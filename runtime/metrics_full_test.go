@@ -160,36 +160,11 @@ func TestMetrics_FullPipeline_SharedOutbox(t *testing.T) {
 	}
 }
 
-// TestMetrics_AllMetricNamesDocumented verifies every domain metric name constant is listed for documentation coverage.
-func TestMetrics_AllMetricNamesDocumented(t *testing.T) {
-	all := []string{
-		shared.MetricLeaseAcquireLatency,
-		shared.MetricLeaseRenewLatency,
-		shared.MetricLeaseAcquireFailures,
-		shared.MetricLeaseExpiries,
-		shared.MetricLeaseTransfers,
-		shared.MetricOutboxPersistLatency,
-		shared.MetricOutboxDrainLatency,
-		shared.MetricOutboxDepth,
-		shared.MetricOutboxClaimRecoveries,
-		shared.MetricOutboxCompletions,
-		shared.MetricOutboxExpiredBeforeSend,
-		shared.MetricOutboxReplayCount,
-		shared.MetricAckLatency,
-		shared.MetricVisibilityExtensions,
-		shared.MetricDeliveryE2ELatency,
-		shared.MetricDLQEntries,
-		shared.MetricMQTTReconnects,
-	}
-	for _, name := range all {
-		if name == "" {
-			t.Error("metric name constant is empty")
-		}
-	}
-	if len(all) != 17 {
-		t.Errorf("expected 17 metric name constants, got %d", len(all))
-	}
-}
+// Metric name constants are non-empty and collision-free — that is
+// shared.TestMetricConstants_NonEmpty's job, in the package that
+// declares them and against every constant rather than a subset. A
+// stale 17-name copy lived here and asserted `len(all) != 17`, i.e.
+// that the literal above it had the length it was written with.
 
 func assertTag(t *testing.T, tags []shared.Tag, key, wantValue string) {
 	t.Helper()

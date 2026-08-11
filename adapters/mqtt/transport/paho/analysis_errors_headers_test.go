@@ -197,14 +197,6 @@ func TestAnaErr_MapSubscribeReasonCode_TopicFilterInvalid(t *testing.T) {
 	}
 }
 
-// TestAnaErr_ContainsAnyEmptySubstrs is a defensive test for the helper
-// — passing no substrings should return false.
-func TestAnaErr_ContainsAnyEmptySubstrs(t *testing.T) {
-	if got := containsAny("anything"); got {
-		t.Fatal("containsAny with no substrings should return false")
-	}
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Headers — additional bounds, edge cases and round-trip invariants.
 // ═══════════════════════════════════════════════════════════════════════════

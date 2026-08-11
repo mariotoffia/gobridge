@@ -9,7 +9,7 @@ replace github.com/mariotoffia/gobridge/testutil/artemislocal => ../../../../tes
 replace github.com/mariotoffia/gobridge/testutil/wait => ../../../../testutil/wait
 
 require (
-	github.com/Azure/go-amqp v1.5.1
+	github.com/Azure/go-amqp v1.7.0
 	github.com/mariotoffia/gobridge v0.0.0
 	github.com/mariotoffia/gobridge/testutil/artemislocal v0.0.0
 	github.com/mariotoffia/gobridge/testutil/wait v0.0.0-20260424080041-92c57d17e957

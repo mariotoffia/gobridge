@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"strings"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
@@ -23,30 +22,30 @@ func MapError(err error) *shared.BridgeError {
 		return shared.ErrUnavailable.Wrap(err)
 	}
 
+	// A server-side CONNECT denial arrives as a typed *autopaho.ConnackError
+	// carrying the MQTT v5 reason code, so it classifies through the same
+	// table the DISCONNECT path uses — including 0x88 "server unavailable",
+	// which is the only classification the SDK's error strings ever carried.
+	if code, ok := connackReasonCode(err); ok {
+		if be := MapDisconnectReasonCode(code); be != nil {
+			return be
+		}
+	}
+	if pahoLinkDown(err) {
+		return shared.ErrConnectionLost.Wrap(err)
+	}
+	if pahoInvalidArguments(err) {
+		return shared.ErrProtocolError.Wrap(err)
+	}
+
+	// Dial and I/O failures (ECONNREFUSED, EHOSTUNREACH, ENETUNREACH, read
+	// timeouts) reach us as *net.OpError, which satisfies net.Error.
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		if netErr.Timeout() {
 			return shared.ErrTimeout.Wrap(err)
 		}
 		return shared.ErrConnectionLost.Wrap(err)
-	}
-
-	s := err.Error()
-	// UPGRADE CHECKLIST (F-10): the two containsAny tables below classify
-	// broker/transport errors by case-insensitive SUBSTRING match on the SDK's
-	// error strings. This is correct against the pinned paho.golang v0.23.0
-	// (go.mod) but is inherently fragile: a paho bump can reword an error and
-	// silently reclassify it to the ErrUnavailable fallback, changing retry
-	// behaviour. On ANY paho.golang / autopaho version bump, re-verify these
-	// substrings against the new SDK's error strings (and prefer typed
-	// errors.As / reason codes over string matching where the SDK exposes them).
-	// The MQTT transport page's "Resilience Behavior" section carries the same
-	// note for operators.
-	if containsAny(s, "connection refused", "no route to host", "network unreachable") {
-		return shared.ErrConnectionLost.Wrap(err)
-	}
-	if containsAny(s, "server unavailable", "broker unavailable") {
-		return shared.ErrUnavailable.Wrap(err)
 	}
 
 	return shared.ErrUnavailable.Wrap(err)
@@ -190,14 +189,4 @@ func MapSubscribeReasonCode(code byte) *shared.BridgeError {
 	default:
 		return shared.ErrUnavailable.Wrap(fmt.Errorf("unknown subscribe reason code 0x%02X", code))
 	}
-}
-
-func containsAny(s string, substrs ...string) bool {
-	lower := strings.ToLower(s)
-	for _, sub := range substrs {
-		if strings.Contains(lower, sub) {
-			return true
-		}
-	}
-	return false
 }

@@ -131,8 +131,13 @@ func TestIntegration_Reconcile_PartialFailure_ReportsErrorWithoutChannelLeak(t *
 			errs.Add(1)
 		}
 	}
+	// AMQP 0-9-1 §1.7.2.1 requires the broker to answer a queue.declare that
+	// disagrees with an existing queue's durable flag with PRECONDITION_FAILED
+	// (406). A broker that accepts it is a broken fixture, not a tolerable
+	// variation — skipping here would delete the whole point of the test.
 	if errs.Load() == 0 {
-		t.Skip("broker accepted mismatching durable redeclare; cannot verify error reporting")
+		t.Fatalf("broker accepted %d durable redeclares against a non-durable queue; "+
+			"expected PRECONDITION_FAILED (406) per AMQP 0-9-1 §1.7.2.1", 3)
 	}
 
 	if h := sess.Health(ctx); !h.Connected {

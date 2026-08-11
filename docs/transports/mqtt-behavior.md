@@ -272,15 +272,22 @@ exists only to flag such a future mode.
   all — i.e. a direct library consumer that calls `Send` without a route
   dispatcher and leaves `timeout` at `0`. In a bridge deployment `sender.timeout`
   therefore only ever *tightens* a send; it cannot loosen the route ceiling.
-- **Case-insensitive error classification.** MQTT error messages from brokers
-  are matched case-insensitively. `"Connection Refused"`, `"CONNECTION REFUSED"`,
-  and `"connection refused"` are all correctly classified as `ErrConnectionLost`,
-  enabling proper retry behavior regardless of broker formatting. This matching
-  is a **substring table over SDK error strings**, correct against the pinned
-  `paho.golang v0.23.0`. **Maintenance/upgrade checklist:** on any paho.golang
-  bump, re-verify the `MapError` string table (`errors.go`) — a reworded SDK
-  error can silently fall through to the `ErrUnavailable` default and change
-  retry behavior.
+- **Error classification is type-driven, not text-driven.** `MapError`
+  (`errors.go`) classifies exclusively on typed values, so an SDK upgrade cannot
+  silently change retry behavior by rewording a message:
+  - a server CONNECT denial (`*autopaho.ConnackError`) classifies from its
+    MQTT v5 reason code through the same table as DISCONNECT — e.g. `0x88`
+    → `ErrUnavailable`, `0x86`/`0x87` → `ErrNotAuthorized`, `0x89` →
+    `ErrBrokerBusy`;
+  - the SDK's link-down sentinels (`autopaho.ConnectionDownError`,
+    `paho.ErrConnectionLost`) → `ErrConnectionLost`;
+  - `paho.ErrInvalidArguments` → `ErrProtocolError` (**permanent** — autopaho
+    itself refuses to retry these, so the bridge must not either);
+  - dial and I/O failures arrive as `*net.OpError` and classify through
+    `net.Error`: `Timeout()` → `ErrTimeout`, otherwise `ErrConnectionLost`.
+    This covers `connection refused`, `no route to host`, and `network
+    unreachable` by type rather than by text;
+  - anything unrecognized → `ErrUnavailable` (transient).
 - **Ingress properties are session-owned copies.** The router converts incoming
   MQTT Properties (User properties, CorrelationData, ContentType, etc.) into an
   owned envelope before dispatch. Config-driven composition binds at most one

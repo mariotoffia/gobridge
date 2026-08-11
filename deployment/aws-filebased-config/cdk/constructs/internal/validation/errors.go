@@ -5,14 +5,6 @@ import (
 	"fmt"
 )
 
-// ErrYamlParse is the sentinel returned when the upstream YAML parse
-// fails. Phase 1 itself does not re-parse — see the package doc — but
-// the constant is exported so callers that bridge a config.ParseFile
-// failure into the validator surface can wrap it consistently:
-//
-//	fmt.Errorf("%w: %v", validation.ErrYamlParse, parseErr)
-var ErrYamlParse = errors.New("bridge.yaml: parse failed")
-
 // ErrInvalidBridgeID is returned when cfg.Bridge.ID does not match
 // the bridge-name regex required by the Validation Matrix. The
 // matrix names the field "bridge.name"; on the typed Go side it is

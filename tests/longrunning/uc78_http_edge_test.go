@@ -21,13 +21,6 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
 
-// TestUC78_HTTPSSEClientDisconnect is deferred until the HTTP transport
-// infrastructure (BridgeFactory + SSESender) is available.
-func TestUC78_HTTPSSEClientDisconnect(t *testing.T) {
-	t.Skip("UC78: requires HTTP transport infrastructure (BridgeFactory + SSESender) — deferred to dedicated HTTP test suite")
-	_ = withFreshInfra(t)
-}
-
 // TestUC79_FIFOMultiGroupConcurrent verifies that messages sent through an
 // SQS FIFO queue with 5 message groups are delivered in per-group order
 // through a DirectHold bridge route to MQTT output.

@@ -24,9 +24,13 @@ type GoBridgeEfsConfigProps struct {
 	Vpc awsec2.IVpc
 
 	// VpcSubnets selects the subnets for mount targets. If nil the
-	// default is all private subnets in the VPC. The same selection
-	// must be used by the ECS services consuming this filesystem; the
-	// parent construct (GoBridgeSingle/Cluster) enforces that match.
+	// default is all private subnets in the VPC. A mount target serves
+	// its whole availability zone, so this selection must cover every AZ
+	// the consuming ECS services place tasks in. When this construct is
+	// passed to GoBridgeSingle/Cluster as a pre-built EfsConfig, that
+	// parent enforces the match via [AssertEfsSubnetParity] and fails
+	// synthesis on a mismatch; when the parent auto-creates the config it
+	// passes its own VpcSubnets through, so parity is structural.
 	VpcSubnets *awsec2.SubnetSelection
 
 	// FileSystem is an existing EFS filesystem to reuse. If nil a new
@@ -66,6 +70,15 @@ type GoBridgeEfsConfig struct {
 	workerAP    awsefs.AccessPoint
 	securityGrp awsec2.SecurityGroup
 	vpcSubnets  *awsec2.SubnetSelection
+
+	// vpc and mountAZs record what the subnet selection actually
+	// RESOLVED to, so AssertEfsSubnetParity can compare a
+	// caller-supplied filesystem against the parent's ECS placement
+	// without re-resolving a selection against the wrong VPC. A mount
+	// target serves its entire AZ, so the AZ set — not the subnet ID
+	// set — is what a task needs to land in.
+	vpc      awsec2.IVpc
+	mountAZs []string
 }
 
 // NewGoBridgeEfsConfig creates the EFS configuration construct.
@@ -172,6 +185,8 @@ func NewGoBridgeEfsConfig(scope constructs.Construct, id *string, props *GoBridg
 		workerAP:    workerAP,
 		securityGrp: sg,
 		vpcSubnets:  subnetSelection,
+		vpc:         props.Vpc,
+		mountAZs:    availabilityZonesOf(selected),
 	}
 }
 

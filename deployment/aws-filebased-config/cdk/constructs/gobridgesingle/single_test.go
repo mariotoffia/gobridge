@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	"github.com/aws/jsii-runtime-go"
 
+	cdkconstructs "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
@@ -189,5 +190,52 @@ bridge:
 		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:latest"), nil),
 		Bootstrap:    singleBootstrap(),
 		BridgeConfig: src,
+	})
+}
+
+// TestGoBridgeSingle_SuppliedEfsConfig_SubnetMismatchFailsSynth is the
+// facade half of Validation Matrix row 14. The parity check itself is
+// unit-tested in constructs/efs_config_validation_test.go; this proves
+// GoBridgeSingle actually CALLS it on the supplied-EfsConfig path — the
+// only path where the mismatch is possible, since an auto-created config
+// receives props.VpcSubnets verbatim.
+func TestGoBridgeSingle_SuppliedEfsConfig_SubnetMismatchFailsSynth(t *testing.T) {
+	app := awscdk.NewApp(nil)
+	stack := awscdk.NewStack(app, jsii.String("SingleStack"), nil)
+	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)
+
+	azs := *vpc.AvailabilityZones()
+	if len(azs) < 2 {
+		t.Fatalf("fixture needs a multi-AZ VPC, got %d zone(s)", len(azs))
+	}
+
+	// Mount targets in the first AZ only; ECS placement left at the
+	// default, which spans every private subnet — including the second AZ.
+	efs := cdkconstructs.NewGoBridgeEfsConfig(stack, jsii.String("Efs"),
+		&cdkconstructs.GoBridgeEfsConfigProps{
+			Vpc: vpc,
+			VpcSubnets: &awsec2.SubnetSelection{
+				SubnetType:        awsec2.SubnetType_PRIVATE_WITH_EGRESS,
+				AvailabilityZones: &[]*string{azs[0]},
+			},
+		})
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("GoBridgeSingle must reject an EfsConfig that cannot serve its ECS placement")
+		}
+		if msg := fmt.Sprintf("%v", r); !strings.Contains(msg, "GoBridgeSingle") ||
+			!strings.Contains(msg, *azs[1]) {
+			t.Fatalf("panic must name the construct and the uncovered AZ %q, got: %s", *azs[1], msg)
+		}
+	}()
+
+	gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Bridge"), &gobridgesingle.SingleProps{
+		Vpc:          vpc,
+		EfsConfig:    efs,
+		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:latest"), nil),
+		Bootstrap:    singleBootstrap(),
+		BridgeConfig: source.NewAsset(writeSingleYAML(t, singleSampleYAML)),
 	})
 }

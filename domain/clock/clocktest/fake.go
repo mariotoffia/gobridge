@@ -93,6 +93,28 @@ func (f *Fake) TickerCount() int {
 	return n
 }
 
+// TickerPeriods returns the current period of every active ticker, in
+// registration order.
+//
+// It is the Reset-aware companion to TickerCount. A goroutine that
+// switches cadence mid-loop calls Ticker.Reset, which changes no count
+// and consumes no channel — it leaves the test with nothing to
+// synchronise on. Advancing by the NEW period before that Reset lands
+// re-arms nextTick past the instant the test aimed at, the tick never
+// fires, and the test hangs until its wait deadline. Spin here until
+// the expected period appears, then Advance.
+func (f *Fake) TickerPeriods() []time.Duration {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]time.Duration, 0, len(f.tickers))
+	for _, tk := range f.tickers {
+		if !tk.stopped {
+			out = append(out, tk.period)
+		}
+	}
+	return out
+}
+
 // TimerCount returns the number of active (non-stopped, non-fired)
 // timers currently registered with the fake clock. Useful for the
 // same synchronisation pattern as TickerCount.

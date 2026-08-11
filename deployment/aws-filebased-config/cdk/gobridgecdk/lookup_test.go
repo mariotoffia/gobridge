@@ -186,8 +186,13 @@ func TestLookupBridge_ManifestVersionMismatchEmitsAnnotationError(t *testing.T) 
 	_, stack := newStack(t, ctx)
 
 	ref := gobridgecdk.LookupBridge(stack, "Ref", testPrefix)
+	// Context seeding failing is the setup being broken, not the environment
+	// being unusual: newStack puts the value in App context and LookupBridge
+	// reads it before any AWS round-trip. Fail here rather than skip, or the
+	// mismatch assertion below evaporates silently.
 	if got := ref.ManifestVersion(); got != "99" {
-		t.Skipf("context seeding did not surface (got %q) — environment-specific; skipping", got)
+		t.Fatalf("seeded App context %s=99 did not surface: ManifestVersion() = %q",
+			manifestContextKey(testPrefix), got)
 	}
 
 	ann := assertions.Annotations_FromStack(stack)

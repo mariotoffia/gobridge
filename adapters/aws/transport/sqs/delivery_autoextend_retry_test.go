@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
@@ -128,17 +129,38 @@ func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
 		return fake.TickerCount() >= 1
 	})
 
-	// Cadence: tick at vis/3 = 10s; after the 2nd failure the loop resets
-	// to a 5s retry (half the remaining window). Advance along that exact
-	// schedule so three consecutive failures fire before the 30s deadline.
-	for i, adv := range []time.Duration{10 * time.Second, 10 * time.Second, 5 * time.Second} {
-		fake.Advance(adv)
-		want := i + 1
+	// Cadence: tick at vis/3 = 10s; after the 2nd failure the remaining
+	// window has halved so the loop Resets the ticker to a 5s retry.
+	// Advance along that exact schedule so three consecutive failures fire
+	// before the 30s deadline.
+	//
+	// wantPeriod is the ORDERING BARRIER. Waiting only on the CMV call
+	// races the loop's ticker.Reset, which happens later in the same
+	// iteration: advancing 5s before the Reset lands re-arms nextTick to
+	// now+5s instead of firing at it, the third tick never arrives and the
+	// test hangs. Waiting for the period to change proves the Reset is in.
+	for _, step := range []struct {
+		advance    time.Duration
+		wantCalls  int
+		wantPeriod time.Duration // ticker cadence once this tick is fully handled
+	}{
+		{10 * time.Second, 1, 10 * time.Second}, // retry == cadence → no Reset
+		{10 * time.Second, 2, 5 * time.Second},  // remaining window halved → Reset(5s)
+		{5 * time.Second, 3, 0},                 // ceiling reached → loop returns
+	} {
+		fake.Advance(step.advance)
 		wait.Until(t, time.Second, "failure tick", func() bool {
 			mock.mu.Lock()
 			n := len(mock.ChangeVisibilityCalls)
 			mock.mu.Unlock()
-			return n >= want
+			return n >= step.wantCalls
+		})
+		if step.wantPeriod == 0 {
+			continue
+		}
+		wait.Until(t, time.Second, "ticker re-armed at the retry cadence", func() bool {
+			periods := fake.TickerPeriods()
+			return len(periods) == 1 && periods[0] == step.wantPeriod
 		})
 	}
 
@@ -178,9 +200,18 @@ func TestAutoExtendCancelsOnDeadlineLapseAtMinVisibilityS15(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e-minvis", Payload: []byte("y"), CreatedAt: time.Now()})
 	fake := clocktest.New()
 	var cancelled atomic.Bool
+	// rec is the ORDERING BARRIER between the two Advance calls, not a
+	// metrics assertion. The loop records the CMV call, THEN reads
+	// clk.Now() for the window check, THEN counts the failure
+	// (acl_delivery.go: ChangeMessageVisibility → clk.Now() → Counter).
+	// Advancing on the CMV call alone races that middle step: the clock
+	// could reach t=2s before tick 1's window check reads it, lapsing the
+	// window after ONE call and cancelling for the wrong reason. Waiting
+	// for the counter proves clk.Now() was already read at t=1s.
+	rec := &ports.RecordingExporter{}
 	// vis=2 → interval floored to 1s, deadline at t=2s.
 	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-minvis", 2, true,
-		func() { cancelled.Store(true) }, nil, nil, fake)
+		func() { cancelled.Store(true) }, nil, rec, fake)
 	defer func() { d.stopAutoExtend(); d.cleanupContext() }()
 
 	wait.Until(t, time.Second, "ticker registered", func() bool {
@@ -189,11 +220,8 @@ func TestAutoExtendCancelsOnDeadlineLapseAtMinVisibilityS15(t *testing.T) {
 
 	// Tick 1 at t=1s: fails, cf=1, window not yet lapsed (1s < 2s) → retry.
 	fake.Advance(1 * time.Second)
-	wait.Until(t, time.Second, "first failure tick", func() bool {
-		mock.mu.Lock()
-		n := len(mock.ChangeVisibilityCalls)
-		mock.mu.Unlock()
-		return n >= 1
+	wait.Until(t, time.Second, "first failure counted at t=1s", func() bool {
+		return len(rec.FindEntries(MetricSQSAutoExtendFailures)) >= 1
 	})
 
 	// Tick 2 at t=2s: fails, cf=2 (< ceiling 3), window lapsed (2s !< 2s)

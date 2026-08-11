@@ -31,6 +31,7 @@ func TestAutoExtend_Boundary_Timeout1_Disabled(t *testing.T) {
 	defer parentCancel()
 
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "boundary-1", Subject: "test"})
+	fake := clocktest.New()
 	del := newDelivery(
 		parentCtx,
 		env,
@@ -42,17 +43,22 @@ func TestAutoExtend_Boundary_Timeout1_Disabled(t *testing.T) {
 		func() {}, // processingCancel
 		nil,
 		&ports.NoopExporter{},
-		nil,
+		fake,
 	)
 
-	// NEGATIVE: verify no ChangeMessageVisibility from the background
-	// auto-extend loop when visibilityTimeout == 1 (guard is vis >= 2).
-	// Measure BEFORE Ack: Ack now issues a single final pre-delete
+	// NEGATIVE, asserted on the clock rather than on elapsed wall time: the
+	// auto-extend loop's first act is to register a ticker, so "no ticker was
+	// ever registered" is the deterministic proof it never started. Advancing
+	// the fake past several would-be intervals leaves nothing to fire.
+	fake.Advance(10 * time.Second)
+
+	assert.Equal(t, 0, fake.TickerCount(),
+		"auto-extend should NOT register a ticker when visibilityTimeout == 1")
+
+	// Measured BEFORE Ack: Ack issues a single final pre-delete
 	// visibility-margin extension for such a small window
 	// (Finding: c8-autoextend-margin), which is unrelated to whether the
 	// background auto-extend loop started.
-	<-time.After(200 * time.Millisecond)
-
 	mock.mu.Lock()
 	callsBeforeAck := len(mock.ChangeVisibilityCalls)
 	mock.mu.Unlock()
@@ -65,11 +71,10 @@ func TestAutoExtend_Boundary_Timeout1_Disabled(t *testing.T) {
 
 // TestAutoExtend_Boundary_Timeout2_Enabled verifies that auto-extend DOES
 // start when visibilityTimeout == 2 (interval = 1s, fires at least once).
+// The 1s interval is driven by a clocktest.Fake, so this completes in
+// microseconds and runs on every `make test` — it is a regression guard,
+// not an integration test.
 func TestAutoExtend_Boundary_Timeout2_Enabled(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping: needs ~2s for auto-extend to fire")
-	}
-
 	mock := &mockSQSClient{
 		ChangeMessageVisibilityFn: func(
 			_ context.Context,

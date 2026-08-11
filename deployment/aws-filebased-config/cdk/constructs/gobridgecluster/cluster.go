@@ -348,7 +348,10 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 
 	// Shared EFS config — auto-create when not supplied. Used by
 	// BOTH services (control access point for control, worker
-	// access point for worker).
+	// access point for worker). An auto-created config gets
+	// props.VpcSubnets verbatim, so its mount targets always cover the
+	// ECS placement; a SUPPLIED one may not, and a task in an AZ without
+	// a mount target fails at container start (matrix row 14).
 	efsConfig := props.EfsConfig
 	if efsConfig == nil {
 		efsConfig = cdkconstructs.NewGoBridgeEfsConfig(c, jsii.String("Efs"), &cdkconstructs.GoBridgeEfsConfigProps{
@@ -356,6 +359,8 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 			VpcSubnets: props.VpcSubnets,
 			EfsKmsKey:  props.EfsKmsKey,
 		})
+	} else {
+		cdkconstructs.AssertEfsSubnetParity("GoBridgeCluster", props.Vpc, props.VpcSubnets, efsConfig)
 	}
 
 	// Shared ECS cluster — auto-create when not supplied.

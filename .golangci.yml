@@ -194,6 +194,17 @@ linters:
           msg: "use clock.Since via dependency injection (see domain/clock)"
         - pattern: '^time\.Until$'
           msg: "compute via clk.Now (see domain/clock)"
+        # H-3: production code must surface an invalid envelope as an
+        # error it can classify into a BridgeError, not panic or
+        # silently substitute a placeholder ID. The Must* helpers are
+        # test-fixture constructors. Exempted below by the existing
+        # forbidigo path rules: _test.go, ports/storetest/, and (via
+        # exclusions.paths) ports/transporttest/ — the conformance
+        # suites that build known-valid fixtures. The definition site
+        # calls it unqualified inside package messaging, so it does not
+        # match this pattern.
+        - pattern: '^messaging\.MustEnvelope(WithReserved)?$'
+          msg: "use messaging.NewEnvelope and surface the error (H-3)"
 
     depguard:
       rules:

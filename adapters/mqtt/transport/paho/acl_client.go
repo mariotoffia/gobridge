@@ -100,6 +100,28 @@ func connackReasonCode(err error) (code byte, ok bool) {
 	return 0, false
 }
 
+// pahoLinkDown reports whether err is one of the SDK's typed
+// link-down sentinels: autopaho.ConnectionDownError (no usable
+// connection to the server) or pahov5.ErrConnectionLost (the link
+// dropped after a request went out, so the outcome is unknown). Both
+// are transient — the caller maps them to shared.ErrConnectionLost.
+// Kept here beside connackReasonCode so MapError classifies by type
+// without errors.go importing the vendor SDK.
+func pahoLinkDown(err error) bool {
+	return errors.Is(err, autopaho.ConnectionDownError) ||
+		errors.Is(err, pahov5.ErrConnectionLost)
+}
+
+// pahoInvalidArguments reports whether err is pahov5.ErrInvalidArguments,
+// which the SDK joins into requests the server cannot satisfy on this
+// connection (unsupported wildcards, shared subscriptions, QoS above the
+// server maximum, retain when disabled). autopaho itself refuses to retry
+// these (autopaho/auto.go), so they map to a permanent classification
+// rather than the transient fallback.
+func pahoInvalidArguments(err error) bool {
+	return errors.Is(err, pahov5.ErrInvalidArguments)
+}
+
 // pahoConn is the production pahoConnection backed by a real
 // autopaho.ConnectionManager.
 type pahoConn struct {

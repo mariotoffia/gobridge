@@ -119,10 +119,6 @@ func TestNumericCompare_LargeInt64Precision(t *testing.T) {
 	v1 := int64(1<<53 + 1)
 	v2 := int64(1<<53 + 2)
 
-	if v1 == v2 {
-		t.Skip("test requires distinct int64 values")
-	}
-
 	eval := &conditionEval{
 		cond: MatchCondition{
 			Field:    "header.val",

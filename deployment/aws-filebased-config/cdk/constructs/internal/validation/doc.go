@@ -26,13 +26,14 @@
 //
 // This package implements the Phase 1 rows of the Validation Matrix:
 //
-//  1. yaml unparseable                       — already enforced upstream
-//     by config.ParseFile (called by source.Materialize). If
-//     Materialize succeeded, this row is past. Phase 1 here does not
-//     re-parse; the construct boundary is responsible for surfacing
-//     the parse error with the "bridge.yaml: <err>" prefix.
-//  2. stage-1 validator failure              — same as row 1; bundled
-//     into config.ParseFile and surfaced upstream.
+//  1. yaml unparseable                       — enforced upstream by
+//     config.ParseFile (called by source.Materialize), which wraps the
+//     failure in source.ErrYamlParse so the operator-facing message
+//     carries the matrix-required "bridge.yaml: " prefix ahead of the
+//     yaml line/col detail. If Materialize succeeded, this row is past;
+//     Phase 1 here does not re-parse.
+//  2. stage-1 validator failure              — same boundary and same
+//     source.ErrYamlParse wrap as row 1; bundled into config.ParseFile.
 //  3. plaintext credential at field path    — bridgecfg.ScanForPlaintextSecrets.
 //  4. filesystem topology + delivery_mode = shared_outbox.
 //  5. filesystem topology + route.session lease.

@@ -59,11 +59,10 @@ func TestBug3_Delivery_ProcessingCancelSetAfterConstruction(t *testing.T) {
 // when auto-extend exhausts its max failures, the processingCancel
 // function (now passed at construction time) is called, properly
 // cancelling the processing context.
+// The 10s/10s/5s failure cadence is driven by a clocktest.Fake, so this
+// completes in microseconds and runs on every `make test` — it is a
+// regression guard, not an integration test.
 func TestBug3_Delivery_AutoExtendExhaustsCancelsProcessing(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping: auto-extend test needs ~4s for 3 failure cycles")
-	}
-
 	// Atomic because the mock callback is invoked from the auto-extend
 	// goroutine while wait.Until predicates read it from the test goroutine.
 	var extendCalls atomic.Int32
@@ -113,11 +112,31 @@ func TestBug3_Delivery_AutoExtendExhaustsCancelsProcessing(t *testing.T) {
 
 	// SYNC: advance along the exact failure cadence (10s, 10s, 5s) to
 	// trigger autoExtendMaxFailures (3) consecutive failure cycles.
-	for i, adv := range []time.Duration{10 * time.Second, 10 * time.Second, 5 * time.Second} {
-		fake.Advance(adv)
-		want := int32(i + 1)
+	//
+	// wantPeriod is the ORDERING BARRIER against the loop's ticker.Reset,
+	// which lands AFTER the CMV call it follows: advancing 5s before the
+	// Reset re-arms nextTick to now+5s rather than firing at it, so the
+	// third tick never arrives. See the same table in
+	// delivery_autoextend_retry_test.go.
+	for _, step := range []struct {
+		advance    time.Duration
+		wantCalls  int32
+		wantPeriod time.Duration
+	}{
+		{10 * time.Second, 1, 10 * time.Second}, // retry == cadence → no Reset
+		{10 * time.Second, 2, 5 * time.Second},  // remaining window halved → Reset(5s)
+		{5 * time.Second, 3, 0},                 // ceiling reached → loop returns
+	} {
+		fake.Advance(step.advance)
 		wait.Until(t, time.Second, "failure tick", func() bool {
-			return extendCalls.Load() >= want
+			return extendCalls.Load() >= step.wantCalls
+		})
+		if step.wantPeriod == 0 {
+			continue
+		}
+		wait.Until(t, time.Second, "ticker re-armed at the retry cadence", func() bool {
+			periods := fake.TickerPeriods()
+			return len(periods) == 1 && periods[0] == step.wantPeriod
 		})
 	}
 

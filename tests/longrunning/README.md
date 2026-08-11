@@ -241,7 +241,6 @@ Tests use per-test `mqttlocal.BrokerInstance` containers with custom configs.
 | UC75 | Wildcard subscription overlap | 500 | Documents dedup vs double-delivery. |
 | UC76 | MQTT QoS 0 fire-and-forget | 5,000 | No bridge errors. Collector > 0. Loss % logged. |
 | UC77 | QoS 2 under broker restart | 1,000 | >= 1,000 unique. Zero duplicates. |
-| UC78 | HTTP/SSE client disconnect | — | SKIP (needs HTTP factory infrastructure). |
 | UC79 | SQS FIFO multi-group concurrent | 1,000 | Per-group ordering preserved. |
 
 ---
