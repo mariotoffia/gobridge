@@ -40,9 +40,15 @@ if [ "$DRY_RUN" != "1" ]; then
   gh auth status >/dev/null 2>&1 || die "gh is not authenticated (run: gh auth login)"
 fi
 
+# The manifest validator rejects a gap in the layer numbering, so the highest
+# declared layer is the whole sequence. Deriving it here means adding a module
+# above the current top layer needs no edit to this script.
+MAX_LAYER="$(make --no-print-directory release-modules RELEASE_FORMAT=tsv | cut -f1 | sort -n | tail -1)"
+printf '%s' "$MAX_LAYER" | grep -Eq '^[0-9]+$' || die "could not determine the highest release layer"
+
 # ---- plan (always) ----
 echo "Release plan for ${VERSION} (DRY_RUN=${DRY_RUN}, REMOTE=${REMOTE}):"
-for layer in 0 1 2 3; do
+for layer in $(seq 0 "$MAX_LAYER"); do
   mods="$(make --no-print-directory release-modules RELEASE_LAYER="$layer" 2>/dev/null || true)"
   [ -n "$mods" ] || continue
   echo "  layer ${layer}:"
@@ -268,8 +274,8 @@ git push "$REMOTE" "HEAD:refs/heads/${branch}"
 BOOTSTRAP_COMMIT="$(git rev-parse HEAD)"
 make derive-release-bootstrap RELEASE_VERSION="$VERSION" RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"
 
-# §4 layers 1..3 — sequential between layers, concurrent within each
-for layer in 1 2 3; do
+# §4 layers 1..N — sequential between layers, concurrent within each
+for layer in $(seq 1 "$MAX_LAYER"); do
   echo "== §4 layer ${layer} =="
   publish_layer "$layer"
 done

@@ -32,21 +32,32 @@ make release-modules RELEASE_FORMAT=tsv
 make release-modules RELEASE_LAYER=1
 ```
 
-The repository currently has **31 published modules**:
+The repository currently has **33 published modules**:
 
 | Layer | Count | Contents |
 |---|---:|---|
 | 0 | 1 | Root module |
-| 1 | 26 | Direct-root adapter/processor leaf modules |
+| 1 | 27 | Direct-root adapter/processor leaf modules, plus `deployment/aws-filebased-config/infra` |
 | 2 | 3 | `adapters/aws/store`, `adapters/native/store`, and `httpapi` |
-| 3 | 1 | `cmd/gobridge` |
+| 3 | 1 | `deployment/aws-filebased-config/cdk` |
+| 4 | 1 | `cmd/gobridge` |
 
 The published set is the root module, every module under `adapters/` and
-`processors/`, `httpapi`, and `cmd/gobridge`. Modules under `tests/`,
-`testutil/`, `scripts/`, and `deployment/` are internal-only and are never
-tagged. The manifest declares only the test-helper modules required to compile
-published-module tests as pseudo-version bootstrap exceptions; that does not
-make them tagged releases.
+`processors/`, `httpapi`, `cmd/gobridge`, and the two CDK modules
+`deployment/aws-filebased-config/infra` and
+`deployment/aws-filebased-config/cdk`. Everything else under `tests/`,
+`testutil/`, `scripts/`, and `deployment/` — including
+`deployment/aws-filebased-config/lib`, which is internal wiring for the shipped
+image — is internal-only and is never tagged. The manifest declares only the
+test-helper modules required to compile published-module tests as
+pseudo-version bootstrap exceptions; that does not make them tagged releases.
+
+The two CDK modules are published because an external CDK app writes its own
+stack against the constructs, and those constructs take `infra` types as
+arguments. Both must resolve from the proxy or the documented quickstart in
+`docs/scenarios/cdk/` cannot compile outside this repository. `cdk` sits above
+the layer-2 store aggregates it requires, which is why `cmd/gobridge` moved to
+layer 4 — the final module must be alone on the highest layer.
 
 ## Policy
 
@@ -224,9 +235,11 @@ Run `make release VERSION=vX.Y.Z` first (dry-run) to review the per-layer plan. 
 surrounding sections (§1 waits, §2 root, §3 bootstrap above; §5 smoke below) document what each step does;
 `run.sh` performs them in order and must not be bypassed to retag.
 
-Layer 2 cannot start until all layer-1 tags are green and visible. The final
-module cannot start until all three layer-2 tags are green and visible. If a
-tagged workflow fails, stop. Do not retag; diagnose and start a new patch train.
+No layer can start until every tag in the layer below it is green and visible,
+so the final `cmd/gobridge` tag is reached only after
+`deployment/aws-filebased-config/cdk`, which in turn waits on all three layer-2
+tags. If a tagged workflow fails, stop. Do not retag; diagnose and start a new
+patch train.
 
 ### 5. Final public proof
 

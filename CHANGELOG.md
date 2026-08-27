@@ -10,6 +10,37 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Added
+
+- The two CDK modules `deployment/aws-filebased-config/cdk` and
+  `deployment/aws-filebased-config/infra` are now published, taking the train
+  from 31 to 33 modules. The CDK scenarios under `docs/scenarios/cdk/` tell an
+  external app to import the constructs and the `infra` types those constructs
+  take as arguments, but neither module had ever been tagged, so none of the
+  documented examples could resolve outside this repository.
+  `deployment/aws-filebased-config/lib` stays internal — it is wiring for the
+  shipped image, not a consumer API.
+
+### Changed
+
+- `cmd/gobridge` moved from layer 3 to layer 4. `cdk` requires the layer-2 store
+  aggregates, so it lands on layer 3, and the final module must be alone on the
+  highest layer for the strict all-module gate and image build to trigger once.
+- `scripts/release/run.sh` derives the highest layer from the manifest instead of
+  hardcoding `0 1 2 3`, so adding a module above the current top layer no longer
+  needs an edit to the script.
+
+### Fixed
+
+- `TestAutoExtendStopsAfterMaxFailuresS15` failed under parallel load. The SQS
+  auto-extend loop re-arms its ticker *after* the `ChangeMessageVisibility` call
+  returns, so waiting on the recorded call did not prove the ticker carried its
+  shortened retry deadline. Advancing the fake clock into that gap stepped past
+  the stale deadline without firing, and the late `Reset` then scheduled from
+  the new now — stranding the third tick. `clocktest.Fake` gained
+  `TickerResets()`, the re-arm counterpart to `TickerCount()`, and the test now
+  waits for the re-arm before advancing.
+
 ## [0.3.3] - 2026-07-27
 
 Completes 0.3.2: same modules, plus the two release-pipeline fixes that

@@ -131,6 +131,12 @@ func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
 	// Cadence: tick at vis/3 = 10s; after the 2nd failure the loop resets
 	// to a 5s retry (half the remaining window). Advance along that exact
 	// schedule so three consecutive failures fire before the 30s deadline.
+	//
+	// The 3rd advance is only correct once that reset has landed. The loop
+	// resets the ticker after the SQS call returns, so the recorded call is
+	// not proof the ticker carries its 5s deadline yet; advancing first would
+	// step over the stale 30s deadline without firing and strand the 3rd tick.
+	// Wait for the re-arm itself.
 	for i, adv := range []time.Duration{10 * time.Second, 10 * time.Second, 5 * time.Second} {
 		fake.Advance(adv)
 		want := i + 1
@@ -140,6 +146,11 @@ func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
 			mock.mu.Unlock()
 			return n >= want
 		})
+		if want == 2 {
+			wait.Until(t, time.Second, "retry cadence armed", func() bool {
+				return fake.TickerResets() >= 1
+			})
+		}
 	}
 
 	wait.Until(t, time.Second, "processing cancelled", func() bool {

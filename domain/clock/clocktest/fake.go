@@ -17,10 +17,11 @@ import (
 // the lock-ordering hazards that arise when Advance walks the slices
 // while Reset/Stop/fire mutate elements.
 type Fake struct {
-	mu      sync.Mutex
-	now     time.Time
-	timers  []*fakeTimer
-	tickers []*fakeTicker
+	mu           sync.Mutex
+	now          time.Time
+	timers       []*fakeTimer
+	tickers      []*fakeTicker
+	tickerResets int
 }
 
 // New returns a Fake clock starting at the current wall-clock time.
@@ -91,6 +92,20 @@ func (f *Fake) TickerCount() int {
 		}
 	}
 	return n
+}
+
+// TickerResets returns how many times any ticker has been Reset since the
+// clock was created. It is the re-arm counterpart to TickerCount: a goroutine
+// that reacts to a tick by changing its own cadence does the Reset *after*
+// whatever side effect the test can already observe, so waiting on that side
+// effect does not prove the ticker carries its new deadline yet. Advancing
+// into that gap moves `now` past the old deadline without firing, and the late
+// Reset then schedules from the new `now` — the tick is lost for good. Spin on
+// TickerResets() until it grows before calling Advance again.
+func (f *Fake) TickerResets() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tickerResets
 }
 
 // TimerCount returns the number of active (non-stopped, non-fired)
@@ -227,6 +242,7 @@ func (tk *fakeTicker) Reset(d time.Duration) {
 	}
 	tk.clock.mu.Lock()
 	defer tk.clock.mu.Unlock()
+	tk.clock.tickerResets++
 	tk.period = d
 	tk.stopped = false
 	// Schedule the next tick one full period from the current fake

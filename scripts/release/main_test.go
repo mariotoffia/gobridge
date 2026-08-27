@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -419,54 +418,14 @@ func TestRunModuleChecks_PropagatesCommandFailure(t *testing.T) {
 func TestStrictAll_RejectsForbiddenManifestBeforePublicCommands(t *testing.T) {
 	t.Parallel()
 
-	repo := t.TempDir()
-	manifest := releaseManifest{
-		Schema:       1,
-		ModulePrefix: "github.com/mariotoffia/gobridge",
-		Published: []publishedModule{
-			{Path: ".", Layer: 0},
-			{Path: "adapters/example", Layer: 1},
-			{Path: "httpapi", Layer: 2},
-			{Path: "cmd/gobridge", Layer: 3},
-		},
-	}
-	files := map[string]string{
-		"go.mod": `module github.com/mariotoffia/gobridge
-
-go 1.25.0
-`,
-		"adapters/example/go.mod": `module github.com/mariotoffia/gobridge/adapters/example
+	repo, manifest := writeFixtureRepository(t, true)
+	writeTestFile(t, filepath.Join(repo, "adapters", "example", "go.mod"), `module github.com/mariotoffia/gobridge/adapters/example
 
 go 1.25.0
 
 require github.com/mariotoffia/gobridge v0.0.0
 replace github.com/mariotoffia/gobridge => ../..
-`,
-		"httpapi/go.mod": `module github.com/mariotoffia/gobridge/httpapi
-
-go 1.25.0
-
-require github.com/mariotoffia/gobridge v0.3.0
-`,
-		"cmd/gobridge/go.mod": `module github.com/mariotoffia/gobridge/cmd/gobridge
-
-go 1.25.0
-
-require github.com/mariotoffia/gobridge/httpapi v0.3.0
-`,
-	}
-	if err := os.MkdirAll(filepath.Join(repo, "processors"), 0o755); err != nil {
-		t.Fatalf("MkdirAll(processors) error = %v", err)
-	}
-	for name, content := range files {
-		filename := filepath.Join(repo, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
-			t.Fatalf("MkdirAll(%s) error = %v", filename, err)
-		}
-		if err := os.WriteFile(filename, []byte(content), 0o600); err != nil {
-			t.Fatalf("WriteFile(%s) error = %v", filename, err)
-		}
-	}
+`)
 
 	runner := &recordingRunner{}
 	err := strictAll(context.Background(), runner, repo, manifest, "v0.3.0")

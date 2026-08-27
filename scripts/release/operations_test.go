@@ -70,6 +70,41 @@ func TestReleaseManifest_Validate(t *testing.T) {
 	}
 }
 
+func TestIsInternalOnlyPath_PublishesOnlyTheTwoDeploymentModules(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]bool{
+		"deployment/aws-filebased-config/cdk":   false,
+		"deployment/aws-filebased-config/infra": false,
+		"deployment/aws-filebased-config/lib":   true,
+		"deployment/aws-filebased-config":       true,
+		"deployment":                            true,
+		"scripts/release":                       true,
+		"testutil/wait":                         true,
+		"adapters/example":                      false,
+	}
+	for modulePath, want := range tests {
+		if got := isInternalOnlyPath(modulePath); got != want {
+			t.Errorf("isInternalOnlyPath(%q) = %v, want %v", modulePath, got, want)
+		}
+	}
+}
+
+// A published deployment module accepts its own tag; every sibling under
+// deployment/ must still be refused, so a stray tag cannot mint a release.
+func TestModuleForTag_RejectsUnpublishedDeploymentSiblings(t *testing.T) {
+	t.Parallel()
+
+	manifest := fixtureManifest()
+	if _, _, err := manifest.moduleForTag("deployment/aws-filebased-config/cdk/v0.3.0"); err != nil {
+		t.Fatalf("moduleForTag(cdk) error = %v, want the declared published module", err)
+	}
+	_, _, err := manifest.moduleForTag("deployment/aws-filebased-config/lib/v0.3.0")
+	if err == nil || !strings.Contains(err.Error(), "internal-only module") {
+		t.Fatalf("moduleForTag(lib) error = %v, want internal-only rejection", err)
+	}
+}
+
 func TestRunSourcePreflight_ReportsStructureAndInventory(t *testing.T) {
 	t.Parallel()
 
@@ -89,7 +124,7 @@ replace github.com/mariotoffia/gobridge => ../..
 	}
 	for _, want := range []string{
 		"Release source preflight PASS.",
-		"Published modules: 4; layer 0=1; layer 1=1; layer 2=1; layer 3=1",
+		"Published modules: 6; layer 0=1; layer 1=2; layer 2=1; layer 3=1; layer 4=1",
 		"exact-v0.0.0: 1",
 		"local-replace: 1",
 		"strict release gates reject it",
@@ -113,7 +148,9 @@ func TestRunCLI_ListUsesCanonicalManifest(t *testing.T) {
 	); err != nil {
 		t.Fatalf("runCLI(list) error = %v", err)
 	}
-	if got, want := output.String(), "adapters/example/v0.3.0\n"; got != want {
+	want := "adapters/example/v0.3.0\n" +
+		"deployment/aws-filebased-config/infra/v0.3.0\n"
+	if got := output.String(); got != want {
 		t.Fatalf("runCLI(list) output = %q, want %q", got, want)
 	}
 }
@@ -379,10 +416,10 @@ func TestListModules_AllFormats(t *testing.T) {
 		version string
 		want    string
 	}{
-		{format: "path", want: "adapters/example"},
-		{format: "import", want: "github.com/mariotoffia/gobridge/adapters/example"},
-		{format: "tag", version: testReleaseVersion, want: "adapters/example/v0.3.0"},
-		{format: "tsv", want: "1\tadapters/example\tgithub.com/mariotoffia/gobridge/adapters/example"},
+		{format: "path", want: "adapters/example\ndeployment/aws-filebased-config/infra"},
+		{format: "import", want: "github.com/mariotoffia/gobridge/adapters/example\ngithub.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"},
+		{format: "tag", version: testReleaseVersion, want: "adapters/example/v0.3.0\ndeployment/aws-filebased-config/infra/v0.3.0"},
+		{format: "tsv", want: "1\tadapters/example\tgithub.com/mariotoffia/gobridge/adapters/example\n1\tdeployment/aws-filebased-config/infra\tgithub.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.format, func(t *testing.T) {
@@ -897,8 +934,10 @@ func fixtureManifest() releaseManifest {
 		Published: []publishedModule{
 			{Path: ".", Layer: 0},
 			{Path: "adapters/example", Layer: 1},
+			{Path: "deployment/aws-filebased-config/infra", Layer: 1},
 			{Path: "httpapi", Layer: 2},
-			{Path: "cmd/gobridge", Layer: 3},
+			{Path: "deployment/aws-filebased-config/cdk", Layer: 3},
+			{Path: "cmd/gobridge", Layer: 4},
 		},
 	}
 }
@@ -933,6 +972,19 @@ require (
 go 1.25.0
 
 require github.com/mariotoffia/gobridge/httpapi v0.3.0
+`,
+		"deployment/aws-filebased-config/infra/go.mod": `module github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra
+
+go 1.25.0
+`,
+		"deployment/aws-filebased-config/cdk/go.mod": `module github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk
+
+go 1.25.0
+
+require (
+	github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra v0.3.0
+	github.com/mariotoffia/gobridge/httpapi v0.3.0
+)
 `,
 	}
 	for name, content := range files {

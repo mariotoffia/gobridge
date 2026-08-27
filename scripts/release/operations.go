@@ -347,7 +347,8 @@ func discoverPublishedModules(repo string) ([]string, error) {
 		return nil, fmt.Errorf("resolving repository root: %w", err)
 	}
 	result := []string{rootModulePath}
-	for _, fixed := range []string{"httpapi", finalModulePath} {
+	fixedModules := append([]string{"httpapi", finalModulePath}, publishedDeploymentModules...)
+	for _, fixed := range fixedModules {
 		filename, err := secureJoin(repoRoot, fixed, "go.mod")
 		if err != nil {
 			return nil, fmt.Errorf("published module %s: %w", fixed, err)

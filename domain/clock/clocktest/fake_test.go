@@ -217,6 +217,69 @@ func TestTickerStop(t *testing.T) {
 	}
 }
 
+// TestTickerResets_CountsEveryReArm pins the signal a test needs when the
+// goroutine under test changes its own cadence: the counter must move on each
+// Reset, across every ticker on the clock, and must not move for a plain tick.
+// Without it a test can only observe the side effect that precedes the Reset,
+// advance into the gap, and lose the next tick.
+func TestTickerResets_CountsEveryReArm(t *testing.T) {
+	clk := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	first := clk.NewTicker(2 * time.Second)
+	second := clk.NewTicker(2 * time.Second)
+
+	if got := clk.TickerResets(); got != 0 {
+		t.Fatalf("TickerResets() on a fresh clock = %d, want 0", got)
+	}
+
+	clk.Advance(2 * time.Second)
+	if got := clk.TickerResets(); got != 0 {
+		t.Fatalf("TickerResets() after a tick = %d, want 0 (a fire is not a re-arm)", got)
+	}
+
+	first.Reset(5 * time.Second)
+	if got := clk.TickerResets(); got != 1 {
+		t.Fatalf("TickerResets() after one Reset = %d, want 1", got)
+	}
+
+	second.Reset(3 * time.Second)
+	first.Reset(4 * time.Second)
+	if got := clk.TickerResets(); got != 3 {
+		t.Fatalf("TickerResets() after three Resets = %d, want 3", got)
+	}
+}
+
+// TestTickerResets_ObservedReArmMakesAdvanceSafe reproduces the ordering that
+// strands a tick. A ticker re-armed to a shorter period schedules from the
+// clock's current time, so advancing by the new period only fires once the
+// Reset has landed — which is exactly what TickerResets() lets a test await.
+func TestTickerResets_ObservedReArmMakesAdvanceSafe(t *testing.T) {
+	clk := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	tkr := clk.NewTicker(10 * time.Second)
+
+	clk.Advance(10 * time.Second)
+	<-tkr.C()
+
+	// Advancing by the shorter period BEFORE the re-arm steps over the stale
+	// 20s deadline without firing.
+	clk.Advance(5 * time.Second)
+	select {
+	case <-tkr.C():
+		t.Fatal("ticker fired on the stale cadence")
+	default:
+	}
+
+	tkr.Reset(5 * time.Second)
+	if got := clk.TickerResets(); got != 1 {
+		t.Fatalf("TickerResets() = %d, want 1", got)
+	}
+	clk.Advance(5 * time.Second)
+	select {
+	case <-tkr.C():
+	default:
+		t.Fatal("ticker did not fire on the re-armed cadence")
+	}
+}
+
 func TestSystemClockNotNil(t *testing.T) {
 	if clock.System == nil {
 		t.Fatal("clock.System must not be nil")

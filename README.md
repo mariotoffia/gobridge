@@ -57,7 +57,7 @@ For richer setups, see the [scenarios index](docs/scenarios/) (durable outbox, c
 
 ## Installation
 
-**One version for everything.** GoBridge publishes 31 modules from this
+**One version for everything.** GoBridge publishes 33 modules from this
 repository, and every one of them carries the *same* version. There is no
 compatibility matrix to consult and no per-module changelog to cross-check: pick
 a version, use it everywhere, and the pieces are guaranteed to be the set that
