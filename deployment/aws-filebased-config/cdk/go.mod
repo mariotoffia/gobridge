@@ -12,11 +12,11 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.24
 	github.com/aws/constructs-go/constructs/v10 v10.6.0
 	github.com/aws/jsii-runtime-go v1.127.0
-	github.com/mariotoffia/gobridge/adapters/aws/store v0.0.0-00010101000000-000000000000
-	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0-00010101000000-000000000000
-	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0-00010101000000-000000000000
-	github.com/mariotoffia/gobridge/adapters/native/store v0.0.0-00010101000000-000000000000
-	github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra v0.0.0
+	github.com/mariotoffia/gobridge/adapters/aws/store v0.3.6
+	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.3.6
+	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.3.6
+	github.com/mariotoffia/gobridge/adapters/native/store v0.3.6
+	github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra v0.3.6
 )
 
 require (
@@ -39,16 +39,16 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-20260507130243-4750750b6096 // indirect
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq v0.3.6 // indirect
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.3.6 // indirect
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions v0.3.6 // indirect
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.3.6 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq v0.3.6 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.3.6 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq v0.3.6 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions v0.3.6 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox v0.3.6 // indirect
+	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-20260827121914-08499d2a53b9 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/net v0.57.0 // indirect
@@ -64,8 +64,11 @@ require (
 	github.com/cdklabs/awscdk-asset-node-proxy-agent-go/nodeproxyagentv6/v2 v2.1.1 // indirect
 	github.com/cdklabs/cloud-assembly-schema-go/awscdkcloudassemblyschema/v53 v53.0.0 // indirect
 	github.com/fatih/color v1.18.0 // indirect
-	github.com/mariotoffia/gobridge v0.0.0
-	github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm v0.0.0
+	github.com/mariotoffia/gobridge v0.3.6
+	github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm v0.3.6
+	github.com/mariotoffia/gobridge/testutil/localstack v0.0.0-20260827121914-08499d2a53b9 // indirect
+	github.com/mariotoffia/gobridge/testutil/mqttlocal v0.0.0-20260827121914-08499d2a53b9 // indirect
+	github.com/mariotoffia/gobridge/testutil/wait v0.0.0-20260827121914-08499d2a53b9 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/yuin/goldmark v1.7.16 // indirect
@@ -79,41 +82,3 @@ require (
 	golang.org/x/tools/godoc v0.1.0-deprecated // indirect
 	gopkg.in/yaml.v3 v3.0.1
 )
-
-replace github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra => ../infra
-
-replace github.com/mariotoffia/gobridge => ../../..
-
-replace github.com/mariotoffia/gobridge/adapters/aws/transport/sqs => ../../../adapters/aws/transport/sqs
-
-replace github.com/mariotoffia/gobridge/adapters/aws/store => ../../../adapters/aws/store
-
-replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq => ../../../adapters/aws/store/dynamodbdlq
-
-replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease => ../../../adapters/aws/store/dynamodblease
-
-replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox => ../../../adapters/aws/store/dynamodboutbox
-
-replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions => ../../../adapters/aws/store/dynamodbmanagedsubscriptions
-
-replace github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho => ../../../adapters/mqtt/transport/paho
-
-replace github.com/mariotoffia/gobridge/adapters/native/store => ../../../adapters/native/store
-
-replace github.com/mariotoffia/gobridge/adapters/native/store/memorydlq => ../../../adapters/native/store/memorydlq
-
-replace github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox => ../../../adapters/native/store/memoryoutbox
-
-replace github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq => ../../../adapters/native/store/sqlitedlq
-
-replace github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox => ../../../adapters/native/store/sqliteoutbox
-
-replace github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions => ../../../adapters/native/store/sqlitemanagedsubscriptions
-
-replace github.com/mariotoffia/gobridge/testutil/wait => ../../../testutil/wait
-
-replace github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm => ../../../adapters/aws/credentials/ssm
-
-replace github.com/mariotoffia/gobridge/testutil/localstack => ../../../testutil/localstack
-
-replace github.com/mariotoffia/gobridge/testutil/mqttlocal => ../../../testutil/mqttlocal
