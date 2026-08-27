@@ -13,7 +13,6 @@ import (
 )
 
 func TestGrantSQS(t *testing.T) {
-	defer jsii.Close()
 
 	tests := []struct {
 		name        string
@@ -82,7 +81,6 @@ func TestGrantSQS(t *testing.T) {
 }
 
 func TestGrantSQSReceiver_AutoExtendAddsChangeVisibility(t *testing.T) {
-	defer jsii.Close()
 	baseActions := []string{
 		"sqs:ReceiveMessage",
 		"sqs:DeleteMessage",

@@ -59,7 +59,6 @@ func newSingleStack(t *testing.T) (awscdk.Stack, *gobridgesingle.GoBridgeSingle)
 }
 
 func TestGoBridgeSingle_Synth_NoPanic_ServiceCount_DesiredCount(t *testing.T) {
-	defer jsii.Close()
 	stack, g := newSingleStack(t)
 	if g == nil {
 		t.Fatal("constructor returned nil")
@@ -90,7 +89,6 @@ func TestGoBridgeSingle_Synth_NoPanic_ServiceCount_DesiredCount(t *testing.T) {
 }
 
 func TestGoBridgeSingle_MainContainer_RWMount(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := newSingleStack(t)
 	tpl := assertions.Template_FromStack(stack, nil)
 	tds := tpl.FindResources(jsii.String("AWS::ECS::TaskDefinition"), nil)
@@ -120,7 +118,6 @@ func TestGoBridgeSingle_MainContainer_RWMount(t *testing.T) {
 }
 
 func TestGoBridgeSingle_Accessors(t *testing.T) {
-	defer jsii.Close()
 	_, g := newSingleStack(t)
 	if g.ControlService() == nil {
 		t.Fatal("ControlService() nil")
@@ -143,7 +140,6 @@ func TestGoBridgeSingle_Accessors(t *testing.T) {
 }
 
 func TestGoBridgeSingle_NilProps_Panics(t *testing.T) {
-	defer jsii.Close()
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic on nil props")
@@ -153,7 +149,6 @@ func TestGoBridgeSingle_NilProps_Panics(t *testing.T) {
 }
 
 func TestGoBridgeSingle_MissingRequired_Panics(t *testing.T) {
-	defer jsii.Close()
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
 	defer func() {
@@ -170,7 +165,6 @@ func TestGoBridgeSingle_MissingRequired_Panics(t *testing.T) {
 }
 
 func TestGoBridgeSingle_Phase1Failure_Panics(t *testing.T) {
-	defer jsii.Close()
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
 	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)

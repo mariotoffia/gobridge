@@ -126,8 +126,18 @@ It verifies every declared module with the workspace disabled:
 go mod download
 go mod verify
 go build ./...
-go test -count=1 ./...
 ```
+
+The gate proves the module is **consumable**: every module in its graph is
+fetchable from the public proxy, the checksums match, and the replace-free
+source compiles against those exact versions. It deliberately does not run the
+module's tests. A release tag's commit differs from `main` only in `go.mod` and
+`go.sum` — the Go source is identical — so `make test` has already run them on
+this code, and a consumer never compiles them. Running them here imported CI's
+flakes into an irreversible step without testing anything new about the
+published artifact. `go mod download` with no arguments already fetches the
+whole graph, test dependencies included, so `go build` adds no downloads; it
+only proves the fetched versions compile together.
 
 Each pushed module tag runs the same static checks and commands for that module.
 The final `cmd/gobridge` tag additionally repeats the strict gate for all

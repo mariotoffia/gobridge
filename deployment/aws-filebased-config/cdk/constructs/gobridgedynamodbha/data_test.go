@@ -10,7 +10,6 @@ import (
 )
 
 func TestDynamoDBHAData_ProvisionsExactAdapterSchemas(t *testing.T) {
-	defer jsii.Close()
 	h := newHAHarness(t, nil)
 	template := assertions.Template_FromStack(h.stack, nil)
 	template.ResourceCountIs(jsii.String("AWS::DynamoDB::Table"), jsii.Number(3))
@@ -68,7 +67,6 @@ func TestDynamoDBHAData_ProvisionsExactAdapterSchemas(t *testing.T) {
 }
 
 func TestDynamoDBHAData_ExposesObjectsNamesAndARNsOnlyThroughData(t *testing.T) {
-	defer jsii.Close()
 	h := newHAHarness(t, nil)
 	data := h.bridge.Data()
 	if data.LeaseTable() == nil || data.OutboxTable() == nil || data.ManagedSubscriptionsTable() == nil {

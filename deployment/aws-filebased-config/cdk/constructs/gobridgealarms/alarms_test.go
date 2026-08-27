@@ -144,7 +144,6 @@ func findAlarms(t *testing.T, stack awscdk.Stack) map[string]map[string]any {
 }
 
 func TestAlarms_Cluster_WithAttachment_Emits7(t *testing.T) {
-	defer jsii.Close()
 	h := newHarness(t)
 	c := h.newCluster(t)
 	att := h.newAttachment(t, c)
@@ -173,7 +172,6 @@ func TestAlarms_Cluster_WithAttachment_Emits7(t *testing.T) {
 }
 
 func TestAlarms_Single_WithAttachment_Emits6(t *testing.T) {
-	defer jsii.Close()
 	h := newHarness(t)
 	s := h.newSingle(t)
 	att := h.newSingleAttachment(t, s)
@@ -204,7 +202,6 @@ func TestAlarms_Single_WithAttachment_Emits6(t *testing.T) {
 }
 
 func TestAlarms_Single_NoAttachment_Emits2(t *testing.T) {
-	defer jsii.Close()
 	h := newHarness(t)
 	s := h.newSingle(t)
 	g := gobridgealarms.NewGoBridgeAlarms(h.stack, jsii.String("BridgeAlarms"), &gobridgealarms.AlarmsProps{
@@ -230,7 +227,6 @@ func TestAlarms_Single_NoAttachment_Emits2(t *testing.T) {
 }
 
 func TestAlarms_Cluster_NoAttachment_Emits3(t *testing.T) {
-	defer jsii.Close()
 	h := newHarness(t)
 	c := h.newCluster(t)
 	gobridgealarms.NewGoBridgeAlarms(h.stack, jsii.String("BridgeAlarms"), &gobridgealarms.AlarmsProps{
@@ -244,7 +240,6 @@ func TestAlarms_Cluster_NoAttachment_Emits3(t *testing.T) {
 }
 
 func TestAlarms_ThresholdOverrides(t *testing.T) {
-	defer jsii.Close()
 	h := newHarness(t)
 	c := h.newCluster(t)
 	att := h.newAttachment(t, c)
@@ -282,7 +277,6 @@ func TestAlarms_ThresholdOverrides(t *testing.T) {
 }
 
 func TestAlarms_DisableEachAlarm(t *testing.T) {
-	defer jsii.Close()
 	cases := []struct {
 		name      string
 		mut       func(*gobridgealarms.AlarmsProps)
@@ -401,7 +395,6 @@ func TestAlarms_Validation_PanicMessages(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			defer jsii.Close()
 			h := newHarness(t)
 			props := tc.setup(h)
 			defer func() {
@@ -425,7 +418,6 @@ func TestAlarms_Validation_PanicMessages(t *testing.T) {
 }
 
 func TestAlarms_EfsAlarm_DefaultThresholdAndMetric(t *testing.T) {
-	defer jsii.Close()
 	h := newHarness(t)
 	c := h.newCluster(t)
 	gobridgealarms.NewGoBridgeAlarms(h.stack, jsii.String("BridgeAlarms"), &gobridgealarms.AlarmsProps{
@@ -451,7 +443,6 @@ func TestAlarms_EfsAlarm_DefaultThresholdAndMetric(t *testing.T) {
 }
 
 func TestAlarms_OkActionWired(t *testing.T) {
-	defer jsii.Close()
 	h := newHarness(t)
 	s := h.newSingle(t)
 	gobridgealarms.NewGoBridgeAlarms(h.stack, jsii.String("BridgeAlarms"), &gobridgealarms.AlarmsProps{

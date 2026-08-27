@@ -207,7 +207,6 @@ func envValue(envs []any, name string) string {
 }
 
 func TestGoBridgeDynamoDBHA_ProvisionsControlAndTwoWorkersAcrossAZs(t *testing.T) {
-	defer jsii.Close()
 	h := newHAHarness(t, nil)
 	template := assertions.Template_FromStack(h.stack, nil)
 
@@ -237,7 +236,6 @@ func TestGoBridgeDynamoDBHA_ProvisionsControlAndTwoWorkersAcrossAZs(t *testing.T
 }
 
 func TestGoBridgeDynamoDBHA_ControlDeploymentPreventsConcurrentRWWriters(t *testing.T) {
-	defer jsii.Close()
 	h := newHAHarness(t, nil)
 	template := assertions.Template_FromStack(h.stack, nil)
 	services := template.FindResources(jsii.String("AWS::ECS::Service"), nil)
@@ -258,7 +256,6 @@ func TestGoBridgeDynamoDBHA_ControlDeploymentPreventsConcurrentRWWriters(t *test
 }
 
 func TestGoBridgeDynamoDBHA_ForcesTopologyCloudWatchAndUniqueMetricIdentity(t *testing.T) {
-	defer jsii.Close()
 	h := newHAHarness(t, func(props *ha.DynamoDBHAProps) {
 		props.Bootstrap.Topology = infra.TopologySingle
 		props.Bootstrap.MetricsExporter = infra.MetricsExporterNoop
@@ -299,7 +296,6 @@ func TestGoBridgeDynamoDBHA_ForcesTopologyCloudWatchAndUniqueMetricIdentity(t *t
 }
 
 func TestGoBridgeDynamoDBHA_ConfigAndAccessors(t *testing.T) {
-	defer jsii.Close()
 	h := newHAHarness(t, nil)
 	if h.bridge.ControlService() == nil || h.bridge.WorkerService() == nil {
 		t.Fatal("service accessor returned nil")
@@ -319,7 +315,6 @@ func TestGoBridgeDynamoDBHA_ConfigAndAccessors(t *testing.T) {
 }
 
 func TestGoBridgeDynamoDBHA_InitializesManagedSubscriptionBaselineBeforeServices(t *testing.T) {
-	defer jsii.Close()
 	h := newHAHarness(t, nil)
 	template := assertions.Template_FromStack(h.stack, nil)
 
@@ -358,7 +353,6 @@ func TestGoBridgeDynamoDBHA_InitializesManagedSubscriptionBaselineBeforeServices
 }
 
 func TestGoBridgeDynamoDBHA_ReplacesBaselineInitializerWhenDurableIdentityChanges(t *testing.T) {
-	defer jsii.Close()
 	first := newHAHarness(t, nil)
 	firstID := managedSubscriptionInitializerID(t, first.stack)
 
@@ -377,7 +371,6 @@ func TestGoBridgeDynamoDBHA_ReplacesBaselineInitializerWhenDurableIdentityChange
 }
 
 func TestGoBridgeDynamoDBHA_RejectsMissingManagedSubscriptionBaseline(t *testing.T) {
-	defer jsii.Close()
 	defer func() {
 		recovered := recover()
 		if recovered == nil || !strings.Contains(fmt.Sprint(recovered), `managed subscription baseline for Exclusive MQTT session "mqtt-ha" is required`) {
@@ -416,7 +409,6 @@ func TestGoBridgeDynamoDBHA_RejectsInvalidManagedSubscriptionBaseline(t *testing
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer jsii.Close()
 			defer func() {
 				recovered := recover()
 				if recovered == nil || !strings.Contains(fmt.Sprint(recovered), tc.want) {
@@ -431,7 +423,6 @@ func TestGoBridgeDynamoDBHA_RejectsInvalidManagedSubscriptionBaseline(t *testing
 }
 
 func TestGoBridgeDynamoDBHA_AcceptsCanonicalMQTTPahoAlias(t *testing.T) {
-	defer jsii.Close()
 	t.Cleanup(singleton.ResetForTest)
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("AliasStack"), nil)
@@ -450,7 +441,6 @@ func TestGoBridgeDynamoDBHA_AcceptsCanonicalMQTTPahoAlias(t *testing.T) {
 }
 
 func TestGoBridgeDynamoDBHA_RejectsUnresolvedTableNameToken(t *testing.T) {
-	defer jsii.Close()
 	t.Cleanup(singleton.ResetForTest)
 	asset := source.NewAsset(writeHAYAML(t, validHAYAML))
 	materialized, err := asset.Materialize()
@@ -512,7 +502,6 @@ func TestGoBridgeDynamoDBHA_RejectsInvalidHAProfiles(t *testing.T) {
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
-			defer jsii.Close()
 			t.Cleanup(singleton.ResetForTest)
 			app := awscdk.NewApp(nil)
 			stack := awscdk.NewStack(app, jsii.String("S"), nil)
@@ -544,7 +533,6 @@ func TestGoBridgeDynamoDBHA_RejectsUnprovableWorkerDesiredCount(t *testing.T) {
 	}
 	for name, value := range cases {
 		t.Run(name, func(t *testing.T) {
-			defer jsii.Close()
 			defer func() {
 				recovered := recover()
 				if recovered == nil || !strings.Contains(fmt.Sprint(recovered), "resolved finite integer >= 2") {
@@ -557,7 +545,6 @@ func TestGoBridgeDynamoDBHA_RejectsUnprovableWorkerDesiredCount(t *testing.T) {
 }
 
 func TestGoBridgeDynamoDBHA_PendingVpcLookupDefersAZValidation(t *testing.T) {
-	defer jsii.Close()
 	t.Cleanup(singleton.ResetForTest)
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("PendingStack"), &awscdk.StackProps{
@@ -579,7 +566,6 @@ func TestGoBridgeDynamoDBHA_PendingVpcLookupDefersAZValidation(t *testing.T) {
 }
 
 func TestGoBridgeDynamoDBHA_ResolvedSingleAZIsRejected(t *testing.T) {
-	defer jsii.Close()
 	t.Cleanup(singleton.ResetForTest)
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("SingleAZStack"), nil)
@@ -600,7 +586,6 @@ func TestGoBridgeDynamoDBHA_ResolvedSingleAZIsRejected(t *testing.T) {
 }
 
 func TestGoBridgeDynamoDBHA_TaskRolesHaveExactDynamoDBDataPlaneGrants(t *testing.T) {
-	defer jsii.Close()
 	h := newHAHarness(t, nil)
 	template := assertions.Template_FromStack(h.stack, nil)
 	policies := template.FindResources(jsii.String("AWS::IAM::Policy"), nil)
@@ -707,7 +692,6 @@ func normalizeActions(raw any) []string {
 }
 
 func TestGoBridgeDynamoDBHA_HealthyStandbyDoesNotInstallAcquireContentionAlarm(t *testing.T) {
-	defer jsii.Close()
 	h := newHAHarness(t, nil)
 	topic := awssns.NewTopic(h.stack, jsii.String("AlarmTopic"), nil)
 	gobridgealarms.NewGoBridgeAlarms(h.stack, jsii.String("Alarms"), &gobridgealarms.AlarmsProps{
@@ -723,7 +707,6 @@ func TestGoBridgeDynamoDBHA_HealthyStandbyDoesNotInstallAcquireContentionAlarm(t
 }
 
 func TestGoBridgeDynamoDBHA_ALBAttachmentTargetsHAServiceSet(t *testing.T) {
-	defer jsii.Close()
 	h := newHAHarness(t, nil)
 	alb := elbv2.NewApplicationLoadBalancer(h.stack, jsii.String("ALB"), &elbv2.ApplicationLoadBalancerProps{Vpc: h.vpc})
 	listener := alb.AddListener(jsii.String("Listener"), &elbv2.BaseApplicationListenerProps{
@@ -742,7 +725,6 @@ func TestGoBridgeDynamoDBHA_ALBAttachmentTargetsHAServiceSet(t *testing.T) {
 }
 
 func TestGoBridgeDynamoDBHA_AlarmsCoverHAAndExternalDuration(t *testing.T) {
-	defer jsii.Close()
 	h := newHAHarness(t, nil)
 	topic := awssns.NewTopic(h.stack, jsii.String("AlarmTopic"), nil)
 	alarms := gobridgealarms.NewGoBridgeAlarms(h.stack, jsii.String("Alarms"), &gobridgealarms.AlarmsProps{

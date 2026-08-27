@@ -47,7 +47,6 @@ func metricsBuild(t *testing.T, boot infra.BootstrapConfig, memoryMiB ...float64
 // is emitted only when the exporter is selected, and is scoped to the
 // effective namespace via the cloudwatch:namespace condition.
 func TestBase_Metrics_CloudWatchGrant(t *testing.T) {
-	defer jsii.Close()
 
 	t.Run("granted-when-cloudwatch-selected", func(t *testing.T) {
 		boot := t20BaseBootstrap()
@@ -101,7 +100,6 @@ func TestBase_Metrics_CloudWatchGrant(t *testing.T) {
 // TestBase_Metrics_EnvPlumbing asserts the exporter selection + namespace ride
 // in the bootstrap JSON env var so the container actually receives them.
 func TestBase_Metrics_EnvPlumbing(t *testing.T) {
-	defer jsii.Close()
 
 	boot := t20BaseBootstrap()
 	boot.MetricsExporter = infra.MetricsExporterCloudWatch

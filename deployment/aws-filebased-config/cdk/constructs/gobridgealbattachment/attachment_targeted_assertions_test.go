@@ -22,7 +22,6 @@ import (
 // priorities must form a contiguous block at BasePriority + step*0..N (step
 // 10, default base 100): 100,110,120,130,140.
 func Test_T20_Attachment_Single_PrioritiesContiguousFromBase(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	src := source.NewAsset(writeYAML(t, httpReceiverYAML))
 	single := newSingle(t, stack, vpc, src)
@@ -51,7 +50,6 @@ func Test_T20_Attachment_Single_PrioritiesContiguousFromBase(t *testing.T) {
 // 200. The existing test exercises Interval/Timeout/Threshold but does NOT
 // pin HealthCheckProtocol or the Matcher.
 func Test_T20_Attachment_TargetGroup_HealthCheckTunedDefaults(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	src := source.NewAsset(writeYAML(t, baseYAML))
 	single := newSingle(t, stack, vpc, src)
@@ -115,7 +113,6 @@ func Test_T20_Attachment_TargetGroup_HealthCheckTunedDefaults(t *testing.T) {
 // asserts the ARN references resolve to those exact TGs — the sibling
 // TestALBAttachment_Cluster_TGsTargetCorrectServices only counts LBs.
 func Test_T20_Attachment_Cluster_TGsTargetCorrectServices(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	// httpReceiverYAML emits the transport target group so the worker
 	// service attaches to its own (transport) TG plus the shared monitor
@@ -209,7 +206,6 @@ func Test_T20_Attachment_Cluster_TGsTargetCorrectServices(t *testing.T) {
 // Mutation: flip the transport TG health-check default to /ready?level=full and
 // this fails.
 func Test_T20_Attachment_TransportTG_HealthChecksLiveness(t *testing.T) {
-	defer jsii.Close()
 	_, stack, vpc, listener := newApp(t)
 	// httpReceiverYAML declares HTTP receivers, so a dedicated transport
 	// (worker) target group is emitted alongside control + monitor.

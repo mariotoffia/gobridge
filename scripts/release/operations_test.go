@@ -684,8 +684,16 @@ func TestStrictModule_ValidTagRunsResolutionAndGoGates(t *testing.T) {
 	if !runner.hasGoCommand([]string{"mod", "verify"}) {
 		t.Error("strictModule() did not run go mod verify")
 	}
-	if !runner.hasGoCommand([]string{"test", "-count=1", "./..."}) {
-		t.Error("strictModule() did not run uncached tests")
+	if !runner.hasGoCommand([]string{"build", "./..."}) {
+		t.Error("strictModule() did not build the published source")
+	}
+	// The gate proves the module is consumable, not that its tests pass. A
+	// release tag's commit differs from main only in go.mod and go.sum, so CI
+	// has already run these tests on identical source, and a consumer never
+	// compiles them. Running them here only imports CI's flakes into an
+	// irreversible step.
+	if runner.hasGoCommand([]string{"test", "-count=1", "./..."}) {
+		t.Error("strictModule() ran module tests; the gate must not depend on them")
 	}
 }
 

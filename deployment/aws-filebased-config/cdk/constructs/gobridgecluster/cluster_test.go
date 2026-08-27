@@ -92,7 +92,6 @@ func mainContainer(t *testing.T, td map[string]any) map[string]any {
 }
 
 func TestGoBridgeCluster_Synth_NoPanic_ServiceCount_TwoServices_TwoTaskDefs(t *testing.T) {
-	defer jsii.Close()
 	stack, g := newClusterStack(t, nil)
 	if g == nil {
 		t.Fatal("constructor returned nil")
@@ -103,7 +102,6 @@ func TestGoBridgeCluster_Synth_NoPanic_ServiceCount_TwoServices_TwoTaskDefs(t *t
 }
 
 func TestGoBridgeCluster_Control_DesiredCount_And_DeploymentPolicy_0_100(t *testing.T) {
-	defer jsii.Close()
 	stack, g := newClusterStack(t, nil)
 	tpl := assertions.Template_FromStack(stack, nil)
 	svcs := tpl.FindResources(jsii.String("AWS::ECS::Service"), nil)
@@ -126,7 +124,6 @@ func TestGoBridgeCluster_Control_DesiredCount_And_DeploymentPolicy_0_100(t *test
 }
 
 func TestGoBridgeCluster_Worker_DesiredCount_Default_2(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := newClusterStack(t, nil)
 	tpl := assertions.Template_FromStack(stack, nil)
 	svcs := tpl.FindResources(jsii.String("AWS::ECS::Service"), nil)
@@ -143,7 +140,6 @@ func TestGoBridgeCluster_Worker_DesiredCount_Default_2(t *testing.T) {
 }
 
 func TestGoBridgeCluster_Worker_DesiredCount_Override(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := newClusterStack(t, func(p *gobridgecluster.ClusterProps) {
 		v := 5.0
 		p.WorkerDesiredCount = &v
@@ -163,7 +159,6 @@ func TestGoBridgeCluster_Worker_DesiredCount_Override(t *testing.T) {
 }
 
 func TestGoBridgeCluster_Mounts_Control_RW_Worker_RO(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := newClusterStack(t, nil)
 	tpl := assertions.Template_FromStack(stack, nil)
 	tds := tpl.FindResources(jsii.String("AWS::ECS::TaskDefinition"), nil)
@@ -187,7 +182,6 @@ func TestGoBridgeCluster_Mounts_Control_RW_Worker_RO(t *testing.T) {
 }
 
 func TestGoBridgeCluster_NodeRole_Env_Wired(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := newClusterStack(t, nil)
 	tpl := assertions.Template_FromStack(stack, nil)
 	tds := tpl.FindResources(jsii.String("AWS::ECS::TaskDefinition"), nil)
@@ -207,7 +201,6 @@ func TestGoBridgeCluster_NodeRole_Env_Wired(t *testing.T) {
 }
 
 func TestGoBridgeCluster_AutoScaling_Off_By_Default(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := newClusterStack(t, nil)
 	tpl := assertions.Template_FromStack(stack, nil)
 	tpl.ResourceCountIs(jsii.String("AWS::ApplicationAutoScaling::ScalableTarget"), jsii.Number(0))
@@ -220,7 +213,6 @@ func TestGoBridgeCluster_AutoScaling_Off_By_Default(t *testing.T) {
 // validator and runtime guard return early on "single" and shared_outbox /
 // session leases on SQLite-over-EFS are silently permitted.
 func TestGoBridgeCluster_Topology_Forced_FilesystemReplicated(t *testing.T) {
-	defer jsii.Close()
 	// Caller intentionally leaves Topology unset (normalizes to "single").
 	stack, _ := newClusterStack(t, nil)
 	tpl := assertions.Template_FromStack(stack, nil)
@@ -248,7 +240,6 @@ func TestGoBridgeCluster_Topology_Forced_FilesystemReplicated(t *testing.T) {
 }
 
 func TestGoBridgeCluster_AutoScaling_On_When_Set(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := newClusterStack(t, func(p *gobridgecluster.ClusterProps) {
 		p.AutoScaling = &gobridgecluster.AutoScalingProps{Min: 2, Max: 8}
 	})
@@ -267,7 +258,6 @@ func TestGoBridgeCluster_AutoScaling_On_When_Set(t *testing.T) {
 }
 
 func TestGoBridgeCluster_NilProps_Panics(t *testing.T) {
-	defer jsii.Close()
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic on nil props")
@@ -277,7 +267,6 @@ func TestGoBridgeCluster_NilProps_Panics(t *testing.T) {
 }
 
 func TestGoBridgeCluster_MissingRequired_Panics(t *testing.T) {
-	defer jsii.Close()
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
 	defer func() {
@@ -294,7 +283,6 @@ func TestGoBridgeCluster_MissingRequired_Panics(t *testing.T) {
 }
 
 func TestGoBridgeCluster_Phase1Failure_Panics(t *testing.T) {
-	defer jsii.Close()
 	app := awscdk.NewApp(nil)
 	stack := awscdk.NewStack(app, jsii.String("S"), nil)
 	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)
@@ -322,7 +310,6 @@ bridge:
 }
 
 func TestGoBridgeCluster_Accessors(t *testing.T) {
-	defer jsii.Close()
 	_, g := newClusterStack(t, nil)
 	if g.ControlService() == nil {
 		t.Fatal("ControlService nil")

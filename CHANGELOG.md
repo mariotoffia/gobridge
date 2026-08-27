@@ -10,6 +10,50 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-08-27
+
+Completes the 0.3.4/0.3.5 attempts. Same 33 modules; this train fixes the four
+defects those two exposed, so it runs end to end including the container image.
+
+### Fixed
+
+- **The jsii kernel crashed the CDK tests.** Every CDK test closed the kernel
+  on return — 154 closes. `jsii.Close()` shuts the child's stdin, the Node
+  runtime exits, and that wakes the background `cmd.Wait()` jsii keeps on the
+  child, which then reaps descriptors `Close()` has already freed, outside
+  jsii's own mutex. Go 1.26's `os/exec` dereferences that freed pipe state, so
+  the binary died with SIGSEGV roughly once in twelve runs. The kernel now
+  closes once per test binary via `TestMain`. Upstream still has this shape at
+  jsii-runtime-go v1.140.0, so the fix belongs here, not in a version bump.
+- **`make test` did not run four CDK packages.** The non-race pass listed
+  packages by hand and the list had drifted: `./constructs`,
+  `./constructs/gobridgecluster`, `./constructs/gobridgesingle` and
+  `./gobridgecdk` ran in no target at all, which is how a SIGSEGV in
+  `./constructs` first surfaced inside a release gate. It now runs the whole
+  module.
+- **Layer-2 aggregates failed their own release workflow.** Resolving a nested
+  module makes proxy.golang.org probe its parent prefixes, so while layer 1
+  resolved, the proxy asked for `adapters/aws/store` and
+  `adapters/native/store` at a version whose tag did not exist yet and cached
+  the miss. The tag landed moments later but the cached miss outlived the
+  workflow's propagation budget. Both 0.3.4 and 0.3.5 lost layer 2 to this.
+  `run.sh` now asks the proxy for each module's version list right after
+  pushing a layer's tags, which forces a fresh read of the repository's tags.
+- **`TestIntegration_AppCoordinatedRolloutOverDynamoDB` raced its own
+  subject.** The durable committed artifact is written *after* the local swap,
+  so reading it the moment `CurrentAppliedConfig()` reported the new version
+  raced a write still in flight, which teardown then cancelled. The test now
+  waits for the artifact.
+
+### Changed
+
+- The strict per-tag release gate no longer runs the module's tests. It runs
+  `go mod download`, `go mod verify` and `go build ./...`, which is what proves
+  a published module is consumable. A release tag's commit differs from `main`
+  only in `go.mod`/`go.sum`, so CI has already run the tests on identical
+  source, and a consumer never compiles them. See
+  [RELEASE.md](RELEASE.md#verification-modes).
+
 ## [0.3.5] - 2026-08-27
 
 Completes 0.3.4: the same 33 modules, plus the consumer-smoke fix that

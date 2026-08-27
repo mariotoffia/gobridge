@@ -251,11 +251,30 @@ publish_layer() { # layer number
   done
   [ "$pushed" -eq 0 ] || echo "-- pushed ${pushed} tag(s) for layer ${layer}"
 
-  # 3. wait for the layer's workflows with a single shared poller
+  # 3. make the proxy re-read this repository's tags before anything waits.
+  #
+  # Resolving a nested module makes proxy.golang.org probe its parent prefixes
+  # to find the module root. While layer 1 resolves, the proxy therefore asks
+  # for the layer-2 parent — adapters/aws/store, adapters/native/store — at a
+  # version whose tag does not exist yet, and caches that miss. The tag lands
+  # moments later, but the cached miss outlives the workflow's propagation
+  # budget, so a module that is perfectly fine fails its own release workflow.
+  # Both v0.3.4 and v0.3.5 lost layer 2 to exactly this.
+  #
+  # Asking for the version list forces a fresh read of the repository's tags,
+  # which replaces the cached miss. Best effort: if it fails the propagation
+  # wait still has to pass on its own.
+  if command -v curl >/dev/null 2>&1; then
+    for import in "${imports[@]}"; do
+      curl -fsS -m 30 -o /dev/null "https://proxy.golang.org/${import}/@v/list" || true
+    done
+  fi
+
+  # 4. wait for the layer's workflows with a single shared poller
   echo "-- waiting for ${#tags[@]} workflow(s) in layer ${layer}"
   wait_for_layer_workflows "${tags[@]}"
 
-  # 4. wait for proxy propagation of the whole layer before the next one stages
+  # 5. wait for proxy propagation of the whole layer before the next one stages
   for import in "${imports[@]}"; do
     wait_for_proxy "$import"
   done

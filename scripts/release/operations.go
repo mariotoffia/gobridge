@@ -38,7 +38,6 @@ const (
 	moduleDownloadLimit            = 10 * time.Minute
 	moduleVerifyLimit              = 2 * time.Minute
 	moduleBuildLimit               = 15 * time.Minute
-	moduleTestLimit                = 30 * time.Minute
 	moduleTidyLimit                = 10 * time.Minute
 	smokeCommandLimit              = 10 * time.Minute
 	smokeOverallLimit              = 25 * time.Minute
@@ -131,6 +130,21 @@ func publicModuleEnvironment() map[string]string {
 	}
 }
 
+// runModuleChecks proves a published module is consumable: every module in its
+// graph is fetchable from the public proxy, the checksums match, and the
+// replace-free source compiles against those exact versions.
+//
+// It deliberately does not run the module's tests. A release tag's commit
+// differs from main only in go.mod and go.sum — the Go source is identical —
+// so `make test` in CI has already run them on this code. Re-running them here
+// tests nothing new about the published artifact, while `mod download`,
+// `mod verify` and `build` test the one thing that is new: resolution against
+// the rewritten manifests. A consumer never compiles this module's tests, so a
+// test failure is a CI concern, not a reason to refuse a tag whose code builds.
+//
+// `mod download` with no arguments already fetches the whole graph, test
+// dependencies included, so `build` adds no downloads — it only proves the
+// fetched versions actually compile together.
 func runModuleChecks(ctx context.Context, runner commandRunner, moduleDir string) error {
 	commands := []struct {
 		args    []string
@@ -139,7 +153,6 @@ func runModuleChecks(ctx context.Context, runner commandRunner, moduleDir string
 		{args: []string{"mod", "download"}, timeout: moduleDownloadLimit},
 		{args: []string{"mod", "verify"}, timeout: moduleVerifyLimit},
 		{args: []string{"build", "./..."}, timeout: moduleBuildLimit},
-		{args: []string{"test", "-count=1", "./..."}, timeout: moduleTestLimit},
 	}
 	for _, command := range commands {
 		if _, err := runner.run(ctx, commandRequest{

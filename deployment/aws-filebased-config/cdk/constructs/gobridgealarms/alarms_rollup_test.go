@@ -16,7 +16,6 @@ import (
 // materialized when EnableRollupAlarms is set, target the correct namespace,
 // and expose accessors.
 func TestAlarms_Rollup_OptIn(t *testing.T) {
-	defer jsii.Close()
 
 	t.Run("off-by-default", func(t *testing.T) {
 		h := newHarness(t)

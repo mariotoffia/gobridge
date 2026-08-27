@@ -61,7 +61,6 @@ func t20SingleNew(t *testing.T) (awscdk.Stack, *gobridgesingle.GoBridgeSingle) {
 // but not the absence of any "Worker" logical id, which guards against a
 // future regression where the cluster wiring leaks into the single facade.
 func Test_T20_Single_ResourceCounts(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := t20SingleNew(t)
 	tpl := assertions.Template_FromStack(stack, nil)
 
@@ -79,7 +78,6 @@ func Test_T20_Single_ResourceCounts(t *testing.T) {
 // Test_T20_Single_MainContainer_RWMount: the single service main container's
 // MountPoint MUST be RW (control-style mount).
 func Test_T20_Single_MainContainer_RWMount(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := t20SingleNew(t)
 	tpl := assertions.Template_FromStack(stack, nil)
 	tds := tpl.FindResources(jsii.String("AWS::ECS::TaskDefinition"), nil)
@@ -110,7 +108,6 @@ func Test_T20_Single_MainContainer_RWMount(t *testing.T) {
 // default) must be present in the TaskDefinition's ContainerDefinitions
 // PortMappings on tcp.
 func Test_T20_Single_AdminPort_OnTaskDef(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := t20SingleNew(t)
 	tpl := assertions.Template_FromStack(stack, nil)
 	tds := tpl.FindResources(jsii.String("AWS::ECS::TaskDefinition"), nil)
@@ -143,7 +140,6 @@ func Test_T20_Single_AdminPort_OnTaskDef(t *testing.T) {
 // role policy emitted by the Single facade includes
 // elasticfilesystem:ClientWrite (single = control).
 func Test_T20_Single_TaskRole_HasEFSClientWrite(t *testing.T) {
-	defer jsii.Close()
 	stack, _ := t20SingleNew(t)
 	tpl := assertions.Template_FromStack(stack, nil)
 

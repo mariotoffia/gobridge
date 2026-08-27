@@ -188,11 +188,12 @@ test: audit-timings audit-test-timings ## Run unit tests (no Docker, integration
 	# -race, so they are a separate non-race pass rather than a separate
 	# target. `make test` is the whole unit surface, race and not.
 	@echo "Running non-race CDK assertion suites..."
-	@cd deployment/aws-filebased-config/cdk && go test -count=1 -timeout 120s \
-		./constructs/internal/grants ./constructs/internal/gobridgebase \
-		./constructs/gobridgedynamodbha ./constructs/gobridgealarms \
-		./constructs/gobridgealbattachment ./constructs/internal/singleton \
-		./constructs/internal/validation ./registry
+	# The whole module, not a hand-listed subset. The list drifted and left
+	# ./constructs, ./constructs/gobridgecluster, ./constructs/gobridgesingle
+	# and ./gobridgecdk running in no target at all, which is how a SIGSEGV in
+	# ./constructs reached a release gate unseen. ./... cannot drift.
+	# ./integration is behind integration_aws and contributes nothing here.
+	@cd deployment/aws-filebased-config/cdk && go test -count=1 -timeout 300s ./...
 	@cd deployment/aws-filebased-config/cdk && AWS_EC2_METADATA_DISABLED=true \
 		go test -race -count=1 -timeout 120s -tags=integration_aws \
 		-run '^TestSandboxEnvFrom_' ./integration

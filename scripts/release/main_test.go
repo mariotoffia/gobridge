@@ -228,7 +228,7 @@ func TestInspectModule_RejectsUndeclaredAndNonLowerDependencies(t *testing.T) {
 	}
 }
 
-func TestRunModuleChecks_DisablesWorkspaceAndUsesUncachedTests(t *testing.T) {
+func TestRunModuleChecks_DisablesWorkspaceAndProvesConsumability(t *testing.T) {
 	t.Parallel()
 
 	runner := &recordingRunner{}
@@ -238,11 +238,14 @@ func TestRunModuleChecks_DisablesWorkspaceAndUsesUncachedTests(t *testing.T) {
 		t.Fatalf("runModuleChecks() error = %v", err)
 	}
 
+	// Fetch the whole graph, check its checksums, compile the replace-free
+	// source against those exact versions. No test step: the tag's commit
+	// differs from main only in go.mod/go.sum, so CI has already run the tests
+	// on identical source and a consumer never compiles them.
 	wantArgs := [][]string{
 		{"mod", "download"},
 		{"mod", "verify"},
 		{"build", "./..."},
-		{"test", "-count=1", "./..."},
 	}
 	if len(runner.requests) != len(wantArgs) {
 		t.Fatalf("runModuleChecks() commands = %d, want %d", len(runner.requests), len(wantArgs))

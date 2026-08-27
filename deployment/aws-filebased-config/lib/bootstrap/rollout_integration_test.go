@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease"
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbrollout"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
@@ -70,9 +71,22 @@ func TestIntegration_AppCoordinatedRolloutOverDynamoDB(t *testing.T) {
 
 	// The durable committed artifact was written to DynamoDB and decodes back with
 	// the App's REAL codec — the Phase-5A round-trip risk, proven through the App.
+	// The durable write lands AFTER the local swap: the member applies the
+	// committed candidate first and records the artifact afterwards, which is
+	// why the supervisor warns that a restart before a peer writes this
+	// generation can fall back to an older artifact. Reading the moment
+	// CurrentAppliedConfig reports 2 therefore races the write that is still in
+	// flight, and test teardown cancels it. Wait for the artifact itself.
 	rolloutStore := dynamodbrollout.NewStore(client, dynamodbrollout.WithTableName(rolloutTable))
-	committed, err := rolloutStore.CommittedConfig(context.Background())
-	require.NoError(t, err)
+	var committed persistence.CommittedRolloutConfig
+	wait.Until(t, 20*time.Second, "the durable committed artifact reaches DynamoDB", func() bool {
+		got, err := rolloutStore.CommittedConfig(context.Background())
+		if err != nil {
+			return false
+		}
+		committed = got
+		return committed.ConfigVersion == 2
+	})
 	assert.Equal(t, 2, committed.ConfigVersion, "the commit wrote the durable artifact")
 	_, decode := app.rolloutCodec()
 	got, err := decode(committed.ConfigBytes)
