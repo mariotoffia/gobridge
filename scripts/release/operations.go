@@ -1551,11 +1551,18 @@ func runConsumerSmokePass(
 	// smoke compiles them. Build the facade package rather than only listing
 	// it: resolution alone would not catch a published module whose stripped
 	// manifest no longer satisfies the constructs' own imports.
+	//
+	// Fetch by PACKAGE path, not module path. `go get module@version` records
+	// the requirement but not the go.sum entries for the packages that module's
+	// code imports, so a following `go build` fails on every missing sum. The
+	// paho pair does not hit this because `go list` needs no build deps, and
+	// `go install pkg@version` resolves in module-agnostic mode.
+	cdkFacade := cdk + "/" + cdkSmokePackage
 	commands := [][]string{
 		{"get", paho + "@" + version},
 		{"list", paho},
-		{"get", cdk + "@" + version},
-		{"build", cdk + "/" + cdkSmokePackage},
+		{"get", cdkFacade + "@" + version},
+		{"build", cdkFacade},
 		{"install", command + "@" + version},
 	}
 	for _, args := range commands {

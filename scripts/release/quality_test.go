@@ -388,11 +388,18 @@ go 1.25.0
 			t.Errorf("smoke did not resolve %s; resolved %v", want, resolved)
 		}
 	}
-	if want := cdk + "@" + testReleaseVersion; !slices.Contains(fetched, want) {
+	// Fetching the module path alone leaves go.sum without entries for what the
+	// CDK's own code imports, and the build that follows fails on every one of
+	// them. The fetch must name the package.
+	facade := cdk + "/" + cdkSmokePackage
+	if want := facade + "@" + testReleaseVersion; !slices.Contains(fetched, want) {
 		t.Errorf("smoke did not go get %s; fetched %v", want, fetched)
 	}
-	if want := cdk + "/" + cdkSmokePackage; !slices.Contains(built, want) {
-		t.Errorf("smoke did not build %s; built %v", want, built)
+	if slices.Contains(fetched, cdk+"@"+testReleaseVersion) {
+		t.Errorf("smoke fetched the cdk module path; go build needs the package path")
+	}
+	if !slices.Contains(built, facade) {
+		t.Errorf("smoke did not build %s; built %v", facade, built)
 	}
 }
 

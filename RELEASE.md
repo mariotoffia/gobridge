@@ -262,7 +262,7 @@ and run:
 go mod init example.com/gobridge-release-smoke
 go get github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho@vX.Y.Z
 go list github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho
-go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk@vX.Y.Z
+go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle@vX.Y.Z
 go build github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle
 go install github.com/mariotoffia/gobridge/cmd/gobridge@vX.Y.Z
 ```
@@ -277,6 +277,12 @@ longer satisfies the constructs' own imports. Building
 `constructs/gobridgesingle` reaches `gobridgecdk`, `bridgecfg`, `registry`, the
 shared constructs, and the `infra` types they take as arguments in one command,
 which is the same surface the quickstart in `docs/scenarios/cdk/` uses.
+
+The CDK step fetches the **package** path, not the module path. `go get
+module@version` records the requirement but not the `go.sum` entries for what
+that module's own code imports, so the build that follows fails on every
+missing sum. The Paho pair avoids this because `go list` needs no build
+dependencies and `go install pkg@version` resolves in module-agnostic mode.
 
 The pre-1.0 root-only tags `v0.1.0` and `v0.2.0` predate this policy and have no
 nested module tags; they are not consumable and this proof does not apply to
