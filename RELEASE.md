@@ -254,18 +254,29 @@ The tool first retries a **proxy-only** pass with
 `GOPROXY=https://proxy.golang.org` for bounded tag propagation, then repeats a
 separate **direct-only** pass with `GOPROXY=direct`. Every attempt has a fresh
 `HOME`, `GOPATH`, module/build cache, and `GOBIN`; system/global Git config is
-disabled. Both passes retain checksum-database verification, bind Paho and
-`cmd/gobridge` `Origin.Hash` to their exact local tag commits, and run:
+disabled. Both passes retain checksum-database verification, bind Paho, both
+CDK modules, and `cmd/gobridge` `Origin.Hash` to their exact local tag commits,
+and run:
 
 ```text
 go mod init example.com/gobridge-release-smoke
 go get github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho@vX.Y.Z
 go list github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho
+go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk@vX.Y.Z
+go build github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle
 go install github.com/mariotoffia/gobridge/cmd/gobridge@vX.Y.Z
 ```
 
 It rejects every `replace` or `exclude` directive in resolved module manifests
 and in the generated consumer go.mod.
+
+The CDK step **builds** rather than lists. `cdk` is not in `cmd/gobridge`'s
+dependency graph, so nothing else in the train compiles it from outside the
+repository, and resolution alone would not catch a published manifest that no
+longer satisfies the constructs' own imports. Building
+`constructs/gobridgesingle` reaches `gobridgecdk`, `bridgecfg`, `registry`, the
+shared constructs, and the `infra` types they take as arguments in one command,
+which is the same surface the quickstart in `docs/scenarios/cdk/` uses.
 
 The pre-1.0 root-only tags `v0.1.0` and `v0.2.0` predate this policy and have no
 nested module tags; they are not consumable and this proof does not apply to

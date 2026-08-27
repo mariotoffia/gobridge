@@ -902,6 +902,8 @@ exclude example.com/blocked v1.0.0
 		"exclude",
 		map[string]string{
 			"adapters/mqtt/transport/paho": commit,
+			cdkInfraModulePath:             commit,
+			cdkModulePath:                  commit,
 			finalModulePath:                commit,
 		},
 	)

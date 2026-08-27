@@ -21,6 +21,14 @@ const (
 	manifestRelativePath = "scripts/release/modules.json"
 	rootModulePath       = "."
 	finalModulePath      = "cmd/gobridge"
+	cdkModulePath        = "deployment/aws-filebased-config/cdk"
+	cdkInfraModulePath   = "deployment/aws-filebased-config/infra"
+
+	// cdkSmokePackage is the facade an external stack instantiates. Building
+	// it reaches gobridgecdk, bridgecfg, registry, the shared constructs and
+	// the infra types in one command, so it stands in for the whole public
+	// CDK surface in the external consumer smoke.
+	cdkSmokePackage = "constructs/gobridgesingle"
 )
 
 // publishedDeploymentModules are the only modules under deployment/ that are
@@ -29,10 +37,7 @@ const (
 // constructs, and those constructs take infra types (BootstrapConfig and
 // friends) as arguments, so both modules must resolve from the proxy or the
 // documented quickstart cannot compile outside this repository.
-var publishedDeploymentModules = []string{
-	"deployment/aws-filebased-config/cdk",
-	"deployment/aws-filebased-config/infra",
-}
+var publishedDeploymentModules = []string{cdkModulePath, cdkInfraModulePath}
 
 var (
 	stableVersionPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)

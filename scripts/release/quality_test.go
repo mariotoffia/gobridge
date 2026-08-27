@@ -181,6 +181,7 @@ func TestConsumerSmoke_RetriesProxyThenUsesIsolatedDirectPass(t *testing.T) {
 
 	var requests []commandRequest
 	proxyGetAttempts := 0
+	initCalls := 0
 	runner := qualityRunner(func(_ context.Context, request commandRequest) ([]byte, error) {
 		requests = append(requests, request)
 		switch request.Name {
@@ -191,6 +192,7 @@ func TestConsumerSmoke_RetriesProxyThenUsesIsolatedDirectPass(t *testing.T) {
 			return nil, nil
 		case "go":
 			if slices.Equal(request.Args, []string{"mod", "init", "example.com/gobridge-release-smoke"}) {
+				initCalls++
 				writeTestFile(t, filepath.Join(request.Dir, "go.mod"), `module example.com/gobridge-release-smoke
 
 go 1.25.0
@@ -244,8 +246,15 @@ go 1.25.0
 	); err != nil {
 		t.Fatalf("runConsumerSmokeWithOptions() error = %v", err)
 	}
-	if proxyGetAttempts != 2 || waitCalls != 1 {
-		t.Fatalf("proxy attempts=%d waits=%d, want 2 and 1", proxyGetAttempts, waitCalls)
+	// Each pass runs `go mod init` once in its own fresh directory, so init
+	// calls count passes: two proxy attempts (the first aborted by the
+	// injected failure) and one direct pass. Counting passes rather than
+	// `go get` calls keeps this independent of how many modules a pass fetches.
+	if initCalls != 3 || waitCalls != 1 {
+		t.Fatalf("passes=%d waits=%d, want 3 and 1", initCalls, waitCalls)
+	}
+	if proxyGetAttempts < 2 {
+		t.Fatalf("proxy go get attempts = %d, want the failed attempt retried", proxyGetAttempts)
 	}
 
 	var getRequests []commandRequest
@@ -254,17 +263,21 @@ go 1.25.0
 			getRequests = append(getRequests, request)
 		}
 	}
-	if len(getRequests) != 3 {
-		t.Fatalf("go get requests = %d, want two proxy attempts and one direct pass", len(getRequests))
+	if len(getRequests) == 0 {
+		t.Fatal("no go get requests issued")
 	}
-	if getRequests[0].Env["GOPROXY"] != "https://proxy.golang.org" ||
-		getRequests[1].Env["GOPROXY"] != "https://proxy.golang.org" ||
-		getRequests[2].Env["GOPROXY"] != "direct" {
-		t.Fatalf("go get proxy order = %q, %q, %q",
-			getRequests[0].Env["GOPROXY"],
-			getRequests[1].Env["GOPROXY"],
-			getRequests[2].Env["GOPROXY"],
-		)
+	// The proxy attempts must all precede the direct pass and never resume
+	// after it, so the collapsed sequence of GOPROXY values is exactly
+	// proxy-then-direct however many modules each pass fetches.
+	var proxyOrder []string
+	for _, request := range getRequests {
+		proxy := request.Env["GOPROXY"]
+		if len(proxyOrder) == 0 || proxyOrder[len(proxyOrder)-1] != proxy {
+			proxyOrder = append(proxyOrder, proxy)
+		}
+	}
+	if !slices.Equal(proxyOrder, []string{"https://proxy.golang.org", "direct"}) {
+		t.Fatalf("go get proxy order = %v, want proxy attempts then one direct pass", proxyOrder)
 	}
 	homes := make(map[string]struct{})
 	caches := make(map[string]struct{})
@@ -291,6 +304,95 @@ go 1.25.0
 	}
 	if len(homes) != 3 || len(caches) != 3 {
 		t.Fatalf("HOME/cache isolation counts = %d/%d, want 3/3", len(homes), len(caches))
+	}
+}
+
+// TestConsumerSmoke_ResolvesAndBuildsPublishedCDK pins the external proof for
+// the two CDK modules. Nothing else in the smoke reaches them — cdk is not in
+// cmd/gobridge's graph — so the pass has to resolve both against their tag
+// commits and actually compile the facade package a third-party stack imports.
+// Resolution alone would not catch a published manifest that no longer
+// satisfies the constructs' own imports, which is why this asserts `go build`
+// and not `go list`.
+func TestConsumerSmoke_ResolvesAndBuildsPublishedCDK(t *testing.T) {
+	repo, manifest := smokeFixture(t)
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+
+	var requests []commandRequest
+	runner := qualityRunner(func(_ context.Context, request commandRequest) ([]byte, error) {
+		requests = append(requests, request)
+		if request.Name != "go" {
+			return nil, fmt.Errorf("unexpected command %s", request.Name)
+		}
+		if slices.Equal(request.Args, []string{"mod", "init", "example.com/gobridge-release-smoke"}) {
+			writeTestFile(t, filepath.Join(request.Dir, "go.mod"), `module example.com/gobridge-release-smoke
+
+go 1.25.0
+`)
+			return nil, nil
+		}
+		if len(request.Args) == 4 && slices.Equal(request.Args[:3], []string{"list", "-m", "-json"}) {
+			importPath, version, found := strings.Cut(request.Args[3], "@")
+			if !found {
+				return nil, fmt.Errorf("bad query %q", request.Args[3])
+			}
+			modulePath, _ := siblingPath(manifest.ModulePrefix, importPath)
+			listed := listedModule{
+				Path:    importPath,
+				Version: version,
+				GoMod:   moduleGoModForTest(repo, modulePath),
+			}
+			listed.Origin.Hash = commit
+			return json.Marshal(listed)
+		}
+		return nil, nil
+	})
+
+	trainCommits := make(map[string]string, len(manifest.Published))
+	for _, entry := range manifest.Published {
+		trainCommits[entry.Path] = commit
+	}
+	err := runConsumerSmokePass(
+		context.Background(),
+		runner,
+		t.TempDir(),
+		repo,
+		manifest,
+		testReleaseVersion,
+		"direct",
+		"cdk",
+		trainCommits,
+	)
+	if err != nil {
+		t.Fatalf("runConsumerSmokePass() error = %v", err)
+	}
+
+	cdk := manifest.importPath(cdkModulePath)
+	wantResolved := []string{
+		manifest.importPath(cdkInfraModulePath) + "@" + testReleaseVersion,
+		cdk + "@" + testReleaseVersion,
+	}
+	var resolved, built, fetched []string
+	for _, request := range requests {
+		switch {
+		case len(request.Args) == 4 && slices.Equal(request.Args[:3], []string{"list", "-m", "-json"}):
+			resolved = append(resolved, request.Args[3])
+		case len(request.Args) == 2 && request.Args[0] == "build":
+			built = append(built, request.Args[1])
+		case len(request.Args) == 2 && request.Args[0] == "get":
+			fetched = append(fetched, request.Args[1])
+		}
+	}
+	for _, want := range wantResolved {
+		if !slices.Contains(resolved, want) {
+			t.Errorf("smoke did not resolve %s; resolved %v", want, resolved)
+		}
+	}
+	if want := cdk + "@" + testReleaseVersion; !slices.Contains(fetched, want) {
+		t.Errorf("smoke did not go get %s; fetched %v", want, fetched)
+	}
+	if want := cdk + "/" + cdkSmokePackage; !slices.Contains(built, want) {
+		t.Errorf("smoke did not build %s; built %v", want, built)
 	}
 }
 

@@ -1518,6 +1518,7 @@ func runConsumerSmokePass(
 
 	paho := manifest.importPath("adapters/mqtt/transport/paho")
 	command := manifest.importPath(finalModulePath)
+	cdk := manifest.importPath(cdkModulePath)
 	if _, err := runner.run(ctx, commandRequest{
 		Dir:     consumerDir,
 		Env:     environment,
@@ -1527,7 +1528,12 @@ func runConsumerSmokePass(
 	}); err != nil {
 		return fmt.Errorf("external consumer command go mod init: %w", err)
 	}
-	for _, modulePath := range []string{"adapters/mqtt/transport/paho", finalModulePath} {
+	for _, modulePath := range []string{
+		"adapters/mqtt/transport/paho",
+		cdkInfraModulePath,
+		cdkModulePath,
+		finalModulePath,
+	} {
 		if err := resolveSmokeModule(
 			ctx,
 			runner,
@@ -1541,9 +1547,15 @@ func runConsumerSmokePass(
 			return err
 		}
 	}
+	// The CDK modules are not in cmd/gobridge's graph, so nothing else in this
+	// smoke compiles them. Build the facade package rather than only listing
+	// it: resolution alone would not catch a published module whose stripped
+	// manifest no longer satisfies the constructs' own imports.
 	commands := [][]string{
 		{"get", paho + "@" + version},
 		{"list", paho},
+		{"get", cdk + "@" + version},
+		{"build", cdk + "/" + cdkSmokePackage},
 		{"install", command + "@" + version},
 	}
 	for _, args := range commands {

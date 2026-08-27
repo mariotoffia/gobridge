@@ -20,6 +20,14 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   documented examples could resolve outside this repository.
   `deployment/aws-filebased-config/lib` stays internal — it is wiring for the
   shipped image, not a consumer API.
+- The external consumer smoke now resolves both CDK modules against their tag
+  commits and builds `cdk/constructs/gobridgesingle`. `cdk` is not in
+  `cmd/gobridge`'s dependency graph, so nothing else in the train compiles it
+  from outside the repository; it builds rather than lists because resolution
+  alone would not catch a published manifest that no longer satisfies the
+  constructs' own imports. Cost is roughly 86 MB of module downloads and ~11s
+  of compile per pass, well inside the existing 10m per-command and 25m
+  per-pass budgets.
 
 ### Changed
 
@@ -32,14 +40,19 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ### Fixed
 
-- `TestAutoExtendStopsAfterMaxFailuresS15` failed under parallel load. The SQS
-  auto-extend loop re-arms its ticker *after* the `ChangeMessageVisibility` call
-  returns, so waiting on the recorded call did not prove the ticker carried its
-  shortened retry deadline. Advancing the fake clock into that gap stepped past
-  the stale deadline without firing, and the late `Reset` then scheduled from
-  the new now — stranding the third tick. `clocktest.Fake` gained
-  `TickerResets()`, the re-arm counterpart to `TickerCount()`, and the test now
-  waits for the re-arm before advancing.
+- The SQS auto-extend tests failed under parallel load. All four advanced the
+  fake clock as soon as a `ChangeMessageVisibility` call was recorded, but the
+  loop does its clock-dependent work *after* that call returns, so an advance
+  could land mid-iteration. Two distinct symptoms followed. The loop reads
+  `clk.Now()` after the call and derives "has the visibility window lapsed"
+  from it, so a mid-iteration advance made it read a later instant than the
+  tick it was handling, cancel processing on a deadline it never reached, and
+  return — after which no tick was ever served again. Separately, the loop
+  re-arms its ticker to a shorter retry cadence after a failure, so an advance
+  landing before that `Reset` stepped past the stale deadline without firing
+  and the late `Reset` rescheduled from the new now, stranding the tick.
+  `clocktest.Fake` gained `NowCalls()` and `TickerResets()` as the two
+  observable barriers, and the tests wait on them before advancing.
 
 ## [0.3.3] - 2026-07-27
 

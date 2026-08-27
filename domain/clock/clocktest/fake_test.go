@@ -280,6 +280,37 @@ func TestTickerResets_ObservedReArmMakesAdvanceSafe(t *testing.T) {
 	}
 }
 
+// TestNowCalls_CountsEveryRead pins the barrier a test needs when the
+// goroutine under test reads the clock after the side effect the test can
+// observe. Every read counts, including the one Since makes, and advancing
+// time is not itself a read.
+func TestNowCalls_CountsEveryRead(t *testing.T) {
+	clk := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+
+	if got := clk.NowCalls(); got != 0 {
+		t.Fatalf("NowCalls() on a fresh clock = %d, want 0", got)
+	}
+
+	clk.Advance(time.Second)
+	if got := clk.NowCalls(); got != 0 {
+		t.Fatalf("NowCalls() after Advance = %d, want 0 (advancing is not a read)", got)
+	}
+
+	start := clk.Now()
+	if got := clk.NowCalls(); got != 1 {
+		t.Fatalf("NowCalls() after one Now = %d, want 1", got)
+	}
+
+	// Since reads the clock to compute the delta, so it counts too.
+	clk.Advance(2 * time.Second)
+	if elapsed := clk.Since(start); elapsed != 2*time.Second {
+		t.Fatalf("Since(start) = %v, want 2s", elapsed)
+	}
+	if got := clk.NowCalls(); got != 2 {
+		t.Fatalf("NowCalls() after Since = %d, want 2", got)
+	}
+}
+
 func TestSystemClockNotNil(t *testing.T) {
 	if clock.System == nil {
 		t.Fatal("clock.System must not be nil")

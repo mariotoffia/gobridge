@@ -41,16 +41,10 @@ func TestAutoExtendRetriesTransientThenSucceedsS15(t *testing.T) {
 	})
 
 	// SYNC: advance to trigger first tick (will fail with "transient").
-	fake.Advance(1 * time.Second)
-	wait.Until(t, time.Second, "first tick", func() bool {
-		return callCount.Load() >= 1
-	})
+	advanceAutoExtend(t, fake, 1*time.Second, &callCount, 1)
 
 	// SYNC: advance to trigger second tick (will succeed).
-	fake.Advance(1 * time.Second)
-	wait.Until(t, time.Second, "second tick", func() bool {
-		return callCount.Load() >= 2
-	})
+	advanceAutoExtend(t, fake, 1*time.Second, &callCount, 2)
 
 	mock.mu.Lock()
 	n := len(mock.ChangeVisibilityCalls)
@@ -88,10 +82,7 @@ func TestAutoExtendInterleavedFailSuccessS15(t *testing.T) {
 
 	// SYNC: advance multiple ticks to get > autoExtendMaxFailures total calls.
 	for i := 1; i <= autoExtendMaxFailures+2; i++ {
-		fake.Advance(1 * time.Second)
-		wait.Until(t, time.Second, "tick fired", func() bool {
-			return callCount.Load() >= int32(i)
-		})
+		advanceAutoExtend(t, fake, 1*time.Second, &callCount, int32(i))
 	}
 
 	total := callCount.Load()
@@ -111,8 +102,10 @@ func TestAutoExtendInterleavedFailSuccessS15(t *testing.T) {
 func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
 	t.Parallel()
 
+	var callCount atomic.Int32
 	mock := &mockSQSClient{}
 	mock.ChangeMessageVisibilityFn = func(_ context.Context, _ *awssqs.ChangeMessageVisibilityInput, _ ...func(*awssqs.Options)) (*awssqs.ChangeMessageVisibilityOutput, error) {
+		callCount.Add(1)
 		return nil, errors.New("always fail")
 	}
 
@@ -131,22 +124,14 @@ func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
 	// Cadence: tick at vis/3 = 10s; after the 2nd failure the loop resets
 	// to a 5s retry (half the remaining window). Advance along that exact
 	// schedule so three consecutive failures fire before the 30s deadline.
-	//
-	// The 3rd advance is only correct once that reset has landed. The loop
-	// resets the ticker after the SQS call returns, so the recorded call is
-	// not proof the ticker carries its 5s deadline yet; advancing first would
-	// step over the stale 30s deadline without firing and strand the 3rd tick.
-	// Wait for the re-arm itself.
 	for i, adv := range []time.Duration{10 * time.Second, 10 * time.Second, 5 * time.Second} {
-		fake.Advance(adv)
-		want := i + 1
-		wait.Until(t, time.Second, "failure tick", func() bool {
-			mock.mu.Lock()
-			n := len(mock.ChangeVisibilityCalls)
-			mock.mu.Unlock()
-			return n >= want
-		})
-		if want == 2 {
+		advanceAutoExtend(t, fake, adv, &callCount, int32(i+1))
+		if i+1 == 2 {
+			// The 5s advance below is only correct once the loop has re-armed
+			// the ticker from the 10s cadence to the 5s retry. That reset
+			// happens after the clock read advanceAutoExtend waits on, so it
+			// needs its own barrier: advancing first would step over the stale
+			// deadline without firing and strand the third tick.
 			wait.Until(t, time.Second, "retry cadence armed", func() bool {
 				return fake.TickerResets() >= 1
 			})
@@ -180,8 +165,10 @@ func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
 func TestAutoExtendCancelsOnDeadlineLapseAtMinVisibilityS15(t *testing.T) {
 	t.Parallel()
 
+	var callCount atomic.Int32
 	mock := &mockSQSClient{}
 	mock.ChangeMessageVisibilityFn = func(_ context.Context, _ *awssqs.ChangeMessageVisibilityInput, _ ...func(*awssqs.Options)) (*awssqs.ChangeMessageVisibilityOutput, error) {
+		callCount.Add(1)
 		return nil, errors.New("always fail")
 	}
 
@@ -199,13 +186,10 @@ func TestAutoExtendCancelsOnDeadlineLapseAtMinVisibilityS15(t *testing.T) {
 	})
 
 	// Tick 1 at t=1s: fails, cf=1, window not yet lapsed (1s < 2s) → retry.
-	fake.Advance(1 * time.Second)
-	wait.Until(t, time.Second, "first failure tick", func() bool {
-		mock.mu.Lock()
-		n := len(mock.ChangeVisibilityCalls)
-		mock.mu.Unlock()
-		return n >= 1
-	})
+	// The advance for tick 2 must not land before the loop has read the clock
+	// for tick 1, or the loop reads t=2s for tick 1, cancels on the lapsed
+	// window a tick early, and only one call is ever made.
+	advanceAutoExtend(t, fake, 1*time.Second, &callCount, 1)
 
 	// Tick 2 at t=2s: fails, cf=2 (< ceiling 3), window lapsed (2s !< 2s)
 	// → deadline-driven cancel.
@@ -221,4 +205,32 @@ func TestAutoExtendCancelsOnDeadlineLapseAtMinVisibilityS15(t *testing.T) {
 		t.Fatalf("ChangeMessageVisibility calls: want exactly 2 (deadline branch, "+
 			"cf=2 < ceiling %d), got %d", autoExtendMaxFailures, n)
 	}
+}
+
+// advanceAutoExtend moves the fake clock forward by d and waits until the
+// auto-extend loop has finished handling the tick that advance triggers:
+// `want` SQS calls recorded, and the loop's own clock read for that iteration
+// done.
+//
+// Waiting on the recorded call alone is not enough. The loop calls
+// ChangeMessageVisibility first and only then reads the clock, deriving from
+// that reading whether the visibility window has lapsed. An advance landing
+// between the two makes it read a later instant than the tick it is handling,
+// so it can see a deadline it never actually reached, cancel processing and
+// return — after which no further tick is ever served and every later wait
+// times out.
+func advanceAutoExtend(
+	t *testing.T,
+	fake *clocktest.Fake,
+	d time.Duration,
+	callCount *atomic.Int32,
+	want int32,
+) {
+	t.Helper()
+
+	reads := fake.NowCalls()
+	fake.Advance(d)
+	wait.Until(t, time.Second, "tick handled", func() bool {
+		return callCount.Load() >= want && fake.NowCalls() > reads
+	})
 }

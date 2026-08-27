@@ -22,6 +22,7 @@ type Fake struct {
 	timers       []*fakeTimer
 	tickers      []*fakeTicker
 	tickerResets int
+	nowCalls     int
 }
 
 // New returns a Fake clock starting at the current wall-clock time.
@@ -35,7 +36,22 @@ func NewAt(t time.Time) *Fake {
 func (f *Fake) Now() time.Time {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.nowCalls++
 	return f.now
+}
+
+// NowCalls returns how many times the clock has been read since it was
+// created. It is the synchronisation point for a goroutine that reacts to a
+// tick by reading the clock and deciding from that reading — a lease that has
+// lapsed, a deadline that has passed. Such a goroutine reads the clock *after*
+// whatever side effect a test can observe, so advancing on the side effect
+// alone lets the next Advance land mid-iteration: the goroutine then reads a
+// later instant than the tick it is handling and acts on a deadline it never
+// actually reached. Spin on NowCalls() until it grows before advancing again.
+func (f *Fake) NowCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nowCalls
 }
 
 func (f *Fake) Since(t time.Time) time.Duration {
