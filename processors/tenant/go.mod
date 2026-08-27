@@ -3,7 +3,7 @@ module github.com/mariotoffia/gobridge/processors/tenant
 go 1.25.0
 
 require (
-	github.com/mariotoffia/gobridge v0.0.0
+	github.com/mariotoffia/gobridge v0.3.5
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -13,5 +13,3 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/mariotoffia/gobridge => ../..
