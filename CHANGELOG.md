@@ -10,6 +10,35 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-08-27
+
+Completes 0.3.4: the same 33 modules, plus the consumer-smoke fix that
+0.3.4's own train exposed. First version to carry the CDK modules through a
+complete train, container image and `latest` promotion included.
+
+### Fixed
+
+- The external consumer smoke fetched the CDK by module path and then built a
+  package inside it. `go get module@version` records the requirement but not
+  the `go.sum` entries for what that module's own code imports, so the build
+  failed on 25 missing sums. This failed the 0.3.4 `cmd/gobridge` workflow
+  after all 33 module tags had already validated, skipping the image, the
+  GitHub Release and the `latest` promotion. It now fetches the package path.
+  The Paho steps never hit this: `go list` needs no build dependencies and
+  `go install pkg@version` resolves in module-agnostic mode.
+
+## [0.3.4] - 2026-08-27
+
+Publishes the two CDK modules for the first time, taking the train from 31 to
+33 modules.
+
+**Modules only — no container image.** The consumer-smoke defect fixed in
+0.3.5 failed this version's final workflow after every module tag had already
+passed the strict gate, so the image, GitHub Release and `latest` promotion
+were skipped. All 33 modules are published, resolvable and consumable at
+`v0.3.4`; there is no `ghcr.io/mariotoffia/gobridge` image associated with it.
+Use 0.3.5 if you need the image.
+
 ### Added
 
 - The two CDK modules `deployment/aws-filebased-config/cdk` and
