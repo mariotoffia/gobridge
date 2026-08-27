@@ -5,12 +5,12 @@ go 1.25.0
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.57.0
-	github.com/mariotoffia/gobridge v0.0.0
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq v0.0.0
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.0.0
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions v0.0.0
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.0.0
-	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge v0.3.6
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq v0.3.6
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.3.6
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions v0.3.6
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.3.6
+	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-20260827121207-e4131f9ac111
 )
 
 require (
@@ -28,14 +28,4 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.17 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.9 // indirect
 	github.com/aws/smithy-go v1.25.1 // indirect
-)
-
-replace (
-	github.com/mariotoffia/gobridge => ../../..
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq => ./dynamodbdlq
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease => ./dynamodblease
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions => ./dynamodbmanagedsubscriptions
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox => ./dynamodboutbox
-	github.com/mariotoffia/gobridge/testutil/ddblocal => ../../../testutil/ddblocal
-	github.com/mariotoffia/gobridge/testutil/wait => ../../../testutil/wait
 )
