@@ -31,14 +31,22 @@ defects those two exposed, so it runs end to end including the container image.
   `./gobridgecdk` ran in no target at all, which is how a SIGSEGV in
   `./constructs` first surfaced inside a release gate. It now runs the whole
   module.
-- **Layer-2 aggregates failed their own release workflow.** Resolving a nested
-  module makes proxy.golang.org probe its parent prefixes, so while layer 1
-  resolved, the proxy asked for `adapters/aws/store` and
-  `adapters/native/store` at a version whose tag did not exist yet and cached
-  the miss. The tag landed moments later but the cached miss outlived the
-  workflow's propagation budget. Both 0.3.4 and 0.3.5 lost layer 2 to this.
-  `run.sh` now asks the proxy for each module's version list right after
-  pushing a layer's tags, which forces a fresh read of the repository's tags.
+- **Layer-2 aggregates failed their own release workflow.** The two modules
+  whose directories contain nested modules — `adapters/aws/store` and
+  `adapters/native/store` — consistently take 15 to 20 minutes to appear on
+  proxy.golang.org, where a leaf module takes about one. The verifier's
+  propagation budget was 10 minutes, so both failed while being perfectly
+  correct, and a tag cannot be re-pushed to try again. This cost 0.3.4, 0.3.5
+  and 0.3.6 their layer 2. The budget is now 20 minutes, and
+  `wait_for_layer_workflows` gives a failed run one re-run before the layer
+  dies — the same bounded retry `publish_module` already applied to a single
+  module, for the same stated reason.
+
+  An earlier attempt asked the proxy for each module's version list right after
+  pushing, on the theory that this forces a fresh read of the repository's
+  tags. It does not: `@v/list` is served from the proxy's own cache, and
+  v0.3.6 was still absent from that list minutes after its tag was pushed and
+  the request made. That step was removed rather than left in looking useful.
 - **`TestIntegration_AppCoordinatedRolloutOverDynamoDB` raced its own
   subject.** The durable committed artifact is written *after* the local swap,
   so reading it the moment `CurrentAppliedConfig()` reported the new version

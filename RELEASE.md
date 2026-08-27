@@ -245,6 +245,14 @@ Run `make release VERSION=vX.Y.Z` first (dry-run) to review the per-layer plan. 
 surrounding sections (§1 waits, §2 root, §3 bootstrap above; §5 smoke below) document what each step does;
 `run.sh` performs them in order and must not be bypassed to retag.
 
+Propagation is not uniform. A leaf module appears on proxy.golang.org in about
+a minute; `adapters/aws/store` and `adapters/native/store`, whose directories
+contain nested modules, have consistently taken 15 to 20. The verifier's
+propagation budget is therefore 20 minutes, and a failed layer workflow gets
+one re-run before the layer dies — a tag cannot be re-pushed, so a run that
+failed on propagation alone must not cost an entire new version train. A
+genuine defect still fails twice and stops the train.
+
 No layer can start until every tag in the layer below it is green and visible,
 so the final `cmd/gobridge` tag is reached only after
 `deployment/aws-filebased-config/cdk`, which in turn waits on all three layer-2

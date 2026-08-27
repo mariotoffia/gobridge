@@ -33,7 +33,15 @@ const (
 	// origin matches the tag commit) with time only as the failure budget.
 	// Nothing is weakened — every assertion still has to pass, and a module
 	// that never appears still fails the release.
-	defaultModulePropagationBudget = 10 * time.Minute
+	// 20 minutes, not 10, because indexing time is not uniform across modules.
+	// A leaf module appears on proxy.golang.org in about a minute, but the two
+	// aggregates whose directories contain nested modules — adapters/aws/store
+	// and adapters/native/store — consistently took 15 to 20. At 10 minutes
+	// they failed their own release workflow on three successive trains while
+	// being perfectly correct, and the tag cannot be re-pushed to try again.
+	// The budget is a failure deadline, not a target: a module that resolves
+	// immediately still costs one poll.
+	defaultModulePropagationBudget = 20 * time.Minute
 	defaultModulePropagationPoll   = 10 * time.Second
 	moduleDownloadLimit            = 10 * time.Minute
 	moduleVerifyLimit              = 2 * time.Minute

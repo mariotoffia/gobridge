@@ -118,14 +118,26 @@ wait_for_release_workflow() {
 # A tag with no run at all is treated as fatal once the grace period passes:
 # that is the signature of a bulk tag push silently not triggering workflows,
 # and it must never be mistaken for "still starting".
+#
+# A failed run gets ONE re-run before the layer dies, the same bounded retry
+# publish_module already applies to a single module and for the same reason: a
+# tag cannot be re-pushed, so a run that failed on something transient would
+# otherwise force an entire new version train for a fault that has already
+# cleared. The two aggregate modules whose directories contain nested modules,
+# adapters/aws/store and adapters/native/store, consistently take longer to
+# appear on proxy.golang.org than a leaf module does — long enough to exhaust
+# the verifier's own propagation budget — and that alone cost the v0.3.4,
+# v0.3.5 and v0.3.6 trains their layer 2. The re-run happens minutes later,
+# by which time the module has indexed. A genuine defect still fails twice.
 wait_for_layer_workflows() {
   local tags=("$@")
-  local start now snapshot tag state pending missing
+  local start now snapshot tag state pending missing run_id
+  declare -A retried=()
   start="$(date +%s)"
   while :; do
     snapshot="$(gh run list --workflow release.yml --limit 100 \
-      --json headBranch,status,conclusion \
-      --jq '.[] | "\(.headBranch)\t\(.status)\t\(.conclusion // "-")"' 2>/dev/null)" || {
+      --json headBranch,status,conclusion,databaseId \
+      --jq '.[] | "\(.headBranch)\t\(.status)\t\(.conclusion // "-")\t\(.databaseId)"' 2>/dev/null)" || {
       sleep "$WORKFLOW_POLL_SECONDS"; continue
     }
     pending=0
@@ -135,7 +147,18 @@ wait_for_layer_workflows() {
       case "$state" in
         completed/success) ;;
         "")               missing=$((missing + 1)); pending=$((pending + 1)) ;;
-        completed/*)      die "release workflow ${state#completed/} for $tag" ;;
+        completed/*)
+          if [ -n "${retried[$tag]:-}" ]; then
+            die "release workflow ${state#completed/} for $tag after one re-run"
+          fi
+          run_id="$(printf '%s\n' "$snapshot" | awk -F'\t' -v t="$tag" '$1==t {print $4; exit}')"
+          [ -n "$run_id" ] || die "release workflow ${state#completed/} for $tag (no run id to retry)"
+          echo "-- ${tag}: workflow ${state#completed/}; re-running once (run ${run_id})"
+          gh run rerun "$run_id" >/dev/null 2>&1 \
+            || die "release workflow ${state#completed/} for $tag; re-run could not be started"
+          retried[$tag]=1
+          pending=$((pending + 1))
+          ;;
         *)                pending=$((pending + 1)) ;;
       esac
     done
@@ -251,30 +274,11 @@ publish_layer() { # layer number
   done
   [ "$pushed" -eq 0 ] || echo "-- pushed ${pushed} tag(s) for layer ${layer}"
 
-  # 3. make the proxy re-read this repository's tags before anything waits.
-  #
-  # Resolving a nested module makes proxy.golang.org probe its parent prefixes
-  # to find the module root. While layer 1 resolves, the proxy therefore asks
-  # for the layer-2 parent — adapters/aws/store, adapters/native/store — at a
-  # version whose tag does not exist yet, and caches that miss. The tag lands
-  # moments later, but the cached miss outlives the workflow's propagation
-  # budget, so a module that is perfectly fine fails its own release workflow.
-  # Both v0.3.4 and v0.3.5 lost layer 2 to exactly this.
-  #
-  # Asking for the version list forces a fresh read of the repository's tags,
-  # which replaces the cached miss. Best effort: if it fails the propagation
-  # wait still has to pass on its own.
-  if command -v curl >/dev/null 2>&1; then
-    for import in "${imports[@]}"; do
-      curl -fsS -m 30 -o /dev/null "https://proxy.golang.org/${import}/@v/list" || true
-    done
-  fi
-
-  # 4. wait for the layer's workflows with a single shared poller
+  # 3. wait for the layer's workflows with a single shared poller
   echo "-- waiting for ${#tags[@]} workflow(s) in layer ${layer}"
   wait_for_layer_workflows "${tags[@]}"
 
-  # 5. wait for proxy propagation of the whole layer before the next one stages
+  # 4. wait for proxy propagation of the whole layer before the next one stages
   for import in "${imports[@]}"; do
     wait_for_proxy "$import"
   done
