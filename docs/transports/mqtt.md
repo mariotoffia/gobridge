@@ -520,6 +520,48 @@ expiry"). A non-positive or sub-second remainder therefore clamps to **one
 second** rather than omitting the property, which would leave the broker holding
 the message for a queued subscriber with no expiry at all.
 
+## Publish namespaces
+
+A publish topic is checked for the MQTT v5 structural rules — non-empty, at most
+65,535 bytes, no `+` or `#` wildcard, no null byte — and nothing else. In
+particular a leading `$` is **allowed**: MQTT v5 §4.7.2 reserves that prefix for
+the *server* to define rather than making it malformed, and real brokers define
+legal write namespaces there, AWS IoT's `$aws/rules/<rule>` republish target
+being the common one. Refusing the whole prefix terminalized those messages
+inside the bridge before the broker ever saw them. `$share/` stays refused: it
+names a subscription group, so it can never be a publish destination.
+
+Whether a particular `$` namespace accepts a write is the broker's
+authorization decision; its refusal arrives as a PUBACK reason code and is
+classified as described next, so a denial stays visible and terminal. A
+deployment that must confine its routes to particular namespaces expresses that
+as broker-side ACL policy — the adapter carries no namespace allowlist.
+
+## Broker acknowledgements and error classification
+
+A rejected SUBACK, UNSUBACK or PUBACK reason code is the broker telling the
+bridge *why* it refused. The MQTT client returns that acknowledgement together
+with a generic error for any reason code of `0x80` or higher, so the adapter
+classifies the **reason code first** and falls back to the client's error only
+when no acknowledgement arrived at all.
+
+This is what keeps a denial permanent. Reason `0x87` (*Not authorized*) on a
+publish classifies as `FORBIDDEN` — dead-lettered immediately, cause intact.
+Read only as a generic error it would classify as `UNAVAILABLE`, so the route
+would retry a message the broker will never accept until the replay budget ran
+out, then dead-letter it as `max_retries` with the real cause lost. A partially
+accepted SUBACK behaves the same way: the granted filters are recorded as
+broker-observed state even though the call as a whole failed.
+
+Configuration failures are classified `INVALID_CONFIG`, not `INVALID_PAYLOAD`.
+The two differ in class (`permanent` versus `rejected`), and reporting a
+build-time configuration failure as a payload rejection makes automation and
+metrics attribute a deployment error to message traffic. Everything the factory
+refuses — a missing `client_id`, an empty `broker_urls`, an invalid
+`client_id_suffix`, an unpublishable `default_topic`, an out-of-range `qos`, a
+malformed subscription filter, cleartext credentials on a non-TLS broker — is
+`INVALID_CONFIG`. `INVALID_PAYLOAD` stays reserved for a rejected message.
+
 ## Dialing through a proxy
 
 `ALL_PROXY` (or `all_proxy`) routes broker dials through a SOCKS5 proxy, and

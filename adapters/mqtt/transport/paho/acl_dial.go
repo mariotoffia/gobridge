@@ -51,7 +51,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 
 	serverURLs, err := parseURLs(s.opts.BrokerURLs)
 	if err != nil {
-		return nil, nil, shared.ErrInvalidPayload.Wrap(err).WithMessage("parse broker URLs")
+		return nil, nil, shared.ErrInvalidConfig.Wrap(err).WithMessage("parse broker URLs")
 	}
 
 	// ponytail: — this session relies on autopaho's DEFAULT
@@ -128,6 +128,14 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 			// The lease (one active owner) is what makes a shared Exclusive
 			// ClientID safe — at most one holder connects at a time.
 			ClientID: s.opts.ClientID,
+
+			// PacketTimeout bounds each packet acknowledgement the SDK waits
+			// for (CONNACK, SUBACK, UNSUBACK, PUBACK/PUBCOMP), INSIDE the
+			// caller's context. Its own default (10s) is shorter than every
+			// adapter-owned budget, so leaving it unset silently overrides
+			// them — a healthy SUBACK at 12s would be abandoned mid-reconcile.
+			// See Session.packetTimeout for how the value is derived.
+			PacketTimeout: s.packetTimeout(),
 
 			// Manual acknowledgment is the load-bearing delivery
 			// guarantee of this adapter: the client does NOT auto-ack
@@ -281,11 +289,7 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		return nil, nil, MapError(err)
 	}
 
-	connectTimeout := s.opts.ConnectTimeout
-	if connectTimeout == 0 {
-		connectTimeout = DefaultConnectTimeout
-	}
-	awaitCtx, awaitCancel := context.WithTimeout(ctx, connectTimeout)
+	awaitCtx, awaitCancel := context.WithTimeout(ctx, s.connectTimeout())
 	defer awaitCancel()
 
 	if err := cm.AwaitConnection(awaitCtx); err != nil {

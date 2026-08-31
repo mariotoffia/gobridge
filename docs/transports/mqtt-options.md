@@ -46,6 +46,39 @@ backpressure.
 | `tls.key_pem` | string | -- | Client private key PEM material (redacted on marshal; requires `cert_pem`) |
 | `tls.insecure_skip_verify` | bool | `false` | Skip server certificate verification |
 
+### Duration validation
+
+Every duration above accepts `0`, which selects the documented default. A
+**negative** value is rejected at configuration validation, so it can never
+reach a session. Nothing downstream treats a negative duration as an error --
+it becomes an already-expired context -- so a build that accepted one would
+start successfully and then fail every attempt it made, for a reason that is
+invisible in the configuration.
+
+### Packet acknowledgement budget
+
+The MQTT client applies its own deadline to each packet acknowledgement it
+waits for (CONNACK, SUBACK, UNSUBACK, PUBACK/PUBCOMP), *inside* the deadline
+the bridge already set. Its built-in default is 10 seconds -- shorter than
+every budget on this page -- so leaving it alone would silently override them:
+a SUBACK the bridge was willing to wait 30 seconds for would be abandoned at
+10, failing a reconcile while the broker was answering normally.
+
+There is no key for it. The session derives the budget as the longest of
+`connect_timeout`, `reconnect_timeout`, `reconcile_timeout`, the `timeout` of
+every sender bound to the session, and the 30-second sender default -- so the
+adapter-owned bound is always the one that governs. It is not a liveness bound
+of its own: each packet operation already runs under its own deadline, and that
+is what bounds an unresponsive broker.
+
+One consequence is worth knowing when tuning shutdown: a SUBSCRIBE or
+UNSUBSCRIBE still in flight when the session is closed now waits out
+`reconcile_timeout` rather than being cut short at the client's old 10-second
+default. Cancelling the context passed to `Reconcile` still ends it
+immediately, which is what the runtime does on shutdown, so this is visible
+only to a library consumer that closes a session while holding a longer-lived
+context open.
+
 ### Ingress byte model
 
 Every MQTT session that can own inbound state is validated independently:
@@ -126,10 +159,10 @@ MQTT ingress.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `default_topic` | string | -- | Fallback publish topic used when `OutboundMessage.Address` is empty. The publish topic is never read from `Envelope.Subject`. Validated as an MQTT publish topic at **build time** (wildcards `+`/`#`, a `$`-reserved prefix, and null bytes are rejected), because it bypasses the runtime address validator — a malformed value would otherwise only fail at first publish, as a broker DISCONNECT that tears down the shared session for every route on it. |
+| `default_topic` | string | -- | Fallback publish topic used when `OutboundMessage.Address` is empty. The publish topic is never read from `Envelope.Subject`. Validated as an MQTT publish topic at **build time** (wildcards `+`/`#`, the `$share/` prefix, and null bytes are rejected), because it bypasses the runtime address validator — a malformed value would otherwise only fail at first publish, as a broker DISCONNECT that tears down the shared session for every route on it. |
 | `qos` | int | `1` | MQTT QoS level (0, 1, or 2) |
 | `retain` | bool | `false` | MQTT retain flag |
-| `timeout` | duration | `30s` | Per-publish timeout, applied as the **stricter** of this value and the caller's remaining deadline. On a bridge route the dispatcher already wraps every send in the route's `policy.send_timeout` (default 30s), so a `timeout` **shorter** than the remaining route deadline tightens the publish while a **longer** one is capped by the route deadline — it never extends the route ceiling. **Note the coercion asymmetry:** unlike an explicit `qos: 0` or `keep_alive: 0` (honoured as-is), a configured `timeout: 0` is coerced **up** to the `30s` default at build. The 60s Send-time safety-net for a zero timeout is therefore reachable only by a direct library consumer that constructs `SenderOptions` and leaves `Timeout` at `0`, bypassing the factory — via config, a `0` becomes `30s`. See [Resilience Behavior](#resilience-behavior) for the interaction with `policy.send_timeout`. |
+| `timeout` | duration | `30s` | Per-publish timeout, applied as the **stricter** of this value and the caller's remaining deadline. The session raises the MQTT client's per-packet acknowledgement budget to cover the longest `timeout` of any sender bound to it, so the value you configure is the one that governs a PUBACK wait (see [Packet acknowledgement budget](#packet-acknowledgement-budget)). On a bridge route the dispatcher already wraps every send in the route's `policy.send_timeout` (default 30s), so a `timeout` **shorter** than the remaining route deadline tightens the publish while a **longer** one is capped by the route deadline — it never extends the route ceiling. **Note the coercion asymmetry:** unlike an explicit `qos: 0` or `keep_alive: 0` (honoured as-is), a configured `timeout: 0` is coerced **up** to the `30s` default at build. The 60s Send-time safety-net for a zero timeout is therefore reachable only by a direct library consumer that constructs `SenderOptions` and leaves `Timeout` at `0`, bypassing the factory — via config, a `0` becomes `30s`. See [Resilience Behavior](#resilience-behavior) for the interaction with `policy.send_timeout`. |
 | `throttle_retry_after` | duration | `500ms` | Retry-after hint attached to a publish failure **only** when the broker returns PUBACK/PUBREC reason `0x97` (Quota exceeded) -- the one reason code that signals throttling. Other non-zero reason codes classify as generic errors with no back-off hint. |
 
 ## Credential URI (`options.credentials_uri`)
@@ -206,6 +239,18 @@ The same pattern works for AMQP 0-9-1, AMQP 1.0 and Azure Service Bus.
 
 MQTT receivers have no transport-specific options. Subscriptions are declared
 in the `topics[]` array on the `ReceiverDef`, not in the `options` map.
+
+Every entry is validated at **build time** -- the topic filter against the MQTT
+v5 filter rules (wildcard placement, `$share/<group>/<filter>` shape, UTF-8, no
+null bytes, length) and `qos` against 0/1/2. Both checks are repeated when the
+session plan is reconciled, so a plan handed straight to a `Session` by a
+library consumer fails the same way. Validating at build matters twice over: a
+subscription only reaches the broker when the session manager reconciles the
+plan, so a malformed filter would otherwise fail *after* the process had
+started serving -- and an out-of-range `qos` would not fail at all. The MQTT
+client writes the level as `qos & 0x03`, so `qos: 4` would reach the broker as
+`0`: the route would believe it subscribed at-least-once while the broker
+delivered at-most-once and never asked for an acknowledgement.
 
 > **Use the factory for production composition (library-consumer note).**
 > `Factory.NewReceiver` atomically reserves the session's sole ingress receiver

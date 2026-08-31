@@ -109,7 +109,7 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 | 6 | done | NEW-HIGH-4, HIGH-18, HIGH-19, MEDIUM-8, NEW-MEDIUM-8, MEDIUM-22, LOW-16, LOW-24, LOW-25 |
 | 7 | done | HIGH-13, MEDIUM-16, MEDIUM-17 |
 | 8 | done | HIGH-11, HIGH-12, HIGH-14, MEDIUM-15, MEDIUM-18, MEDIUM-19, LOW-1, NEW-HIGH-5, NEW-LOW-1 |
-| 9 | waiting | NEW-MEDIUM-1, NEW-MEDIUM-2, NEW-MEDIUM-3, NEW-MEDIUM-5, NEW-MEDIUM-6, NEW-LOW-9 |
+| 9 | done | NEW-MEDIUM-1, NEW-MEDIUM-2, NEW-MEDIUM-3, NEW-MEDIUM-5, NEW-MEDIUM-6, NEW-LOW-9 |
 | 10 | waiting | LOW-3, LOW-4, NEW-MEDIUM-12, NEW-MEDIUM-13, NEW-MEDIUM-14, NEW-MEDIUM-15, NEW-LOW-6 |
 | 11 | waiting | HIGH-6, HIGH-15, HIGH-20, MEDIUM-3, MEDIUM-4, MEDIUM-6, MEDIUM-23, MEDIUM-25, LOW-15, LOW-20, NEW-MEDIUM-9, NEW-TEST-1 |
 | 12 | waiting | LOW-7 (withdrawn), LOW-13, LOW-14, NEW-MEDIUM-10, NEW-MEDIUM-11, NEW-LOW-5 |
@@ -285,13 +285,15 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 - **Dependencies:** Chunk 4.
 - **Files/packages:** `adapters/mqtt/transport/paho/acl_client.go`, `errors.go`, `acl_dial.go`, `config_plugin.go`, `factory.go`, `topic_validator.go`, `session_reconcile_apply.go`.
 - **Tests:** `errors_test.go`, `factory_test.go`, `topic_validator_test.go`, reconcile reason-code tests.
-- [ ] Add failing negative SUBACK/PUBACK, packet-budget, invalid filter/QoS, legal `$aws` topic, negative timeout, and plaintext-error-class tests.
-- [ ] Run `go -C adapters/mqtt/transport/paho test -race -count=1 ./... -run 'Test.*(Ack|PacketTimeout|Topic|Factory|Config)'`; expect generic errors or late failure.
-- [ ] Return acknowledgement data with SDK errors, classify reason first, set effective `PacketTimeout`, share factory/reconcile validators, permit legal `$` names, and return `ErrInvalidConfig`.
-- [ ] Re-run the exact failing command above; expect pass.
-- [ ] Run `make test` for parser, builder, and direct factory entry points.
-- [ ] Update MQTT options and error-classification references.
-- [ ] Accept when broker denials keep their class, configured deadlines govern, and invalid configuration cannot reach a broker.
+- [x] Add failing negative SUBACK/PUBACK, packet-budget, invalid filter/QoS, legal `$aws` topic, negative timeout, and plaintext-error-class tests.
+- [x] Run `go -C adapters/mqtt/transport/paho test -race -count=1 ./... -run 'Test.*(Ack|PacketTimeout|Topic|Factory|Config)'`; expect generic errors or late failure.
+- [x] Return acknowledgement data with SDK errors, classify reason first, set effective `PacketTimeout`, share factory/reconcile validators, permit legal `$` names, and return `ErrInvalidConfig`.
+- [x] Re-run the exact failing command above; expect pass.
+- [x] Run `make test` for parser, builder, and direct factory entry points.
+- [x] Update MQTT options and error-classification references.
+- [x] Accept when broker denials keep their class, configured deadlines govern, and invalid configuration cannot reach a broker.
+- **Landed:** the ACL now returns the SUBACK / UNSUBACK / PUBACK alongside the SDK error — the SDK produces both for every reason code at or above `0x80` — and `publishResult.Acknowledged` separates "answered with `0x00`" from "never answered". Reconcile, `unsubscribeConfirmed` and `Sender.Send` classify the reason code FIRST and fall back to the SDK's own classification only when no acknowledgement arrived, so `0x87` is `FORBIDDEN` (permanent, DLQ'd on the first attempt) instead of `UNAVAILABLE` burning the replay budget; a partially accepted SUBACK also keeps its grants in `observedSubs` rather than discarding them with the failed call. `Session.packetTimeout` derives the SDK's per-packet budget from the longest deadline that encloses a packet operation — `reconcile_timeout`, `connect_timeout`, `reconnect_timeout`, the `timeout` of every sender registered through `NewSender`, and the 30 s sender default as a floor — because the SDK applies its own bound INSIDE the caller's context and its 10 s default silently overrode every one of them; no new configuration key. One consequence surfaced by the adversarial review: a SUBSCRIBE in flight when a session is closed now waits out `reconcile_timeout` rather than the SDK's old 10 s, so `integration_resilience_test.go` states the bound it asserts against instead of inheriting the 30 s default; the runtime is unaffected because shutdown cancels the context it passed to `Reconcile`. One `ValidateMQTTSubscription` is shared by `Factory.NewReceiver` and `reconcile`, checking the filter syntax and QoS 0–2 before the narrowing `byte` conversion (the SDK writes `qos & 0x03`, so `qos: 4` reached the broker as `0`); an empty topic is now rejected rather than skipped, because `sessionPlanFor` builds the plan from the same list the receiver seam was silently dropping it from. `ValidateMQTTTopic` no longer rejects the whole `$` prefix — only `$share/`, which can never name a publish destination — so `$aws/rules/...` reaches the broker and the broker's own denial is what classifies. Every configuration failure in the adapter returns `ErrInvalidConfig` (permanent) instead of `ErrInvalidPayload` (rejected, reserved for a message).
+- **Proof:** `ack_reason_preservation_test.go`, `packet_timeout_test.go`, `subscription_validation_test.go`, `config_duration_signs_test.go`, `config_error_class_test.go`, the `$`-namespace cases in `topic_validator_test.go`, `benchmark_ack_validation_test.go`, and two integration tests in `integration_packet_ack_budget_test.go` — an in-process MQTT responder that answers SUBACK after 12 s (fails at the SDK's 10 s default without the fix) and a live Mosquitto publish into `$SYS`, which the broker refuses with reason `0x87` (classified `transient` without the fix).
 - **Suggested commit title:** `validate mqtt operations before activation`
 
 ### Chunk 10: Route and bridge configuration validation

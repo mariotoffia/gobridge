@@ -57,7 +57,7 @@ func (s *Session) reconcileManagedUnsubscribe(
 			if err := s.finalizeManagedCleanup(ctx, managedStore, managedIdentity, confirmation.confirmed); err != nil {
 				return err
 			}
-			return confirmation.firstErr.With("topic", confirmation.errTopic)
+			return confirmation.failure()
 		}
 		return errManagedCleanupRecycled
 	}
@@ -74,7 +74,7 @@ func (s *Session) reconcileManagedUnsubscribe(
 		return err
 	}
 	if confirmation.firstErr != nil {
-		return confirmation.firstErr.With("topic", confirmation.errTopic)
+		return confirmation.failure()
 	}
 	return nil
 }
@@ -121,6 +121,17 @@ type unsubscribeConfirmation struct {
 	errTopic   string
 }
 
+// failure returns the classified rejection, tagged with the offending filter
+// when the UNSUBACK reason codes named one. A rejection carried over from the
+// SDK error has no per-filter attribution, so it is returned untagged rather
+// than with an empty topic.
+func (c unsubscribeConfirmation) failure() *shared.BridgeError {
+	if c.firstErr == nil || c.errTopic == "" {
+		return c.firstErr
+	}
+	return c.firstErr.With("topic", c.errTopic)
+}
+
 func (s *Session) unsubscribeConfirmed(ctx context.Context, cm pahoConnection, topics []string, operationEpoch uint64) (unsubscribeConfirmation, error) {
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "mqtt: unsubscribing", "client_id", s.opts.ClientID, "topics", topics)
@@ -129,15 +140,25 @@ func (s *Session) unsubscribeConfirmed(ctx context.Context, cm pahoConnection, t
 		return unsubscribeConfirmation{}, err
 	}
 	unsubCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
-	reasons, err := cm.Unsubscribe(unsubCtx, topics)
+	reasons, unsubErr := cm.Unsubscribe(unsubCtx, topics)
 	cancel()
-	if err != nil {
-		return unsubscribeConfirmation{}, MapError(err)
+	// The SDK returns the UNSUBACK together with an error for any reason code
+	// of 0x80 or higher. Reason codes present means the broker answered, so its
+	// per-filter verdict is what the caller acts on; only a call that produced
+	// no acknowledgement at all is an operation failure.
+	if unsubErr != nil && len(reasons) == 0 {
+		return unsubscribeConfirmation{}, MapError(unsubErr)
 	}
 	if err := s.requireReconcileEpoch(operationEpoch); err != nil {
 		return unsubscribeConfirmation{}, err
 	}
-	return classifyUnsubackReasons(topics, reasons), nil
+	confirmation := classifyUnsubackReasons(topics, reasons)
+	if confirmation.firstErr == nil && unsubErr != nil {
+		// Every filter was confirmed yet the SDK still failed the call; nothing
+		// in the UNSUBACK explains it, so its own classification stands.
+		confirmation.firstErr = MapError(unsubErr)
+	}
+	return confirmation, nil
 }
 
 func classifyUnsubackReasons(topics []string, reasons []byte) unsubscribeConfirmation {

@@ -54,8 +54,8 @@ func TestNoTopicReceiver_RejectedNotMatchAll(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected classified *shared.BridgeError, got %T: %v", err, err)
 	}
-	if be.Code != shared.ErrInvalidPayload.Code {
-		t.Fatalf("expected ErrInvalidPayload, got %s", be.Code)
+	if be.Code != shared.ErrInvalidConfig.Code {
+		t.Fatalf("expected ErrInvalidConfig, got %s", be.Code)
 	}
 
 	// Guard: the rejection is specific to the zero-topic case — a receiver

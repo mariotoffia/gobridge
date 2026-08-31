@@ -132,8 +132,12 @@ func (Config) Kind() string { return QualifiedKind }
 // enforces the real requirements (client_id, broker_urls) on the
 // effective merged config at build time.
 func (c Config) Validate() error {
-	if c.Sender.QoS > 2 {
-		return fmt.Errorf("mqtt: sender.qos must be 0, 1, or 2, got %d", c.Sender.QoS)
+	if c.Sender.QoS > maxMQTTQoS {
+		return shared.ErrInvalidConfig.WithMessage(
+			fmt.Sprintf("mqtt: sender.qos must be 0, 1, or 2, got %d", c.Sender.QoS))
+	}
+	if err := c.validateDurations(); err != nil {
+		return err
 	}
 	if err := c.Session.Will.Validate(); err != nil {
 		return err
@@ -156,6 +160,40 @@ func (c Config) Validate() error {
 	} else {
 		if err := c.ValidateIngressMemory(0); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// validateDurations rejects a negative value on every configurable duration.
+//
+// Zero stays valid on all of them: it is how "use the documented default" is
+// expressed, and each consumer coerces it. A NEGATIVE value has no such
+// meaning, and nothing downstream treats it as an error either — it flows into
+// context.WithTimeout, which produces an already-expired context, so the
+// session builds successfully and then fails every attempt it makes for a
+// reason no operator can see in the configuration. This is the one effective
+// validator every typed entry point passes through, so the sign check belongs
+// here rather than on any single decoder.
+func (c Config) validateDurations() error {
+	durations := []struct {
+		key   string
+		value time.Duration
+	}{
+		{"session.connect_timeout", c.Session.ConnectTimeout},
+		{"session.reconnect_timeout", c.Session.ReconnectTimeout},
+		{"session.reconcile_timeout", c.Session.ReconcileTimeout},
+		{"session.reconnect_delay", c.Session.ReconnectDelay},
+		{"session.reconnect_max_delay", c.Session.ReconnectMaxDelay},
+		{"session.unmatched_grace", c.Session.UnmatchedGrace},
+		{"sender.timeout", c.Sender.Timeout},
+		{"sender.throttle_retry_after", c.Sender.ThrottleRetryAfter},
+	}
+	for _, d := range durations {
+		if d.value < 0 {
+			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+				"mqtt: %s must not be negative, got %s (omit it or use 0 for the default)",
+				d.key, d.value))
 		}
 	}
 	return nil

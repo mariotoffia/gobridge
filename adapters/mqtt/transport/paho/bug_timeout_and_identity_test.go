@@ -198,8 +198,8 @@ func TestFactoryNewSession_ClientIDSuffix_RejectedForExclusive(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected client_id_suffix to be rejected for exclusive mode")
 	}
-	if !errors.Is(err, shared.ErrInvalidPayload) {
-		t.Fatalf("expected ErrInvalidPayload, got %v", err)
+	if !errors.Is(err, shared.ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got %v", err)
 	}
 }
 

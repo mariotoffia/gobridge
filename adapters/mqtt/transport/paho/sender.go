@@ -28,11 +28,20 @@ var _ ports.Sender = (*Sender)(nil)
 var _ ports.NonDurableEgressReporter = (*Sender)(nil)
 
 // NewSender creates a Sender bound to the given Session.
+//
+// The sender's publish deadline is registered with the session: the SDK bounds
+// each packet acknowledgement INSIDE the caller's context, so the session has
+// to know the longest publish budget it serves or the SDK would cut a
+// configured publish short (see Session.packetTimeout). Senders are built
+// before the session dials, so the budget is in place for the first CONNECT;
+// one created against an already-connected session takes effect on its next
+// reconnect.
 func NewSender(session *Session, opts SenderOptions) *Sender {
 	m := session.metrics
 	if m == nil {
 		m = &ports.NoopExporter{}
 	}
+	session.notePublishAckBudget(opts.Timeout)
 	return &Sender{session: session, opts: opts, logger: session.logger, metrics: m}
 }
 
@@ -96,8 +105,25 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		s.metrics.Timer(MetricMQTTPublishLatency, elapsed, sessionTag)
 		s.metrics.Counter(MetricMQTTPublishFailures, 1, sessionTag)
 		if logging.DebugEnabled(s.logger) {
-			s.logger.Log(ctx, logging.LevelDebug, "mqtt: publish failed",
-				"topic", topic, "error", err)
+			attrs := []any{"topic", topic, "error", err}
+			if resp.Acknowledged {
+				// Only meaningful when the broker actually answered; without an
+				// acknowledgement the zero value would read as "success".
+				attrs = append(attrs, "reason_code", fmt.Sprintf("0x%02X", resp.ReasonCode))
+			}
+			s.logger.Log(ctx, logging.LevelDebug, "mqtt: publish failed", attrs...)
+		}
+		// The SDK returns the PUBACK / PUBREC together with a generic error for
+		// every reason code of 0x80 or higher, and the reason code is the only
+		// place the broker's actual verdict survives. Classifying it first is
+		// what keeps a denial permanent: the generic fallback would call it a
+		// transient outage, so the route would retry a message the broker will
+		// never accept until the replay budget is spent, then dead-letter it
+		// with the cause lost.
+		if resp.Acknowledged {
+			if berr := s.publishReasonError(resp.ReasonCode, topic); berr != nil {
+				return berr
+			}
 		}
 		return MapError(err)
 	}
@@ -135,7 +161,7 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 // that signals throttling. 0x93 (Receive Maximum exceeded) and 0xA1
 // (Subscription Identifiers not supported) are NOT valid PUBACK/PUBREC
 // reason codes, so they get no back-off hint (they classify as generic
-// errors); the old dead checks for them were removed (finding 7).
+// errors); the old dead checks for them were removed.
 func (s *Sender) publishReasonError(code byte, topic string) *shared.BridgeError {
 	berr := MapPublishReasonCode(code)
 	if berr == nil {

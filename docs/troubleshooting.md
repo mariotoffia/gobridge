@@ -196,6 +196,13 @@ the source of the failure.
 * **Recovery.** Update the resource-side policy to grant the action.
   Verify the ARN / topic name in the policy matches the configured
   destination exactly.
+* **MQTT.** A PUBACK/PUBREC or SUBACK reason code of `0x87` (*Not authorized*)
+  maps here, carrying the broker's own verdict rather than a generic transport
+  error. That makes a broker ACL denial permanent and dead-letters it on the
+  first attempt instead of retrying it until the replay budget is spent. Check
+  the broker's publish/subscribe ACL for the bridge's `client_id` and the exact
+  topic — including any `$`-prefixed namespace, which the bridge now forwards
+  and the broker authorizes (see [MQTT](transports/mqtt.md#publish-namespaces)).
 
 ### `NOT_FOUND`
 

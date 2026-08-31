@@ -201,7 +201,13 @@ func TestRes_ConcurrentReconcileAndClose_NoHang(t *testing.T) {
 		ClientID:       mqttlocal.UniqueClientID("res-recon-close"),
 		KeepAlive:      10,
 		ConnectTimeout: 5 * time.Second,
-		CleanStart:     true,
+		// The bound this test asserts against is the session's own, so state it
+		// rather than inheriting the 30s default. A SUBSCRIBE in flight when
+		// Close tears the connection down waits out reconcile_timeout: the MQTT
+		// client's per-packet deadline no longer cuts it short, because it is
+		// now derived from the adapter's budgets instead of overriding them.
+		ReconcileTimeout: 2 * time.Second,
+		CleanStart:       true,
 	}, connectivity.SessionEphemeral, nil)
 
 	if err := sess.Start(ctx); err != nil {

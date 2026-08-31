@@ -109,7 +109,7 @@ func mapConnectError(err error) *shared.BridgeError {
 // option.
 func (s *Session) ApplyCredentials(ctx context.Context, creds *connectivity.CredentialSet) error {
 	if creds == nil {
-		return shared.ErrInvalidPayload.WithMessage("nil credential set")
+		return shared.ErrInvalidConfig.WithMessage("nil credential set")
 	}
 	var user, pass string
 	if creds.Password() != nil {

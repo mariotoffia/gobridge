@@ -262,9 +262,13 @@ func plaintextCredentialViolation(hasCreds, allowPlaintext bool, brokerURLs []st
 // errPlaintextCredentials is the fail-closed error every gate returns so
 // the message (and its BridgeError code) is identical whether the violation is
 // caught at static config validation, at runtime credential rotation, or at the
-// dial-time defense-in-depth guard.
+// dial-time defense-in-depth guard. It is INVALID_CONFIG, not INVALID_PAYLOAD:
+// nothing about a message is wrong here — a human has to change broker_urls or
+// the credential settings — and the two classes differ (Permanent vs Rejected),
+// so misreporting it makes automation and metrics attribute a deployment error
+// to message traffic.
 func errPlaintextCredentials() error {
-	return shared.ErrInvalidPayload.WithMessage(
+	return shared.ErrInvalidConfig.WithMessage(
 		"mqtt: username/password are sent in the MQTT CONNECT packet in cleartext but not all broker_urls " +
 			"use a TLS scheme; use ssl:// (or mqtts://, tls://, mqtt+ssl://, tcps://, wss://), or set " +
 			"allow_plaintext_credentials=true to send credentials in cleartext anyway")

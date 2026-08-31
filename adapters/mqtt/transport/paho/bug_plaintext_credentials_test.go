@@ -100,7 +100,7 @@ func TestSessionOptions_PlaintextCredentials_Gate(t *testing.T) {
 				require.Contains(t, err.Error(), "cleartext")
 				be, ok := shared.AsBridgeError(err)
 				require.True(t, ok, "gate must return a BridgeError")
-				require.Equal(t, shared.ErrCodeInvalidPayload, be.Code)
+				require.Equal(t, shared.ErrCodeInvalidConfig, be.Code)
 				return
 			}
 			require.NoError(t, err)

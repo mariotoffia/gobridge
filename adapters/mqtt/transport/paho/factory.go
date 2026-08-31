@@ -64,7 +64,7 @@ func (f *Factory) AddressValidator() ports.AddressValidator {
 func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.Session, error) {
 	cfg, err := configFromSpec(spec.Config)
 	if err != nil {
-		return nil, shared.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidConfig.WithMessage(
 			fmt.Sprintf("mqtt session %q: %s", spec.ID, err))
 	}
 	if err := cfg.Validate(); err != nil {
@@ -86,7 +86,7 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 	}
 	cfg.Session.normalizeBrokerURLs()
 	if err := cfg.ValidateEffectiveSession(mode); err != nil {
-		return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
+		return nil, shared.ErrInvalidConfig.Wrap(err).WithMessage(
 			fmt.Sprintf("mqtt session %q: invalid effective session configuration", spec.ID))
 	}
 	opts := cfg.Session
@@ -96,7 +96,7 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 	if opts.ClientIDSuffix != "" {
 		resolved, err := cfg.resolveClientIDSuffix(opts.ClientID, opts.ClientIDSuffix)
 		if err != nil {
-			return nil, shared.ErrInvalidPayload.Wrap(err).WithMessage(
+			return nil, shared.ErrInvalidConfig.Wrap(err).WithMessage(
 				fmt.Sprintf("mqtt session %q: invalid client_id_suffix", spec.ID))
 		}
 		opts.ClientID = resolved
@@ -156,14 +156,24 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, session ports.Session) (ports.Receiver, error) {
 	mqttSession, ok := session.(*Session)
 	if !ok || mqttSession == nil {
-		return nil, shared.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidConfig.WithMessage(
 			fmt.Sprintf("mqtt receiver %q: session must be a non-nil MQTT session", spec.ID))
 	}
 	filters := make([]string, 0, len(spec.Subscriptions))
 	for _, sub := range spec.Subscriptions {
-		if sub.Topic != "" {
-			filters = append(filters, sub.Topic)
+		// Validate EVERY declared filter and QoS, not just the first non-empty
+		// topic, and reject rather than skip an empty one: the session plan is
+		// built from the SAME subscription list, so a topic this seam quietly
+		// dropped would still be sent to the broker at reconcile. A subscription
+		// reaches the broker only when the session manager reconciles, so an
+		// unvalidated one fails after the process has already started serving —
+		// and an out-of-range QoS does not fail at all, it is masked into a
+		// weaker delivery guarantee.
+		if err := ValidateMQTTSubscription(sub.Topic, sub.QoS); err != nil {
+			return nil, shared.ErrInvalidConfig.Wrap(err).WithMessage(
+				fmt.Sprintf("mqtt receiver %q: invalid subscription", spec.ID))
 		}
+		filters = append(filters, sub.Topic)
 	}
 	// A receiver with ZERO subscription topics is a configuration error, not
 	// an implicit match-all. The router treats an empty filter set as
@@ -174,7 +184,7 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, sessio
 	// (c4-notopic-matchall); the direct NewReceiver constructor keeps the
 	// match-all default for tests/diagnostic taps.
 	if len(filters) == 0 {
-		return nil, shared.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidConfig.WithMessage(
 			fmt.Sprintf("mqtt receiver %q: at least one subscription topic is required "+
 				"(a receiver with no topics would subscribe to everything)", spec.ID))
 	}
@@ -191,17 +201,17 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, sessio
 func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, session ports.Session) (ports.Sender, error) {
 	mqttSession, ok := session.(*Session)
 	if !ok || mqttSession == nil {
-		return nil, shared.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidConfig.WithMessage(
 			fmt.Sprintf("mqtt sender %q: session must be a non-nil MQTT session", spec.ID))
 	}
 	cfg, err := configFromSpec(spec.Config)
 	if err != nil {
-		return nil, shared.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidConfig.WithMessage(
 			fmt.Sprintf("mqtt sender %q: %s", spec.ID, err))
 	}
 	opts := cfg.Sender
 	if opts.QoS > 2 {
-		return nil, shared.ErrInvalidPayload.WithMessage(
+		return nil, shared.ErrInvalidConfig.WithMessage(
 			fmt.Sprintf("mqtt sender %q: qos must be 0, 1, or 2", spec.ID))
 	}
 	// QoS is honoured as-is: the registry decode path (register.go)
@@ -225,7 +235,7 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, session po
 	// instead. Empty means "no fallback" and is validated at Send.
 	if opts.DefaultTopic != "" {
 		if err := ValidateMQTTTopic(opts.DefaultTopic); err != nil {
-			return nil, shared.ErrInvalidPayload.WithMessage(
+			return nil, shared.ErrInvalidConfig.WithMessage(
 				fmt.Sprintf("mqtt sender %q: default_topic %q is not a valid MQTT publish topic: %s",
 					spec.ID, opts.DefaultTopic, err))
 		}

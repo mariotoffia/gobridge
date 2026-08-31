@@ -77,11 +77,15 @@ type subscribeSpec struct {
 	RetainHandling byte
 }
 
-// publishResult is the SDK-free view of a paho PUBACK / PUBREC. Only
-// the reason code is consumed by the port side; richer fields can be
-// added if future logic requires them.
+// publishResult is the SDK-free view of a paho PUBACK / PUBREC. Acknowledged
+// separates "the broker answered with reason code 0x00" from "no answer at
+// all": the SDK returns BOTH an acknowledgement and a generic error whenever
+// the reason code is 0x80 or higher, and the reason code is the only place the
+// broker's actual verdict survives. Without the flag a zero-valued result is
+// indistinguishable from a success.
 type publishResult struct {
-	ReasonCode byte
+	ReasonCode   byte
+	Acknowledged bool
 }
 
 // connackReasonCode extracts the CONNACK reason code from a rejected autopaho
@@ -195,25 +199,34 @@ func (c *pahoConn) Subscribe(ctx context.Context, subs []subscribeSpec) ([]byte,
 		}
 	}
 	sa, err := c.cm.Subscribe(ctx, &pahov5.Subscribe{Subscriptions: opts})
+	// A rejected reason code makes the SDK return the SUBACK *and* a generic
+	// error. The reason codes are the broker's verdict — which filter was
+	// refused, and why — so they are handed back with the error rather than
+	// discarded; the caller classifies them first and falls back to the error
+	// only when no SUBACK arrived.
+	var reasons []byte
+	if sa != nil {
+		reasons = sa.Reasons
+	}
 	if err != nil {
-		return nil, fmt.Errorf("paho: subscribe: %w", err)
+		return reasons, fmt.Errorf("paho: subscribe: %w", err)
 	}
-	if sa == nil {
-		return nil, nil
-	}
-	return sa.Reasons, nil
+	return reasons, nil
 }
 
 // Unsubscribe issues an UNSUBSCRIBE for the given topics.
 func (c *pahoConn) Unsubscribe(ctx context.Context, topics []string) ([]byte, error) {
 	ack, err := c.cm.Unsubscribe(ctx, &pahov5.Unsubscribe{Topics: topics})
+	// Same contract as Subscribe: the UNSUBACK reason codes travel with the
+	// error so the caller can classify the broker's verdict per filter.
+	var reasons []byte
+	if ack != nil {
+		reasons = ack.Reasons
+	}
 	if err != nil {
-		return nil, fmt.Errorf("paho: unsubscribe: %w", err)
+		return reasons, fmt.Errorf("paho: unsubscribe: %w", err)
 	}
-	if ack == nil {
-		return nil, nil
-	}
-	return ack.Reasons, nil
+	return reasons, nil
 }
 
 // PublishEnvelope serialises the given messaging.Envelope into a paho
@@ -245,13 +258,18 @@ func (c *pahoConn) PublishEnvelope(
 		return publishResult{}, err
 	}
 	resp, err := c.cm.Publish(ctx, pub)
+	// A PUBACK / PUBREC carrying 0x80 or higher comes back together with a
+	// generic SDK error. The reason code is the broker's actual answer — "not
+	// authorized" is permanent, the generic fallback would call it a transient
+	// outage — so it is returned alongside the error, not dropped.
+	var result publishResult
+	if resp != nil {
+		result = publishResult{ReasonCode: resp.ReasonCode, Acknowledged: true}
+	}
 	if err != nil {
-		return publishResult{}, fmt.Errorf("paho: publish: %w", err)
+		return result, fmt.Errorf("paho: publish: %w", err)
 	}
-	if resp == nil {
-		return publishResult{}, nil
-	}
-	return publishResult{ReasonCode: resp.ReasonCode}, nil
+	return result, nil
 }
 
 // brokerMaximumPacketSize returns the ceiling in force for the current

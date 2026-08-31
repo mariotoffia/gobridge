@@ -27,8 +27,8 @@ func TestFactory_NewSession_MissingClientID(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing client_id")
 	}
-	if !errors.Is(err, shared.ErrInvalidPayload) {
-		t.Fatalf("expected ErrInvalidPayload, got %v", err)
+	if !errors.Is(err, shared.ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got %v", err)
 	}
 }
 
@@ -47,8 +47,8 @@ func TestFactory_NewSession_MissingBrokerURLs(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing broker URLs")
 	}
-	if !errors.Is(err, shared.ErrInvalidPayload) {
-		t.Fatalf("expected ErrInvalidPayload, got %v", err)
+	if !errors.Is(err, shared.ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got %v", err)
 	}
 }
 
@@ -93,8 +93,8 @@ func TestFactory_NewSession_DurableModeRejectsIndependentBrokerURLs(t *testing.T
 
 	for _, mode := range []connectivity.SessionMode{connectivity.SessionPersistent, connectivity.SessionExclusive} {
 		_, err := factory.NewSession(t.Context(), ports.SessionSpec{ID: "durable", SessionMode: mode, Config: cfg})
-		if !errors.Is(err, shared.ErrInvalidPayload) {
-			t.Fatalf("mode %s error = %v, want ErrInvalidPayload", mode, err)
+		if !errors.Is(err, shared.ErrInvalidConfig) {
+			t.Fatalf("mode %s error = %v, want ErrInvalidConfig", mode, err)
 		}
 	}
 	if _, err := factory.NewSession(t.Context(), ports.SessionSpec{
@@ -114,8 +114,8 @@ func TestFactory_NewReceiver_WrongSessionType(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for wrong session type")
 	}
-	if !errors.Is(err, shared.ErrInvalidPayload) {
-		t.Fatalf("expected ErrInvalidPayload, got %v", err)
+	if !errors.Is(err, shared.ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got %v", err)
 	}
 }
 
@@ -129,8 +129,8 @@ func TestFactory_NewSender_WrongSessionType(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for wrong session type")
 	}
-	if !errors.Is(err, shared.ErrInvalidPayload) {
-		t.Fatalf("expected ErrInvalidPayload, got %v", err)
+	if !errors.Is(err, shared.ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got %v", err)
 	}
 }
 
@@ -147,8 +147,8 @@ func TestFactory_NewSession_NilOptions(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nil options")
 	}
-	if !errors.Is(err, shared.ErrInvalidPayload) {
-		t.Fatalf("expected ErrInvalidPayload, got %v", err)
+	if !errors.Is(err, shared.ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got %v", err)
 	}
 }
 
@@ -170,8 +170,8 @@ func TestFactory_NewSession_EmptyBrokerURLs(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty broker URLs")
 	}
-	if !errors.Is(err, shared.ErrInvalidPayload) {
-		t.Fatalf("expected ErrInvalidPayload, got %v", err)
+	if !errors.Is(err, shared.ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got %v", err)
 	}
 }
 
@@ -209,8 +209,8 @@ func TestFactory_NewReceiver_NilSession(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nil session")
 	}
-	if !errors.Is(err, shared.ErrInvalidPayload) {
-		t.Fatalf("expected ErrInvalidPayload, got %v", err)
+	if !errors.Is(err, shared.ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got %v", err)
 	}
 }
 
@@ -224,8 +224,8 @@ func TestFactory_NewSender_NilSession(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nil session")
 	}
-	if !errors.Is(err, shared.ErrInvalidPayload) {
-		t.Fatalf("expected ErrInvalidPayload, got %v", err)
+	if !errors.Is(err, shared.ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got %v", err)
 	}
 }
 
@@ -238,8 +238,8 @@ func TestFactory_NewReceiver_TypedNilSession(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for typed nil session")
 	}
-	if !errors.Is(err, shared.ErrInvalidPayload) {
-		t.Fatalf("expected ErrInvalidPayload, got %v", err)
+	if !errors.Is(err, shared.ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got %v", err)
 	}
 }
 
@@ -252,8 +252,8 @@ func TestFactory_NewSender_TypedNilSession(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for typed nil session")
 	}
-	if !errors.Is(err, shared.ErrInvalidPayload) {
-		t.Fatalf("expected ErrInvalidPayload, got %v", err)
+	if !errors.Is(err, shared.ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got %v", err)
 	}
 }
 

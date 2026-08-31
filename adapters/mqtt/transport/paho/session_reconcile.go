@@ -297,3 +297,60 @@ func (s *Session) reconcileTimeout() time.Duration {
 	}
 	return DefaultReconcileTimeout
 }
+
+// connectTimeout returns the deadline applied to the INITIAL connection await
+// in Start. A non-positive configured value is coerced to
+// DefaultConnectTimeout: zero means "unset", and a negative one that reached a
+// hand-built SessionOptions without passing Config.Validate would otherwise
+// produce an already-expired context, so every connect attempt would fail
+// before it was made.
+func (s *Session) connectTimeout() time.Duration {
+	if s.opts.ConnectTimeout > 0 {
+		return s.opts.ConnectTimeout
+	}
+	return DefaultConnectTimeout
+}
+
+// packetTimeout returns the per-packet acknowledgement budget handed to the
+// SDK (CONNACK, SUBACK, UNSUBACK, PUBACK / PUBCOMP).
+//
+// The SDK applies this budget INSIDE the caller's context, so the effective
+// deadline for any packet is the shorter of the two. Its own default is ten
+// seconds — shorter than every adapter-owned budget below — which silently
+// overrides them: a SUBACK the bridge was willing to wait thirty seconds for is
+// abandoned at ten, and the reconcile fails with a deadline error while the
+// broker was answering normally.
+//
+// The budget is therefore the LONGEST enclosing deadline it could pre-empt, so
+// the adapter-owned bound is always the one that governs. It is not a liveness
+// bound of its own: every packet operation already runs under a deadline of its
+// own (reconcile for SUBSCRIBE / UNSUBSCRIBE, the sender budget for PUBLISH,
+// the reconnect attempt for CONNECT), which is what actually bounds a wedged
+// broker.
+func (s *Session) packetTimeout() time.Duration {
+	s.mu.Lock()
+	publishBudget := s.publishAckBudget
+	s.mu.Unlock()
+	budget := max(
+		s.reconcileTimeout(),
+		s.connectTimeout(),
+		s.opts.ReconnectTimeout,
+		publishBudget,
+	)
+	// A session built directly, without a Config, carries no sender budget.
+	// The documented sender default is what such a sender will use.
+	return max(budget, DefaultSenderOptions().Timeout)
+}
+
+// notePublishAckBudget raises the session's record of the longest publish
+// deadline it serves. It only ever raises: a session shared by several senders
+// must not let the shortest of them shorten the SDK's packet budget for the
+// rest.
+func (s *Session) notePublishAckBudget(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.publishAckBudget = max(s.publishAckBudget, d)
+}

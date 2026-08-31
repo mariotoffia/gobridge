@@ -21,6 +21,15 @@ func (s *Session) reconcile(
 
 	desired := make(map[string]byte, len(plan.Subscriptions))
 	for _, sub := range plan.Subscriptions {
+		// Defense in depth for a plan handed straight to a session: the factory
+		// seam validates configured subscriptions, but Reconcile is public and a
+		// direct-library caller reaches it without one. The QoS check must
+		// happen BEFORE the narrowing conversion — the SDK writes qos & 0x03, so
+		// an unchecked 4 silently becomes at-most-once delivery on a route that
+		// asked for at-least-once.
+		if err := ValidateMQTTSubscription(sub.Topic, sub.QoS); err != nil {
+			return shared.ErrInvalidConfig.Wrap(err).WithMessage("mqtt: invalid subscription in session plan")
+		}
 		qos := byte(sub.QoS)
 		if current, ok := desired[sub.Topic]; !ok || qos > current {
 			desired[sub.Topic] = qos
@@ -171,7 +180,7 @@ func (s *Session) reconcile(
 			return err
 		}
 		if confirmation.firstErr != nil {
-			return confirmation.firstErr.With("topic", confirmation.errTopic)
+			return confirmation.failure()
 		}
 	}
 
@@ -216,10 +225,16 @@ func (s *Session) reconcile(
 			return err
 		}
 		subCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
-		reasons, err := cm.Subscribe(subCtx, toSub)
+		reasons, subErr := cm.Subscribe(subCtx, toSub)
 		cancel()
-		if err != nil {
-			return MapError(err)
+		// A SUBACK that arrived is the broker's verdict even when the SDK also
+		// reported an error — it does that for every reason code of 0x80 or
+		// higher. Classifying the reason codes first keeps "not authorized"
+		// permanent instead of relabelling it as a transient outage, and keeps
+		// the grants in a partially accepted SUBACK. No reason codes means no
+		// verdict, so the SDK error is the only evidence there is.
+		if subErr != nil && len(reasons) == 0 {
+			return MapError(subErr)
 		}
 		if err := s.requireReconcileEpoch(operationEpoch); err != nil {
 			return err
@@ -275,6 +290,11 @@ func (s *Session) reconcile(
 		}
 		if firstErr != nil {
 			return firstErr.With("topic", errTopic)
+		}
+		if subErr != nil {
+			// Every reason code was a grant yet the SDK still failed the call.
+			// Nothing in the SUBACK explains it, so its own classification stands.
+			return MapError(subErr)
 		}
 	}
 

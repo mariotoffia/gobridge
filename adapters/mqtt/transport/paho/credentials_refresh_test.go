@@ -67,7 +67,7 @@ func TestApplyCredentials_NilSet_Rejected(t *testing.T) {
 	require.Error(t, err)
 	be, ok := shared.AsBridgeError(err)
 	require.True(t, ok)
-	require.Equal(t, shared.ErrCodeInvalidPayload, be.Code)
+	require.Equal(t, shared.ErrCodeInvalidConfig, be.Code)
 }
 
 // TestApplyCredentials_ClosedSession_Rejected ensures rotation after

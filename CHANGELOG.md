@@ -99,6 +99,72 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ### Fixed
 
+- **A broker's refusal reason code was thrown away with the SDK's generic
+  error.** The MQTT client returns the acknowledgement *and* an error for any
+  SUBACK / UNSUBACK / PUBACK reason code of `0x80` or higher, and the adapter
+  kept only the error. Reason `0x87` (*Not authorized*) on a publish therefore
+  classified as `UNAVAILABLE` — transient — so the route retried a message the
+  broker will never accept until the replay budget ran out, then dead-lettered
+  it as `max_retries` with the real cause lost. Reason codes are now classified
+  first and the SDK error is the fallback for a call that produced no
+  acknowledgement at all, so a denial is `FORBIDDEN` and terminal on the first
+  attempt. A partially accepted SUBACK also keeps its grants: the filters the
+  broker did grant are recorded as broker-observed state instead of being
+  discarded with the call.
+
+- **The MQTT client's hidden ten-second packet deadline overrode every
+  configured budget.** The SDK bounds each acknowledgement wait *inside* the
+  caller's context and defaults that bound to ten seconds, shorter than
+  `connect_timeout`, `reconnect_timeout`, `reconcile_timeout` and the sender
+  `timeout` alike. A healthy SUBACK at twelve seconds was abandoned mid-reconcile
+  and a publish could not use the budget it was given. The session now derives
+  the packet budget from the longest of those deadlines — including the `timeout`
+  of every sender bound to it — so the adapter-owned bound is the one that
+  governs. There is no new configuration key. One consequence: a SUBSCRIBE or
+  UNSUBSCRIBE in flight when a session is closed now waits out
+  `reconcile_timeout` instead of the client's old ten seconds. Cancelling the
+  context passed to `Reconcile` still ends it at once, which is what the runtime
+  does on shutdown.
+
+- **Subscription filters and QoS were not validated before activation.** Only
+  the first non-empty topic of a receiver was checked, and nothing checked QoS
+  at all. A malformed filter failed after the process had started serving, and
+  an out-of-range QoS did not fail: the SDK writes the level as `qos & 0x03`, so
+  `qos: 4` reached the broker as `0` and the route believed it had subscribed
+  at-least-once while the broker delivered at-most-once. Every filter and QoS is
+  now validated at the factory seam and again at reconcile, through one shared
+  validator, so a blueprint and a direct library caller fail identically. An
+  empty topic is rejected rather than skipped — the session plan is built from
+  the same list, so a topic the receiver dropped was still sent to the broker.
+
+- **Legal `$` publish namespaces were terminalized inside the bridge.** Every
+  `$`-prefixed publish topic was rejected as reserved, which is not what MQTT v5
+  §4.7.2 says: the prefix is reserved for the *server* to define, and real
+  brokers define legal write namespaces there — AWS IoT's `$aws/rules/<rule>`
+  republish target most of all. Those messages never reached the broker. The
+  blanket rejection is gone; `$share/` stays refused because it names a
+  subscription group and can never be a publish destination. Whether a given
+  namespace accepts a write is the broker's authorization decision, and its
+  refusal now arrives as a classified reason code.
+
+- **A negative MQTT duration was accepted and failed only at runtime.** Nothing
+  checked the sign of `connect_timeout`, `reconnect_timeout`,
+  `reconcile_timeout`, `reconnect_delay`, `reconnect_max_delay`,
+  `unmatched_grace`, `sender.timeout` or `sender.throttle_retry_after`. A
+  negative value became an already-expired context, so the session built
+  successfully and then failed every attempt it made for a reason invisible in
+  the configuration. All eight are now rejected by `Config.Validate`; `0` still
+  selects the documented default.
+
+- **MQTT configuration failures were reported as message-payload rejections.**
+  A missing `client_id`, an empty `broker_urls`, an invalid `client_id_suffix`,
+  an unpublishable `default_topic`, an out-of-range sender `qos`, a session or
+  sender built against the wrong transport, and cleartext credentials on a
+  non-TLS broker all returned `INVALID_PAYLOAD`. That code is `rejected` and
+  reserved for a rejected message, while a configuration failure is `permanent`
+  and needs a human, so automation and metrics attributed deployment errors to
+  message traffic. All of them now return `INVALID_CONFIG`.
+
 - **A CONNACK backlog delivered before `OnConnectionUp` was purged un-acked and
   wedged the live connection's acknowledgement order.** Paho starts delivering
   publishes from inside `Client.Connect`, while autopaho calls `OnConnectionUp`

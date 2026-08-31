@@ -43,7 +43,7 @@ func TestBug_ApplyCredentials_PlaintextGate_RuntimeRotation(t *testing.T) {
 		require.Contains(t, err.Error(), "cleartext")
 		be, ok := shared.AsBridgeError(err)
 		require.True(t, ok)
-		require.Equal(t, shared.ErrCodeInvalidPayload, be.Code)
+		require.Equal(t, shared.ErrCodeInvalidConfig, be.Code)
 
 		// The rejected rotation must NOT have mutated any credential state.
 		s.mu.Lock()

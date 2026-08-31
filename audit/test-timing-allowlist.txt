@@ -19,7 +19,7 @@
 ./adapters/mqtt/transport/paho/analysis_session_test.go:385:	time.Sleep(80 * time.Millisecond) // OTHER: race window — let concurrent goroutines exercise before stopping
 ./adapters/mqtt/transport/paho/analysis_session_test.go:466:	time.Sleep(20 * time.Millisecond) // OTHER: race window — let ConnectionManager accessor goroutine exercise before Close
 ./adapters/mqtt/transport/paho/analysis_session_test.go:93:		time.Sleep(50 * time.Millisecond) // OTHER: race window — cancel during Start connect attempt
-./adapters/mqtt/transport/paho/integration_resilience_test.go:242:		time.Sleep(40 * time.Millisecond)
+./adapters/mqtt/transport/paho/integration_resilience_test.go:248:		time.Sleep(40 * time.Millisecond)
 ./adapters/mqtt/transport/paho/integration_test.go:311:			time.Sleep(10 * time.Millisecond) // OTHER: slow consumer backpressure simulation
 ./adapters/mqtt/transport/paho/session_pushevent_test.go:65:			time.Sleep(50 * time.Microsecond) // OTHER: microsecond pacing — race window for concurrent Close during pushEvent
 ./adapters/native/config/file/watcher_test.go:302:		time.Sleep(20 * time.Millisecond)

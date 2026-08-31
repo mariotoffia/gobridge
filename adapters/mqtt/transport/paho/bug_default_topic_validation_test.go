@@ -14,7 +14,7 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════
 // (MEDIUM): a sender's default_topic is used verbatim as the PUBLISH topic
 // when an outbound message carries no Address, bypassing the runtime
-// AddressValidator. A wildcard / $-reserved / malformed default_topic would then
+// AddressValidator. A wildcard, $share-prefixed or malformed default_topic would then
 // only fail at first publish — as a broker DISCONNECT that tears down the shared
 // session. The factory must fail closed at build time.
 //
@@ -36,7 +36,7 @@ func TestFactory_NewSender_ValidatesDefaultTopic(t *testing.T) {
 	}{
 		{"multi-level wildcard", "sensors/#"},
 		{"single-level wildcard", "sensors/+/temp"},
-		{"reserved dollar prefix", "$SYS/broker/x"},
+		{"shared-subscription prefix", "$share/group/x"},
 		{"embedded null", "sensors/\x00/temp"},
 	}
 	for _, tc := range reject {
@@ -47,7 +47,7 @@ func TestFactory_NewSender_ValidatesDefaultTopic(t *testing.T) {
 			}
 			_, err := f.NewSender(context.Background(), spec, sess)
 			require.Error(t, err, "an invalid default_topic must be rejected at build time")
-			require.ErrorIs(t, err, shared.ErrInvalidPayload)
+			require.ErrorIs(t, err, shared.ErrInvalidConfig)
 		})
 	}
 

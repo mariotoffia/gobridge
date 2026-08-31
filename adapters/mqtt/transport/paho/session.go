@@ -45,7 +45,14 @@ type Session struct {
 	// non-nil presence.
 	cm       pahoConnection
 	cmCancel context.CancelFunc // cancels the CM's background context on Close
-	events   chan ports.SessionEvent
+	// publishAckBudget is the longest per-publish deadline any Sender bound to
+	// this session applies (SenderOptions.Timeout). Senders are constructed
+	// before the session dials, so packetTimeout can hand the SDK a per-packet
+	// budget long enough not to cut a configured publish short. Guarded by mu;
+	// only ever raised, never lowered, because one slow sender's budget must
+	// cover it without shortening any other's.
+	publishAckBudget time.Duration
+	events           chan ports.SessionEvent
 	// eventsClosed guards the single close of s.events. TWO paths close
 	// it — Close (terminal shutdown) and Reload's Start-failure signal
 	// (closing events routes the dead session into the runtime

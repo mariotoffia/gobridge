@@ -131,17 +131,26 @@ func TestValidateMQTTTopic_ExactMaxLength(t *testing.T) {
 	}
 }
 
-// TestValidateMQTTTopic_DollarPrefix validates the $-prefix reserved
-// topic guard (MQTT v5 §4.7.2).
-func TestValidateMQTTTopic_DollarPrefix(t *testing.T) {
+// TestValidateMQTTTopic_DollarNamespaces pins which $-prefixed publish topics
+// are structurally rejected. MQTT v5 §4.7.2 reserves the $ prefix for the
+// SERVER to define; it does not make publishing to one a syntax error, and
+// real brokers define legal write namespaces there — AWS IoT's $aws/rules/…
+// republish target is the canonical one. Rejecting the whole prefix
+// terminalized those messages inside the bridge before the broker ever saw
+// them, so only $share/ — a filter-only construct that can never name a
+// publish destination — stays rejected. Everything else is the broker's
+// authorization decision, and its denial comes back as a PUBACK reason code.
+func TestValidateMQTTTopic_DollarNamespaces(t *testing.T) {
 	tests := []struct {
 		name    string
 		topic   string
 		wantErr bool
 	}{
-		{"$SYS prefix", "$SYS/broker/load", true},
+		{"aws iot rules republish", "$aws/rules/myrule", false},
+		{"aws iot shadow update", "$aws/things/sensor-1/shadow/update", false},
+		{"$SYS prefix", "$SYS/broker/load", false},
+		{"$ alone", "$", false},
 		{"$share prefix", "$share/group/topic", true},
-		{"$ alone", "$", true},
 		{"dollar mid-topic", "devices/$status", false},
 		{"normal topic", "devices/sensor/temp", false},
 	}
