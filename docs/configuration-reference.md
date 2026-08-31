@@ -267,6 +267,10 @@ stores:
       stale_claim_duration: 30s
   dlq:
     type: memory
+    options:
+      # In-memory DLQ entries are lost on restart, erasing the terminal
+      # evidence of dropped messages; the loss must be acknowledged.
+      acknowledge_volatile: true
   managed_subscriptions:
     type: dynamodb
     options:

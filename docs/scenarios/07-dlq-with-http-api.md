@@ -75,6 +75,8 @@ bindings:
 stores:
   dlq:
     type: memory
+    options:
+      acknowledge_volatile: true
 
 routes:
   - id: ingest
@@ -102,7 +104,7 @@ http:
 
 ### `stores.dlq: { type: memory }`
 
-The DLQ store holds failed message entries. The `memory` type is suitable for development and single-instance deployments, but entries are lost on restart. See **Variations** for persistent options.
+The DLQ store holds failed message entries. The `memory` type is suitable for development and single-instance deployments, but entries are lost on restart -- which erases the only record that a message existed and was given up on. That loss must be acknowledged with `acknowledge_volatile: true` before the store will build. See **Variations** for persistent options.
 
 ### `policy.on_permanent_failure: dlq`
 

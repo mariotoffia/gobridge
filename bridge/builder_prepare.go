@@ -286,6 +286,9 @@ type storeResult struct {
 	leaseDist                bool
 	outboxDist               bool
 	dlqDist                  bool
+	leaseDurable             bool
+	outboxDurable            bool
+	dlqDurable               bool
 	managedSubscriptions     ports.ManagedSubscriptionStore
 	managedSubscriptionsDist bool
 }
@@ -349,6 +352,7 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 		}
 		res.lease = s
 		res.leaseDist = isDistributedFactory(sf)
+		res.leaseDurable = isCrashDurableFactory(sf)
 	}
 	if sc := b.cfg.Stores.Outbox; sc != nil {
 		sf, ok := b.storeFactories[sc.Type]
@@ -368,6 +372,7 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 		}
 		res.outbox = s
 		res.outboxDist = isDistributedFactory(sf)
+		res.outboxDurable = isCrashDurableFactory(sf)
 	}
 	if sc := b.cfg.Stores.ManagedSubscriptions; sc != nil {
 		sf, ok := b.storeFactories[sc.Type]
@@ -405,6 +410,7 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 		}
 		res.dlq = s
 		res.dlqDist = isDistributedFactory(sf)
+		res.dlqDurable = isCrashDurableFactory(sf)
 	}
 
 	// Clustered posture is implied by configured cluster endpoints even when
@@ -453,6 +459,10 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 			"lease_store_type", b.cfg.Stores.Lease.Type,
 			"deployment_mode", b.cfg.Bridge.DeploymentMode,
 			"remediation", "set replicas=1, or use a distributed lease store")
+	}
+
+	if err := b.enforceStoreDurability(res); err != nil {
+		return nil, err
 	}
 
 	// Wrap stores with metrics decorators when an exporter is configured so

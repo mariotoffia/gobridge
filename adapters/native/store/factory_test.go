@@ -9,13 +9,15 @@ import (
 	"time"
 
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 // Verifies the memory lease store fails fast when single-replica operation is
 // not acknowledged (nil config or the flag left false), and builds once it is.
-// This is the c10-memlease-split gate: an unacknowledged in-memory lease behind
-// >1 replica would silently split-brain, so construction must refuse it.
+// An unacknowledged in-memory lease behind more than one replica would silently
+// split the brain — every replica believing it owns the same exclusive session
+// — so construction must refuse it rather than warn.
 func TestMemoryStoreFactory_NewLeaseStore(t *testing.T) {
 	f := nativestore.NewMemoryStoreFactory()
 
@@ -23,8 +25,8 @@ func TestMemoryStoreFactory_NewLeaseStore(t *testing.T) {
 	// NewLeaseStore makes these return a non-nil store with no error.
 	for _, cfg := range []ports.PluginConfig{nil, &nativestore.MemoryConfig{}, nativestore.MemoryConfig{}} {
 		s, err := f.NewLeaseStore(context.Background(), cfg)
-		if err == nil {
-			t.Fatalf("expected fail-closed error for unacknowledged single-replica lease (cfg %T)", cfg)
+		if !errors.Is(err, shared.ErrInvalidConfig) {
+			t.Fatalf("expected ErrInvalidConfig for unacknowledged single-replica lease (cfg %T), got %v", cfg, err)
 		}
 		if s != nil {
 			t.Fatalf("expected nil LeaseStore when construction fails (cfg %T)", cfg)
@@ -42,36 +44,14 @@ func TestMemoryStoreFactory_NewLeaseStore(t *testing.T) {
 	}
 }
 
-// Verifies the memory store factory returns a non-nil outbox store.
-func TestMemoryStoreFactory_NewOutboxStore(t *testing.T) {
-	f := nativestore.NewMemoryStoreFactory()
-	s, err := f.NewOutboxStore(context.Background(), nil, ports.OutboxRuntimeOptions{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if s == nil {
-		t.Fatal("expected non-nil OutboxStore")
-	}
-}
-
-// Verifies the memory store factory returns a non-nil DLQ store.
-func TestMemoryStoreFactory_NewDLQStore(t *testing.T) {
-	f := nativestore.NewMemoryStoreFactory()
-	s, err := f.NewDLQStore(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if s == nil {
-		t.Fatal("expected non-nil DLQStore")
-	}
-}
-
-// Verifies the SQLite store factory returns an error for the unsupported lease role.
+// Verifies the SQLite store factory reports the unsupported lease role as
+// ErrNotSupported — a missing capability, not a malformed config, so a caller
+// can tell "this backend has no lease store" from "your lease config is wrong".
 func TestSQLiteStoreFactory_NewLeaseStore_ReturnsError(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
 	s, err := f.NewLeaseStore(context.Background(), nil)
-	if err == nil {
-		t.Fatal("expected error for unimplemented SQLite lease store")
+	if !errors.Is(err, shared.ErrNotSupported) {
+		t.Fatalf("expected ErrNotSupported for unimplemented SQLite lease store, got %v", err)
 	}
 	if s != nil {
 		t.Fatal("expected nil LeaseStore when error is returned")
@@ -143,18 +123,20 @@ func TestSQLiteStoreFactory_NewDLQStore(t *testing.T) {
 	}
 }
 
-// Verifies SQLite outbox, DLQ, and managed-subscription construction fail when the typed config is missing.
+// Verifies SQLite outbox and DLQ construction reject a missing typed config and
+// an empty Path as ErrInvalidConfig, so the composition root can tell an
+// operator config error from a store I/O failure.
 func TestSQLiteStoreFactory_MissingPath(t *testing.T) {
 	f := nativestore.NewSQLiteStoreFactory()
 
 	_, err := f.NewOutboxStore(context.Background(), nil, ports.OutboxRuntimeOptions{})
-	if err == nil {
-		t.Fatal("expected error for missing typed config")
+	if !errors.Is(err, shared.ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig for missing typed config, got %v", err)
 	}
 
 	_, err = f.NewDLQStore(context.Background(), &nativestore.SQLiteConfig{})
-	if err == nil {
-		t.Fatal("expected error for empty Path in typed config")
+	if !errors.Is(err, shared.ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig for empty Path in typed config, got %v", err)
 	}
 }
 

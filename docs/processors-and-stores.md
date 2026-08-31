@@ -490,12 +490,12 @@ independently in the `stores` section.
 ```yaml
 stores:
   lease:
-    type: memory
+    # A durable outbox requires a durable lease -- see Store durability and
+    # pairing rules below. The in-memory lease is only valid alongside an
+    # in-memory outbox.
+    type: dynamodb
     options:
-      # Required for the in-memory lease: it keeps ownership per-process and
-      # cannot coordinate across replicas, so single-replica operation must be
-      # explicitly acknowledged. Use dynamodb for clustered deployments.
-      acknowledge_single_replica: true
+      table_name: my-lease-table
   outbox:
     type: sqlite
     options:
@@ -506,12 +506,61 @@ stores:
       table_name: my-dlq-table
 ```
 
+### Store durability and pairing rules
+
+A store is **crash-durable** when a successful write survives the loss of the
+process. A nil result from an outbox persist or a DLQ write means exactly that,
+because the runtime settles the SOURCE on it -- an at-least-once ingress
+acknowledges upstream as soon as the persist returns. Two rules follow, both
+enforced at startup:
+
+| Lease | Outbox | Result |
+|---|---|---|
+| `dynamodb` | `dynamodb` / `sqlite` | Accepted. The production posture. |
+| `dynamodb` / `memory` | `memory` | Accepted with `acknowledge_volatile: true`; warns, naming the routes. |
+| `memory` | `dynamodb` / `sqlite` | **Rejected at startup** when any route uses `shared_outbox`. |
+
+1. **A process-volatile lease may not back a crash-durable outbox.** The durable
+   outboxes persist a per-partition fencing high-water-mark and reject any claim
+   below it; the in-memory lease numbers fencing versions from a per-process
+   counter that restarts at zero. After a restart the new owner claims below the
+   mark, is fenced out, and the partition never drains again while ingress keeps
+   acknowledging into it. No acknowledgement is offered: this is a permanent
+   loss of progress, not a tradeoff.
+2. **A volatile outbox or DLQ requires `acknowledge_volatile: true`.** Losing
+   accepted work, or the terminal evidence of dropped work, on restart is an
+   acceptable development tradeoff only when it is stated. The memory store
+   refuses to build either role without it, and the builder warns at startup
+   naming every affected route.
+
+The rejection is scoped to blueprints that actually drain the outbox: a fencing
+token only ever reaches the store from a `shared_outbox` route's drainer, so a
+durable outbox nothing drains cannot wedge. A reload that adds such a route is
+judged again and rejected before it commits.
+
+`sqlite` is node-local, so a SQLite outbox is single-replica even under a
+DynamoDB lease -- a second replica ingests into its own database file and cannot
+drain it until it wins the lease. Multi-instance operation needs `dynamodb` for
+both.
+
+Volatile stores are excluded from the production profile: a deployment that must
+not lose acknowledged work runs `sqlite` (single instance) or `dynamodb`
+(clustered) for both the outbox and the DLQ.
+
 ### Memory Store
 
 - **Type:** `memory`
-- **Options:** none
-- In-process only. Not distributed. Data lost on restart.
+- **Options:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `acknowledge_single_replica` | bool | `false` | **Required to build the LEASE store.** The in-memory lease keeps ownership in a per-process map and cannot coordinate across replicas, so more than one instance silently splits the brain. Construction fails without it. No effect on the outbox or DLQ. |
+| `acknowledge_volatile` | bool | `false` | **Required to build the OUTBOX or DLQ store.** Both hold their records in the process heap, so a restart, crash, or OOM kill loses accepted work and the terminal evidence of dropped work -- after the source was already acknowledged. Construction fails without it. No effect on the lease. |
+
+- In-process only. Not distributed. **Not crash-durable:** data is lost on restart.
 - Suitable for development and single-instance setups without durability needs.
+  It is not a production store, and it may not back a durable outbox as a lease
+  (see Store durability and pairing rules above).
 
 ### SQLite Store
 
@@ -527,8 +576,9 @@ stores:
 - Persistent across restarts. Single-instance only.
 - Suitable for single-instance production with disk durability.
 - WAL journalling is always on; a single writer connection plus `busy_timeout` serialises in-process writers safely. Managed-subscription databases enforce `0600` on the database/WAL/SHM, create owned parent directories as `0700`, and reject insecure existing files or symlinks.
-- Outbox honours the runtime-derived `stale_claim_duration`: a claim stranded by a crashed owner is reclaimed once it goes stale (in addition to immediate higher-version reclaim). Pair it with a durable lease store for strict multi-restart crash recovery; `memory` lease resets its fencing version on restart.
-- No SQLite lease store exists -- use memory or DynamoDB for leases.
+- Outbox honours the runtime-derived `stale_claim_duration`: a claim stranded by a crashed owner is reclaimed once it goes stale (in addition to immediate higher-version reclaim).
+- **Crash-durable.** It therefore requires a crash-durable lease store: the `memory` lease renumbers its fencing versions from zero on restart and is rejected against a SQLite outbox (see Store durability and pairing rules above).
+- No SQLite lease store exists -- use DynamoDB for leases when the outbox is durable.
 
 **Fatal storage faults are a distinct alertable signal.** A disk-full, corrupt,
 read-only, or not-a-database fault is classified PERMANENT and increments the
@@ -540,17 +590,6 @@ polling and records stay durable, so the counter exists purely for
 observability. Watch it (see
 [Monitoring](aws-deployment/monitoring.md#key-metrics)) rather than inferring the
 fault from a stalled queue.
-
-**Legacy databases are rebuilt once on open.** A legacy SQLite outbox carrying the
-old global `UNIQUE` constraint is transparently rebuilt one time, on open, to the
-partition-scoped outbox identity. The rebuild runs in a single transaction: it
-holds the writer lock and roughly doubles WAL size for its duration. On a very
-large backlogged legacy outbox this is a noticeable one-time startup pause, and a
-second process opening the same file concurrently can exceed the 5s `busy_timeout`
-and fail to open. Pre-drain or compact a huge legacy outbox before upgrading if
-the startup pause matters; the store is single-process by charter, so the
-concurrent-opener case is rare. A modern or fresh database skips the rebuild
-entirely.
 
 ### DynamoDB Store
 

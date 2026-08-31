@@ -23,7 +23,7 @@ type leaseEntry struct {
 // Store implements ports.LeaseStore in memory for tests and
 // single-process mode. It is not safe for clustered production deployments.
 //
-// Split-brain safety gate (finding c10-memlease-split): the store keeps a
+// Split-brain safety gate: the store keeps a
 // PER-PROCESS lease map and version counter. Two replicas of the same
 // standalone deployment (e.g. a Kubernetes Deployment with replicas > 1) each
 // hold an independent Store and both believe they own "the" lease, producing
@@ -42,7 +42,7 @@ type Store struct {
 	// ackSingleReplica records the operator's explicit assertion that this
 	// process is the SOLE replica using this in-memory lease store. It gates
 	// every operation (fail-closed) so a silently scaled-out deployment cannot
-	// cause undetectable split-brain ownership. See finding c10-memlease-split.
+	// cause undetectable split-brain ownership.
 	ackSingleReplica bool
 }
 
@@ -68,9 +68,8 @@ func WithLogger(l *slog.Logger) Option {
 // that this process is the ONLY replica that will ever use this in-memory lease
 // store. It maps to the `acknowledge_single_replica` configuration key.
 //
-// It exists to close finding c10-memlease-split: because an in-memory lease
-// store keeps a per-process lease map, it cannot coordinate ownership across
-// processes. A standalone deployment silently scaled to replicas > 1 would let
+// It exists because an in-memory lease store keeps a per-process lease map and
+// cannot coordinate ownership across processes. A standalone deployment silently scaled to replicas > 1 would let
 // every pod believe it owns the lease → split-brain delivery (duplicate /
 // double ownership). To make that impossible to do by accident, the store
 // FAILS CLOSED: every operation is rejected with shared.ErrInvalidConfig until
@@ -89,7 +88,7 @@ func WithAcknowledgeSingleReplica(ack bool) Option {
 // Without WithAcknowledgeSingleReplica(true) the returned Store is in a
 // guarded, fail-closed state: construction succeeds (the constructor cannot
 // change its signature) but every operation returns shared.ErrInvalidConfig.
-// See finding c10-memlease-split and WithAcknowledgeSingleReplica.
+// See WithAcknowledgeSingleReplica.
 func NewStore(opts ...Option) *Store {
 	s := &Store{
 		leases: make(map[string]*leaseEntry),
@@ -108,7 +107,7 @@ func NewStore(opts ...Option) *Store {
 // store is operating in single-replica mode. It is called exactly once, at
 // construction, when the operator has acknowledged the constraint. Falls back
 // to slog.Default() so the warning is never silently dropped when no logger is
-// injected. See finding c10-memlease-split.
+// injected.
 func (s *Store) warnSplitBrainRisk(ctx context.Context) {
 	l := s.logger
 	if l == nil {
@@ -116,7 +115,7 @@ func (s *Store) warnSplitBrainRisk(ctx context.Context) {
 	}
 	l.LogAttrs(ctx, slog.LevelWarn,
 		"memorylease: SINGLE-REPLICA MODE acknowledged — split-brain risk",
-		slog.String("finding", "c10-memlease-split"),
+		slog.String("risk", "split-brain"),
 		slog.Bool("acknowledge_single_replica", true),
 		slog.String("warning",
 			"in-memory lease ownership is per-process and CANNOT coordinate across replicas; "+
@@ -127,7 +126,7 @@ func (s *Store) warnSplitBrainRisk(ctx context.Context) {
 
 // errNotAcknowledged is the fail-closed error returned by every operation until
 // the operator asserts single-replica ownership via
-// WithAcknowledgeSingleReplica(true). See finding c10-memlease-split.
+// WithAcknowledgeSingleReplica(true).
 func (s *Store) errNotAcknowledged() error {
 	return shared.ErrInvalidConfig.
 		WithMessage("memorylease: refusing to operate without single-replica acknowledgement — "+
@@ -135,7 +134,7 @@ func (s *Store) errNotAcknowledged() error {
 			"beyond one replica (e.g. Kubernetes replicas > 1) causes split-brain delivery "+
 			"(duplicate / double ownership); construct with memorylease.WithAcknowledgeSingleReplica(true) "+
 			"to assert this process is the sole replica").
-		With("finding", "c10-memlease-split")
+		With("risk", "split-brain")
 }
 
 // cloneEndpoints returns an independent copy of the endpoints map so that

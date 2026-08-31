@@ -33,6 +33,15 @@ import (
 //   - A batch that contains the same identity twice persists the first
 //     occurrence and skips the rest, following the same per-record rule.
 //
+// Durability contract:
+//
+//   - A nil error from Persist means CRASH-DURABLE — see the crash-durable
+//     success boundary in stores.go. The runtime settles the source on that
+//     nil, so a store that returns nil ahead of durability turns a process
+//     crash into silent loss of acknowledged work. A store that cannot meet
+//     the boundary declares it through CrashDurableStoreFactory instead of
+//     redefining success.
+//
 // Claim ordering contract:
 //
 //   - Claim returns records in per-partition persist order: ascending

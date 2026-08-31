@@ -840,11 +840,25 @@ deps:
   # ports.StoreFactory port to the application by composing several
   # leaf implementations.
   adapter_store_native_factory:
-    # Narrowed to ACTUAL usage: the factory composes the five
-    # native store impls and exposes them through ports.StoreFactory; it
-    # imports no domain context directly (the leaves carry those).
+    # Narrowed to ACTUAL usage: the factory composes the five native store
+    # impls and exposes them through ports.StoreFactory. It carries no domain
+    # CONTEXT (clock, persistence, routing) -- the leaves own those.
+    #
+    # domain_shared: this factory ORIGINATES config-rejection decisions that
+    # exist nowhere else. The in-memory lease's single-replica gate and the
+    # in-memory outbox/DLQ volatility gate are both "the operator has not
+    # acknowledged a hazard this store cannot detect at runtime -> refuse
+    # boot", and the SQLite role checks reject a missing/mistyped path the
+    # same way. Those are the same fail-boot-on-bad-config class the AWS
+    # sibling holds this edge for, so they must carry the shared error
+    # taxonomy: without it the composition root (bridge/builder_prepare.go)
+    # cannot distinguish an operator config error from a store I/O failure,
+    # and every gate degrades to an unclassified fmt.Errorf. The edge is for
+    # the shared error kernel only -- if a domain CONTEXT import ever appears
+    # here, that is a real violation and the type belongs in a leaf.
     mayDependOn:
       - ports
+      - domain_shared
       - adapter_store_native_memorylease
       - adapter_store_native_memoryoutbox
       - adapter_store_native_memorydlq
@@ -856,8 +870,8 @@ deps:
     # Narrowed to ACTUAL usage: composes the three DynamoDB store
     # impls behind ports.StoreFactory and touches the AWS SDK.
     #
-    # domain_shared (asymmetric with the native sibling on purpose): the
-    # DynamoDB factory owns a build-time schema-preflight posture.
+    # domain_shared (same rationale as the native sibling, plus one of its
+    # own): the DynamoDB factory owns a build-time schema-preflight posture.
     # DynamoDB has a control-plane schema (tables + GSIs) that the native
     # sqlite/memory stores lack, so ONLY this factory runs DescribeTable at
     # construction and must classify the leaf's returned error to decide

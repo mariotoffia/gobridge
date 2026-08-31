@@ -3,7 +3,7 @@
 
 **Goal:** Close every stable finding in the canonical `PROD_READY_ISSUES.md` ledger with tested behavior, truthful contracts, safe migrations, and release evidence.
 
-**Plan status (2026-08-18):** Chunks 1–4 landed (`cf86968f`, `84939bf5`, `f0c9685c`, `b781f741`) and are checked off below with their residuals. The ledger re-verification at HEAD `b781f741` added 22 findings (HIGH-14…20, MEDIUM-18…25, LOW-20…26), withdrew LOW-7 and LOW-19, and downgraded MEDIUM-12 and BLOCKER-2; the coverage matrix and two new chunks (24, 25) absorb them. Chunks 24 and 25 are placed at the end of Phase 1 by dependency but carry P0 defects — schedule them immediately after Chunk 5.
+**Plan status:** Chunks 1–7 landed and are checked off below with their residuals; chunks 1–4 are the commits `cf86968f`, `84939bf5`, `f0c9685c`, `b781f741`. The ledger re-verification at HEAD `b781f741` added 22 findings (HIGH-14…20, MEDIUM-18…25, LOW-20…26), withdrew LOW-7 and LOW-19, and downgraded MEDIUM-12 and BLOCKER-2; the coverage matrix and two new chunks (24, 25) absorb them. Chunks 24 and 25 are placed at the end of Phase 1 by dependency but carry P0 defects — schedule them immediately after Chunk 5.
 
 **Architecture:** Keep domain and port contracts inward-facing. Change shared contracts and persistence formats before adapters, then wire composition roots, deployment, observability, and documentation. Coordinated rollout stays disabled in the shipped autoscaled high-availability facade until the static-member implementation and its deployment proof pass.
 
@@ -107,7 +107,7 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 | 4 | done | NEW-HIGH-3, MEDIUM-1 (residual open), MEDIUM-13, MEDIUM-14, NEW-MEDIUM-4, LOW-10 |
 | 5 | done | BLOCKER-3, NEW-MEDIUM-7, LOW-27 |
 | 6 | done | NEW-HIGH-4, HIGH-18, HIGH-19, MEDIUM-8, NEW-MEDIUM-8, MEDIUM-22, LOW-16, LOW-24, LOW-25 |
-| 7 | waiting | HIGH-13, MEDIUM-16, MEDIUM-17 |
+| 7 | done | HIGH-13, MEDIUM-16, MEDIUM-17 |
 | 8 | waiting | HIGH-11, HIGH-12, HIGH-14, MEDIUM-15, MEDIUM-18, MEDIUM-19, LOW-1, NEW-HIGH-5, NEW-LOW-1 |
 | 9 | waiting | NEW-MEDIUM-1, NEW-MEDIUM-2, NEW-MEDIUM-3, NEW-MEDIUM-5, NEW-MEDIUM-6, NEW-LOW-9 |
 | 10 | waiting | LOW-3, LOW-4, NEW-MEDIUM-12, NEW-MEDIUM-13, NEW-MEDIUM-14, NEW-MEDIUM-15, NEW-LOW-6 |
@@ -245,13 +245,16 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 - **Dependencies:** Chunks 5–6.
 - **Files/packages:** `ports/stores.go`, `bridge/builder_prepare.go`, `adapters/native/store/config.go`, `factory.go`, production profile validation.
 - **Tests:** `bridge/builder_prepare_test.go`, `adapters/native/store/factory_test.go`, reload/restart pairing tests.
-- [ ] Add failing tests for memory-lease/SQLite-outbox composition, unacknowledged memory outbox/DLQ, and nil-success durability wording.
-- [ ] Run `go test -race -count=1 ./bridge -run 'Test.*(Durability|LeaseOutbox)'` and `go -C adapters/native/store test -race -count=1 ./... -run 'Test.*Factory'`; expect unsafe pairings to build.
-- [ ] Define the crash-durable success boundary, add a store durability capability, reject volatile lease with durable fenced outbox, and add `acknowledge_volatile`.
-- [ ] Re-run the exact failing commands above; expect pass.
-- [ ] Run `make test` for every accepted lease/outbox pair across reload and reconstructed stores.
-- [ ] Name affected routes in warnings and exclude acknowledged volatile stores from the production profile docs.
-- [ ] Accept when every accepted pairing preserves monotonic fencing and volatile persistence cannot look crash-durable without explicit consent.
+- [x] Add failing tests for memory-lease/SQLite-outbox composition, unacknowledged memory outbox/DLQ, and nil-success durability wording. *(The nil-success boundary is prose in `ports/stores.go`, so what is pinned is the testable half of it: `TestNativeStoreFactory_DeclaresCrashDurability` asserts each factory answers the capability truthfully, since the guard's whole correctness rests on that answer.)*
+- [x] Run `go test -race -count=1 ./bridge -run 'Test.*(Durability|LeaseOutbox)'` and `go -C adapters/native/store test -race -count=1 ./... -run 'Test.*Factory'`; expect unsafe pairings to build.
+- [x] Define the crash-durable success boundary, add a store durability capability, reject volatile lease with durable fenced outbox, and add `acknowledge_volatile`.
+- [x] Re-run the exact failing commands above; expect pass.
+- [x] Run `make test` for every accepted lease/outbox pair across reload and reconstructed stores. *(`TestSupervisorReload_StoreDurability_AcceptedPairingsSwap` drives all three accepted pairings through a real supervisor reload, which reconstructs every store and re-runs the guard; `TestStoreFactory_MemoryLeaseVersionResetWedgesDurableOutboxFence` rebuilds the lease store against a surviving SQLite fence.)*
+- [x] Name affected routes in warnings and exclude acknowledged volatile stores from the production profile docs.
+- [x] Accept when every accepted pairing preserves monotonic fencing and volatile persistence cannot look crash-durable without explicit consent.
+- **Landed:** `ports/stores.go` defines the crash-durable success boundary — a nil `OutboxStore.Persist` / `DLQAdmin.Write` means the record outlives this process, because the runtime settles the SOURCE on that nil — and adds the optional `ports.CrashDurableStoreFactory`; an undeclared factory is read as NOT durable, mirroring `DistributedStoreFactory`'s fail-closed default, so a durable store has to say so. `bridge/store_durability.go` rejects a volatile `LeaseStore` under a crash-durable `OutboxStore`, scoped to blueprints carrying a `shared_outbox` route: a fencing token only reaches the store from a drainer, so a durable outbox nothing drains cannot wedge. The wedge itself is proven, not asserted — `TestStoreFactory_MemoryLeaseVersionResetWedgesDurableOutboxFence` raises a real SQLite partition fence to version 2, rebuilds the in-memory lease (a restart), and shows the reissued version 1 rejected as `ErrStaleFencingToken`. The memory outbox and DLQ now fail closed on `acknowledge_volatile` exactly as the lease does on `acknowledge_single_replica`, and an accepted volatile store warns at startup naming the affected routes (capped at 20 plus a count). Two guards keep the pairing unreachable from a running system and both are pinned: cold start refuses it, and a live reload is refused earlier still by the backing-store repoint guard. Contracts in `ports/stores.go`, `ports/stores_outbox.go`, `UBIQUITOUS.md`, `CHANGELOG.md`; the store reference and every `memory`-store example in `docs/` and `ARCHITECTURE.md` were corrected — `docs/scenarios/05-durable-shared-outbox.md` had been publishing the rejected pairing (memory lease + SQLite outbox) as its headline configuration, along with a note calling it safe.
+- **Also closed here:** an unrelated latent defect found in review — `deployment/aws-filebased-config/cdk/bridgecfg` emitted `MemoryConfig{}` for `WithMemoryOutbox`/`WithMemoryDLQ`, so every CDK app using them would have failed to boot once the acknowledgement gate landed; it now sets the flag the way `WithMemoryLease` already did. Two pre-existing contract gaps in the same factory were closed while classifying the new gate's error: the single-replica gate and the SQLite path/type checks returned unclassified `fmt.Errorf`, so the composition root could not tell an operator config error from a store I/O failure. All now carry `shared.ErrInvalidConfig`, and the unimplemented SQLite lease role carries `shared.ErrNotSupported` (a missing capability, not a bad config); `.go-arch-lint.yml` grants `adapter_store_native_factory` the `domain_shared` edge its AWS sibling already held, with the reason recorded inline. The stale `c10-memlease-split` planning identifier was removed repo-wide (19 references) — including two that had leaked into operator-facing telemetry as a `finding` log/error attribute, now the durable `risk=split-brain`.
+- **Residual:** `docs/processors-and-stores.md` is 702 lines against the 600-line documentation limit; it was already 663 before this chunk, so splitting it is its own task.
 - **Suggested commit title:** `enforce store durability contracts`
 
 ### Chunk 8: MQTT reservation, recovery, close, and settlement metrics

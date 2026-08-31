@@ -95,6 +95,10 @@ type DLQReader interface {
 // returns the accurate deleted count. With a positive Limit it deletes at
 // most Limit entries, selected oldest-first per the DLQReader ordering
 // contract.
+// A nil error from Write means CRASH-DURABLE — see the crash-durable success
+// boundary below. The DLQ is the terminal evidence that a message existed and
+// was given up on; a Write that returns nil before the entry survives the
+// process erases the only record of the loss it was meant to document.
 type DLQAdmin interface {
 	Write(ctx context.Context, entry routing.DLQEntry) error
 	Delete(ctx context.Context, ids []string) (int, error)
@@ -172,4 +176,60 @@ type StoreFactory interface {
 // this interface are assumed to be process-local (not distributed).
 type DistributedStoreFactory interface {
 	IsDistributed() bool
+}
+
+// CRASH-DURABLE SUCCESS BOUNDARY.
+//
+// A nil error from OutboxStore.Persist or DLQAdmin.Write means the record has
+// reached storage that SURVIVES the immediate loss of this process — a killed
+// container, an OOM, a node power cut — and can be read back by the process
+// that replaces it. It does NOT mean "accepted into a buffer", "queued for a
+// background flush", or "written to a file descriptor whose fsync has not
+// returned". The runtime settles the SOURCE on that nil: an at-least-once
+// ingress acknowledges upstream once persist succeeds, so a store that returns
+// nil ahead of durability converts a crash into silent message loss while
+// conforming to the letter of every other clause in this file.
+//
+// An implementation that CANNOT meet the boundary — an in-memory store, a
+// write-behind cache, a store deliberately trading durability for latency —
+// does not get to redefine "success". It declares its posture through
+// CrashDurableStoreFactory (below) so composition can reject or gate it, and
+// the operator opts in explicitly. Silence is not consent: a factory that
+// declares nothing is treated as NOT crash-durable.
+//
+// The boundary applies to the ACCEPTANCE path only. Read, count, and
+// administrative operations carry no durability promise, and a store MAY lose
+// non-acceptance state (cached counts, depth estimates) freely.
+
+// CrashDurableStoreFactory is an optional interface that StoreFactory
+// implementations may satisfy to declare whether the stores they build meet the
+// crash-durable success boundary above.
+//
+// Factories that do NOT implement it are treated as NOT crash-durable. This
+// direction is deliberate and matches DistributedStoreFactory: a wrong "durable"
+// answer permits a composition that loses acknowledged work or wedges a
+// partition, while a wrong "volatile" answer only costs an explicit operator
+// acknowledgement. A durable store therefore has to say so.
+//
+// The declaration is factory-wide because durability is a property of the
+// BACKING (a process heap, a file, a managed table), not of the role built on
+// top of it: every store role a given factory produces shares that backing.
+//
+// Composition reads it for two decisions:
+//
+//   - A volatile LeaseStore may not back a crash-durable OutboxStore. The
+//     outbox keeps a DURABLE per-partition fencing high-water-mark and rejects
+//     any claim below it, while a volatile lease renumbers its fencing versions
+//     from zero on every process start. After a restart the new owner presents a
+//     version below the persisted mark, every Claim and Expire is fenced out,
+//     and the partition never drains again — while ingress keeps acknowledging
+//     work into it. There is no acknowledgement for this pairing: it is a
+//     progress failure, not a durability tradeoff.
+//   - A volatile outbox or DLQ makes accepted work, or the terminal evidence of
+//     dropped work, disappear on restart. That IS an acknowledgeable tradeoff,
+//     so it is the adapter's own explicit opt-in (see the native memory store's
+//     acknowledge_volatile key) plus a startup warning naming the affected
+//     routes.
+type CrashDurableStoreFactory interface {
+	IsCrashDurable() bool
 }

@@ -25,7 +25,7 @@ import (
 var _ ports.LeaseStore = (*memorylease.Store)(nil)
 
 // newTestStore builds a memory lease store that has acknowledged the
-// single-replica constraint (finding c10-memlease-split) so ordinary tests
+// single-replica constraint so ordinary tests
 // exercise a working store with a one-line opt-in. The mandatory split-brain
 // warning is routed to a discard logger to keep unrelated test output quiet;
 // tests that assert the warning construct the store directly with a capturing
@@ -357,7 +357,7 @@ func TestVersionMonotonicallyIncreases(t *testing.T) {
 
 // captureHandler is a minimal slog.Handler that records every emitted record so
 // tests can assert on the mandatory split-brain warning (finding
-// c10-memlease-split).
+// split-brain gate).
 type captureHandler struct {
 	mu      *sync.Mutex
 	records *[]slog.Record
@@ -389,7 +389,7 @@ func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
 func (h *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *captureHandler) WithGroup(string) slog.Handler      { return h }
 
-// Verifies the split-brain gate (finding c10-memlease-split): a store built
+// Verifies the split-brain gate: a store built
 // WITHOUT the single-replica acknowledgement fails closed — construction
 // succeeds but every operation is rejected with shared.ErrInvalidConfig so a
 // silently scaled-out deployment cannot cause undetectable split-brain
@@ -431,7 +431,7 @@ func TestOperationsRejectedWithoutAcknowledgement(t *testing.T) {
 
 // Verifies that acknowledging the single-replica constraint lets the store
 // operate AND emits exactly one LOUD split-brain warning (finding
-// c10-memlease-split) at construction — not per operation.
+// gate) at construction — not per operation.
 //
 // The warning must be emitted from the constructor. Performing >=2 operations
 // (Acquire -> Renew -> Current) and still asserting warnings == 1 kills the
@@ -472,13 +472,13 @@ func TestAcknowledgeSingleReplicaWarnsOnceAndWorks(t *testing.T) {
 		warnings++
 		var hasFinding bool
 		r.Attrs(func(a slog.Attr) bool {
-			if a.Key == "finding" && a.Value.String() == "c10-memlease-split" {
+			if a.Key == "risk" && a.Value.String() == "split-brain" {
 				hasFinding = true
 			}
 			return true
 		})
 		if !hasFinding {
-			t.Fatalf("warning missing finding attr c10-memlease-split: %q", r.Message)
+			t.Fatalf("warning missing risk=split-brain attribute: %q", r.Message)
 		}
 	}
 	if warnings != 1 {

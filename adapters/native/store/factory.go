@@ -10,6 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq"
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions"
 	"github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -17,6 +18,8 @@ var (
 	_ ports.StoreFactory                    = (*MemoryStoreFactory)(nil)
 	_ ports.StoreFactory                    = (*SQLiteStoreFactory)(nil)
 	_ ports.ManagedSubscriptionStoreFactory = (*SQLiteStoreFactory)(nil)
+	_ ports.CrashDurableStoreFactory        = (*MemoryStoreFactory)(nil)
+	_ ports.CrashDurableStoreFactory        = (*SQLiteStoreFactory)(nil)
 )
 
 // MemoryStoreFactory creates in-memory store instances.
@@ -33,23 +36,48 @@ func NewMemoryStoreFactory() *MemoryStoreFactory {
 // the "acknowledge_single_replica" config key. Absent, construction fails fast
 // here rather than letting a clustered deployment silently split the brain — a
 // missing/empty config never wires a lease store at all, so this gate does not
-// affect the healthy empty-start path. See finding c10-memlease-split.
+// affect the healthy empty-start path.
 func (f *MemoryStoreFactory) NewLeaseStore(_ context.Context, cfg ports.PluginConfig) (ports.LeaseStore, error) {
 	if !memoryConfigFrom(cfg).AcknowledgeSingleReplica {
-		return nil, fmt.Errorf("nativestore: in-memory lease store requires \"acknowledge_single_replica: true\" — it keeps ownership per-process and cannot coordinate across replicas, so more than one instance silently splits the brain (duplicate / double lease ownership); set the flag to confirm single-replica operation, or use \"dynamodb\" for clustered deployments")
+		return nil, shared.ErrInvalidConfig.WithMessage(
+			"nativestore: in-memory lease store requires \"acknowledge_single_replica: true\" — it keeps " +
+				"ownership per-process and cannot coordinate across replicas, so more than one instance " +
+				"silently splits the brain (duplicate / double lease ownership); set the flag to confirm " +
+				"single-replica operation, or use \"dynamodb\" for clustered deployments")
 	}
 	return memorylease.NewStore(memorylease.WithAcknowledgeSingleReplica(true)), nil
 }
 
-// NewOutboxStore creates an in-memory outbox store.
-func (f *MemoryStoreFactory) NewOutboxStore(_ context.Context, _ ports.PluginConfig, _ ports.OutboxRuntimeOptions) (ports.OutboxStore, error) {
+// NewOutboxStore creates an in-memory outbox store. The records live in the
+// process heap, so a restart or crash loses every one of them while a
+// successful Persist has already permitted the runtime to settle the SOURCE —
+// the outbox port's crash-durable success boundary is deliberately NOT met.
+// Construction therefore requires "acknowledge_volatile: true", exactly as the
+// lease store requires its own acknowledgement: an operator who never states
+// the tradeoff cannot end up running a persist-before-ack route on a store that
+// silently drops acknowledged work.
+func (f *MemoryStoreFactory) NewOutboxStore(_ context.Context, cfg ports.PluginConfig, _ ports.OutboxRuntimeOptions) (ports.OutboxStore, error) {
+	if err := requireVolatileAcknowledged(cfg, "outbox", "accepted work already acknowledged upstream"); err != nil {
+		return nil, err
+	}
 	return memoryoutbox.NewStore(), nil
 }
 
-// NewDLQStore creates an in-memory DLQ store.
-func (f *MemoryStoreFactory) NewDLQStore(_ context.Context, _ ports.PluginConfig) (ports.DLQStore, error) {
+// NewDLQStore creates an in-memory DLQ store. It is gated on the same
+// "acknowledge_volatile: true" as the in-memory outbox and for the same reason:
+// entries live in the process heap, so a restart erases the terminal evidence
+// that a message existed and was given up on — the only record of the loss.
+func (f *MemoryStoreFactory) NewDLQStore(_ context.Context, cfg ports.PluginConfig) (ports.DLQStore, error) {
+	if err := requireVolatileAcknowledged(cfg, "dlq", "terminal evidence of dropped messages"); err != nil {
+		return nil, err
+	}
 	return memorydlq.NewStore(), nil
 }
+
+// IsCrashDurable reports that in-memory stores do NOT survive the process, so
+// composition can reject the pairings that depend on durability and gate the
+// ones that merely trade it away.
+func (f *MemoryStoreFactory) IsCrashDurable() bool { return false }
 
 // SQLiteStoreFactory creates SQLite-backed store instances.
 // The factory expects a *SQLiteConfig (or SQLiteConfig) PluginConfig
@@ -63,8 +91,16 @@ func NewSQLiteStoreFactory() *SQLiteStoreFactory {
 
 // NewLeaseStore is not supported on SQLite.
 func (f *SQLiteStoreFactory) NewLeaseStore(_ context.Context, _ ports.PluginConfig) (ports.LeaseStore, error) {
-	return nil, fmt.Errorf("nativestore: SQLite lease store is not implemented; use \"memory\" for single-instance or \"dynamodb\" for clustered deployments")
+	return nil, shared.ErrNotSupported.WithMessage(
+		"nativestore: SQLite lease store is not implemented; use \"dynamodb\", or \"memory\" for a single " +
+			"instance whose outbox and DLQ are ALSO in-memory — an in-memory lease renumbers its fencing " +
+			"versions from zero on every restart and cannot back a SQLite or DynamoDB outbox, whose durable " +
+			"partition fence would then reject every claim")
 }
+
+// IsCrashDurable reports that SQLite-backed stores survive the process: the
+// records are on disk and readable by the process that replaces this one.
+func (f *SQLiteStoreFactory) IsCrashDurable() bool { return true }
 
 // NewOutboxStore creates a SQLite outbox store from the typed config.
 // The stale-claim window is threaded into the store so a claim stranded
@@ -129,13 +165,29 @@ func (f *SQLiteStoreFactory) NewDLQStore(_ context.Context, cfg ports.PluginConf
 	return sqlitedlq.NewStore(sc.Path, opts...) //nolint:wrapcheck // Rule 2/Q3 decorator pass-through; inner sqlitedlq.NewStore already classifies via mapError.
 }
 
+// requireVolatileAcknowledged enforces the in-memory outbox/DLQ opt-in. role
+// names the store role and atRisk names, in operator terms, what the process
+// loses on restart, so the error says what is at stake rather than only which
+// key is missing.
+func requireVolatileAcknowledged(cfg ports.PluginConfig, role, atRisk string) error {
+	if memoryConfigFrom(cfg).AcknowledgeVolatile {
+		return nil
+	}
+	return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+		"nativestore: in-memory %s store requires \"acknowledge_volatile: true\" — it keeps records in the "+
+			"process heap, so a restart, crash, or OOM kill loses %s; set the flag to confirm the loss is "+
+			"acceptable, or use \"sqlite\"/\"dynamodb\" when the records must survive the process", role, atRisk))
+}
+
 func requiredSQLiteConfig(cfg ports.PluginConfig) (SQLiteConfig, error) {
 	sc, ok := sqliteConfigFrom(cfg)
 	if !ok {
-		return SQLiteConfig{}, fmt.Errorf("nativestore: SQLite store requires a *SQLiteConfig, got %T", cfg)
+		return SQLiteConfig{}, shared.ErrInvalidConfig.WithMessage(
+			fmt.Sprintf("nativestore: SQLite store requires a *SQLiteConfig, got %T", cfg))
 	}
 	if sc.Path == "" {
-		return SQLiteConfig{}, fmt.Errorf("nativestore: missing required option \"path\" in SQLite store config")
+		return SQLiteConfig{}, shared.ErrInvalidConfig.WithMessage(
+			"nativestore: missing required option \"path\" in SQLite store config")
 	}
 	return sc, nil
 }

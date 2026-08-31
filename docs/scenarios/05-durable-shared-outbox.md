@@ -94,12 +94,14 @@ stores:
     options:
       path: /var/lib/gobridge/outbox.db
   lease:
-    type: memory # single-instance example; use dynamodb for multi-instance (see stores.lease)
+    # A crash-durable outbox REQUIRES a crash-durable lease. The outbox
+    # persists a per-partition fencing high-water-mark; an in-memory lease
+    # renumbers its fencing versions from zero on every restart and would then
+    # claim below that mark and be fenced out forever. The bridge rejects that
+    # pairing at startup, so a durable outbox pairs with dynamodb.
+    type: dynamodb
     options:
-      # The in-memory lease keeps ownership per-process and cannot coordinate
-      # across replicas, so single-replica operation must be acknowledged
-      # explicitly before it will build. Use dynamodb for multi-instance.
-      acknowledge_single_replica: true
+      table_name: gobridge-leases
 
 receivers:
   - id: mqtt-in
@@ -356,7 +358,8 @@ Two distinct paths return a claimed record to `pending`:
 
 ### SQLite Outbox for Disk Persistence
 
-Replace the in-memory outbox with SQLite for single-instance crash survival:
+Replace the in-memory outbox with SQLite for single-instance crash survival.
+The lease must be durable too — see the pairing rule below:
 
 ```yaml
 stores:
@@ -365,9 +368,9 @@ stores:
     options:
       path: /var/lib/gobridge/outbox.db
   lease:
-    type: memory
+    type: dynamodb
     options:
-      acknowledge_single_replica: true
+      table_name: gobridge-leases
 ```
 
 On crash and restart, the drainer finds all pending records and resumes
@@ -383,13 +386,24 @@ from `step_down_grace`, or set explicitly) lets it be re-claimed once the claim
 goes stale. The native SQLite outbox now honours `stale_claim_duration` for this
 fallback, matching the DynamoDB backend.
 
-> **Note on `lease: memory`.** The in-memory lease store resets its fencing
-> version on restart, so it cannot guarantee version continuity across a crash.
-> For a single instance whose lease returns to the same version this is safe and
-> the stale-claim fallback above still recovers stranded work; for
-> multi-instance or strict crash-recovery guarantees use a durable lease store
-> (DynamoDB). `memory` lease and outbox remain development/test grade — see the
-> store readiness notes in [config-stores](../config-stores.md).
+> **Pairing rule: a volatile lease may not back a durable outbox.** The
+> in-memory lease store numbers fencing versions from a per-process counter that
+> restarts at zero, while the SQLite and DynamoDB outboxes persist a
+> per-partition fencing high-water-mark and reject every claim below it. After a
+> restart — once the durable mark has passed 1, which one prior re-acquire is
+> enough to do — the new owner claims below the mark, is rejected as stale, and
+> the partition never drains again while ingress keeps acknowledging into it.
+> The builder therefore REJECTS `lease: memory` with a `sqlite` or `dynamodb`
+> outbox at startup. The two supported postures are a durable lease with a
+> durable outbox (production), and an in-memory lease with an in-memory outbox
+> (development, and only with `acknowledge_volatile: true` — see the store
+> reference in [processors-and-stores](../processors-and-stores.md)).
+>
+> **A SQLite outbox with a DynamoDB lease is still single-replica.** The lease
+> is cluster-wide but the database file is node-local, so a second replica
+> ingests into its OWN outbox file and cannot drain it until it happens to win
+> the lease. Run exactly one replica on this pairing; for real multi-instance
+> operation both stores must be DynamoDB (next section).
 
 ### DynamoDB Outbox for Multi-Instance
 
@@ -406,7 +420,6 @@ stores:
     type: dynamodb
     options:
       table_name: gobridge-leases
-      region: us-west-1
 ```
 
 **Standby readiness.** Only the lease holder drains; standby instances hold their drainers idle until they win the lease. The active drainer also gates each cycle on egress-transport readiness -- when the target session is disconnected, it skips the drain instead of running failing Claim+Send cycles. This keeps a broker outage from silently burning the replay budget and poisoning healthy records while the target is simply unreachable.

@@ -337,6 +337,8 @@ To persist permanently failed messages, add a DLQ store:
 stores:
   dlq:
     type: memory
+    options:
+      acknowledge_volatile: true
 
 routes:
   - id: process

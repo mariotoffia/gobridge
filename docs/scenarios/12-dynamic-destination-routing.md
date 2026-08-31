@@ -240,7 +240,7 @@ routes:
     bindings: [to-factory-orders, to-factory-audit]
 
 stores:
-  outbox: { type: memory }
+  outbox: { type: memory, options: { acknowledge_volatile: true } }
 ```
 
 Each message is sent to **both** bindings, each with its own rendered address. A message with `factory_id: "A"` produces:

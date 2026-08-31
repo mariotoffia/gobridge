@@ -165,8 +165,8 @@ routes:
       on_permanent_failure: dlq
 
 stores:
-  outbox: { type: memory }
-  dlq: { type: memory }
+  outbox: { type: memory, options: { acknowledge_volatile: true } }
+  dlq: { type: memory, options: { acknowledge_volatile: true } }
 ```
 
 ## Config Walkthrough

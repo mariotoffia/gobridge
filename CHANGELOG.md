@@ -45,6 +45,25 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ### Added
 
+- **Crash-durable success boundary and `ports.CrashDurableStoreFactory`.** A nil
+  error from `OutboxStore.Persist` or `DLQAdmin.Write` now explicitly means the
+  record survives the loss of the process — the runtime settles the SOURCE on
+  that nil, so a store returning it after mere local buffering converted a crash
+  into silent loss of acknowledged work while conforming to the written
+  contract. Stores declare their posture through the new OPTIONAL
+  `CrashDurableStoreFactory` (`IsCrashDurable() bool`); a factory that does not
+  implement it is treated as NOT crash-durable, mirroring
+  `DistributedStoreFactory`. `sqlite` and `dynamodb` declare durable, `memory`
+  declares volatile.
+
+- **`acknowledge_volatile` on the `memory` store.** The in-memory OUTBOX and DLQ
+  now fail closed at construction until the operator acknowledges that a
+  restart loses accepted work and the terminal evidence of dropped work. This
+  mirrors the lease store's existing `acknowledge_single_replica`; the two keys
+  are independent and each guards only its own roles. On an acknowledged
+  volatile outbox or DLQ the builder additionally warns at startup, naming every
+  affected route.
+
 - **Ordering-key head-of-line rule on `OutboxStore.Claim`.** A record carrying
   `x-bridge.ordering-key` is now claimable only when the partition holds no
   older non-terminal record on the same key that the same `Claim` will not also
@@ -71,6 +90,23 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   **`DynamoDBOutboxClaimTruncated`** (adapter-owned).
 
 ### Fixed
+
+- **A process-volatile lease store could regress a durable outbox's fencing
+  version and wedge the partition forever.** The in-memory lease numbers fencing
+  versions from a per-process counter that restarts at zero, while the SQLite
+  and DynamoDB outboxes persist a per-partition fencing high-water-mark and
+  reject every claim below it. Once the durable mark had passed 1 — one prior
+  re-acquire is enough — a restart or a store-rebuilding reload handed the new
+  owner a version below the mark, every `Claim` and `Expire` was rejected as
+  stale, and the partition never drained again while ingress kept acknowledging
+  into it. The builder now REJECTS the pairing at startup. There is no
+  acknowledgement for it: it is a permanent loss of progress, not a tradeoff.
+  The check is scoped to blueprints carrying a `shared_outbox` route — a
+  fencing token only reaches the store from a drainer, so a durable outbox
+  nothing drains cannot wedge. Existing `memory` lease + `sqlite`/`dynamodb`
+  outbox configurations must move the LEASE to `dynamodb`; downgrading the
+  outbox to `memory` instead abandons every record already in the durable
+  store, so drain it first if it holds a backlog.
 
 - `TestAutoExtendRetriesTransientThenSucceedsS15` (SQS auto-extend) gave its
   fake-clock sync points a 1s WALL-CLOCK budget. `Advance` only releases the

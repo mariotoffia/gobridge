@@ -62,8 +62,12 @@ sessions:
 stores:
   outbox:
     type: memory
+    options:
+      acknowledge_volatile: true
   dlq:
     type: memory
+    options:
+      acknowledge_volatile: true
 
 receivers:
   - id: telemetry-in

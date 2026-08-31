@@ -730,12 +730,20 @@ bridge:
   log_level: info
 
 stores:
+  # Development posture: every store is in-process and loses its contents on
+  # restart, so each role's acknowledgement is required before it will build.
   lease:
     type: memory
+    options:
+      acknowledge_single_replica: true
   outbox:
     type: memory
+    options:
+      acknowledge_volatile: true
   dlq:
     type: memory
+    options:
+      acknowledge_volatile: true
 
 sessions:
   - id: mqtt-session

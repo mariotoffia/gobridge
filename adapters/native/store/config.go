@@ -31,17 +31,33 @@ type MemoryConfig struct {
 	// count, so the operator must explicitly acknowledge single-replica
 	// operation. Absent (false), MemoryStoreFactory.NewLeaseStore fails fast
 	// at construction. Use the "dynamodb" store for clustered deployments.
-	// See finding c10-memlease-split.
 	AcknowledgeSingleReplica bool `mapstructure:"acknowledge_single_replica" yaml:"acknowledge_single_replica" json:"acknowledge_single_replica"`
+
+	// AcknowledgeVolatile must be set to true to build the in-memory OUTBOX or
+	// DLQ store; it has no effect on the in-memory lease store. Both keep their
+	// records in the process heap, so a restart, a crash, or an OOM kill loses
+	// them entirely — yet a nil result from either permits the runtime to settle
+	// the SOURCE. On a persist-before-ack route that means accepted work is
+	// acknowledged upstream and then vanishes, and terminal DLQ evidence of
+	// dropped messages disappears with it. gobridge cannot tell a scratch
+	// development bridge from a production one, so the operator must state that
+	// losing both on restart is acceptable. Absent (false),
+	// MemoryStoreFactory.NewOutboxStore and NewDLQStore fail fast at
+	// construction rather than let a production-looking route silently lose
+	// work. Use "sqlite" or "dynamodb" when the records must survive the
+	// process.
+	AcknowledgeVolatile bool `mapstructure:"acknowledge_volatile" yaml:"acknowledge_volatile" json:"acknowledge_volatile"`
 }
 
 // Kind reports the registry discriminator.
 func (MemoryConfig) Kind() string { return MemoryKind }
 
-// Validate is a no-op: the single-replica acknowledgement is a lease-store-only
-// concern enforced at construction (MemoryStoreFactory.NewLeaseStore), because
-// the same MemoryConfig also configures the outbox and DLQ stores, which have
-// no split-brain constraint and must validate without the flag.
+// Validate is a no-op: both acknowledgements are per-ROLE gates enforced at
+// construction (MemoryStoreFactory.NewLeaseStore, NewOutboxStore, NewDLQStore),
+// because one MemoryConfig configures every role and each flag is meaningless
+// for the roles it does not guard — a lease-only config must validate without
+// acknowledge_volatile, and an outbox-only config without
+// acknowledge_single_replica.
 func (MemoryConfig) Validate() error { return nil }
 
 // SQLiteConfig is the typed PluginConfig for the SQLite-backed

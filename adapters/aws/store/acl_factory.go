@@ -20,6 +20,7 @@ var (
 	_ ports.StoreFactory                    = (*DynamoDBStoreFactory)(nil)
 	_ ports.ManagedSubscriptionStoreFactory = (*DynamoDBStoreFactory)(nil)
 	_ ports.DistributedStoreFactory         = (*DynamoDBStoreFactory)(nil)
+	_ ports.CrashDurableStoreFactory        = (*DynamoDBStoreFactory)(nil)
 )
 
 // DynamoDBStoreFactory creates DynamoDB-backed lease, outbox, DLQ, and managed-subscription stores.
@@ -201,6 +202,11 @@ func (f *DynamoDBStoreFactory) preflight(ctx context.Context, s preflighter) err
 
 // IsDistributed marks DynamoDB stores as cross-process coordination capable.
 func (f *DynamoDBStoreFactory) IsDistributed() bool { return true }
+
+// IsCrashDurable marks DynamoDB stores as meeting the crash-durable success
+// boundary: a successful write is replicated and readable by the process that
+// replaces this one, so settling the source on a nil result is safe.
+func (f *DynamoDBStoreFactory) IsCrashDurable() bool { return true }
 
 // NewLeaseStore creates a DynamoDB-backed lease store from the typed config.
 func (f *DynamoDBStoreFactory) NewLeaseStore(ctx context.Context, cfg ports.PluginConfig) (ports.LeaseStore, error) {
