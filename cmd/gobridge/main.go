@@ -75,7 +75,7 @@ Usage of %s:
 		flag.PrintDefaults()
 	}
 	configPath := flag.String("config", "bridge.yaml", "path to configuration file")
-	logLevel := flag.String("log-level", "info", "log level (debug, info, warn, error)")
+	logLevel := flag.String("log-level", "info", "log level ("+strings.Join(ports.LogLevelNames(), ", ")+")")
 	credentialsDir := flag.String("credentials-dir", "credentials",
 		"base directory backing file:// credential URIs (native file credential store)")
 	flag.Parse()
@@ -618,17 +618,9 @@ func waitForSupervisorRuntime(
 }
 
 func newLogger(level string) *slog.Logger {
-	var lvl slog.Level
-	switch level {
-	case "debug":
-		lvl = slog.LevelDebug
-	case "warn":
-		lvl = slog.LevelWarn
-	case "error":
-		lvl = slog.LevelError
-	default:
-		lvl = slog.LevelInfo
-	}
+	// One enum for -log-level and bridge.log_level: an unrecognised flag value
+	// falls back to info here (there is no prior level to keep at process start).
+	lvl, _ := ports.ParseLogLevel(level)
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
 }
 

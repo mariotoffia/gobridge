@@ -110,7 +110,7 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 | 7 | done | HIGH-13, MEDIUM-16, MEDIUM-17 |
 | 8 | done | HIGH-11, HIGH-12, HIGH-14, MEDIUM-15, MEDIUM-18, MEDIUM-19, LOW-1, NEW-HIGH-5, NEW-LOW-1 |
 | 9 | done | NEW-MEDIUM-1, NEW-MEDIUM-2, NEW-MEDIUM-3, NEW-MEDIUM-5, NEW-MEDIUM-6, NEW-LOW-9 |
-| 10 | waiting | LOW-3, LOW-4, NEW-MEDIUM-12, NEW-MEDIUM-13, NEW-MEDIUM-14, NEW-MEDIUM-15, NEW-LOW-6 |
+| 10 | done | LOW-3, LOW-4, NEW-MEDIUM-12, NEW-MEDIUM-13, NEW-MEDIUM-14, NEW-MEDIUM-15, NEW-LOW-6 |
 | 11 | waiting | HIGH-6, HIGH-15, HIGH-20, MEDIUM-3, MEDIUM-4, MEDIUM-6, MEDIUM-23, MEDIUM-25, LOW-15, LOW-20, NEW-MEDIUM-9, NEW-TEST-1 |
 | 12 | waiting | LOW-7 (withdrawn), LOW-13, LOW-14, NEW-MEDIUM-10, NEW-MEDIUM-11, NEW-LOW-5 |
 | 13 | waiting | LOW-5, LOW-11, LOW-12, MEDIUM-20, NEW-LOW-2, NEW-LOW-3 |
@@ -303,13 +303,15 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 - **Dependencies:** Chunks 7 and 9.
 - **Files/packages:** `config/validate.go`, `validate/blueprint_graph.go`, `bridge/convert.go`, `runtime/validator.go`, `runtime/route/dispatch.go`, `retry.go`, `domain/routing/policy.go`.
 - **Tests:** config, blueprint, runtime validator, retry, and dispatch unit tests.
-- [ ] Add failing tests for broker-health duration, negative intervals, multiplier below one, omitted versus explicit jitter, log-level aliases, zero wedge ceiling, and nil outbox.
-- [ ] Run `go test -race -count=1 ./config ./validate ./runtime/... ./bridge -run 'Test.*(Validate|Backoff|Wedge|NilOutbox)'`; expect validation seams to disagree.
-- [ ] Share strict rules across validation boundaries, represent jitter unset distinctly, treat zero wedge as unbounded, and terminalize invalid nil-outbox wiring.
-- [ ] Re-run the exact failing command above; expect pass.
-- [ ] Run `make test` to cover admin commit, startup, and direct builder paths.
-- [ ] Update route-policy and log-level references after defaults are fixed.
-- [ ] Accept when every bad value fails before durable commit and every construction path receives the same retry defaults.
+- [x] Add failing tests for broker-health duration, negative intervals, multiplier below one, omitted versus explicit jitter, log-level aliases, zero wedge ceiling, and nil outbox.
+- [x] Run `go test -race -count=1 ./config ./validate ./runtime/... ./bridge -run 'Test.*(Validate|Backoff|Wedge|NilOutbox)'`; expect validation seams to disagree.
+- [x] Share strict rules across validation boundaries, represent jitter unset distinctly, treat zero wedge as unbounded, and terminalize invalid nil-outbox wiring.
+- [x] Re-run the exact failing command above; expect pass.
+- [x] Run `make test` to cover admin commit, startup, and direct builder paths.
+- [x] Update route-policy and log-level references after defaults are fixed.
+- [x] Accept when every bad value fails before durable commit and every construction path receives the same retry defaults.
+- **Landed:** `backoff.jitter` is a `*float64` on the wire and `BackoffPolicy.JitterFactor` is tri-state in the domain — zero means UNSET and `WithDefaults` fills `DefaultJitterFactor` (0.2, the value only `NewDefaultBackoffPolicy` used to carry), while `JitterDisabled` is the explicit opt-out an operator spells `jitter: 0`; a single zero could not express both, which is why every config-loaded route retried un-jittered while programmatic ones staggered. `multiplier` must now be `>= 1` at all four boundaries (blueprint validator, builder, runtime start validator, `RoutePolicy.Validate`): a value in (0,1) is acceleration, not backoff. Negative `initial_interval` / `max_interval` and an invalid or non-positive `broker_health_step_down` are rejected BEFORE the config transaction's durable write instead of at apply, so they no longer enter the rollback/divergence path. `bridge.log_level` is validated against one enum table, `ports.ParseLogLevel`, which the config validator and all three composition roots (`cmd/gobridge` flag, file-based bootstrap, admin commit) now share — a value that validates always applies, `warning` is an accepted alias, and the two per-root switch statements are deleted. `boundedSend` arms no timer when the wedge ceiling is zero: `clk.NewTimer(0)` fires at once, so the documented "no bound" marked every send hung. A `shared_outbox` route with no `OutboxStore` wedges terminally rather than looping on a cap-less one-second retry; the delivery is left unsettled, so nothing is acked or dropped. Two adjacent test defects surfaced and are fixed: three HTTP integration tests POSTed without waiting for the receiver's started signal (a pre-existing 503 flake, reproduced on a clean tree), and two config tests used `log_level` as an arbitrary marker string.
+- **Proof:** `validate/route_retry_bounds_test.go`, `bridge/retry_policy_defaults_test.go`, `config/validate_log_level_test.go`, `config/parser/backoff_jitter_tristate_test.go` (the tri-state through the real YAML decoder), `runtime/route/send_wedge_ceiling_test.go`, `runtime/route/shared_outbox_nil_store_test.go`, `runtime/drainer_config_details_test.go` (`TestRouteRunner_SharedOutbox_NilOutboxStore_Terminal`, rewritten from the retry-forever contract), `ports/log_level_test.go`, the new cases in `domain/routing/policy_backoff_test.go`, `runtime/validator_test.go` and `config/validate_hardening_test.go`, `tests/integration/integration_config_api_retry_bounds_test.go` — a real admin transaction per newly bounded field, asserting 422 AND a byte-identical config file, with a negative control that commits `multiplier: 1` and `jitter: 0` and reads the opt-out back off disk — plus `runtime/route/benchmark_retry_delay_test.go` and `validate/benchmark_blueprint_graph_test.go` for the two paths whose cost changed.
 - **Suggested commit title:** `unify route configuration validation`
 
 ### Chunk 24: Route dispatch cancellation, redrive provenance, and retry accounting

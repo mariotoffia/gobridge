@@ -19,33 +19,6 @@ func testBootstrapCfg() deployinfra.BootstrapConfig {
 	}
 }
 
-func TestParseLogLevel(t *testing.T) {
-	for _, tc := range []struct {
-		in    string
-		want  slog.Level
-		wantK bool
-	}{
-		{"debug", slog.LevelDebug, true},
-		{"DEBUG", slog.LevelDebug, true},
-		{" Info ", slog.LevelInfo, true},
-		{"warn", slog.LevelWarn, true},
-		{"warning", slog.LevelWarn, true},
-		{"error", slog.LevelError, true},
-		{"", slog.LevelInfo, false},
-		{"verbose", slog.LevelInfo, false},
-	} {
-		t.Run(tc.in, func(t *testing.T) {
-			got, ok := parseLogLevel(tc.in)
-			if ok != tc.wantK {
-				t.Fatalf("parseLogLevel(%q) ok = %v, want %v", tc.in, ok, tc.wantK)
-			}
-			if ok && got != tc.want {
-				t.Fatalf("parseLogLevel(%q) = %v, want %v", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestApplyLogLevel_UpdatesLevelVar(t *testing.T) {
 	lv := new(slog.LevelVar) // starts at Info (0)
 	app := NewApp(testBootstrapCfg(),

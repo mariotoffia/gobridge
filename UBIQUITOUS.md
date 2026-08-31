@@ -75,7 +75,7 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 |---|---|
 | **Route** | A logical edge from a source binding through processors to one or more destination bindings, governed by a `RoutePolicy`. |
 | **RoutePolicy** | Per-route delivery, retry, backpressure, and timeout configuration. Aggregate root for routing. |
-| **BackoffPolicy** | Retry backoff parameters: `InitialInterval`, `MaxInterval`, `Multiplier`. |
+| **BackoffPolicy** | Retry backoff parameters: `InitialInterval`, `MaxInterval`, `Multiplier` (must be >= 1 — below 1 the delay shrinks per attempt, which is acceleration, not backoff), and `JitterFactor` (YAML `jitter`), the equal-jitter fraction in [0,1] that de-correlates retries across replicas. `JitterFactor` is tri-state: zero means unset and `WithDefaults` fills `DefaultJitterFactor` (0.2); `JitterDisabled` is the explicit opt-out that keeps the deterministic exponential delay, spelled `jitter: 0` in a blueprint. |
 | **DeliveryMode** | `direct_hold` (hold source ack until target accepts) or `shared_outbox` (persist then ack source). |
 | **DispatchMode** | `single` (one binding per envelope) or `fan_out` (every matching binding). |
 | **AckBoundary** | `target_accept` (ack source after target accepts) or `outbox_persist` (ack source after outbox persists). With `DeliveryMode`, sets the per-route at-least-once contract — lease/version fencing bounds but does not eliminate the duplicate window (in-flight sends at lease transfer), so downstream consumers dedup on `x-bridge.idempotency-key` / `x-bridge.dedup-id` (see [docs/troubleshooting.md](docs/troubleshooting.md)). |

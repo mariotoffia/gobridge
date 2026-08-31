@@ -127,6 +127,10 @@ func TestIntegration_HTTPPost_RuntimePipeline_FakeSender(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = rt.Stop(context.Background()) }()
+	// Start returns once the route is launched; the receiver stores its emit
+	// callback from its own goroutine and answers 503 until it has. Wait for the
+	// signal instead of racing it.
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
@@ -187,6 +191,10 @@ func TestIntegration_HTTPPost_FilterDrop_NoSend(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = rt.Stop(context.Background()) }()
+	// Start returns once the route is launched; the receiver stores its emit
+	// callback from its own goroutine and answers 503 until it has. Wait for the
+	// signal instead of racing it.
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()
@@ -456,6 +464,10 @@ func TestIntegration_HTTPPost_HeaderProcessing(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = rt.Stop(context.Background()) }()
+	// Start returns once the route is launched; the receiver stores its emit
+	// callback from its own goroutine and answers 503 until it has. Wait for the
+	// signal instead of racing it.
+	waitReceiverReady(t, recv, 2*time.Second)
 
 	ts := httptest.NewServer(factory.Handler())
 	defer ts.Close()

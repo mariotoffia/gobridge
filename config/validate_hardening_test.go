@@ -83,8 +83,33 @@ func TestValidate_BuildTimeConsumedFields(t *testing.T) {
 		},
 		{
 			name:    "backoff jitter out of range",
-			mutate:  func(c *ports.BridgeConfig) { c.Routes[0].Policy.Backoff.Jitter = 1.5 },
+			mutate:  func(c *ports.BridgeConfig) { c.Routes[0].Policy.Backoff.Jitter = ptrTo(1.5) },
 			wantSub: "backoff.jitter",
+		},
+		{
+			name:    "negative backoff initial_interval",
+			mutate:  func(c *ports.BridgeConfig) { c.Routes[0].Policy.Backoff.InitialInterval = "-1s" },
+			wantSub: "backoff.initial_interval",
+		},
+		{
+			name:    "negative backoff max_interval",
+			mutate:  func(c *ports.BridgeConfig) { c.Routes[0].Policy.Backoff.MaxInterval = "-30s" },
+			wantSub: "backoff.max_interval",
+		},
+		{
+			name:    "backoff multiplier below one",
+			mutate:  func(c *ports.BridgeConfig) { c.Routes[0].Policy.Backoff.Multiplier = 0.5 },
+			wantSub: "backoff.multiplier",
+		},
+		{
+			name:    "invalid broker_health_step_down",
+			mutate:  func(c *ports.BridgeConfig) { c.Routes[0].Session.BrokerHealthStepDown = "soon" },
+			wantSub: "broker_health_step_down",
+		},
+		{
+			name:    "non-positive broker_health_step_down",
+			mutate:  func(c *ports.BridgeConfig) { c.Routes[0].Session.BrokerHealthStepDown = "0s" },
+			wantSub: "broker_health_step_down",
 		},
 	}
 	for _, tc := range tests {
@@ -111,10 +136,16 @@ func TestValidate_BuildTimeConsumedFields_ValidPass(t *testing.T) {
 	cfg.Routes[0].Policy.ReplayBudget = "15m"
 	cfg.Routes[0].Policy.Backoff.InitialInterval = "1s"
 	cfg.Routes[0].Policy.Backoff.MaxInterval = "30s"
-	cfg.Routes[0].Policy.Backoff.Jitter = 0.5
+	cfg.Routes[0].Policy.Backoff.Multiplier = 1.0
+	cfg.Routes[0].Policy.Backoff.Jitter = ptrTo(0.5)
+	s.BrokerHealthStepDown = "45s"
 
 	require.NoError(t, Validate(cfg))
 }
+
+// ptrTo is the tri-state helper for optional numeric blueprint fields, where a
+// nil pointer ("omitted") and an explicit zero mean different things.
+func ptrTo[T any](v T) *T { return &v }
 
 // TestManager_AppliedVersionSurfaced covers the cluster-convergence finding:
 // per-instance divergence must at least be OBSERVABLE. The manager stamps and

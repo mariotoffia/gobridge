@@ -10,6 +10,27 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Changed — BREAKING (`ports.BackoffDef.Jitter`)
+
+- `routes[].policy.backoff.jitter` is now a `*float64`, so an omitted field and
+  an explicit `0` are distinguishable. Omitting it takes the recommended
+  de-correlation default; writing `jitter: 0` opts out and keeps the
+  deterministic exponential delay. YAML and JSON blueprints are unaffected —
+  only Go code that builds a `ports.BackoffDef` literal needs the address-of.
+
+  ```go
+  // before
+  ports.BackoffDef{Jitter: 0.2}
+  // after
+  jitter := 0.2
+  ports.BackoffDef{Jitter: &jitter}
+  ```
+
+  The domain counterpart `routing.BackoffPolicy.JitterFactor` stays a `float64`
+  and gains the same tri-state: zero means unset and is filled with
+  `routing.DefaultJitterFactor`; `routing.JitterDisabled` is the explicit
+  opt-out.
+
 ### Changed — BREAKING (`ports.OutboxStore`)
 
 - `OutboxStore.Expire` now takes the caller's fencing token. The bulk expiry
@@ -98,6 +119,47 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   **`DynamoDBOutboxClaimTruncated`** (adapter-owned).
 
 ### Fixed
+
+- **Routes loaded from a blueprint retried without the recommended jitter.** The
+  20 % equal-jitter that de-correlates retries across replicas lived only in
+  `NewDefaultBackoffPolicy`, which a config-loaded route never calls, so an
+  entire replica set re-attempted a failed target on the same tick while
+  programmatically built routes staggered. `WithDefaults` now fills the one
+  shared default, and an operator who wants deterministic backoff writes
+  `jitter: 0` (see the breaking note above).
+
+- **A retry multiplier below one turned backoff into acceleration.** Nothing
+  rejected `multiplier: 0.5`: each retry fired sooner than the one before it, so
+  a failing target was hammered hardest exactly when it was least able to
+  recover. The config validator, the builder and the runtime start validator now
+  require `>= 1` (exactly `1` is a fixed retry interval).
+
+- **Negative retry intervals and an invalid `broker_health_step_down` committed
+  before failing.** `time.ParseDuration` accepts a leading `-`, and both fields
+  were checked only where the builder consumes them — at apply or the next
+  restart — so an invalid value passed the config transaction and its durable
+  write, then failed on the rollback/divergence path. Both are now rejected
+  before the commit, alongside the retry rules above.
+
+- **`bridge.log_level` accepted values it then ignored.** The field is a closed
+  enum, but nothing validated it, and a composition root keeps its current level
+  for an unrecognised value — so an operator who set `DEUBG` to diagnose an
+  incident saw a clean commit and no extra logging. One enum table now backs
+  both validation and every root that applies the level, with `warning` an
+  accepted alias of `warn`.
+
+- **A shared-outbox route wired without an outbox store retried forever.** The
+  branch handling a missing `OutboxStore` bypassed the replay cap, so every
+  message looped on a one-second retry behind green liveness. A missing store is
+  a wiring defect no redelivery can fix: the route now fails terminally and the
+  supervisor escalates, leaving the delivery unsettled so nothing is acked or
+  dropped. Startup validation still rejects the shape up front; only direct
+  library composition could reach it.
+
+- **A disabled send timeout wedged the route on its first send.** `SendTimeout: 0`
+  means "no wedge bound", but the zero was handed to a timer, which fires
+  immediately — so every send was classified as hung. A zero bound now arms no
+  timer at all.
 
 - **A broker's refusal reason code was thrown away with the SDK's generic
   error.** The MQTT client returns the acknowledgement *and* an error for any

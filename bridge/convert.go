@@ -55,10 +55,18 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 		}
 		p.ReplayBudget = d
 	}
+	// The retry rules below mirror validate.ValidateBlueprintGraph exactly, so a
+	// route built directly through the library API cannot receive a policy the
+	// config path would refuse. A negative interval is the dangerous one: the
+	// exponential clamp is gated on `MaxInterval > 0`, so a negative cap never
+	// fires and the delay grows to +Inf.
 	if r.Policy.Backoff.InitialInterval != "" {
 		d, err := time.ParseDuration(r.Policy.Backoff.InitialInterval)
 		if err != nil {
 			return p, fmt.Errorf("invalid backoff initial_interval %q: %w", r.Policy.Backoff.InitialInterval, err)
+		}
+		if d < 0 {
+			return p, fmt.Errorf("invalid backoff initial_interval %q: must not be negative", r.Policy.Backoff.InitialInterval)
 		}
 		p.Backoff.InitialInterval = d
 	}
@@ -67,16 +75,30 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 		if err != nil {
 			return p, fmt.Errorf("invalid backoff max_interval %q: %w", r.Policy.Backoff.MaxInterval, err)
 		}
+		if d < 0 {
+			return p, fmt.Errorf("invalid backoff max_interval %q: must not be negative", r.Policy.Backoff.MaxInterval)
+		}
 		p.Backoff.MaxInterval = d
 	}
 	if r.Policy.Backoff.Multiplier != 0 {
+		if r.Policy.Backoff.Multiplier < 1 {
+			return p, fmt.Errorf("invalid backoff multiplier %v: must be >= 1 (below 1 accelerates retries instead of backing off)",
+				r.Policy.Backoff.Multiplier)
+		}
 		p.Backoff.Multiplier = r.Policy.Backoff.Multiplier
 	}
-	if r.Policy.Backoff.Jitter != 0 {
-		if r.Policy.Backoff.Jitter < 0 || r.Policy.Backoff.Jitter > 1 {
-			return p, fmt.Errorf("invalid backoff jitter %v: must be in [0,1]", r.Policy.Backoff.Jitter)
+	// Jitter is tri-state on the wire: omitted leaves JitterFactor zero so
+	// WithDefaults fills the recommended fraction (the same one a programmatic
+	// NewDefaultBackoffPolicy route gets); an explicit 0 is an operator opting
+	// OUT, which only routing.JitterDisabled can carry through defaulting.
+	if j := r.Policy.Backoff.Jitter; j != nil {
+		if *j < 0 || *j > 1 {
+			return p, fmt.Errorf("invalid backoff jitter %v: must be in [0,1]", *j)
 		}
-		p.Backoff.JitterFactor = r.Policy.Backoff.Jitter
+		p.Backoff.JitterFactor = *j
+		if *j == 0 {
+			p.Backoff.JitterFactor = routing.JitterDisabled
+		}
 	}
 	return p, nil
 }

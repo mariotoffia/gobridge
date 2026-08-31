@@ -168,31 +168,13 @@ func (a *App) applyLogLevel(logical *ports.BridgeConfig) {
 	if a.logLevelVar == nil || logical == nil {
 		return
 	}
-	lvl, ok := parseLogLevel(logical.Bridge.LogLevel)
+	lvl, ok := ports.ParseLogLevel(logical.Bridge.LogLevel)
 	if !ok {
 		return
 	}
 	if a.logLevelVar.Level() != lvl {
 		a.logLevelVar.Set(lvl)
 		a.logger.Info("bootstrap: applied bridge.log_level", "level", logical.Bridge.LogLevel)
-	}
-}
-
-// parseLogLevel maps a bridge.log_level string to a slog.Level. The bool is
-// false for empty or unrecognized input so callers can leave the level
-// unchanged.
-func parseLogLevel(s string) (slog.Level, bool) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "debug":
-		return slog.LevelDebug, true
-	case "info":
-		return slog.LevelInfo, true
-	case "warn", "warning":
-		return slog.LevelWarn, true
-	case "error":
-		return slog.LevelError, true
-	default:
-		return slog.LevelInfo, false
 	}
 }
 

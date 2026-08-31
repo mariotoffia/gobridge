@@ -365,15 +365,23 @@ func (r *RouteRunner) boundedSend(ctx context.Context, sender ports.Sender, msg 
 	// (SendTimeout + margin), strictly LARGER than the sendCtx SendTimeout deadline
 	// so a cooperative sender aborting at SendTimeout returns via `done` and wins
 	// this race — only a genuinely-parked (ctx-ignoring) send reaches the ceiling.
-	ceiling := r.clk.NewTimer(r.sendWedgeCeiling())
-	defer ceiling.Stop()
+	// A zero ceiling means NO bound (SendTimeout disabled): await completion.
+	// Arming a timer with it would fire IMMEDIATELY and wedge the route on its
+	// very first send, the exact inverse of the contract. Leaving the channel nil
+	// blocks that arm of the select forever, which is what "no bound" means.
+	var ceilingC <-chan time.Time
+	if d := r.sendWedgeCeiling(); d > 0 {
+		ceiling := r.clk.NewTimer(d)
+		defer ceiling.Stop()
+		ceilingC = ceiling.C()
+	}
 	select {
 	case res := <-done:
 		if res.rec != nil {
 			panic(res.rec)
 		}
 		return res.err
-	case <-ceiling.C():
+	case <-ceilingC:
 		// Prefer a result that landed in the same tick as the ceiling: a send
 		// that actually completed must win over the timeout so we never retry an
 		// already-delivered message (duplicate).
@@ -1052,7 +1060,15 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 	}
 
 	if r.outboxStore == nil {
-		return r.retryOrFallback(ctx, del, env, time.Second, fmt.Errorf("shared_outbox route %q: no OutboxStore configured", r.routeID))
+		// A shared_outbox route without an OutboxStore is a WIRING defect, not a
+		// message fault: no redelivery can supply the missing store, and this
+		// branch bypasses the replay cap (retryOrFallback never consults it), so
+		// retrying turned every message into an unbounded one-second loop behind
+		// green liveness. Wedge terminally instead — the supervisor escalates and
+		// the delivery is left unsettled, so nothing is acked or dropped.
+		// Startup validation blocks this shape; only direct library composition
+		// (route.NewRouteRunner) can reach it.
+		return r.wedge(fmt.Errorf("shared_outbox route %q: no OutboxStore configured", r.routeID))
 	}
 
 	// Depth check is advisory: concurrent goroutines may each see under-capacity

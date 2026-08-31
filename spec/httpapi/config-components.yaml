@@ -235,7 +235,9 @@ schemas:
         type: string
       log_level:
         type: string
-        enum: [debug, info, warn, error]
+        description: >
+          Case-insensitive; "warning" is an accepted alias of "warn".
+        enum: [debug, info, warn, warning, error]
 
   ConfigWatchDef:
     type: object
@@ -402,13 +404,20 @@ schemas:
         type: string
       multiplier:
         type: number
+        minimum: 1
+        description: >
+          Exponential backoff multiplier. Below 1 the delay shrinks on every
+          attempt, so retries accelerate instead of backing off; 1 is a fixed
+          retry interval.
       jitter:
         type: number
         minimum: 0
         maximum: 1
         description: >
           Equal-jitter fraction in [0,1] applied to each computed backoff
-          delay to de-correlate retries (0 = deterministic).
+          delay to de-correlate retries across replicas. Omitting the field
+          takes the recommended 0.2 default; an explicit 0 opts out and keeps
+          the deterministic exponential delay.
 
   HTTPConfig:
     type: object

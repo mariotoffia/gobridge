@@ -79,15 +79,15 @@ func TestToRoutePolicy_BackoffDurations(t *testing.T) {
 	}
 }
 
-// TestToRoutePolicy_BackoffJitter validates that BackoffDef.Jitter maps
-// onto BackoffPolicy.JitterFactor (finding #27 config round-trip).
+// TestToRoutePolicy_BackoffJitter validates that BackoffDef.Jitter maps onto
+// BackoffPolicy.JitterFactor when the operator sets a value.
 func TestToRoutePolicy_BackoffJitter(t *testing.T) {
 	rd := ports.RouteDef{
 		Policy: ports.PolicyDef{
 			Backoff: ports.BackoffDef{
 				InitialInterval: "500ms",
 				Multiplier:      2.0,
-				Jitter:          0.3,
+				Jitter:          jitter(0.3),
 			},
 		},
 	}

@@ -78,8 +78,15 @@ func TestRouteRunner_DirectHoldTransientSendUsesBackoff(t *testing.T) {
 	}
 
 	waitFor(t, 2*time.Second, "delivery retried with backoff", del.IsRetried)
-	if del.RetryAfter < 500*time.Millisecond {
-		t.Fatalf("RetryAfter = %v, want >= %v", del.RetryAfter, 500*time.Millisecond)
+	// The runner defaults an unset jitter to the recommended fraction, so the
+	// first retry is equal-jittered around InitialInterval:
+	// [initial*(1-jitter), initial]. The point of the assertion is that the
+	// policy's interval governs — not a zero or hard-coded delay.
+	const initial = 500 * time.Millisecond
+	lo := time.Duration(float64(initial) * (1 - routing.DefaultJitterFactor))
+	if del.RetryAfter < lo || del.RetryAfter > initial {
+		t.Fatalf("RetryAfter = %v, want within the equal-jitter band [%v, %v] around the policy interval",
+			del.RetryAfter, lo, initial)
 	}
 }
 

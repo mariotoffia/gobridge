@@ -504,10 +504,13 @@ type BackoffDef struct {
 	InitialInterval string  `yaml:"initial_interval,omitempty" json:"initial_interval,omitempty"`
 	MaxInterval     string  `yaml:"max_interval,omitempty" json:"max_interval,omitempty"`
 	Multiplier      float64 `yaml:"multiplier,omitempty" json:"multiplier,omitempty"`
-	// Jitter is the equal-jitter fraction in [0,1] applied to each
-	// computed backoff delay (0 = deterministic). Maps to
+	// Jitter is the equal-jitter fraction in [0,1] applied to each computed
+	// backoff delay, de-correlating retries across replicas. It is a POINTER
+	// because omitting it and writing 0 mean different things: omitted takes the
+	// recommended default (routing.DefaultJitterFactor), an explicit 0 opts out
+	// and keeps the deterministic exponential delay. Maps to
 	// routing.BackoffPolicy.JitterFactor.
-	Jitter float64 `yaml:"jitter,omitempty" json:"jitter,omitempty"`
+	Jitter *float64 `yaml:"jitter,omitempty" json:"jitter,omitempty"`
 }
 
 // BlueprintValidator is the contract a config validator implements so

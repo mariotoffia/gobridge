@@ -611,6 +611,18 @@ func validateBridgeFields(ve *ValidationError, cfg *ports.BridgeConfig) {
 			"standalone", "clustered")
 	}
 
+	// log_level is a closed enum that nothing validated: a composition root
+	// KEEPS its current level for an unrecognised value (resetting verbosity
+	// mid-incident would be worse), so a misspelled level committed cleanly and
+	// then did nothing. Validate against the same table the roots parse with, so
+	// a value that validates always applies.
+	if cfg.Bridge.LogLevel != "" {
+		if _, ok := ports.ParseLogLevel(cfg.Bridge.LogLevel); !ok {
+			ve.Addf("bridge.log_level: invalid value %q, must be one of: %s",
+				cfg.Bridge.LogLevel, strings.Join(ports.LogLevelNames(), ", "))
+		}
+	}
+
 	if cfg.Bridge.ShutdownTimeout != "" {
 		if d, err := time.ParseDuration(cfg.Bridge.ShutdownTimeout); err != nil {
 			ve.Addf("bridge.shutdown_timeout: invalid duration %q: %v", cfg.Bridge.ShutdownTimeout, err)

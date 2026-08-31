@@ -859,3 +859,46 @@ func TestValidator_SharedOutbox_BindingInheritsRouteSession(t *testing.T) {
 	}
 	_ = rt.Stop(context.Background())
 }
+
+// TestValidator_RejectsBackoffMultiplierBelowOne pins the runtime start
+// boundary to the same rule the config boundary enforces. A multiplier in (0,1)
+// survives WithDefaults (which fills only ZERO fields) and turns "exponential
+// backoff" into accelerating retry: every attempt fires sooner than the last
+// until the delay underflows, so a failing target is hammered hardest exactly
+// when it is least able to recover.
+func TestValidator_RejectsBackoffMultiplierBelowOne(t *testing.T) {
+	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
+	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+	cfg.Policy.Backoff.Multiplier = 0.5
+
+	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rt.Start(context.Background())
+	if err == nil {
+		t.Fatal("a decaying retry multiplier must fail start validation")
+	}
+	if !strings.Contains(err.Error(), "Multiplier") {
+		t.Fatalf("error must name the offending field: %v", err)
+	}
+}
+
+// TestValidator_AcceptsBackoffMultiplierOne is the negative control: a fixed
+// retry interval (multiplier exactly 1) is a legitimate policy, so the rule is
+// `>= 1`, not `> 1`.
+func TestValidator_AcceptsBackoffMultiplierOne(t *testing.T) {
+	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
+	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+	cfg.Policy.Backoff.Multiplier = 1.0
+
+	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := rt.Start(ctx); err != nil && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("multiplier 1.0 is a legal fixed retry interval: %v", err)
+	}
+}

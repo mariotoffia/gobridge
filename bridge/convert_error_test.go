@@ -122,7 +122,7 @@ func TestToRoutePolicy_InvalidJitter_ReturnsError(t *testing.T) {
 	for _, j := range []float64{-0.1, 1.5} {
 		_, err := toRoutePolicyE(ports.RouteDef{
 			Policy: ports.PolicyDef{
-				Backoff: ports.BackoffDef{Jitter: j},
+				Backoff: ports.BackoffDef{Jitter: jitter(j)},
 			},
 		})
 		if err == nil {

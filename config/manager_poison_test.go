@@ -74,12 +74,14 @@ func TestManager_Watch_PoisonedLayerDoesNotBlockOtherLayers(t *testing.T) {
 	// A emits a good update AFTER the poison was processed. Before the fix, B's
 	// poison would be cached and re-merged here, dropping A too. With the fix, B
 	// was never cached, so A applies cleanly.
-	chA <- &ports.BridgeConfig{Bridge: ports.BridgeSettings{LogLevel: "applied"}}
+	// A real log level: the field is a validated enum, and the base leaves it
+	// unset, so seeing it in the output proves A's update applied.
+	chA <- &ports.BridgeConfig{Bridge: ports.BridgeSettings{LogLevel: "debug"}}
 
 	select {
 	case cfg := <-out:
 		require.NotNil(t, cfg)
-		assert.Equal(t, "applied", cfg.Bridge.LogLevel, "good update from layer A must apply despite layer B's poison")
+		assert.Equal(t, "debug", cfg.Bridge.LogLevel, "good update from layer A must apply despite layer B's poison")
 		assert.Equal(t, "base", cfg.Bridge.ID, "base id must survive (poison never cached)")
 	case <-time.After(2 * time.Second):
 		t.Fatal("layer A good update was dropped: poisoned layer B blocked it")

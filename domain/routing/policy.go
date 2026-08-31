@@ -65,11 +65,17 @@ type BackoffPolicy struct {
 	Multiplier      float64
 	// JitterFactor is the fraction in [0,1] of the computed backoff delay
 	// that is randomized to de-correlate retries across competing senders
-	// (thundering-herd avoidance). 0 disables jitter and reproduces the
-	// deterministic exponential delay; 1 randomizes the full interval.
+	// (thundering-herd avoidance); 1 randomizes the full interval.
 	// Equal-jitter is applied by route.RetryDelay:
 	// delay = d*(1-JitterFactor) + rand[0, d*JitterFactor), clamped to
 	// [0, MaxInterval].
+	//
+	// The field is TRI-STATE, like every other field WithDefaults fills: zero
+	// means UNSET and takes DefaultJitterFactor. Opting out of jitter — keeping
+	// the deterministic exponential delay — is JitterDisabled, which WithDefaults
+	// leaves alone and RetryDelay reads as "no jitter". A single zero could not
+	// express both, and reading it as "no jitter" is what left every
+	// config-loaded route un-jittered while programmatic ones were not.
 	JitterFactor float64
 }
 
@@ -141,6 +147,17 @@ const (
 	// FirstAttemptedAt, before the outbox drainer poisons it to the DLQ. It is
 	// the age half of the poison AND-gate; the count half is MaxReplayAttempts.
 	DefaultReplayBudget = 15 * time.Minute
+	// DefaultJitterFactor is the recommended equal-jitter fraction: 20%
+	// de-correlates retries across competing senders without materially changing
+	// the backoff envelope. It is the ONE default — WithDefaults and
+	// NewDefaultBackoffPolicy both fill it — so a route loaded from a blueprint
+	// and one built programmatically retry with the same de-correlation.
+	DefaultJitterFactor = 0.2
+	// JitterDisabled is the explicit opt-out from retry jitter, kept distinct
+	// from the zero value so WithDefaults can tell "unset" from "no jitter,
+	// deliberately". Any value <= 0 reproduces the deterministic exponential
+	// delay on the retry path.
+	JitterDisabled = -1.0
 )
 
 // NewDefaultBackoffPolicy returns a fresh BackoffPolicy with the
@@ -151,9 +168,7 @@ func NewDefaultBackoffPolicy() BackoffPolicy {
 		InitialInterval: 1 * time.Second,
 		MaxInterval:     30 * time.Second,
 		Multiplier:      2.0,
-		// 20% equal-jitter de-correlates retries across competing senders
-		// without materially changing the backoff envelope.
-		JitterFactor: 0.2,
+		JitterFactor:    DefaultJitterFactor,
 	}
 }
 
@@ -237,6 +252,9 @@ func (p RoutePolicy) WithDefaults() RoutePolicy {
 	}
 	if p.Backoff.Multiplier == 0 {
 		p.Backoff.Multiplier = defaults.Multiplier
+	}
+	if p.Backoff.JitterFactor == 0 {
+		p.Backoff.JitterFactor = defaults.JitterFactor
 	}
 	if !p.OnExpired.IsValid() {
 		p.OnExpired = ExpiredDLQ
@@ -326,8 +344,20 @@ func (p RoutePolicy) Validate() error {
 	if p.Backoff.MaxInterval < 0 {
 		return invalidDuration("Backoff.MaxInterval", p.Backoff.MaxInterval)
 	}
-	if p.Backoff.Multiplier < 0 {
+	// A multiplier in (0,1) is decaying, not gentle, backoff: every retry fires
+	// SOONER than the one before it, so a persistently failing target is hammered
+	// at an accelerating rate until the delay underflows to zero. Exactly 1 is a
+	// legal fixed retry interval; zero still means "unset".
+	if p.Backoff.Multiplier != 0 && p.Backoff.Multiplier < 1 {
 		return invalidFloat("Backoff.Multiplier", p.Backoff.Multiplier)
+	}
+	// Jitter is a fraction in [0,1] or the explicit JitterDisabled opt-out.
+	// Anything else is a typo the retry path would silently absorb (RetryDelay
+	// clamps > 1 and treats every negative as "off"), so a `jitter: 20` meaning
+	// "20%" would randomize the FULL interval with no signal.
+	if p.Backoff.JitterFactor != JitterDisabled &&
+		(p.Backoff.JitterFactor < 0 || p.Backoff.JitterFactor > 1) {
+		return invalidFloat("Backoff.JitterFactor", p.Backoff.JitterFactor)
 	}
 	return nil
 }

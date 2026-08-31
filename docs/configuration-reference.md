@@ -98,7 +98,7 @@ classDiagram
 | `drain_timeout` | duration | no | `30s` | How long the supervisor lets a runtime drain when it STOPS one (shutdown, or a reconfiguration swap). It is the ceiling on `Runtime.Stop`, not a per-batch outbox budget. |
 | `per_record_drain_timeout` | duration | no | `3s` | Per-record budget in the outbox drain batch ceiling `min(batchCount * per_record_drain_timeout, max_drain_timeout)`. The ceiling may only RAISE a batch budget already floored at one full send, so it can never cut a send short. |
 | `max_drain_timeout` | duration | no | `10s` | Upper bound of that batch ceiling. Must be >= `per_record_drain_timeout`. |
-| `log_level` | string | no | `info` | Log level: `debug`, `info`, `warn`, `error` |
+| `log_level` | string | no | `info` | Log level: `debug`, `info`, `warn` (alias `warning`), `error`. Case-insensitive. Validated as a closed enum -- an unknown value is rejected at load instead of being silently ignored |
 
 ### `bridge.cluster` -- Cluster Config
 

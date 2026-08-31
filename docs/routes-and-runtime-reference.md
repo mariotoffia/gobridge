@@ -81,9 +81,14 @@ the permanent-failure sink. The default changed in this release -- see the
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `initial_interval` | duration | no | `1s` | First retry delay |
-| `max_interval` | duration | no | `30s` | Maximum retry delay |
-| `multiplier` | float | no | 2.0 | Exponential backoff multiplier |
+| `initial_interval` | duration | no | `1s` | First retry delay. Must not be negative |
+| `max_interval` | duration | no | `30s` | Maximum retry delay. Must not be negative |
+| `multiplier` | float | no | 2.0 | Exponential backoff multiplier. Must be **>= 1**: a value below 1 shrinks each delay, so retries accelerate instead of backing off. `1` is a fixed retry interval |
+| `jitter` | float | no | `0.2` | Equal-jitter fraction in `[0,1]` applied to each computed delay: `delay = d*(1-jitter) + rand[0, d*jitter)`. De-correlates retries across replicas so a whole fleet does not re-attempt a failed target on the same tick. **Omitting the field takes the `0.2` default; an explicit `jitter: 0` opts out** and keeps the deterministic exponential delay |
+
+Every field above is checked before a config change is written, so a bad retry
+policy is refused at the point you submit it rather than failing later, at the
+next apply or restart.
 
 ### `routes[].session` -- Route Session Management
 

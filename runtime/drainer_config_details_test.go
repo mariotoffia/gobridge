@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strconv"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/mariotoffia/gobridge/runtime/dlq"
 	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
 	"github.com/mariotoffia/gobridge/runtime/route"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -411,12 +413,14 @@ func TestOutboxDrainerConfig_DrainMaxBatchSize_FloorsToBatchSize(t *testing.T) {
 	cancel()
 }
 
-// TestRouteRunner_SharedOutbox_NilOutboxStore_Retries validates that
-// a SharedOutbox route with nil OutboxStore retries the delivery
-// instead of panicking. This configuration is normally caught by
-// Runtime.Start() validation; this test verifies the defensive
-// guard for direct RouteRunner construction.
-func TestRouteRunner_SharedOutbox_NilOutboxStore_Retries(t *testing.T) {
+// TestRouteRunner_SharedOutbox_NilOutboxStore_Terminal validates that a
+// shared_outbox route wired without an OutboxStore fails TERMINALLY instead of
+// retrying every delivery forever. A missing store is a wiring defect no
+// redelivery can fix, and the retry branch bypassed the replay cap, so the
+// route looped at one second per message behind green liveness. Runtime.Start
+// validation rejects this shape; the guard covers direct RouteRunner
+// construction, which is the only way to reach it.
+func TestRouteRunner_SharedOutbox_NilOutboxStore_Terminal(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
 
@@ -438,10 +442,30 @@ func TestRouteRunner_SharedOutbox_NilOutboxStore_Retries(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { _ = runner.Run(ctx) }()
+	runErr := make(chan error, 1)
+	go func() { runErr <- runner.Run(ctx) }()
 
 	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-nil-outbox", Payload: []byte("z")}))
 	_ = receiver.Emit(ctx, del)
 
-	waitFor(t, time.Second, "delivery retried (no outbox store)", del.IsRetried)
+	// The wedge latches inside the delivery goroutine; once it has, the route
+	// refuses every further delivery with the terminal sentinel instead of
+	// spawning more doomed work. Each probe before the latch takes the same
+	// undeliverable path and wedges, so the condition converges.
+	waitFor(t, time.Second, "route refuses deliveries after wedging", func() bool {
+		probe := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-probe", Payload: []byte("z")}))
+		return errors.Is(receiver.Emit(ctx, probe), route.ErrRouteTerminal)
+	})
+
+	if del.IsRetried() {
+		t.Fatal("a wiring defect must not be retried: no redelivery can supply the missing store")
+	}
+	if del.IsAcked() {
+		t.Fatal("an undeliverable route must never ack the source")
+	}
+
+	cancel()
+	if err := wait.RequireReceive(t, runErr, 2*time.Second); !errors.Is(err, route.ErrRouteTerminal) {
+		t.Fatalf("Run = %v, want ErrRouteTerminal so the supervisor escalates instead of restarting the route", err)
+	}
 }

@@ -442,18 +442,34 @@ func validateRoutePolicyBuildFields(ve *ports.BlueprintValidationError, i int, p
 			ve.Addf("routes[%d].policy.replay_budget: must not be negative, got %s", i, p.ReplayBudget)
 		}
 	}
-	if p.Backoff.InitialInterval != "" {
-		if _, err := time.ParseDuration(p.Backoff.InitialInterval); err != nil {
-			ve.Addf("routes[%d].policy.backoff.initial_interval: invalid duration %q: %v", i, p.Backoff.InitialInterval, err)
+	// time.ParseDuration accepts a leading '-', and a negative retry interval is
+	// nonsensical in both directions: a negative max_interval never clamps
+	// (route.retryDelay gates the clamp on `> 0`), so the exponential grows to
+	// +Inf and feeds Retry a near-infinite or negative delay.
+	for _, f := range []struct{ name, val string }{
+		{"initial_interval", p.Backoff.InitialInterval},
+		{"max_interval", p.Backoff.MaxInterval},
+	} {
+		if f.val == "" {
+			continue
+		}
+		if d, err := time.ParseDuration(f.val); err != nil {
+			ve.Addf("routes[%d].policy.backoff.%s: invalid duration %q: %v", i, f.name, f.val, err)
+		} else if d < 0 {
+			ve.Addf("routes[%d].policy.backoff.%s: must not be negative, got %s", i, f.name, f.val)
 		}
 	}
-	if p.Backoff.MaxInterval != "" {
-		if _, err := time.ParseDuration(p.Backoff.MaxInterval); err != nil {
-			ve.Addf("routes[%d].policy.backoff.max_interval: invalid duration %q: %v", i, p.Backoff.MaxInterval, err)
-		}
+	// A multiplier in (0,1) is decaying, not gentle, backoff: each retry fires
+	// SOONER than the last, so a failing target is hammered hardest exactly when
+	// it is least able to recover. Exactly 1 is a legal fixed retry interval.
+	if p.Backoff.Multiplier != 0 && p.Backoff.Multiplier < 1 {
+		ve.Addf("routes[%d].policy.backoff.multiplier: must be >= 1 (below 1 accelerates retries instead of backing off), got %v",
+			i, p.Backoff.Multiplier)
 	}
-	if p.Backoff.Jitter != 0 && (p.Backoff.Jitter < 0 || p.Backoff.Jitter > 1) {
-		ve.Addf("routes[%d].policy.backoff.jitter: must be in [0,1], got %v", i, p.Backoff.Jitter)
+	// Omitted jitter takes the recommended default; an explicit 0 opts out.
+	// Both are legal, so only a present, out-of-range fraction is rejected.
+	if p.Backoff.Jitter != nil && (*p.Backoff.Jitter < 0 || *p.Backoff.Jitter > 1) {
+		ve.Addf("routes[%d].policy.backoff.jitter: must be in [0,1], got %v", i, *p.Backoff.Jitter)
 	}
 }
 
@@ -466,6 +482,11 @@ func validateSessionDurationFields(ve *ports.BlueprintValidationError, prefix st
 		{"lease_ttl", sess.LeaseTTL},
 		{"renew_interval", sess.RenewInterval},
 		{"step_down_grace", sess.StepDownGrace},
+		// broker_health_step_down is consumed at build time and was rejected
+		// only there, so an invalid value passed the config transaction and
+		// failed at apply — after the durable write, on the rollback/divergence
+		// path. The builder requires a POSITIVE duration; so does this.
+		{"broker_health_step_down", sess.BrokerHealthStepDown},
 	} {
 		if f.val == "" {
 			continue

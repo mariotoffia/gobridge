@@ -442,15 +442,16 @@ func validateTimeouts(ve *ValidationError, prefix string, entry *routeEntry, has
 // side drifting is caught.
 const dlqWriteBudget = 10500 * time.Millisecond
 
-// validateBackoff rejects negative Backoff fields. WithDefaults fills only
-// ZERO fields, so a negative interval/multiplier survives to here. A negative
-// MaxInterval is the dangerous one: route.retryDelay only clamps exponential
-// growth behind a `> 0` MaxInterval guard, so a negative cap never fires and
-// float64 growth reaches time.Duration(+Inf) (implementation-defined, negative on
-// amd64/arm64), feeding Retry a negative/near-infinite delay. InitialInterval and
-// Multiplier are rejected for the same fail-loud-on-bad-config posture. The check
-// mirrors domain/routing.RoutePolicy.Validate, which the runtime start path does
-// not call.
+// validateBackoff rejects a Backoff block that is not a backoff. WithDefaults
+// fills only ZERO fields, so a negative interval or a below-one multiplier
+// survives to here. A negative MaxInterval is the dangerous one: route.retryDelay
+// only clamps exponential growth behind a `> 0` MaxInterval guard, so a negative
+// cap never fires and float64 growth reaches time.Duration(+Inf)
+// (implementation-defined, negative on amd64/arm64), feeding Retry a
+// negative/near-infinite delay. A multiplier in (0,1) is the inverse defect: it
+// makes each retry fire sooner than the last, hammering a failing target at an
+// accelerating rate. The checks mirror domain/routing.RoutePolicy.Validate,
+// which the runtime start path does not call.
 func validateBackoff(ve *ValidationError, prefix string, policy routing.RoutePolicy) {
 	if policy.Backoff.InitialInterval < 0 {
 		ve.add(prefix + fmt.Sprintf("Backoff.InitialInterval (%s) must not be negative", policy.Backoff.InitialInterval))
@@ -458,8 +459,16 @@ func validateBackoff(ve *ValidationError, prefix string, policy routing.RoutePol
 	if policy.Backoff.MaxInterval < 0 {
 		ve.add(prefix + fmt.Sprintf("Backoff.MaxInterval (%s) must not be negative", policy.Backoff.MaxInterval))
 	}
-	if policy.Backoff.Multiplier < 0 {
-		ve.add(prefix + fmt.Sprintf("Backoff.Multiplier (%g) must not be negative", policy.Backoff.Multiplier))
+	if policy.Backoff.Multiplier != 0 && policy.Backoff.Multiplier < 1 {
+		ve.add(prefix + fmt.Sprintf(
+			"Backoff.Multiplier (%g) must be >= 1; below 1 accelerates retries instead of backing off",
+			policy.Backoff.Multiplier))
+	}
+	if policy.Backoff.JitterFactor != routing.JitterDisabled &&
+		(policy.Backoff.JitterFactor < 0 || policy.Backoff.JitterFactor > 1) {
+		ve.add(prefix + fmt.Sprintf(
+			"Backoff.JitterFactor (%g) must be a fraction in [0,1] or routing.JitterDisabled",
+			policy.Backoff.JitterFactor))
 	}
 }
 
