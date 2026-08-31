@@ -266,6 +266,22 @@ func (s *Server) handleInject(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "route not found")
 			return
 		}
+		if errors.Is(err, ports.ErrInjectNotDelivered) {
+			// The route PROCESSED the message and settled it without delivering
+			// it — dropped by its failure policy, discarded by a filter, already
+			// expired, or written to the DLQ. That is the route behaving as
+			// configured, so it is neither "injected" (which would claim a
+			// delivery that never happened) nor a server fault. Report it as an
+			// unprocessable outcome naming the reason, so an operator exercising
+			// a route sees what the route actually did.
+			s.emitAudit(r, "route.inject", "route", routeID, "not_delivered", map[string]any{
+				"envelope_id": env.ID(),
+				"error":       err.Error(),
+			})
+			writeErr(w, http.StatusUnprocessableEntity,
+				"message processed but not delivered: "+err.Error())
+			return
+		}
 		s.emitAudit(r, "route.inject", "route", routeID, "failure", map[string]any{
 			"envelope_id": env.ID(),
 			"error":       err.Error(),

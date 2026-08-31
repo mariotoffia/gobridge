@@ -9,6 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/route"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
@@ -115,6 +116,10 @@ func (rt *Runtime) RouteLocator() ports.RouteLocator {
 // pipeline (processors, destination resolution, send/outbox). The
 // envelope is cloned to prevent caller mutation. An ID is assigned if
 // the envelope's ID field is empty.
+//
+// A nil error means the message was DELIVERED. When the route settled it
+// terminally without delivering it — dropped by policy, filtered, expired, or
+// written to the DLQ — the cause is returned as an error.
 func (rt *Runtime) Inject(ctx context.Context, routeID string, env *messaging.Envelope) error {
 	return rt.injectToBinding(ctx, routeID, "", env, "")
 }
@@ -185,6 +190,22 @@ func (rt *Runtime) InjectRedrive(ctx context.Context, routeID, bindingID string,
 	// and correlation keys are kept (they do not suppress delivery); provenance is
 	// preserved via the causation link injectToBinding stamps from originalID.
 	fresh.DeleteHeader(messaging.HeaderDeduplicationID)
+	// The adapter-generated identity marker must not ride along either. It means
+	// "the SOURCE supplied no stable identity", which makes the message
+	// UNCOUNTABLE: the replay ledger cannot follow it across redeliveries, so the
+	// route sinks it terminally on its FIRST transient failure. A redrive is
+	// operator-issued under the fresh, bridge-minted ID above, so it is countable
+	// and must get the route's normal retry budget instead of being dropped on
+	// one downstream blip.
+	fresh.DeleteHeader(messaging.HeaderGeneratedID)
+	// Nor may the SOURCE transport's redelivery counter ride along. On a
+	// count-bearing source (SQS, Azure Service Bus, AMQP 1.0) the route reads
+	// that counter in preference to its own ledger, and the entry being redriven
+	// is very often one the counter itself poisoned — so inheriting it puts the
+	// redrive over max_replay_attempts before its first attempt, and the replay
+	// is sunk on its first hiccup. A redrive is a fresh delivery attempt and
+	// carries no redelivery history.
+	route.StripInboundReceiveCounts(fresh)
 	return rt.injectToBinding(ctx, routeID, bindingID, fresh, originalID)
 }
 
@@ -214,7 +235,22 @@ func (rt *Runtime) injectToBinding(ctx context.Context, routeID, bindingID strin
 		}
 	}
 
-	return entry.runner.HandleDelivery(ctx, &syntheticDelivery{env: env, binding: bindingID, redrivenFrom: redrivenFrom})
+	del := &syntheticDelivery{env: env, binding: bindingID, redrivenFrom: redrivenFrom}
+	if err := entry.runner.HandleDelivery(ctx, del); err != nil {
+		return err
+	}
+	// A synthetic Ack always succeeds, so a delivery the route settled
+	// TERMINALLY without delivering it — dropped by policy, filtered, expired,
+	// or written to the DLQ — would otherwise look exactly like a successful
+	// send. Report it as a failure so a caller that treats success as "the
+	// message is on its way" is not misled; the admin DLQ redrive relies on this
+	// to keep the original entry instead of deleting the last copy of a message
+	// that was never delivered.
+	if cause := del.terminalFailure(); cause != nil {
+		return fmt.Errorf("runtime: route %q settled the injected message terminally without delivering it (%v): %w",
+			routeID, cause, ports.ErrInjectNotDelivered)
+	}
+	return nil
 }
 
 // syntheticDelivery implements ports.Delivery for programmatically
@@ -231,6 +267,11 @@ type syntheticDelivery struct {
 	// provenance (HeaderCausationID) AFTER the ingress reserved-header strip,
 	// so external messages can never spoof it.
 	redrivenFrom string
+	// terminal records the cause of a TERMINAL settle that did not deliver the
+	// message (drop, filter, expiry, DLQ write). The route runner reports it
+	// through RecordTerminalFailure; injectToBinding turns it into an error.
+	// Written and read on the single goroutine that runs HandleDelivery.
+	terminal error
 }
 
 func (d *syntheticDelivery) Envelope() *messaging.Envelope { return d.env }
@@ -247,3 +288,17 @@ func (d *syntheticDelivery) BindingOverride() string { return d.binding }
 // RedrivenFrom satisfies the route runner's redriveProvenancer contract,
 // exposing the original envelope ID of a redriven message out-of-band.
 func (d *syntheticDelivery) RedrivenFrom() string { return d.redrivenFrom }
+
+// RecordTerminalFailure satisfies the route runner's terminalFailureRecorder
+// contract: the runner calls it when it settles this delivery terminally
+// WITHOUT delivering the message. Only the first cause is kept — a delivery
+// settles terminally exactly once.
+func (d *syntheticDelivery) RecordTerminalFailure(cause error) {
+	if d.terminal == nil {
+		d.terminal = cause
+	}
+}
+
+// terminalFailure reports why the message was settled terminally without being
+// delivered, or nil when it was delivered.
+func (d *syntheticDelivery) terminalFailure() error { return d.terminal }

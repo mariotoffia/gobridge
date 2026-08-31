@@ -120,6 +120,58 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ### Fixed
 
+- **A shutdown could acknowledge and discard in-flight messages.** When the
+  bridge cancelled a delivery — a SIGTERM, a reconfiguration swap that outran
+  the drain budget, or a receiver restarting its route — the cancellation
+  reached the pipeline as an ordinary recoverable error and was fed to the
+  replay-cap gate. For a message whose identity the source did not supply (the
+  common MQTT publish) that gate reports "already at the cap" on the first
+  failure, so under `on_permanent_failure: drop`, or on a route with no DLQ
+  store, the message was dropped and acknowledged. Every rolling restart could
+  discard whatever was in flight. Cancellation is now recognised at the entry of
+  every recoverable dispatch branch (send, processor chain, destination resolve,
+  outbox depth check, outbox build, outbox persist) and in the delivery-panic
+  recovery: the delivery is left **unsettled**, so the source redelivers it. A
+  send that merely exceeded its own `send_timeout` while the delivery context
+  stayed live is unchanged — that is a genuine target failure.
+
+- **A DLQ redrive that was never delivered deleted its own evidence.** The
+  admin redrive path deletes an entry once the inject "succeeds", but an
+  injected message is settled through a synthetic delivery whose acknowledgement
+  always succeeds — so a replay the route DROPPED or wrote back to the DLQ read
+  as a successful delivery, and the entry (the message's last copy) was deleted
+  and counted on `DLQRedrives`. The route now reports a terminal settle that
+  delivered nothing, `Runtime.Inject`/`InjectRedrive` surface it as an error,
+  and the admin API answers 207 with the reason, counts `DLQRedriveFailures`,
+  and leaves the entry in place. A redriven message also no longer inherits the
+  original's redelivery history — neither the adapter-generated identity marker
+  (`x-bridge.generated-id`) nor the source transport's redelivery counter
+  (`sqs.ApproximateReceiveCount` and its siblings, which are usually what
+  exhausted the replay cap in the first place). A redrive is operator-issued
+  under a fresh bridge-minted ID, so it gets the route's normal retry budget
+  instead of being sunk on the first downstream blip.
+
+  `POST /api/v1/admin/routes/{routeID}/inject` gains the same honesty: a message
+  the route processed but did not deliver now answers **422** with the reason and
+  audits outcome `not_delivered`, instead of reporting `{"status":"injected"}`.
+  Programmatically, `ports.RuntimeCommand.Inject` returns an error wrapping the
+  new `ports.ErrInjectNotDelivered` for that case; a nil error now means the
+  message was delivered.
+
+- **Retries were charged and paced by the wrong counter.** The send path
+  computed its backoff from the source transport's native redelivery count, so a
+  source that supplies none (MQTT, AMQP 0-9-1) retried at `initial_interval`
+  forever instead of backing off; it now uses the same attempt count every other
+  transient path uses. Separately, a retry the message did not cause — a full
+  outbox partition, a failed outbox depth query, or a DLQ store that refused the
+  record — spent the message's replay budget, so a message that only queued
+  behind a slow drainer could be poisoned (DLQ'd, or dropped under
+  `on_permanent_failure: drop`) on its first genuine transient error. Those
+  retries no longer charge the budget — nor does an outbox `Persist` that hit
+  the bounded store-operation deadline, which is the same slow-store fault. See
+  [routes-and-runtime-reference.md](docs/routes-and-runtime-reference.md) —
+  "What counts as a retry attempt".
+
 - **Routes loaded from a blueprint retried without the recommended jitter.** The
   20 % equal-jitter that de-correlates retries across replicas lived only in
   `NewDefaultBackoffPolicy`, which a config-loaded route never calls, so an

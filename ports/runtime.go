@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -327,14 +328,37 @@ type RuntimeCommand interface {
 	// expired ctx still runs the cancel-and-return fallback promptly.
 	Stop(ctx context.Context) error
 	// Inject sends a synthetic envelope through the named route's
-	// delivery pipeline. Returns shared.ErrNotFound when the route
-	// does not exist.
+	// delivery pipeline. A nil error means the message was DELIVERED.
+	//
+	// An error wrapping ErrInjectNotDelivered means the route processed the
+	// message and settled it WITHOUT delivering it. Any other error is a
+	// genuine injection failure.
+	// Returns shared.ErrNotFound when the route does not exist, and a
+	// non-nil error when the route settled the message terminally without
+	// delivering it — dropped by policy, filtered, expired, or written to
+	// the DLQ. An injected message is settled through a synthetic delivery
+	// whose acknowledgement always succeeds, so without that distinction a
+	// discarded message would be indistinguishable from a delivered one.
 	Inject(ctx context.Context, routeID string, env *messaging.Envelope) error
 	// DLQAdmin returns the configured DLQ admin port, or nil when no
 	// DLQ is wired. It carries the destructive dead-letter operations
 	// (write, delete, delete-by-filter, purge) kept off the read port.
 	DLQAdmin() DLQAdmin
 }
+
+// ErrInjectNotDelivered marks the outcome of an Inject whose message the route
+// PROCESSED but did not DELIVER: it was dropped by the route's failure policy,
+// discarded by a filter processor, already expired, or written to the dead-letter
+// queue. The message never reached a destination, so it is not a success — but
+// the route did exactly what it was configured to do, so it is not a fault of
+// the caller or of the bridge either.
+//
+// It exists because an injected message is settled through a synthetic delivery
+// whose acknowledgement always succeeds. Without this distinction a discarded
+// message is indistinguishable from a delivered one, and the admin DLQ redrive
+// deletes the entry — the message's last copy — after a replay that went
+// nowhere. Implementations wrap it around the settling cause.
+var ErrInjectNotDelivered = errors.New("ports: injected message was settled without being delivered")
 
 // Runtime aggregates the read- and write-side runtime ports for
 // driving adapters that need both. Most adapters should depend on

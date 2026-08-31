@@ -492,7 +492,11 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 		// fresh deep copy.
 		env := entry.Snapshot()
 		if err := injectRedrive(opCtx, s.logger, rt, entry.RouteID(), entry.BindingID(), env); err != nil {
-			msg := "inject failed"
+			// Carry the cause: a redrive can fail because the route DROPPED or
+			// re-DLQ'd the replay (the runtime reports a terminal settle that
+			// delivered nothing), and "inject failed" alone leaves the operator
+			// with no way to tell that from a missing route.
+			msg := "inject failed: " + err.Error()
 			switch {
 			case errors.Is(err, errRedriveUnsafeSharedOutbox):
 				// The runtime cannot confirm a non-duplicate enqueue for this

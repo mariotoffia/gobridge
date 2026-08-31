@@ -233,7 +233,13 @@ stripped automatically. Request body limited to 1 MB.
 
 An optional `id` field supplies the envelope ID; omit it for a server-generated
 one (an explicit empty string is a 400). The response is
-`{"status":"injected","envelope_id":...}`. A **caller-supplied** `id` can collide
+`{"status":"injected","envelope_id":...}`, and it means the message reached its
+destination. When the route instead PROCESSED the message and settled it without
+delivering it -- dropped by its failure policy, discarded by a filter processor,
+already expired, or written to the DLQ -- the endpoint answers **422** with the
+reason, rather than reporting a delivery that never happened. 422 says the route
+behaved as configured; a 500 still means the inject itself failed. A
+**caller-supplied** `id` can collide
 with a completed/poisoned outbox row on a `shared_outbox` route, where the
 re-persist is swallowed as a duplicate and nothing is sent; the response then
 carries a non-fatal **`warning`** field flagging the possible no-op
@@ -333,10 +339,24 @@ binding that failed, not to its healthy siblings. It is **not** a header:
 at ingress before any consumption site reads them, so a header cannot steer the
 replay.
 
+An inject is "confirmed" only when the route actually delivered the message. A
+replay the route **dropped** (`on_permanent_failure: drop`), filtered, expired,
+or wrote back to the DLQ is reported per entry in the `errors` array, counted on
+`DLQRedriveFailures`, and its entry is **kept** -- deleting it would destroy the
+message and the only record that it failed. On a route that retains failures,
+such a redrive also writes a NEW entry for the new failure, so one message shows
+two entries; the newer one's envelope carries `x-bridge.causation-id` set to the
+original envelope ID.
+
 Redrive uses **redrive-safe injection** (`InjectRedrive`) where the runtime
 supports it: the message is re-issued under a fresh envelope ID with the
 original stamped as provenance (`x-bridge.causation-id`). The re-issue also
-**drops the stale transport dedup key** (`x-bridge.dedup-id`): a redrive is a
+drops the source's **adapter-generated identity marker**
+(`x-bridge.generated-id`): that marker means the SOURCE supplied no stable
+identity, which makes a message uncountable and sinks it terminally on its first
+transient failure. A redrive is operator-issued under the fresh bridge-minted
+ID, so it is countable and gets the route's normal retry budget. The re-issue
+also **drops the stale transport dedup key** (`x-bridge.dedup-id`): a redrive is a
 deliberate operator re-issue, so the original dedup id -- whose whole purpose is
 to *suppress* re-delivery (e.g. it maps to an SQS FIFO `MessageDeduplicationId`)
 -- must not ride along, or an idempotent/FIFO sender would swallow the "fresh"
@@ -493,6 +513,10 @@ Notable actions include `bridge.status`, `bridge.start`, `bridge.stop`,
 | `auth.throttled` | A request is rejected with 429 because the client is over its failure limit |
 | `dlq.read_payload` | A single DLQ entry (with full payload) is read via `GET .../dlq/messages/{id}` |
 | `dlq.redrive.begin` | Emitted (outcome `pending`) before the inject→delete loop of a redrive batch, recording the requested IDs |
+
+`route.inject` records outcome `not_delivered` (alongside `success` and
+`failure`) when the route processed the message and settled it without
+delivering it.
 
 ## Monitor API Endpoints
 

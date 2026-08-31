@@ -432,17 +432,28 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 							}
 							return
 						}
-						// Propagate caller ctx for trace/correlation values and to
-						// honour any deadline the caller already set. If the caller
-						// ctx is cancelled, strip cancellation but keep values so
-						// the retry (ack/nack to the source) can still complete.
-						var retryParent context.Context
+						// A panic while the BRIDGE is cancelling this delivery —
+						// shutdown, a reconfiguration swap, a route restart — is
+						// not evidence that the message is bad; the dependency the
+						// panicking code touched is most likely the one being torn
+						// down. Leave the delivery UNSETTLED so the source
+						// redelivers it, exactly as every recoverable dispatch
+						// branch does (abandonIfCancelled). Recovering it here
+						// would instead run the replay-cap decision, which reports
+						// "already at the cap" on the FIRST occurrence for an
+						// adapter-generated identity and would DLQ the message —
+						// or discard it under on_permanent_failure=drop or with no
+						// DLQ store.
 						if ctx.Err() != nil {
-							retryParent = context.WithoutCancel(ctx)
-						} else {
-							retryParent = ctx
+							if r.logger != nil {
+								r.logger.Warn("panic while the delivery context was cancelled; leaving the delivery unsettled for redelivery",
+									"route", r.routeID, "cause", rec)
+							}
+							return
 						}
-						retryCtx, retryCancel := context.WithTimeout(retryParent, r.panicRetryTimeout)
+						// Propagate caller ctx for trace/correlation values and to
+						// honour any deadline the caller already set.
+						retryCtx, retryCancel := context.WithTimeout(ctx, r.panicRetryTimeout)
 						defer retryCancel()
 						// Finding 2: panics outside RunChain (resolver, hooks,
 						// tracer, metrics) reach here. Route the recovery through

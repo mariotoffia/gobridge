@@ -213,7 +213,7 @@ func (r *RouteRunner) buildOutboxRecords(ctx context.Context, env *messaging.Env
 	// untouched; NewOutboxRecords shares this finalized immutable snapshot
 	// across fan-out records.
 	persisted := env.Clone()
-	stripInboundReceiveCounts(persisted)
+	StripInboundReceiveCounts(persisted)
 
 	// Continue the distributed trace across the store-and-forward hop (OTEL):
 	// stamp THIS bridge's active ingress span onto the persisted envelope's W3C

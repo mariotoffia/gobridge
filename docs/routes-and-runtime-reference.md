@@ -90,6 +90,34 @@ Every field above is checked before a config change is written, so a bad retry
 policy is refused at the point you submit it rather than failing later, at the
 next apply or restart.
 
+#### What counts as a retry attempt
+
+Two separate things are counted, and only some events count towards either.
+
+**The attempt number that drives the backoff ladder** is the source transport's
+own redelivery count when the transport supplies one (SQS, Azure Service Bus,
+AMQP 1.0), and the bridge's own per-message attempt count when it does not
+(MQTT, AMQP 0-9-1, HTTP). Both climb on each redelivery, so the delay grows for
+every source. A source with no redelivery counter is no longer stuck retrying at
+`initial_interval` forever.
+
+**The replay budget** -- the count `max_replay_attempts` compares against -- is
+spent only by a failure of the MESSAGE itself: a refused send, a failing
+processor, a destination that cannot be resolved. It is deliberately NOT spent
+by:
+
+| Event | Why it does not count |
+|---|---|
+| The outbox partition is at capacity, or its depth query failed | The message queued behind a slow drainer. It was never attempted, so it must not arrive at the cap already exhausted and be poisoned on its first real failure |
+| The outbox write exceeded the store-operation deadline | The store was slow. The same message is written the moment it recovers |
+| The DLQ store refused the record | The DLQ backend is unhealthy. The message is redelivered so the evidence can be written, but the message did not fail again |
+| The bridge cancelled the delivery -- shutdown, a reconfiguration swap, a route restart, including a panic that happened while it was being torn down | The bridge stopped its own work. Nothing was learned about the message |
+
+A cancelled delivery is left **unsettled**: it is never acknowledged, dropped or
+written to the DLQ, so the source redelivers it after the restart. This holds
+even under `on_permanent_failure: drop`, and it is the reason a rolling restart
+does not discard in-flight messages.
+
 ### `routes[].session` -- Route Session Management
 
 For routes targeting exclusive sessions. Manages lease acquisition and outbox draining.

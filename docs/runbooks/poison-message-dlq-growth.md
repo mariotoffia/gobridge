@@ -83,6 +83,26 @@ the entry's `LastError` before you act.
     "http://<host>:8080/api/v1/admin/dlq/redrive"
   ```
 
+  **A redrive that is not delivered keeps its entry.** An entry is deleted only
+  after the route confirms the replay reached its destination. If the redriven
+  message is dropped (`on_permanent_failure: drop`), filtered, expired, or
+  written back to the DLQ, the redrive is reported in the `errors` array with
+  the reason, counted on `DLQRedriveFailures`, and the original entry stays
+  where it was. Nothing is lost by retrying too early -- the worst case is a
+  207 and an unchanged DLQ.
+
+  Two consequences to expect:
+
+  - On a route that retains failures, a failed redrive writes a NEW entry for
+    the new failure while the original stays. You will see two entries for one
+    message. Delete the older one once you have confirmed they are the same
+    message (the new entry's envelope carries `x-bridge.causation-id` set to the
+    original envelope ID).
+  - A redrive is an operator action, not a broker redelivery, so the replayed
+    message is re-issued under a fresh bridge-minted envelope ID and gets the
+    route's normal retry budget even when the original message came from a
+    source that supplies no stable identity (the common MQTT publish).
+
 - **Confirmed unrecoverable entries**: delete by ID (max 1000) or by filter
   (an empty filter requires `confirm_delete_all`). Purge the entire DLQ only with
   `confirm_purge_all: true`

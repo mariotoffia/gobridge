@@ -101,7 +101,7 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 
 | Chunk | Status | Primary issue IDs |
 |---|---|---|
-| 1 | done | HIGH-9, HIGH-10 |
+| 1 | done | HIGH-9 (residual open, rechecked in 17), HIGH-10 |
 | 2 | done | MEDIUM-7, MEDIUM-9, MEDIUM-10, MEDIUM-11, LOW-6, NEW-LOW-4 |
 | 3 | done | HIGH-1, HIGH-8, NEW-HIGH-1, NEW-HIGH-2, LOW-17 |
 | 4 | done | NEW-HIGH-3, MEDIUM-1 (residual open), MEDIUM-13, MEDIUM-14, NEW-MEDIUM-4, LOW-10 |
@@ -124,7 +124,7 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 | 21 | waiting | DOC-8, DOC-15, NEW-LOW-7, NEW-LOW-8, LOW-26 |
 | 22 | waiting | DOC-2, DOC-9, DOC-11 |
 | 23 | waiting | TEST-1, TEST-2, TEST-4, TEST-5, TEST-6, TEST-7, TEST-8, TEST-9, TEST-10, TEST-11, TEST-12 |
-| 24 | waiting | HIGH-16, MEDIUM-21, LOW-22, LOW-23 |
+| 24 | done | HIGH-16, MEDIUM-21, LOW-22, LOW-23 |
 | 25 | waiting | HIGH-17, MEDIUM-24, LOW-21 |
 
 ## Phase 0: Stop unsafe claims and freeze accepted contracts
@@ -321,13 +321,14 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 - **Dependencies:** Chunk 3. Schedule immediately after Chunk 5 — HIGH-16 is a loss path reachable on every SIGTERM until Chunk 11 lands.
 - **Files/packages:** `runtime/route/dispatch.go`, `runtime/route/leakguard.go`, `runtime/bridge_routes.go`, `httpapi/admin_dlq.go`, `domain/shared/errors.go` (classification helper only if needed).
 - **Tests:** `runtime/route/bounded_ctx_test.go`, `runtime/route/dispatch_test.go`, `runtime/route/mqtt_core1_test.go`, `runtime/redrive_fresh_id_test.go`, `httpapi/admin_dlq_redrive_test.go`.
-- [ ] Add failing tests: cancelled delivery context + generated-ID envelope + `on_permanent_failure: drop` (and no-DLQ-store) for send, processor, resolver, outbox build and persist paths — assert no ACK and no drop metric; a DLQ redrive of an adapter-identified entry whose first send fails transiently under drop policy — assert the entry is not deleted and the admin response is not success; a re-DLQ'd redrive reports non-success; send-path backoff grows with the ledger attempt for a count-less source; outbox-at-capacity and DLQ-write-failure retries do not advance the replay ledger.
-- [ ] Run `go test -race -count=1 ./runtime/... ./httpapi -run 'Test.*(Cancel|Redrive|Backoff|ReplayBudget)'`; expect current ACK/drop and success responses.
-- [ ] Return early from every recoverable branch when `ctx.Err() != nil` or the error is `context.Canceled` (mirror the DeadlineExceeded branch); delete `messaging.HeaderGeneratedID` in `InjectRedrive`; make a synthetic delivery's terminal drop/re-DLQ surface as a non-success outcome to admin; use `effectiveAttempt` on the send path; stop charging backpressure/DLQ-write-failure retries to the ledger.
-- [ ] Re-run the exact failing command above; expect pass.
-- [ ] Run `make test`.
-- [ ] Update `docs/routes-and-runtime-reference.md` (retry accounting) and the DLQ redrive runbook (dropped redrive keeps evidence).
-- [ ] Accept when no cancellation can settle a message terminally, a dropped redrive keeps its DLQ entry, and retry backoff/budget reflect only genuine message failures.
+- [x] Add failing tests: cancelled delivery context + generated-ID envelope + `on_permanent_failure: drop` (and no-DLQ-store) for send, processor, resolver, outbox build and persist paths — assert no ACK and no drop metric; a DLQ redrive of an adapter-identified entry whose first send fails transiently under drop policy — assert the entry is not deleted and the admin response is not success; a re-DLQ'd redrive reports non-success; send-path backoff grows with the ledger attempt for a count-less source; outbox-at-capacity and DLQ-write-failure retries do not advance the replay ledger.
+- [x] Run `go test -race -count=1 ./runtime/... ./httpapi -run 'Test.*(Cancel|Redrive|Backoff|ReplayBudget)'`; expect current ACK/drop and success responses. *(Tests are named after the behaviour they pin: the real selectors are `-run 'TestCancelledDelivery|TestDeliveryPanic_UnderCancellation|TestSendRetryBackoff|TestOutboxBackpressure|TestDLQWriteFailureRetry|TestPersistTimeout|TestInjectRedrive|TestInject_'` for `./runtime/...` and `-run 'TestHandleDLQRedrive|TestHandleInject_'` for `./httpapi`.)*
+- [x] Return early from every recoverable branch when `ctx.Err() != nil` or the error is `context.Canceled` (mirror the DeadlineExceeded branch); delete `messaging.HeaderGeneratedID` in `InjectRedrive`; make a synthetic delivery's terminal drop/re-DLQ surface as a non-success outcome to admin; use `effectiveAttempt` on the send path; stop charging backpressure/DLQ-write-failure retries to the ledger.
+- [x] Re-run the exact failing command above; expect pass.
+- [x] Run `make test`.
+- [x] Update `docs/routes-and-runtime-reference.md` (retry accounting) and the DLQ redrive runbook (dropped redrive keeps evidence).
+- [x] Accept when no cancellation can settle a message terminally, a dropped redrive keeps its DLQ entry, and retry backoff/budget reflect only genuine message failures.
+- **Landed:** `abandonIfCancelled` guards every recoverable dispatch branch — send, processor chain, destination resolve, outbox depth check (both the failed query and the at-capacity arm), outbox build, outbox persist — plus the delivery-panic recovery in `runner.go`, whose cancel-stripping `WithoutCancel` retry was deleted. The delivery is left unsettled and the returned error carries the cancellation. The scope is pinned by `TestSendTimeout_StillPoisonsUncountableSource`: a send that blew only its own `SendTimeout` keeps its terminal behaviour. `retryOrFallback` split into a charged and an `Uncharged` variant; the uncharged one takes outbox-at-capacity, the depth-query failure, every DLQ-write failure, and the bounded-store `Persist` deadline (the same slow-store fault as the depth query). Every `RetryDelay` now reads `effectiveAttempt`, so a count-less source backs off. `InjectRedrive` strips `x-bridge.generated-id` AND the source transport's redelivery counters (via the newly exported `route.StripInboundReceiveCounts`) — the latter is usually what exhausted the cap, so inheriting it made the redrive a no-op. A new `terminalFailureRecorder` lets a synthetic delivery learn it was settled without delivery; `Inject`/`InjectRedrive` return it wrapped in the new `ports.ErrInjectNotDelivered`, the DLQ redrive keeps the entry and answers 207, and `POST .../inject` answers 422 with the reason (audit outcome `not_delivered`) instead of claiming a delivery. Tests are mutation-checked and cover both DLQ shapes (store and no store) because the DLQ router's own `ctx.Err()` refusal masks the loss when a store is present. Glossary terms **Abandoned delivery** and **Replay ledger** added; contracts in `docs/routes-and-runtime-reference.md`, `docs/http-api.md`, the poison-message runbook and `CHANGELOG.md`.
 - **Suggested commit title:** `never settle a cancelled delivery terminally`
 
 ### Chunk 25: Session-failure lease handoff and manager timing validation
