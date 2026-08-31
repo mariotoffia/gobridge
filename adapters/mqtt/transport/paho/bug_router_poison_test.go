@@ -112,7 +112,7 @@ func TestRouter_RecycleWindowDiscardsAreMetered(t *testing.T) {
 		r := newRouter(nil, rec)
 		r.beginGrace()
 		t.Cleanup(r.shutdown)
-		require.NoError(t, r.quiesceForRecycle(t.Context(), nil))
+		require.NoError(t, r.quiesceForRecycle(t.Context(), t.Context(), nil))
 
 		pub := &pahov5.Publish{Topic: "recycle/enqueue", QoS: 0, Payload: []byte("x")}
 		r.enqueueDispatch(pub, nil)
@@ -127,7 +127,7 @@ func TestRouter_RecycleWindowDiscardsAreMetered(t *testing.T) {
 		r := newRouter(nil, rec)
 		r.beginGrace()
 		t.Cleanup(r.shutdown)
-		require.NoError(t, r.quiesceForRecycle(t.Context(), nil))
+		require.NoError(t, r.quiesceForRecycle(t.Context(), t.Context(), nil))
 
 		r.mu.Lock()
 		epoch := r.connEpoch
@@ -147,16 +147,16 @@ func TestRouter_AckAfterReconnectMappedSuccessIsCounted(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	r := newRouter(nil, rec, withSessionTag("l5-session"))
 
-	settle := r.ackWithReconnectMapping(func() error { return pahov5.ErrPacketNotFound })
+	settle := r.ackWithReconnectMapping(nil, func() error { return pahov5.ErrPacketNotFound })
 	require.NoError(t, settle(), "ErrPacketNotFound maps to success (broker redelivers)")
 	assert.Equal(t, int64(1), r.AckAfterReconnectCount())
 	require.Len(t, rec.FindEntries(MetricMQTTAckAfterReconnect), 1)
 
-	failing := r.ackWithReconnectMapping(func() error { return errors.New("broker rejected") })
+	failing := r.ackWithReconnectMapping(nil, func() error { return errors.New("broker rejected") })
 	require.Error(t, failing(), "a non-cycled ack error remains a settlement failure")
 	assert.Equal(t, int64(1), r.AckAfterReconnectCount(), "only the cycled mapping is counted")
 
-	ok := r.ackWithReconnectMapping(func() error { return nil })
+	ok := r.ackWithReconnectMapping(nil, func() error { return nil })
 	require.NoError(t, ok())
 	assert.Equal(t, int64(1), r.AckAfterReconnectCount())
 }
@@ -220,7 +220,7 @@ func TestRouter_PreFirstReconcileBacklogRetainedThenReclassified(t *testing.T) {
 // redelivered copy is tracked fresh).
 func TestRouter_TrackedAckAfterReconnectSettlesUnsettledWindow(t *testing.T) {
 	r := newRouter(nil, &ports.RecordingExporter{})
-	ack := r.trackAcknowledgement(r.ackWithReconnectMapping(func() error {
+	ack := r.trackAcknowledgement(r.ackWithReconnectMapping(nil, func() error {
 		return pahov5.ErrPacketNotFound
 	}))
 	require.Equal(t, 1, r.unsettledSnapshot(2).Count)

@@ -45,6 +45,14 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ### Added
 
+- **`MQTTReceiverEmitRejected`.** Counts inbound deliveries the route pipeline
+  refuses at emit — a shutting-down or wedged route runner — tagged
+  `outcome=recovering` (durable QoS 1/2: left un-acked, redelivered by the
+  bounded session recycle) or `outcome=lost` (QoS 0: no acknowledgement to
+  withhold and no redelivery contract, so the message is gone). The QoS 0 loss
+  previously produced only a Debug log, so with production logging it left no
+  trace at all.
+
 - **Crash-durable success boundary and `ports.CrashDurableStoreFactory`.** A nil
   error from `OutboxStore.Persist` or `DLQAdmin.Write` now explicitly means the
   record survives the loss of the process — the runtime settles the SOURCE on
@@ -90,6 +98,92 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   **`DynamoDBOutboxClaimTruncated`** (adapter-owned).
 
 ### Fixed
+
+- **A CONNACK backlog delivered before `OnConnectionUp` was purged un-acked and
+  wedged the live connection's acknowledgement order.** Paho starts delivering
+  publishes from inside `Client.Connect`, while autopaho calls `OnConnectionUp`
+  only after the connection is fully established, so a broker replaying a queued
+  QoS 1/2 backlog reached the router first. Those publishes were stamped with the
+  PREVIOUS connection generation (or hit the recycle window's discard flag) and
+  dropped without acknowledgement — although their acknowledgement belonged to
+  the LIVE client. The un-acked packet then sat at the head of paho's
+  contiguous-prefix acknowledgement tracker: every later `Delivery.Ack` on the
+  session reported success while no PUBACK was written, and after
+  `receive_maximum` such packets QoS 1/2 ingress was dead until an unrelated
+  disconnect. Health read clean throughout, because the same callback cleared the
+  unsettled bookkeeping. The connection generation is now opened by whichever of
+  the connection-up callback or the first packet from a Paho client the router
+  has not seen arrives FIRST — the latter is proof the previous generation is
+  dead, since autopaho only builds a replacement client after the old one has
+  shut down.
+
+- **A covered QoS 0 drop leaked one unit of the ingress admission budget, every
+  time.** The branch that drops a still-covered QoS 0 publish the pending buffer
+  cannot hold returned without releasing its reservation. Since release is the
+  only decrement, `receive_maximum` such drops retired the whole budget: nothing
+  could be admitted again and the connection died of keepalive starvation with
+  the process still reporting connected.
+
+- **Grace-buffered QoS 0 could starve QoS 1/2 admission and stall the MQTT
+  connection.** Pending QoS 0 entries hold admission budget while sitting outside
+  the broker's Receive-Maximum window, so with no handler registered for a topic
+  set (a route in supervisor backoff, a late registration) a saturated budget
+  parked the next QoS 1/2 publish inside paho's single publish-callback
+  goroutine. That goroutine also reads PINGRESP, so keepalive killed the
+  connection — and because the callback never returned, autopaho observed neither
+  client shutdown nor a connection-down edge, leaving the session reporting
+  connected. A QoS 1/2 admission now reclaims the oldest pending QoS 0's slot and
+  waits only when the budget is entirely QoS 1/2. The QoS 0 drop log also names
+  the refusing bound, so an exhausted budget is no longer reported as a full
+  startup-grace buffer.
+
+- **`Session.Close` disconnected the client before stopping the router, so a
+  parked publish callback pinned the close for its whole deadline.** autopaho's
+  `Disconnect` waits for the client's worker goroutines, one of which runs our
+  publish callback; the only thing that releases a callback parked in the router
+  is `router.shutdown()`, which Close ran afterwards. Close burned its context
+  and returned a timeout, which the session manager reads as a wedged close —
+  retaining an exclusive lease until its TTL instead of handing it to a standby.
+  Close now stops the router first.
+
+- **A source session Close received no deadline of its own.** The
+  session-failure teardown raced `Close` against a hard ceiling but passed it an
+  unbounded (only detached) context, so a cooperative-but-slow disconnect had
+  nothing to abort on: it ran past the ceiling, was classified as a wedge,
+  terminalized the process, and extended the outage to the lease TTL. It now
+  carries the same bounded-teardown budget the sibling lease release uses. This
+  is safe only because the MQTT close stops its router before any bounded
+  network wait (above), so a close that returns its context error has still
+  stopped that session from dispatching or acknowledging ingress — which is what
+  the manager relies on when it releases the lease after Close returns.
+
+- **A settlement-recovery drain was capped at five seconds, turning one slow
+  target into a restart loop.** The drain waits for deliveries the runtime has
+  already accepted, each bounded by its own route's send-wedge, processor and
+  store ceilings — all of which legitimately exceed five seconds under the
+  default 30-second send budget. Exceeding the cap was classified as an
+  unrecoverable drain failure, which terminalizes the session and restarts every
+  unrelated route in the process. The adapter no longer imposes a bound on that
+  phase: `reconcile_timeout` bounds only the adapter-owned teardown that precedes
+  it, and the recovery attempt budget is the outer bound.
+
+- **The reconnect-acknowledgement metric missed the settlements it exists to
+  measure.** `MQTTAckAfterReconnect` counted only paho's `ErrPacketNotFound`, but
+  the acknowledgement tracker marks an ack and flushes the acknowledged prefix
+  asynchronously — an ack marked just before the connection dropped returns
+  success and is still redelivered, so the guaranteed duplicate went uncounted.
+  Detection now compares the Paho CLIENT captured at receive against the live
+  one; SDK errors stay reserved for classifying the operation. It is deliberately
+  not the connection epoch, which also advances for a recycle on a still-live
+  socket — that would report every settlement in a routine drain as a guaranteed
+  redelivery and swallow a real acknowledgement failure on a connection that
+  never cycled.
+
+- **A settlement-recovery cooldown outlived the session by up to 30 seconds.**
+  The rate-limit wait runs on a deliberately detached context so a route-scoped
+  cancellation cannot abort a recycle, which left `Close` with nothing to wake
+  it. It is now bound to the session lifetime and the timer is stopped on every
+  exit.
 
 - **A process-volatile lease store could regress a durable outbox's fencing
   version and wedge the partition forever.** The in-memory lease numbers fencing

@@ -137,9 +137,7 @@ func (s *Session) transitionTerminal(
 		terminalCtx, cancel := s.contextWithClockTimeout(context.WithoutCancel(parent), s.recoveryAttemptTimeout())
 		switch {
 		case recoveryInFlight && drainOwner:
-			drainCtx, cancelDrain := s.contextWithClockTimeout(terminalCtx, settlementRecoveryDrainLimit)
-			_ = s.quiesceForRecycle(drainCtx)
-			cancelDrain()
+			_ = s.quiesceForRecycle(terminalCtx)
 			s.finishRecoveryDrain(drainGeneration, drainDone)
 		case recoveryInFlight && !drainFinished && drainDone != nil:
 			select {
@@ -286,6 +284,7 @@ func (s *Session) reloadLocked(ctx context.Context) error {
 	if cmCancel != nil {
 		cmCancel()
 	}
+	s.router.noteConnectionTornDown()
 	if disconnectErr != nil {
 		mapped := MapError(disconnectErr).WithMessage("mqtt reload: disconnect current generation")
 		s.mu.Lock()
@@ -347,9 +346,23 @@ func (s *Session) closeEventsLocked() {
 //
 // Ordering invariant (do not reorder):
 //  1. Set s.closed = true under mutex — prevents pushEvent from sending.
-//  2. Call cm.Disconnect — may trigger OnConnectError, which calls
+//  2. Stop the router. autopaho's Disconnect waits for the connection-manager
+//     loop, which waits for the Paho client, which waits for every worker
+//     goroutine — including the one running our publish callback. A callback
+//     parked in the router (a saturated dispatch budget, or a slow delivery)
+//     is released only by router.shutdown(), so disconnecting first would
+//     park Disconnect behind it for the whole close deadline and return a
+//     context error the session manager reads as a wedged close — which
+//     retains the lease until its TTL instead of handing it to a standby.
+//     Un-acked QoS 1/2 released here are redelivered on session resume.
+//     This step is UNCONDITIONAL and precedes every bounded network wait, so
+//     even a Close that returns its context error has definitively stopped this
+//     session from dispatching or acknowledging ingress. The session manager
+//     relies on that: it releases an exclusive lease once Close RETURNS, and a
+//     returned-but-failed Close must not leave an owner still consuming.
+//  3. Call cm.Disconnect — may trigger OnConnectError, which calls
 //     pushEvent, but the s.closed guard returns early (safe re-entrancy).
-//  3. Await in-flight handlers (bounded by ctx), then close s.events —
+//  4. Await in-flight handlers (bounded by ctx), then close s.events —
 //     safe because step 1 guarantees no concurrent sender can reach the
 //     channel send.
 //
@@ -374,6 +387,12 @@ func (s *Session) Close(ctx context.Context) error {
 	}
 	s.closed = true
 	s.connected = false
+	// Wake every detached session-lifetime wait (the settlement-recovery
+	// cooldown runs on a context deliberately immune to route cancellation, so
+	// this close is the only thing that can end it).
+	if s.closedCh != nil {
+		close(s.closedCh)
+	}
 	if s.starting && !s.connectionUpCompleted {
 		s.connectionUpErr = shared.ErrUnavailable.WithMessage("mqtt: session closed before connection-up callback completed")
 		s.connectionUpCompleted = true
@@ -409,6 +428,15 @@ func (s *Session) Close(ctx context.Context) error {
 		}
 	}
 
+	// Stop the router's grace-sweep and dispatch workers BEFORE disconnecting
+	// (see the ordering invariant above) and before awaiting in-flight dispatch
+	// handlers. shutdown signals the workers to exit, releases every parked
+	// publish callback and marks the router closing; a best-effort orphan
+	// UNSUBSCRIBE already in flight completes on its own (bounded by
+	// orphanUnsubscribeTimeout) and is intentionally NOT awaited here, so Close
+	// latency stays decoupled from a network round-trip.
+	s.router.shutdown()
+
 	var disconnErr error
 	if cm != nil {
 		disconnErr = cm.Disconnect(ctx)
@@ -416,14 +444,6 @@ func (s *Session) Close(ctx context.Context) error {
 	if cmCancel != nil {
 		cmCancel()
 	}
-
-	// Stop the router's grace-sweep and dispatch workers before awaiting
-	// in-flight dispatch handlers. shutdown signals the workers to exit and
-	// marks the router closing; a best-effort orphan UNSUBSCRIBE already in
-	// flight completes on its own (bounded by orphanUnsubscribeTimeout) and
-	// is intentionally NOT awaited here, so Close latency stays decoupled
-	// from a network round-trip.
-	s.router.shutdown()
 
 	done := make(chan struct{})
 	go func() {
@@ -436,8 +456,10 @@ func (s *Session) Close(ctx context.Context) error {
 		s.router.Wait()
 		close(done)
 	}()
+	handlersDrained := false
 	select {
 	case <-done:
+		handlersDrained = true
 	case <-ctx.Done():
 		if s.logger != nil {
 			s.logger.Warn("Close: context expired while waiting for in-flight handlers")
@@ -453,6 +475,15 @@ func (s *Session) Close(ctx context.Context) error {
 
 	if disconnErr != nil {
 		return MapError(disconnErr)
+	}
+	if !handlersDrained {
+		// Ingress IS stopped (the router was shut down before any bounded wait),
+		// but deliveries the route pipeline already accepted are still settling.
+		// The session manager releases an exclusive lease as soon as Close
+		// returns, so reporting success here would hand ownership over while
+		// this owner's pipeline can still send.
+		return shared.ErrTimeout.WithMessage(
+			"mqtt: session close stopped ingress but gave up waiting for in-flight deliveries to settle")
 	}
 	return nil
 }

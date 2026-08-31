@@ -7,6 +7,23 @@ import (
 	pahov5 "github.com/eclipse/paho.golang/paho"
 )
 
+// reserveQueueSlot claims one unit of the shared dispatch budget for pub.
+//
+// QoS 0 is refused immediately on a full budget: it carries no delivery
+// contract, and parking Paho's single publish-callback goroutine for it would
+// stop PINGRESP being read.
+//
+// QoS 1/2 must not be refused (at-least-once), but it must not park behind
+// QoS 0 either. A pending QoS 0 holds a reservation while sitting OUTSIDE the
+// broker's Receive-Maximum window, so a budget saturated by grace-buffered
+// QoS 0 could only be released by handler progress that a not-yet-registered
+// receiver cannot make — the callback parks, keepalive kills the connection,
+// and because the callback never returns autopaho observes neither client
+// shutdown nor a connection-down edge. So a QoS 1/2 first RECLAIMS the oldest
+// reserved pending QoS 0 (a best-effort drop, always safe) and waits only when
+// no reclaimable pending QoS 0 remains — everything holding the budget is then
+// either being dispatched or inside the broker's in-flight window, so the
+// broker's own Receive-Maximum flow control bounds the wait.
 func (r *router) reserveQueueSlot(pub *pahov5.Publish, qos byte) bool {
 	for {
 		r.mu.Lock()
@@ -20,11 +37,16 @@ func (r *router) reserveQueueSlot(pub *pahov5.Publish, qos byte) bool {
 			r.mu.Unlock()
 			return true
 		}
-		changed := r.queueChanged
-		r.mu.Unlock()
 		if qos == 0 {
+			r.mu.Unlock()
 			return false
 		}
+		if r.evictOldestQoS0Locked(true) {
+			r.mu.Unlock()
+			continue
+		}
+		changed := r.queueChanged
+		r.mu.Unlock()
 		select {
 		case <-changed:
 		case <-r.stop:
@@ -173,10 +195,10 @@ func (r *router) bufferLocked(pub *pahov5.Publish, ack func() error) bool {
 	// by evicting the oldest QoS 0, then buffer regardless (memory is bounded
 	// by the count cap == receive_maximum).
 	if overBytes {
-		r.evictOldestQoS0Locked()
+		r.evictOldestQoS0Locked(false)
 	}
 	// Enforce the count cap AFTER any byte-driven eviction freed a slot.
-	if len(r.pending) >= r.pendingLimit && !r.evictOldestQoS0Locked() {
+	if len(r.pending) >= r.pendingLimit && !r.evictOldestQoS0Locked(false) {
 		// Count cap hit with no QoS 0 to reclaim: only reachable if the broker
 		// exceeded its granted Receive Maximum (protocol violation).
 		return false
@@ -228,16 +250,36 @@ func (r *router) purgeStalePendingLocked() {
 // to reclaim a slot and bytes for a QoS 1/2 publish that must be buffered,
 // counting the evicted QoS 0 as a best-effort drop (it carries no delivery
 // contract). Returns true when an entry was evicted. Caller holds r.mu.
-func (r *router) evictOldestQoS0Locked() bool {
+//
+// reserved restricts the scan to entries that still hold a dispatch
+// reservation: the budget gate needs the RESERVATION back, and an entry
+// buffered through the legacy Route path holds none, so evicting it would drop
+// a message without freeing what the caller is waiting for.
+func (r *router) evictOldestQoS0Locked(reserved bool) bool {
 	for i := range r.pending {
-		if r.pending[i].pub.QoS == 0 {
-			r.pendingBytes -= pubBytes(r.pending[i].pub)
-			r.releaseQueueReservationLocked(r.pending[i].pub)
-			r.pending = append(r.pending[:i], r.pending[i+1:]...)
-			r.dropCount.Add(1)
-			r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
+		if r.pending[i].pub.QoS != 0 {
+			continue
+		}
+		if _, held := r.queueReservations[r.pending[i].pub]; reserved && !held {
+			continue
+		}
+		// A retained COVERED entry is a live route's message held for a receiver
+		// that registered late. Reclaiming it is still the right trade, but it
+		// keeps the covered-drop attribution: that metric is the operator's
+		// signal for slow receiver startup, and folding it into generic
+		// backpressure would silence exactly that alert.
+		covered := r.pending[i].retainCounted
+		r.pendingBytes -= pubBytes(r.pending[i].pub)
+		r.releaseQueueReservationLocked(r.pending[i].pub)
+		r.pending = append(r.pending[:i], r.pending[i+1:]...)
+		if covered {
+			r.coveredDropped.Add(1)
+			r.metrics.Counter(MetricMQTTRouterCoveredDropped, 1, r.sessionTag()...)
 			return true
 		}
+		r.dropCount.Add(1)
+		r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
+		return true
 	}
 	return false
 }

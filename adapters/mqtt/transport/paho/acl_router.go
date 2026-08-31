@@ -101,13 +101,29 @@ type router struct {
 	// verification starts. Production leaves it nil. Guarded by mu.
 	awaitManagedReplayHook func()
 	// connEpoch identifies the CURRENT broker connection generation. It is
-	// bumped on every beginGrace (i.e. every OnConnectionUp) and stamped onto
-	// each entry buffered under it (bufferLocked). On a RECONNECT, beginGrace
-	// purges every entry whose epoch predates connEpoch: those carry dead acks
-	// and the broker redelivers their QoS 1/2 fresh, so keeping them would
-	// double-count against the receive_maximum count cap and ack-drop a live
-	// message as a bogus overflow. Guarded by mu.
+	// bumped once per connection by advanceGenerationLocked — from whichever of
+	// the connection-up callback (beginGrace) or the first packet of a new Paho
+	// client (noteLiveClient) observes the connection first — and stamped onto
+	// each entry buffered under it (bufferLocked). Advancing purges every entry
+	// whose epoch predates connEpoch: those carry dead acks and the broker
+	// redelivers their QoS 1/2 fresh, so keeping them would double-count against
+	// the receive_maximum count cap and ack-drop a live message as a bogus
+	// overflow. Guarded by mu.
 	connEpoch uint64
+	// liveClient is the Paho client that delivered the most recent packet, and
+	// generationOpener records which event opened the current generation (see
+	// noteLiveClient / beginGrace). Together they make the generation identity
+	// follow the CLIENT rather than the connection-up callback, which Paho does
+	// not order against its own publish delivery. Guarded by mu.
+	liveClient *pahov5.Client
+	// replacementPending is armed by noteConnectionTornDown and cleared when the
+	// next generation opens. It marks the only window in which an unfamiliar
+	// client can be a REPLACEMENT connection rather than a straggler from a
+	// superseded socket. generationOpenedByClient is the one-shot marker saying
+	// that replacement's first packet already opened the generation, so the
+	// connection-up callback that follows must not open it again. Guarded by mu.
+	replacementPending       bool
+	generationOpenedByClient bool
 	// unsettled records every QoS 1/2 packet accepted in connEpoch until its
 	// protocol Ack succeeds. The map is cleared on every epoch transition because
 	// old packet handles die with their connection and the broker redelivers them.

@@ -137,11 +137,17 @@ const (
 	//     recycle is disconnecting it are released without dispatch or ack.
 	//     Previously this branch was the router's only fully silent drop.
 	//
-	// In BOTH branches QoS 1/2 entries are NOT lost (the resumed session
+	// It also counts ingress released while the session is CLOSING: the router
+	// is stopped before the SDK disconnect (otherwise a parked publish callback
+	// pins that disconnect for the whole close deadline), so publishes keep
+	// arriving, and anything still queued for dispatch is shed.
+	//
+	// In EVERY branch QoS 1/2 entries are NOT lost (the resumed session
 	// redelivers them); QoS 0 entries are a best-effort loss (no redelivery
-	// contract across a disconnect, by protocol). A steadily rising count
-	// means frequent reconnects/recycles while traffic is in flight —
-	// expected churn, not data loss for QoS 1/2.
+	// contract across a disconnect, by protocol) and are counted on
+	// MetricMQTTRouterDropped instead. A steadily rising count means frequent
+	// reconnects/recycles/closes while traffic is in flight — expected churn,
+	// not data loss for QoS 1/2.
 	MetricMQTTRouterStalePurged = "MQTTRouterStalePurged"
 
 	// MetricMQTTSessionTakeover counts server disconnects with reason code
@@ -169,10 +175,27 @@ const (
 	// advertised Maximum Packet Size) still fail the session closed.
 	MetricMQTTIngressPoisonDropped = "MQTTIngressPoisonDropped"
 
+	// MetricMQTTReceiverEmitRejected counts inbound deliveries the route
+	// pipeline REFUSED at emit — a shutting-down or wedged route runner. It is
+	// tagged with the session and an outcome:
+	//
+	//   - "recovering": the delivery was durable (QoS 1/2), so it is left
+	//     un-acked and a bounded session recycle makes the broker redeliver it.
+	//     The count is the leading indicator of the recycle that follows.
+	//   - "lost": the delivery was QoS 0 — no acknowledgement to withhold and no
+	//     redelivery contract, so the message is gone. Any non-zero "lost" count
+	//     is acknowledged best-effort loss; alert on it if the deployment treats
+	//     QoS 0 ingress as significant.
+	MetricMQTTReceiverEmitRejected = "MQTTReceiverEmitRejected"
+
 	// MetricMQTTAckAfterReconnect counts delivery settlements whose protocol
-	// acknowledgement could not be sent because the underlying connection was
-	// torn down and re-established between receive and settle (paho
-	// ErrPacketNotFound). The settlement still reports SUCCESS to the runtime
+	// acknowledgement could not reach the broker because the connection was torn
+	// down and re-established between receive and settle. It is measured from
+	// the connection generation captured at receive, NOT from an SDK error
+	// class: paho marks an acknowledgement and flushes the acknowledged prefix
+	// asynchronously, so an ack marked just before the connection dropped
+	// returns success and is still redelivered. The settlement reports SUCCESS
+	// to the runtime
 	// — the broker redelivers the packet on the resumed session and downstream
 	// idempotency/dedup absorbs the duplicate (documented at-least-once
 	// residual) — but each count here is a GUARANTEED broker

@@ -6,14 +6,25 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-const (
-	settlementRecoveryDrainLimit  = 5 * time.Second
-	settlementRecoveryMinInterval = 30 * time.Second
-)
+// settlementRecoveryMinInterval rate-limits how often a durable session may
+// recycle its broker connection to recover stranded settlements.
+//
+// There is deliberately NO separate drain limit. The recovery drain waits for
+// deliveries the runtime already ACCEPTED to settle, and every settlement path
+// is bounded by the ROUTE that owns it — the send-wedge ceiling, the processor
+// budget, the store and dead-letter call deadlines. An adapter-local drain
+// bound could therefore only be SHORTER than a legitimate settlement, and since
+// a failed drain is unrecoverable in-process (old work could still mutate after
+// a recycle), it would convert one slow target into a terminal session and a
+// restart of every unrelated route in the process. The recovery attempt budget
+// is the outer bound; the adapter's own reconcile timeout still bounds the
+// adapter's own teardown phase (see Session.quiesceForRecycle).
+const settlementRecoveryMinInterval = 30 * time.Second
 
 func (s *Session) recoveryAttemptTimeout() time.Duration {
 	s.mu.Lock()
@@ -213,24 +224,42 @@ func (s *Session) requestRecovery(ctx context.Context) error {
 	generation := s.recoveryGeneration
 	s.recoveryErr = nil
 	s.subscriptionsSatisfied = false
-	var rateLimit <-chan time.Time
+	var cooldown clock.Timer
 	if !s.lastRecoveryCompleted.IsZero() {
 		elapsed := s.clock().Since(s.lastRecoveryCompleted)
 		if elapsed < settlementRecoveryMinInterval {
-			rateLimit = s.clock().After(settlementRecoveryMinInterval - elapsed)
+			cooldown = s.clock().NewTimer(settlementRecoveryMinInterval - elapsed)
 		}
 	}
+	closedCh := s.closedCh
 	s.mu.Unlock()
 
-	go s.runRecovery(context.WithoutCancel(ctx), rateLimit, generation)
+	go s.runRecovery(context.WithoutCancel(ctx), cooldown, closedCh, generation)
 	return nil
 }
 
-func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time, generation uint64) {
-	if rateLimit != nil {
+// runRecovery rate-limits, then recycles the durable broker session. The
+// context is detached so a route-scoped cancellation cannot abort a recycle
+// mid-flight; closedCh is therefore what ends the cooldown when the session
+// closes, and the timer is stopped on every exit so a closed session leaves no
+// armed timer behind.
+func (s *Session) runRecovery(
+	ctx context.Context,
+	cooldown clock.Timer,
+	closedCh <-chan struct{},
+	generation uint64,
+) {
+	if cooldown != nil {
+		var abandoned bool
 		select {
-		case <-rateLimit:
+		case <-cooldown.C():
+		case <-closedCh:
+			abandoned = true
 		case <-ctx.Done():
+			abandoned = true
+		}
+		cooldown.Stop()
+		if abandoned {
 			return
 		}
 	}
@@ -295,9 +324,7 @@ func (s *Session) runRecovery(ctx context.Context, rateLimit <-chan time.Time, g
 		}
 		return
 	}
-	drainCtx, cancelDrain := s.contextWithClockTimeout(ctx, settlementRecoveryDrainLimit)
-	drainErr := s.quiesceForRecycle(drainCtx)
-	cancelDrain()
+	drainErr := s.quiesceForRecycleAwaitingSettlement(ctx)
 	s.finishRecoveryDrain(generation, drainDone)
 	if drainErr != nil {
 		s.completeRecoveryAttempt(generation,

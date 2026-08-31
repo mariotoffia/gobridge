@@ -141,13 +141,33 @@ func (m *Manager) boundedReconcile(ctx context.Context, plan connectivity.Sessio
 // releaseOwnedLeaseBestEffort; the bound reuses releaseTimeout — the same
 // bounded-teardown budget the lease Release uses.
 //
+// The DEADLINE on that context is load-bearing, not decoration. The ceiling
+// below only decides how long the MANAGER waits; it cannot stop the adapter. A
+// cooperative adapter needs a deadline of its own to abort on — without one, a
+// slow but well-behaved disconnect keeps running past the ceiling, is
+// classified as a wedge (completed == false), terminalizes the process, and
+// extends the outage to the lease TTL. Passing the same bound as the ceiling
+// means a cooperative Close always aborts and returns THROUGH the race, so only
+// a genuinely ctx-ignoring adapter is ever judged wedged; the ceiling remains
+// the backstop for exactly that adapter. The deadline is set closeAbortMargin
+// EARLIER than the ceiling: both are armed within microseconds of each other,
+// so without the margin an adapter that aborts exactly at its deadline still
+// has to unwind faster than the ceiling timer — a coin flip whose losing side
+// is a false wedge.
+//
 // It returns whether Close actually COMPLETED within the ceiling. A false return
 // means the ceiling fired while Close was still parked (the adapter ignored ctx):
 // the source is STILL subscribed, so the caller MUST NOT release the lease — a
 // wedged-but-subscribed session cannot be safely handed off to a standby.
 func (m *Manager) closeSourceBounded(ctx context.Context, reason string) bool {
-	closeCtx := context.WithoutCancel(ctx)
-	err, completed := m.boundedCallResult(closeCtx, m.releaseTimeout(), "source session close", func(c context.Context) error {
+	ceiling := m.releaseTimeout()
+	abortAfter := ceiling - closeAbortMargin
+	if abortAfter <= 0 {
+		abortAfter = ceiling / 2
+	}
+	closeCtx, cancelClose := context.WithTimeout(context.WithoutCancel(ctx), abortAfter)
+	defer cancelClose()
+	err, completed := m.boundedCallResult(closeCtx, ceiling, "source session close", func(c context.Context) error {
 		return m.session.Close(c)
 	})
 	if err != nil {
@@ -156,3 +176,11 @@ func (m *Manager) closeSourceBounded(ctx context.Context, reason string) bool {
 	}
 	return completed
 }
+
+// closeAbortMargin is how much earlier than the manager's hard ceiling the
+// source Close is told to give up, leaving it room to unwind and return through
+// the race. It mirrors the route dispatcher's send-wedge margin: the cooperative
+// abort must always beat the wedge verdict, or ordinary slowness is punished as
+// a hang. A ceiling at or below the margin (a very short configured step-down
+// grace) halves instead, keeping the same ordering at any scale.
+const closeAbortMargin = 500 * time.Millisecond

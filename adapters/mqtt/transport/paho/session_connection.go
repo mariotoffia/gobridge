@@ -186,6 +186,10 @@ func (s *Session) handleConnectionDownGeneration(generation uint64) bool {
 		}
 	}
 	s.mu.Unlock()
+	// autopaho raises this edge only after the client's workers have returned,
+	// and builds the replacement only afterwards, so it is the happens-after
+	// point that lets the router recognise the replacement's first packet.
+	s.router.noteConnectionTornDown()
 	s.pushEvent(ports.SessionDisconnected, nil)
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(context.Background(), logging.LevelDebug, "mqtt: connection down",
@@ -195,22 +199,64 @@ func (s *Session) handleConnectionDownGeneration(generation uint64) bool {
 }
 
 // quiesceForRecycle atomically stops new router callback acceptance, waits for
-// accepted callbacks to return, then waits for the runtime RouteRunner settlement
-// counters. The reconcile/session context is always honored; ReconcileTimeout is
-// an additional ceiling for direct callers that supplied no shorter deadline.
+// accepted callbacks to return, then waits for the runtime RouteRunner
+// settlement counters.
+//
+// The two phases have DIFFERENT owners and therefore different ceilings, and
+// conflating them is what turns a slow target into a restart loop:
+//
+//   - TEARDOWN (stopping acceptance and draining the callbacks already inside
+//     the router) is adapter work whose latency the adapter controls. It keeps
+//     ReconcileTimeout as an additional ceiling for direct callers that supplied
+//     no shorter deadline.
+//   - ACCEPTANCE (waiting for deliveries the runtime already took ownership of
+//     to settle) is runtime work. Its duration is bounded by the ROUTE — the
+//     send-wedge ceiling, the processor budget, the store and dead-letter call
+//     deadlines — and can legitimately exceed any adapter-local bound. It
+//     therefore runs under the CALLER's context only, so the recovery attempt
+//     budget is the outer bound and cooperative downstream slowness is never
+//     misread as an unrecoverable drain failure.
+//
+// The reconcile/session context is honored throughout both phases.
+//
+// quiesceForRecycle keeps ReconcileTimeout on BOTH phases: its callers are
+// reconcile-driven (managed-subscription cleanup, failed-reconcile teardown)
+// and several of them run on the session manager's Run context, which carries
+// no deadline of its own — an unbounded settlement wait there would park the
+// goroutine for the process lifetime while holding the session serialization
+// gate. Only settlement recovery, whose whole purpose is to tolerate a slow
+// settlement, uses quiesceForRecycleAwaitingSettlement below.
 func (s *Session) quiesceForRecycle(ctx context.Context) error {
+	bounded, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
+	defer cancel()
+	return s.quiesceRouter(bounded, bounded)
+}
+
+// quiesceForRecycleAwaitingSettlement is the settlement-recovery variant: the
+// adapter-owned teardown keeps ReconcileTimeout, while the wait for deliveries
+// the runtime already accepted runs under the CALLER's context only. Its
+// duration belongs to the routes — the send-wedge ceiling, the processor
+// budget, the store and dead-letter call deadlines — and an adapter-local bound
+// below those turns cooperative downstream slowness into an unrecoverable drain
+// failure, terminalizing the session and restarting every unrelated route. The
+// caller's recovery attempt budget is the outer bound.
+func (s *Session) quiesceForRecycleAwaitingSettlement(ctx context.Context) error {
+	teardownCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
+	defer cancel()
+	return s.quiesceRouter(teardownCtx, ctx)
+}
+
+func (s *Session) quiesceRouter(teardownCtx, settleCtx context.Context) error {
 	s.mu.Lock()
 	waiter := s.ingressQuiescenceWaiter
 	s.mu.Unlock()
 	if s.router == nil {
 		if waiter != nil {
-			return waiter(ctx)
+			return waiter(settleCtx)
 		}
 		return nil
 	}
-	quiesceCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
-	defer cancel()
-	return s.router.quiesceForRecycle(quiesceCtx, waiter)
+	return s.router.quiesceForRecycle(teardownCtx, settleCtx, waiter)
 }
 
 func terminalIngressQuiescenceError(cause error) error {
@@ -282,4 +328,5 @@ func (s *Session) disconnectGeneration(ctx context.Context) {
 	if cmCancel != nil {
 		cmCancel()
 	}
+	s.router.noteConnectionTornDown()
 }

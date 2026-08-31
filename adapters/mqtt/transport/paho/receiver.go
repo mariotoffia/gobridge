@@ -136,6 +136,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 			// residual). Ephemeral sessions and QoS 0 have no redelivery
 			// contract to recover — requestRecovery is not applicable and
 			// the un-acked state dies with the connection.
+			r.countEmitRejection(ack != nil)
 			if ack != nil {
 				if r.logger != nil {
 					r.logger.Warn("mqtt: emit error stranded an un-acked delivery; "+
@@ -146,8 +147,9 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 					logging.Debug(r.logger, "mqtt: session recovery request after emit error failed",
 						"receiver_id", r.id, "error", recErr)
 				}
-			} else if logging.DebugEnabled(r.logger) {
-				r.logger.Log(runCtx, logging.LevelDebug, "mqtt: emit error",
+			} else if r.logger != nil {
+				r.logger.Warn("mqtt: emit error DROPPED a QoS 0 delivery — there is no "+
+					"acknowledgement to withhold and no redelivery contract, so the message is lost",
 					"receiver_id", r.id, "error", err)
 			}
 			// Signal the error and cancel so the handler unblocks.
@@ -186,4 +188,29 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		}
 		return err
 	}
+}
+
+// Outcome tag values for MetricMQTTReceiverEmitRejected.
+const (
+	// emitRejectionRecovering marks a refused DURABLE delivery: it stays
+	// un-acked and the bounded session recycle makes the broker redeliver it.
+	emitRejectionRecovering = "recovering"
+	// emitRejectionLost marks a refused QoS 0 delivery: no acknowledgement to
+	// withhold, no redelivery contract, so the message is gone.
+	emitRejectionLost = "lost"
+)
+
+// countEmitRejection records one delivery the route pipeline refused at emit.
+// Both outcomes are counted: the durable one because it predicts the session
+// recycle that follows, and the QoS 0 one because nothing else would ever
+// record that the message was lost.
+func (r *Receiver) countEmitRejection(durable bool) {
+	outcome := emitRejectionLost
+	if durable {
+		outcome = emitRejectionRecovering
+	}
+	r.session.metrics.Counter(MetricMQTTReceiverEmitRejected, 1,
+		shared.Tag{Key: shared.TagKeySessionID, Value: r.session.opts.ClientID},
+		shared.Tag{Key: shared.TagKeyOutcome, Value: outcome},
+	)
 }

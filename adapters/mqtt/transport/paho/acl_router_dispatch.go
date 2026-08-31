@@ -2,7 +2,6 @@ package paho
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
 
@@ -32,11 +31,13 @@ func (r *router) dispatchLoop(ch <-chan dispatchItem, done chan struct{}) {
 }
 
 // drainDispatchOnStop empties any publishes still queued in dispatchCh when the
-// worker stops, so a QoS 0 entry left buffered at close is metered rather than
-// vanishing silently (MQTT-OBS-1). Each entry's queue reservation is released;
-// a QoS 1/2 entry is deliberately left UNACKED so the broker redelivers it on
-// session resume (at-least-once), while a QoS 0 entry — which has no redelivery
-// — is counted on MetricMQTTRouterDropped so the close-time loss is observable.
+// worker stops, so nothing left buffered at close vanishes silently. Each
+// entry's queue reservation is released; a QoS 1/2 entry is deliberately left
+// UNACKED so the broker redelivers it on session resume (at-least-once) and is
+// counted on MetricMQTTRouterStalePurged, while a QoS 0 entry — which has no
+// redelivery — is counted on MetricMQTTRouterDropped as the loss it is. The
+// queue holds up to receive_maximum entries, so a close under load can shed a
+// meaningful backlog; both counters make that visible.
 func (r *router) drainDispatchOnStop(ch <-chan dispatchItem) {
 	for {
 		select {
@@ -48,6 +49,9 @@ func (r *router) drainDispatchOnStop(ch <-chan dispatchItem) {
 			if item.pub.QoS == 0 {
 				r.dropCount.Add(1)
 				r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
+			} else {
+				r.stalePurged.Add(1)
+				r.metrics.Counter(MetricMQTTRouterStalePurged, 1, r.sessionTag()...)
 			}
 		default:
 			return
@@ -121,6 +125,11 @@ func clonePublish(pub *pahov5.Publish) *pahov5.Publish {
 // Delivery contract.
 func (r *router) onPublishReceived(pr pahov5.PublishReceived) (bool, error) {
 	received := pr.Packet
+	// Before anything is stamped with the current generation: once the session
+	// has reported the previous connection torn down, the first packet from a
+	// new client is the replacement connection's, and it can arrive before
+	// autopaho's connection-up callback announces that connection.
+	r.noteLiveClient(pr.Client)
 	if class, violation := r.ingressCapViolation(received); violation != nil {
 		client := pr.Client
 		var ack func() error
@@ -134,36 +143,12 @@ func (r *router) onPublishReceived(pr pahov5.PublishReceived) (bool, error) {
 	client := pr.Client
 	var ack func() error
 	if received != nil && received.QoS > 0 && client != nil {
-		ack = r.trackAcknowledgement(r.ackWithReconnectMapping(func() error {
+		ack = r.trackAcknowledgement(r.ackWithReconnectMapping(client, func() error {
 			return client.Ack(received)
 		}))
 	}
 	r.enqueueDispatch(pub, ack)
 	return true, nil
-}
-
-// ackWithReconnectMapping wraps a protocol-ack callback with the
-// connection-cycled mapping: paho ErrPacketNotFound means the connection was
-// torn down and re-established between receive and settle — the client's ack
-// tracker was reset, the broker will redeliver, and downstream dedup absorbs
-// the duplicate, so the settlement reports SUCCESS. Each mapped success is a
-// GUARANTEED broker redelivery, so it is counted on
-// MetricMQTTAckAfterReconnect: a burst after a reconnect storm is
-// the leading indicator of a duplicate flood on routes without downstream
-// dedup. Every other ack error is classified via MapError and remains a
-// settlement failure.
-func (r *router) ackWithReconnectMapping(ack func() error) func() error {
-	return func() error {
-		if err := ack(); err != nil {
-			if errors.Is(err, pahov5.ErrPacketNotFound) {
-				r.ackAfterReconnect.Add(1)
-				r.metrics.Counter(MetricMQTTAckAfterReconnect, 1, r.sessionTag()...)
-				return nil
-			}
-			return MapError(err)
-		}
-		return nil
-	}
 }
 
 // enqueueDispatch hands a publish to the serialized dispatch worker
@@ -179,9 +164,7 @@ func (r *router) enqueueDispatch(pub *pahov5.Publish, ack func() error) {
 		return
 	}
 	if !r.reserveQueueSlot(pub, pub.QoS) {
-		if pub.QoS == 0 {
-			r.dropQoS0Overflow(pub)
-		}
+		r.noteAdmissionRefused(pub)
 		return
 	}
 	r.mu.Lock()
@@ -221,11 +204,39 @@ func (r *router) enqueueDispatch(pub *pahov5.Publish, ack func() error) {
 		return
 	}
 	// QoS 1/2: block until the worker drains a slot or the router stops.
-	// The un-acked publish is redelivered by the broker if we stop first.
+	// The un-acked publish is redelivered by the broker if we stop first —
+	// counted on the same stale-purge metric as every other release at a
+	// generation boundary, so a close never sheds ingress silently.
 	select {
 	case ch <- item:
 	case <-r.stop:
 		r.releaseQueueReservation(pub)
+		r.stalePurged.Add(1)
+		r.metrics.Counter(MetricMQTTRouterStalePurged, 1, r.sessionTag()...)
+	}
+}
+
+// noteAdmissionRefused accounts for a publish the admission budget would not
+// take. The two reasons are operationally different and must not be conflated:
+// a CLOSING router releases ingress deliberately (the router is stopped before
+// the SDK disconnect, so publishes keep arriving for the length of that
+// disconnect), while a full budget means receive_maximum is too small for the
+// offered load. QoS 1/2 released at close is redelivered on session resume, so
+// it is counted on the same stale-purge metric as every other
+// generation-boundary discard rather than as loss; QoS 0 has no redelivery and
+// is counted as the loss it is. Caller must hold NEITHER r.mu.
+func (r *router) noteAdmissionRefused(pub *pahov5.Publish) {
+	r.mu.RLock()
+	closing := r.closing
+	r.mu.RUnlock()
+	switch {
+	case closing && pub.QoS == 0:
+		r.dropQoS0(pub, dropReasonSessionClosing)
+	case closing:
+		r.stalePurged.Add(1)
+		r.metrics.Counter(MetricMQTTRouterStalePurged, 1, r.sessionTag()...)
+	case pub.QoS == 0:
+		r.dropQoS0(pub, dropReasonBudgetExhausted)
 	}
 }
 
@@ -325,7 +336,7 @@ func (r *router) dispatchCore(pub *pahov5.Publish, ack func() error, epoch uint6
 			} else if pub.QoS > 0 {
 				r.overflowAckDrop(pub, ack)
 			} else {
-				r.dropQoS0Overflow(pub)
+				r.dropQoS0(pub, dropReasonPendingFull)
 			}
 			return
 		}
@@ -356,7 +367,7 @@ func (r *router) finishHeldPublish(pub *pahov5.Publish, ack func() error, buffer
 		r.overflowAckDrop(pub, ack)
 		return
 	}
-	r.dropQoS0Overflow(pub)
+	r.dropQoS0(pub, dropReasonPendingFull)
 }
 
 // fanout dispatches one publish to the given handlers and blocks until

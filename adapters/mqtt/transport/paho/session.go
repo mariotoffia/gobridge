@@ -55,6 +55,11 @@ type Session struct {
 	// s.events) when the supervisor re-Starts a Reload-failed session.
 	eventsClosed bool
 	closed       bool
+	// closedCh is closed exactly once by Close, under mu together with the
+	// closed flag. It is the session-lifetime signal for waits that deliberately
+	// run on a detached context — the settlement-recovery cooldown — which
+	// would otherwise outlive the session by the whole rate-limit interval.
+	closedCh chan struct{}
 	// terminalErr latches a fail-closed generation whose ingress could not be
 	// quiesced safely. This Session instance must never reconnect in-process.
 	terminalErr error
@@ -338,6 +343,7 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		metrics:      m,
 		clk:          opts.Clock,
 		events:       make(chan ports.SessionEvent, sessionEventsBuffer),
+		closedCh:     make(chan struct{}),
 		reloadGate:   make(chan struct{}, 1),
 		observedSubs: make(map[string]subscriptionGrant),
 		activeSubs:   make(map[string]byte),

@@ -20,21 +20,16 @@ import (
 func (r *router) beginGrace() {
 	r.mu.Lock()
 	r.graceDeadline = r.clk.Now().Add(r.graceWindow)
-	// Advance the connection generation. Entries buffered from here on are
-	// stamped with this epoch (bufferLocked); on the RECONNECT path below,
-	// entries stamped with a prior epoch are purged.
-	r.connEpoch++
-	r.clearUnsettledLocked()
-	// Replacement ingress may be buffered while global quiescence remains.
-	r.discarding = false
+	if r.generationOpenedByClient {
+		// The replacement connection's first packet already opened this
+		// generation (it reached the callback before autopaho got here).
+		// Advancing again would purge the entries that packet just buffered and
+		// erase its unsettled bookkeeping — the loss this ordering prevents.
+		r.generationOpenedByClient = false
+	} else {
+		r.advanceGenerationLocked()
+	}
 	if r.graceStarted {
-		// Reconnect. A clean_start=false broker replays every un-acked QoS 1/2
-		// from the prior connection with FRESH packet IDs, so any entry still
-		// buffered under a previous epoch is a stale twin whose ack died with
-		// the old connection. Purge them: keeping them lets a redelivered copy
-		// accumulate beside its ghost until the count cap (== receive_maximum)
-		// ack-drops a LIVE message as a bogus overflow, breaking at-least-once.
-		r.purgeStalePendingLocked()
 		if r.graceTimer != nil {
 			r.graceTimer.Reset(r.graceWindow)
 		}
@@ -377,7 +372,11 @@ func (r *router) retainCovered(pub *pahov5.Publish, ack func() error) {
 		return
 	}
 	// Covered QoS 0 the buffer cannot hold: best-effort drop (no redelivery
-	// contract). Counted on the covered-drop metric for visibility.
+	// contract). Counted on the covered-drop metric for visibility. The
+	// reservation MUST be returned here: this branch is reachable on every
+	// byte-ceiling refusal, so holding it would retire one unit of the shared
+	// dispatch budget per drop until nothing could be admitted at all.
+	r.releaseQueueReservation(pub)
 	r.coveredDropped.Add(1)
 	r.metrics.Counter(MetricMQTTRouterCoveredDropped, 1, r.sessionTag()...)
 	if ack != nil {
@@ -453,18 +452,28 @@ func (r *router) overflowAckDrop(pub *pahov5.Publish, ack func() error) {
 	}
 }
 
-// dropQoS0Overflow drops a QoS 0 publish the pending buffer refused during the
-// startup grace window. QoS 0 carries no delivery contract and no ack, so the
-// drop is best-effort and counted only on the generic drop metric. Caller must
-// hold NEITHER r.mu.
-func (r *router) dropQoS0Overflow(pub *pahov5.Publish) {
+// dropQoS0 drops a QoS 0 publish no admission path could hold. QoS 0 carries no
+// delivery contract and no ack, so the drop is best-effort and counted only on
+// the generic drop metric. reason names WHICH bound refused it, because the
+// operator remedy differs: a full pending buffer means a receiver has not
+// registered (or has stalled), while an exhausted dispatch budget means
+// receive_maximum is too small for the offered load. Caller must hold NEITHER
+// r.mu.
+func (r *router) dropQoS0(pub *pahov5.Publish, reason string) {
 	r.releaseQueueReservation(pub)
 	r.dropCount.Add(1)
 	r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
 	if r.logger != nil {
-		r.logger.Warn("mqtt: dropped QoS 0 publish (pending buffer full during startup grace)",
+		r.logger.Warn("mqtt: dropped QoS 0 publish ("+reason+")",
 			"topic", pub.Topic,
 			"qos", pub.QoS,
 		)
 	}
 }
+
+// Reasons a QoS 0 publish is shed, as reported by dropQoS0.
+const (
+	dropReasonPendingFull     = "pending buffer full during startup grace"
+	dropReasonBudgetExhausted = "dispatch budget exhausted"
+	dropReasonSessionClosing  = "session is closing"
+)
