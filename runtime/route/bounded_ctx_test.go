@@ -32,7 +32,7 @@ func (s *deadlineCapturingStore) Claim(context.Context, string, persistence.Leas
 func (s *deadlineCapturingStore) Complete(context.Context, []string, persistence.LeaseToken) error {
 	return nil
 }
-func (s *deadlineCapturingStore) Expire(context.Context, time.Time, string) (int, error) {
+func (s *deadlineCapturingStore) Expire(context.Context, time.Time, string, persistence.LeaseToken) (int, error) {
 	return 0, nil
 }
 func (s *deadlineCapturingStore) QueryPending(context.Context, string, int) ([]*persistence.OutboxRecord, error) {

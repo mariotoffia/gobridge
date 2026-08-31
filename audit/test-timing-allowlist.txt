@@ -85,7 +85,7 @@
 ./tests/longrunning/uc5_pipeline_chain_test.go:52:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 ./tests/longrunning/uc57_outbox_lease_test.go:108:	time.Sleep(5 * time.Second) // ESSENTIAL: wait for lease TTL (2s) to expire + margin
 ./tests/longrunning/uc59_outbox_edge_test.go:166:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
-./tests/longrunning/uc63_performance_test.go:335:		time.Sleep(500 * time.Millisecond) // SYNC: poll for per-tenant completion
+./tests/longrunning/uc63_performance_test.go:342:		time.Sleep(500 * time.Millisecond) // SYNC: poll for per-tenant completion
 ./tests/longrunning/uc80_benchmark_test.go:91:		time.Sleep(500 * time.Millisecond) // SYNC: poll for message delivery progress
 ./tests/longrunning/uc92_amqp091_broker_resilience_test.go:135:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 ports/storetest/lease.go:21:	// If nil, the suite uses time.Sleep(ttl + 500ms).

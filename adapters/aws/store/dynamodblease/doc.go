@@ -29,15 +29,13 @@
 // shared.ErrInvalidConfig. The store never treats missing fields as release and
 // never recreates an existing fencing counter at version 1.
 //
-// The only supported legacy omission is the complete set of takeover-observation
-// attributes. If fingerprint, elapsed duration, and generation are all absent,
-// observation starts at zero. Partial, negative, or overflowing evidence is
-// corrupt. Deployments upgrading from rows that predate renewed_at must migrate
-// those rows offline before starting this version: quiesce all lease users,
-// preserve each positive version, write a valid renewed_at/expires_at pair (or
-// the explicit released shape), verify the rows, then restart. Automatic healing
-// is intentionally forbidden because it cannot distinguish a dead owner from a
-// live foreign writer safely.
+// The one tolerated omission is the complete set of takeover-observation
+// attributes: if fingerprint, elapsed duration, and generation are all absent,
+// observation starts at zero — that is the shape of a lease row this store has
+// written but never yet observed a takeover on. Partial, negative, or
+// overflowing evidence is corrupt and fails closed. Automatic healing of a
+// corrupt row is intentionally forbidden because it cannot distinguish a dead
+// owner from a live foreign writer safely.
 //
 // # TTL invariant: DynamoDB TTL MUST be DISABLED on the lease table
 //

@@ -95,9 +95,9 @@ classDiagram
 | `instance_id` | string | no | auto-generated | Instance identifier (useful in clustered mode) |
 | `deployment_mode` | string | no | `standalone` | `standalone` or `clustered` |
 | `shutdown_timeout` | duration | no | `30s` | Grace period for clean shutdown |
-| `drain_timeout` | duration | no | `30s` | Legacy fixed ceiling for a drain batch. Retained for backward compatibility; prefer `per_record_drain_timeout` + `max_drain_timeout` for production workloads. |
-| `per_record_drain_timeout` | duration | no | `3s` (when paired) | Per-record budget in the scaled formula `ceiling = min(batchCount * per_record_drain_timeout, max_drain_timeout)`. Setting this or `max_drain_timeout` activates the scaled formula and supersedes `drain_timeout`. |
-| `max_drain_timeout` | duration | no | `10s` (when paired) | Upper bound for the scaled drain formula. Must be >= `per_record_drain_timeout`. |
+| `drain_timeout` | duration | no | `30s` | How long the supervisor lets a runtime drain when it STOPS one (shutdown, or a reconfiguration swap). It is the ceiling on `Runtime.Stop`, not a per-batch outbox budget. |
+| `per_record_drain_timeout` | duration | no | `3s` | Per-record budget in the outbox drain batch ceiling `min(batchCount * per_record_drain_timeout, max_drain_timeout)`. The ceiling may only RAISE a batch budget already floored at one full send, so it can never cut a send short. |
+| `max_drain_timeout` | duration | no | `10s` | Upper bound of that batch ceiling. Must be >= `per_record_drain_timeout`. |
 | `log_level` | string | no | `info` | Log level: `debug`, `info`, `warn`, `error` |
 
 ### `bridge.cluster` -- Cluster Config
@@ -231,17 +231,28 @@ partitions from accreting one immortal fence row each, while 30 days of
 abandonment is deemed safe because such a partition has no competing owner left
 to fence (`sqliteoutbox/outbox.go:35`, `dynamodboutbox/acl_store.go:72`).
 
-**DynamoDB outbox GSI change (breaking for existing tables).** The outbox table's
-secondary indexes changed: the former `StatusIndex` (a table-wide hot partition
-rewritten on every state transition) and the never-queried `ClaimedByIndex` were
-removed, and a sparse `ExpiryIndex` (hash `has_expiry`, range `expires_at`,
-`KEYS_ONLY`) was added alongside the existing `RecordIDIndex`. A freshly created
-table (`Store.CreateTable`) provisions the new shape automatically; a table
-created by an earlier build must be migrated. See
-[DynamoDB outbox GSI migration](runbooks/dynamodb-outbox-gsi-migration.md).
+**DynamoDB outbox indexes.** The outbox table requires three sparse indexes —
+`ExpiryIndex` (hash `has_expiry`, range `expires_at`, `KEYS_ONLY`),
+`RecordIDIndex` (hash `record_id`, `KEYS_ONLY`) and `ClaimIndex` (hash `PK`,
+range `claim_sort`, **`Projection: ALL`**). `Store.CreateTable` provisions all
+three; the factory preflight rejects a table that is missing one or has
+`ClaimIndex` under-projected. See
+[DynamoDB outbox table schema](runbooks/dynamodb-outbox-table-schema.md).
 
-Set `stale_claim_duration` above your worst-case drain-batch timeout;
-`step_down_grace + 15s` (~20s) is a safe rule of thumb.
+Set `stale_claim_duration` above your worst-case drain-batch timeout. A
+stale-claim reclaim is crash recovery — it hands a record to a second sender on
+the assumption the first is dead — so a value below the time a HEALTHY owner can
+hold a claim duplicates deliveries that are still in flight, silently. Validation
+enforces two bounds on an explicit value:
+
+| Value | Result |
+|---|---|
+| at or below the largest route `send_timeout` | **rejected** — the first owner's send has not even timed out yet |
+| at or below `send_timeout` + the drain-batch ceiling (`max_drain_timeout`, else `drain_timeout`) | **warning** — a record claimed at the head of a batch can wait most of that budget before its own send starts |
+| above both | accepted |
+
+Leaving the key unset is the safe default: the bridge derives
+`step_down_grace + max(2 x step_down_grace, 15s)` and no bound is applied.
 
 ```yaml
 stores:

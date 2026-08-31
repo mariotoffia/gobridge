@@ -32,7 +32,7 @@ import (
 // Scenario:
 // ───────────────────────────────────────────────
 //
-//	DrainTimeout:  500ms
+//	MaxDrainTimeout:  500ms
 //	SendTimeout:   2s
 //	Sender blocks: 800ms  (> drainTimeout, < SendTimeout)
 //	Expected:      send succeeds, record completed
@@ -77,8 +77,8 @@ func TestOutboxDrainer_WorkCtxNotCappedBySendTimeout(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			SendTimeout: 2 * time.Second,
 		}.WithDefaults(),
-		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
-		DrainTimeout: 5 * time.Second,
+		Strategy:        persistence.NewFixedPoll(50 * time.Millisecond),
+		MaxDrainTimeout: 5 * time.Second,
 		// Threshold: 1 (Run loop) + 1 (pre-send check) + 1 (post-send fence) = 3. The token must stay live THROUGH the post-send fence for
 		// the record to complete; this test exercises the DrainTimeout-vs-
 		// SendTimeout window, not lease staleness, so the owner never loses the

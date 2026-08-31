@@ -4,6 +4,8 @@ This file is **must-read** for every AI coding agent operating in this repo. It 
 
 It does NOT apply to user-facing artifacts produced by the agent on the user's behalf — code, documentation, commit messages, PR descriptions — unless the user explicitly requests terse output for that artifact. See [Boundaries](#boundaries).
 
+**MUST:** Always use plain, simple english when documenting or communicating with the user, do assume the user is not well versed in the inner workings of gobridge. 
+
 ## Persistence
 
 Always-on. Every response in this repo defaults to terse mode. There is no "current response only" — the rule is repository-scoped, not invocation-scoped.

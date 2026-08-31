@@ -170,11 +170,21 @@ func marshalRecord(r *persistence.OutboxRecord, now time.Time) (map[string]ddbty
 	// stamped by Persist after allocating the per-partition sequence.
 	//
 	// first_attempted_at is likewise omitted while zero (never claimed):
-	// Claim stamps it once via if_not_exists and it is never moved after.
-	// A legacy item that predates this attribute simply has no such key, so
+	// Claim stamps it once via if_not_exists and it is never moved after, so an
+	// item without the attribute is one that has never been claimed and
 	// unmarshalRecord reads it back as the zero time (numAttrI64 → 0).
 	if fa := r.FirstAttemptedAt(); !fa.IsZero() {
 		item["first_attempted_at"] = &ddbtypes.AttributeValueMemberN{Value: i64(fa.UnixMilli())}
+	}
+
+	// ordering_key is denormalised out of the envelope so a claim can evaluate
+	// the head-of-line rule without unmarshalling every scanned record. It is
+	// written only when the envelope carries one, so keyless records add no
+	// attribute, and it is never rewritten — the envelope is immutable, so the
+	// key cannot change under a record. Records written before this attribute
+	// existed are read back through the envelope fallback in orderingKeyOfItem.
+	if key, ok := r.OrderingKey(); ok {
+		item[attrOrderingKey] = &ddbtypes.AttributeValueMemberS{Value: key}
 	}
 
 	// has_expiry is the sparse ExpiryIndex hash key: present only on

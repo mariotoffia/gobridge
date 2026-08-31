@@ -363,7 +363,7 @@ on each table and required index the store names. Two operator responsibilities 
   `gobridge-managed-subscriptions`.
 
 The adapter's expected key schemas -- what an out-of-band table must match, and
-what the store's own `EnsureTable`/`CreateTable` helper provisions -- are below.
+what the store's own table-creation helper provisions -- are below.
 All four tables are created `PAY_PER_REQUEST` (on-demand).
 
 **Lease table** (default `gobridge-leases`)
@@ -388,14 +388,17 @@ enforces this (see [IAM Least Privilege](#iam-least-privilege) below).
 |---|---|---|---|
 | `ExpiryIndex` | `has_expiry` (S) HASH, `expires_at` (N) RANGE | `KEYS_ONLY` | Sparse; drives expiry sweeps |
 | `RecordIDIndex` | `record_id` (S) HASH | `KEYS_ONLY` | `Complete` record lookup |
-| `ClaimIndex` | `PK` (S) HASH, `claim_sort` (S) RANGE | `ALL` | Sparse, age-ordered claim path; **optional** |
+| `ClaimIndex` | `PK` (S) HASH, `claim_sort` (S) RANGE | `ALL` | Sparse, age-ordered claim path |
 
-`ClaimIndex` is optional -- `Claim` falls back to a whole-partition scan when it
-is absent, so an un-migrated table still boots. When it is present it **must** be
-`Projection: ALL`: the claim query filters on the non-key `status` attribute, so
-an under-projected index fails every claim at runtime. Preflight rejects a
-present-but-under-projected `ClaimIndex` at startup, and the running store
-degrades to the scan path if the index becomes unusable.
+`ClaimIndex` is **required**, and required to be `Projection: ALL`: the claim
+query filters on the non-key `status` attribute, so an under-projected index
+passes a key-only check and then fails every claim at runtime. `CreateTable`
+provisions it and preflight rejects a table that is missing it or has it
+under-projected. Ordering-keyed partitions read the base table with
+`ConsistentRead` instead — no index can prove a keyed record has no older unseen
+sibling — which is why `DynamoDBOutboxClaimScanPages` can rise on a correctly
+provisioned table. See
+[DynamoDB outbox table schema](../runbooks/dynamodb-outbox-table-schema.md).
 
 **DLQ table** (default `gobridge-dlq`)
 

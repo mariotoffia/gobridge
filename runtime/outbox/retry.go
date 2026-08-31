@@ -43,7 +43,7 @@ var errReleaseFailed = errors.New("outbox: record release failed after transient
 // Note the deferral re-claims the record on the next cycle, which increments
 // its ReplayCount even though no send failed. Replay count therefore counts
 // claims, not failures, which is why the poison gate (processRecord) AND-checks
-// poisonAgeReached — see poisonMinAge.
+// the wall-clock replay budget — see replayBudgetExhausted.
 var errBatchDeadlineDeferred = errors.New("outbox: record deferred: batch deadline aborted send")
 
 // errCompletionFenced signals that a record's Send had returned but the
@@ -212,23 +212,6 @@ func (d *Drainer) completeTerminal(ctx context.Context, rec *persistence.OutboxR
 	return nil
 }
 
-// poisonAgeReached reports whether a replay-exhausted record is old enough to
-// be poisoned to the DLQ (finding 8). The age gate prevents a transient egress
-// outage — which can burn the small replay budget in seconds — from poisoning
-// otherwise-healthy records: a record is only poisoned once it has ALSO reached
-// poisonMinAge. When CreatedAt is unknown (zero), the age cannot be checked, so
-// we fail OPEN and allow poisoning — preserving the pre-age-gate behaviour
-// (poison on replay exhaustion) rather than retrying a genuinely poisoned record
-// forever. Production records always carry a persist timestamp, so the age gate
-// is effective there; only ageless (e.g. hand-rehydrated) records fail open.
-func (d *Drainer) poisonAgeReached(rec *persistence.OutboxRecord) bool {
-	created := rec.CreatedAt()
-	if created.IsZero() {
-		return true
-	}
-	return d.clk.Since(created) >= d.poisonMinAge
-}
-
 // replayBudgetExhausted reports whether a replay-exhausted record has ALSO spent
 // its wall-clock replay budget and may therefore be poisoned to the DLQ
 // (WP-REPLAY-BUDGET). The budget is measured from the record's FIRST delivery
@@ -236,14 +219,18 @@ func (d *Drainer) poisonAgeReached(rec *persistence.OutboxRecord) bool {
 // replay COUNT quickly cannot poison an otherwise-healthy record until real time
 // — replayBudget — has actually elapsed since delivery was first attempted.
 //
-// Records with a zero FirstAttemptedAt (persisted before the replay-budget
-// schema, or never yet claimed) fall back BIT-FOR-BIT to the legacy CreatedAt
-// age gate (poisonAgeReached / poisonMinAge), so upgrading in place changes no
-// poison decision for pre-existing records.
+// A record reaching this gate has just been claimed, and every backend stamps
+// FirstAttemptedAt on the first claim (the aggregate does it in
+// OutboxRecord.Claim; SQLite in its claim UPDATE, DynamoDB via if_not_exists,
+// the in-memory store through the aggregate). A zero value is therefore a store
+// that broke that contract, and the answer is NOT to guess an age from
+// CreatedAt: poisoning routes a message to the dead-letter queue — or drops it
+// outright under FailureDrop — so the budget is reported UNSPENT and the record
+// keeps being retried. A store bug must not be able to destroy messages.
 func (d *Drainer) replayBudgetExhausted(rec *persistence.OutboxRecord) bool {
 	first := rec.FirstAttemptedAt()
 	if first.IsZero() {
-		return d.poisonAgeReached(rec)
+		return false
 	}
 	return d.clk.Since(first) >= d.replayBudget
 }
@@ -272,7 +259,7 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 	// OutboundMessage.Address.
 	outbound := rec.Snapshot()
 	routeTag := shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID}
-	attempt := rec.ReplayCount() + 1
+	attempt := attemptNumber(rec)
 
 	if outbound.HasExpiry() && outbound.IsExpired(d.clk) {
 		d.metrics.Counter(shared.MetricOutboxExpiredBeforeSend, 1, routeTag)
@@ -284,9 +271,7 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 	// gated on replay exhaustion AND the replay budget being spent
 	// (replayBudgetExhausted): both must hold. A record is poisoned only once
 	// wall-clock time since its FIRST attempt (FirstAttemptedAt) has reached
-	// ReplayBudget; legacy records carrying a zero FirstAttemptedAt fall back
-	// bit-for-bit to the CreatedAt/poisonMinAge age gate. Both conditions are a
-	// hard AND, never an OR.
+	// ReplayBudget. Both conditions are a hard AND, never an OR.
 	if rec.ReplayCount() > d.policy.MaxReplayAttempts && d.replayBudgetExhausted(rec) {
 		return d.handlePoison(ctx, rec, token)
 	}
@@ -503,7 +488,7 @@ func (d *Drainer) handleExpired(ctx context.Context, rec *persistence.OutboxReco
 		BindingID:   rec.BindingID(),
 		Address:     rec.Address(),
 		Envelope:    env,
-		Attempt:     rec.ReplayCount() + 1,
+		Attempt:     attemptNumber(rec),
 		MaxAttempts: d.policy.MaxReplayAttempts,
 		Err:         shared.ErrMessageExpired,
 		Terminal:    true,
@@ -520,8 +505,7 @@ func (d *Drainer) handlePoison(ctx context.Context, rec *persistence.OutboxRecor
 	// a healthy record, because poisoning now requires real time — measured from
 	// the FIRST attempt — to have elapsed. The transientRetryFloor still bounds
 	// how fast the count burns (rate); the budget bounds the TOTAL burn. Legacy
-	// records with a zero FirstAttemptedAt fall back to the CreatedAt/poisonMinAge
-	// age gate. Emit an explicit WARN carrying the age evidence
+	// Emit an explicit WARN carrying the age evidence
 	// (first_attempted_at, replay_budget) so a genuine budget-exhaustion loss is
 	// observable at the point of loss instead of surfacing only as a generic,
 	// reason-less DLQ entry.
@@ -538,7 +522,7 @@ func (d *Drainer) handlePoison(ctx context.Context, rec *persistence.OutboxRecor
 		BindingID:   rec.BindingID(),
 		Address:     rec.Address(),
 		Envelope:    env,
-		Attempt:     rec.ReplayCount() + 1,
+		Attempt:     attemptNumber(rec),
 		MaxAttempts: d.policy.MaxReplayAttempts,
 		Err:         poisonErr,
 		Terminal:    true,
@@ -563,4 +547,16 @@ func (d *Drainer) handlePoison(ctx context.Context, rec *persistence.OutboxRecor
 	// OnSettled fires only after Complete durably lands; emitDLQ above is
 	// per-write and already stands even if Complete later fails.
 	return d.completeTerminal(ctx, rec, token, outcome)
+}
+
+// attemptNumber is the 1-based attempt number reported to delivery hooks
+// (ports.DeliveryAttempt.Attempt / ports.DeliveryOutcome.Attempt) on the outbox
+// path. OutboxRecord.Claim increments ReplayCount for the claim that is being
+// attempted right now, so the count ALREADY includes this attempt — adding one
+// made the first delivery report attempt 2 while the direct path reported 1 for
+// the same message. The floor of 1 covers a record rehydrated with a zero
+// replay count — an out-of-tree store that does not increment it — so the
+// number stays 1-based whatever the store did.
+func attemptNumber(rec *persistence.OutboxRecord) int {
+	return max(rec.ReplayCount(), 1)
 }

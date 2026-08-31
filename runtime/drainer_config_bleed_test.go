@@ -129,8 +129,8 @@ func TestStart_SharedSessionDrainer_AllowsAlignedConfig(t *testing.T) {
 // TestStart_SharedSessionDrainer_NormalizesDrainDefaults covers
 // (MEDIUM): the drainer fingerprint must be computed over the NORMALIZED (post
 // outbox.New defaulting) drain config, not the raw session fields. outbox.New
-// defaults a zero DrainBatchSize/DrainMaxBatchSize/DrainMaxConcurrency/DrainTimeout
-// to 100/500/10/10s, so two routes that share a session and are EFFECTIVELY
+// defaults a zero DrainBatchSize/DrainMaxBatchSize/DrainMaxConcurrency
+// to 100/500/10, so two routes that share a session and are EFFECTIVELY
 // identical — one leaving those fields zero, the other spelling out the exact
 // defaults — build the same drainer. Comparing the RAW fields would see 0 vs 100
 // and falsely reject a valid Start. With normalization the fingerprints are equal
@@ -150,14 +150,12 @@ func TestStart_SharedSessionDrainer_NormalizesDrainDefaults(t *testing.T) {
 	zeroCfg.DrainBatchSize = 0
 	zeroCfg.DrainMaxBatchSize = 0
 	zeroCfg.DrainMaxConcurrency = 0
-	zeroCfg.DrainTimeout = 0
 
 	// route-explicit spells out exactly what outbox.New's defaulting produces.
 	explicitCfg := base
 	explicitCfg.DrainBatchSize = 100
 	explicitCfg.DrainMaxBatchSize = 500
 	explicitCfg.DrainMaxConcurrency = 10
-	explicitCfg.DrainTimeout = 10 * time.Second
 
 	specs := []struct {
 		id string

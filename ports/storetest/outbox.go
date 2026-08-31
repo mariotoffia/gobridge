@@ -71,10 +71,19 @@ func RunOutboxStoreTests(t *testing.T, store ports.OutboxStore) {
 	t.Run("CompleteRejectsZeroClaimSnapshot", func(t *testing.T) { testCompleteRejectsZeroClaimSnapshot(t, store) })
 	t.Run("CompleteRejectsSameVersionDifferentOwner", func(t *testing.T) { testCompleteRejectsSameVersionDifferentOwner(t, store) })
 	t.Run("ExpireSkipsClaimed", func(t *testing.T) { testExpireSkipsClaimed(t, store) })
+	t.Run("ExpireRejectsZeroToken", func(t *testing.T) { testExpireRejectsZeroToken(t, store) })
+	t.Run("ExpireRejectsStaleVersion", func(t *testing.T) { testExpireRejectsStaleVersion(t, store) })
+	t.Run("ExpireAdvancesPartitionFence", func(t *testing.T) { testExpireAdvancesPartitionFence(t, store) })
 	t.Run("ClaimRejectsStaleVersionOnPending", func(t *testing.T) { testClaimRejectsStaleVersionOnPending(t, store) })
 	t.Run("ClaimRejectsStaleVersionAfterNoopHigherClaim", func(t *testing.T) { testClaimRejectsStaleVersionAfterNoopHigherClaim(t, store) })
 	t.Run("ClaimReturnsSameKeyRecordsInCreatedOrder", func(t *testing.T) { testClaimReturnsSameKeyRecordsInCreatedOrder(t, store) })
 	t.Run("ClaimTieBreaksByPersistOrderOnEqualCreatedAt", func(t *testing.T) { testClaimTieBreaksByPersistOrderOnEqualCreatedAt(t, store) })
+	t.Run("ClaimBlocksYoungerSiblingOfStrandedHead", func(t *testing.T) { testClaimBlocksYoungerSiblingOfStrandedHead(t, store) })
+	t.Run("ClaimBlocksYoungerSiblingOfPendingHeadBeyondLimit", func(t *testing.T) {
+		testClaimBlocksYoungerSiblingOfPendingHeadBeyondLimit(t, store)
+	})
+	t.Run("ClaimAllowsIndependentKeysPastStrandedHead", func(t *testing.T) { testClaimAllowsIndependentKeysPastStrandedHead(t, store) })
+	t.Run("ClaimReturnsWholeGroupWhenHeadIsClaimable", func(t *testing.T) { testClaimReturnsWholeGroupWhenHeadIsClaimable(t, store) })
 	t.Run("ClaimZeroLimitAdvancesFenceOnly", func(t *testing.T) { testClaimZeroLimitAdvancesFenceOnly(t, store) })
 	t.Run("ClaimBeyondReplayCapRemainsClaimable", func(t *testing.T) { testClaimBeyondReplayCapRemainsClaimable(t, store) })
 	t.Run("ClaimFenceInterleaving", func(t *testing.T) { testClaimFenceInterleaving(t, store) })
@@ -470,7 +479,7 @@ func testExpireMarksEligible(t *testing.T, store ports.OutboxStore) {
 		t.Fatalf("persist: %v", err)
 	}
 
-	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-exp")
+	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-exp", persistence.LeaseToken{Version: 1, Owner: "owner-exp"})
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}
@@ -501,7 +510,7 @@ func testExpireScopedToPartition(t *testing.T, store ports.OutboxStore) {
 	}
 
 	// Sweep only partition 1.
-	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-expscope-1")
+	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-expscope-1", persistence.LeaseToken{Version: 1, Owner: "owner-expscope"})
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}
@@ -542,7 +551,7 @@ func testExpireSkipsCompleted(t *testing.T, store ports.OutboxStore) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-expsk")
+	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-expsk", persistence.LeaseToken{Version: 1, Owner: "owner-expsk"})
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}

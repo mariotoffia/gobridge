@@ -797,10 +797,9 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 		goruntime.WithOutboxStore(outboxStore),
 		goruntime.WithLeaseStore(leaseStore),
 		goruntime.WithDLQStore(dlq),
-		// The poison gates (legacy poisonMinAge and the wall-clock ReplayBudget
-		// set on the route policy below) would otherwise stall this fast-poll
-		// e2e; replay exhaustion crossing the budget is what is under test.
-		goruntime.WithOutboxPoisonMinAge(time.Millisecond),
+		// The poison gate is replay exhaustion AND the wall-clock ReplayBudget
+		// measured from the record's first attempt; the route policy below
+		// shrinks that budget so this fast-poll e2e does not stall on it.
 	)
 
 	receiver := newFakeReceiver()

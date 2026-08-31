@@ -22,8 +22,8 @@
 //   - ClaimIndex: PK=PK, SK=claim_sort (sparse, age-ordered; for Claim to
 //     drain a partition oldest-first in O(limit) — see "Claim ordering")
 //
-// See docs/runbooks/dynamodb-outbox-gsi-migration.md for migrating
-// tables created with the former StatusIndex/ClaimedByIndex layout.
+// See docs/runbooks/dynamodb-outbox-table-schema.md for the operator-facing
+// schema reference and how to repair a misprovisioned table.
 //
 // # Authoritative key schema (verified by factory preflight)
 //
@@ -33,7 +33,7 @@
 // the expected schema, and the actual schema. A misprovisioned outbox (e.g. a
 // PK-only lease table copy-pasted into the outbox config) would otherwise accept
 // the first record per partition and classify every subsequent record a
-// duplicate, silently acking and dropping it. EnsureTable/CreateTable provision
+// duplicate, silently acking and dropping it. CreateTable provisions
 // exactly this shape.
 //
 //	Primary key : PK          (S, HASH)
@@ -82,42 +82,35 @@
 // per-record claim transaction re-validates status and the fence, so a stale
 // index entry only ever costs a skipped candidate, never a double claim.
 //
-// Fallback path (no ClaimIndex): on a table provisioned before ClaimIndex
-// existed — or one whose ClaimIndex cannot serve the age-ordered claim query
-// (missing OR not Projection: ALL, detected at runtime) — the Query fails;
-// Claim latches that (one WARN naming the reason) and falls back to paging the
-// partition to EXHAUSTION, selecting the oldest N across every page. This is
-// always correct but O(backlog) — a deep backlog on the fallback path emits a
-// throttled WARN and a MetricClaimScanPages counter so the quadratic cost is
-// observable. Provision the ClaimIndex GSI as Projection: ALL (EnsureTable/
-// CreateTable do so) to regain the O(limit) fast path.
+// ClaimIndex is REQUIRED. CreateTable provisions it and the factory
+// preflight rejects a table that is missing it or has it under-projected, so a
+// claim-time index failure is a provisioning fault and is SURFACED, never
+// degraded around.
 //
-// # SK escaping migration (upgrading from raw-concat keys)
+// Strongly consistent path (ordering keys): a partition whose records carry
+// messaging.HeaderOrderingKey cannot be served by ANY global secondary index —
+// a GSI cannot prove a record has no older unseen sibling on the same key, so a
+// lagging index would hand back the younger message first. The moment a claim
+// sees an ordering key it abandons the index, having claimed nothing, and pages
+// the base table with ConsistentRead to EXHAUSTION, selecting the oldest N
+// across every page. That is correct but O(backlog): a deep backlog on this
+// path emits a throttled WARN and a MetricClaimScanPages counter so the cost is
+// observable. A rising counter on a correctly provisioned table therefore means
+// ordering keys, not a missing index.
 //
-// Pre-upgrade rows used a RAW concatenation SK ("OUTBOX#<envelope_id>#<binding_id>"
-// with no per-component escaping). New rows escape each component. The two
-// schemes share the "OUTBOX#" prefix on purpose so the scan fallback's
-// begins_with(SK, "OUTBOX#") still finds and drains BOTH old raw rows and new
-// escaped rows during migration — old pending rows are never orphaned.
+// # Sort-key escaping
 //
-// Residual (self-healing, narrow): a new escaped SK can equal an old raw SK
-// only when a producer/env id LITERALLY contains "%23"/"%25" — e.g. new
-// sortKey("a#b","c") == old raw "OUTBOX#a%23b#c" written for env "a%23b". If an
-// old raw row still occupies that key, the new distinct record's
-// attribute_not_exists(SK) put fails. Persist does NOT blind-count that a
-// duplicate (which would ack and DROP the distinct message); it reads the
-// occupying row strongly-consistently and, on an envelope/binding MISMATCH,
-// returns a TRANSIENT error so the record is retried — it lands once the legacy
-// row is claimed, completed and TTL-compacted. No silent drop occurs.
+// A record's SK is "OUTBOX#<esc(envelope_id)>#<esc(binding_id)>", where each
+// component percent-escapes '#' and '%'. The escaping makes the key INJECTIVE:
+// without it, (env="order", binding="eu#prod") and (env="order#eu",
+// binding="prod") produce the same SK, so the second distinct record hits
+// attribute_not_exists(SK), is counted an idempotent duplicate, and is acked and
+// DROPPED — silent loss, with producer-controlled envelope IDs as the trigger.
 //
-// Migration steps:
-//  1. Deploy the new code with NO ClaimIndex provisioned yet. Claim uses the
-//     scan fallback and drains old raw rows (no claim_sort) and new escaped
-//     rows alike via begins_with(SK, "OUTBOX#").
-//  2. Let the pre-upgrade backlog drain (old rows lack claim_sort, so they are
-//     invisible to a ClaimIndex query — provisioning it first would strand
-//     them on the fast path). Backfill claim_sort onto surviving old rows if
-//     you must provision earlier.
-//  3. Provision the ClaimIndex GSI as Projection: ALL once the old backlog is
-//     drained (or backfilled) to regain the O(limit) fast path.
+// Because the key is injective, a conflict this store produces can only ever be
+// the SAME (envelope_id, binding_id) — a genuine redelivery. Persist still reads
+// the occupying row strongly-consistently before counting a duplicate: an
+// envelope/binding MISMATCH means a writer that is not this store owns that key,
+// and the record is returned as a TRANSIENT error to be retried rather than
+// blind-counted a duplicate and dropped.
 package dynamodboutbox

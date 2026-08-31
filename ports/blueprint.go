@@ -78,16 +78,17 @@ type BridgeSettings struct {
 	InstanceID      string `yaml:"instance_id,omitempty" json:"instance_id,omitempty"`
 	DeploymentMode  string `yaml:"deployment_mode,omitempty" json:"deployment_mode,omitempty"`
 	ShutdownTimeout string `yaml:"shutdown_timeout,omitempty" json:"shutdown_timeout,omitempty"`
-	// DrainTimeout is the legacy fixed ceiling applied to a whole drain
-	// batch. Retained for backward compatibility; prefer
-	// PerRecordDrainTimeout + MaxDrainTimeout for production workloads.
+	// DrainTimeout bounds how long the supervisor lets a runtime drain when it
+	// STOPS one — on shutdown, or when a reconfiguration swaps a runtime out.
+	// It is the ceiling on Runtime.Stop and nothing else; the outbox drain
+	// BATCH is bounded separately by PerRecordDrainTimeout/MaxDrainTimeout.
+	// Default: 30s.
 	DrainTimeout string `yaml:"drain_timeout,omitempty" json:"drain_timeout,omitempty"`
-	// PerRecordDrainTimeout is the per-record allowance used by the
-	// scaled formula: ceiling = min(batchCount * PerRecordDrainTimeout,
-	// MaxDrainTimeout). When non-zero together with MaxDrainTimeout this
-	// supersedes DrainTimeout.
+	// PerRecordDrainTimeout is the per-record allowance in the outbox drain
+	// batch ceiling: min(batchCount * PerRecordDrainTimeout, MaxDrainTimeout).
+	// Default: 3s.
 	PerRecordDrainTimeout string `yaml:"per_record_drain_timeout,omitempty" json:"per_record_drain_timeout,omitempty"`
-	// MaxDrainTimeout is the upper bound for the scaled drain formula.
+	// MaxDrainTimeout is the upper bound of that batch ceiling. Default: 10s.
 	MaxDrainTimeout string         `yaml:"max_drain_timeout,omitempty" json:"max_drain_timeout,omitempty"`
 	LogLevel        string         `yaml:"log_level,omitempty" json:"log_level,omitempty"`
 	Cluster         *ClusterConfig `yaml:"cluster,omitempty" json:"cluster,omitempty"`

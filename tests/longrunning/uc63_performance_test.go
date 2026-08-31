@@ -107,8 +107,15 @@ func TestUC63_MemoryStability(t *testing.T) {
 		// its test clock beyond retention and trigger compaction so this measures
 		// runtime memory after persistence has released completed payloads.
 		outboxClock.Advance(2 * time.Minute)
-		_, err := outboxStore.Expire(
+		// Expire is lease-fenced, so this harness sweep must carry the token the
+		// runtime's own drainer holds. Reading it from the lease store (rather
+		// than inventing a version) keeps the sweep from raising the partition
+		// fence past the live drainer and fencing it out of the phases below.
+		live, err := leaseStore.Current(ctx, sessID)
+		require.NoError(t, err)
+		_, err = outboxStore.Expire(
 			ctx, outboxClock.Now(), persistence.OutboxPartitionKey(sessID, ""),
+			persistence.LeaseToken{Owner: live.Owner, Version: live.Version},
 		)
 		require.NoError(t, err)
 	}

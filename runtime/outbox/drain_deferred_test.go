@@ -89,7 +89,7 @@ func (s *deferredFakeStore) Complete(_ context.Context, ids []string, _ persiste
 	return s.completeErr
 }
 
-func (s *deferredFakeStore) Expire(_ context.Context, _ time.Time, partition string) (int, error) {
+func (s *deferredFakeStore) Expire(_ context.Context, _ time.Time, partition string, _ persistence.LeaseToken) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.expireCalls = append(s.expireCalls, partition)

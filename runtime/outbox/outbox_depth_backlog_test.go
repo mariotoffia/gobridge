@@ -48,7 +48,7 @@ func (s *depthReportingStore) Complete(context.Context, []string, persistence.Le
 	return nil
 }
 
-func (s *depthReportingStore) Expire(context.Context, time.Time, string) (int, error) {
+func (s *depthReportingStore) Expire(context.Context, time.Time, string, persistence.LeaseToken) (int, error) {
 	return 0, nil
 }
 

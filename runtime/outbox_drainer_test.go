@@ -363,7 +363,7 @@ func TestOutboxDrainer_CancelDuringBatch_ReturnsPromptly(t *testing.T) {
 	_, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.DrainMaxConcurrency = 1
 		cfg.DrainBatchSize = 50
-		cfg.DrainTimeout = 500 * time.Millisecond
+		cfg.MaxDrainTimeout = 500 * time.Millisecond
 
 		outbox := NewFakeOutboxStore()
 		ctx := context.Background()
@@ -430,7 +430,7 @@ func TestOutboxDrainer_CancelBeforeBatch_ExitsPromptly(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 	outbox, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Strategy = persistence.NewFixedPoll(10 * time.Millisecond)
-		cfg.DrainTimeout = 500 * time.Millisecond
+		cfg.MaxDrainTimeout = 500 * time.Millisecond
 	})
 
 	ctx := context.Background()
@@ -493,7 +493,7 @@ func TestOutboxDrainer_ConcurrentBatch_SemaphoreConsistency(t *testing.T) {
 	_, _, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.DrainMaxConcurrency = 3
 		cfg.DrainBatchSize = 20
-		cfg.DrainTimeout = 500 * time.Millisecond
+		cfg.MaxDrainTimeout = 500 * time.Millisecond
 
 		outbox := NewFakeOutboxStore()
 		ctx := context.Background()

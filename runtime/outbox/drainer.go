@@ -35,29 +35,18 @@ type Drainer struct {
 	logger         *slog.Logger
 	clk            clock.Clock
 
-	drainTimeout          time.Duration
 	perRecordDrainTimeout time.Duration
 	maxDrainTimeout       time.Duration
-	useScaledTimeout      bool
 	batchTimeoutFloor     time.Duration
-	// poisonMinAge is the minimum wall-clock age a record must reach BEFORE
-	// replay-count exhaustion is allowed to poison it to the DLQ (finding 8).
-	// Replay count alone poisons healthy records during an egress outage that
-	// outlasts the (small) replay budget; requiring a generous minimum age as
-	// well decouples poisoning from a transient outage that merely burned the
-	// count quickly. It is also the guard against a subtler over-count: a
-	// record's ReplayCount increments on EVERY claim — including batch-deadline
-	// deferrals and stale-claim reclaims where no send ever failed — so replay
-	// exhaustion is not by itself proof of poison. The age gate is therefore a
-	// hard AND-condition, never an OR. Default: max(5×SendTimeout, 2m).
-	poisonMinAge time.Duration
 	// replayBudget bounds the TOTAL wall-clock time, measured from a record's
 	// FirstAttemptedAt, that redelivery may span before the record is poisoned
 	// to the DLQ (WP-REPLAY-BUDGET). It is the age half of the poison AND-gate:
 	// a transient egress outage that merely burns the replay COUNT quickly can
 	// no longer poison a healthy record until real time — replayBudget — has
-	// elapsed since the first attempt. poisonMinAge remains the LEGACY fallback,
-	// used only for records whose FirstAttemptedAt is zero (pre-budget schema).
+	// elapsed since the first attempt. That matters because a record's
+	// ReplayCount increments on EVERY claim, including batch-deadline deferrals
+	// and stale-claim reclaims where no send ever failed, so replay exhaustion
+	// is not by itself proof of poison. The gate is a hard AND, never an OR.
 	// Default: cfg.Policy.ReplayBudget, itself defaulting to
 	// routing.DefaultReplayBudget (15m).
 	replayBudget     time.Duration
@@ -129,35 +118,19 @@ type Config struct {
 	DrainBatchSize      int
 	DrainMaxBatchSize   int
 	DrainMaxConcurrency int
-	// DrainTimeout is the legacy fixed timeout that bounded the entire
-	// batch (claim + all sends). It is retained for backward
-	// compatibility: when both PerRecordDrainTimeout and MaxDrainTimeout
-	// are zero, the drainer falls back to using this value as a fixed
-	// batch ceiling. When either of the new fields is set, DrainTimeout
-	// no longer participates in the scaled computation; prefer the new
-	// fields for new code.
-	DrainTimeout time.Duration
 	// PerRecordDrainTimeout is the time budget allocated per record in
-	// the batch under the scaled timeout formula
-	// (batchCount * PerRecordDrainTimeout, capped by MaxDrainTimeout).
-	// Default: 3s. Leaving this zero along with MaxDrainTimeout
-	// preserves legacy DrainTimeout semantics.
+	// the batch ceiling (batchCount * PerRecordDrainTimeout, capped by
+	// MaxDrainTimeout). Default: 3s.
 	PerRecordDrainTimeout time.Duration
 	// MaxDrainTimeout is the absolute ceiling for the per-batch
-	// timeout, regardless of batch size. Default: 10s (matches the
-	// previous DrainTimeout default so the worst-case is unchanged).
+	// timeout, regardless of batch size. Default: 10s.
 	MaxDrainTimeout   time.Duration
 	BatchTimeoutFloor time.Duration
-	// PoisonMinAge is the minimum record age required, IN ADDITION to
-	// replay-count exhaustion, before a record is poisoned to the DLQ
-	// (finding 8). Zero selects the default max(5×SendTimeout, 2m).
-	PoisonMinAge time.Duration
 	// ReplayBudget bounds the total wall-clock time from a record's
 	// FirstAttemptedAt before it is poisoned to the DLQ (WP-REPLAY-BUDGET).
 	// Zero derives it from Policy.ReplayBudget, which itself defaults to
-	// routing.DefaultReplayBudget (15m). This is the primary poison age gate;
-	// PoisonMinAge is retained as the fallback for legacy records that carry a
-	// zero FirstAttemptedAt.
+	// routing.DefaultReplayBudget (15m). It is the age half of the poison
+	// AND-gate; replay-count exhaustion alone never poisons.
 	ReplayBudget time.Duration
 	// ExpireInterval is how often the drainer sweeps expired-but-unclaimed
 	// pending records to the expired terminal state (finding 19). Zero
@@ -229,27 +202,8 @@ func New(cfg Config) *Drainer {
 	if cfg.DLQ == nil {
 		cfg.DLQ = dlq.New(nil)
 	}
-	// useScaledTimeout captures whether the caller opted into the new
-	// scaled formula. When either new field is non-zero we use
-	// ComputeBatchDeadline; otherwise we preserve legacy behavior by
-	// bounding the batch with a fixed DrainTimeout.
-	useScaledTimeout := cfg.PerRecordDrainTimeout > 0 || cfg.MaxDrainTimeout > 0
-	if cfg.DrainTimeout <= 0 {
-		cfg.DrainTimeout = 10 * time.Second
-	}
 	if cfg.BatchTimeoutFloor <= 0 {
 		cfg.BatchTimeoutFloor = 2 * time.Second
-	}
-	if cfg.PoisonMinAge <= 0 {
-		// Generous default: a record must be at least this old before
-		// replay-count exhaustion may poison it. max(5×SendTimeout, 2m)
-		// comfortably clears a transient egress outage that slipped past
-		// ReadyFn and burned the replay budget in seconds.
-		poisonAge := 5 * cfg.Policy.SendTimeout
-		if poisonAge < 2*time.Minute {
-			poisonAge = 2 * time.Minute
-		}
-		cfg.PoisonMinAge = poisonAge
 	}
 	if cfg.ReplayBudget <= 0 {
 		// Derive from the route policy (WithDefaults sets 15m); the second
@@ -295,12 +249,9 @@ func New(cfg Config) *Drainer {
 		batchSize:             cfg.DrainBatchSize,
 		maxBatchSize:          cfg.DrainMaxBatchSize,
 		maxConcurrency:        cfg.DrainMaxConcurrency,
-		drainTimeout:          cfg.DrainTimeout,
 		perRecordDrainTimeout: cfg.PerRecordDrainTimeout,
 		maxDrainTimeout:       cfg.MaxDrainTimeout,
-		useScaledTimeout:      useScaledTimeout,
 		batchTimeoutFloor:     cfg.BatchTimeoutFloor,
-		poisonMinAge:          cfg.PoisonMinAge,
 		replayBudget:          cfg.ReplayBudget,
 		expireInterval:        cfg.ExpireInterval,
 		// Seed lastExpire to now so the first Expire sweep waits a full

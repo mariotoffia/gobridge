@@ -231,7 +231,7 @@ func TestInstrumentedOutboxStore_ExpireDelegates(t *testing.T) {
 	_ = store.Persist(context.Background(), records)
 	rec.Reset()
 
-	count, err := store.Expire(context.Background(), time.Now().Add(time.Hour), "SESSION#s1")
+	count, err := store.Expire(context.Background(), time.Now().Add(time.Hour), "SESSION#s1", persistence.LeaseToken{Version: 1, Owner: "owner-instr"})
 	if err != nil {
 		t.Fatalf("Expire failed: %v", err)
 	}

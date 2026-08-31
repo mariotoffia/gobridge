@@ -47,7 +47,7 @@ stores:
     type: dynamodb
     options:
       table_name: gobridge-outbox
-      stale_claim_duration: 20s
+      stale_claim_duration: 30s
       compaction_grace: 24h
   managed_subscriptions:
     type: dynamodb
@@ -99,6 +99,7 @@ routes:
       ack_after: outbox_persist
       max_in_flight: 10
       max_outbox_depth: 1000
+      send_timeout: 5s
     session:
       session_id: mqtt-ha
       sender_id: mqtt-out

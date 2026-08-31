@@ -220,7 +220,7 @@ Store adapters provide persistence for leases, outbox records, DLQ entries, and 
 
 ### Port Interfaces
 
-From `ports/stores.go`:
+From `ports/stores.go` (the outbox contract lives in `ports/stores_outbox.go`):
 
 ```go
 type LeaseStore interface {
@@ -234,7 +234,7 @@ type OutboxStore interface {
     Persist(ctx context.Context, records []*persistence.OutboxRecord) error
     Claim(ctx context.Context, partitionKey string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error)
     Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error
-    Expire(ctx context.Context, before time.Time) (int, error)
+    Expire(ctx context.Context, before time.Time, partition string, token persistence.LeaseToken) (int, error)
     QueryPending(ctx context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error)
 }
 
@@ -251,6 +251,42 @@ type ManagedSubscriptionStore interface {
     Forget(ctx context.Context, storageIdentity string, filters []string) error
 }
 ```
+
+An `OutboxStore` MAY additionally implement these OPTIONAL capabilities. Skipping
+one costs a feature, never a build or behaviour break:
+
+```go
+// Return a transiently-failed claim to pending immediately, so it is
+// re-claimable on the next drain without a fencing bump or a stale timeout.
+type OutboxReleaser interface {
+    Release(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error
+}
+
+// The true pending backlog behind shared.MetricOutboxDepth.
+type OutboxDepthReporter interface {
+    CountPending(ctx context.Context, partitionKey string) (int, error)
+}
+
+// Records currently CLAIMED, behind shared.MetricOutboxClaimedDepth. CountPending
+// excludes them, so without this a record stranded by a failed release is
+// invisible: the backlog gauge reads zero while messages sit undelivered.
+type OutboxClaimedDepthReporter interface {
+    CountClaimed(ctx context.Context, partitionKey string) (int, error)
+}
+```
+
+Two `Claim` rules bind every implementation and are pinned by the shared
+conformance suite (`ports/storetest`) — read the contract in `ports/stores_outbox.go`
+before writing one:
+
+- **Ordering-key head-of-line.** A record carrying `x-bridge.ordering-key` is
+  claimable only when the partition holds no OLDER non-terminal record on the
+  same key that the same `Claim` will not also return. Order is a durable
+  property: the drainer sequences same-key records inside one batch but cannot
+  see a sibling left `Claimed` by an earlier cycle.
+- **A short batch is legal.** If a per-record claim fails transiently after
+  earlier records were durably claimed, return `(claimed, nil)` — never discard
+  them. Only `shared.ErrStaleFencingToken` surfaces with no records.
 
 ### Store Factory (ports-first)
 

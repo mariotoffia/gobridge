@@ -248,12 +248,31 @@ func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseTok
 	}
 
 	var candidates []*persistence.OutboxRecord
+	// blockedKeys holds every ordering key whose OLDEST non-terminal record is
+	// not claimable by this token — a head stranded Claimed by a failed
+	// release, an abandoned batch, or a dead owner. Its younger siblings must
+	// stay put or they overtake it (ports.OutboxStore ordering-key
+	// head-of-line rule). Only the oldest blocker per key matters, so track
+	// its (created_at, seq) position.
+	blockedKeys := make(map[string]orderPos)
 	for _, r := range s.records {
 		if partitionKey(r) != pk {
 			continue
 		}
 		if r.IsClaimable(token.Version) {
 			candidates = append(candidates, r)
+			continue
+		}
+		if r.Status() != persistence.OutboxPending && r.Status() != persistence.OutboxClaimed {
+			continue // terminal: it can never be delivered again, so it blocks nothing
+		}
+		key, ok := r.OrderingKey()
+		if !ok {
+			continue
+		}
+		at := positionOf(r)
+		if prev, seen := blockedKeys[key]; !seen || at.before(prev) {
+			blockedKeys[key] = at
 		}
 	}
 
@@ -261,12 +280,24 @@ func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseTok
 	// sequence so equal-millisecond timestamps drain in persist order
 	// (ports.OutboxStore claim-ordering contract).
 	sort.Slice(candidates, func(i, j int) bool {
-		ci, cj := candidates[i].CreatedAt(), candidates[j].CreatedAt()
-		if ci.Equal(cj) {
-			return candidates[i].Seq() < candidates[j].Seq()
-		}
-		return ci.Before(cj)
+		return positionOf(candidates[i]).before(positionOf(candidates[j]))
 	})
+
+	// Drop candidates sitting behind a stranded same-key head. Truncating to
+	// `limit` afterwards is order-preserving, so a group whose head falls
+	// outside the batch takes its whole tail with it and cannot reorder.
+	if len(blockedKeys) > 0 {
+		kept := candidates[:0]
+		for _, r := range candidates {
+			if key, ok := r.OrderingKey(); ok {
+				if blocker, blocked := blockedKeys[key]; blocked && blocker.before(positionOf(r)) {
+					continue
+				}
+			}
+			kept = append(kept, r)
+		}
+		candidates = kept
+	}
 
 	if len(candidates) > limit {
 		candidates = candidates[:limit]
@@ -410,9 +441,31 @@ func claimVersionOf(r *persistence.OutboxRecord) uint64 {
 	return r.ClaimVersion()
 }
 
-func (s *Store) Expire(_ context.Context, before time.Time, partition string) (int, error) {
+func (s *Store) Expire(_ context.Context, before time.Time, partition string, token persistence.LeaseToken) (int, error) {
+	// Expiry terminally destroys pending records a successor could still
+	// deliver, so it carries the same valid-token requirement as Claim and
+	// Complete: a zero-value token is never a real lease.
+	if !token.Valid() {
+		return 0, shared.ErrStaleFencingToken.
+			WithMessage("expire rejected: invalid (zero-value) fencing token").
+			With("givenOwner", token.Owner).
+			With("givenVersion", token.Version)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Same durable high-water-mark as Claim: a preempted owner cannot expire
+	// work the partition's newer owner is entitled to drain. Holding s.mu across
+	// the check and the transitions below makes the sweep atomic against a
+	// concurrent Claim that raises the fence.
+	if token.Version < s.latestVersion[partition] {
+		return 0, shared.ErrStaleFencingToken.
+			WithMessage("expire rejected: token version is stale").
+			With("givenVersion", token.Version).
+			With("latestVersion", s.latestVersion[partition])
+	}
+	s.latestVersion[partition] = token.Version
 
 	count := 0
 	now := s.clk.Now()
@@ -489,6 +542,52 @@ func (s *Store) CountPending(ctx context.Context, pk string) (int, error) {
 	count := 0
 	for _, r := range s.records {
 		if r.Status() != persistence.OutboxPending {
+			continue
+		}
+		if pk != "" && partitionKey(r) != pk {
+			continue
+		}
+		count++
+	}
+	return count, nil
+}
+
+// orderPos is a record's position in the partition's claim order: ascending
+// (created_at, seq), the same ordering Claim returns records in.
+type orderPos struct {
+	createdAt time.Time
+	seq       uint64
+}
+
+func (p orderPos) before(other orderPos) bool {
+	if p.createdAt.Equal(other.createdAt) {
+		return p.seq < other.seq
+	}
+	return p.createdAt.Before(other.createdAt)
+}
+
+func positionOf(r *persistence.OutboxRecord) orderPos {
+	return orderPos{createdAt: r.CreatedAt(), seq: r.Seq()}
+}
+
+// CountClaimed reports the number of records currently in the CLAIMED state —
+// work an owner took but has not driven to a terminal state
+// (ports.OutboxClaimedDepthReporter). CountPending deliberately excludes those
+// records, so without this a record stranded by a failed release is invisible:
+// the backlog gauge reads zero while messages sit undelivered. An empty pk
+// counts across every partition. It never mutates state.
+func (s *Store) CountClaimed(ctx context.Context, pk string) (int, error) {
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "memoryoutbox: count_claimed",
+			"partition_key", pk)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// ponytail: O(n) map scan, same as CountPending; fine for in-memory store.
+	count := 0
+	for _, r := range s.records {
+		if r.Status() != persistence.OutboxClaimed {
 			continue
 		}
 		if pk != "" && partitionKey(r) != pk {

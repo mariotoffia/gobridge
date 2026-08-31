@@ -54,7 +54,7 @@ it on a receiver reachable by untrusted producers would let them spoof
 |-------|------|----------|---------|-------------|
 | `max_in_flight` | int | no | 100 | Max concurrent messages in this route |
 | `ack_after` | string | no | `target_accept` | `target_accept` or `outbox_persist` |
-| `max_replay_attempts` | int | no | 5 | Max times a record may be claimed before it is eligible for poison (claims include deferrals/reclaims; poisoning also requires `poison_min_age`) |
+| `max_replay_attempts` | int | no | 5 | Max times a record may be claimed before it is eligible for poison (claims include deferrals/reclaims; poisoning also requires the wall-clock `replay_budget` to be spent) |
 | `max_outbox_depth` | int | no | 10000 | Max pending outbox records before backpressure |
 | `on_expired` | string | no | `dlq` | `drop` or `dlq` |
 | `on_permanent_failure` | string | no | `dlq` | `drop` or `dlq` |
@@ -498,16 +498,16 @@ not the YAML shape, but they change *when* and *how* config errors surface:
 - **Supervisor health.** `Supervisor.Degraded() (bool, string)` reports whether
   the last reconfiguration failed (with a reason) while the previous runtime
   keeps serving; `Supervisor.Terminal() bool` reports an unrecoverable state.
-- **Outbox poison quarantine.** `runtime.WithOutboxPoisonMinAge` sets the minimum
-  wall-clock age a record must reach *before* replay-count exhaustion may poison
-  it to the DLQ, so a transient egress outage cannot burn the replay budget and
-  poison healthy records in seconds. Zero (default) lets each drainer fall back
-  to `max(5×send_timeout, 2m)`. This is a Go runtime option, not a YAML key.
-  Note that a record's replay count increments on every *claim* — including
-  batch-deadline deferrals and stale-claim reclaims where no send ever failed —
-  so `max_replay_attempts` counts claims, not failed sends, and replay
-  exhaustion alone is never sufficient to poison a record: the age gate is a hard
-  AND-condition.
+- **Outbox poison quarantine.** Poisoning a record to the DLQ requires BOTH
+  `max_replay_attempts` exceeded AND the wall-clock `replay_budget` spent,
+  measured from the record's first delivery attempt (`FirstAttemptedAt`). A
+  record's replay count increments on every *claim* — including batch-deadline
+  deferrals and stale-claim reclaims where no send ever failed — so replay
+  exhaustion alone is never sufficient: a transient egress outage that burns the
+  count in seconds cannot poison a healthy record until real time has elapsed.
+  The gate is a hard AND, never an OR. A record that is somehow claimed without a
+  first-attempt stamp reports its budget UNSPENT and keeps being retried, so a
+  store that breaks the stamp contract can never destroy a message.
 
 ## Validation Rules Summary
 

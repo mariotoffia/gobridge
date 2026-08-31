@@ -339,14 +339,12 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 	lease := NewFakeLeaseStore()
 	dlq := NewFakeDLQStore()
 
-	// WP-REPLAY-BUDGET: poisoning now requires the record to spend its
-	// wall-clock ReplayBudget (measured from FirstAttemptedAt) in addition to
-	// exhausting MaxReplayAttempts; poisonMinAge is only the legacy fallback for
-	// zero-first-attempt records. This real-time test cannot wait the 15m
-	// production budget, so the route policy below shrinks ReplayBudget to
-	// effectively-immediate. The poisonMinAge option is likewise shrunk so the
-	// legacy fallback stays fast too.
-	rt := newTestRuntime("bridge-poison", outbox, lease, dlq, goruntime.WithOutboxPoisonMinAge(time.Millisecond))
+	// WP-REPLAY-BUDGET: poisoning requires the record to spend its wall-clock
+	// ReplayBudget (measured from FirstAttemptedAt) in addition to exhausting
+	// MaxReplayAttempts. This real-time test cannot wait the 15m production
+	// budget, so the route policy below shrinks ReplayBudget to
+	// effectively-immediate.
+	rt := newTestRuntime("bridge-poison", outbox, lease, dlq)
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()

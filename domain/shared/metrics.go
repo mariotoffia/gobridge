@@ -81,6 +81,24 @@ const (
 	// depth. Tagged with the partition (TagKeyPartition), sharing the series shape
 	// with MetricOutboxDepth.
 	MetricOutboxClaimBatchSize = "OutboxClaimBatchSize"
+	// MetricOutboxClaimedDepth is the partition-keyed gauge of records currently
+	// CLAIMED — work an owner has taken but not yet driven to a terminal state.
+	// It is read from the OPTIONAL ports.OutboxClaimedDepthReporter capability on
+	// the drain cadence, alongside MetricOutboxDepth.
+	//
+	// It exists because MetricOutboxDepth counts PENDING records only, so a
+	// record left Claimed by a failed release, an abandoned batch, or a dead
+	// owner is invisible: the backlog gauge reads zero while messages sit
+	// undelivered. The two gauges are read together — depth at zero with a
+	// standing non-zero claimed depth is the signature of stranded work, and on a
+	// route using ordering keys it is also what a group stalled behind a stranded
+	// head looks like. A claimed depth that tracks the claim batch size and falls
+	// back to zero each cycle is normal in-flight work, not a problem.
+	//
+	// Emitted only when the store implements the capability; a real error from
+	// the count is recorded on MetricOutboxDepthFailures exactly like the pending
+	// count, and the gauge is skipped for that cycle rather than reported wrong.
+	MetricOutboxClaimedDepth = "OutboxClaimedDepth"
 	// MetricOutboxDepthFailures counts drain cycles where a SUPPORTED outbox
 	// depth reporter's CountPending returned a REAL error (a DB/read failure,
 	// not ports.ErrOutboxDepthUnsupported). On such a cycle the drainer skips the
@@ -106,10 +124,16 @@ const (
 	// one route means its source's identity namespace is colliding.
 	MetricOutboxDuplicateSuppressed = "OutboxDuplicateSuppressed"
 	// MetricOutboxDeferred counts claimed records the drainer could NOT process
-	// this cycle (batch deadline expired before the send launched or completed)
-	// and released/left for the next drain. They are neither successes nor hard
-	// failures; a rising value under load flags a drain budget too small for the
-	// batch size (see Drainer.drainBatch batch-deadline handling).
+	// this cycle and released/left for the next drain. Two things produce them:
+	// the batch deadline expiring before a send launched or completed, and the
+	// UNATTEMPTED tail of an ordering group whose head failed (a DLQ-store write
+	// error, or a post-send Complete the store refused) — the group stops at the
+	// first record that does not go terminal, so a younger same-key record can
+	// never overtake it, and everything behind it goes back to pending. They are
+	// neither successes nor hard failures; a rising value under load flags a
+	// drain budget too small for the batch size, and a rising value alongside
+	// MetricOutboxRecordFailures flags a flaky record stalling its whole key
+	// (see Drainer.drainBatch).
 	MetricOutboxDeferred = "OutboxDeferred"
 	// MetricOutboxClaimConflicts counts per-record claim transactions aborted
 	// because a concurrent Persist/Claim/Complete touched the same item — as
@@ -172,6 +196,16 @@ const (
 	// cardinality. Alarm on DLQDepth > 0 sustained.
 	MetricDLQDepth         = "DLQDepth"
 	MetricDLQWriteFailures = "DLQWriteFailures"
+	// MetricDLQDuplicateSuppressed counts DLQ writes the store refused because
+	// the entry already existed — the SAME terminal event being recorded twice.
+	// A DLQ write is durable BEFORE the source delivery is settled, so a failed
+	// settle redelivers the message, it fails identically, and the router writes
+	// the same derived entry identity again. The refusal is reported as success
+	// (the evidence is already durable) and counted here, so the collapse is
+	// visible rather than silent. A rising value means settlement is failing
+	// after DLQ writes land — look at the source acknowledgement path, not the
+	// DLQ store.
+	MetricDLQDuplicateSuppressed = "DLQDuplicateSuppressed"
 	// MetricDLQWriteHold is the wall-clock time a synchronous DLQ write held its
 	// caller — and with it a route and global concurrency slot. The DLQ write is
 	// deliberately synchronous and confirmed before the source delivery is

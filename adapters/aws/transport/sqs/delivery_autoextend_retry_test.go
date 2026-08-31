@@ -37,19 +37,23 @@ func TestAutoExtendRetriesTransientThenSucceedsS15(t *testing.T) {
 	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-1", 2, true, nil, nil, nil, fake)
 	defer func() { d.stopAutoExtend(); d.cleanupContext() }()
 
-	wait.Until(t, time.Second, "ticker registered", func() bool {
+	// The budget is wall-clock while the tick itself is fake-clock: Advance
+	// only releases the auto-extend goroutine, which then has to be SCHEDULED.
+	// Under a parallel -race integration run that scheduling can slip past a
+	// 1s budget, so these use the repo's 2s default.
+	wait.Until(t, 2*time.Second, "ticker registered", func() bool {
 		return fake.TickerCount() >= 1
 	})
 
 	// SYNC: advance to trigger first tick (will fail with "transient").
 	fake.Advance(1 * time.Second)
-	wait.Until(t, time.Second, "first tick", func() bool {
+	wait.Until(t, 2*time.Second, "first tick", func() bool {
 		return callCount.Load() >= 1
 	})
 
 	// SYNC: advance to trigger second tick (will succeed).
 	fake.Advance(1 * time.Second)
-	wait.Until(t, time.Second, "second tick", func() bool {
+	wait.Until(t, 2*time.Second, "second tick", func() bool {
 		return callCount.Load() >= 2
 	})
 
@@ -83,14 +87,14 @@ func TestAutoExtendInterleavedFailSuccessS15(t *testing.T) {
 	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-3", 2, true, nil, nil, nil, fake)
 	defer func() { d.stopAutoExtend(); d.cleanupContext() }()
 
-	wait.Until(t, time.Second, "ticker registered", func() bool {
+	wait.Until(t, 2*time.Second, "ticker registered", func() bool {
 		return fake.TickerCount() >= 1
 	})
 
 	// SYNC: advance multiple ticks to get > autoExtendMaxFailures total calls.
 	for i := 1; i <= autoExtendMaxFailures+2; i++ {
 		fake.Advance(1 * time.Second)
-		wait.Until(t, time.Second, "tick fired", func() bool {
+		wait.Until(t, 2*time.Second, "tick fired", func() bool {
 			return callCount.Load() >= int32(i)
 		})
 	}
@@ -125,7 +129,7 @@ func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
 		func() { cancelled.Store(true) }, nil, nil, fake)
 	defer func() { d.stopAutoExtend(); d.cleanupContext() }()
 
-	wait.Until(t, time.Second, "ticker registered", func() bool {
+	wait.Until(t, 2*time.Second, "ticker registered", func() bool {
 		return fake.TickerCount() >= 1
 	})
 
@@ -149,7 +153,7 @@ func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
 		{5 * time.Second, 3, 0},                 // ceiling reached → loop returns
 	} {
 		fake.Advance(step.advance)
-		wait.Until(t, time.Second, "failure tick", func() bool {
+		wait.Until(t, 2*time.Second, "failure tick", func() bool {
 			mock.mu.Lock()
 			n := len(mock.ChangeVisibilityCalls)
 			mock.mu.Unlock()
@@ -158,13 +162,13 @@ func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
 		if step.wantPeriod == 0 {
 			continue
 		}
-		wait.Until(t, time.Second, "ticker re-armed at the retry cadence", func() bool {
+		wait.Until(t, 2*time.Second, "ticker re-armed at the retry cadence", func() bool {
 			periods := fake.TickerPeriods()
 			return len(periods) == 1 && periods[0] == step.wantPeriod
 		})
 	}
 
-	wait.Until(t, time.Second, "processing cancelled", func() bool {
+	wait.Until(t, 2*time.Second, "processing cancelled", func() bool {
 		return cancelled.Load()
 	})
 
@@ -214,20 +218,20 @@ func TestAutoExtendCancelsOnDeadlineLapseAtMinVisibilityS15(t *testing.T) {
 		func() { cancelled.Store(true) }, nil, rec, fake)
 	defer func() { d.stopAutoExtend(); d.cleanupContext() }()
 
-	wait.Until(t, time.Second, "ticker registered", func() bool {
+	wait.Until(t, 2*time.Second, "ticker registered", func() bool {
 		return fake.TickerCount() >= 1
 	})
 
 	// Tick 1 at t=1s: fails, cf=1, window not yet lapsed (1s < 2s) → retry.
 	fake.Advance(1 * time.Second)
-	wait.Until(t, time.Second, "first failure counted at t=1s", func() bool {
+	wait.Until(t, 2*time.Second, "first failure counted at t=1s", func() bool {
 		return len(rec.FindEntries(MetricSQSAutoExtendFailures)) >= 1
 	})
 
 	// Tick 2 at t=2s: fails, cf=2 (< ceiling 3), window lapsed (2s !< 2s)
 	// → deadline-driven cancel.
 	fake.Advance(1 * time.Second)
-	wait.Until(t, time.Second, "processing cancelled by deadline", func() bool {
+	wait.Until(t, 2*time.Second, "processing cancelled by deadline", func() bool {
 		return cancelled.Load()
 	})
 

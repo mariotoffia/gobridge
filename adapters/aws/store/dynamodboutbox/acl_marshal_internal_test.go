@@ -37,8 +37,9 @@ func mustMarshalRecord(t *testing.T, r *persistence.OutboxRecord) map[string]ddb
 
 // TestMarshalRecord_OmitsFirstAttemptedAtWhenZero: an unclaimed record (the only
 // state Persist ever marshals) must NOT carry a first_attempted_at attribute,
-// and it unmarshals back to a zero first attempt. This keeps legacy items —
-// which never had the attribute — bit-for-bit compatible: absent → zero.
+// and it unmarshals back to a zero first attempt. Persist must never pre-stamp
+// the replay-budget clock: Claim's if_not_exists write is its single authority,
+// and a value already present would make if_not_exists a no-op forever.
 func TestMarshalRecord_OmitsFirstAttemptedAtWhenZero(t *testing.T) {
 	r := newMarshalRecord(t)
 	item := mustMarshalRecord(t, r)
@@ -83,9 +84,9 @@ func TestMarshalUnmarshal_FirstAttemptedAtRoundTrip(t *testing.T) {
 	}
 }
 
-// TestNumAttrI64_MissingAttributeReturnsZero pins the legacy-safety invariant the
+// TestNumAttrI64_MissingAttributeReturnsZero pins the invariant the
 // claim/unmarshal path relies on: a missing numeric attribute reads back as 0,
-// and timeFromMillis(0) is the zero time.
+// and timeFromMillis(0) is the zero time — never a now-stamp.
 func TestNumAttrI64_MissingAttributeReturnsZero(t *testing.T) {
 	empty := map[string]ddbtypes.AttributeValue{}
 	if got := numAttrI64(empty, "first_attempted_at"); got != 0 {

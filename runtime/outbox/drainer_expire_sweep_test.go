@@ -165,7 +165,9 @@ func TestDrainer_ExpireSweep_SkippedForDLQPolicy(t *testing.T) {
 		// sweep is the dlq-policy gate.
 		clk.Advance(2 * time.Minute)
 
-		d.maybeExpire(context.Background())
+		if err := d.maybeExpire(context.Background(), deferredTestToken()); err != nil {
+			t.Fatalf("maybeExpire: %v", err)
+		}
 
 		if got := store.expiredPartitions(); len(got) != 0 {
 			t.Errorf("Expire called %v, want none: dlq-policy expiry must flow through handleExpired, not the sweep", got)
@@ -178,7 +180,9 @@ func TestDrainer_ExpireSweep_SkippedForDLQPolicy(t *testing.T) {
 		d := newExpireDrainer(store, routing.ExpiredDrop, clk)
 		clk.Advance(2 * time.Minute)
 
-		d.maybeExpire(context.Background())
+		if err := d.maybeExpire(context.Background(), deferredTestToken()); err != nil {
+			t.Fatalf("maybeExpire: %v", err)
+		}
 
 		got := store.expiredPartitions()
 		if len(got) != 1 || got[0] != "SESSION#sess-exp" {
@@ -404,7 +408,7 @@ func (s *completeFailOnceStore) Complete(_ context.Context, _ []string, _ persis
 	return nil
 }
 
-func (s *completeFailOnceStore) Expire(context.Context, time.Time, string) (int, error) {
+func (s *completeFailOnceStore) Expire(context.Context, time.Time, string, persistence.LeaseToken) (int, error) {
 	return 0, nil
 }
 
@@ -637,10 +641,11 @@ func TestDrainer_WedgedSender_UnblocksDrainerWithoutFalseComplete(t *testing.T) 
 		RouteID:      "route-wedge",
 		PartitionKey: "SESSION#sess-wedge",
 		Policy:       routing.RoutePolicy{SendTimeout: time.Hour, MaxReplayAttempts: 5},
-		DrainTimeout: time.Hour, // keep the REAL workCtx deadline far away
-		Clock:        clk,
-		Metrics:      metrics,
-		TokenFn:      func() (persistence.LeaseToken, bool) { return deferredTestToken(), true },
+		// Keep the REAL workCtx deadline far away.
+		MaxDrainTimeout: time.Hour,
+		Clock:           clk,
+		Metrics:         metrics,
+		TokenFn:         func() (persistence.LeaseToken, bool) { return deferredTestToken(), true },
 	})
 
 	type result struct {
@@ -696,15 +701,15 @@ func TestDrainer_CORE_RES1_StalledLatchEscalatesTerminal(t *testing.T) {
 	clk := &signalingClock{Fake: clocktest.NewAt(budgetBase), timerCreated: make(chan struct{}, 4)}
 	store := &deferredFakeStore{} // empty: drainBatch returns fast, exercising only the latch gate
 	d := New(Config{
-		OutboxStore:  store,
-		Sender:       &fnSender{send: func(context.Context, ports.OutboundMessage) error { return nil }},
-		RouteID:      "route-core1",
-		PartitionKey: "SESSION#sess-core1",
-		Policy:       routing.RoutePolicy{SendTimeout: time.Hour, MaxReplayAttempts: 5},
-		DrainTimeout: time.Hour,
-		Clock:        clk,
-		Metrics:      newRecordingExporter(),
-		TokenFn:      func() (persistence.LeaseToken, bool) { return deferredTestToken(), true },
+		OutboxStore:     store,
+		Sender:          &fnSender{send: func(context.Context, ports.OutboundMessage) error { return nil }},
+		RouteID:         "route-core1",
+		PartitionKey:    "SESSION#sess-core1",
+		Policy:          routing.RoutePolicy{SendTimeout: time.Hour, MaxReplayAttempts: 5},
+		MaxDrainTimeout: time.Hour,
+		Clock:           clk,
+		Metrics:         newRecordingExporter(),
+		TokenFn:         func() (persistence.LeaseToken, bool) { return deferredTestToken(), true },
 	})
 	// Pre-latch the stall (as the watchdog would after abandoning a hung sender).
 	d.drainStalled.Store(true)
@@ -850,11 +855,11 @@ func TestDrainer_WatchdogAbandonedSend_LaterReturnsNil_DoesNotComplete(t *testin
 		PartitionKey: "SESSION#sess-abandon",
 		// Lease stays live throughout: this proves the BATCH-abandonment fence
 		// (not the lease fence) is what refuses the completion.
-		Policy:       routing.RoutePolicy{SendTimeout: time.Hour, MaxReplayAttempts: 5},
-		DrainTimeout: time.Hour, // keep the REAL workCtx deadline far away
-		Clock:        clk,
-		Metrics:      metrics,
-		TokenFn:      func() (persistence.LeaseToken, bool) { return deferredTestToken(), true },
+		Policy:          routing.RoutePolicy{SendTimeout: time.Hour, MaxReplayAttempts: 5},
+		MaxDrainTimeout: time.Hour, // keep the REAL workCtx deadline far away
+		Clock:           clk,
+		Metrics:         metrics,
+		TokenFn:         func() (persistence.LeaseToken, bool) { return deferredTestToken(), true },
 	})
 
 	drainReturned := make(chan struct{})
@@ -1039,7 +1044,9 @@ func (s *versionOnlyStore) Release(_ context.Context, ids []string, token persis
 	return nil
 }
 
-func (s *versionOnlyStore) Expire(context.Context, time.Time, string) (int, error) { return 0, nil }
+func (s *versionOnlyStore) Expire(context.Context, time.Time, string, persistence.LeaseToken) (int, error) {
+	return 0, nil
+}
 
 func (s *versionOnlyStore) QueryPending(context.Context, string, int) ([]*persistence.OutboxRecord, error) {
 	return nil, nil
@@ -1097,15 +1104,15 @@ func TestDrainer_WatchdogAbandon_VersionOnlyStore_ReleasesHeadAndSuffixForReclai
 
 	tok := deferredTestToken() // v1, owner-1
 	d := New(Config{
-		OutboxStore:  store,
-		Sender:       sender,
-		RouteID:      "route-vonly",
-		PartitionKey: "SESSION#sess-vonly",
-		Policy:       routing.RoutePolicy{SendTimeout: time.Hour, MaxReplayAttempts: 5},
-		DrainTimeout: time.Hour,
-		Clock:        clk,
-		Metrics:      metrics,
-		TokenFn:      func() (persistence.LeaseToken, bool) { return tok, true },
+		OutboxStore:     store,
+		Sender:          sender,
+		RouteID:         "route-vonly",
+		PartitionKey:    "SESSION#sess-vonly",
+		Policy:          routing.RoutePolicy{SendTimeout: time.Hour, MaxReplayAttempts: 5},
+		MaxDrainTimeout: time.Hour,
+		Clock:           clk,
+		Metrics:         metrics,
+		TokenFn:         func() (persistence.LeaseToken, bool) { return tok, true },
 	})
 
 	drainReturned := make(chan struct{})

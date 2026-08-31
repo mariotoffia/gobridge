@@ -272,10 +272,8 @@ func (rt *Runtime) Start(ctx context.Context) error {
 						DrainBatchSize:        entry.sessCfg.DrainBatchSize,
 						DrainMaxBatchSize:     entry.sessCfg.DrainMaxBatchSize,
 						DrainMaxConcurrency:   entry.sessCfg.DrainMaxConcurrency,
-						DrainTimeout:          entry.sessCfg.DrainTimeout,
 						PerRecordDrainTimeout: entry.sessCfg.PerRecordDrainTimeout,
 						MaxDrainTimeout:       entry.sessCfg.MaxDrainTimeout,
-						PoisonMinAge:          rt.outboxPoisonMinAge,
 						Metrics:               m,
 						Hook:                  rt.hook,
 						Logger:                rt.logger,
@@ -335,10 +333,8 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					DrainBatchSize:        sse.config.DrainBatchSize,
 					DrainMaxBatchSize:     sse.config.DrainMaxBatchSize,
 					DrainMaxConcurrency:   sse.config.DrainMaxConcurrency,
-					DrainTimeout:          sse.config.DrainTimeout,
 					PerRecordDrainTimeout: sse.config.PerRecordDrainTimeout,
 					MaxDrainTimeout:       sse.config.MaxDrainTimeout,
-					PoisonMinAge:          rt.outboxPoisonMinAge,
 					Metrics:               m,
 					Hook:                  rt.hook,
 					Logger:                rt.logger,
@@ -520,7 +516,6 @@ type drainerFingerprint struct {
 	drainBatchSize        int
 	drainMaxBatchSize     int
 	drainMaxConcurrency   int
-	drainTimeout          time.Duration
 	perRecordDrainTimeout time.Duration
 	maxDrainTimeout       time.Duration
 }
@@ -565,7 +560,6 @@ func drainFingerprint(p routing.RoutePolicy, sc session.Config) drainerFingerpri
 		drainBatchSize:        batch,
 		drainMaxBatchSize:     normalizeDrainMaxBatchSize(sc.DrainMaxBatchSize, batch),
 		drainMaxConcurrency:   normalizeDrainMaxConcurrency(sc.DrainMaxConcurrency),
-		drainTimeout:          normalizeDrainTimeout(sc.DrainTimeout),
 		perRecordDrainTimeout: per,
 		maxDrainTimeout:       maxT,
 	}
@@ -623,13 +617,6 @@ func normalizeDrainMaxBatchSize(v, batch int) int {
 func normalizeDrainMaxConcurrency(v int) int {
 	if v <= 0 {
 		return 10
-	}
-	return v
-}
-
-func normalizeDrainTimeout(v time.Duration) time.Duration {
-	if v <= 0 {
-		return 10 * time.Second
 	}
 	return v
 }

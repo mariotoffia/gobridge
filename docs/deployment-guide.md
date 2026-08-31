@@ -76,8 +76,7 @@ bridge:
   id: my-bridge
   deployment_mode: standalone   # or "clustered"
   shutdown_timeout: 30s
-  # Scaled drain formula (preferred). Legacy drain_timeout is retained
-  # for backward compatibility.
+  # Outbox drain batch ceiling.
   per_record_drain_timeout: 3s
   max_drain_timeout: 30s
 ```
@@ -342,8 +341,8 @@ bridge:
   shutdown_timeout: 30s
   # Scaled drain formula (preferred in production). The per-batch
   # ceiling is min(batchCount * per_record_drain_timeout,
-  # max_drain_timeout). Legacy drain_timeout remains for backward
-  # compatibility; set either the new fields OR drain_timeout.
+  # max_drain_timeout). It only ever RAISES a batch budget that is
+  # already floored at one full send.
   per_record_drain_timeout: 3s
   max_drain_timeout: 30s
 ```
@@ -351,7 +350,7 @@ bridge:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `shutdown_timeout` | `30s` | Total grace period for clean shutdown |
-| `drain_timeout` | `30s` | Legacy fixed drain ceiling. Retained for backward compatibility; prefer the scaled fields. |
+| `drain_timeout` | `30s` | Ceiling on `Runtime.Stop` when the supervisor stops a runtime (shutdown or reconfiguration swap). Not a per-batch outbox budget. |
 | `per_record_drain_timeout` | `3s` | Per-record budget in the scaled formula. |
 | `max_drain_timeout` | `10s` | Absolute ceiling for the scaled formula. |
 

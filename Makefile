@@ -201,7 +201,7 @@ test: audit-timings audit-test-timings ## Run unit tests (no Docker, integration
 		-run '^TestLookupVpc_ExplicitAttributesProduceCompleteAssembly$$' ./integration
 	@echo "Running unit tests across all modules..."
 	@echo "Report will be saved to: reports/test-unit.log"
-	@bash -c 'set -o pipefail; { rc=0; for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
+	@bash -c 'set -o pipefail; { rc=0; for modfile in $$(find . -name go.mod -not -path "./.worktrees/*" -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
 		gowork=""; if [ "$$dir" = "./scripts/release" ]; then gowork=off; fi; \
 		echo "--- Testing $$dir ---"; \
@@ -228,7 +228,7 @@ test-integration: audit-timings audit-test-timings ## Run all tests including in
 	@mkdir -p reports
 	@echo "Running all tests (unit + integration) across all modules..."
 	@echo "Report will be saved to: reports/test-integration.log"
-	@bash -c 'set -o pipefail; { rc=0; for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
+	@bash -c 'set -o pipefail; { rc=0; for modfile in $$(find . -name go.mod -not -path "./.worktrees/*" -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
 		gowork=""; if [ "$$dir" = "./scripts/release" ]; then gowork=off; fi; \
 		echo "--- Testing $$dir ---"; \
@@ -313,7 +313,7 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 	fi
 	@echo "=== go vet ==="
 	@bash -c 'set -eo pipefail; mkdir -p "$(GOBRIDGE_GO_CACHE)"; export GOCACHE="$(GOBRIDGE_GO_CACHE)"; : > reports/go-vet.log; \
-	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" | sort); do \
+	for modfile in $$(find . -name go.mod -not -path "./.worktrees/*" -not -path "*/vendor/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
 		gowork=""; if [ "$$dir" = "./scripts/release" ]; then gowork=off; fi; \
 		if [ -z "$$(cd "$$dir" && GOWORK="$$gowork" go list ./... 2>/dev/null)" ]; then \
@@ -331,7 +331,7 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 		exit 1; \
 	fi'
 	@bash -c 'set -eo pipefail; mkdir -p "$(GOBRIDGE_GO_CACHE)"; export GOCACHE="$(GOBRIDGE_GO_CACHE)"; : > reports/golangci.log; \
-	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" | sort); do \
+	for modfile in $$(find . -name go.mod -not -path "./.worktrees/*" -not -path "*/vendor/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
 		gowork=""; if [ "$$dir" = "./scripts/release" ]; then gowork=off; fi; \
 		if [ -z "$$(cd "$$dir" && GOWORK="$$gowork" go list ./... 2>/dev/null)" ]; then \
@@ -353,7 +353,7 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 	done'
 	@echo "=== cfgshape (typed plugin config) ==="
 	@bash -c 'set -eo pipefail; : > reports/cfgshape.log; \
-	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "./scripts/*" -not -path "./tests/*" -not -path "./testutil/*" | sort); do \
+	for modfile in $$(find . -name go.mod -not -path "./.worktrees/*" -not -path "*/vendor/*" -not -path "./scripts/*" -not -path "./tests/*" -not -path "./testutil/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
 		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then continue; fi; \
 		echo "--- cfgshape $$dir ---" | tee -a reports/cfgshape.log; \
@@ -419,26 +419,26 @@ tidy: ## Sync workspace and tidy all module dependencies
 	@echo "Syncing workspace..."
 	go work sync
 	@echo "Tidying all modules..."
-	@find . -name go.mod -not -path '*/vendor/*' -execdir sh -c 'echo "Tidying $$(pwd)..." && GOWORK=off go mod tidy' \;
+	@find . -name go.mod -not -path './.worktrees/*' -not -path '*/vendor/*' -execdir sh -c 'echo "Tidying $$(pwd)..." && GOWORK=off go mod tidy' \;
 
 sync: tidy ## Alias for tidy (workspace sync is included)
 
 update: ## Update all dependencies to latest minor/patch versions
-	@find . -name go.mod -not -path '*/vendor/*' -not -path '*/legacy/*' \
+	@find . -name go.mod -not -path './.worktrees/*' -not -path '*/vendor/*' -not -path '*/legacy/*' \
 		-execdir sh -c 'echo "Updating $$(pwd)..." && GOWORK=off go get -u ./... && GOWORK=off go mod tidy' \;
 	@$(MAKE) tidy
 
 update-major: ## Show available major version upgrades (requires gomajor)
-	@find . -name go.mod -not -path '*/vendor/*' -not -path '*/legacy/*' \
+	@find . -name go.mod -not -path './.worktrees/*' -not -path '*/vendor/*' -not -path '*/legacy/*' \
 		-execdir sh -c 'echo "=== Major versions in $$(pwd) ===" && GOWORK=off gomajor list' \;
 
 outdated: ## Show outdated direct dependencies (requires go-mod-outdated)
-	@find . -name go.mod -not -path '*/vendor/*' -not -path '*/legacy/*' \
+	@find . -name go.mod -not -path './.worktrees/*' -not -path '*/vendor/*' -not -path '*/legacy/*' \
 		-execdir sh -c 'echo "=== Outdated in $$(pwd) ===" && GOWORK=off go list -m -u -json all | go-mod-outdated -direct -update' \;
 
 vulncheck: ## Check all modules for known vulnerabilities (requires govulncheck)
 	@echo "Running vulnerability check..."
-	@find . -name go.mod -not -path '*/vendor/*' -not -path '*/legacy/*' \
+	@find . -name go.mod -not -path './.worktrees/*' -not -path '*/vendor/*' -not -path '*/legacy/*' \
 		-execdir sh -c 'echo "=== Checking $$(pwd) ===" && GOWORK=off govulncheck ./...' \;
 
 clean: ## Clean build cache and test cache

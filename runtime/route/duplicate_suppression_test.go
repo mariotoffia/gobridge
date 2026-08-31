@@ -30,7 +30,7 @@ func (s *duplicateOutboxStore) Complete(context.Context, []string, persistence.L
 	return nil
 }
 
-func (s *duplicateOutboxStore) Expire(context.Context, time.Time, string) (int, error) {
+func (s *duplicateOutboxStore) Expire(context.Context, time.Time, string, persistence.LeaseToken) (int, error) {
 	return 0, nil
 }
 

@@ -127,10 +127,11 @@ func TestDeliveryHook_SharedOutbox_Poison(t *testing.T) {
 	if !settled[0].Terminal {
 		t.Error("settled should be terminal")
 	}
-	// FakeOutboxStore.Claim increments ReplayCount, so initial 5 becomes
-	// 6 after claim, and Attempt = ReplayCount+1 = 7.
-	if settled[0].Attempt != 7 {
-		t.Errorf("settled Attempt = %d, want (claimed ReplayCount)+1=7", settled[0].Attempt)
+	// FakeOutboxStore.Claim increments ReplayCount, so initial 5 becomes 6 after
+	// the claim. That claim IS this attempt, so the 1-based attempt number is 6
+	// — adding one would report an attempt that has not happened.
+	if settled[0].Attempt != 6 {
+		t.Errorf("settled Attempt = %d, want the claimed ReplayCount 6", settled[0].Attempt)
 	}
 }
 
@@ -280,12 +281,12 @@ func TestDeliveryHook_SharedOutbox_AttemptIsReplayCountPlusOne(t *testing.T) {
 	waitFor(t, 2*time.Second, "hook settled", func() bool { return hook.SettledCount() >= 1 })
 	cancel()
 
-	// FakeOutboxStore.Claim increments ReplayCount, so initial 3 becomes
-	// 4 after claim, and Attempt = ReplayCount+1 = 5.
+	// FakeOutboxStore.Claim increments ReplayCount, so initial 3 becomes 4 after
+	// the claim. That claim IS this attempt, so the 1-based attempt number is 4.
 	for _, a := range hook.Attempts() {
 		if a.Direction == ports.DirectionEgress {
-			if a.Attempt != 5 {
-				t.Errorf("Attempt = %d, want (claimed ReplayCount)+1=5", a.Attempt)
+			if a.Attempt != 4 {
+				t.Errorf("Attempt = %d, want the claimed ReplayCount 4", a.Attempt)
 			}
 			return
 		}

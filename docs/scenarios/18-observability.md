@@ -53,8 +53,10 @@ The runtime emits these metrics automatically when a `MetricsExporter` is config
 | `DLQEntries` | Counter | `route_id`, `category` | DLQ ARRIVALS (ingress counter -- only increases) |
 | `DLQDepth` | Gauge | — | Standing DLQ BACKLOG right now (sampled via the store's optional `DLQDepthReporter`) -- alarmed by default (`DLQDepth > 0`) |
 | `DLQWriteFailures` | Counter | — | Failed DLQ writes |
+| `DLQDuplicateSuppressed` | Counter | — | A DLQ write the store refused because the entry already existed — the SAME terminal event recorded twice. Reported as success (the evidence is already durable). A rising value means settlement is failing AFTER DLQ writes land: look at the source acknowledgement path, not the DLQ store |
 | `OutboxDepth` | Gauge | `partition` | TRUE pending outbox backlog (exact count via the store's optional `OutboxDepthReporter`; falls back to the claimed-count lower bound until an adapter implements it) |
 | `OutboxClaimBatchSize` | Gauge | `partition` | Records claimed on the last drain poll -- liveness/throughput, NOT the backlog |
+| `OutboxClaimedDepth` | Gauge | `partition` | Records currently CLAIMED — work an owner took but has not driven to a terminal state (via the store's optional `OutboxClaimedDepthReporter`). `OutboxDepth` at zero with a STANDING non-zero value here is stranded work, or an ordering-key group stalled behind a stranded head |
 | `OutboxDepthFailures` | Counter | `partition` | Depth-query failures on a supported reporter (real DB/read error); `OutboxDepth` is skipped that cycle so the missing-data alarm fires instead of masking the fault |
 | `OutboxDrainLatency` | Timer | `session_id` | Outbox drain cycle time |
 | `OutboxExpiredBeforeSend` | Counter | `route_id` | Claimed record found past its TTL before its send; handled by the route's `on_expired` policy |

@@ -185,16 +185,16 @@ func TestOutboxDrainer_FinalDrainCompletesPendingRecords(t *testing.T) {
 	}
 
 	drainer := outboxpkg.New(outboxpkg.Config{
-		OutboxStore:  outbox,
-		LeaseStore:   lease,
-		Sender:       sender,
-		RouteID:      "r1",
-		PartitionKey: "SESSION#s1",
-		LeaseID:      "s1",
-		Policy:       routing.RoutePolicy{}.WithDefaults(),
-		Strategy:     persistence.NewFixedPoll(50 * time.Millisecond),
-		DrainTimeout: 5 * time.Second,
-		TokenFn:      func() (persistence.LeaseToken, bool) { return token, true },
+		OutboxStore:     outbox,
+		LeaseStore:      lease,
+		Sender:          sender,
+		RouteID:         "r1",
+		PartitionKey:    "SESSION#s1",
+		LeaseID:         "s1",
+		Policy:          routing.RoutePolicy{}.WithDefaults(),
+		Strategy:        persistence.NewFixedPoll(50 * time.Millisecond),
+		MaxDrainTimeout: 5 * time.Second,
+		TokenFn:         func() (persistence.LeaseToken, bool) { return token, true },
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

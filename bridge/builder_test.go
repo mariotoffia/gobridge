@@ -106,7 +106,7 @@ func (f *fakeOutboxStore) Claim(_ context.Context, _ string, _ persistence.Lease
 func (f *fakeOutboxStore) Complete(_ context.Context, _ []string, _ persistence.LeaseToken) error {
 	return nil
 }
-func (f *fakeOutboxStore) Expire(_ context.Context, _ time.Time, _ string) (int, error) {
+func (f *fakeOutboxStore) Expire(_ context.Context, _ time.Time, _ string, _ persistence.LeaseToken) (int, error) {
 	return 0, nil
 }
 func (f *fakeOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]*persistence.OutboxRecord, error) {

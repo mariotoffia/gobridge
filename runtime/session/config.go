@@ -71,16 +71,12 @@ type Config struct {
 	DrainMaxBatchSize   int
 	DrainMaxConcurrency int
 
-	// DrainTimeout is the legacy fixed ceiling applied to a single
-	// drain batch when both PerRecordDrainTimeout and MaxDrainTimeout
-	// are zero. Retained for backward compatibility.
-	DrainTimeout time.Duration
-	// PerRecordDrainTimeout feeds the scaled formula for the batch
-	// ceiling: ceiling = min(batchCount * PerRecordDrainTimeout,
-	// MaxDrainTimeout). Setting either this or MaxDrainTimeout
-	// activates the scaled formula and supersedes DrainTimeout.
+	// PerRecordDrainTimeout is the per-record allowance in the outbox drain
+	// batch ceiling: min(batchCount * PerRecordDrainTimeout, MaxDrainTimeout).
+	// Zero selects the drainer default.
 	PerRecordDrainTimeout time.Duration
-	// MaxDrainTimeout is the upper bound of the scaled drain formula.
+	// MaxDrainTimeout is the upper bound of that ceiling. Zero selects the
+	// drainer default.
 	MaxDrainTimeout time.Duration
 
 	// PostAcquireActivationTimeout is the conservative hard bound for the

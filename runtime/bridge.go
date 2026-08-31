@@ -43,13 +43,6 @@ type Runtime struct {
 	clusterEndpoints         map[string]string
 	locator                  *cluster.Locator
 
-	// outboxPoisonMinAge is the minimum record age required, in ADDITION to
-	// replay-count exhaustion, before an outbox drainer poisons a record to the
-	// DLQ (finding 8). Zero (default) lets each drainer pick its own default of
-	// max(5×SendTimeout, 2m). Exposed as a knob so deployments (and tests) can
-	// tune the transient-outage protection window.
-	outboxPoisonMinAge time.Duration
-
 	shutdownTimeout time.Duration
 
 	// stopQuiesce OVERRIDES the pre-cancel drain budget in Stop. Stop always
@@ -221,21 +214,6 @@ func WithClusterEndpoints(endpoints map[string]string) Option {
 // to a default of 5 seconds.
 func WithShutdownTimeout(d time.Duration) Option {
 	return func(rt *Runtime) { rt.shutdownTimeout = d }
-}
-
-// WithOutboxPoisonMinAge sets the minimum wall-clock age a record must reach
-// BEFORE replay-count exhaustion is allowed to poison it to the DLQ (finding 8).
-// The age gate prevents a transient egress outage — which can burn the small
-// replay budget in seconds — from poisoning otherwise-healthy records. A
-// positive value is applied to every outbox drainer; zero (default) lets each
-// drainer fall back to max(5×SendTimeout, 2m). Values are clamped to >= 0.
-func WithOutboxPoisonMinAge(d time.Duration) Option {
-	return func(rt *Runtime) {
-		if d < 0 {
-			d = 0
-		}
-		rt.outboxPoisonMinAge = d
-	}
 }
 
 // WithClock sets the clock used by all runtime components. When nil or

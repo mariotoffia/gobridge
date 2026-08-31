@@ -45,6 +45,11 @@ func s12ValidConfig() *ports.BridgeConfig {
 func TestValidateStaleClaimDuration_NoWarning_WithinBounds(t *testing.T) {
 	cfg := s12ValidConfig()
 	cfg.Routes[0].Session.StepDownGrace = "15s"
+	// Short send and drain budgets keep the in-flight claim ceiling
+	// (send_timeout + drain-batch ceiling = 15s) below the configured value, so
+	// only the upper-bound warning is under test here.
+	cfg.Routes[0].Policy.SendTimeout = "5s"
+	cfg.Bridge.MaxDrainTimeout = "10s"
 	cfg.Stores.Outbox.SetDecoded(nil, fakeRawConfig(map[string]any{"stale_claim_duration": "25s"}))
 
 	warnings, err := ValidateWithWarnings(cfg)

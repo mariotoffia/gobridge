@@ -240,11 +240,6 @@ func applyBridgeDrainDefaults(sc *session.Config, bs ports.BridgeSettings) {
 	if sc == nil {
 		return
 	}
-	if sc.DrainTimeout == 0 {
-		if d := bs.DrainTimeoutDuration(); d > 0 && bs.DrainTimeout != "" {
-			sc.DrainTimeout = d
-		}
-	}
 	if sc.PerRecordDrainTimeout == 0 {
 		sc.PerRecordDrainTimeout = bs.PerRecordDrainTimeoutDuration()
 	}

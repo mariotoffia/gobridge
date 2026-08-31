@@ -20,11 +20,11 @@ import (
 // ---------------------------------------------------------------------------
 // WP-REPLAY-BUDGET: age-based outbox replay budget
 //
-// The poison decision is now a hard AND-gate: a record is DLQ'd only when its
+// The poison decision is a hard AND-gate: a record is DLQ'd only when its
 // ReplayCount exceeds MaxReplayAttempts AND wall-clock time since its first
 // attempt (FirstAttemptedAt) has reached ReplayBudget (replayBudgetExhausted).
-// Records with a zero FirstAttemptedAt (pre-budget schema) fall back
-// bit-for-bit to the legacy CreatedAt/poisonMinAge age gate.
+// A record claimed WITHOUT a first-attempt stamp reports its budget unspent and
+// is never poisoned — see TestDrainer_ZeroFirstAttempt_NeverPoisons.
 //
 // White-box: drainBatch is exercised directly with an injected clock so the
 // budget decision is deterministic — no wall-clock waits. The store fake
@@ -58,9 +58,9 @@ func budgetSnapshot(id string, replayCount int, firstAttempted, createdAt time.T
 }
 
 // budgetDrainer builds a Drainer over the production route defaults
-// (MaxReplayAttempts=5, ReplayBudget=15m, SendTimeout=30s → poisonMinAge
-// fallback 2m30s) with an injected clock, metrics and logger. It returns the
-// resolved policy so tests can assert against the same defaults.
+// (MaxReplayAttempts=5, ReplayBudget=15m, SendTimeout=30s) with an injected
+// clock, metrics and logger. It returns the resolved policy so tests can assert
+// against the same defaults.
 func budgetDrainer(store *deferredFakeStore, sender ports.Sender, clk *clocktest.Fake, metrics ports.MetricsExporter, logger *slog.Logger) (*Drainer, routing.RoutePolicy) {
 	policy := routing.RoutePolicy{}.WithDefaults()
 	d := New(Config{
@@ -85,12 +85,12 @@ func budgetDrainer(store *deferredFakeStore, sender ports.Sender, clk *clocktest
 // TestDrainer_TransientOutageWithinBudget_NeverPoisons is the HEADLINE test.
 // A record that has exhausted its replay COUNT during a transient outage but is
 // still WITHIN the wall-clock ReplayBudget must never be poisoned: it is
-// released back to pending for retry. CreatedAt is deliberately old enough that
-// the LEGACY poisonMinAge gate WOULD fire, proving the budget — not CreatedAt —
-// now decides.
+// released back to pending for retry. CreatedAt is deliberately far older than
+// the budget, so a gate that measured record AGE rather than time since the
+// first attempt would poison it — proving the budget is what decides.
 //
-// Probe: reverting the criterion in processRecord to d.poisonAgeReached(rec)
-// makes this test fail (the record would be DLQ'd), which is exactly the
+// Probe: measuring from CreatedAt instead of FirstAttemptedAt makes this test
+// fail (the record would be DLQ'd), which is exactly the
 // premature-DLQ-from-outage defect this work package fixes.
 func TestDrainer_TransientOutageWithinBudget_NeverPoisons(t *testing.T) {
 	clk := clocktest.NewAt(budgetBase)
@@ -216,43 +216,37 @@ func TestDrainer_BudgetNotCheckedBelowAttemptFloor(t *testing.T) {
 	}
 }
 
-// TestDrainer_LegacyZeroFirstAttempt_FallsBackToCreatedAtGate pins that a
-// record with a zero FirstAttemptedAt (persisted before the replay-budget
-// schema) is decided BIT-FOR-BIT by the legacy CreatedAt/poisonMinAge gate: old
-// enough poisons, young enough does not.
-func TestDrainer_LegacyZeroFirstAttempt_FallsBackToCreatedAtGate(t *testing.T) {
-	cases := []struct {
-		name         string
-		createdAt    time.Time
-		wantPoison   int
-		wantReleased bool
-	}{
-		{"created older than poisonMinAge -> poison", budgetBase.Add(-30 * time.Minute), 1, false},
-		{"created younger than poisonMinAge -> no poison", budgetBase.Add(-1 * time.Minute), 0, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			clk := clocktest.NewAt(budgetBase)
-			rec := persistence.RehydrateFromSnapshot(budgetSnapshot("rec-legacy", 6,
-				time.Time{}, tc.createdAt))
-			store := &deferredFakeStore{claimable: []*persistence.OutboxRecord{rec}}
-			sender := &fnSender{send: func(context.Context, ports.OutboundMessage) error {
-				return shared.NewBridgeError("OUTAGE", shared.ErrorTransient, "egress down")
-			}}
-			metrics := newDLQCountingExporter()
-			d, _ := budgetDrainer(store, sender, clk, metrics, nil)
+// TestDrainer_ZeroFirstAttempt_NeverPoisons pins the fail-safe: every backend
+// stamps FirstAttemptedAt on the first claim, so a claimed record reaching the
+// poison gate without one means the store broke that contract. Poisoning routes
+// the message to the dead-letter queue — or drops it outright under
+// FailureDrop — so the budget is reported UNSPENT and the record keeps being
+// retried. A store bug must not be able to destroy messages, and guessing an age
+// from CreatedAt would let it.
+//
+// Mutation this kills: returning true (or falling back to a CreatedAt age gate)
+// for a zero FirstAttemptedAt poisons the record → wantPoison 0 FAILs.
+func TestDrainer_ZeroFirstAttempt_NeverPoisons(t *testing.T) {
+	clk := clocktest.NewAt(budgetBase)
+	// Replay count far past the cap and created long ago: only the missing
+	// first-attempt stamp stands between this record and the DLQ.
+	rec := persistence.RehydrateFromSnapshot(budgetSnapshot("rec-unstamped", 6,
+		time.Time{}, budgetBase.Add(-30*time.Minute)))
+	store := &deferredFakeStore{claimable: []*persistence.OutboxRecord{rec}}
+	sender := &fnSender{send: func(context.Context, ports.OutboundMessage) error {
+		return shared.NewBridgeError("OUTAGE", shared.ErrorTransient, "egress down")
+	}}
+	metrics := newDLQCountingExporter()
+	d, _ := budgetDrainer(store, sender, clk, metrics, nil)
 
-			if _, _, err := d.drainBatch(context.Background(), deferredTestToken()); err != nil {
-				t.Fatalf("drainBatch err = %v, want nil", err)
-			}
-			if got := metrics.count("poison"); got != tc.wantPoison {
-				t.Errorf("poison DLQ = %d, want %d", got, tc.wantPoison)
-			}
-			released := len(store.releasedIDs()) == 1
-			if released != tc.wantReleased {
-				t.Errorf("released = %v, want %v", released, tc.wantReleased)
-			}
-		})
+	if _, _, err := d.drainBatch(context.Background(), deferredTestToken()); err != nil {
+		t.Fatalf("drainBatch: %v", err)
+	}
+	if got := metrics.count("poison"); got != 0 {
+		t.Fatalf("an unstamped record must never be poisoned, got %d poison DLQ entries", got)
+	}
+	if got := store.releasedIDs(); len(got) != 1 || got[0] != "rec-unstamped" {
+		t.Fatalf("the record must be released for retry, got %v", got)
 	}
 }
 

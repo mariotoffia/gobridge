@@ -1,7 +1,7 @@
 package sqliteoutbox
 
 // Internal regression tests for the production-readiness remediation:
-//   - partition-scoped duplicate identity (schema rebuild migration).
+//   - partition-scoped duplicate identity.
 //   - MED fatal storage-fault classification + store-health metric.
 //   - MED PRAGMA synchronous=FULL pin (counterfactual over a DSN override).
 //   - LOW partial compaction indexes are actually used by the sweep DELETEs.
@@ -96,17 +96,6 @@ func assertPermanent(t *testing.T, err error) {
 	if be.Class != shared.ErrorPermanent {
 		t.Fatalf("error class: got %q, want %q (err=%v)", be.Class, shared.ErrorPermanent, err)
 	}
-}
-
-func indexExists(t *testing.T, s *Store, name string) bool {
-	t.Helper()
-	var n int
-	if err := s.sess.db.QueryRow(
-		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", name,
-	).Scan(&n); err != nil {
-		t.Fatalf("probe index %s: %v", name, err)
-	}
-	return n == 1
 }
 
 func queryPlan(t *testing.T, s *Store, query string) string {
@@ -256,96 +245,6 @@ func TestTransientFaultNotCountedAsFatal(t *testing.T) {
 }
 
 // --- identity migration (schema rebuild) -------------------------------
-
-// A database carrying the legacy GLOBAL UNIQUE(envelope_id, binding_id) is
-// rebuilt in place: the inline constraint is dropped, the partition-scoped
-// idx_outbox_identity replaces it, existing rows survive, and the Persist
-// identity is now partition-scoped (same envelope+binding under a new
-// partition persists; under the same partition it is still a duplicate).
-func TestIdentityMigrationDropsGlobalUniqueAndScopesByPartition(t *testing.T) {
-	dbPath := t.TempDir() + "/legacy-identity.db"
-
-	legacy, err := openRawForTest(dbPath)
-	if err != nil {
-		t.Fatalf("open raw: %v", err)
-	}
-	const legacySchema = `
-CREATE TABLE outbox (
-    id             TEXT PRIMARY KEY,
-    partition_key  TEXT NOT NULL,
-    route_id       TEXT NOT NULL,
-    envelope_id    TEXT NOT NULL,
-    binding_id     TEXT NOT NULL,
-    session_id     TEXT NOT NULL DEFAULT '',
-    address        TEXT NOT NULL DEFAULT '',
-    envelope_json  TEXT NOT NULL,
-    headers_json   TEXT,
-    status         TEXT NOT NULL DEFAULT 'pending',
-    claimed_by     TEXT NOT NULL DEFAULT '',
-    claim_version  INTEGER NOT NULL DEFAULT 0,
-    replay_count   INTEGER NOT NULL DEFAULT 0,
-    created_at     INTEGER NOT NULL,
-    expires_at     INTEGER NOT NULL DEFAULT 0,
-    completed_at   INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(envelope_id, binding_id)
-);
-CREATE TABLE outbox_partition_fence (
-    partition_key TEXT PRIMARY KEY,
-    max_version   INTEGER NOT NULL DEFAULT 0
-);`
-	if _, err := legacy.Exec(legacySchema); err != nil {
-		t.Fatalf("legacy schema: %v", err)
-	}
-	t0 := time.Unix(1_700_000_000, 0)
-	if _, err := legacy.Exec(
-		`INSERT INTO outbox (id, partition_key, route_id, envelope_id, binding_id, session_id, envelope_json, created_at)
-		 VALUES ('leg-1', 'SESSION#sess-A', 'route-1', 'env-x', 'bind-x', 'sess-A', '{"id":"env-x","subject":"s"}', ?)`,
-		t0.UnixMilli(),
-	); err != nil {
-		t.Fatalf("legacy insert: %v", err)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatalf("close legacy: %v", err)
-	}
-
-	clk := clocktest.NewAt(t0.Add(time.Hour))
-	s, err := NewStore(dbPath, WithClock(clk))
-	if err != nil {
-		t.Fatalf("NewStore over legacy identity db: %v", err)
-	}
-	defer func() { _ = s.Close() }()
-
-	// (1) The rebuilt table no longer carries the global inline UNIQUE.
-	var ddl string
-	if err := s.sess.db.QueryRow(
-		"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'outbox'",
-	).Scan(&ddl); err != nil {
-		t.Fatalf("read outbox ddl: %v", err)
-	}
-	if strings.Contains(strings.ReplaceAll(ddl, " ", ""), "UNIQUE(envelope_id,binding_id)") {
-		t.Fatalf("legacy global UNIQUE was not dropped by the migration:\n%s", ddl)
-	}
-	// (2) The partition-scoped identity index exists.
-	if !indexExists(t, s, "idx_outbox_identity") {
-		t.Fatal("idx_outbox_identity not created by the migration")
-	}
-	// (3) The legacy row survived the rebuild.
-	if got := countRows(t, s, "outbox"); got != 1 {
-		t.Fatalf("legacy row lost in rebuild, rows=%d", got)
-	}
-
-	ctx := context.Background()
-	// (4) Same (envelope, binding) under a DIFFERENT partition must persist.
-	other := mustRecordIdent(t, "new-B", "env-x", "bind-x", "sess-B", clk.Now())
-	if err := s.Persist(ctx, []*persistence.OutboxRecord{other}); err != nil {
-		t.Fatalf("cross-partition re-persist of same identity must succeed, got %v", err)
-	}
-	// (5) Same (envelope, binding) under the SAME partition is still a duplicate.
-	dup := mustRecordIdent(t, "dup-A", "env-x", "bind-x", "sess-A", clk.Now())
-	if err := s.Persist(ctx, []*persistence.OutboxRecord{dup}); !errors.Is(err, shared.ErrDuplicateRecord) {
-		t.Fatalf("same-partition duplicate must return ErrDuplicateRecord, got %v", err)
-	}
-}
 
 // --- LOW: partial compaction indexes are used -------------------------------
 

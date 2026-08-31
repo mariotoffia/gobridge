@@ -12,18 +12,15 @@ import (
 // lives in acl_row.go and lifecycle/exec wiring lives in
 // acl_session.go.
 
-// outboxColumnDefs is the column-definition block shared by the fresh-DB
-// CREATE TABLE (schemaSQL) and the identity-migration table rebuild
-// (createOutboxRebuildTableSQL) so the two can never drift.
+// outboxColumnDefs is the outbox table's column-definition block.
 //
-// It carries NO inline UNIQUE(envelope_id, binding_id): that pre-fix GLOBAL
-// constraint diverged from the ports.OutboxStore Persist identity — which is
-// (partition key, EnvelopeID, BindingID) — and silently swallowed a
-// re-persist of the same envelope+binding under a NEW partition key as a
-// duplicate (a silent-loss edge on a session-identity change; the DynamoDB
-// backend delivers it). Duplicate detection is now the partition-scoped
-// UNIQUE INDEX idx_outbox_identity (see outboxIndexSQL), matching the
-// DynamoDB backend and the contract.
+// It carries NO inline UNIQUE(envelope_id, binding_id). A GLOBAL constraint
+// would diverge from the ports.OutboxStore Persist identity — (partition key,
+// EnvelopeID, BindingID) — and silently swallow a re-persist of the same
+// envelope+binding under a NEW partition key as a duplicate (a silent-loss edge
+// on a session-identity change; the DynamoDB backend delivers it). Duplicate
+// detection is the partition-scoped UNIQUE INDEX idx_outbox_identity (see
+// outboxIndexSQL), matching the DynamoDB backend and the contract.
 const outboxColumnDefs = `
     id             TEXT PRIMARY KEY,
     partition_key  TEXT NOT NULL,
@@ -43,12 +40,11 @@ const outboxColumnDefs = `
     created_at     INTEGER NOT NULL,
     expires_at     INTEGER NOT NULL DEFAULT 0,
     completed_at   INTEGER NOT NULL DEFAULT 0,
-    seq            INTEGER NOT NULL DEFAULT 0`
+    seq            INTEGER NOT NULL DEFAULT 0,
+    ordering_key   TEXT NOT NULL DEFAULT ''`
 
-// schemaSQL is the DDL run on every NewStore. Idempotent. It creates the
-// base tables ONLY; indexes (including the partition-scoped identity index)
-// are (re)created by outboxIndexSQL after the identity migration, so a table
-// rebuild cannot leave a stale or missing index behind.
+// schemaSQL is the DDL run on every NewStore. Idempotent: it creates the base
+// tables only, and outboxIndexSQL creates every index immediately after.
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS outbox (` + outboxColumnDefs + `
 );
@@ -60,8 +56,7 @@ CREATE TABLE IF NOT EXISTS outbox_partition_fence (
 `
 
 // outboxIndexSQL creates every index on the outbox table. Run on every open
-// AFTER migrateOutboxIdentity (idempotent) so fresh, legacy, and rebuilt
-// databases converge on the same index set:
+// immediately after schemaSQL, and idempotent:
 //
 //   - idx_outbox_partition_status backs the Claim/QueryPending partition scans.
 //     It also serves CountPending's per-partition path (countPendingByPartitionSQL,
@@ -77,45 +72,26 @@ CREATE TABLE IF NOT EXISTS outbox_partition_fence (
 //     only pending rows (the CountPending bounded-cost contract).
 //   - idx_outbox_identity is the partition-scoped duplicate-detection identity
 //     (partition_key, envelope_id, binding_id) that INSERT OR IGNORE keys on.
-//     It REPLACES the legacy global UNIQUE(envelope_id, binding_id) so the same
-//     envelope+binding re-persisted under a new partition is a distinct
-//     claimable record (contract parity with DynamoDB).
+//     Partition-scoped, not global, so the same envelope+binding re-persisted
+//     under a new partition is a distinct claimable record (contract parity
+//     with DynamoDB).
 //   - idx_outbox_completed / idx_outbox_expired are PARTIAL indexes that turn
 //     the retention-compaction DELETEs (deleteCompletedSQL / deleteExpiredSQL)
 //     from full-table scans into narrow index range scans.
+//   - idx_outbox_ordering is a PARTIAL index over the ordering-keyed rows only.
+//     It backs the head-of-line subquery in selectClaimableIDsSQL, which asks
+//     "does this key have an older non-terminal sibling I am not taking?" once
+//     per candidate. Without it that subquery degrades to a partition scan per
+//     candidate; with it, it is a narrow range seek. It stays small because
+//     most deployments key only a subset of their traffic.
 const outboxIndexSQL = `
 CREATE INDEX IF NOT EXISTS idx_outbox_partition_status ON outbox(partition_key, status);
 CREATE INDEX IF NOT EXISTS idx_outbox_status_pending ON outbox(status) WHERE status = 'pending';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_identity ON outbox(partition_key, envelope_id, binding_id);
 CREATE INDEX IF NOT EXISTS idx_outbox_completed ON outbox(completed_at) WHERE status = 'completed';
 CREATE INDEX IF NOT EXISTS idx_outbox_expired ON outbox(expires_at) WHERE status = 'expired';
+CREATE INDEX IF NOT EXISTS idx_outbox_ordering ON outbox(partition_key, ordering_key, created_at, seq) WHERE ordering_key <> '';
 `
-
-// rebuildOutboxColumns is the explicit column list copied by the identity
-// migration table rebuild. It MUST enumerate every column in outboxColumnDefs
-// so the rebuild is a faithful row-for-row copy of the live table.
-//
-// ponytail: this hard-codes the modern column set. A legacy DB missing a column
-// that is NOT backfilled by the migrateColumn calls in openSession (only
-// claimed_at/first_attempted_at/seq are backfilled there) would fail the
-// rebuild SELECT — but LOUD (NewStore errors, no corruption), never silent. No
-// shipped schema hits this today. A future column addition must add its
-// migrateColumn backfill (or this list must derive from PRAGMA table_info
-// intersected with the target columns) before it can appear in a rebuilt
-// legacy DB.
-const rebuildOutboxColumns = `id, partition_key, route_id, envelope_id, binding_id,
-    session_id, address, envelope_json, headers_json, status, claimed_by,
-    claim_version, claimed_at, first_attempted_at, replay_count, created_at,
-    expires_at, completed_at, seq`
-
-// createOutboxRebuildTableSQL creates the transient rebuild table used by
-// migrateOutboxIdentity. Same columns as outbox, NO inline UNIQUE.
-const createOutboxRebuildTableSQL = `CREATE TABLE outbox_rebuild (` + outboxColumnDefs + `
-)`
-
-// copyIntoOutboxRebuildSQL copies every existing row into the rebuild table.
-const copyIntoOutboxRebuildSQL = `INSERT INTO outbox_rebuild (` + rebuildOutboxColumns + `)
-    SELECT ` + rebuildOutboxColumns + ` FROM outbox`
 
 // outboxColumns is the canonical column list used for SELECTs that
 // hydrate full persistence.OutboxRecord values via scanRecords.
@@ -147,18 +123,24 @@ const (
 	// clock would silently reset. The memory and DynamoDB stores preserve a
 	// non-zero FirstAttemptedAt through Persist; SQLite relies on this invariant.
 	//
-	// Bind order: ..., created_at, expires_at,
+	// ordering_key is denormalised out of the envelope so Claim's head-of-line
+	// subquery is an indexed range seek instead of a JSON extraction per row.
+	// It is written once at Persist and never rewritten: the envelope is
+	// immutable, so the key cannot change under a record.
+	//
+	// Bind order: ..., created_at, expires_at, ordering_key,
 	// partition_key (again, for the seq subselect).
 	insertOutboxSQL = `INSERT OR IGNORE INTO outbox (id, partition_key, route_id, envelope_id, binding_id,
-		 session_id, address, envelope_json, headers_json, status, created_at, expires_at, seq)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?,
+		 session_id, address, envelope_json, headers_json, status, created_at, expires_at, ordering_key, seq)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?,
 		 (SELECT COALESCE(MAX(seq), 0) + 1 FROM outbox WHERE partition_key = ?))`
 
-	// selectMaxClaimVersionSQL reports the highest claim_version ever stamped
-	// on a persisted row in the partition. It is only the legacy-row component
-	// of the fence: rows predating outbox_partition_fence have no fence entry,
-	// so their stamped claim_version is still honoured. The durable fence
-	// (selectFenceVersionSQL) is the authoritative high-water-mark.
+	// selectMaxClaimVersionSQL reports the highest claim_version ever stamped on
+	// a persisted row in the partition. It is the recovery component of the
+	// fence: retention compaction may drop the fence entry of a partition that
+	// still holds claimed records, and their stamped claim_version keeps the
+	// high-water-mark from resetting. The durable fence (selectFenceVersionSQL)
+	// is the authoritative source.
 	selectMaxClaimVersionSQL = `SELECT COALESCE(MAX(claim_version), 0)
 		 FROM outbox WHERE partition_key = ?`
 
@@ -204,6 +186,17 @@ const (
 		 WHERE partition_key = ? AND status = 'pending'`
 	countPendingAllSQL = `SELECT COUNT(*) FROM outbox WHERE status = 'pending'`
 
+	// countClaimedByPartitionSQL / countClaimedAllSQL back the OPTIONAL
+	// ports.OutboxClaimedDepthReporter capability: the count of records an owner
+	// has taken but not yet driven to a terminal state. CountPending excludes
+	// those rows, so without this a record stranded by a failed release reads as
+	// an empty backlog. The per-partition path is served by the composite
+	// idx_outbox_partition_status; the fleet-wide path has no partition
+	// constraint and scans the status index.
+	countClaimedByPartitionSQL = `SELECT COUNT(*) FROM outbox
+		 WHERE partition_key = ? AND status = 'claimed'`
+	countClaimedAllSQL = `SELECT COUNT(*) FROM outbox WHERE status = 'claimed'`
+
 	expireOutboxSQL = `UPDATE outbox SET status = 'expired'
 		 WHERE partition_key = ? AND expires_at > 0 AND expires_at < ? AND status = 'pending'`
 
@@ -240,19 +233,59 @@ const (
 // placeholder is present only when staleEnabled, so a store configured
 // without a stale-claim duration stays strictly version-only.
 func claimableWhere(staleEnabled bool) string {
-	w := `(status = 'pending' OR (status = 'claimed' AND claim_version < ?)`
+	return claimableWhereFor("", staleEnabled)
+}
+
+// claimableWhereFor is claimableWhere qualified with a table alias, so the same
+// predicate can be applied to the candidate row and, inside the head-of-line
+// subquery, to a sibling row in the same statement. Pass "" for an unqualified
+// single-table statement.
+func claimableWhereFor(alias string, staleEnabled bool) string {
+	q := ""
+	if alias != "" {
+		q = alias + "."
+	}
+	w := `(` + q + `status = 'pending' OR (` + q + `status = 'claimed' AND ` + q + `claim_version < ?)`
 	if staleEnabled {
-		w += ` OR (status = 'claimed' AND claimed_at > 0 AND claimed_at <= ?)`
+		w += ` OR (` + q + `status = 'claimed' AND ` + q + `claimed_at > 0 AND ` + q + `claimed_at <= ?)`
 	}
 	return w + `)`
 }
 
+// headOfLineWhere is the ordering-key head-of-line predicate (see the
+// ports.OutboxStore Claim contract). A candidate carrying an ordering key is
+// claimable only when no OLDER non-terminal row shares that key without being
+// claimable itself — a head stranded Claimed by a failed release, an abandoned
+// batch, or a dead owner. Claiming past such a head would deliver a younger
+// message first and silently break per-key order, with no error anywhere.
+//
+// The subquery repeats claimableWhere so a blocker that THIS claim will also
+// take does not block: the ORDER BY returns the head first, so the whole group
+// travels together and in order. Truncating at LIMIT is order-preserving, so a
+// group whose head falls outside the batch takes its tail with it.
+//
+// The claim_version placeholder (and the stale cutoff, when enabled) therefore
+// appears twice: once for the candidate, once for the sibling test.
+func headOfLineWhere(staleEnabled bool) string {
+	return `(o.ordering_key = '' OR NOT EXISTS (
+		 SELECT 1 FROM outbox b
+		 WHERE b.partition_key = o.partition_key
+		   AND b.ordering_key = o.ordering_key
+		   AND b.status IN ('pending', 'claimed')
+		   AND (b.created_at < o.created_at
+		        OR (b.created_at = o.created_at AND b.seq < o.seq))
+		   AND NOT ` + claimableWhereFor("b", staleEnabled) + `
+	 ))`
+}
+
 // selectClaimableIDsSQL builds the claimable-ID SELECT. Bind order:
-// partition_key, claim_version, [stale_cutoff_ms], limit.
+// partition_key, claim_version, [stale_cutoff_ms], claim_version,
+// [stale_cutoff_ms], limit.
 func selectClaimableIDsSQL(staleEnabled bool) string {
-	return `SELECT id FROM outbox
-		 WHERE partition_key = ? AND ` + claimableWhere(staleEnabled) + `
-		 ORDER BY created_at, seq
+	return `SELECT o.id FROM outbox o
+		 WHERE o.partition_key = ? AND ` + claimableWhereFor("o", staleEnabled) + `
+		 AND ` + headOfLineWhere(staleEnabled) + `
+		 ORDER BY o.created_at, o.seq
 		 LIMIT ?`
 }
 
@@ -267,14 +300,6 @@ func selectClaimableIDsSQL(staleEnabled bool) string {
 // claimableWhere fence (the claim UPDATE is guarded, not a blind id-list
 // write) so a row that stopped being claimable between select and update is
 // never stolen.
-//
-// ponytail: an in-place upgrade leaves existing in-flight rows at
-// first_attempted_at = 0, so their replay-budget clock starts at the FIRST
-// post-upgrade claim rather than their true first attempt. This is fail-safe —
-// it only ever grants MORE budget, never a premature poison — and legacy rows
-// still fall back to the CreatedAt/poisonMinAge gate until re-claimed. Upgrade
-// path if exactness is ever required: a one-time backfill of first_attempted_at
-// from created_at for rows where first_attempted_at = 0.
 //
 // Bind order:
 // claimed_by, claim_version, claimed_at, first_attempted_at, ids..., claim_version, [stale_cutoff_ms].

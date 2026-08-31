@@ -3,11 +3,14 @@ package dlq
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -191,7 +194,7 @@ func (r *Router) buildEntry(
 	reason := safeErrorReason(err)
 
 	return routing.NewDLQEntry(routing.DLQEntrySpec{
-		ID:            generateID(),
+		ID:            entryID(env.ID(), routeID, bindingID, sourceID),
 		Envelope:      *env,
 		RouteID:       routeID,
 		BindingID:     bindingID,
@@ -269,6 +272,20 @@ func (r *Router) writeConfirmed(ctx context.Context, entry routing.DLQEntry) err
 		if writeErr == nil {
 			return nil
 		}
+		if errors.Is(writeErr, shared.ErrDuplicateRecord) {
+			// The entry identity already exists, so this terminal event is
+			// ALREADY durably recorded — by an earlier write of this same
+			// failure whose source settle did not land, or by a retry of this
+			// call. Reporting it as a failure would refuse the settle again and
+			// keep the message redelivering forever over evidence that is
+			// already safe. Count the collapse so it stays visible.
+			r.metrics.Counter(shared.MetricDLQDuplicateSuppressed, 1)
+			if r.logger != nil {
+				r.logger.Debug("DLQ entry already recorded for this terminal event",
+					"entry_id", entry.ID(), "route_id", entry.RouteID())
+			}
+			return nil
+		}
 	}
 
 	r.metrics.Counter(shared.MetricDLQWriteFailures, 1)
@@ -307,6 +324,40 @@ func classifyError(err error) (category string, code string) {
 //
 //nolint:gochecknoglobals // counter must outlive every call
 var idFallbackCounter atomic.Uint64
+
+// entryID derives the DLQ entry identity from the message and the delivery leg
+// that failed: (envelope ID, route, binding, source). A DLQ write is made
+// durable BEFORE the source delivery is settled, so the settle can fail after
+// the evidence lands — the message is redelivered, fails the same way, and is
+// written again. A random ID per call turned every such round into a distinct
+// row, so one terminal event accumulated duplicates for as long as settlement
+// kept failing.
+//
+// The attempt counter is deliberately NOT part of the identity. A redelivery IS
+// a later attempt, so including it would make every repeat a fresh identity and
+// collapse nothing. What the identity says instead is: this message, on this
+// delivery leg, reached a terminal state — one event, one row, whatever the
+// retry counter reads. The first write wins, so the earliest evidence is the
+// one preserved.
+//
+// This depends on the transport contract that an envelope ID is stable across
+// redelivery and unique within its source (ports.Source). A source that broke
+// that contract would simply fall back to today's behaviour — a distinct row —
+// never a wrong collapse across different messages.
+//
+// An envelope with no ID cannot be identified, so it falls back to a random ID
+// rather than collapsing unrelated failures onto one row. Envelope IDs are
+// required by construction, so that is a defensive floor, not a live path.
+func entryID(envelopeID, routeID, bindingID, sourceID string) string {
+	if envelopeID == "" {
+		return generateID()
+	}
+	sum := sha256.Sum256([]byte(strings.Join(
+		[]string{envelopeID, routeID, bindingID, sourceID}, "\x1f")))
+	// Truncated to 16 bytes so the identifier keeps the 32-hex-character shape
+	// every DLQ backend and admin surface already handles.
+	return hex.EncodeToString(sum[:16])
+}
 
 // generateID returns a 32-hex-character DLQ entry identifier. It mirrors
 // the runtime-wide convention used by other components but is duplicated

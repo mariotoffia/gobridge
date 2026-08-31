@@ -241,6 +241,7 @@ from the intentional filter and TTL counters.
 |--------|-----------|------|-------------|
 | `OutboxDepth` | `partition` | Count (gauge) | TRUE pending backlog — dual-emitter (ingress + drain), see the depth note below |
 | `OutboxClaimBatchSize` | `partition` | Count (gauge) | Records the drainer CLAIMED on its last poll — a liveness/throughput signal that saturates at the claim ceiling; NOT the backlog (kept separate from `OutboxDepth`) |
+| `OutboxClaimedDepth` | `partition` | Count (gauge) | Records currently CLAIMED — work an owner took but has not driven to a terminal state (via the store's optional `OutboxClaimedDepthReporter`). `OutboxDepth` at zero with a STANDING non-zero value here is stranded work, or an ordering-key group stalled behind a stranded head. Normal in-flight work returns to zero every cycle |
 | `OutboxDepthFailures` | `partition` | Count | Drain cycles where a supported depth reporter's count query FAILED (real DB/read error, not "unsupported"). On such a cycle `OutboxDepth` is deliberately NOT emitted so the missing-data alarm fires; a rising value means the depth query itself is broken |
 | `OutboxPersistLatency` | `route_id` | Milliseconds | Persist-call latency |
 | `OutboxDrainLatency` | `session_id` | Milliseconds | Drain-batch latency |
@@ -287,7 +288,8 @@ dimensioned series.
 
 | Metric | Dimensions | Unit | Description |
 |--------|-----------|------|-------------|
-| `DynamoDBOutboxClaimScanPages` | `partition` | Count | Number of DynamoDB Query pages a single outbox `Claim` scanned, emitted only when that count crosses 8. Claim pages the whole partition to guarantee oldest-first delivery, so a sustained deep backlog (draining after an egress outage on an exclusive session) makes each Claim O(backlog) and the drain quadratic. A rising value, with the paired loud WARN, is the signal that a partition carries a deep backlog. |
+| `DynamoDBOutboxClaimScanPages` | `partition` | Count | Number of DynamoDB Query pages a single outbox `Claim` scanned, emitted only when that count crosses 8. The scan path pages the whole partition to guarantee oldest-first delivery, so a sustained deep backlog (draining after an egress outage on an exclusive session) makes each Claim O(backlog) and the drain quadratic. Two things put a claim on that path: a table without the `ClaimIndex` GSI, or a partition whose records carry ordering keys (a GSI cannot prove a record has no older unseen sibling, so keyed claims read the base table consistently -- see ADR 0005). On a table that HAS `ClaimIndex`, a rising value means ordering keys, not a missing index; the store logs which once per process. |
+| `DynamoDBOutboxClaimTruncated` | `partition` | Count | A `Claim` that ended early because a per-record transaction failed transiently (throttle, deadline, network) AFTER earlier records were already durably claimed. The short batch is returned rather than discarded, so nothing is stranded; a rising value usually means sustained throttling or a claim budget too small for the batch size. |
 | `SQLiteStoreUnhealthy` | `entity` | Count | A fatal SQLite outbox storage fault -- disk full, corruption, read-only, or not-a-database (`entity=outbox`). Classified PERMANENT because no retry clears it without operator action. The drain loop keeps polling and records stay durable -- this is an observability signal, not a halt -- so alert on it directly: it means free disk / restore the file, distinct from transient throttling noise. |
 
 The DynamoDB DLQ **unbounded delete-all** (`DeleteByFilter` with no cap, i.e.
@@ -297,10 +299,13 @@ The DynamoDB DLQ **unbounded delete-all** (`DeleteByFilter` with no cap, i.e.
 informational (a large purge is running), not an error. Narrow the filter's time
 range to bound it.
 
-The durable fix that removes the O(backlog) `DynamoDBOutboxClaimScanPages` cost --
-a per-partition `created_at` GSI so the Query returns age-ordered items and the
-scan stops after `limit` -- is a tracked future item; see
-[ADR 0005](../adr/0005-outbox-partition-claim-design.md).
+Keyless partitions never pay that cost: the required `ClaimIndex` GSI serves
+them in O(limit). Only ordering-keyed partitions reach the scan, because no
+eventually-consistent index can prove a keyed record has no older unseen
+sibling; the bounded alternative would be a local secondary index on
+`(PK, claim_sort)` read with `ConsistentRead`, which can only be created with the
+table. See [ADR 0005](../adr/0005-outbox-partition-claim-design.md) and the
+[outbox table schema runbook](../runbooks/dynamodb-outbox-table-schema.md).
 
 **Lease**
 
@@ -319,6 +324,7 @@ scan stops after `limit` -- is a tracked future item; see
 | `DLQEntries` | `route_id`, `category` | Count | Messages written to the DLQ (an INGRESS COUNTER — only ever increases) |
 | `DLQDepth` | none | Count (gauge) | CURRENT outstanding DLQ entries — the standing backlog "right now", so a stale burst after traffic stops is visible. Sampled via the store's optional `ports.DLQDepthReporter`; emitted as a dimensionless fleet total. |
 | `DLQWriteFailures` | none | Count | DLQ write attempts that failed after retries, or were skipped with no held lease |
+| `DLQDuplicateSuppressed` | none | Count | DLQ writes the store refused as an existing entry — the same terminal event recorded twice, collapsed onto one row and reported as success. A rising value means settlement is failing after DLQ writes land, not that the DLQ store is unhealthy |
 | `DLQRedrives` | `route_id` | Count | DLQ entries an admin redrive re-injected successfully |
 | `DLQRedriveFailures` | `route_id` | Count | Redrive attempts that failed during or after the claim |
 

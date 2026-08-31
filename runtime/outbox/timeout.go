@@ -3,11 +3,7 @@ package outbox
 import "time"
 
 // ComputeBatchDeadline returns the wall-clock timeout to apply to a
-// single drain batch, given the number of records claimed.
-//
-// When neither PerRecordDrainTimeout nor MaxDrainTimeout is set, the
-// legacy fixed DrainTimeout is returned to preserve backward-compatible
-// behavior. Otherwise the timeout scales with batch size:
+// single drain batch, given the number of records claimed:
 //
 //	scaled = batchCount * PerRecordDrainTimeout
 //	deadline = min(scaled, MaxDrainTimeout)
@@ -16,12 +12,9 @@ import "time"
 // large batches cannot produce unbounded timeouts. A PerRecord floor
 // still applies so that a batchCount of 0 (which should not occur in
 // practice because drainBatch returns early on empty claims) does not
-// collapse the deadline to zero.
+// collapse the deadline to zero. Either field left at zero takes its
+// package default (3s per record, 10s ceiling).
 func ComputeBatchDeadline(batchCount int, cfg Config) time.Duration {
-	// Backward-compat path: if new fields unset, honor legacy DrainTimeout.
-	if cfg.PerRecordDrainTimeout == 0 && cfg.MaxDrainTimeout == 0 {
-		return cfg.DrainTimeout
-	}
 	per := cfg.PerRecordDrainTimeout
 	if per == 0 {
 		per = defaultPerRecordDrainTimeout
@@ -45,13 +38,9 @@ func ComputeBatchDeadline(batchCount int, cfg Config) time.Duration {
 // It exists so the drain loop can derive a per-batch deadline without
 // holding a copy of Config.
 func (d *Drainer) batchDeadline(batchCount int) time.Duration {
-	if !d.useScaledTimeout {
-		return d.drainTimeout
-	}
 	return ComputeBatchDeadline(batchCount, Config{
 		PerRecordDrainTimeout: d.perRecordDrainTimeout,
 		MaxDrainTimeout:       d.maxDrainTimeout,
-		DrainTimeout:          d.drainTimeout,
 	})
 }
 
@@ -60,9 +49,9 @@ func (d *Drainer) batchDeadline(batchCount int) time.Duration {
 // SendTimeout + Complete margin, and it scales with the sequential send depth
 // the batch needs: the number of concurrency waves (recordCount/maxConcurrency)
 // OR the longest ordering group (whose records send strictly sequentially),
-// whichever is larger. The configured DrainTimeout/MaxDrainTimeout ceiling may
-// only RAISE this budget — it can no longer cut it below one full send, which
-// was the silent SendTimeout cap the previous min()-with-ceiling introduced.
+// whichever is larger. The configured MaxDrainTimeout ceiling may only RAISE
+// this budget — it can never cut it below one full send, which was the silent
+// SendTimeout cap a min()-with-ceiling would introduce.
 func (d *Drainer) batchTimeout(recordCount int, groups []orderingGroup) time.Duration {
 	perSend := d.policy.SendTimeout + d.completeBudget()
 	if perSend <= 0 {

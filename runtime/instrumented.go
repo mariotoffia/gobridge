@@ -194,8 +194,8 @@ func (s *InstrumentedOutboxStore) Complete(ctx context.Context, recordIDs []stri
 	return s.inner.Complete(ctx, recordIDs, token)
 }
 
-func (s *InstrumentedOutboxStore) Expire(ctx context.Context, before time.Time, partition string) (int, error) {
-	return s.inner.Expire(ctx, before, partition)
+func (s *InstrumentedOutboxStore) Expire(ctx context.Context, before time.Time, partition string, token persistence.LeaseToken) (int, error) {
+	return s.inner.Expire(ctx, before, partition, token)
 }
 
 func (s *InstrumentedOutboxStore) QueryPending(ctx context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error) {
@@ -229,6 +229,22 @@ func (s *InstrumentedOutboxStore) CountPending(ctx context.Context, partitionKey
 		return 0, ports.ErrOutboxDepthUnsupported
 	}
 	return reporter.CountPending(ctx, partitionKey)
+}
+
+// CountClaimed forwards the OPTIONAL ports.OutboxClaimedDepthReporter capability
+// of the wrapped store, on the same terms as CountPending: the wrapper ALWAYS
+// satisfies the interface so the drainer's capability probe succeeds in
+// production (where it holds the wrapper, not the raw store), and returns the
+// EXPORTED sentinel ports.ErrOutboxDepthUnsupported when the inner store has not
+// adopted it. A real error from the inner reporter is returned AS-IS so it is
+// not mistaken for "unsupported". It emits no metric; the drainer owns the
+// shared.MetricOutboxClaimedDepth emission so there is a single emission site.
+func (s *InstrumentedOutboxStore) CountClaimed(ctx context.Context, partitionKey string) (int, error) {
+	reporter, ok := s.inner.(ports.OutboxClaimedDepthReporter)
+	if !ok {
+		return 0, ports.ErrOutboxDepthUnsupported
+	}
+	return reporter.CountClaimed(ctx, partitionKey)
 }
 
 func instrumentedClock(clk clock.Clock) clock.Clock {

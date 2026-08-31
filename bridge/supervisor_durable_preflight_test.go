@@ -48,7 +48,9 @@ func (bareOutboxStore) Claim(context.Context, string, persistence.LeaseToken, in
 	return nil, nil
 }
 func (bareOutboxStore) Complete(context.Context, []string, persistence.LeaseToken) error { return nil }
-func (bareOutboxStore) Expire(context.Context, time.Time, string) (int, error)           { return 0, nil }
+func (bareOutboxStore) Expire(context.Context, time.Time, string, persistence.LeaseToken) (int, error) {
+	return 0, nil
+}
 func (bareOutboxStore) QueryPending(context.Context, string, int) ([]*persistence.OutboxRecord, error) {
 	return nil, nil
 }

@@ -214,7 +214,7 @@ func TestOutboxDrainerConfig_DrainBatchSize_Custom(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// finalDrain uses context.Background() bounded by DrainTimeout
+// finalDrain uses context.Background() bounded by MaxDrainTimeout
 // ═══════════════════════════════════════════════════════════════════════════
 
 // TestOutboxDrainer_FinalDrain_CompletesAfterCancel validates that
@@ -240,7 +240,7 @@ func TestOutboxDrainer_FinalDrain_CompletesAfterCancel(t *testing.T) {
 
 	outbox, sender, _, drainer := makeDrainer(t, token, func(cfg *outboxpkg.Config) {
 		cfg.Strategy = strategy
-		cfg.DrainTimeout = 500 * time.Millisecond
+		cfg.MaxDrainTimeout = 500 * time.Millisecond
 	})
 
 	ctx := context.Background()

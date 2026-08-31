@@ -680,16 +680,24 @@ type OutboxStore interface {
     Persist(ctx context.Context, records []*persistence.OutboxRecord) error
     Claim(ctx context.Context, partitionKey string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error)
     Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error
-    Expire(ctx context.Context, before time.Time) (int, error)
+    Expire(ctx context.Context, before time.Time, partition string, token persistence.LeaseToken) (int, error)
     QueryPending(ctx context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error)
 }
 ```
 
 Outbox records are partitioned by session or binding identity via `persistence.OutboxPartitionKey()`.
 
+`Expire` is a terminal, destructive transition of pending records, so it is fenced exactly like `Claim`: it is partition-scoped, it rejects a token below the partition's durable fencing high-water-mark with `shared.ErrStaleFencingToken`, and an accepted sweep raises that high-water-mark. The check and the transitions it authorises are atomic against a concurrent fence raise — one transaction on SQLite, the store-wide mutex on the memory backend, and a per-record `ConditionCheck` on the fence row for DynamoDB, which aborts the remainder of a sweep the moment a successor takes the partition. The advance matters because a drop-policy drainer sweeps expiry *before* its egress-readiness gate: on a partition whose egress never becomes ready, `Expire` is the only fencing call the drainer ever makes.
+
+`Claim` enforces the **ordering-key head-of-line rule**: a record carrying `x-bridge.ordering-key` is claimable only when the partition holds no OLDER non-terminal record on the same key that the same `Claim` will not also return. Per-key order is durable, not per-batch — the drainer sequences same-key records inside one claimed batch, but it cannot see a sibling left `Claimed` by a previous cycle (a failed `Release`, an abandoned batch, a crashed owner), and claiming past that head delivers the younger message first with no error anywhere. A blocked record is not returned; it becomes claimable again the moment its head goes terminal or is released. Keyless records keep full concurrency. SQLite evaluates the rule in the claim `SELECT` against a denormalised `ordering_key` column; the memory store under its mutex; DynamoDB client-side over a `ConsistentRead` base-table scan, because a global secondary index cannot prove the absence of an older sibling (see [ADR 0005](docs/adr/0005-outbox-partition-claim-design.md)). The key is denormalised in every backend so a claim never unmarshals a record to read it.
+
+`Claim` may also return a SHORT batch with a nil error. A backend that claims one record per remote transaction can fail after earlier records are durably claimed; those records belong to the caller and are excluded from `CountPending`, so returning them alongside an error strands them until the wall-clock stale window. Only `shared.ErrStaleFencingToken` still surfaces with no records — the owner has lost the partition and must stop.
+
+Two OPTIONAL capabilities widen the port without breaking implementations that skip them: `OutboxReleaser` (return a transiently-failed claim to pending immediately) and the depth reporters `OutboxDepthReporter` / `OutboxClaimedDepthReporter` (pending and claimed counts behind `OutboxDepth` and `OutboxClaimedDepth`). The claimed count exists because `CountPending` excludes claimed rows, so work stranded by a failed release is otherwise invisible — the backlog gauge reads zero while messages sit undelivered.
+
 ### DLQStore
 
-Dead-letter queue management for failed or rejected messages. `Write` is idempotent -- writing the same entry twice must not create a duplicate.
+Dead-letter queue management for failed or rejected messages. `Write` is idempotent -- writing the same entry twice must not create a duplicate. Entry identity is DERIVED from the message and the delivery leg — `sha256(envelope ID, route, binding, source)` — not generated per write, so the same terminal event recorded twice (a DLQ write that landed followed by a failed source settle) collapses onto one row instead of accumulating duplicates. The store refuses the repeat; the router reports that refusal as durable success and counts `DLQDuplicateSuppressed`.
 
 ```go
 type DLQStore interface {

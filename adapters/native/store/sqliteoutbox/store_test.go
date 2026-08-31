@@ -31,6 +31,18 @@ var _ ports.OutboxReleaser = (*sqliteoutbox.Store)(nil)
 // per .go-arch-lint.yml).
 var _ ports.OutboxDepthReporter = (*sqliteoutbox.Store)(nil)
 
+// Compile-time assertion that the SQLite store implements the optional
+// OutboxClaimedDepthReporter capability the drainer type-asserts to emit the
+// stranded-work gauge (shared.MetricOutboxClaimedDepth). Same test-package
+// placement rationale as the assertions above.
+var _ ports.OutboxClaimedDepthReporter = (*sqliteoutbox.Store)(nil)
+
+// Validates the optional claimed-depth capability against the shared
+// conformance suite so stranded work is visible identically on every backend.
+func TestOutboxClaimedDepthConformance(t *testing.T) {
+	storetest.RunOutboxClaimedDepthTests(t, newTempStore(t))
+}
+
 func newTempStore(t *testing.T) *sqliteoutbox.Store {
 	t.Helper()
 	dir := t.TempDir()

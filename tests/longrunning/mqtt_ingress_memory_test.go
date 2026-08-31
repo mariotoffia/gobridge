@@ -254,7 +254,7 @@ func (*blockingMemoryProofOutbox) Complete(context.Context, []string, persistenc
 	return nil
 }
 
-func (*blockingMemoryProofOutbox) Expire(context.Context, time.Time, string) (int, error) {
+func (*blockingMemoryProofOutbox) Expire(context.Context, time.Time, string, persistence.LeaseToken) (int, error) {
 	return 0, nil
 }
 

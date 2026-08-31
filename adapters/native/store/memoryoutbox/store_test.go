@@ -29,6 +29,18 @@ var _ ports.OutboxReleaser = (*memoryoutbox.Store)(nil)
 // per .go-arch-lint.yml).
 var _ ports.OutboxDepthReporter = (*memoryoutbox.Store)(nil)
 
+// Compile-time assertion that the in-memory store implements the optional
+// OutboxClaimedDepthReporter capability the drainer type-asserts to emit the
+// stranded-work gauge (shared.MetricOutboxClaimedDepth). Same test-package
+// placement rationale as the assertions above.
+var _ ports.OutboxClaimedDepthReporter = (*memoryoutbox.Store)(nil)
+
+// Validates the optional claimed-depth capability against the shared
+// conformance suite so stranded work is visible identically on every backend.
+func TestOutboxClaimedDepthConformance(t *testing.T) {
+	storetest.RunOutboxClaimedDepthTests(t, memoryoutbox.NewStore())
+}
+
 // Validates the in-memory outbox store against the shared conformance suite.
 func TestOutboxStoreConformance(t *testing.T) {
 	store := memoryoutbox.NewStore()

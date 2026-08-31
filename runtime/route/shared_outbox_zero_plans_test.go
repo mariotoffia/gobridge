@@ -36,7 +36,7 @@ func (s *countingOutboxStore) Complete(context.Context, []string, persistence.Le
 	return nil
 }
 
-func (s *countingOutboxStore) Expire(context.Context, time.Time, string) (int, error) {
+func (s *countingOutboxStore) Expire(context.Context, time.Time, string, persistence.LeaseToken) (int, error) {
 	return 0, nil
 }
 

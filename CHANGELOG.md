@@ -10,6 +10,211 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Changed — BREAKING (`ports.OutboxStore`)
+
+- `OutboxStore.Expire` now takes the caller's fencing token. The bulk expiry
+  sweep terminally destroys pending records, but it was authorised only by a
+  local lease check inside the drainer: an owner that passed that check and then
+  lost its lease could still bulk-expire pending drop-policy records its
+  successor was entitled to deliver. The token is now enforced at the store
+  transaction.
+
+  ```go
+  // before
+  Expire(ctx context.Context, before time.Time, partition string) (int, error)
+  // after
+  Expire(ctx context.Context, before time.Time, partition string, token persistence.LeaseToken) (int, error)
+  ```
+
+  **Migrating an out-of-tree `OutboxStore`.** Add the parameter and enforce
+  three rules, all of which `Claim` already implements in the same store:
+
+  1. Reject an invalid (zero-value) token with `shared.ErrStaleFencingToken`
+     before any state transition.
+  2. Reject a token whose `Version` is below the partition's fencing
+     high-water-mark with `shared.ErrStaleFencingToken`, having expired nothing.
+  3. On acceptance, raise the high-water-mark to `token.Version` — including
+     when the sweep expires no records — and keep the check atomic against a
+     concurrent raise.
+
+  Existing fence records need no schema rewrite: the sweep reuses the same
+  per-partition fence state `Claim` already maintains (`outbox_partition_fence`
+  on SQLite, the `FENCE` item on DynamoDB, `latestVersion` in memory). The
+  DynamoDB sweep now issues one `TransactWriteItems` per expired record instead
+  of one `UpdateItem`, pairing the record write with a fence `ConditionCheck`.
+
+### Added
+
+- **Ordering-key head-of-line rule on `OutboxStore.Claim`.** A record carrying
+  `x-bridge.ordering-key` is now claimable only when the partition holds no
+  older non-terminal record on the same key that the same `Claim` will not also
+  return. Per-key order was previously enforced only WITHIN one claimed batch,
+  so a head left `Claimed` by a previous cycle — a failed `Release`, an
+  abandoned batch, a crashed owner — was silently overtaken by its younger
+  sibling. Enforced by every backend and pinned by the shared conformance suite.
+
+  The key is denormalised so a claim never unmarshals a record to read it:
+  SQLite gets an `ordering_key` column and the partial index
+  `idx_outbox_ordering`, DynamoDB an `ordering_key` attribute stamped at
+  `Persist`, and the in-memory store reads it off the aggregate. There is no
+  data migration and no backfill: GoBridge has never been deployed, so no store
+  holds a record written without it.
+
+- **`ports.OutboxClaimedDepthReporter`** (OPTIONAL): `CountClaimed(ctx,
+  partitionKey)` reports records currently CLAIMED. `CountPending` deliberately
+  excludes them, so work stranded by a failed release was invisible — the
+  backlog gauge read zero while messages sat undelivered. The drainer emits it
+  as `OutboxClaimedDepth` on the drain cadence; all three in-tree backends
+  implement it. Stores that do not are unaffected: no capability, no gauge.
+
+- **`OutboxClaimedDepth`** and **`DLQDuplicateSuppressed`** metrics, plus
+  **`DynamoDBOutboxClaimTruncated`** (adapter-owned).
+
+### Fixed
+
+- `TestAutoExtendRetriesTransientThenSucceedsS15` (SQS auto-extend) gave its
+  fake-clock sync points a 1s WALL-CLOCK budget. `Advance` only releases the
+  auto-extend goroutine; it still has to be scheduled, and under a parallel
+  `-race` integration run that slipped past 1s. Widened to the repository's
+  2s default.
+- `make test` / `make lint` walked every `go.mod` under the repository root,
+  which swept any sibling git worktree under `.worktrees/` — another BRANCH's
+  checkout. That says nothing about the branch under test, doubles the runtime,
+  and failed outright on the sibling's `scripts/release` module, whose `GOWORK`
+  override is keyed to the literal path `./scripts/release`. Module discovery now
+  excludes `.worktrees/`.
+
+### Removed
+
+- **Every remaining backward-compatibility path.** GoBridge has never been
+  deployed, so no store holds data written by an earlier build and none of this
+  machinery could ever run. Removed as one sweep:
+
+  - **DynamoDB `ClaimIndex` is now REQUIRED.** `Claim` no longer latches a
+    missing or under-projected index and silently degrades to a whole-partition
+    scan; preflight rejects such a table at startup and a claim-time index
+    failure surfaces as an error naming the index. `CreateTable` and the CDK
+    construct both provision it as `Projection: ALL`. Degrading turned an
+    O(limit) drain into O(backlog) fleet-wide behind a WARN nobody reads, and
+    `CountPending` / `CountClaimed` likewise reported a broken table as an
+    unsupported capability — a plausible-looking gauge over a fault.
+  - **The DynamoDB sort-key cross-scheme migration path.** Records written
+    before the sort key was made injective cannot exist. The verify-on-conflict
+    readback is KEPT — it is what stops a distinct message being acked and
+    dropped when a foreign writer occupies a key — but it is no longer described
+    as a migration state.
+  - **The `sqlitedlq` `address` column migration** and its test.
+  - **The replay-budget `CreatedAt` fallback.** A record reaching the poison
+    gate has just been claimed, and every backend stamps `FirstAttemptedAt` on
+    the first claim, so a zero value means the store broke that contract. The
+    drainer now reports the budget UNSPENT and keeps retrying instead of
+    guessing an age from `CreatedAt` — poisoning routes a message to the DLQ or
+    drops it outright, so a store bug must not be able to destroy messages. This
+    removes `runtime.WithOutboxPoisonMinAge`, `outbox.Config.PoisonMinAge` and
+    the `PoisonMinAge` glossary term.
+  - **The legacy fixed drain-batch ceiling.** `bridge.drain_timeout` fed two
+    unrelated budgets: the supervisor's ceiling on `Runtime.Stop`, and — through
+    `session.Config`/`outbox.Config` — a fixed per-batch outbox ceiling
+    explicitly "retained for backward compatibility". The second meaning is
+    gone; `ComputeBatchDeadline` is now always
+    `min(batchCount * per_record_drain_timeout, max_drain_timeout)`. The YAML key
+    survives with exactly one documented meaning, the stop budget.
+
+    This also fixes a validation bug: `stale_claim_duration`'s in-flight ceiling
+    read `bridge.drain_timeout` as if it were the batch ceiling, inflating the
+    warning band from 10s to 30s of pure fiction.
+
+    The shutdown FINAL drain is now bounded by `max_drain_timeout` too — it is
+    a drain batch, so it takes the batch ceiling rather than the supervisor's
+    stop budget. A deployment that set a long `bridge.drain_timeout` expecting a
+    longer final drain should set `max_drain_timeout` instead; the supervisor's
+    stop budget still bounds `Runtime.Stop` above it.
+
+    An unconfigured batch ceiling changes from a flat 10s to
+    `min(n * 3s, 10s)`. It is inert in practice — the ceiling may only RAISE a
+    budget already floored at the sequential send depth times
+    (`send_timeout` + complete margin), which is 30s+ on defaults — and that is
+    now pinned by `TestBatchTimeout_CeilingOnlyRaisesNeverCuts` rather than
+    asserted.
+
+  - **`docs/runbooks/dynamodb-outbox-gsi-migration.md`**, replaced by
+    [`dynamodb-outbox-table-schema.md`](docs/runbooks/dynamodb-outbox-table-schema.md):
+    the required table and index shape, why `ClaimIndex` must be
+    `Projection: ALL`, and how to read a preflight rejection — no migration
+    steps, because there is nothing to migrate from.
+
+- **In-place SQLite schema migration.** The outbox store carried column
+  migrations (`claimed_at`, `first_attempted_at`, `seq`, fence `updated_at`), a
+  table rebuild that dropped a legacy global `UNIQUE(envelope_id, binding_id)`,
+  and a stamp for fence rows predating `updated_at` — all of it for databases no
+  deployment has ever produced. `openSession` is now the DDL and nothing else,
+  which also removes the failure mode where adding a column silently broke the
+  rebuild's hard-coded copy list. GoBridge has never been deployed; a migration
+  ships when there is deployed data to migrate.
+
+### Changed
+
+- **DLQ entry identity is derived, not random.** A DLQ entry's ID is now
+  `sha256(envelope ID, route, binding, source)` instead of a fresh random value
+  per write. A DLQ write is durable BEFORE the source delivery is settled, so a
+  failed settle redelivered the message, it failed identically, and a SECOND
+  distinct row was written — one terminal event accumulating duplicates for as
+  long as settlement kept failing. The repeat write now lands on the same entry,
+  which the stores refuse as a duplicate; the router reports that refusal as
+  durable success (the evidence is already there) and counts
+  `DLQDuplicateSuppressed`. The attempt counter is deliberately NOT part of the
+  identity — a redelivery IS a later attempt, so including it would collapse
+  nothing. The first write wins, so the earliest evidence is preserved.
+
+  DLQ writes remain **at-least-once across distinct failures**: a message that
+  is redriven and fails again on the same leg re-uses the identity and updates
+  nothing, and a lease lost mid-write can still duplicate. Duplicates are
+  reconcilable; loss is not.
+
+- **`Claim` may return a SHORT batch with a nil error.** A backend that claims
+  one record per remote transaction can fail after earlier records are durably
+  claimed. Those records now come back to the caller instead of being discarded
+  with the error. Out-of-tree `OutboxStore` implementations should adopt the
+  same rule; callers already tolerate a short batch.
+
+- **An explicit `stale_claim_duration` is now bounded from below.** At or below
+  the largest route `send_timeout` it is REJECTED (a reclaim would re-send a
+  record whose first delivery has not even timed out); at or below
+  `send_timeout` plus the drain-batch ceiling it WARNS. Leaving the key unset
+  keeps the derived default and applies no bound.
+
+### Fixed
+
+- The outbox expiry sweep and the depth query (`CountPending`) ran on the
+  drainer's long-lived loop context. A black-holed store could park the single
+  drain goroutine for a partition in housekeeping work indefinitely, stalling
+  the send path with it. Both now run under the same per-operation deadline
+  `Claim` uses.
+- The DynamoDB `ClaimIndex` GSI cannot be read strongly consistent and
+  propagates per item, so it could surface a younger same-key record before its
+  older sibling — an ordering violation with no failure anywhere, and invisible
+  to tests because DynamoDB Local's GSIs are synchronously consistent. A claim
+  that sees any ordering key now abandons the index and re-runs through the
+  `ConsistentRead` base-table scan. Keyless partitions keep the O(limit) fast
+  path.
+- A DynamoDB `Claim` that hit a throttle or its own deadline part-way through
+  the batch discarded every record it had already claimed. Those records were
+  durably claimed, hidden from `CountPending`, unreclaimable until the stale
+  window, and charged a replay attempt per recovery cycle — so a short
+  `send_timeout` relative to claim cost could poison a healthy backlog to the
+  dead-letter queue without a single send. The claim now returns what it
+  claimed, and its deadline scales with the batch
+  (`max(send_timeout, limit x 100ms)`, capped at two minutes) instead of reusing
+  the per-message send timeout.
+- An unclassified per-record failure in the drain loop — a DLQ-store write
+  error, or a post-send `Complete` the store refused — left the whole ordering
+  group `Claimed`. The head keeps its claim (its send may already have landed),
+  but the unattempted tail is now released back to pending.
+- `DeliveryAttempt.Attempt` / `DeliveryOutcome.Attempt` were off by one on the
+  outbox path: `OutboxRecord.Claim` already counts the claim being attempted, so
+  the first delivery reported attempt 2 while the direct path reported 1 for the
+  same message.
+
 ## [0.3.3] - 2026-07-27
 
 Completes 0.3.2: same modules, plus the two release-pipeline fixes that

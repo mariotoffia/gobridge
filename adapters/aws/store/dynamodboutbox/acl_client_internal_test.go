@@ -760,61 +760,38 @@ func TestClaim_IndexFastPath_StopsAtLimitWithoutPagingWholePartition(t *testing.
 	}
 }
 
-// TestClaim_MissingIndex_FallsBackToScanAndWarnsOnce pins the backward-compat
-// guarantee: a table created before the ClaimIndex GSI existed still works.
-// The first Claim probes the GSI, DynamoDB rejects it (missing index), and
-// Claim must LATCH the absence, WARN exactly once, and fall back to the
-// always-correct base-table scan — still claiming the record. A subsequent
-// Claim goes straight to the scan without re-probing the GSI.
-func TestClaim_MissingIndex_FallsBackToScanAndWarnsOnce(t *testing.T) {
-	const partition = "PART#unmigrated"
+// TestClaim_MissingIndex_SurfacesTheProvisioningFault: the ClaimIndex GSI is
+// REQUIRED. CreateTable provisions it and Preflight rejects a table
+// without it, so a missing-index ValidationException at claim time is a broken
+// table, not a mode to degrade into. Silently falling back to the
+// whole-partition scan would turn an O(limit) drain into O(backlog) fleet-wide
+// and hide the misprovisioning behind a WARN nobody reads.
+//
+// Mutation this kills: re-introducing the "index unusable → latch → scan"
+// fallback makes Claim return nil → this test FAILs.
+func TestClaim_MissingIndex_SurfacesTheProvisioningFault(t *testing.T) {
+	const partition = "PART#no-index"
 	f := newFakeDDB()
 	f.getItemFn = fenceGetItem("0")
 	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
 		if in.IndexName != nil && *in.IndexName == claimIndexName {
-			// An un-migrated table lacks ClaimIndex: DynamoDB rejects the query
-			// with a ValidationException naming the missing index.
 			return nil, errors.New("ValidationException: The table does not have the specified index: ClaimIndex")
 		}
-		return &dynamodb.QueryOutput{Items: []map[string]ddbtypes.AttributeValue{
-			pendingQueryItem(partition, "OUTBOX#env-1#bind-1", "rec-1"),
-		}}, nil
+		t.Fatal("a missing ClaimIndex must NOT silently fall back to the base-table scan")
+		return nil, nil
 	}
-	f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
-		return &dynamodb.TransactWriteItemsOutput{}, nil
-	}
-	logger, buf := warnBufLogger()
 	s := newFakeStore(f)
-	s.logger = logger
 
 	claimed, err := s.Claim(context.Background(), partition,
 		persistence.LeaseToken{Version: 1, Owner: "drainer"}, 10)
-	if err != nil {
-		t.Fatalf("missing-index claim must fall back, not error: %v", err)
+	if err == nil {
+		t.Fatal("a missing required index must surface as an error")
 	}
-	if len(claimed) != 1 {
-		t.Fatalf("scan fallback must still claim the record, got %d", len(claimed))
+	if claimed != nil {
+		t.Fatalf("no records may be returned when the index query failed, got %d", len(claimed))
 	}
-	if !s.claimIndexAbsent.Load() {
-		t.Fatalf("a missing ClaimIndex must be latched so later Claims skip the GSI probe")
-	}
-	if got := f.queryCalls[""]; got == 0 {
-		t.Fatalf("Claim must fall back to the base-table scan when the GSI is absent")
-	}
-
-	// Second Claim: absence is latched, so it must go straight to the scan and
-	// NOT re-probe the GSI; the WARN must stay at exactly one.
-	gsiProbes := f.queryCalls[claimIndexName]
-	if _, err := s.Claim(context.Background(), partition,
-		persistence.LeaseToken{Version: 1, Owner: "drainer"}, 10); err != nil {
-		t.Fatalf("second claim: %v", err)
-	}
-	if f.queryCalls[claimIndexName] != gsiProbes {
-		t.Fatalf("latched absence must skip further GSI probes, got %d then %d",
-			gsiProbes, f.queryCalls[claimIndexName])
-	}
-	if n := strings.Count(buf.String(), "ClaimIndex GSI unusable"); n != 1 {
-		t.Fatalf("expected exactly ONE ClaimIndex-unusable WARN, got %d in: %q", n, buf.String())
+	if !strings.Contains(err.Error(), claimIndexName) {
+		t.Fatalf("the error must name the index that is missing, got %v", err)
 	}
 }
 
@@ -908,5 +885,355 @@ func TestPersist_AllDuplicates_ReturnsErrDuplicateRecord(t *testing.T) {
 	err := s.Persist(context.Background(), records)
 	if !errors.Is(err, shared.ErrDuplicateRecord) {
 		t.Fatalf("all-duplicate batch must return ErrDuplicateRecord, got %v", err)
+	}
+}
+
+// A fence raised mid-sweep ABORTS the remaining expiry work. Expire holds no
+// per-record claim, so without the transactional fence check a preempted owner
+// that passed the up-front fence read would keep terminally expiring records the
+// successor is entitled to deliver. Item 0 is the fence ConditionCheck, so its
+// cancellation must surface as ErrStaleFencingToken and stop the sweep at the
+// first record rather than paging on through the rest.
+func TestExpire_FenceRaisedMidSweep_AbortsWithStaleToken(t *testing.T) {
+	f := newFakeDDB()
+	f.getItemFn = fenceGetItem("5")
+	f.queryFn = func(*dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		return &dynamodb.QueryOutput{Items: []map[string]ddbtypes.AttributeValue{
+			pendingQueryItem("PART#1", "OUTBOX#env-1#bind-1", "rec-1"),
+			pendingQueryItem("PART#1", "OUTBOX#env-2#bind-1", "rec-2"),
+		}}, nil
+	}
+	var captured *dynamodb.TransactWriteItemsInput
+	f.transactFn = func(in *dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+		captured = in
+		return nil, transactCanceled("ConditionalCheckFailed", "None")
+	}
+	s := newFakeStore(f)
+
+	n, err := s.Expire(context.Background(), time.UnixMilli(1_700_000_100_000), "PART#1",
+		persistence.LeaseToken{Version: 5, Owner: "a"})
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
+		t.Fatalf("fence-check cancellation must map to ErrStaleFencingToken, got %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("aborted sweep must report no expirations, got %d", n)
+	}
+	if f.transactCalls != 1 {
+		t.Fatalf("sweep must stop at the first fence rejection, got %d transactions", f.transactCalls)
+	}
+
+	// Pin the transaction SHAPE, not merely the error mapping: without item 0
+	// the record write would not be gated on the fence at all, and this test
+	// would still see the canned cancellation and still pass.
+	if captured == nil || len(captured.TransactItems) != 2 {
+		t.Fatalf("expiry must be a 2-item transaction, got %+v", captured)
+	}
+	check := captured.TransactItems[0].ConditionCheck
+	if check == nil || strAttr(check.Key, "SK") != fenceSK {
+		t.Fatalf("item 0 must be a ConditionCheck on the FENCE row, got %+v", captured.TransactItems[0])
+	}
+	if got := check.ExpressionAttributeValues[":ver"]; got == nil ||
+		got.(*ddbtypes.AttributeValueMemberN).Value != "5" {
+		t.Fatalf("fence check must be bound to the sweep's token version, got %+v", got)
+	}
+	upd := captured.TransactItems[1].Update
+	if upd == nil || strAttr(upd.Key, "SK") != "OUTBOX#env-1#bind-1" {
+		t.Fatalf("item 1 must be the record update, got %+v", captured.TransactItems[1])
+	}
+}
+
+// A record-level condition failure (the candidate was claimed or completed
+// between the index read and the write) is a benign SKIP, not an abort: the
+// sweep continues to the next candidate and reports only what it actually
+// expired.
+func TestExpire_RecordRaceLost_SkipsAndContinues(t *testing.T) {
+	f := newFakeDDB()
+	f.getItemFn = fenceGetItem("5")
+	f.queryFn = func(*dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		return &dynamodb.QueryOutput{Items: []map[string]ddbtypes.AttributeValue{
+			pendingQueryItem("PART#1", "OUTBOX#env-1#bind-1", "rec-1"),
+			pendingQueryItem("PART#1", "OUTBOX#env-2#bind-1", "rec-2"),
+		}}, nil
+	}
+	var calls int
+	f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+		calls++
+		if calls == 1 {
+			return nil, transactCanceled("None", "ConditionalCheckFailed")
+		}
+		return &dynamodb.TransactWriteItemsOutput{}, nil
+	}
+	s := newFakeStore(f)
+
+	n, err := s.Expire(context.Background(), time.UnixMilli(1_700_000_100_000), "PART#1",
+		persistence.LeaseToken{Version: 5, Owner: "a"})
+	if err != nil {
+		t.Fatalf("record-race loss must not fail the sweep: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 expired (the second candidate), got %d", n)
+	}
+	if f.transactCalls != 2 {
+		t.Fatalf("expected both candidates attempted, got %d transactions", f.transactCalls)
+	}
+	// An accepted sweep must also RAISE the fence up front, so a partition whose
+	// egress never becomes ready still fences out a preempted owner. Without the
+	// raise this is the only assertion that fails.
+	if f.updateItemCalls != 1 {
+		t.Fatalf("accepted sweep must raise the partition fence exactly once, got %d UpdateItem calls", f.updateItemCalls)
+	}
+}
+
+// A stale token is refused by the up-front fence read, before any record is
+// touched: the sweep must not open a single record transaction.
+func TestExpire_StaleToken_RejectedBeforeAnyWrite(t *testing.T) {
+	f := newFakeDDB()
+	f.getItemFn = fenceGetItem("9")
+	s := newFakeStore(f)
+
+	n, err := s.Expire(context.Background(), time.UnixMilli(1_700_000_100_000), "PART#1",
+		persistence.LeaseToken{Version: 5, Owner: "a"})
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
+		t.Fatalf("expected ErrStaleFencingToken for a token below the fence, got %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("rejected sweep must report no expirations, got %d", n)
+	}
+	if f.transactCalls != 0 {
+		t.Fatalf("a stale sweep must not touch a record, got %d transactions", f.transactCalls)
+	}
+}
+
+// lastKey builds an ExclusiveStartKey/LastEvaluatedKey shaped like the ones the
+// ExpiryIndex returns.
+func lastKey(sk string) map[string]ddbtypes.AttributeValue {
+	return map[string]ddbtypes.AttributeValue{
+		"PK": &ddbtypes.AttributeValueMemberS{Value: "PART#1"},
+		"SK": &ddbtypes.AttributeValueMemberS{Value: sk},
+	}
+}
+
+// A sweep cut short by its operation deadline must RESUME at the page it stopped
+// on. The ExpiryIndex is hashed on one flag for the whole table, so rows in
+// partitions nobody sweeps sit at the head of the range forever; restarting at
+// page 1 every time would let them consume the whole deadline before this
+// partition's records were ever reached, and expiry would stall permanently.
+// Resuming makes progress monotonic no matter how much foreign traffic is ahead.
+func TestExpire_DeadlineTruncatedSweep_ResumesAtNextPage(t *testing.T) {
+	const partition = "PART#1"
+	f := newFakeDDB()
+	f.getItemFn = fenceGetItem("0")
+	f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+		return &dynamodb.TransactWriteItemsOutput{}, nil
+	}
+
+	// Page 1 succeeds and reports more to come; page 2 fails as a deadline would.
+	var starts []map[string]ddbtypes.AttributeValue
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		starts = append(starts, in.ExclusiveStartKey)
+		if in.ExclusiveStartKey == nil {
+			return &dynamodb.QueryOutput{
+				Items:            []map[string]ddbtypes.AttributeValue{pendingQueryItem(partition, "OUTBOX#env-1#bind-1", "rec-1")},
+				LastEvaluatedKey: lastKey("OUTBOX#env-1#bind-1"),
+			}, nil
+		}
+		return nil, context.DeadlineExceeded
+	}
+	s := newFakeStore(f)
+
+	n, err := s.Expire(context.Background(), time.UnixMilli(1_700_000_100_000), partition,
+		persistence.LeaseToken{Version: 5, Owner: "a"})
+	if err == nil {
+		t.Fatal("expected the truncated sweep to surface its error")
+	}
+	if n != 1 {
+		t.Fatalf("truncated sweep must report the record it did expire, got %d", n)
+	}
+
+	// The next sweep must start where the last one stopped, not at the head.
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		starts = append(starts, in.ExclusiveStartKey)
+		return &dynamodb.QueryOutput{}, nil
+	}
+	if _, err := s.Expire(context.Background(), time.UnixMilli(1_700_000_100_000), partition,
+		persistence.LeaseToken{Version: 5, Owner: "a"}); err != nil {
+		t.Fatalf("resumed sweep: %v", err)
+	}
+
+	if len(starts) != 3 {
+		t.Fatalf("expected 3 queries (page 1, failed page 2, resumed page 2), got %d", len(starts))
+	}
+	if starts[0] != nil {
+		t.Fatalf("first sweep must start at the head, got %+v", starts[0])
+	}
+	resumed := starts[2]
+	if resumed == nil || strAttr(resumed, "SK") != "OUTBOX#env-1#bind-1" {
+		t.Fatalf("sweep must resume at the truncated page, got %+v", resumed)
+	}
+}
+
+// A completed pass must clear the resume point so the next sweep starts at the
+// head and sees records that became due behind the cursor. The first sweep here
+// really is interrupted, so a cursor genuinely exists to be cleared.
+func TestExpire_CompletedSweep_ClearsResumeCursor(t *testing.T) {
+	const partition = "PART#1"
+	f := newFakeDDB()
+	f.getItemFn = fenceGetItem("0")
+	f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+		return &dynamodb.TransactWriteItemsOutput{}, nil
+	}
+	token := persistence.LeaseToken{Version: 5, Owner: "a"}
+	before := time.UnixMilli(1_700_000_100_000)
+
+	// Sweep 1: page 1 succeeds, page 2 fails — this is what parks a cursor.
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		if in.ExclusiveStartKey == nil {
+			return &dynamodb.QueryOutput{LastEvaluatedKey: lastKey("OUTBOX#env-1#bind-1")}, nil
+		}
+		return nil, context.DeadlineExceeded
+	}
+	s := newFakeStore(f)
+	if _, err := s.Expire(context.Background(), before, partition, token); err == nil {
+		t.Fatal("sweep 1 must fail so a cursor is parked")
+	}
+
+	// Sweep 2 resumes and runs to completion, which must clear the cursor.
+	var sweep2Start map[string]ddbtypes.AttributeValue
+	seen := false
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		if !seen {
+			sweep2Start = in.ExclusiveStartKey
+			seen = true
+		}
+		return &dynamodb.QueryOutput{}, nil
+	}
+	if _, err := s.Expire(context.Background(), before, partition, token); err != nil {
+		t.Fatalf("sweep 2: %v", err)
+	}
+	if sweep2Start == nil {
+		t.Fatal("sweep 2 must have resumed from the parked cursor; the fixture proved nothing")
+	}
+
+	// Sweep 3 must start at the head again.
+	var sweep3Start map[string]ddbtypes.AttributeValue
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		sweep3Start = in.ExclusiveStartKey
+		return &dynamodb.QueryOutput{}, nil
+	}
+	if _, err := s.Expire(context.Background(), before, partition, token); err != nil {
+		t.Fatalf("sweep 3: %v", err)
+	}
+	if sweep3Start != nil {
+		t.Fatalf("a completed pass must clear its cursor, got resume key %+v", sweep3Start)
+	}
+}
+
+// The mid-page abort branch parks a cursor too. This is the branch a fence
+// takeover and a throttled record write take — the likeliest interruptions in
+// production — and it is distinct from the query-error branch.
+func TestExpire_MidPageAbort_ParksCursorAtFailedPage(t *testing.T) {
+	const partition = "PART#1"
+	f := newFakeDDB()
+	f.getItemFn = fenceGetItem("0")
+	token := persistence.LeaseToken{Version: 5, Owner: "a"}
+	before := time.UnixMilli(1_700_000_100_000)
+
+	page2 := lastKey("OUTBOX#env-1#bind-1")
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		if in.ExclusiveStartKey == nil {
+			return &dynamodb.QueryOutput{
+				Items:            []map[string]ddbtypes.AttributeValue{pendingQueryItem(partition, "OUTBOX#env-1#bind-1", "rec-1")},
+				LastEvaluatedKey: page2,
+			}, nil
+		}
+		return &dynamodb.QueryOutput{
+			Items: []map[string]ddbtypes.AttributeValue{pendingQueryItem(partition, "OUTBOX#env-2#bind-1", "rec-2")},
+		}, nil
+	}
+	// Page 1's record expires; page 2's record is refused by the fence.
+	calls := 0
+	f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+		calls++
+		if calls == 1 {
+			return &dynamodb.TransactWriteItemsOutput{}, nil
+		}
+		return nil, transactCanceled("ConditionalCheckFailed", "None")
+	}
+	s := newFakeStore(f)
+
+	n, err := s.Expire(context.Background(), before, partition, token)
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
+		t.Fatalf("expected the fence abort to surface, got %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("aborted sweep must report the record it did expire, got %d", n)
+	}
+
+	// The sweep advanced past its start, so the cursor parks at the failed page.
+	var resumed map[string]ddbtypes.AttributeValue
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		resumed = in.ExclusiveStartKey
+		return &dynamodb.QueryOutput{}, nil
+	}
+	if _, err := s.Expire(context.Background(), before, partition, token); err != nil {
+		t.Fatalf("resumed sweep: %v", err)
+	}
+	if resumed == nil || strAttr(resumed, "SK") != strAttr(page2, "SK") {
+		t.Fatalf("mid-page abort must park the cursor at the failed page, got %+v", resumed)
+	}
+}
+
+// A sweep that fails on the very page it resumed from advanced nothing, so its
+// cursor must be DROPPED. Otherwise a persistently throttled store, a flapping
+// fence, or a clock that stepped back past the cursor's key would pin the resume
+// point forever and the records ahead of it would never be examined again.
+func TestExpire_FailureAtResumePoint_DropsCursor(t *testing.T) {
+	const partition = "PART#1"
+	f := newFakeDDB()
+	f.getItemFn = fenceGetItem("0")
+	f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
+		return &dynamodb.TransactWriteItemsOutput{}, nil
+	}
+	token := persistence.LeaseToken{Version: 5, Owner: "a"}
+	before := time.UnixMilli(1_700_000_100_000)
+
+	// Sweep 1 advances one page then fails: a cursor is parked.
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		if in.ExclusiveStartKey == nil {
+			return &dynamodb.QueryOutput{LastEvaluatedKey: lastKey("OUTBOX#env-1#bind-1")}, nil
+		}
+		return nil, context.DeadlineExceeded
+	}
+	s := newFakeStore(f)
+	if _, err := s.Expire(context.Background(), before, partition, token); err == nil {
+		t.Fatal("sweep 1 must fail so a cursor is parked")
+	}
+
+	// Sweep 2 fails immediately at the resume point — no progress at all.
+	resumeSeen := false
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		if in.ExclusiveStartKey != nil {
+			resumeSeen = true
+		}
+		return nil, context.DeadlineExceeded
+	}
+	if _, err := s.Expire(context.Background(), before, partition, token); err == nil {
+		t.Fatal("sweep 2 must fail")
+	}
+	if !resumeSeen {
+		t.Fatal("sweep 2 should have resumed from the parked cursor")
+	}
+
+	// Sweep 3 must therefore start at the head, not at the wedged page.
+	var sweep3Start map[string]ddbtypes.AttributeValue
+	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		sweep3Start = in.ExclusiveStartKey
+		return &dynamodb.QueryOutput{}, nil
+	}
+	if _, err := s.Expire(context.Background(), before, partition, token); err != nil {
+		t.Fatalf("sweep 3: %v", err)
+	}
+	if sweep3Start != nil {
+		t.Fatalf("a sweep that never advanced must drop its cursor, got resume key %+v", sweep3Start)
 	}
 }

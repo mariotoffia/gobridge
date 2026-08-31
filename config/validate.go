@@ -727,6 +727,37 @@ func validateStaleClaimDuration(ve *ValidationError, cfg *ports.BridgeConfig) {
 		return
 	}
 
+	// Lower bound. A stale-claim reclaim hands a record to a second sender while
+	// the first may still be delivering it, so the threshold has to dominate how
+	// long a HEALTHY owner can hold a claim. Two thresholds, because they carry
+	// different certainty:
+	//
+	//   - At or below the largest route send_timeout the overlap is certain: the
+	//     first owner's send has not even timed out yet when the reclaim lands,
+	//     so reclaim stops being crash recovery and becomes a duplicate-delivery
+	//     generator on a perfectly healthy owner — silently, since nothing fails.
+	//     That is an error.
+	//   - Between that and send_timeout plus the drain-batch ceiling the overlap
+	//     depends on where the record sat in its batch: a record claimed at the
+	//     head of a batch may not start sending until most of the batch budget
+	//     has elapsed. Real but configuration-dependent, so a warning naming the
+	//     window rather than a rejection.
+	send, ceiling := sendTimeoutCeiling(cfg), drainBatchCeiling(cfg)
+	if stale <= send {
+		ve.Addf("stores.outbox.options.stale_claim_duration (%s) must exceed the largest route "+
+			"send_timeout (%s): at or below it another owner reclaims and re-sends a record "+
+			"whose first delivery has not even timed out yet", stale, send)
+		return
+	}
+	if stale <= send+ceiling {
+		ve.Warnf("stores.outbox.options.stale_claim_duration (%s) is below the worst-case "+
+			"in-flight claim ceiling (%s = the largest route send_timeout %s plus the "+
+			"drain-batch ceiling %s). A record claimed at the head of a batch can wait most of "+
+			"that budget before its own send starts, so a reclaim inside this window can "+
+			"duplicate a delivery that is still in flight",
+			stale, send+ceiling, send, ceiling)
+	}
+
 	maxGrace := routing.DefaultStepDownGrace
 	for _, r := range cfg.Routes {
 		if r.Session == nil {
@@ -754,3 +785,45 @@ func validateStaleClaimDuration(ve *ValidationError, cfg *ports.BridgeConfig) {
 			stale, maxGrace, maxGrace+15*time.Second)
 	}
 }
+
+// sendTimeoutCeiling is the largest per-record delivery budget any route can
+// spend: the maximum EFFECTIVE send_timeout across routes, where a route
+// without an explicit value contributes the runtime default. It is the floor a
+// wall-clock stale-claim reclaim must clear — see validateStaleClaimDuration.
+func sendTimeoutCeiling(cfg *ports.BridgeConfig) time.Duration {
+	var maxSend time.Duration
+	for _, r := range cfg.Routes {
+		send := routing.DefaultSendTimeout
+		if r.Policy.SendTimeout != "" {
+			if d, err := time.ParseDuration(r.Policy.SendTimeout); err == nil && d > 0 {
+				send = d
+			}
+		}
+		if send > maxSend {
+			maxSend = send
+		}
+	}
+	if maxSend == 0 {
+		return routing.DefaultSendTimeout
+	}
+	return maxSend
+}
+
+// drainBatchCeiling is the configured upper bound on a single outbox drain
+// batch: bridge.max_drain_timeout, or the drainer's own default when unset.
+//
+// It deliberately does NOT read bridge.drain_timeout. That key bounds how long
+// the supervisor lets a runtime DRAIN ON STOP — a different budget entirely —
+// and borrowing it here inflated this ceiling from 10s to 30s, widening the
+// stale-claim warning band by twenty seconds of pure fiction.
+func drainBatchCeiling(cfg *ports.BridgeConfig) time.Duration {
+	if d := cfg.Bridge.MaxDrainTimeoutDuration(); d > 0 {
+		return d
+	}
+	return defaultMaxDrainBatchCeiling
+}
+
+// defaultMaxDrainBatchCeiling mirrors runtime/outbox.defaultMaxDrainTimeout, the
+// batch ceiling applied when bridge.max_drain_timeout is unset. Duplicated here
+// because config validation must not depend on the runtime package.
+const defaultMaxDrainBatchCeiling = 10 * time.Second

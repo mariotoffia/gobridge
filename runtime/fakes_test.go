@@ -565,7 +565,7 @@ func (s *FakeOutboxStore) Release(_ context.Context, recordIDs []string, token p
 	return nil
 }
 
-func (s *FakeOutboxStore) Expire(_ context.Context, before time.Time, partition string) (int, error) {
+func (s *FakeOutboxStore) Expire(_ context.Context, before time.Time, partition string, _ persistence.LeaseToken) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
