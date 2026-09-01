@@ -72,7 +72,12 @@ func (m *Manager) handleSessionEvent(ctx context.Context, ev ports.SessionEvent)
 		m.markNonConverged()
 
 	case ports.SessionReconnecting:
-		m.log(ctx, slog.LevelInfo, "session reconnecting")
+		// ev.Err is the transport's mapped CONNECT failure — the one place MQTT
+		// says WHY a session cannot come back. Dropping it left readiness red
+		// with no actionable cause in the runtime log at all. The level stays
+		// Info: the preceding SessionDisconnected already raised a Warn, and the
+		// adapter warns once per failed CONNECT with the bounded error code.
+		m.log(ctx, slog.LevelInfo, "session reconnecting", "error", ev.Err)
 		m.markNonConverged()
 
 	case ports.SessionError:

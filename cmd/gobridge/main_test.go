@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // TestWatchTerminal_ReturnsTrueWhenTerminalObserved proves the backstop keeps
@@ -219,17 +219,14 @@ func TestWaitForSupervisorRuntime_RuntimeAppearingAfterSlowInitialBuildSucceeds(
 	}
 }
 
-// waitForTimerCount spins until the fake clock has at least n active timers,
+// waitForTimerCount blocks until the fake clock has at least n active timers,
 // synchronising with a background goroutine that registers timers on startup
-// (the documented clocktest pattern) before the test advances time. Bounded by
-// a wall-clock deadline so a wiring regression fails fast instead of hanging.
+// (the documented clocktest pattern) before the test advances time. Paced by
+// testutil/wait rather than a spin loop, which would compete for CPU with the
+// goroutine whose registration it is waiting for.
 func waitForTimerCount(t *testing.T, f *clocktest.Fake, n int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for f.TimerCount() < n {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %d fake timers (have %d)", n, f.TimerCount())
-		}
-		runtime.Gosched()
-	}
+	wait.Until(t, 2*time.Second, "fake clock reaches the expected active timer count", func() bool {
+		return f.TimerCount() >= n
+	})
 }

@@ -53,6 +53,7 @@ func (s *Session) handleConnectError(err error) {
 	s.subscriptionsSatisfied = false
 	s.mu.Unlock()
 	mapped := mapConnectError(err)
+	s.noteConnectFailure(mapped)
 	s.reportAuthFailure(mapped)
 	s.pushEvent(ports.SessionReconnecting, mapped)
 }

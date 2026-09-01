@@ -29,7 +29,10 @@ mistaking a broker outage for a bridge fault and restarting healthy tasks.
    `/api/v1/monitor/deephealth` (authenticated) reports per-session state
    ([http-api.md#monitor-api-endpoints](../http-api.md#monitor-api-endpoints)).
 
-2. Read the error code to classify the cause
+2. Read the error code to classify the cause. Every rejected CONNECT is counted
+   on `MQTTConnectFailures`, tagged `session_id` and the bounded `code`, and the
+   same cause is latched on the session's `LastError` until the session comes
+   back up — so the reason is visible without catching a log line live
    ([troubleshooting.md](../troubleshooting.md)):
    - `CONNECTION_LOST` — session dropped mid-operation: broker restart, network
      partition, idle-timeout, or a TLS failure on reconnect
@@ -50,6 +53,18 @@ mistaking a broker outage for a bridge fault and restarting healthy tasks.
    ([troubleshooting.md#adapter--runtime-diagnostic-metrics](../troubleshooting.md#adapter--runtime-diagnostic-metrics)):
    two instances sharing one `client_id` kick each other off in a loop.
 
+5. Check whether the outage cost you the durable session. `MQTTSessionResumeLost`
+   counts every connection where a persistent or exclusive session asked the
+   broker to resume (`clean_start=false`) and the CONNACK answered **Session
+   Present=false**. Re-subscribing then succeeds and the session goes green
+   again, so this counter — and the matching `LastError` latch, which clears on
+   the next converged reconcile — is the ONLY evidence that continuity broke.
+
+6. If reconnects recover but readiness never reaches `full`, look for
+   `MQTTQoSDowngraded`. A broker QoS cap fails every reconcile identically; the
+   third consecutive confirmation of the same grant is treated as permanent and
+   the session goes terminal rather than restarting into it forever.
+
 ## Action
 
 - **Do not restart tasks for a reconnecting session.** The adapters reconnect
@@ -64,6 +79,21 @@ mistaking a broker outage for a bridge fault and restarting healthy tasks.
   broker/SDK quota increase for a chronic throttle
   ([troubleshooting.md#broker_busy](../troubleshooting.md#broker_busy),
   [troubleshooting.md#throttled](../troubleshooting.md#throttled)).
+- **`MQTTSessionResumeLost` is non-zero** — the offline QoS 1/2 backlog queued
+  for that `client_id` while the session was away is gone, along with its
+  broker-side subscriptions; only messages published from the reconnect onward
+  are delivered. There is nothing to recover at the bridge — the messages were
+  never handed to it. Reduce the exposure for next time: raise
+  `session_expiry_interval` above your worst-case outage/failover gap, and
+  confirm the broker persists sessions across restarts (an in-memory broker
+  loses every session on restart regardless of the interval). If the loss is not
+  acceptable, move the source to a store-backed transport rather than relying on
+  broker-side offline retention.
+- **`MQTTQoSDowngraded` climbing with a terminal session** — the broker refuses
+  the QoS the route asks for and the bridge stopped retrying. Either lower the
+  route's `qos` to the granted level (accepting the weaker guarantee) or lift the
+  broker's QoS cap for this client; the reconcile error names the topic, the
+  requested QoS and the granted QoS.
 - **Outage exceeds your SLO budget** — escalate to the broker/dependency owner.
   A clustered instance whose lease store also went unreachable steps down and
   eventually goes terminal; the process then exits non-zero so the orchestrator

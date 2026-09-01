@@ -397,11 +397,46 @@ const (
 // series is per-member: a member that never observes a resolution its peers did
 // has diverged. A rising aborted rate means changes are being rejected —
 // read the rollout row's reason (or deep health) for which member and why.
+// MetricClusterRolloutStoreCalls counts every rollout store and coordinator-lease
+// call the barrier drive makes, dimensioned by the call class (TagKeyOperation =
+// "read" | "vote" | "decide" | "lease" | "artifact" | "propose") and its outcome
+// (TagKeyOutcome = "success" | "failure" | "timeout" | "blocked"). "timeout"
+// means the call blew its own budget and was abandoned; "blocked" means the
+// barrier refused to start a call because an earlier abandoned one has still not
+// returned. Either, sustained, means the rollout store is not answering — the
+// failure the local deadman and the stale-observation signals exist for.
+//
+// MetricClusterRolloutObservationAge reports, in seconds, how long ago this
+// member last read the rollout row. It is the freshness signal: every other
+// rollout series is a projection of the LAST observation, so an operator needs to
+// know whether that observation is two seconds or ten minutes old before acting
+// on it. Alert above a few poll intervals.
+//
+// MetricClusterRolloutRetries reports how many consecutive attempts this member
+// has made at a local safety operation it has not yet completed
+// (TagKeyOperation = "apply" | "artifact" | "revert"), and zero once it
+// succeeds. A non-zero value that stays non-zero is a member repairing itself;
+// one that reaches the bound becomes the terminal gauge below.
+//
+// MetricClusterRolloutTerminal reports the rollout generation whose SAFE state
+// this member could not reach — a committed config it could not durably record,
+// or a provisional config it could not revert — and zero when there is none. It
+// is not a rate: any non-zero value means this member cannot get itself back to
+// a state consistent with the cohort's decision and needs operator attention.
+// WHICH action differs, and deep health carries it: a member that cannot record
+// the artifact is running the correct config and must NOT be replaced (that is
+// what would boot it on the older generation) — repair the rollout store. A
+// member that cannot revert is running rejected config, and replacing it is the
+// repair.
 const (
-	MetricClusterRolloutState    = "ClusterRolloutState"
-	MetricClusterRolloutAcks     = "ClusterRolloutAcks"
-	MetricClusterRolloutEpoch    = "ClusterRolloutEpoch"
-	MetricClusterRolloutResolved = "ClusterRolloutResolved"
+	MetricClusterRolloutState          = "ClusterRolloutState"
+	MetricClusterRolloutAcks           = "ClusterRolloutAcks"
+	MetricClusterRolloutEpoch          = "ClusterRolloutEpoch"
+	MetricClusterRolloutResolved       = "ClusterRolloutResolved"
+	MetricClusterRolloutStoreCalls     = "ClusterRolloutStoreCalls"
+	MetricClusterRolloutObservationAge = "ClusterRolloutObservationAge"
+	MetricClusterRolloutRetries        = "ClusterRolloutRetries"
+	MetricClusterRolloutTerminal       = "ClusterRolloutTerminal"
 )
 
 // Standard dimension key names for metric tags.
@@ -424,6 +459,12 @@ const (
 	// counter (committed/aborted). Distinct from TagKeyState, which names a
 	// point-in-time lifecycle state rather than how something ended.
 	TagKeyOutcome = "outcome"
+	// TagKeyOperation dimensions a metric by the CLASS of operation it counts —
+	// used by the coordinated cluster rollout barrier to separate its store call
+	// classes (read/vote/decide/lease/artifact/propose) and its local repair
+	// operations (apply/artifact/revert). The classes are a closed set, so
+	// cardinality is fixed.
+	TagKeyOperation = "operation"
 	// TagKeyProcessor dimensions a filter-drop counter by the processor that
 	// discarded the message. Processor names are operator-defined and bounded,
 	// so cardinality stays low.

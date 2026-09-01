@@ -12,6 +12,14 @@ import (
 // Health returns the current health state of the session, including
 // subscription and handler readiness.
 //
+// LastError joins every latched fault that explains the current state: a
+// pending/failed settlement recovery, a terminal fail-closed generation, the
+// mapped cause of the most recent failed CONNECT (cleared when a connection
+// comes up), and a lost durable resume (cleared by the next converged
+// reconcile). It is DIAGNOSTIC — readiness is decided by Connected/Ready and
+// ServiceLevel, so a latched cause never on its own pulls a session out of
+// rotation.
+//
 // Ready reports CONNECTIVITY ONLY: it is true when the session is
 // connected to the broker. This is intentional and matches the
 // ports.SessionHealth contract — Ready does NOT imply that subscriptions
@@ -68,6 +76,8 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	recoveryPending := s.recoveryPending
 	recoveryErr := s.recoveryErr
 	terminalErr := s.terminalErr
+	connectErr := s.connectErr
+	resumeLostErr := s.resumeLostErr
 	recoveryRecycleCount := s.recoveryRecycleCount
 	s.mu.Unlock()
 	sort.Strings(topics)
@@ -126,7 +136,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 
 	return ports.SessionHealth{
 		Connected:                connected,
-		LastError:                errors.Join(recoveryErr, terminalErr),
+		LastError:                errors.Join(recoveryErr, terminalErr, connectErr, resumeLostErr),
 		SubscriptionsWanted:      wantedCount,
 		SubscriptionsActive:      activeCount,
 		SubscriptionsSatisfied:   &subscriptionsSatisfied,

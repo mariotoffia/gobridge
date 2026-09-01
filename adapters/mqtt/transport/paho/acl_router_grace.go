@@ -266,7 +266,7 @@ func (r *router) enqueueUnsub(topic string) {
 		r.mu.Unlock()
 		if r.logger != nil {
 			r.logger.Warn("mqtt: unmatched publish past startup grace — orphan broker subscription; "+
-				"acking, dropping, and unsubscribing to converge broker state",
+				"acking, dropping, and attempting to unsubscribe its exact topic",
 				"topic", topic,
 			)
 		}

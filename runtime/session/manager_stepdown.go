@@ -74,13 +74,32 @@ func (m *Manager) finishStepDown(ctx context.Context, token persistence.LeaseTok
 	if !closeCompleted {
 		return fmt.Errorf("%w: %w", ErrSessionUnrecoverable, errStepDownCloseFailed)
 	}
-	if m.drainIdle == nil || !m.drainIdle() {
-		graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), m.stepDownGrace)
-		defer graceCancel()
-		<-graceCtx.Done()
-	}
+	m.awaitSettlementGrace(ctx)
 	m.releaseOwnedLeaseBestEffort(ctx, token, "step-down")
 	return errLeaseLostAfterRenewal
+}
+
+// awaitSettlementGrace holds the lease for the bounded StepDownGrace before it
+// is released, so destination work this owner already ACCEPTED can settle
+// before the standby that acquires next advances the fence. Closing the source
+// stops INGRESS; it does not settle the sends already taken from it, and a send
+// completing after the fence moves is an accepted duplicate.
+//
+// Every path that surrenders a held lease while such work may be outstanding
+// uses it: the three-phase step-down and the session-failure recovery. It is
+// skipped on one piece of evidence — a destination drainer that reports idle,
+// which proves there is nothing left to settle, so waiting would only add
+// takeover latency (a new owner keys off the lease store, not this wait).
+//
+// The wait is detached from ctx so a shutdown cannot cut it short, and bounded
+// by StepDownGrace so a wedged destination cannot hold the partition forever.
+func (m *Manager) awaitSettlementGrace(ctx context.Context) {
+	if m.drainIdle != nil && m.drainIdle() {
+		return
+	}
+	graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), m.stepDownGrace)
+	defer graceCancel()
+	<-graceCtx.Done()
 }
 
 // afterRenewLoopExit classifies renewLoop's non-ctx return and emits the
@@ -166,6 +185,11 @@ func (m *Manager) afterRenewLoopExit(ctx context.Context, token persistence.Leas
 			// cooperative work; this lease expires naturally after process exit.
 			return err
 		}
+		// Same hand-off hazard as a step-down, so the same bounded grace: the
+		// close above fenced INGRESS, but destination sends already accepted
+		// from this session may still be settling, and releasing straight away
+		// lets the standby advance the fence underneath them.
+		m.awaitSettlementGrace(ctx)
 		m.releaseOwnedLeaseBestEffort(ctx, token, "session failure")
 		return err
 	}

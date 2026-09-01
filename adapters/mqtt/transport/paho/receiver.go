@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
@@ -119,25 +120,34 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		}
 
 		deliveryOpts := []DeliveryOption{WithAckFunc(ack)}
-		if ack != nil {
+		recoverable := ack != nil && r.session.mode != connectivity.SessionEphemeral
+		if recoverable {
 			deliveryOpts = append(deliveryOpts, WithRetryFunc(r.session.requestRecovery))
 		}
 		del := NewDelivery(env, deliveryOpts...)
 		if err := emit(runCtx, del); err != nil {
-			// The delivery whose emit failed is left UN-ACKED, and MQTT
-			// brokers do not redeliver on a live connection — without
-			// intervention it (and any sibling un-acked deliveries) would
-			// pin broker Receive-Maximum slots until an unrelated
-			// connection teardown, wedging ingress as slots accumulate
-			// For durable QoS 1/2 (ack != nil), request the same
-			// bounded, rate-limited session recycle a Delivery.Retry uses:
-			// the resumed session redelivers every unsettled delivery
-			// (duplicates absorbed downstream, the documented at-least-once
-			// residual). Ephemeral sessions and QoS 0 have no redelivery
-			// contract to recover — requestRecovery is not applicable and
-			// the un-acked state dies with the connection.
-			r.countEmitRejection(ack != nil)
-			if ack != nil {
+			// A delivery whose emit failed is left UN-ACKED, and MQTT brokers do
+			// not redeliver on a live connection — without intervention it (and
+			// any sibling un-acked deliveries) would pin broker Receive-Maximum
+			// slots until an unrelated connection teardown, wedging ingress as
+			// slots accumulate. What can be done about it depends on whether the
+			// broker session RESUMES:
+			//
+			//   - Durable QoS 1/2 on a persistent/exclusive session: request the
+			//     same bounded, rate-limited recycle a Delivery.Retry uses. The
+			//     resumed session redelivers every unsettled delivery
+			//     (duplicates absorbed downstream, the documented at-least-once
+			//     residual).
+			//   - Durable QoS 1/2 on an EPHEMERAL session: clean_start=true
+			//     discards the server-side session at the next disconnect, so
+			//     nothing will ever be redelivered. Withholding the ack buys no
+			//     recovery and pins a Receive-Maximum slot for the life of the
+			//     connection, so the bounded policy is to ack, drop, and record
+			//     the loss — the same accounting QoS 0 gets.
+			//   - QoS 0: no acknowledgement to withhold, no redelivery contract.
+			r.countEmitRejection(recoverable)
+			switch {
+			case recoverable:
 				if r.logger != nil {
 					r.logger.Warn("mqtt: emit error stranded an un-acked delivery; "+
 						"requesting bounded session recovery so the broker redelivers it",
@@ -147,10 +157,27 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 					logging.Debug(r.logger, "mqtt: session recovery request after emit error failed",
 						"receiver_id", r.id, "error", recErr)
 				}
-			} else if r.logger != nil {
-				r.logger.Warn("mqtt: emit error DROPPED a QoS 0 delivery — there is no "+
-					"acknowledgement to withhold and no redelivery contract, so the message is lost",
-					"receiver_id", r.id, "error", err)
+			case ack != nil:
+				if r.logger != nil {
+					r.logger.Warn("mqtt: emit error DROPPED a QoS 1/2 delivery on an ephemeral "+
+						"session — clean_start=true leaves no session to resume, so no recycle can "+
+						"redeliver it; acking frees the receive-window slot it would otherwise pin "+
+						"until disconnect",
+						"receiver_id", r.id, "error", err)
+				}
+				// Through the Delivery, never the raw callback: Ack is
+				// once-guarded, so a runner that settled the delivery and THEN
+				// failed cannot be double-acknowledged here.
+				if ackErr := del.Ack(runCtx); ackErr != nil {
+					logging.Debug(r.logger, "mqtt: ack of a dropped ephemeral delivery failed",
+						"receiver_id", r.id, "error", ackErr)
+				}
+			default:
+				if r.logger != nil {
+					r.logger.Warn("mqtt: emit error DROPPED a QoS 0 delivery — there is no "+
+						"acknowledgement to withhold and no redelivery contract, so the message is lost",
+						"receiver_id", r.id, "error", err)
+				}
 			}
 			// Signal the error and cancel so the handler unblocks.
 			select {
@@ -192,21 +219,28 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 
 // Outcome tag values for MetricMQTTReceiverEmitRejected.
 const (
-	// emitRejectionRecovering marks a refused DURABLE delivery: it stays
-	// un-acked and the bounded session recycle makes the broker redeliver it.
+	// emitRejectionRecovering marks a refused DURABLE delivery on a resuming
+	// session: it stays un-acked and the bounded session recycle makes the
+	// broker redeliver it.
 	emitRejectionRecovering = "recovering"
-	// emitRejectionLost marks a refused QoS 0 delivery: no acknowledgement to
-	// withhold, no redelivery contract, so the message is gone.
+	// emitRejectionLost marks a refused delivery nothing will redeliver: QoS 0
+	// (no acknowledgement to withhold), or QoS 1/2 on an ephemeral session
+	// (clean_start=true leaves no session to resume). Either way the message is
+	// gone, and the acknowledgement is sent so it stops pinning the broker's
+	// receive window.
 	emitRejectionLost = "lost"
 )
 
 // countEmitRejection records one delivery the route pipeline refused at emit.
-// Both outcomes are counted: the durable one because it predicts the session
-// recycle that follows, and the QoS 0 one because nothing else would ever
-// record that the message was lost.
-func (r *Receiver) countEmitRejection(durable bool) {
+// Both outcomes are counted: the recoverable one because it predicts the
+// session recycle that follows, and the lost one because nothing else would
+// ever record that the message was gone. "Recoverable" is a durable
+// acknowledgement on a session that RESUMES — a QoS 1/2 delivery on an
+// ephemeral session is counted as lost, because clean_start=true means no
+// recycle can bring it back.
+func (r *Receiver) countEmitRejection(recoverable bool) {
 	outcome := emitRejectionLost
-	if durable {
+	if recoverable {
 		outcome = emitRejectionRecovering
 	}
 	r.session.metrics.Counter(MetricMQTTReceiverEmitRejected, 1,

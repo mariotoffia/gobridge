@@ -67,7 +67,7 @@ func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Cont
 		return nil, fmt.Errorf("bridge: cannot compute the boot config digest to check it against the " +
 			"cluster rollout committed artifact; refusing to start")
 	}
-	committed, err := d.barrier.committedStore.CommittedConfig(ctx)
+	committed, err := rolloutOpValue(ctx, d.barrier.ops, rolloutOpRead, d.barrier.committedStore.CommittedConfig)
 	if errors.Is(err, shared.ErrNotFound) {
 		// No committed artifact yet: no barrier rollout has ever committed, so there
 		// is no cohort-committed config to recover to. Do NOT seed off `current` —
@@ -177,7 +177,7 @@ func (d *ClusterRolloutDriver) checkRolloutMembership(cfg *ports.BridgeConfig) e
 // without it), so an unreadable store means this node cannot tell a committed
 // config from a rejected one — and booting on the wrong one splits the cohort.
 func (d *ClusterRolloutDriver) checkRolloutJoinerRule(ctx context.Context, cfg *ports.BridgeConfig) error {
-	r, err := d.barrier.store.Current(ctx)
+	r, err := rolloutOpValue(ctx, d.barrier.ops, rolloutOpRead, d.barrier.store.Current)
 	if err != nil {
 		if errors.Is(err, shared.ErrNotFound) {
 			return nil // no rollout has ever been proposed: nothing has been rejected

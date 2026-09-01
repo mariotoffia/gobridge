@@ -3,7 +3,6 @@ package servicebus
 import (
 	"context"
 	"errors"
-	"runtime"
 	"testing"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // --- Finding 4: ReceiveAndDelete settlement -------------------------------
@@ -317,11 +317,11 @@ func TestAutoExtend_MaxFailures_CancelsProcessingContext(t *testing.T) {
 	defer d.stop()
 
 	// newDelivery spawns autoExtendLoop, which registers its ticker from a
-	// background goroutine. Yield until the ticker exists so the first
-	// Advance cannot race ahead of registration and drop the tick.
-	for fake.TickerCount() == 0 {
-		runtime.Gosched()
-	}
+	// background goroutine. Wait until the ticker exists so the first Advance
+	// cannot race ahead of registration and drop the tick.
+	wait.Until(t, 5*time.Second, "autoExtendLoop registers its ticker", func() bool {
+		return fake.TickerCount() > 0
+	})
 
 	// interval = lockDuration/2 = 1s, so each 1.1s Advance fires exactly one
 	// tick. Block on the handshake after each so ticks are neither lost nor

@@ -65,6 +65,30 @@ mixed-version cohort (revert is whole-cohort, not per-member).
   member alone on an unconfirmed generation.
 - **Strict whole-cohort revert:** the cohort reverts together; no member is fenced
   out of serving while others run the new generation.
+- **A revert is not finished when it is decided, and a member that cannot finish it
+  is replaced.** The swap back to generation N−1 can fail the same way any apply
+  can (a broker refusing the reconnect, a store briefly unopenable), so it is
+  retried under a bounded backoff and marked done only once the member is verifiably
+  running N−1 again. A member that exhausts the bound is still serving the config
+  the cohort rejected and cannot repair itself: it marks itself degraded, publishes
+  the generation it could not get back to (`rollout.terminal_generation` in deep
+  health, the `ClusterRolloutTerminal` metric), and stops retrying. Replacing it IS
+  the repair — it reboots onto the last confirmed generation.
+
+  The mirror-image failure is deliberately NOT treated the same way. A member that
+  applied a committed generation but cannot durably record the committed-config
+  artifact is running the CORRECT config and only its boot state is stale, so
+  replacing it is the one action that would put it on an older generation. It keeps
+  retrying at a capped backoff under the same alarm, and retracts it if the store
+  comes back. The alarm is shared; the operator action is not, and the reason text
+  says which.
+- **The local deadman does not depend on the rollout store.** It fires from a
+  deadline cached at the provisional swap and runs before the store observation on
+  every drive tick, because "no coordinator decided" and "the store stopped
+  answering" are the same outage from a member's point of view. Every barrier store
+  call is individually bounded and abandoned if it does not return, so a
+  black-holed store delays the deadman by at most one tick instead of suppressing
+  it.
 
 ## Rejected alternatives
 

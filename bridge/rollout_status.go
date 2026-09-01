@@ -3,7 +3,9 @@ package bridge
 import (
 	"slices"
 	"sync"
+	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -56,13 +58,45 @@ type RolloutStatus struct {
 	// committed on every member, but a member whose local swap failed is still
 	// on the previous generation. Alert on committed AND NOT applied.
 	Applied bool
+	// ObservationAge is how long ago this member last read the rollout row, and
+	// Stale reports that the age has outrun the barrier's poll cadence. Every
+	// other field is a projection of that observation, so an operator must read
+	// these two first: a stale status describes the cohort as it WAS.
+	ObservationAge time.Duration
+	Stale          bool
+	// LastError is the most recent remote-call failure, so a stale status says
+	// why it is stale.
+	LastError string
+	// ArtifactGeneration is the generation whose durable last-committed config
+	// artifact this member has VERIFIED as written — what it would boot on. It
+	// lags Generation while a write is being retried.
+	ArtifactGeneration uint64
+	// TerminalGeneration is a generation whose safe state this member could not
+	// reach (a committed config it could not durably record, or a provisional one
+	// it could not revert), and zero when there is none. Non-zero means this
+	// member cannot repair itself and must be replaced; TerminalReason says which
+	// of the two it was.
+	TerminalGeneration uint64
+	TerminalReason     string
 }
+
+// staleObservationTicks is how many poll intervals an observation may age before
+// it is reported stale. Three tolerates one slow store call and one missed tick
+// without crying wolf, while still going stale long before an operator could
+// mistake a frozen snapshot for a live one.
+const staleObservationTicks = 3
 
 // rolloutObserver turns each applier observation into metrics and the
 // deep-health snapshot. It is owned by the applier (single goroutine), except
 // for the snapshot, which is read concurrently by health handlers.
 type rolloutObserver struct {
 	metrics ports.MetricsExporter
+	// clk stamps and ages observations. Nil means the system clock (hand-wired
+	// appliers in tests and benchmarks).
+	clk clock.Clock
+	// staleAfter is how old an observation may be before status() calls it
+	// stale. Zero means staleObservationTicks x the default poll interval.
+	staleAfter time.Duration
 
 	mu   sync.RWMutex
 	snap RolloutStatus
@@ -70,6 +104,41 @@ type rolloutObserver struct {
 	// so the resolution counter fires once per rollout rather than on every
 	// poll of an already-decided row.
 	resolved uint64
+	// observedAt is when the rollout row was last successfully read; zero before
+	// the first observation, where startedAt (when the drive began) is the
+	// baseline instead — a drive that has NEVER managed a read is not fresh, it
+	// just has nothing to be stale about yet. lastErr is the most recent
+	// remote-call failure, kept so an operator reading a stale status learns WHY
+	// it is stale rather than only that it is.
+	startedAt  time.Time
+	observedAt time.Time
+	lastErr    string
+	// artifactGen, terminalGen and terminalReason are this member's LOCAL safety
+	// state, published alongside the shared row: which generation it has durably
+	// recorded, and which generation's safe state it could not reach at all.
+	artifactGen    uint64
+	terminalGen    uint64
+	terminalReason string
+}
+
+// newRolloutObserver builds the observer for one drive.
+func newRolloutObserver(metrics ports.MetricsExporter, clk clock.Clock, pollInterval time.Duration) *rolloutObserver {
+	o := &rolloutObserver{
+		metrics:    metrics,
+		clk:        clk,
+		staleAfter: staleObservationTicks * orDefault(pollInterval, defaultRolloutPollInterval),
+	}
+	o.startedAt = o.now()
+	return o
+}
+
+// now reads the observer's clock, defaulting to the system clock so a
+// hand-wired observer (tests, benchmarks) needs no clock to work.
+func (o *rolloutObserver) now() time.Time {
+	if o.clk == nil {
+		return clock.System.Now()
+	}
+	return o.clk.Now()
 }
 
 // rolloutStates returns every state the gauge reports, so exactly one series
@@ -92,6 +161,8 @@ func rolloutStates() []persistence.RolloutState {
 // actually running that generation's content.
 func (o *rolloutObserver) observe(r persistence.Rollout, memberID string, staged, applied bool) {
 	o.mu.Lock()
+	o.observedAt = o.now()
+	o.lastErr = ""
 	o.snap = RolloutStatus{
 		MemberID:      memberID,
 		Generation:    r.Generation(),
@@ -150,11 +221,121 @@ func rolloutOutcome(state persistence.RolloutState) string {
 	}
 }
 
-// status returns the last observation.
+// status returns the last observation, aged against the clock. Freshness is
+// computed at READ time, not at observation time, so a drive that has stopped
+// observing entirely — the store black-holed, the goroutine gone — reports a
+// growing age rather than a snapshot frozen at the moment it last worked.
 func (o *rolloutObserver) status() RolloutStatus {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
-	return o.snap
+	out := o.snap
+	out.LastError = o.lastErr
+	out.ArtifactGeneration = o.artifactGen
+	out.TerminalGeneration = o.terminalGen
+	out.TerminalReason = o.terminalReason
+	if since := o.freshnessBaseline(); !since.IsZero() {
+		out.ObservationAge = o.now().Sub(since)
+		out.Stale = out.ObservationAge > o.staleBudget()
+	}
+	return out
+}
+
+// freshnessBaseline is the instant the observation age is measured from: the
+// last successful read, or — before there has been one — when the drive started.
+// Callers hold at least a read lock.
+func (o *rolloutObserver) freshnessBaseline() time.Time {
+	if !o.observedAt.IsZero() {
+		return o.observedAt
+	}
+	return o.startedAt
+}
+
+// staleBudget is how old an observation may be before it is stale.
+func (o *rolloutObserver) staleBudget() time.Duration {
+	return orDefault(o.staleAfter, staleObservationTicks*defaultRolloutPollInterval)
+}
+
+// observeAbsent records a successful read that found NO rollout row. It is a
+// genuine observation of the shared row — "the cohort has no rollout in flight"
+// is an answer, not a missing one — so it keeps this member's freshness signal
+// alive during the long stretches between rollouts.
+func (o *rolloutObserver) observeAbsent() {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	o.observedAt = o.now()
+	o.lastErr = ""
+	o.mu.Unlock()
+}
+
+// observeCall meters one remote call the barrier made. It is nil-safe because
+// the proposer path runs before the drive exists.
+func (o *rolloutObserver) observeCall(class, outcome string, err error) {
+	if o == nil {
+		return
+	}
+	if err != nil {
+		o.mu.Lock()
+		o.lastErr = err.Error()
+		o.mu.Unlock()
+	}
+	if o.metrics != nil {
+		o.metrics.Counter(shared.MetricClusterRolloutStoreCalls, 1,
+			shared.Tag{Key: shared.TagKeyOperation, Value: class},
+			shared.Tag{Key: shared.TagKeyOutcome, Value: outcome})
+	}
+}
+
+// observeRetry publishes how many consecutive attempts a local safety operation
+// has taken without completing; zero once it completes.
+func (o *rolloutObserver) observeRetry(class string, attempts int) {
+	if o == nil || o.metrics == nil {
+		return
+	}
+	o.metrics.Gauge(shared.MetricClusterRolloutRetries, float64(attempts),
+		shared.Tag{Key: shared.TagKeyOperation, Value: class})
+}
+
+// observeArtifact records the generation whose durable committed artifact this
+// member has VERIFIED as written.
+func (o *rolloutObserver) observeArtifact(gen uint64) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	o.artifactGen = gen
+	o.mu.Unlock()
+}
+
+// observeTerminal records a generation whose safe state this member could not
+// reach. It is a latch: the member cannot repair itself and needs replacing.
+func (o *rolloutObserver) observeTerminal(gen uint64, reason string) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	o.terminalGen, o.terminalReason = gen, reason
+	o.mu.Unlock()
+	if o.metrics != nil {
+		o.metrics.Gauge(shared.MetricClusterRolloutTerminal, float64(gen))
+	}
+}
+
+// publishFreshness emits the observation-age gauge. The drive calls it every
+// tick — including ticks whose store read failed, which are exactly the ticks
+// that make the age worth reporting.
+func (o *rolloutObserver) publishFreshness() {
+	if o == nil || o.metrics == nil {
+		return
+	}
+	o.mu.RLock()
+	since := o.freshnessBaseline()
+	o.mu.RUnlock()
+	if since.IsZero() {
+		return
+	}
+	o.metrics.Gauge(shared.MetricClusterRolloutObservationAge, o.now().Sub(since).Seconds())
 }
 
 // RolloutStatus returns this member's last observation of the coordinated

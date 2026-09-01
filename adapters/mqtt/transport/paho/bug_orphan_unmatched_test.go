@@ -276,6 +276,11 @@ func TestOrphan_GraceRestartsPerConnection(t *testing.T) {
 type recordingUnsubConn struct {
 	mu     sync.Mutex
 	topics []string
+	// reason is the UNSUBACK reason code returned for every requested filter.
+	// The zero value 0x00 means "the filter existed and was removed"; 0x11
+	// ("no subscription existed") is what a broker answers when the filter was
+	// never created with that exact string — the wildcard-orphan case.
+	reason byte
 }
 
 func (c *recordingUnsubConn) AwaitConnection(context.Context) error { return nil }
@@ -288,7 +293,11 @@ func (c *recordingUnsubConn) Unsubscribe(_ context.Context, topics []string) ([]
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.topics = append(c.topics, topics...)
-	return make([]byte, len(topics)), nil
+	reasons := make([]byte, len(topics))
+	for i := range reasons {
+		reasons[i] = c.reason
+	}
+	return reasons, nil
 }
 
 func (c *recordingUnsubConn) PublishEnvelope(

@@ -133,7 +133,7 @@ const (
 	// instance is the primary dispatcher for its exclusive routes.
 	roleActive = "active"
 	// roleStandby: exclusive sessions are configured but none currently
-	// hold a lease — ready but not serving as primary (finding 22).
+	// hold a lease — ready but not serving as primary.
 	roleStandby = "standby"
 	// roleStandalone: no exclusive sessions configured — no failover role.
 	roleStandalone = "standalone"
@@ -332,8 +332,8 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 	// broker client). Holding rt.mu across it would stall every other lock user
 	// — including Stop, Role, and the /live+/ready probes — for the whole
 	// duration, turning one slow session into a runtime-wide health outage
-	// (finding L-M). So snapshot the immutable references under the lock, RELEASE
-	// it, and invoke the plugin calls (Health, runner reads) lock-free.
+	// So snapshot the immutable references under the lock, RELEASE it, and invoke
+	// the plugin calls (Health, runner reads) lock-free.
 	type sessionSnap struct {
 		sess              ports.Session
 		sid               string
@@ -461,7 +461,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 		// A deferred-connect standby's source session intentionally stays
 		// disconnected until this instance wins the lease; excluding it from the
 		// ready aggregate keeps a healthy standby reportable rather than
-		// permanently un-ready (finding readiness).
+		// permanently un-ready.
 		deferredStandby := snap.connectAfterLease && !snap.hasLease
 		if !sh.Ready && !deferredStandby {
 			allReady = false
@@ -516,7 +516,14 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 		}
 	}
 
-	dh.ReadyForTraffic = allReady
+	// An instance with no routes and no sessions bridges nothing: every
+	// "all X are ready" aggregate above is vacuously true over the empty set, so
+	// a bridge started from a missing or route-less config would otherwise
+	// advertise itself as ready for traffic and reach LevelFull. Report the
+	// state explicitly and refuse the traffic claim; the process stays alive and
+	// running so a probe can still tell it apart from a dead one.
+	dh.Empty = len(routeSnaps) == 0 && len(sessSnaps) == 0
+	dh.ReadyForTraffic = allReady && !dh.Empty
 	dh.ServiceLevel = aggSL
 	return dh
 }

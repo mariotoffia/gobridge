@@ -54,11 +54,19 @@ func (h *recordingLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *recordingLogHandler) WithGroup(string) slog.Handler      { return h }
 
 func (h *recordingLogHandler) warnCountContaining(substr string) int {
+	return h.messageCountContaining(slog.LevelWarn, substr)
+}
+
+// messageCountContaining counts recorded messages at exactly the given level
+// whose text contains substr. Level matters when a test must distinguish a
+// claim made at Debug (an operation that succeeded) from a Warn (one that did
+// not).
+func (h *recordingLogHandler) messageCountContaining(level slog.Level, substr string) int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	n := 0
 	for _, r := range h.records {
-		if r.Level == slog.LevelWarn && strings.Contains(r.Message, substr) {
+		if r.Level == level && strings.Contains(r.Message, substr) {
 			n++
 		}
 	}

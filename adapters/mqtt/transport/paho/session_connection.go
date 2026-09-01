@@ -92,6 +92,13 @@ func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint
 		s.recoverySessionPresentEpoch = nextEpoch
 		s.recoveryErr = nil
 	}
+	resumeLost := !sessionPresent && s.resumeExpectedLocked()
+	if resumeLost {
+		s.resumeLostErr = durableResumeLostError()
+	}
+	// The connection this CONNACK belongs to is up, so whatever rejected the
+	// previous CONNECT attempt is history.
+	s.connectErr = nil
 	s.connected = true
 	s.connUpAt = s.clock().Now().UnixNano()
 	s.observedSubs = make(map[string]subscriptionGrant)
@@ -103,6 +110,10 @@ func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint
 	// This reset is part of connection-up completion: Start/Reload must not
 	// return until the replacement router epoch is active.
 	s.router.beginGrace()
+
+	if resumeLost {
+		s.noteDurableResumeLost()
+	}
 
 	s.completeConnectionUpBarrier(generation, nil)
 	s.mu.Lock()

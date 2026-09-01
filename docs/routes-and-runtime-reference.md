@@ -378,6 +378,18 @@ When using a `rules` resolver with `direct_hold` delivery mode, each binding may
 | `tls_cert_file` | string | no | -- | Path to the PEM server certificate (with any intermediate chain). Enables in-process TLS on both listeners when paired with `tls_key_file`. |
 | `tls_key_file` | string | no | -- | Path to the PEM private key for `tls_cert_file`. |
 
+> **Restart required.** The admin and monitor servers are bound once, when the
+> process starts, from the configuration it booted with. Changing
+> `admin_addr`, `monitor_addr`, `cors_origins`, `tls_cert_file` or
+> `tls_key_file` through a reload (file or admin config API) is accepted and
+> stored durably, but the running listeners keep their original settings until
+> the process is restarted. Adding an `http` block to a process that started
+> without one likewise creates no servers. The API keys are the exception --
+> a deployment that resolves them through a secret provider picks up a rotation
+> on the next request. Where the composition root can see the divergence it
+> reports it in the `restart_required` field of the `/deephealth`
+> `config_watch` projection.
+
 TLS is opt-in and both-or-none: when `tls_cert_file` and `tls_key_file` are both
 set, the admin and monitor servers serve HTTPS with that pair; when either is
 empty the servers stay plaintext (the historical default, assuming an external

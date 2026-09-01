@@ -243,7 +243,13 @@ func (s *Session) reconcile(
 		// while only contract-satisfying grants become active. This preserves
 		// cleanup knowledge without treating a weaker QoS grant as ready.
 		succeeded, firstErr, errTopic := classifySubackReasons(toSub, reasons)
-		var downgradeErr *shared.BridgeError
+		// The reported grant is the topic-smallest downgrade, matching what
+		// observedQoSDowngrade reports for the SAME state on a later reconcile
+		// that issues no SUBSCRIBE. toSub is built from a map, so picking "the
+		// first one seen" would make the reported filter vary between
+		// reconciles and reset the permanence confirmation count each time.
+		var downgrade qosDowngradeGrant
+		var downgraded bool
 		for _, opt := range succeeded {
 			req := desired[opt.Topic]
 			if opt.QoS >= req {
@@ -261,8 +267,9 @@ func (s *Session) reconcile(
 					"granted_qos", opt.QoS,
 				)
 			}
-			if downgradeErr == nil {
-				downgradeErr = qosDowngradeError(opt.Topic, req, opt.QoS)
+			if !downgraded || opt.Topic < downgrade.topic {
+				downgrade = qosDowngradeGrant{topic: opt.Topic, requested: req, granted: opt.QoS}
+				downgraded = true
 			}
 		}
 		if len(succeeded) > 0 {
@@ -285,8 +292,8 @@ func (s *Session) reconcile(
 			}
 			s.mu.Unlock()
 		}
-		if downgradeErr != nil {
-			return downgradeErr
+		if downgraded {
+			return s.noteQoSDowngrade(downgrade)
 		}
 		if firstErr != nil {
 			return firstErr.With("topic", errTopic)
@@ -307,9 +314,12 @@ func (s *Session) reconcile(
 	if err := s.requireReconcileEpoch(operationEpoch); err != nil {
 		return err
 	}
-	if downgradeErr := observedQoSDowngrade(desired, observed); downgradeErr != nil {
-		return downgradeErr
+	if grant, downgraded := observedQoSDowngrade(desired, observed); downgraded {
+		return s.noteQoSDowngrade(grant)
 	}
+	// Every desired filter was granted at or above its requested QoS: any
+	// confirmation streak from an earlier broker policy is stale.
+	s.clearQoSDowngrade()
 
 	s.mu.Lock()
 	if epochErr := reconcileEpochMismatch(operationEpoch, s.connEpoch); epochErr != nil {
@@ -355,10 +365,15 @@ func subscriptionStateConverged(
 	return true
 }
 
+// observedQoSDowngrade reports the first (topic-sorted, so the verdict is
+// stable across reconciles of the same state) desired filter whose LAST
+// broker-observed grant sits below the requested QoS. It covers the reconcile
+// that issues no SUBSCRIBE at all: an unchanged downgraded filter is
+// deliberately not re-subscribed, so the standing grant is the only evidence.
 func observedQoSDowngrade(
 	desired map[string]byte,
 	observed map[string]subscriptionGrant,
-) *shared.BridgeError {
+) (qosDowngradeGrant, bool) {
 	topics := make([]string, 0, len(desired))
 	for topic := range desired {
 		topics = append(topics, topic)
@@ -368,10 +383,10 @@ func observedQoSDowngrade(
 		req := desired[topic]
 		grant, ok := observed[topic]
 		if ok && grant.Requested == req && grant.Granted < req {
-			return qosDowngradeError(topic, req, grant.Granted)
+			return qosDowngradeGrant{topic: topic, requested: req, granted: grant.Granted}, true
 		}
 	}
-	return nil
+	return qosDowngradeGrant{}, false
 }
 
 func (s *Session) requireReconcileEpoch(operationEpoch uint64) error {
@@ -388,14 +403,6 @@ func reconcileEpochMismatch(operationEpoch, currentEpoch uint64) error {
 		WithMessage("mqtt: connection changed during reconcile").
 		With("operation_epoch", operationEpoch).
 		With("current_epoch", currentEpoch)
-}
-
-func qosDowngradeError(topic string, requested, granted byte) *shared.BridgeError {
-	return shared.ErrQoSNotSupported.
-		WithMessage("mqtt: broker granted subscription QoS below requested").
-		With("topic", topic).
-		With("requested_qos", int(requested)).
-		With("granted_qos", int(granted))
 }
 
 // retainHandlingForMode returns the MQTT5 RetainHandling value for a session of

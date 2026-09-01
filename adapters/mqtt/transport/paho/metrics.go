@@ -203,6 +203,31 @@ const (
 	// a duplicate flood on routes without downstream dedup (direct_hold).
 	MetricMQTTAckAfterReconnect = "MQTTAckAfterReconnect"
 
+	// MetricMQTTConnectFailures counts rejected or failed CONNECT attempts,
+	// tagged with the session and the bounded BridgeError code the failure
+	// classified to (UNAVAILABLE, NOT_AUTHORIZED, TIMEOUT, CONNECTION_LOST, …).
+	// MQTT authenticates only at CONNECT and autopaho then retries forever
+	// behind the scenes, so this is the ONE place a reconnect failure names its
+	// cause; the same cause is latched on SessionHealth.LastError until the
+	// session is up again. The broker URL is deliberately NOT a dimension (it
+	// may carry credentials); only the bounded code is. A rising NOT_AUTHORIZED
+	// rate is a credential problem (see the credential-expiry runbook); a
+	// rising UNAVAILABLE / CONNECTION_LOST rate is a broker or network outage.
+	MetricMQTTConnectFailures = "MQTTConnectFailures"
+
+	// MetricMQTTSessionResumeLost counts connections where a persistent or
+	// exclusive session asked the broker to RESUME (clean_start=false) and the
+	// CONNACK answered Session Present=false: the broker had no session state,
+	// so the subscriptions and the queued offline QoS 1/2 backlog for this
+	// client id are gone. Causes are a session expiry elapsed during a long
+	// outage, a broker restart without persistence, or an exclusive standby
+	// connecting after session_expiry_interval. Re-subscribing then succeeds
+	// and the session reports healthy again, so WITHOUT this counter the
+	// discontinuity is invisible. Tagged with the session. Any non-zero value
+	// means offline continuity — the reason those modes exist — was broken at
+	// least once; see docs/runbooks/broker-outage-reconnect-storm.md.
+	MetricMQTTSessionResumeLost = "MQTTSessionResumeLost"
+
 	// MetricMQTTQoSDowngraded counts subscriptions the broker granted at a
 	// LOWER QoS than requested (for example, requested QoS 2 and SUBACK reason
 	// 0x00 granting QoS 0). Reconcile emits a loud warning, leaves the filter

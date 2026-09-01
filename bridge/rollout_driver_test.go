@@ -29,11 +29,21 @@ type fakeRolloutHost struct {
 	applied     []*ports.BridgeConfig
 	unbuildable map[int]string // config version -> nack reason
 	unconverged map[int]bool   // config version -> never reaches convergence (confirm window)
-	degraded    string
+	// refuse models a swap that FAILED and restored the previous config: applying
+	// the keyed version is a no-op for that many attempts (-1 = forever). It is how
+	// a test reproduces a member that cannot reach a generation — including the
+	// last confirmed one it has to revert to.
+	refuse   map[int]int
+	degraded string
 }
 
 func newFakeRolloutHost(initial *ports.BridgeConfig) *fakeRolloutHost {
-	return &fakeRolloutHost{cfg: initial, unbuildable: map[int]string{}, unconverged: map[int]bool{}}
+	return &fakeRolloutHost{
+		cfg:         initial,
+		unbuildable: map[int]string{},
+		unconverged: map[int]bool{},
+		refuse:      map[int]int{},
+	}
 }
 
 func (h *fakeRolloutHost) Config() *ports.BridgeConfig {
@@ -54,8 +64,28 @@ func (h *fakeRolloutHost) PlanCandidate(_ context.Context, cfg *ports.BridgeConf
 func (h *fakeRolloutHost) ApplyCommitted(_ context.Context, cfg *ports.BridgeConfig) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.cfg = cfg
 	h.applied = append(h.applied, cfg)
+	if n := h.refuse[cfg.Version]; n != 0 {
+		if n > 0 {
+			h.refuse[cfg.Version] = n - 1
+		}
+		return // the swap failed and the previous config was restored
+	}
+	h.cfg = cfg
+}
+
+// appliedCount reports how many swaps were attempted, refused ones included.
+func (h *fakeRolloutHost) appliedCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.applied)
+}
+
+// degradedReason reports the last MarkDegraded reason, or "".
+func (h *fakeRolloutHost) degradedReason() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.degraded
 }
 
 func (h *fakeRolloutHost) MarkDegraded(reason string) {

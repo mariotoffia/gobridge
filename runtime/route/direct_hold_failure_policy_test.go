@@ -3,7 +3,6 @@ package route
 import (
 	"context"
 	"errors"
-	stdruntime "runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,22 +14,19 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
-// waitTimerCount spins (yielding, never a logic-driving sleep) until the fake
-// clock has at least n active timers, so a test drives a clock deadline only
-// AFTER the production code under test has registered it. The wall-clock
-// deadline is a stuck-test guard only — it never sequences logic. This mirrors
-// the sanctioned fake-clock sync pattern in runtime/health_timeout_test.go.
+// waitTimerCount blocks until the fake clock has at least n active timers, so a
+// test drives a clock deadline only AFTER the production code under test has
+// registered it. The wall-clock deadline is a stuck-test guard only — it never
+// sequences logic. This mirrors the sanctioned fake-clock sync pattern in
+// runtime/health_timeout_test.go.
 func waitTimerCount(t *testing.T, clk *clocktest.Fake, n int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for clk.TimerCount() < n {
-		if time.Now().After(deadline) {
-			t.Fatalf("fake clock never reached %d active timers (have %d)", n, clk.TimerCount())
-		}
-		stdruntime.Gosched()
-	}
+	wait.Until(t, 5*time.Second, "fake clock reaches the expected active timer count", func() bool {
+		return clk.TimerCount() >= n
+	})
 }
 
 // --- shared test doubles for the Chunk-2 findings ---------------------------
@@ -577,13 +573,9 @@ func TestRun_GracefulShutdown_DrainsBeforeClose(t *testing.T) {
 	// Unifying, deadlock-free sync for BOTH pre- and post-fix behaviour:
 	//  - pre-fix: the watcher force-closes immediately → closeCalled becomes true.
 	//  - post-fix: the watcher registers its grace timer → TimerCount reaches n+1.
-	deadline := time.Now().Add(5 * time.Second)
-	for !rcv.closeCalled.Load() && clk.TimerCount() < n+1 {
-		if time.Now().After(deadline) {
-			t.Fatal("watcher neither force-closed nor registered a grace timer after cancel")
-		}
-		stdruntime.Gosched()
-	}
+	wait.Until(t, 5*time.Second, "watcher force-closes or arms its grace timer after cancel", func() bool {
+		return rcv.closeCalled.Load() || clk.TimerCount() >= n+1
+	})
 
 	// Fire the in-flight ack timers FIRST (deadline ackDur < grace closeTO): on
 	// the drain-then-close path the transport is still alive so every ack lands.

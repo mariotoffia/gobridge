@@ -66,6 +66,32 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ### Added
 
+- **`empty` in deep health, and an empty bridge no longer claims to be ready.**
+  `GET /api/v1/monitor/deephealth` now reports `"empty": true` for an instance
+  that carries no routes and no sessions, and such an instance is capped at the
+  `running` readiness level with `ready_for_traffic: false`. Every "all routes
+  are ready" test is trivially satisfied when there are no routes, so a bridge
+  started from a missing or route-less configuration used to report full
+  readiness while not one message could pass through it — a load balancer would
+  steer traffic at it and a rollout gate would count it as converged. It stays
+  alive (`/live` is still 200), so nothing restarts a process that is merely
+  waiting for its configuration.
+
+- **`-start-empty` flag on the reference binary.** `cmd/gobridge -start-empty=false`
+  turns a missing `-config` file back into a fatal startup error, for
+  deployments where carrying zero routes is never correct. The default stays
+  `true`.
+
+- **`restart_required` in the deep-health `config_watch` projection.** Names a
+  part of the desired configuration that has been accepted and durably stored
+  but cannot be applied to the running process. Today that is the `http` block:
+  the admin and monitor listeners are bound once, at startup, so a reloaded
+  address, TLS pair or CORS origin was accepted and then silently ignored.
+
+- **`httpapi.Config.TerminalProvider`.** Lets a composition root feed its own
+  terminal state to the liveness probe, independently of any runtime the server
+  can see.
+
 - **`MQTTReceiverEmitRejected`.** Counts inbound deliveries the route pipeline
   refuses at emit — a shutting-down or wedged route runner — tagged
   `outcome=recovering` (durable QoS 1/2: left un-acked, redelivered by the
@@ -118,7 +144,176 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 - **`OutboxClaimedDepth`** and **`DLQDuplicateSuppressed`** metrics, plus
   **`DynamoDBOutboxClaimTruncated`** (adapter-owned).
 
+- **`MQTTConnectFailures`** (tagged `session_id` and the bounded error `code`)
+  and **`MQTTSessionResumeLost`** (tagged `session_id`) metrics, and
+  [MQTT settlement recovery](docs/transports/mqtt-settlement-recovery.md) as its
+  own page, split out of the MQTT behaviour reference.
+
 ### Fixed
+
+- **A black-holed rollout store can no longer wedge the coordinated cluster
+  rollout drive.** Every rollout store, coordinator-lease and committed-artifact
+  call now runs under its own budget (`bridge.ClusterRolloutConfig.StoreCallTimeout`,
+  5 s by default), and a call that ignores its context is abandoned rather than
+  owning the single drive goroutine — a deadline expires the context, it does not
+  unblock the call. While an abandoned call has not returned the barrier starts no
+  new one, so a store that has stopped answering costs exactly one parked
+  goroutine instead of one per poll. With the drive ticking again, three things
+  that a black hole used to suppress keep working: the local confirm-window
+  deadman (which reverts a member to its last confirmed generation and now runs
+  off a cached deadline, before the observation, rather than behind it), the
+  freshness of the published status, and process shutdown. Orderly coordinator
+  resignation is bounded by `min(lease_ttl, 5s)` instead of the whole lease TTL,
+  so a slow release cannot spend the shutdown budget on a courtesy whose fallback
+  — TTL expiry — is the always-safe crash path.
+
+- **Two rollout safety operations were latched as done whether or not they
+  worked.** Recording the durable last-committed artifact and reverting a
+  provisional generation were one-shot and best-effort, and both set their "done"
+  latch regardless of outcome: one cancelled write left a member that reboots
+  onto an older generation than the cohort runs, and one failed swap left a
+  member serving the config the cohort rejected — with its own repair suppressed.
+  Both are now retryable state, attempted under a bounded exponential backoff and
+  latched only after verification: the artifact is read back (the store's
+  monotonicity rule makes a stale write a no-op SUCCESS, so "the write returned
+  nil" and "the artifact holds this generation" are different statements), and
+  the revert is confirmed against the running config. A member that exhausts the
+  bound says so — `rollout.terminal_generation` in deep health, the
+  `ClusterRolloutTerminal` gauge, and a degraded latch — and the reason names the
+  right repair: replace a member that cannot revert (it is running rejected
+  config), repair the store for a member that cannot record the artifact (it is
+  running the correct config, so replacing it is what would boot it stale, and it
+  keeps retrying).
+
+- **Deep health reports how old the rollout observation is.** Every rollout field
+  is a projection of this member's last read of the shared row, and a member that
+  cannot read it kept publishing that snapshot with nothing to say so. The block
+  now carries `observation_age_ms`, `stale`, `last_error` and
+  `artifact_generation`, and `applied` — declared but never populated — is filled
+  in. New metrics: `ClusterRolloutStoreCalls` (by call class and outcome),
+  `ClusterRolloutObservationAge`, `ClusterRolloutRetries` and
+  `ClusterRolloutTerminal`.
+
+- **MQTT session edge recovery: four states the bridge reported but had not
+  verified.** An orphan `UNSUBSCRIBE` answered `0x11` ("no subscription
+  existed") was logged as a successful cleanup, so a **wildcard** orphan — which
+  MQTT cannot unsubscribe by a topic it delivered — survived silently. It is now
+  reported: the Debug convergence line is kept for a real removal (`0x00`), and
+  `0x11` warns, naming what does converge it (managed subscriptions, whose exact
+  durable history reconcile unsubscribes, or broker administration). See
+  ADR-0003.
+
+- **A broker QoS cap no longer churns forever.** A SUBACK below the requested
+  QoS failed every reconcile identically, so the supervisor restarted the
+  session into the same verdict at its backoff cap — and an exclusive owner
+  released and re-seized its lease on every cycle, resetting each standby's
+  observation window. The same `(filter, requested, granted)` grant confirmed on
+  three consecutive reconciles is now treated as permanent: the error wraps the
+  permanent-closure marker, so the session fails terminally instead of retrying
+  a configuration only a human can fix. A single weak SUBACK stays retryable,
+  and any reconcile that converges clears the count.
+
+- **A refused QoS 1/2 delivery on an ephemeral session no longer pins the
+  receive window.** The receiver asked whether an acknowledgement callback
+  existed, not whether the session could RESUME. An ephemeral session dials
+  `clean_start=true`, so no recycle can ever redeliver it — withholding the
+  acknowledgement bought no recovery and pinned a broker Receive-Maximum slot
+  for the life of the connection. It now takes the policy QoS 0 already had:
+  ack, drop, and count `MQTTReceiverEmitRejected{outcome=lost}`.
+
+- **A reconnect that lost the durable session is now visible.** A persistent or
+  exclusive session dials `clean_start=false` because it wants the broker to
+  resume its subscriptions and its queued offline QoS 1/2 backlog. When CONNACK
+  answered `Session Present=false` the bridge re-subscribed and reported itself
+  fully healthy, so a failover that dropped the whole backlog left no trace. It
+  now counts `MQTTSessionResumeLost`, warns, and latches the loss on the
+  session's `LastError` until the next converged reconcile. A cold start is
+  exempt; a non-empty managed subscription history makes even a first connect
+  answerable, which is the exclusive standby connecting after
+  `session_expiry_interval`.
+
+- **A failed reconnect names its cause.** MQTT authenticates only at CONNECT and
+  autopaho then retries on its own goroutine, so a rejected CONNECT was the one
+  place the reason a session could not come back was ever visible — and it was
+  discarded. The mapped cause is now latched on the session's `LastError` until
+  a connection comes up, warned once per attempt, and counted on
+  `MQTTConnectFailures` tagged with the bounded error `code` (the broker URL is
+  deliberately not a dimension). `runtime/session` also stopped dropping the
+  error when logging `session reconnecting`.
+
+- **Session-failure lease hand-off reuses the settlement grace.** Step-down
+  waits `step_down_grace` before releasing the lease so destination sends this
+  owner already accepted can settle before the next owner advances the fence;
+  the session-failure path closed the source and released immediately. Closing
+  the source fences ingress, not egress, so it widened the accepted-duplicate
+  window the grace exists to close. Both paths now share one bounded wait, and
+  both skip it on the same evidence — a destination drainer that reports idle.
+
+- **Two flaky tests, one cause: `clocktest` swallowed ticks the test had already
+  advanced past.** `clocktest.Ticker.Reset` drained the tick channel, mirroring
+  `time.Ticker`. Both shipped re-pacing loops — the SQS auto-extend loop and the
+  Service Bus session-lock renewer — call `Reset` at the END of the handler they
+  are running, so a test advancing the clock from its own goroutine could land
+  mid-handler: the tick was fired and buffered, and the handler's `Reset` then
+  threw it away. Real time would have delivered another tick one period later;
+  a fake clock never does, so the loop blocked forever and the test failed on
+  its wait deadline — but only when it lost the race, which is why it showed up
+  as an occasional red build rather than a broken test. `Reset` now keeps a tick
+  already delivered and re-paces only what follows. `Reset` also re-registers a
+  timer or ticker that `Advance` retired after `Stop`, which was otherwise a
+  re-armed deadline no `Advance` would ever cross. Timer semantics are
+  unchanged. See `TESTS.md` §2.2.
+
+- **`runtime.Gosched()` spin-polling removed from every test.** Nineteen waits
+  across fourteen files polled with `Gosched` instead of `time.Sleep`, which
+  passed the timing audit while defeating its purpose: the waiter stays runnable
+  for the whole wait, holding a CPU and competing with the goroutine it is
+  waiting for, which under `-race` on a loaded machine is enough to fail a
+  correct test. Two had no deadline at all, so a stuck goroutine became a
+  package timeout that killed every unrelated test in the binary. All now use
+  `testutil/wait`, and `make audit-test-timings` fails on `Gosched` in tests.
+
+- **A DynamoDB config test proved nothing.** It asserted "no emission" after a
+  single scheduler yield, so it passed whether or not the loader emitted. It now
+  holds the channel silent for a window with `wait.Silent`.
+
+- **`/live` was blind to a wedged reference binary for ~15 seconds.** When a
+  reconfiguration swap and its recovery both fail, the process holds no active
+  runtime and routes nothing — which looks exactly like a healthy swap window to
+  a probe that can only inspect the runtime. `cmd/gobridge` now reports the
+  supervisor's terminal state to the HTTP server directly, so `/live` fails
+  closed at once instead of waiting out the coarse background backstop
+  (3 confirmations × 5 s) that was the only thing covering the gap.
+
+- **Monitor and admin endpoints answered from the long-stopped boot runtime.**
+  When a configured `RuntimeProvider` reported no runtime, `httpapi` silently
+  fell back to the runtime passed to `New()`. In a composition root that is the
+  boot runtime, stopped since the first reconfiguration — so `/topology` served
+  boot routes, the DLQ endpoints ran against a closed store, and `/live`
+  answered 200 because a stopped runtime is not a terminal one. A configured
+  provider is now authoritative and its nil means 503.
+
+- **The admin write deadline was shorter than a config commit could take.** The
+  admin listener's `WriteTimeout` was derived from `AdminOperationTimeout`
+  alone (45 s by default), while a commit can legitimately run its detached
+  apply for 60 s and then a rollback restore for another 60 s before answering.
+  The connection was reset while the server was still deciding, leaving
+  automation to retry against a state it could not observe. The deadline is now
+  derived from the longest response path the server can actually serve; a server
+  without the config-transaction endpoints keeps the tighter deadline.
+
+- **The process shutdown budget ignored reloads.** The HTTP drain and the final
+  supervisor wait read `bridge.shutdown_timeout` from the boot configuration, so
+  an operator who raised it through a reload kept the old, shorter budget until
+  the next restart. Both now read the running configuration, falling back to the
+  boot value only when no configuration is active.
+
+- **Start-empty advertised an admin API it does not serve.** The missing-config
+  warning told operators to "push a config through the admin config API", but
+  the start-empty configuration defines no `http` block and this composition
+  root binds its listeners once at startup — so there was no admin API and no
+  probe port to recover through. The warning now states what actually works:
+  create the file to converge the routes, restart to bring up the listeners.
 
 - **SIGTERM killed in-flight deliveries before the drain.** Both shipped
   binaries cancel their process context on `SIGTERM` and only then stop the

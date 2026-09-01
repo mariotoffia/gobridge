@@ -103,7 +103,7 @@ func TestCoordinatorStep_CommitsFullyAckedRollout(t *testing.T) {
 	st := proposeAndAck(t, []string{"a", "b"}, []string{"a", "b"}, nil)
 	ctx := context.Background()
 
-	terminal, err := coordinatorStep(ctx, st, []string{"a", "b"}, coordTok, rolloutBase.Add(time.Minute))
+	terminal, err := coordinatorStep(ctx, nil, st, []string{"a", "b"}, coordTok, rolloutBase.Add(time.Minute))
 
 	require.NoError(t, err)
 	require.True(t, terminal)
@@ -118,7 +118,7 @@ func TestCoordinatorStep_AbortsOnNack(t *testing.T) {
 	st := proposeAndAck(t, []string{"a", "b"}, []string{"a"}, map[string]string{"b": "bad plugin"})
 	ctx := context.Background()
 
-	terminal, err := coordinatorStep(ctx, st, []string{"a", "b"}, coordTok, rolloutBase.Add(time.Minute))
+	terminal, err := coordinatorStep(ctx, nil, st, []string{"a", "b"}, coordTok, rolloutBase.Add(time.Minute))
 
 	require.NoError(t, err)
 	require.True(t, terminal)
@@ -133,7 +133,7 @@ func TestCoordinatorStep_AbortsOnNack(t *testing.T) {
 func TestCoordinatorStep_WaitsWhenNoRollout(t *testing.T) {
 	st := memoryrollout.NewStore(memoryrollout.WithClock(clocktest.NewAt(rolloutBase)))
 
-	terminal, err := coordinatorStep(context.Background(), st, []string{"a"}, coordTok, rolloutBase)
+	terminal, err := coordinatorStep(context.Background(), nil, st, []string{"a"}, coordTok, rolloutBase)
 
 	require.NoError(t, err)
 	require.False(t, terminal)
@@ -147,7 +147,7 @@ func TestCoordinatorStep_SurfacesStaleFencingToken(t *testing.T) {
 	inner := proposeAndAck(t, []string{"a"}, []string{"a"}, nil)
 	st := &flakyRolloutStore{inner: inner, commitErr: shared.ErrStaleFencingToken}
 
-	terminal, err := coordinatorStep(context.Background(), st, []string{"a"}, coordTok, rolloutBase.Add(time.Minute))
+	terminal, err := coordinatorStep(context.Background(), nil, st, []string{"a"}, coordTok, rolloutBase.Add(time.Minute))
 
 	require.False(t, terminal)
 	require.ErrorIs(t, err, shared.ErrStaleFencingToken)
@@ -161,12 +161,12 @@ func TestCoordinatorStep_StoreUnavailableThenResolves(t *testing.T) {
 	st := &flakyRolloutStore{inner: inner, failReads: true}
 	ctx := context.Background()
 
-	terminal, err := coordinatorStep(ctx, st, []string{"a"}, coordTok, rolloutBase.Add(time.Minute))
+	terminal, err := coordinatorStep(ctx, nil, st, []string{"a"}, coordTok, rolloutBase.Add(time.Minute))
 	require.False(t, terminal)
 	require.ErrorIs(t, err, errStoreUnavailable)
 
 	st.failReads = false // store recovers
-	terminal, err = coordinatorStep(ctx, st, []string{"a"}, coordTok, rolloutBase.Add(time.Minute))
+	terminal, err = coordinatorStep(ctx, nil, st, []string{"a"}, coordTok, rolloutBase.Add(time.Minute))
 	require.NoError(t, err)
 	require.True(t, terminal)
 	cur, err := st.Current(ctx)

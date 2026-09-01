@@ -28,7 +28,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -37,7 +36,6 @@ import (
 	"github.com/mariotoffia/gobridge/config"
 	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/clock"
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/httpapi"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	credentials "github.com/mariotoffia/gobridge/runtime/credentials"
@@ -78,6 +76,9 @@ Usage of %s:
 	logLevel := flag.String("log-level", "info", "log level ("+strings.Join(ports.LogLevelNames(), ", ")+")")
 	credentialsDir := flag.String("credentials-dir", "credentials",
 		"base directory backing file:// credential URIs (native file credential store)")
+	startEmpty := flag.Bool("start-empty", true,
+		"start with an empty configuration when -config does not exist; "+
+			"set false to refuse to boot a bridge that would carry no routes")
 	flag.Parse()
 
 	logger := newLogger(*logLevel)
@@ -103,15 +104,17 @@ Usage of %s:
 	}
 
 	fileSource := fileconfig.NewSource(*configPath, reg)
-	// Start-empty (Finding c15/550): a missing config file is a supported,
-	// healthy state — mirror the deployment profile's optionalFileSource. The
-	// bridge boots with an empty logical config (bridge.id only, zero routes)
-	// behind a loud WARN, and converges once a config is pushed through the
-	// admin config API (the txn store treats a missing file as first-write)
-	// or the file is created — the watcher watches the directory, so file
-	// creation is picked up. Any other load error (unreadable, bad parse)
-	// stays fatal.
-	loader := &startEmptySource{src: fileSource, path: *configPath, logger: logger}
+	// Start-empty: a missing config file is a supported, healthy state — mirror
+	// the deployment profile's optionalFileSource. The bridge boots with an
+	// empty logical config (bridge.id only, zero routes) behind a loud WARN and
+	// converges once the file is created; the watcher watches the DIRECTORY, so
+	// file creation is picked up. It does NOT converge through the admin config
+	// API: this root binds its HTTP listeners once from the boot config, and the
+	// start-empty config has no HTTP block, so a missing file means there is no
+	// admin API and no probe port to recover through. Any other load error
+	// (unreadable, bad parse) stays fatal, and -start-empty=false refuses the
+	// fallback outright for a deployment that must never carry zero routes.
+	loader := configLoader(fileSource, *configPath, *startEmpty, logger)
 	baseCfg, err := loader.Load(context.Background())
 	if err != nil {
 		logger.Error("failed to load config", "path", *configPath, "error", err)
@@ -154,7 +157,7 @@ Usage of %s:
 	// pipeline forwards unchanged as SwapEvent.NewConfig.
 	pipeline := newReloadPipeline(reg, logger, withApplyResultNotifier(mgr))
 
-	// Credential store wiring (Finding 11). The stock binary registers the
+	// Credential store wiring. The stock binary registers the
 	// native file:// credential repository so file:// credential URIs in the
 	// config resolve out of the box — previously NO credential store was
 	// registered here, so an operator copying a documented file:// example
@@ -162,11 +165,11 @@ Usage of %s:
 	// add SSM (or other) pull stores the SAME way: resolver.Register(...).
 	//
 	// The resolver is lifted into a runtime-owned push store by the supervisor
-	// (poll-based wrapper). EmitOnStart is set (Finding 1) so a rotation that
+	// (poll-based wrapper). EmitOnStart is set so a rotation that
 	// lands in the build->watch window is surfaced on the first tick rather
-	// than silently baselined; a default jitter (~10% of the interval,
-	// LOW-severity finding) de-synchronizes polls so many sessions do not
-	// stampede the backend on the same tick.
+	// than silently baselined; a default jitter (~10% of the interval)
+	// de-synchronizes polls so many sessions do not stampede the backend on the
+	// same tick.
 	credResolver := newDefaultCredentialResolver(*credentialsDir, logger)
 	credPollInterval := credentials.DefaultCredentialPollInterval
 	credPollConfig := ports.PollBasedWrapperConfig{
@@ -208,7 +211,7 @@ Usage of %s:
 	//   sup.RegisterTransport("sqs", sqs.NewFactory(logger))
 	//   sup.RegisterStoreFactory("dynamodb", awsstore.NewDynamoDBStoreFactory(ddbClient))
 
-	// Observability wiring (Finding 15). This demo binary links no telemetry
+	// Observability wiring. This demo binary links no telemetry
 	// exporter, so metrics/traces/audit default to the runtime's Noop
 	// implementations. The Supervisor now forwards a MetricsExporter, Tracer,
 	// and AuditLogger into every runtime it builds (including hot-reloads) via
@@ -310,6 +313,10 @@ Usage of %s:
 	mgr.NotifyApplyResult(cfg, nil)
 
 	if cfg.HTTP != nil {
+		// The listeners below are bound ONCE, from this block. Keep a copy so
+		// deep health can report a later reload that changed it as
+		// restart-required instead of leaving the change silently inert.
+		bootHTTP := *cfg.HTTP
 		apiCfg := httpapi.Config{
 			AdminAddr:     cfg.HTTP.AdminAddr,
 			MonitorAddr:   cfg.HTTP.MonitorAddr,
@@ -327,10 +334,17 @@ Usage of %s:
 			},
 			ConfigStore:    &cfgparser.FileStore{Path: *configPath, Registry: reg},
 			ConfigProvider: sup.Config,
-			// Surface both watcher failure and desired/running apply divergence.
+			// Surface watcher failure, desired/running apply divergence, and any
+			// desired change this process cannot apply without a restart.
 			ConfigWatchProvider: func() httpapi.ConfigWatchHealth {
-				return configWatchHealth(sup, mgr)
+				return configWatchHealth(sup, mgr, &bootHTTP)
 			},
+			// The supervisor's own terminal state, so /live fails closed the
+			// moment a swap AND its recovery both fail. Without it the probe sees
+			// only "no runtime", which is indistinguishable from a healthy swap
+			// window, and a wedged process keeps answering 200 until the
+			// coarse-grained terminal backstop below finally trips.
+			TerminalProvider: sup.Terminal,
 			// Route admin start/stop through the supervisor so POST /bridge/stop
 			// is a clean deliberate pause (not process-suicide) and POST
 			// /bridge/start rebuilds a fresh single-use runtime afterwards.
@@ -343,12 +357,8 @@ Usage of %s:
 			// the (debounced) file watcher to converge.
 			ConfigApplier: pipeline.applyCommitted,
 		}
-		if apiCfg.AdminAddr == "" {
-			apiCfg.AdminAddr = ":8080"
-		}
-		if apiCfg.MonitorAddr == "" {
-			apiCfg.MonitorAddr = ":8081"
-		}
+		apiCfg.AdminAddr = orDefault(apiCfg.AdminAddr, defaultAdminAddr)
+		apiCfg.MonitorAddr = orDefault(apiCfg.MonitorAddr, defaultMonitorAddr)
 		auditLogger := httpapi.NewSlogAuditLogger(logger)
 		srv := httpapi.New(rt, apiCfg,
 			httpapi.WithServerLogger(logger),
@@ -361,7 +371,7 @@ Usage of %s:
 		defer func() {
 			// Bound the HTTP drain so a wedged in-flight admin request cannot
 			// hang process shutdown forever; reuse the bridge shutdown budget.
-			stopCtx, stopCancel := context.WithTimeout(context.Background(), cfg.Bridge.ShutdownTimeoutDuration())
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), currentShutdownTimeout(sup.Config, cfg))
 			defer stopCancel()
 			_ = srv.Stop(stopCtx)
 		}()
@@ -381,8 +391,8 @@ Usage of %s:
 	// The predicate polls sup.Terminal(), NOT sup.Runtime().Terminal(): when a
 	// swap AND its recovery both fail the supervisor is left WEDGED with no
 	// active runtime (sup.Runtime() == nil), routing nothing. A runtime-only
-	// check would miss that case and idle alive forever (Finding 7). sup.Terminal
-	// covers both the wedged nil-runtime case and an active-but-terminal runtime.
+	// check would miss that case and idle alive forever. sup.Terminal covers both
+	// the wedged nil-runtime case and an active-but-terminal runtime.
 	terminalCh := make(chan struct{}, 1)
 	go func() {
 		if watchTerminal(ctx, clock.System, terminalPollInterval, sup.Terminal) {
@@ -420,201 +430,13 @@ Usage of %s:
 		os.Exit(2)
 	}()
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Bridge.ShutdownTimeoutDuration())
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), currentShutdownTimeout(sup.Config, cfg))
 	defer shutdownCancel()
 
 	awaitSupervisorShutdown(supExited, supDone, shutdownCtx.Done(), logger)
 
 	logger.Info("bridge stopped")
 	return exitCode
-}
-
-// degradedConfigWatch combines the two independent live-reconfiguration
-// degraded signals into the single projection surfaced on /deephealth. The
-// supervisor reports degraded when its config-change stream closes; the config
-// manager reports degraded when a layer's change watcher cannot be
-// re-established. Either means the bridge keeps serving its last good config but
-// can no longer observe config changes without a restart.
-func degradedConfigWatch(sup *bridge.Supervisor, mgr *config.Manager) (bool, string) {
-	if degraded, reason := sup.Degraded(); degraded {
-		return true, reason
-	}
-	if errs := mgr.WatchErrors(); len(errs) > 0 {
-		layers := make([]string, 0, len(errs))
-		for layer := range errs {
-			layers = append(layers, layer)
-		}
-		slices.Sort(layers) // deterministic reason ordering
-		parts := make([]string, len(layers))
-		for i, layer := range layers {
-			parts[i] = fmt.Sprintf("%s: %v", layer, errs[layer])
-		}
-		return true, "config watch degraded: " + strings.Join(parts, "; ")
-	}
-	return false, ""
-}
-
-func configWatchHealth(sup *bridge.Supervisor, mgr *config.Manager) httpapi.ConfigWatchHealth {
-	degraded, reason := degradedConfigWatch(sup, mgr)
-	status := httpapi.ConfigWatchHealth{
-		Degraded:           degraded,
-		Reason:             reason,
-		ReconfigurePending: mgr.ReconfigurePending(),
-	}
-	if version, ok := mgr.AppliedVersion(); ok {
-		status.DesiredVersion = &version
-	}
-	if version, ok := mgr.RunningVersion(); ok {
-		status.RunningVersion = &version
-	}
-	if err := mgr.LastApplyError(); err != nil {
-		status.LastApplyError = err.Error()
-		status.Degraded = true
-	}
-	if status.ReconfigurePending {
-		status.Degraded = true
-		if status.Reason == "" {
-			status.Reason = "desired configuration is not running"
-		}
-	}
-	// A coordinated cluster rollout makes ReconfigurePending expected rather
-	// than alarming for as long as the barrier is undecided: this member has
-	// deliberately not applied a config the cohort has not committed. Surface
-	// the barrier so an operator reading /deephealth sees WHO the cohort is
-	// waiting for instead of a bare "desired configuration is not running".
-	if rollout, ok := sup.RolloutStatus(); ok {
-		status.Rollout = &httpapi.ClusterRolloutHealth{
-			MemberID:        rollout.MemberID,
-			Generation:      rollout.Generation,
-			State:           rollout.State,
-			ConfigVersion:   rollout.ConfigVersion,
-			Epoch:           rollout.Epoch,
-			Acked:           rollout.Acked,
-			Nacked:          rollout.Nacked,
-			Reason:          rollout.Reason,
-			CandidateStaged: rollout.Staged,
-		}
-	}
-	return status
-}
-
-// terminalPollInterval is how often the liveness backstop checks whether the
-// current runtime has gone terminal. Terminal state only follows a sustained
-// failure (e.g. ~30s of lease-store outage before step-down), so a coarse poll
-// is ample and cheap.
-const terminalPollInterval = 5 * time.Second
-
-// terminalConfirmSamples is how many CONSECUTIVE positive terminal reads the
-// backstop requires before it exits the process. A single positive sample can
-// be a transient read during a healthy reconfiguration swap window; requiring N
-// consecutive confirmations means a swap-window blip never kills a healthy
-// process, while a genuine terminal/wedged state (which persists) still trips
-// after N×terminalPollInterval.
-const terminalConfirmSamples = 3
-
-// awaitSupervisorShutdown blocks — bounded by the shutdown deadline (done) —
-// for the supervisor goroutine to report it has unwound after the root context
-// was cancelled. When alreadyExited is true the supervisor already self-exited
-// and its single result was consumed by the primary select in run(); there is
-// nothing left to wait for, so it returns immediately rather than reading the
-// now-drained supDone a second time. A second read would never complete and the
-// call would block until the full ShutdownTimeout elapsed.
-func awaitSupervisorShutdown(alreadyExited bool, supDone <-chan error, done <-chan struct{}, logger *slog.Logger) {
-	if alreadyExited {
-		return
-	}
-	select {
-	case err := <-supDone:
-		if err != nil && !errors.Is(err, context.Canceled) {
-			logger.Error("supervisor shutdown error", "error", err)
-		}
-	case <-done:
-		logger.Error("supervisor shutdown timed out")
-	}
-}
-
-// watchTerminal polls isTerminal every poll interval, returning true only after
-// terminalConfirmSamples CONSECUTIVE positive reads (so a transient swap-window
-// blip never kills a healthy process), or false when ctx is cancelled. It
-// carries no runtime knowledge itself (the caller supplies the predicate), which
-// keeps the poll loop trivially testable.
-func watchTerminal(ctx context.Context, clk clock.Clock, poll time.Duration, isTerminal func() bool) bool {
-	consecutive := 0
-	for {
-		select {
-		case <-ctx.Done():
-			return false
-		case <-clk.After(poll):
-			if isTerminal() {
-				consecutive++
-				if consecutive >= terminalConfirmSamples {
-					return true
-				}
-			} else {
-				consecutive = 0
-			}
-		}
-	}
-}
-
-// initialRuntimeWait bounds how long run() waits for the supervisor to publish
-// its initial runtime before giving up and exiting non-zero. The runtime is
-// published right after the SYNCHRONOUS initial build (Supervisor.buildRuntime)
-// and a non-blocking Runtime.Start — broker/session connects run in background
-// goroutines and never gate publication, so sup.Runtime() goes non-nil within
-// milliseconds of a healthy build. This wait therefore exists to bound a slow or
-// hung SYNCHRONOUS startup build (credential resolution, store construction),
-// which is UNBOUNDED for the initial build — unlike reconfiguration swaps, whose
-// build is bounded by defaultSwapDeadline. 60s tolerates a slow-but-healthy cold
-// cloud start (e.g. SSM/STS credential resolve plus a DynamoDB describe or a
-// SQLite migration) while still backstopping a hung dependency, and mirrors the
-// swap build's defaultSwapDeadline. A genuine build error surfaces promptly via
-// supStopped rather than waiting out the full ceiling (Chunk 16 Finding 1).
-const initialRuntimeWait = 60 * time.Second
-
-// runtimeWaitResult reports the outcome of waitForSupervisorRuntime: either the
-// initial runtime became available (runtime != nil), or the supervisor's Run
-// returned before producing one (supEnded). Distinguishing the two lets run()
-// surface the supervisor's real error instead of a misleading timeout, and exit
-// promptly rather than blocking the full ceiling.
-type runtimeWaitResult struct {
-	runtime  *goruntime.Runtime
-	supEnded bool
-}
-
-// waitForSupervisorRuntime blocks until runtimeOf returns a non-nil runtime, the
-// supervisor's Run returns before publishing one (supStopped closed), or the
-// ceiling elapses. It NEVER reads supDone: the single buffered result is left
-// intact for the one downstream reader, so this wait cannot steal the shutdown
-// read. supStopped is a close-only broadcast, safe to observe here and again
-// downstream.
-func waitForSupervisorRuntime(
-	runtimeOf func() *goruntime.Runtime,
-	clk clock.Clock,
-	timeout time.Duration,
-	supStopped <-chan struct{},
-) runtimeWaitResult {
-	// ESSENTIAL: runtime init poll
-	deadline := clk.After(timeout)
-	for {
-		if rt := runtimeOf(); rt != nil {
-			return runtimeWaitResult{runtime: rt}
-		}
-		select {
-		case <-supStopped:
-			// Run returned before publishing a runtime. Re-check once in case a
-			// runtime raced in just as Run exited; otherwise report the early
-			// exit so the caller surfaces the buffered supDone error instead of
-			// waiting out the full ceiling.
-			if rt := runtimeOf(); rt != nil {
-				return runtimeWaitResult{runtime: rt}
-			}
-			return runtimeWaitResult{supEnded: true}
-		case <-deadline:
-			return runtimeWaitResult{}
-		case <-clk.After(20 * time.Millisecond):
-		}
-	}
 }
 
 func newLogger(level string) *slog.Logger {
@@ -624,59 +446,12 @@ func newLogger(level string) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
 }
 
-// startEmptySource wraps the file config source so a MISSING config file
-// starts an empty, healthy bridge instead of failing the process (start-empty,
-// mirroring the deployment profile's optionalFileSource). The fallback is
-// loud: a missing file is warned on every load so an operator who mistyped
-// -config sees why nothing is bridged. Only shared.ErrNotFound falls back —
-// an unreadable or unparseable file stays a fatal load error, because
-// silently replacing a config that EXISTS but cannot be read would swap real
-// routes for none.
-type startEmptySource struct {
-	src    *fileconfig.Source
-	path   string
-	logger *slog.Logger
-}
-
-var _ ports.Loader = (*startEmptySource)(nil)
-
-func (s *startEmptySource) Load(ctx context.Context) (*ports.BridgeConfig, error) {
-	cfg, err := s.src.Load(ctx)
-	if err == nil {
-		return cfg, nil
-	}
-	if errors.Is(err, shared.ErrNotFound) {
-		s.logger.Warn(
-			"config file not found; starting empty (no routes will be bridged) — "+
-				"create the file or push a config through the admin config API",
-			"path", s.path,
-		)
-		return defaultEmptyConfig(), nil
-	}
-	return nil, err
-}
-
-// defaultEmptyConfig is the start-empty logical config: the one field
-// validation requires (bridge.id) plus the same explicit shutdown budgets the
-// deployment profile's defaultLogicalConfig sets. Zero routes — the bridge is
-// a no-op until configured.
-func defaultEmptyConfig() *ports.BridgeConfig {
-	return &ports.BridgeConfig{
-		Bridge: ports.BridgeSettings{
-			ID:              "gobridge",
-			DeploymentMode:  "standalone",
-			ShutdownTimeout: "30s",
-			DrainTimeout:    "30s",
-		},
-	}
-}
-
 // newDefaultCredentialResolver builds the stock resolver and best-effort
-// registers the native file:// store (Finding 11). A file-store init failure —
+// registers the native file:// store. A file-store init failure —
 // e.g. a read-only working directory where ./credentials does not already
 // exist — is NOT fatal: file:// URIs then fail at resolve time with a clear
 // "no credential repository" error, but a config that uses no file://
-// credentials (pms:// only) still boots (adversarial Finding 2). EmitOnStart
+// credentials (pms:// only) still boots. EmitOnStart
 // and jitter are configured by the caller on the poll wrapper.
 func newDefaultCredentialResolver(dir string, logger *slog.Logger) *goruntime.CredentialResolver {
 	res := goruntime.NewCredentialResolver(goruntime.WithCredentialResolverLogger(logger))

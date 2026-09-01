@@ -220,8 +220,8 @@ func (p *reloadPipeline) run(ctx context.Context, fileChanges <-chan *ports.Brid
 					return
 				}
 				// Genuine watcher failure (ctx still live): do NOT tear down a
-				// healthy runtime (bridge Finding 1). Keep serving admin commits
-				// and stop selecting on the dead channel.
+				// healthy runtime. Keep serving admin commits and stop selecting
+				// on the dead channel.
 				fileChanges = nil
 				if p.logger != nil {
 					p.logger.Error("config: file change stream closed; " +

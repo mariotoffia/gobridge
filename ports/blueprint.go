@@ -536,6 +536,19 @@ type BlueprintValidator func(*BridgeConfig) error
 // empty the servers stay plaintext (the historical default) on the assumption
 // an external terminator (LB/ingress/mesh) provides TLS. Supplying only one of
 // the pair is a configuration error the server rejects at startup.
+// HTTPConfig configures the process-level admin and monitor HTTP servers.
+//
+// RESTART REQUIRED. Every field except the API keys is LISTENER TOPOLOGY: the
+// composition root binds both servers once, at startup, from the configuration
+// it booted with. A reload that changes an address, a TLS pair or the CORS
+// policy is validated and durably stored, and then does nothing to the running
+// listeners — and a config that adds an `http` block to a process that started
+// without one creates no servers at all. Restart the process to apply such a
+// change. Where a composition root can see the divergence it reports it through
+// the `restart_required` field of the /deephealth config_watch projection.
+//
+// The API keys are the exception: a root that wires a key provider reads them
+// per request, so a rotation applies immediately.
 type HTTPConfig struct {
 	AdminAddr     string        `yaml:"admin_addr,omitempty" json:"admin_addr,omitempty"`
 	MonitorAddr   string        `yaml:"monitor_addr,omitempty" json:"monitor_addr,omitempty"`

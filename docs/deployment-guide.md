@@ -23,7 +23,8 @@ cloud-specific guidance, see [What's Next](#whats-next).
 
 The reference `cmd/gobridge` binary is intentionally minimal. Its composition
 root registers the `mqtt` transport and the native `memory` and `sqlite` store
-factories, and **zero processors** (`cmd/gobridge/main.go:145-147`). Processor
+factories, and **zero processors** (the `reg.Register` and
+`sup.RegisterStoreFactory` calls in `cmd/gobridge/main.go`). Processor
 plugins (tenant, filter, transform) and most other transports and stores (SQS,
 Azure Service Bus, AMQP, DynamoDB) live in separate Go modules so the core stays
 dependency-light; the HTTP transport ships in the root module but is likewise
@@ -40,6 +41,22 @@ registers the plugins you need before starting the supervisor:
 
 `cmd/gobridge/main.go` carries commented examples for the AWS transport and store
 factories. See [PLUGIN.md](../PLUGIN.md) for the registration recipe.
+
+The reference binary takes these flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-config` | `bridge.yaml` | Path to the configuration file |
+| `-log-level` | `info` | Log level; an unrecognised value is rejected |
+| `-credentials-dir` | `credentials` | Base directory backing `file://` credential URIs |
+| `-start-empty` | `true` | Start with an empty configuration when `-config` does not exist. Set `false` to refuse to boot a bridge that would carry no routes -- a mistyped path or an unmounted volume then fails the process instead of quietly transporting nothing. |
+
+Starting empty is a real, supported state, but a limited one: the empty
+configuration defines no `http` block, and this composition root binds its HTTP
+listeners once at startup, so a process that started empty serves **no admin
+API and no health probes**. Create the configuration file to converge the
+routes -- the watcher watches the directory, so file creation is picked up --
+and restart the process to bring up the HTTP listeners.
 
 ## Deployment Models
 
@@ -330,9 +347,27 @@ recoverable (including before the runtime is wired **and after a deliberate admi
 stop**), and 503 `{"status":"terminal"}` only once the runtime has entered a
 terminal, unrecoverable state — so an orchestrator restarts the task instead of
 leaving it wedged. The bare `ready` endpoint returns 200 once the runtime is
-started and healthy; it does **not** guarantee transport sessions are connected or
-subscriptions acknowledged. Gate production traffic with the `?level=`
-parameter described under "Readiness levels" below.
+started and healthy **and carrying at least one route or session**; it does
+**not** guarantee transport sessions are connected or subscriptions
+acknowledged. Gate production traffic with the `?level=` parameter described
+under "Readiness levels" below.
+
+Two states deserve calling out because they look healthy from the outside:
+
+- **Empty.** A bridge that carries no routes and no sessions bridges nothing.
+  It happens when the configured file is missing and the process fell back to
+  starting empty, or when a config defines no routes. `/live` stays 200 (the
+  process is fine and must not be restarted), but `/ready` answers 503 and
+  `/deephealth` reports `"empty": true` with the readiness level pinned at
+  `running`. Nothing steers traffic at it and no rollout gate treats it as a
+  converged member. If starting empty is never acceptable for a deployment,
+  the reference binary accepts `-start-empty=false`, which turns a missing
+  config file back into a fatal startup error.
+- **Wedged.** A reconfiguration swap and its recovery both failed, so the
+  process holds no active runtime and routes nothing. This is reported through
+  the supervisor's own terminal state, so `/live` answers 503 immediately
+  rather than waiting for a coarse background backstop, and the orchestrator
+  restarts the task.
 
 ### Shutdown Timeouts
 
@@ -349,7 +384,7 @@ bridge:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `shutdown_timeout` | `30s` | Total grace period for clean shutdown. In the file-based deployment it IS the process budget: the config watcher join, the rollout-drive stop, the HTTP shutdown, the runtime drain, store close and telemetry flush all run inside it. |
+| `shutdown_timeout` | `30s` | Total grace period for clean shutdown. In the file-based deployment it IS the process budget: the config watcher join, the rollout-drive stop, the HTTP shutdown, the runtime drain, store close and telemetry flush all run inside it. Read from the **running** configuration when shutdown starts, so a value raised through a reload takes effect without a restart. |
 | `drain_timeout` | `30s` | Ceiling on `Runtime.Stop` when the supervisor stops a runtime (shutdown or reconfiguration swap). Not a per-batch outbox budget. |
 | `per_record_drain_timeout` | `3s` | Per-record budget in the scaled formula. |
 | `max_drain_timeout` | `10s` | Absolute ceiling for the scaled formula. |

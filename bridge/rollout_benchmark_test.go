@@ -68,6 +68,20 @@ func BenchmarkCandidateConfigDigest(b *testing.B) {
 // majority of ticks in a real deployment's lifetime. It must stay a cheap store
 // read plus bookkeeping: no config marshalling, no build.
 func BenchmarkRolloutApplierStep_SteadyState(b *testing.B) {
+	applier, ctx := benchCommittedApplier(b)
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := applier.step(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// benchCommittedApplier builds an applier that has already adopted a committed
+// (base-protocol) generation, primed so the caller measures the STEADY state
+// rather than the one-off adoption.
+func benchCommittedApplier(b *testing.B) (*rolloutApplier, context.Context) {
+	b.Helper()
 	store := memoryrollout.NewStore()
 	sup := NewSupervisor()
 	sup.rollout = newRolloutBarrier(ClusterRolloutConfig{
@@ -96,19 +110,14 @@ func BenchmarkRolloutApplierStep_SteadyState(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	applier := &rolloutApplier{host: supervisorRolloutHost{sup}, barrier: sup.rollout, store: store, memberID: "node-a", obs: &rolloutObserver{}}
-	// Prime the gate exactly as the first post-commit observation would, so the
-	// loop below measures the STEADY state rather than the one-off adoption.
+	applier := &rolloutApplier{
+		host: supervisorRolloutHost{sup}, barrier: sup.rollout, store: store,
+		memberID: "node-a", obs: &rolloutObserver{}, clk: clock.System,
+	}
 	if err := applier.step(ctx); err != nil {
 		b.Fatal(err)
 	}
-
-	b.ReportAllocs()
-	for b.Loop() {
-		if err := applier.step(ctx); err != nil {
-			b.Fatal(err)
-		}
-	}
+	return applier, ctx
 }
 
 // BenchmarkRolloutApplierStep_ConfirmWindowSteadyState measures the steady-state
@@ -118,6 +127,19 @@ func BenchmarkRolloutApplierStep_SteadyState(b *testing.B) {
 // regression in the provisional/converge/deadman path is visible, not just the base
 // committed path.
 func BenchmarkRolloutApplierStep_ConfirmWindowSteadyState(b *testing.B) {
+	applier, ctx := benchWindowedApplier(b)
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := applier.step(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// benchWindowedApplier builds an applier that has provisionally swapped inside a
+// confirm window and converged, with its local deadman armed.
+func benchWindowedApplier(b *testing.B) (*rolloutApplier, context.Context) {
+	b.Helper()
 	store := memoryrollout.NewStore()
 	// A long window so the rollout stays provisionally-committed for the whole run
 	// (the deadman never fires and no coordinator confirms it here).
@@ -153,18 +175,12 @@ func BenchmarkRolloutApplierStep_ConfirmWindowSteadyState(b *testing.B) {
 		host: host, barrier: barrier, store: store, memberID: "node-a",
 		obs: &rolloutObserver{}, clk: clock.System,
 	}
-	// Prime: provisional swap + the one-off Converge, so the loop measures the
+	// Prime: provisional swap + the one-off Converge, so the caller measures the
 	// converged steady state, not adoption.
 	if err := applier.step(ctx); err != nil {
 		b.Fatal(err)
 	}
-
-	b.ReportAllocs()
-	for b.Loop() {
-		if err := applier.step(ctx); err != nil {
-			b.Fatal(err)
-		}
-	}
+	return applier, ctx
 }
 
 // BenchmarkRolloutApplierVote measures the one-off cost of a member evaluating a
@@ -185,6 +201,56 @@ func BenchmarkRolloutApplierVote(b *testing.B) {
 	for b.Loop() {
 		if reason := evaluateProposal(oldCfg, candidate, raw, digest); reason != "" {
 			b.Fatalf("unexpected nack: %s", reason)
+		}
+	}
+}
+
+// BenchmarkRolloutApplierTick_SteadyState measures what a member ACTUALLY pays
+// per poll now that the drive runs tick() rather than step(): the bounded store
+// read plus the local safety work — the confirm-window deadman check, the
+// outstanding-repair check and the freshness gauge — that runs before it.
+//
+// The delta against BenchmarkRolloutApplierStep_SteadyState is the price of the
+// bound. It is not free: a bounded call runs its store call on its own goroutine
+// so a context-ignoring store can be abandoned rather than owning the drive. That
+// is one goroutine per store call every two seconds on a control plane, and this
+// benchmark is what keeps it from silently becoming more than that.
+func BenchmarkRolloutApplierTick_SteadyState(b *testing.B) {
+	applier, ctx := benchCommittedApplier(b)
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := applier.tick(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkRolloutApplierTick_ConfirmWindowDeadmanArmed measures the steady-state
+// tick of a member sitting inside a confirm window: the deadman is armed (a
+// cached deadline in the future is compared every tick) and a provisional
+// generation is applied. This is the shape a cohort holds for the whole window,
+// so it is where an accidental per-tick cost would live.
+func BenchmarkRolloutApplierTick_ConfirmWindowDeadmanArmed(b *testing.B) {
+	applier, ctx := benchWindowedApplier(b)
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := applier.tick(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkRolloutOps_BoundedCall isolates the bounding wrapper from the store
+// behind it: how much one rollout store call costs beyond the call itself.
+func BenchmarkRolloutOps_BoundedCall(b *testing.B) {
+	ops := newRolloutOps(time.Minute)
+	ctx := context.Background()
+	noop := func(context.Context) error { return nil }
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := ops.run(ctx, rolloutOpRead, noop); err != nil {
+			b.Fatal(err)
 		}
 	}
 }

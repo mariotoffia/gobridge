@@ -112,7 +112,7 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 | 9 | done | NEW-MEDIUM-1, NEW-MEDIUM-2, NEW-MEDIUM-3, NEW-MEDIUM-5, NEW-MEDIUM-6, NEW-LOW-9 |
 | 10 | done | LOW-3, LOW-4, NEW-MEDIUM-12, NEW-MEDIUM-13, NEW-MEDIUM-14, NEW-MEDIUM-15, NEW-LOW-6 |
 | 11 | done | HIGH-6, HIGH-15, HIGH-20, MEDIUM-3, MEDIUM-4, MEDIUM-6, MEDIUM-23, MEDIUM-25 (premise corrected; see the ledger), LOW-15, LOW-20, NEW-MEDIUM-9, NEW-TEST-1 |
-| 12 | waiting | LOW-7 (withdrawn), LOW-13, LOW-14, NEW-MEDIUM-10, NEW-MEDIUM-11, NEW-LOW-5 |
+| 12 | done | LOW-7 (withdrawn), LOW-13, LOW-14, NEW-MEDIUM-10, NEW-MEDIUM-11, NEW-LOW-5 |
 | 13 | waiting | LOW-5, LOW-11, LOW-12, MEDIUM-20, NEW-LOW-2, NEW-LOW-3 |
 | 14 | waiting | HIGH-2, HIGH-7, LOW-2 |
 | 15 | waiting | BLOCKER-2, MEDIUM-2, MEDIUM-12 (downgraded; hardening) |
@@ -376,13 +376,13 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 - **Dependencies:** Chunk 11.
 - **Files/packages:** `httpapi/server.go`, `config_txn.go`, `cmd/gobridge/main.go`, `reload.go`, monitor health models.
 - **Tests:** `httpapi/server_test.go`, config transaction tests, `cmd/gobridge/start_empty_test.go`, reload/liveness tests.
-- [ ] Add failing tests for complete commit response time, absent start-empty API, empty-runtime Full readiness, watcher health, wedged sentinel, and reloaded shutdown budget.
-- [ ] Run `go test -race -count=1 ./httpapi ./cmd/gobridge -run 'Test.*(Timeout|StartEmpty|Liveness|Watch|Shutdown)'`; expect current false states.
-- [ ] Derive write timeout from the longest response path; remove the false admin recovery claim; mark HTTP topology restart-required; expose empty/watch/wedged state; read current shutdown config.
-- [ ] Re-run the exact failing command above; expect pass.
-- [ ] Run `make test`.
-- [ ] Update command help, health payload docs, and restart-required field text.
-- [ ] Accept when automation receives an unambiguous response, start-empty never claims absent endpoints or Full service, and liveness sees terminal supervisor state.
+- [x] Add failing tests for complete commit response time, absent start-empty API, empty-runtime Full readiness, watcher health, wedged sentinel, and reloaded shutdown budget.
+- [x] Run `go test -race -count=1 ./httpapi ./cmd/gobridge -run 'Test.*(Timeout|StartEmpty|Liveness|Watch|Shutdown)'`; expect current false states.
+- [x] Derive write timeout from the longest response path; remove the false admin recovery claim; mark HTTP topology restart-required; expose empty/watch/wedged state; read current shutdown config.
+- [x] Re-run the exact failing command above; expect pass.
+- [x] Run `make test`.
+- [x] Update command help, health payload docs, and restart-required field text.
+- [x] Accept when automation receives an unambiguous response, start-empty never claims absent endpoints or Full service, and liveness sees terminal supervisor state.
 - **Suggested commit title:** `make process health and http lifecycle truthful`
 
 ### Chunk 13: Session edge recovery and actionable health
@@ -392,13 +392,16 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 - **Dependencies:** Chunks 8–9 and 12.
 - **Files/packages:** Paho `session_coverage.go`, `session_reconcile_apply.go`, `receiver.go`, `session_credentials.go`, `session_health.go`, runtime session manager files.
 - **Tests:** orphan, QoS downgrade, ephemeral rejection, reconnect health, and settlement-grace tests.
-- [ ] Add failing wildcard-orphan, permanent downgrade (exclusive **and** persistent mode), ephemeral repeated-rejection, reconnect-cause, session-failure grace, and persistent/exclusive reconnect with `SessionPresent=false` tests (assert a session-tagged metric, a warning, and a `Health.LastError` latch until the next reconcile).
-- [ ] Run `go -C adapters/mqtt/transport/paho test -race -count=1 ./... -run 'Test.*(Orphan|Downgrade|Ephemeral|Reconnect)'` and `go test -race -count=1 ./runtime/session -run 'Test.*SessionFailure'`; expect current edge failures.
-- [ ] Require exact managed history for wildcard cleanup, terminalize confirmed permanent downgrade, define bounded ephemeral recycle, latch coded connect errors, and reuse settlement grace.
-- [ ] Re-run the exact failing commands above; expect pass.
-- [ ] Run `make test`.
-- [ ] Add bounded-code metrics and update broker outage and stuck-settlement runbooks.
-- [ ] Accept when no unmanaged guess claims wildcard cleanup, permanent incompatibility stops churn, pinned windows recover, and health names reconnect cause.
+- [x] Add failing wildcard-orphan, permanent downgrade (exclusive **and** persistent mode), ephemeral repeated-rejection, reconnect-cause, session-failure grace, and persistent/exclusive reconnect with `SessionPresent=false` tests (assert a session-tagged metric, a warning, and a `Health.LastError` latch until the next reconcile).
+- [x] Run `go -C adapters/mqtt/transport/paho test -race -count=1 ./... -run 'Test.*(Orphan|Downgrade|Ephemeral|Reconnect)'` and `go test -race -count=1 ./runtime/session -run 'Test.*SessionFailure'`; expect current edge failures.
+- [x] Require exact managed history for wildcard cleanup, terminalize confirmed permanent downgrade, define bounded ephemeral recycle, latch coded connect errors, and reuse settlement grace.
+- [x] Re-run the exact failing commands above; expect pass.
+- [x] Run `make test`.
+- [x] Add bounded-code metrics and update broker outage and stuck-settlement runbooks.
+- [x] Accept when no unmanaged guess claims wildcard cleanup, permanent incompatibility stops churn, pinned windows recover, and health names reconnect cause.
+- **Landed:** three of the six defects were the same mistake — reporting an outcome the code had not verified — so each fix branches on the evidence instead of on the absence of an error. `unsubscribeOrphan` now splits UNSUBACK `0x00` (removed; the Debug convergence claim stands) from `0x11` (no subscription existed, so the orphan carries a wildcard or shared filter no delivered topic can name): the `0x11` case warns and points at managed subscriptions rather than logging a cleanup that did not happen. A broker QoS grant below the requested level is confirmed before it is believed: `noteQoSDowngrade` counts consecutive reconciles concluding the SAME (filter, requested, granted) grant and, at three, wraps `shared.ErrTransportClosedPermanently` so `runtime/session` escalates to a terminal restart instead of an endless retry (a persistent session looped at the supervisor's backoff cap; an exclusive one also released and re-seized its lease every cycle, resetting every standby's observation window). A refused emit is now classified by whether the session RESUMES, not merely by whether an ack callback exists: QoS 1/2 on an ephemeral session cannot be redelivered by any recycle, so it is acked through the once-guarded `Delivery.Ack`, dropped, and counted `outcome=lost` — the Receive-Maximum slot it used to pin for the life of the connection is released. Reconnect health gained two latches and two bounded-code metrics: `MQTTConnectFailures{session_id,code}` with the mapped cause held on `SessionHealth.LastError` until a connection comes up (`runtime/session` also stopped dropping `ev.Err` on `SessionReconnecting`), and `MQTTSessionResumeLost{session_id}` for a persistent/exclusive connect answered `Session Present=false`, latched until the next converged reconcile. Finally the session-failure hand-off reuses the step-down settlement grace through one shared `Manager.awaitSettlementGrace`: closing the source fences ingress but does not settle destination sends already accepted from it, so releasing immediately let a standby advance the fence underneath them.
+- **Also closed here:** the durable-resume signal needed a cold-start exemption that does not blind the failover case it exists for, so `resumeExpectedLocked` answers from evidence — a prior connection on this session (autopaho sends `CleanStart` only on a ConnectionManager's initial connect), or a non-empty managed subscription history proving this `client_id` previously held broker-side filters, which is exactly the exclusive standby connecting after `session_expiry_interval`. An adversarial review of the landed change found and fixed three defects: the ephemeral drop called the RAW ack callback, so a runner that settled a delivery and then failed would have sent a second protocol acknowledgement; the resume-loss latch was cleared inside `reconcileApply`, which the empty-plan no-op short-circuit skips, so a sender-only session would have latched the loss forever (it now clears from a `reconcileUnderGate` defer registered first, hence run last, after the recovery and exclusive-disconnect defers can still fail the reconcile); and the SUBACK downgrade path reported whichever downgraded filter `toSub`'s map iteration yielded first, so with two downgraded filters the reported grant varied between reconciles and reset its own confirmation count — it now reports the topic-smallest, matching what `observedQoSDowngrade` reports for the same state. `docs/transports/mqtt-behavior.md` sat exactly at the 600-line documentation limit, so the split Chunk 8 deferred was taken here: `### Bounded recovery from an unsettled delivery` moved to `docs/transports/mqtt-settlement-recovery.md` (no existing anchor moved) leaving 496 lines behind, and the page is registered in `docs/index.md` and the `docs/transports/mqtt.md` table.
+- **Residual:** the connect cause is exposed on `ports.SessionHealth.LastError`, the log, and the bounded `code` metric dimension — deliberately NOT on `ports.SessionHealthDetail` / `/deephealth`, which would put a raw transport error string on an HTTP surface the runtime has never used for error text; the bounded code is the operator-facing dimension and carries no secret. A confirmed permanent downgrade reached through the pre-renew-loop activation phase keeps its lease until natural TTL (`releaseAndReturn`'s existing permanent-marker branch treats every permanent failure as possibly-unsettled); nothing is unsettled for a QoS downgrade, so this is one TTL of avoidable failover delay on a config error a human must fix. On a persistent session confirmations two and three re-read the standing observed grant rather than a fresh SUBACK — an unchanged downgraded filter is deliberately never re-subscribed, so a reconnect is the only retest, and escalating is what produces one.
 - **Suggested commit title:** `harden mqtt session edge recovery`
 
 ## Phase 3: Rollout protocol and HA composition
@@ -410,13 +413,15 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 - **Dependencies:** Chunk 11.
 - **Files/packages:** `bridge/rollout_driver.go`, `rollout_loop.go`, `rollout_applier.go`, `rollout_applier_confirm.go`, rollout config/status.
 - **Tests:** rollout black-hole, deadman, artifact, revert, and resignation unit tests.
-- [ ] Add failing context-ignoring store tests for every call class, deadman reversion, artifact retry, revert retry, terminal fallback, and five-second resignation.
-- [ ] Run `go test -race -count=1 ./bridge -run 'Test.*Rollout.*(Blocked|Deadman|Artifact|Revert|Resign)'`; expect hangs or latched success.
-- [ ] Add per-operation contexts, separate local deadman scheduling, verified retry state with bounded backoff, and terminal replacement when safe generation cannot be reached.
-- [ ] Re-run the exact failing command above under the test timeout; expect pass without leaked goroutines.
-- [ ] Run `make test`.
-- [ ] Emit operation class, age, retry, stale-status, and terminal-generation signals.
-- [ ] Accept when black-holed storage cannot suppress deadman, freshness, or shutdown and no completion latch precedes verification.
+- [x] Add failing context-ignoring store tests for every call class, deadman reversion, artifact retry, revert retry, terminal fallback, and five-second resignation.
+- [x] Run `go test -race -count=1 ./bridge -run 'Test.*Rollout.*(Blocked|Deadman|Artifact|Revert|Resign)'`; expect hangs or latched success.
+- [x] Add per-operation contexts, separate local deadman scheduling, verified retry state with bounded backoff, and terminal replacement when safe generation cannot be reached.
+- [x] Re-run the exact failing command above under the test timeout; expect pass without leaked goroutines.
+- [x] Run `make test`.
+- [x] Emit operation class, age, retry, stale-status, and terminal-generation signals.
+- [x] Accept when black-holed storage cannot suppress deadman, freshness, or shutdown and no completion latch precedes verification.
+- **Landed:** per-operation budgets in `bridge/rollout_ops.go` for all six call classes, with ABANDONMENT rather than a bare deadline (a deadline expires the context, not the call) and a single-outstanding rule that caps a black-holed store at one parked goroutine instead of one per tick. The drive runs `rolloutApplier.tick`: local safety work first, so the confirm-window deadman fires off a cached deadline rather than behind a store read. Artifact write and revert are retryable, verified state (`rollout_recovery.go`) — the artifact is read back, because the store's monotonicity rule makes a stale write a no-op success. Signals: `ClusterRolloutStoreCalls{operation,outcome}`, `ClusterRolloutObservationAge`, `ClusterRolloutRetries{operation}`, `ClusterRolloutTerminal`, plus `observation_age_ms` / `stale` / `last_error` / `artifact_generation` / `terminal_generation` on `/deephealth` (where `applied` — declared but never populated — is now filled in).
+- **Deviation from the work item, deliberate:** "terminal replacement" applies to the REVERT only. A member that cannot record the artifact is running the correct config and only its boot state is stale, so replacing it is the one action that would boot it on the older generation; it keeps retrying at the capped backoff under a standing alarm instead, and retracts the latch if the store returns. HIGH-7's remediation allows either ("retry with bounded backoff **or** terminate the unsafe member"), and this picks per case rather than uniformly.
 - **Suggested commit title:** `bound rollout safety operations`
 
 ### Chunk 15: Rollout admission, deployment fingerprint, and baseline

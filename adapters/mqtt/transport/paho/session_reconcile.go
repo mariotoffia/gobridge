@@ -51,6 +51,17 @@ func (s *Session) reconcileUnderGate(
 	plan connectivity.SessionPlan,
 	recoveryGeneration uint64,
 ) (retErr error) {
+	// Registered first, so it runs LAST: the deferred recovery-completion and
+	// exclusive-disconnect handlers below can still turn a nil retErr into an
+	// error, and the durable-resume latch may only be cleared once the
+	// reconcile is FINALLY successful. Every success path passes through here,
+	// including the empty-plan no-op a sender-only session takes — which is the
+	// one shape that would otherwise latch the loss forever.
+	defer func() {
+		if retErr == nil {
+			s.clearResumeLost()
+		}
+	}()
 	defer func() {
 		if recoveryGeneration == 0 {
 			return

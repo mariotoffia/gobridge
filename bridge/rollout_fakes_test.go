@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mariotoffia/gobridge/adapters/native/memoryrollout"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -112,3 +113,219 @@ func testRolloutConfig(store ports.ClusterRolloutStore, memberID string) Cluster
 		MemberID: memberID,
 	}
 }
+
+// blackHoleRolloutStore wraps a real rollout store and swallows the call classes
+// a test has black-holed: those calls block IGNORING their context until the
+// test releases them, which is what an SDK call into a TCP black hole with no
+// client-side timeout does. A store that merely returned an error would prove
+// nothing — the barrier's danger is the call that never comes back at all.
+type blackHoleRolloutStore struct {
+	inner   *memoryrollout.Store
+	release chan struct{}
+	entered chan string
+
+	mu    sync.Mutex
+	holes map[string]bool
+}
+
+func newBlackHoleRolloutStore(inner *memoryrollout.Store) *blackHoleRolloutStore {
+	return &blackHoleRolloutStore{
+		inner:   inner,
+		release: make(chan struct{}),
+		entered: make(chan string, 64),
+		holes:   map[string]bool{},
+	}
+}
+
+// blackHole starts swallowing the named call classes ("read", "vote", "decide",
+// "artifact"); freeAll releases every held call so no goroutine outlives the test.
+func (s *blackHoleRolloutStore) blackHole(classes ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range classes {
+		s.holes[c] = true
+	}
+}
+
+func (s *blackHoleRolloutStore) freeAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.holes = map[string]bool{}
+	select {
+	case <-s.release:
+	default:
+		close(s.release)
+	}
+}
+
+func (s *blackHoleRolloutStore) hold(class string) {
+	s.mu.Lock()
+	held := s.holes[class]
+	s.mu.Unlock()
+	if !held {
+		return
+	}
+	select {
+	case s.entered <- class:
+	default:
+	}
+	<-s.release
+}
+
+func (s *blackHoleRolloutStore) Propose(
+	ctx context.Context, p persistence.RolloutProposal,
+) (persistence.Rollout, error) {
+	s.hold(rolloutOpPropose)
+	return s.inner.Propose(ctx, p)
+}
+
+func (s *blackHoleRolloutStore) Ack(ctx context.Context, gen uint64, memberID, digest string) error {
+	s.hold(rolloutOpVote)
+	return s.inner.Ack(ctx, gen, memberID, digest)
+}
+
+func (s *blackHoleRolloutStore) Nack(ctx context.Context, gen uint64, memberID, reason string) error {
+	s.hold(rolloutOpVote)
+	return s.inner.Nack(ctx, gen, memberID, reason)
+}
+
+func (s *blackHoleRolloutStore) Commit(ctx context.Context, gen uint64, tok persistence.LeaseToken) error {
+	s.hold(rolloutOpDecide)
+	return s.inner.Commit(ctx, gen, tok)
+}
+
+func (s *blackHoleRolloutStore) Converge(ctx context.Context, gen uint64, memberID string) error {
+	s.hold(rolloutOpVote)
+	return s.inner.Converge(ctx, gen, memberID)
+}
+
+func (s *blackHoleRolloutStore) Confirm(ctx context.Context, gen uint64, tok persistence.LeaseToken) error {
+	s.hold(rolloutOpDecide)
+	return s.inner.Confirm(ctx, gen, tok)
+}
+
+func (s *blackHoleRolloutStore) Revert(
+	ctx context.Context, gen uint64, tok persistence.LeaseToken, reason string,
+) error {
+	s.hold(rolloutOpDecide)
+	return s.inner.Revert(ctx, gen, tok, reason)
+}
+
+func (s *blackHoleRolloutStore) Abort(
+	ctx context.Context, gen uint64, tok persistence.LeaseToken, reason string,
+) error {
+	s.hold(rolloutOpDecide)
+	return s.inner.Abort(ctx, gen, tok, reason)
+}
+
+func (s *blackHoleRolloutStore) Current(ctx context.Context) (persistence.Rollout, error) {
+	s.hold(rolloutOpRead)
+	return s.inner.Current(ctx)
+}
+
+func (s *blackHoleRolloutStore) PutCommittedConfig(
+	ctx context.Context, cfg persistence.CommittedRolloutConfig,
+) error {
+	s.hold(rolloutOpArtifact)
+	return s.inner.PutCommittedConfig(ctx, cfg)
+}
+
+func (s *blackHoleRolloutStore) CommittedConfig(ctx context.Context) (persistence.CommittedRolloutConfig, error) {
+	s.hold(rolloutOpRead)
+	return s.inner.CommittedConfig(ctx)
+}
+
+var (
+	_ ports.ClusterRolloutStore         = (*blackHoleRolloutStore)(nil)
+	_ ports.ClusterCommittedConfigStore = (*blackHoleRolloutStore)(nil)
+)
+
+// artifactFaultStore wraps a real rollout store and injects the two committed-
+// artifact failure modes HIGH-7 is about: a write that ERRORS, and — worse — a
+// write that reports success while persisting nothing (the silent no-op a
+// conditional write degrades into when the caller's assumptions are wrong). Both
+// must be retried, and neither may latch the member's "artifact recorded" state.
+type artifactFaultStore struct {
+	*memoryrollout.Store
+
+	mu sync.Mutex
+	// failures counts down: while positive each write fails and decrements.
+	// Negative means fail forever.
+	failures int
+	// lying makes writes report success without persisting anything.
+	lying bool
+	// writes counts every PutCommittedConfig call, successful or not.
+	writes int
+}
+
+func newArtifactFaultStore(failures int, lying bool) *artifactFaultStore {
+	return &artifactFaultStore{Store: memoryrollout.NewStore(), failures: failures, lying: lying}
+}
+
+func (s *artifactFaultStore) PutCommittedConfig(
+	ctx context.Context, cfg persistence.CommittedRolloutConfig,
+) error {
+	s.mu.Lock()
+	s.writes++
+	lying := s.lying
+	fail := s.failures != 0
+	if s.failures > 0 {
+		s.failures--
+	}
+	s.mu.Unlock()
+	switch {
+	case lying:
+		return nil // reported durable, wrote nothing
+	case fail:
+		return shared.ErrUnavailable
+	default:
+		return s.Store.PutCommittedConfig(ctx, cfg)
+	}
+}
+
+// writeCount reports how many artifact writes were attempted.
+func (s *artifactFaultStore) writeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writes
+}
+
+var (
+	_ ports.ClusterRolloutStore         = (*artifactFaultStore)(nil)
+	_ ports.ClusterCommittedConfigStore = (*artifactFaultStore)(nil)
+)
+
+// deadlineRecordingLeaseStore records the budget each lease call was given, so a
+// test can assert the CALLER's bound rather than measuring wall-clock duration.
+type deadlineRecordingLeaseStore struct {
+	*electionLeaseStore
+
+	mu              sync.Mutex
+	releaseBudget   time.Duration
+	releaseObserved bool
+}
+
+func newDeadlineRecordingLeaseStore() *deadlineRecordingLeaseStore {
+	return &deadlineRecordingLeaseStore{electionLeaseStore: newElectionLeaseStore()}
+}
+
+func (s *deadlineRecordingLeaseStore) Release(
+	ctx context.Context, id string, token persistence.LeaseToken,
+) error {
+	if deadline, ok := ctx.Deadline(); ok {
+		s.mu.Lock()
+		s.releaseBudget = time.Until(deadline)
+		s.releaseObserved = true
+		s.mu.Unlock()
+	}
+	return s.electionLeaseStore.Release(ctx, id, token)
+}
+
+// releaseBound reports the deadline budget the last Release was given.
+func (s *deadlineRecordingLeaseStore) releaseBound() (time.Duration, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.releaseBudget, s.releaseObserved
+}
+
+var _ ports.LeaseStore = (*deadlineRecordingLeaseStore)(nil)

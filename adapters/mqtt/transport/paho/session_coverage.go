@@ -26,10 +26,16 @@ const orphanUnsubscribeTimeout = 10 * time.Second
 //
 // MQTT exposes no subscription listing, so the orphan is identified only
 // by its own post-grace publish and unsubscribed by that EXACT topic
-// name. A wildcard orphan subscription may therefore survive (UNSUBSCRIBE
-// matches the filter, not a concrete topic), but its publishes keep being
-// acked-and-dropped, so the stall cannot recur. The router dedups per
-// topic, so this runs at most once per orphan topic per process.
+// name. UNSUBSCRIBE matches the FILTER a subscription was created with,
+// never a topic that filter covers, so this converges an exact-filter
+// orphan and CANNOT converge a wildcard or shared one: the broker answers
+// 0x11 ("no subscription existed") and keeps delivering. That outcome is
+// reported rather than logged as a cleanup — only exact managed
+// subscription history names such a filter, and a managed session
+// converges it through reconcile instead (see reconcileManagedUnsubscribe).
+// The surviving orphan's publishes keep being acked-and-dropped, so the
+// stall cannot recur. The router dedups per topic, so this runs at most
+// once per orphan topic per process.
 //
 // A concrete topic that a STILL-DESIRED subscription covers (an active
 // broker subscription in s.activeSubs, or a filter in the current plan) is
@@ -77,9 +83,11 @@ func (s *Session) unsubscribeOrphan(topic string) {
 		return
 	}
 
+	removed := false
 	reasons, err := cm.Unsubscribe(ctx, []string{topic})
 	if err == nil {
 		confirmation := classifyUnsubackReasons([]string{topic}, reasons)
+		removed = confirmation.removedAny
 		if confirmation.firstErr != nil {
 			err = confirmation.firstErr
 		} else if len(confirmation.confirmed) != 1 {
@@ -92,6 +100,27 @@ func (s *Session) unsubscribeOrphan(topic string) {
 				"client_id", s.opts.ClientID,
 				"topic", topic,
 				"error", err,
+			)
+		}
+		return
+	}
+
+	if !removed {
+		// UNSUBACK 0x11: the broker holds no subscription under this exact
+		// name, so the orphan was created with a wildcard or shared filter
+		// this session cannot reconstruct from a delivered topic. Guessing a
+		// filter would risk removing a LIVE subscription, so nothing is
+		// removed and nothing is claimed. Ingress is unaffected (the publishes
+		// are acked-and-dropped), but MetricMQTTRouterUnmatchedDropped will
+		// keep rising for this filter until an operator removes it at the
+		// broker or the session runs with managed subscriptions, whose exact
+		// durable history converges it on the next reconcile.
+		if s.logger != nil {
+			s.logger.Warn("mqtt: orphan broker subscription survived cleanup; its filter is "+
+				"wildcarded or shared and MQTT cannot unsubscribe it by a delivered topic — "+
+				"enable managed subscriptions for exact durable filters, or remove it at the broker",
+				"client_id", s.opts.ClientID,
+				"topic", topic,
 			)
 		}
 		return

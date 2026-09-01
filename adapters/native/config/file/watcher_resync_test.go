@@ -5,7 +5,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // TestWatcher_Notify_ConfigMapSymlinkSwap reproduces the Kubernetes
@@ -265,11 +265,7 @@ func TestWatcher_Notify_OverflowForcesResync(t *testing.T) {
 // preceding write has been observed.
 func waitForTimer(t *testing.T, fc *clocktest.Fake) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for fc.TimerCount() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for debounce timer to arm")
-		}
-		runtime.Gosched()
-	}
+	wait.Until(t, 2*time.Second, "debounce timer arms", func() bool {
+		return fc.TimerCount() > 0
+	})
 }

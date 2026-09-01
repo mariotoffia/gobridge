@@ -46,9 +46,10 @@ func (f *Fake) NewTimer(d time.Duration) clock.Timer {
 	defer f.mu.Unlock()
 
 	ft := &fakeTimer{
-		ch:       make(chan time.Time, 1),
-		deadline: f.now.Add(d),
-		clock:    f,
+		ch:         make(chan time.Time, 1),
+		deadline:   f.now.Add(d),
+		clock:      f,
+		registered: true,
 	}
 	f.timers = append(f.timers, ft)
 	return ft
@@ -62,10 +63,11 @@ func (f *Fake) NewTicker(d time.Duration) clock.Ticker {
 	defer f.mu.Unlock()
 
 	ft := &fakeTicker{
-		ch:       make(chan time.Time, 1),
-		period:   d,
-		nextTick: f.now.Add(d),
-		clock:    f,
+		ch:         make(chan time.Time, 1),
+		period:     d,
+		nextTick:   f.now.Add(d),
+		clock:      f,
+		registered: true,
 	}
 	f.tickers = append(f.tickers, ft)
 	return ft
@@ -138,13 +140,19 @@ func (f *Fake) Advance(d time.Duration) {
 
 	target := f.now.Add(d)
 
+	// A timer that is stopped or has fired is retired from the list — it has
+	// no further deadline to cross. Mark it de-registered so its own Reset
+	// knows to put it back; a retired element that Reset cannot revive is a
+	// clock that has silently stopped obeying the test.
 	alive := f.timers[:0]
 	for _, t := range f.timers {
 		if t.stopped {
+			t.registered = false
 			continue
 		}
 		if !t.deadline.After(target) {
 			t.fireLocked(t.deadline)
+			t.registered = false
 			continue
 		}
 		alive = append(alive, t)
@@ -154,6 +162,7 @@ func (f *Fake) Advance(d time.Duration) {
 	activeTickers := f.tickers[:0]
 	for _, tk := range f.tickers {
 		if tk.stopped {
+			tk.registered = false
 			continue
 		}
 		for !tk.nextTick.After(target) {
@@ -177,7 +186,12 @@ type fakeTimer struct {
 	deadline time.Time
 	stopped  bool
 	fired    bool
-	clock    *Fake
+	// registered reports whether this timer is still in the Fake's list.
+	// Advance retires a stopped or fired timer from that list; Reset uses
+	// this to put it back rather than leaving a re-armed timer that no
+	// Advance will ever look at again.
+	registered bool
+	clock      *Fake
 }
 
 func (t *fakeTimer) C() <-chan time.Time { return t.ch }
@@ -187,23 +201,33 @@ func (t *fakeTimer) Reset(d time.Duration) bool {
 	defer t.clock.mu.Unlock()
 
 	wasActive := !t.stopped && !t.fired
-	wasFired := t.fired
 	t.stopped = false
 	t.fired = false
 	t.deadline = t.clock.now.Add(d)
+	// A one-shot timer's pending value belongs to the deadline the caller is
+	// replacing, so dropping it is what Reset means (and matches time.Timer
+	// since Go 1.23). Unlike a ticker there is nothing to lose: the new
+	// deadline will fire on a later Advance.
 	select {
 	case <-t.ch:
 	default:
 	}
-	// If the timer had already fired, it was removed from the Fake's
-	// timer list by a previous Advance. Re-register it so that
-	// subsequent Advance calls can fire it again — matching the
-	// behavior of the real runtime where time.Timer.Reset after Stop
-	// or after firing re-arms the timer.
-	if wasFired {
-		t.clock.timers = append(t.clock.timers, t)
-	}
+	// Advance retires a timer once it is stopped or has fired, so a Reset that
+	// re-arms one has to put it back in the list. Without this the timer holds
+	// a live deadline that no Advance will ever cross, and the loop waiting on
+	// it never wakes.
+	t.registerLocked()
 	return wasActive
+}
+
+// registerLocked puts a retired timer back in the Fake's list.
+// Caller MUST hold t.clock.mu.
+func (t *fakeTimer) registerLocked() {
+	if t.registered {
+		return
+	}
+	t.registered = true
+	t.clock.timers = append(t.clock.timers, t)
 }
 
 func (t *fakeTimer) Stop() bool {
@@ -238,7 +262,10 @@ type fakeTicker struct {
 	period   time.Duration
 	nextTick time.Time
 	stopped  bool
-	clock    *Fake
+	// registered mirrors fakeTimer.registered: Advance retires a stopped
+	// ticker from the Fake's list, and Reset puts it back.
+	registered bool
+	clock      *Fake
 }
 
 func (tk *fakeTicker) C() <-chan time.Time { return tk.ch }
@@ -256,10 +283,31 @@ func (tk *fakeTicker) Reset(d time.Duration) {
 	// next Advance would immediately fire on the old cadence — the
 	// opposite of what Reset should do.
 	tk.nextTick = tk.clock.now.Add(d)
-	select {
-	case <-tk.ch:
-	default:
+	// A tick already sitting in the channel is DELIBERATELY kept, which is
+	// where this fake parts company with time.Ticker.Reset.
+	//
+	// A loop that re-paces itself calls Reset at the end of the handler it is
+	// running, while the test that drives it advances the clock from another
+	// goroutine. The advance can therefore land mid-handler: the tick is
+	// fired and buffered, and this Reset arrives after it. Real time.Ticker
+	// can afford to discard that tick because wall time keeps flowing and the
+	// next one is at most one period away. Here nothing else moves time — a
+	// discarded tick is never re-delivered, so the loop and the test both wait
+	// forever, and which of the two happens depends on a goroutine race. That
+	// is exactly the non-determinism a fake clock exists to remove: a tick the
+	// test has already advanced past is an event that HAPPENED, and Reset
+	// changes only the cadence of the ones still to come.
+	tk.registerLocked()
+}
+
+// registerLocked puts a retired ticker back in the Fake's list.
+// Caller MUST hold tk.clock.mu.
+func (tk *fakeTicker) registerLocked() {
+	if tk.registered {
+		return
 	}
+	tk.registered = true
+	tk.clock.tickers = append(tk.clock.tickers, tk)
 }
 
 func (tk *fakeTicker) Stop() {

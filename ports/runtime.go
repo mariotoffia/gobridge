@@ -80,6 +80,13 @@ type DeepHealth struct {
 	Sessions        []SessionHealthDetail
 	ReadyForTraffic bool         // All sessions connected + runtime healthy
 	ServiceLevel    ServiceLevel // Minimum service level across all sessions
+	// Empty reports that this instance carries no routes and no sessions, so
+	// nothing can be bridged through it. It is the observable form of the
+	// start-empty state (a missing or route-less configuration). Every
+	// "all X are ready" aggregate above is vacuously true over empty sets, so
+	// without this flag a bridge that carries nothing would advertise itself as
+	// fully ready for traffic.
+	Empty bool
 }
 
 // ReadinessLevel describes the highest operational level the runtime
@@ -182,6 +189,13 @@ const readinessRoleStandby = "standby"
 func ReadinessLevelFromDeepHealth(dh DeepHealth) ReadinessLevel {
 	if !dh.Running || !dh.Healthy {
 		return LevelLive
+	}
+	// An instance that carries nothing is running and nothing more. Every level
+	// above LevelRunning is a claim about sessions and routes it does not have,
+	// and LevelFull in particular is the gate a deployment opens traffic on, so
+	// a bridge with no configuration must never reach it.
+	if dh.Empty {
+		return LevelRunning
 	}
 	level := readinessLevelFromSessions(dh)
 	if dh.Role == readinessRoleStandby && level > LevelSubscribed {

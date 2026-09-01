@@ -2,7 +2,6 @@ package bridge
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/persistence"
@@ -48,6 +47,12 @@ func (a *rolloutApplier) adoptProvisional(ctx context.Context, r persistence.Rol
 		a.revertCfg = a.host.Config()
 		a.provisionalGen = gen
 		a.convergeSent = false
+		// Cache when the LOCAL deadman fires, so it runs off this member's own
+		// state on the drive's cadence rather than behind a store read. Delayed a
+		// few ticks past the confirm deadline so a live coordinator's Revert wins;
+		// the local deadman covers a dead one — or a store no decision can reach.
+		a.provisionalDeadline = r.ConfirmDeadline().
+			Add(time.Duration(confirmDeadmanGraceTicks) * a.barrier.pollInterval)
 	}
 	// Swap provisionally, idempotent once applied. Skip re-applying once this member
 	// has GIVEN UP on the swap for this gen, so a deterministically-failing swap does
@@ -65,15 +70,11 @@ func (a *rolloutApplier) adoptProvisional(ctx context.Context, r persistence.Rol
 			return err
 		}
 	}
-	// Local deadman (design §8.1): if the confirm window expired and no terminal
-	// decision landed, revert to the last confirmed generation. Delayed a few ticks
-	// past the deadline so a live coordinator's Revert wins; this covers a DEAD one.
-	grace := time.Duration(confirmDeadmanGraceTicks) * a.barrier.pollInterval
-	if a.clk != nil && a.clk.Now().After(r.ConfirmDeadline().Add(grace)) {
-		a.applyRevert(ctx, r, "local confirm-window deadman: the window expired without a coordinator "+
-			"decision, reverting to the last confirmed generation")
-		a.revertedGen = gen
-	}
+	// The deadman also runs from the drive tick (rollout_recovery.go), off the
+	// cached deadline, so it fires on ticks where this observation never happened
+	// because the store did not answer. Running it here too costs nothing and
+	// keeps a member that DID observe from waiting a further tick.
+	a.runLocalDeadman(ctx)
 	return nil
 }
 
@@ -91,7 +92,9 @@ func (a *rolloutApplier) recordConvergence(ctx context.Context, r persistence.Ro
 	if !a.host.Converged(ctx) {
 		return nil // not yet ready; a later poll retries
 	}
-	if err := a.store.Converge(ctx, r.Generation(), a.memberID); err != nil {
+	if err := a.ops().run(ctx, rolloutOpVote, func(callCtx context.Context) error {
+		return a.store.Converge(callCtx, r.Generation(), a.memberID)
+	}); err != nil {
 		// A resolved/superseded rollout rejecting the converge is the barrier working
 		// (the coordinator reverted or confirmed under us), not a store outage.
 		if isRolloutVoteRejection(err) {
@@ -125,10 +128,12 @@ func (a *rolloutApplier) adoptConfirmed(ctx context.Context, r persistence.Rollo
 		return nil
 	}
 	// The cohort confirmed, so N is the config to run even if a local deadman had
-	// reverted this member to N-1 in a prior tick. Idempotent when this member
-	// already runs N; suppress rebuild churn once it has given up on the swap (that
-	// member is degraded and alarmed, — a confirmed gen it cannot apply is a
-	// per-node convergence failure, not a retry-forever).
+	// reverted this member to N-1 in a prior tick — and any revert still owed for N
+	// is now the WRONG outcome, so it is cancelled rather than left to fire.
+	// Idempotent when this member already runs N; suppress rebuild churn once it
+	// has given up on the swap (that member is degraded and alarmed, — a confirmed
+	// gen it cannot apply is a per-node convergence failure, not a retry-forever).
+	a.cancelRevert(gen)
 	a.revertedGen = 0
 	applied := configContentEqual(a.host.Config(), cand.frozen)
 	if !applied && a.gaveUpGen != gen {
@@ -136,9 +141,11 @@ func (a *rolloutApplier) adoptConfirmed(ctx context.Context, r persistence.Rollo
 	}
 	if applied {
 		// NOW advance the durable last-committed artifact — only on Confirm, so a
-		// crash reboots onto the CONFIRMED generation, never a provisional one.
-		a.persistCommittedArtifact(ctx, r, cand.frozen)
-		a.artifactGen = gen
+		// crash reboots onto the CONFIRMED generation, never a provisional one. The
+		// generation is latched only once the write is verified durable, so a
+		// confirmed member that cannot record it keeps retrying instead of
+		// promising a boot state it does not have.
+		a.requireCommittedArtifact(ctx, gen, r.ConfigVersion(), cand.frozen)
 	}
 	return nil
 }
@@ -146,33 +153,12 @@ func (a *rolloutApplier) adoptConfirmed(ctx context.Context, r persistence.Rollo
 // revertProvisional reverts this member to the last confirmed generation (N-1) on
 // observing a Reverted rollout (the coordinator's deadman decision). A no-op for a
 // member that never provisionally applied this generation (it is already on N-1) or
-// already reverted it.
+// already reverted it. The swap itself is a retried, verified repair
+// (rollout_recovery.go): a revert that did not take is not a revert.
 func (a *rolloutApplier) revertProvisional(ctx context.Context, r persistence.Rollout) {
-	gen := r.Generation()
-	if a.provisionalGen != gen || a.revertedGen == gen || a.revertCfg == nil {
+	if a.provisionalGen != r.Generation() {
 		return
 	}
-	a.applyRevert(ctx, r, "coordinated cluster rollout reverted by the coordinator: "+r.Reason())
-	a.revertedGen = gen
-}
-
-// applyRevert swaps this member back to its cached revert target (the config it ran
-// before the provisional swap, i.e. generation N-1). Idempotent: a no-op when this
-// member already runs the target. A revert to a config this member ran moments ago
-// should not fail; if it somehow does, the member is marked degraded rather than
-// left silently mixed-version.
-func (a *rolloutApplier) applyRevert(ctx context.Context, r persistence.Rollout, reason string) {
-	if a.revertCfg == nil || configContentEqual(a.host.Config(), a.revertCfg) {
-		return
-	}
-	if a.host.RolloutLogger() != nil {
-		a.host.RolloutLogger().Warn("supervisor: reverting the provisional cluster rollout to the last "+
-			"confirmed generation", "generation", r.Generation(), "reason", reason)
-	}
-	a.host.ApplyCommitted(ctx, a.revertCfg)
-	if !configContentEqual(a.host.Config(), a.revertCfg) {
-		a.host.MarkDegraded(fmt.Sprintf("coordinated cluster rollout generation %d reverted, but this member "+
-			"could not re-apply the last confirmed generation; it may run the reverted provisional config",
-			r.Generation()))
-	}
+	a.requireRevert(ctx, r.Generation(),
+		"coordinated cluster rollout reverted by the coordinator: "+r.Reason())
 }

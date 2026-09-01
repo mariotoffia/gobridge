@@ -2,7 +2,6 @@ package runtime_test
 
 import (
 	"context"
-	stdruntime "runtime"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
 	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // fixedNoJitterStrategy returns a constant interval without the ±25%
@@ -29,10 +29,9 @@ func (f fixedNoJitterStrategy) NextInterval(_ int) time.Duration { return f.d }
 
 func waitForFakeTimers(t *testing.T, fake *clocktest.Fake, want int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for fake.TimerCount() < want && time.Now().Before(deadline) {
-		stdruntime.Gosched()
-	}
+	wait.Until(t, 2*time.Second, "fake clock reaches the expected active timer count", func() bool {
+		return fake.TimerCount() >= want
+	})
 	if got := fake.TimerCount(); got < want {
 		t.Fatalf("expected at least %d fake timer(s), got %d", want, got)
 	}

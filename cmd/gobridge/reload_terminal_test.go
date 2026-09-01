@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"runtime"
 	"testing"
 	"time"
 
@@ -11,20 +10,20 @@ import (
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
-// waitForFakeTimers spins until the fake clock has at least n active timers, so
-// a test can advance time only AFTER applyCommitted has entered its deadline
-// wait. Bounded by a wall-clock deadline so a wiring regression fails fast.
+// waitForFakeTimers blocks until the fake clock has at least n active timers,
+// so a test can advance time only AFTER applyCommitted has entered its deadline
+// wait. Paced by testutil/wait, which backs off and parks the test goroutine
+// instead of spinning: a spinning waiter competes with the very goroutine it is
+// waiting for, and under -race that is enough to miss the timer registration
+// and fail a correct test.
 func waitForFakeTimers(t *testing.T, f *clocktest.Fake, n int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for f.TimerCount() < n {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %d fake timers (have %d)", n, f.TimerCount())
-		}
-		runtime.Gosched()
-	}
+	wait.Until(t, 2*time.Second, "fake clock reaches the expected active timer count", func() bool {
+		return f.TimerCount() >= n
+	})
 }
 
 // TestApplyCommitted_SlowSuccessfulSwapNotRolledBack is the CRITICAL regression:

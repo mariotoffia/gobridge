@@ -88,7 +88,13 @@ evidence, guarding against removing subscriptions the plan still wants.
   successful `UNSUBSCRIBE` of that exact filter, a verified managed-migration
   drain, a clean start / session deletion, session expiry, a **changed** client
   ID (which abandons the old broker state rather than proving it was cleaned up),
-  or broker administration.
+  or broker administration. The adapter REPORTS this rather than glossing it: an
+  `UNSUBACK` of `0x11` (*no subscription existed*) proves the filter was not the
+  concrete topic, so `unsubscribeOrphan` logs a warning naming the remaining work
+  — enable managed subscriptions, whose exact durable history converges the
+  filter on the next reconcile, or remove it at the broker — instead of the
+  Debug-level "unsubscribed orphan topic" it used to log for a removal that never
+  happened.
 - `UNSUBSCRIBE` is best-effort and **not** retried within the process. A
   `cm.Unsubscribe` failure leaves the dedup mark set, so the exact topic is not
   re-attempted for the life of the process; the only re-attempt path is the

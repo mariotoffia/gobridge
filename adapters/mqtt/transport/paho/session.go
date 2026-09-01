@@ -258,6 +258,28 @@ type Session struct {
 	recoveryErr                 error
 	lastRecoveryCompleted       time.Time
 	recoveryRecycleCount        uint64
+
+	// qosDowngradeConfirmed is the broker grant the current confirmation streak
+	// is counting, and qosDowngradeStreak how many consecutive reconciles have
+	// concluded it. A different grant, or a reconcile that converges without a
+	// downgrade, restarts the count. See noteQoSDowngrade. Guarded by mu.
+	qosDowngradeConfirmed qosDowngradeGrant
+	qosDowngradeStreak    int
+
+	// connectErr latches the mapped cause of the most recent failed CONNECT and
+	// is cleared when a connection comes up. MQTT authenticates only at CONNECT
+	// and autopaho then retries behind the scenes, so without the latch a
+	// session whose readiness has gone red carries no reason at all. Surfaced on
+	// SessionHealth.LastError. Guarded by mu.
+	connectErr error
+
+	// resumeLostErr latches the discontinuity of a persistent/exclusive connect
+	// that asked the broker to resume and got Session Present=false: the offline
+	// QoS 1/2 backlog and the broker-side subscriptions for this client id are
+	// gone. Re-subscribing succeeds, so nothing else would record it. Cleared by
+	// the next reconcile that converges the plan — the point at which the loss
+	// window closes. Guarded by mu.
+	resumeLostErr error
 }
 
 // mqttCredentials is the mutable subset of SessionOptions that can be

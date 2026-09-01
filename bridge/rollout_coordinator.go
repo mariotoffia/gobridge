@@ -115,6 +115,9 @@ type rolloutCoordinatorConfig struct {
 	MemberID   string
 	LeaseTTL   time.Duration
 	Logger     *slog.Logger
+	// Ops bounds every lease and decision call. Nil gives the coordinator its own
+	// default budget, so a hand-wired coordinator is bounded too.
+	Ops *rolloutOps
 }
 
 // rolloutCoordinator drives an active rollout to a terminal decision while it
@@ -131,6 +134,8 @@ type rolloutCoordinator struct {
 	leaseTTL   time.Duration
 	logger     *slog.Logger
 
+	ops *rolloutOps
+
 	tok       persistence.LeaseToken
 	electedAt time.Time
 }
@@ -145,6 +150,10 @@ func newRolloutCoordinator(cfg rolloutCoordinatorConfig) *rolloutCoordinator {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	ops := cfg.Ops
+	if ops == nil {
+		ops = newRolloutOps(0)
+	}
 	return &rolloutCoordinator{
 		store:      cfg.Store,
 		lease:      cfg.Lease,
@@ -153,13 +162,21 @@ func newRolloutCoordinator(cfg rolloutCoordinatorConfig) *rolloutCoordinator {
 		memberID:   cfg.MemberID,
 		leaseTTL:   cfg.LeaseTTL,
 		logger:     logger,
+		ops:        ops,
 	}
 }
 
 // elect acquires the coordinator lease and records the election instant. The
 // returned LeaseToken is this coordinator's fencing token for the rollout.
 func (c *rolloutCoordinator) elect(ctx context.Context) error {
-	tok, err := c.lease.Acquire(ctx, coordLeaseID, c.memberID, c.leaseTTL, nil)
+	// memberID and leaseTTL are immutable, but read them into locals anyway: the
+	// rule for a call that may be abandoned is that its closure captures locals
+	// only (rolloutOps.run), and an exception is how the next edit breaks it.
+	memberID, ttl := c.memberID, c.leaseTTL
+	tok, err := rolloutOpValue(ctx, c.ops, rolloutOpLease,
+		func(callCtx context.Context) (persistence.LeaseToken, error) {
+			return c.lease.Acquire(callCtx, coordLeaseID, memberID, ttl, nil)
+		})
 	if err != nil {
 		return err
 	}
@@ -179,7 +196,7 @@ func (c *rolloutCoordinator) observe(ctx context.Context) (bool, error) {
 	if !firstSideEffectAllowed(c.electedAt, c.leaseTTL, c.clk.Now()) {
 		return false, nil // lock-delay: observe only, no decision yet
 	}
-	return coordinatorStep(ctx, c.store, c.membership(), c.tok, c.clk.Now())
+	return coordinatorStep(ctx, c.ops, c.store, c.membership(), c.tok, c.clk.Now())
 }
 
 // firstSideEffectAllowed reports whether a coordinator elected at electedAt has
@@ -231,12 +248,13 @@ func firstSideEffectAllowed(electedAt time.Time, lockDelay time.Duration, now ti
 // that is the first change that would make a zombie decision observable.
 func coordinatorStep(
 	ctx context.Context,
+	ops *rolloutOps,
 	store ports.ClusterRolloutStore,
 	membership []string,
 	tok persistence.LeaseToken,
 	now time.Time,
 ) (bool, error) {
-	r, err := store.Current(ctx)
+	r, err := rolloutOpValue(ctx, ops, rolloutOpRead, store.Current)
 	if err != nil {
 		if errors.Is(err, shared.ErrNotFound) {
 			return false, nil // no rollout proposed yet — nothing to drive
@@ -246,24 +264,32 @@ func coordinatorStep(
 	action, reason := decideRollout(r, membership, now)
 	switch action {
 	case rolloutActionCommit:
-		if err := store.Commit(ctx, r.Generation(), tok); err != nil {
+		if err := ops.run(ctx, rolloutOpDecide, func(callCtx context.Context) error {
+			return store.Commit(callCtx, r.Generation(), tok)
+		}); err != nil {
 			return false, err // deposed coordinator → stale token rejected
 		}
 		// A base commit is terminal; a provisional (windowed) commit is NOT — the
 		// coordinator keeps driving the latter to Confirm/Revert on later observations.
 		return r.ConfirmWindow() == 0, nil
 	case rolloutActionAbort:
-		if err := store.Abort(ctx, r.Generation(), tok, reason); err != nil {
+		if err := ops.run(ctx, rolloutOpDecide, func(callCtx context.Context) error {
+			return store.Abort(callCtx, r.Generation(), tok, reason)
+		}); err != nil {
 			return false, err
 		}
 		return true, nil
 	case rolloutActionConfirm:
-		if err := store.Confirm(ctx, r.Generation(), tok); err != nil {
+		if err := ops.run(ctx, rolloutOpDecide, func(callCtx context.Context) error {
+			return store.Confirm(callCtx, r.Generation(), tok)
+		}); err != nil {
 			return false, err // deposed coordinator → stale token rejected
 		}
 		return true, nil
 	case rolloutActionRevert:
-		if err := store.Revert(ctx, r.Generation(), tok, reason); err != nil {
+		if err := ops.run(ctx, rolloutOpDecide, func(callCtx context.Context) error {
+			return store.Revert(callCtx, r.Generation(), tok, reason)
+		}); err != nil {
 			return false, err
 		}
 		return true, nil

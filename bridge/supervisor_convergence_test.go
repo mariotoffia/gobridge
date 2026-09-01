@@ -80,8 +80,9 @@ func TestSupervisor_ConvergenceWatch_MarksAppliedNotConvergedThenClearsOnConverg
 	require.True(t, degraded)
 	assert.Contains(t, reason, "config version 7")
 
-	// The sessions "converge": an empty started runtime is Running+Healthy
-	// with no sessions, which classifies at LevelFull ≥ LevelSubscribed.
+	// The sessions "converge": starting the runtime makes it Running+Healthy,
+	// and an instance carrying no sessions has nothing left to connect — the
+	// convergence rule for an empty runtime.
 	require.NoError(t, rt.Start(t.Context()))
 	t.Cleanup(func() { _ = rt.Stop(t.Context()) })
 

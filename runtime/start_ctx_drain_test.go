@@ -62,7 +62,7 @@ func TestStartCtxCancel_InFlightSenderKeepsLiveContextUntilDrain(t *testing.T) {
 	go func() { _ = recv.EmitWork(del) }()
 	<-sender.entered
 
-	base := settledFakeTimerCount(fake)
+	base := settledFakeTimerCount(t, fake)
 
 	// SIGTERM: the process cancels the context it passed to Start. Nothing else.
 	cancel()

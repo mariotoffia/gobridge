@@ -1145,6 +1145,14 @@ func (a *App) configWatchHealth() httpapi.ConfigWatchHealth {
 				Nacked:          r.Nacked,
 				Reason:          r.Reason,
 				CandidateStaged: r.Staged,
+				Applied:         r.Applied,
+
+				ObservationAgeMS:   r.ObservationAge.Milliseconds(),
+				Stale:              r.Stale,
+				LastError:          r.LastError,
+				ArtifactGeneration: r.ArtifactGeneration,
+				TerminalGeneration: r.TerminalGeneration,
+				TerminalReason:     r.TerminalReason,
 			}
 		}
 	}

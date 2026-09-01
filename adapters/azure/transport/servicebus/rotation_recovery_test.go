@@ -3,7 +3,6 @@ package servicebus
 import (
 	"context"
 	"errors"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,6 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // --- Regression: Receiver.ApplyCredentials commit-before-build bricks -------
@@ -329,22 +329,22 @@ func TestPollLoop_SessionRebuildPending_SelfHeals(t *testing.T) {
 	require.ErrorIs(t, <-done, context.Canceled)
 }
 
-// driveFakeClock advances fake time whenever a backoff timer is pending
-// (spinning otherwise) until cond holds or the guard elapses. Mirrors the
-// deterministic clock-driving pattern used by the session-accept tests.
+// driveFakeClock advances fake time whenever a backoff timer or ticker is
+// pending, until cond holds or the guard elapses. Backoff waits inside the code
+// under test only complete when the fake clock crosses them, so the test has to
+// keep time moving; the pacing comes from testutil/wait rather than a spin loop
+// that would compete with the goroutine it is waiting for.
 func driveFakeClock(t *testing.T, fake *clocktest.Fake, guard time.Duration, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(guard)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatal("condition not met before guard elapsed")
+	wait.Until(t, guard, "condition not met before guard elapsed", func() bool {
+		if cond() {
+			return true
 		}
 		if fake.TimerCount() > 0 || fake.TickerCount() > 0 {
 			fake.Advance(pollBackoffMax + 10*time.Second)
-		} else {
-			runtime.Gosched()
 		}
-	}
+		return false
+	})
 }
 
 // --- Regression: stale in-flight rebuild clobbers newer stack (NEW-DEFECT) --

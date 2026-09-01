@@ -63,11 +63,58 @@ sanctioned homes for poll pacing are `testutil/wait` and `testutil/dockerexec`;
 `make audit-test-timings` scans every other test file AND every non-test file
 under `testutil/`, `ports/storetest`, and `tests/testutil` for `time.Sleep`.
 
+**`runtime.Gosched()` is banned in tests for the same reason**, and
+`make audit-test-timings` fails on it. A `for !cond() { runtime.Gosched() }`
+loop is the same hand-rolled poller wearing a disguise: it obeys the letter of
+the no-sleep rule while breaking its purpose. `Gosched` yields but leaves the
+waiter immediately runnable, so it holds a CPU for the whole wait and competes
+with the very goroutine whose progress it is waiting for — under `-race`, on a
+loaded machine, that is enough to make a correct test fail. Several were also
+written with no deadline at all, which turns one stuck goroutine into a package
+timeout that kills every unrelated test in the binary. Use `testutil/wait`
+(`Until`, `Poll`, `RequireReceive`, `RequireClosed`, `Silent`, `StableFor`),
+which backs off, parks the waiter, and clamps to `t.Deadline()`.
+
 If the wait cannot be expressed without `time.Sleep`, the production
 code is not testable. Add a `Clock` dependency or a started-signal
 channel.
 
 ### 2.2 Time is injected, never read
+
+#### `clocktest` delivers every tick the test advanced past
+
+`clocktest.Ticker.Reset` deliberately KEEPS a tick that `Advance` has already
+delivered into the channel. This is the one place the fake parts company with
+`time.Ticker`, and it matters because a loop that re-paces itself calls `Reset`
+at the end of the handler it is running, while the test drives the clock from
+another goroutine:
+
+```
+test goroutine                     loop goroutine
+--------------                     --------------
+                                   <-ticker.C()   (tick 1)
+Advance(...)  -> fires tick 2         ...handler still running...
+                                   ticker.Reset(d)
+```
+
+Real `time.Ticker` may discard tick 2 there, and that is harmless because wall
+time keeps flowing — the next tick is at most one period away. Under a fake
+clock nothing else moves time, so a discarded tick is never re-delivered: the
+loop blocks forever and the test hangs until its wait deadline. Whether that
+happened depended on which goroutine won a race, which is exactly the
+non-determinism a fake clock exists to remove.
+
+So: a tick the test advanced past is an event that HAPPENED. `Reset` changes
+only the cadence of the ticks still to come, and re-arms `nextTick` from the
+current fake time. `Reset` on a timer keeps `time.Timer` semantics and does drop
+the pending value — there is nothing to lose, because the new deadline will fire
+on a later `Advance`.
+
+`Reset` also re-registers a timer or ticker that `Advance` retired after a
+`Stop` (or, for a timer, after it fired). A re-armed element the clock has
+forgotten is a deadline no `Advance` will ever cross.
+
+#### Injection
 
 Production code under test takes `domain/clock.Clock`. Tests use
 `clocktest.FakeClock`, advance it explicitly, assert the result.

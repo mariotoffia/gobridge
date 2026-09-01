@@ -80,6 +80,17 @@ type ClusterRolloutConfig struct {
 	// Zero selects defaultRolloutPollInterval.
 	PollInterval time.Duration
 
+	// StoreCallTimeout bounds EVERY individual rollout-store and coordinator-lease
+	// call the barrier makes. Zero selects defaultRolloutStoreCallTimeout.
+	//
+	// It exists because the barrier drive is one goroutine: without a bound, a
+	// single store call that does not return stops commit, abort, confirm, revert,
+	// observation freshness, the local confirm-window deadman and the process
+	// shutdown that waits on the drive. Keep it well under LeaseTTL — a tick makes
+	// several calls, and their sum must stay inside the TTL or a coordinator can
+	// lose its lease while waiting on its own renewal.
+	StoreCallTimeout time.Duration
+
 	// Encode and Decode round-trip a *ports.BridgeConfig through the durable
 	// last-committed config artifact (design Phase-4 residual): Encode on commit
 	// (to persist the committed bytes), Decode on boot / reconcile (to rebuild the
@@ -116,6 +127,11 @@ type rolloutBarrier struct {
 	// committed-artifact residual protection.
 	encode func(*ports.BridgeConfig) ([]byte, error)
 	decode func([]byte) (*ports.BridgeConfig, error)
+
+	// ops bounds and meters every remote call the barrier makes — the proposer's,
+	// the applier's and the coordinator's alike, so a store that has stopped
+	// answering is refused for all of them at once (rollout_ops.go).
+	ops *rolloutOps
 
 	// candMu guards the staged candidate below.
 	candMu sync.Mutex
@@ -188,11 +204,13 @@ func (b *rolloutBarrier) writeCommittedArtifact(ctx context.Context, gen uint64,
 	if !ok {
 		return fmt.Errorf("bridge: cannot compute the committed config digest for the durable rollout artifact")
 	}
-	return b.committedStore.PutCommittedConfig(ctx, persistence.CommittedRolloutConfig{
-		Generation:    gen,
-		ConfigVersion: version,
-		ConfigBytes:   raw,
-		Digest:        digest,
+	return b.ops.run(ctx, rolloutOpArtifact, func(callCtx context.Context) error {
+		return b.committedStore.PutCommittedConfig(callCtx, persistence.CommittedRolloutConfig{
+			Generation:    gen,
+			ConfigVersion: version,
+			ConfigBytes:   raw,
+			Digest:        digest,
+		})
 	})
 }
 
@@ -212,6 +230,7 @@ func newRolloutBarrier(cfg ClusterRolloutConfig) *rolloutBarrier {
 		pollInterval: orDefault(cfg.PollInterval, defaultRolloutPollInterval),
 		encode:       cfg.Encode,
 		decode:       cfg.Decode,
+		ops:          newRolloutOps(cfg.StoreCallTimeout),
 	}
 	// The committed-config artifact is a separate small port; the same backing
 	// store usually implements it. Discover that capability rather than adding a
@@ -322,13 +341,16 @@ func (b *rolloutBarrier) propose(ctx context.Context, newCfg, sourceCfg *ports.B
 	if !ok {
 		return fmt.Errorf("bridge: cannot compute the candidate config digest for a coordinated rollout")
 	}
-	_, err := b.store.Propose(ctx, persistence.RolloutProposal{
-		ProposerID:    b.memberID,
-		ConfigDigest:  digest,
-		ConfigVersion: newCfg.Version,
-		Members:       members,
-		TTL:           b.ttl,
-		ConfirmWindow: confirmWindow,
+	err := b.ops.run(ctx, rolloutOpPropose, func(callCtx context.Context) error {
+		_, perr := b.store.Propose(callCtx, persistence.RolloutProposal{
+			ProposerID:    b.memberID,
+			ConfigDigest:  digest,
+			ConfigVersion: newCfg.Version,
+			Members:       members,
+			TTL:           b.ttl,
+			ConfirmWindow: confirmWindow,
+		})
+		return perr
 	})
 	if err != nil {
 		if !errors.Is(err, shared.ErrAlreadyExists) {
@@ -359,7 +381,7 @@ func (b *rolloutBarrier) propose(ctx context.Context, newCfg, sourceCfg *ports.B
 //     rollback) and the delta then never applies on any member — a silent drop.
 //     Fail closed; the operator retries once the in-flight rollout resolves.
 func (b *rolloutBarrier) joinActive(ctx context.Context, digest string) error {
-	r, err := b.store.Current(ctx)
+	r, err := rolloutOpValue(ctx, b.ops, rolloutOpRead, b.store.Current)
 	if err != nil {
 		return fmt.Errorf("bridge: a cluster rollout is already active but it could not be read back to "+
 			"check whether it carries this delta, so the change cannot be safely deferred to it: %w", err)

@@ -348,3 +348,32 @@ func TestNewRolloutBarrier_RequiresCompleteWiring(t *testing.T) {
 }
 
 var _ = ports.ClusterRolloutStore(nil)
+
+// TestClusterRolloutResign_IsBoundedWellInsideTheLeaseTTL pins the orderly
+// resignation budget. The coordinator releases its lease on the way out so a
+// successor takes over immediately instead of waiting out the TTL — but bounding
+// that release by the TTL ITSELF (30 s in the shipped default, six minutes in a
+// deployment that raised it) spends the whole process shutdown budget on a
+// courtesy. A release that cannot finish quickly has already failed at its only
+// job, and TTL expiry is the fallback it degrades into: the crash path, which is
+// always safe. So the release gets the SHORTER of the TTL and the resignation
+// budget.
+func TestClusterRolloutResign_IsBoundedWellInsideTheLeaseTTL(t *testing.T) {
+	lease := newDeadlineRecordingLeaseStore()
+	f := newCoordFixture(t, "node-a", "node-a")
+	f.coord.lease = lease
+	f.coord.leaseTTL = 6 * time.Minute
+	f.coord.ops = newRolloutOps(time.Minute)
+
+	tok, err := lease.Acquire(context.Background(), coordLeaseID, "node-a", 6*time.Minute, nil)
+	require.NoError(t, err)
+	f.coord.tok = tok
+
+	f.coord.resign(context.Background())
+
+	budget, observed := lease.releaseBound()
+	require.True(t, observed, "an orderly resignation must bound its release call")
+	assert.LessOrEqual(t, budget, rolloutResignBudget,
+		"the release must not be allowed to consume the whole lease TTL on the shutdown path")
+	assert.Empty(t, lease.held(), "the orderly resignation releases the lease for a successor")
+}

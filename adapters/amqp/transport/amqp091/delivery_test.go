@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"runtime"
 	"testing"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 func makeTestDelivery(acker *mockAcknowledger, tag uint64) (*Delivery, *messaging.Envelope) {
@@ -112,13 +112,16 @@ func TestDelivery_Retry_Delayed(t *testing.T) {
 	del.clk = fake
 
 	// Retry parks on the injected clock; release the honored delay from a
-	// helper goroutine once the timer is registered (runtime.Gosched
-	// busy-poll — no real sleep).
+	// helper goroutine once the timer is registered. wait.Poll is the
+	// non-failing variant — Fatalf may only be called from the test goroutine,
+	// and if the timer never arrives the Retry below fails on its own with a
+	// better message than a helper goroutine could give. The previous spin loop
+	// had no bound at all: a missing registration pinned a CPU until the whole
+	// package timed out.
 	go func() {
-		for fake.TimerCount() < 1 {
-			runtime.Gosched()
+		if wait.Poll(5*time.Second, func() bool { return fake.TimerCount() >= 1 }) {
+			fake.Advance(5 * time.Second)
 		}
-		fake.Advance(5 * time.Second)
 	}()
 
 	reason := errors.New("transient failure")

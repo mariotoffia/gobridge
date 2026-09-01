@@ -517,7 +517,7 @@ audit-timings: ## Check for unauthorized timing calls in production code
 		echo "All timing calls are authorized."; \
 	fi
 
-audit-test-timings: ## Check for new time.Sleep calls in test code and test infrastructure
+audit-test-timings: ## Check for new time.Sleep or Gosched spin-polling in test code and test infrastructure
 	@echo "Checking for new time.Sleep calls in tests..."
 	@VIOLATIONS=$$({ rg --no-heading -n -g '*_test.go' -g '!testutil/wait/*' \
 		'time\.Sleep\(' . ; \
@@ -535,6 +535,20 @@ audit-test-timings: ## Check for new time.Sleep calls in test code and test infr
 		exit 1; \
 	else \
 		echo "No new test timing violations."; \
+	fi
+	@echo "Checking for Gosched spin-polling in tests..."
+	@SPIN=$$(rg --no-heading -n -g '*_test.go' 'runtime\.Gosched\(\)|stdruntime\.Gosched\(\)' . || true); \
+	if [ -n "$$SPIN" ]; then \
+		echo "$$SPIN"; \
+		echo ""; \
+		echo "runtime.Gosched() found in test code."; \
+		echo "A Gosched loop is a hand-rolled poller wearing a disguise: it dodges the"; \
+		echo "time.Sleep rule above while staying runnable at all times, so it competes"; \
+		echo "for CPU with the goroutine it is waiting for and starves it under -race."; \
+		echo "Use testutil/wait (Until, Poll, RequireReceive, Silent, StableFor) instead."; \
+		exit 1; \
+	else \
+		echo "No Gosched spin-polling in tests."; \
 	fi
 
 # ============================================================================

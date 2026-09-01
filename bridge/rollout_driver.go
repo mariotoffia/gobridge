@@ -82,10 +82,14 @@ func (d *ClusterRolloutDriver) Start(ctx context.Context, clk clock.Clock, metri
 	if clk == nil {
 		clk = clock.System
 	}
-	obs := &rolloutObserver{metrics: metrics}
+	obs := newRolloutObserver(metrics, clk, d.barrier.pollInterval)
 	d.mu.Lock()
 	d.obs = obs
 	d.mu.Unlock()
+	// Remote-call outcomes reach metrics and deep health through the same observer
+	// the row observations do, so an operator reads "why is this status stale"
+	// beside the status itself.
+	d.barrier.ops.setObserver(obs)
 
 	applier := &rolloutApplier{
 		host:     d.host,
@@ -106,6 +110,7 @@ func (d *ClusterRolloutDriver) Start(ctx context.Context, clk clock.Clock, metri
 		MemberID:   d.barrier.memberID,
 		LeaseTTL:   d.barrier.leaseTTL,
 		Logger:     d.host.RolloutLogger(),
+		Ops:        d.barrier.ops,
 	})
 
 	loopCtx, cancel := context.WithCancel(ctx)
@@ -144,7 +149,10 @@ func (d *ClusterRolloutDriver) drive(ctx context.Context, clk clock.Clock, appli
 		case <-ctx.Done():
 			return
 		case <-ticker.C():
-			if err := applier.step(ctx); err != nil && logger != nil {
+			// tick, not step: the applier's LOCAL safety work — the confirm-window
+			// deadman and the outstanding revert — runs first, off state this member
+			// already holds, so a store that has stopped answering cannot suppress it.
+			if err := applier.tick(ctx); err != nil && logger != nil {
 				// the rollout resolves (deadline-aborts) when the store
 				// returns; nothing flipped, and this member keeps serving.
 				logger.Warn("cluster rollout: applier observation failed; retrying", "error", err)
@@ -202,7 +210,8 @@ func (h supervisorRolloutHost) Converged(ctx context.Context) bool {
 	if rt == nil {
 		return false
 	}
-	return rt.ReadinessLevel(ctx) >= convergenceReadyLevel
+	converged, _ := runtimeConverged(ctx, rt)
+	return converged
 }
 
 func (h supervisorRolloutHost) RolloutLogger() *slog.Logger { return h.s.logger }

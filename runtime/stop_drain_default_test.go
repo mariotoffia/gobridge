@@ -2,7 +2,6 @@ package runtime_test
 
 import (
 	"context"
-	stdruntime "runtime"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // liveCtxSender is a Sender whose Send blocks until release fires and then
@@ -144,7 +144,7 @@ func TestStop_DrainsInFlightBeforeCancel_ByDefault(t *testing.T) {
 	// Baseline: the in-flight delivery arms its own fake timers (boundedSend
 	// SendTimeout ceiling, chain budget). The fake clock is frozen, so once those
 	// are all registered the count is fixed — capture it as the pre-Stop baseline.
-	base := settledFakeTimerCount(fake)
+	base := settledFakeTimerCount(t, fake)
 
 	stopDone := make(chan error, 1)
 	go func() {
@@ -205,29 +205,22 @@ func TestStop_DrainsInFlightBeforeCancel_ByDefault(t *testing.T) {
 // clock while measuring, the count only ever grows as the in-flight delivery
 // registers its timers and then stays fixed — a stable reading means every
 // delivery timer is registered, giving a baseline that excludes any timer Stop
-// will later add.
-func settledFakeTimerCount(fake *clocktest.Fake) int {
-	last := fake.TimerCount()
-	stableSince := time.Now()
-	for time.Since(stableSince) < 50*time.Millisecond {
-		stdruntime.Gosched()
-		if c := fake.TimerCount(); c != last {
-			last = c
-			stableSince = time.Now()
-		}
-	}
-	return last
+// will later add. The sampling is paced by testutil/wait rather than a spin
+// loop, so the goroutines being waited for are not competing with the waiter
+// for CPU.
+func settledFakeTimerCount(t *testing.T, fake *clocktest.Fake) int {
+	t.Helper()
+	return wait.StableFor(t, fake.TimerCount, 50*time.Millisecond, 5*time.Second)
 }
 
-// waitFakeTimerAtLeast spins (test-synchronisation only; the fake clock is not
+// waitFakeTimerAtLeast blocks (test-synchronisation only; the fake clock is not
 // advanced here) until the fake clock has at least want active timers.
 func waitFakeTimerAtLeast(t *testing.T, fake *clocktest.Fake, want int, what string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for fake.TimerCount() < want && time.Now().Before(deadline) {
-		stdruntime.Gosched()
-	}
-	if got := fake.TimerCount(); got < want {
-		t.Fatalf("%s: expected >= %d fake timer(s), got %d", what, want, got)
+	// wait.Poll, not wait.Until: the failure below reports the count actually
+	// reached, which is what tells you whether the timer was never registered or
+	// only some of the expected ones were.
+	if !wait.Poll(5*time.Second, func() bool { return fake.TimerCount() >= want }) {
+		t.Fatalf("%s: expected >= %d fake timer(s), got %d", what, want, fake.TimerCount())
 	}
 }

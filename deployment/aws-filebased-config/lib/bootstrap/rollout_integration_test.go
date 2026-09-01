@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease"
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbrollout"
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
@@ -70,9 +71,21 @@ func TestIntegration_AppCoordinatedRolloutOverDynamoDB(t *testing.T) {
 
 	// The durable committed artifact was written to DynamoDB and decodes back with
 	// the App's REAL codec — the Phase-5A round-trip risk, proven through the App.
+	// Waited for, not read on the heels of the swap: the artifact write follows the
+	// local apply on the drive goroutine and is retried until it verifies, so the
+	// generation becoming the running config is NOT the instant the artifact
+	// exists. Reading it once here raced that gap and failed with "no committed
+	// config artifact" while the write was still in flight.
 	rolloutStore := dynamodbrollout.NewStore(client, dynamodbrollout.WithTableName(rolloutTable))
-	committed, err := rolloutStore.CommittedConfig(context.Background())
-	require.NoError(t, err)
+	var committed persistence.CommittedRolloutConfig
+	wait.Until(t, 20*time.Second, "the durable committed artifact lands in DynamoDB", func() bool {
+		got, err := rolloutStore.CommittedConfig(context.Background())
+		if err != nil {
+			return false
+		}
+		committed = got
+		return true
+	})
 	assert.Equal(t, 2, committed.ConfigVersion, "the commit wrote the durable artifact")
 	_, decode := app.rolloutCodec()
 	got, err := decode(committed.ConfigBytes)

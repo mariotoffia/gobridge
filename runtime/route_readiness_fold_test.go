@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	stdruntime "runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/route"
 	"github.com/mariotoffia/gobridge/runtime/session"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -209,10 +209,12 @@ func TestSessionProbesRunConcurrentlyUnderOneDeadline(t *testing.T) {
 
 	// Wait until the bounded pool has ALL its workers engaged in Health (proving
 	// concurrency) and the single shared deadline timer is registered.
-	deadline := time.Now().Add(3 * time.Second)
-	for (int(entered.Load()) < wantConcurrent || fake.TimerCount() < 1) && time.Now().Before(deadline) {
-		stdruntime.Gosched()
-	}
+	// wait.Poll, not wait.Until: on timeout the checks below name exactly which
+	// half failed (serial probes vs. a missing shared deadline), which is the
+	// whole diagnostic value of this test.
+	wait.Poll(3*time.Second, func() bool {
+		return int(entered.Load()) >= wantConcurrent && fake.TimerCount() >= 1
+	})
 	if got := int(entered.Load()); got < wantConcurrent {
 		t.Fatalf("only %d concurrent session probes; expected %d (probes are serial, not a bounded pool)", got, wantConcurrent)
 	}

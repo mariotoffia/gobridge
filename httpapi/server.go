@@ -21,10 +21,20 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// adminWriteTimeoutMargin is added to AdminOperationTimeout to derive the admin
-// server WriteTimeout so a slow-but-successful admin operation can flush its
-// response before the write deadline fires.
+// adminWriteTimeoutMargin is added to the longest admin response path to derive
+// the admin server WriteTimeout, so a slow-but-successful admin operation can
+// flush its response before the write deadline fires.
 const adminWriteTimeoutMargin = 15 * time.Second
+
+// commitWorstCaseResponse is the longest a config-transaction commit can take
+// before it answers. The durable write is followed by a DETACHED apply bounded
+// by commitApplyTimeout, and an apply that fails then runs the rollback restore
+// under a fresh context bounded by commitApplyTimeout again, before the handler
+// finally reports rolled_back. Both bounds are server-side and deliberate, so
+// the admin write deadline has to outlive their sum: a shorter one resets the
+// operator's connection while the commit is still legitimately deciding its
+// outcome, and automation is left retrying against a state it cannot observe.
+const commitWorstCaseResponse = 2 * commitApplyTimeout
 
 // Config holds HTTP server configuration.
 type Config struct {
@@ -58,8 +68,21 @@ type Config struct {
 	MonitorAPIKeyProvider func() string `json:"-"`
 
 	// RuntimeProvider returns the current runtime backing the admin/monitor
-	// APIs. When nil, the Server uses the runtime passed to New().
+	// APIs. When this FIELD is nil the Server uses the runtime passed to New().
+	// When it is set it is authoritative: a nil return means "no runtime right
+	// now" and the endpoints answer 503 — the Server never falls back to the
+	// constructor runtime, which a composition root has long stopped.
 	RuntimeProvider func() ports.Runtime `json:"-"`
+
+	// TerminalProvider reports whether the PROCESS is in an unrecoverable state
+	// that warrants a restart, independently of any runtime the server can see.
+	// It exists for the wedged case: when a composition root's swap and its
+	// recovery both fail there is no active runtime at all, which looks exactly
+	// like a healthy swap window to a runtime-only probe, so /live would answer
+	// 200 for a process that routes nothing. Wire it to the supervisor's own
+	// terminal state (bridge.Supervisor.Terminal). When nil, /live falls back to
+	// the runtime's Terminal() alone.
+	TerminalProvider func() bool `json:"-"`
 
 	// BridgeController, when set, routes admin start/stop through the
 	// composition-root supervisor rather than the runtime directly. This makes
@@ -274,8 +297,8 @@ func New(rt ports.Runtime, cfg Config, opts ...Option) *Server {
 		// Validate every dynamically-refreshed single admin key with the same
 		// strength floor validateConfig enforces at startup, failing closed to
 		// the last good key: a rotation that returns a below-floor key can never
-		// be installed after startup (Finding: dynamic providers could install
-		// weak keys post-startup).
+		// be installed after startup: a dynamic provider must not be able to
+		// install a weak key that startup validation would have rejected.
 		vp := &validatedKeyProvider{
 			raw:      cfg.AdminAPIKeyProvider,
 			validate: validateDynamicAdminKey,
@@ -326,11 +349,33 @@ func New(rt ports.Runtime, cfg Config, opts ...Option) *Server {
 	return s
 }
 
+// adminWriteTimeout derives the admin listener's WriteTimeout from the LONGEST
+// response path the server can actually serve, plus a flush margin. Every admin
+// start/stop is bounded by AdminOperationTimeout; a server with the config
+// transaction endpoints enabled can additionally hold a request open for
+// commitWorstCaseResponse. Taking the maximum keeps a slow-but-successful
+// operation's response deliverable, while a server without those endpoints
+// keeps the tighter deadline and its slow-client protection.
+func (s *Server) adminWriteTimeout() time.Duration {
+	longest := s.cfg.AdminOperationTimeout
+	if s.configTxn != nil && commitWorstCaseResponse > longest {
+		longest = commitWorstCaseResponse
+	}
+	return longest + adminWriteTimeoutMargin
+}
+
+// currentRuntime returns the runtime backing the admin and monitor endpoints.
+// A configured RuntimeProvider OWNS the answer: when it reports no runtime the
+// server serves none. It must NOT fall back to the runtime handed to New(),
+// which is the composition root's BOOT runtime — long stopped by the time a
+// provider is wired. Falling back made every endpoint answer from that dead
+// object while the process was between runtimes: boot routes on /topology, a
+// closed store behind the DLQ endpoints, and a healthy-looking /live. The
+// constructor runtime is the answer only for an embedder that wires no
+// provider at all.
 func (s *Server) currentRuntime() ports.Runtime { //nolint:ireturn // intentional: the server depends on the ports.Runtime driving-port interface, not the concrete runtime type
 	if s.rtProvider != nil {
-		if rt := s.rtProvider(); rt != nil {
-			return rt
-		}
+		return s.rtProvider()
 	}
 	return s.rt
 }
@@ -414,18 +459,18 @@ func (s *Server) Start(_ context.Context) error {
 	monitorMux := http.NewServeMux()
 	s.registerMonitorRoutes(monitorMux)
 
-	// The admin WriteTimeout must exceed AdminOperationTimeout: a start/stop
-	// that legitimately runs up to AdminOperationTimeout server-side would
-	// otherwise have its response connection reset by an equal WriteTimeout,
+	// The admin WriteTimeout is derived from the longest response path this
+	// server can serve (see adminWriteTimeout): a request that legitimately runs
+	// that long server-side would otherwise have its response connection reset,
 	// leaving the operator retrying against an ambiguous state.
-	adminWriteTimeout := s.cfg.AdminOperationTimeout + adminWriteTimeoutMargin
+	writeTimeout := s.adminWriteTimeout()
 
 	s.admin = &http.Server{
 		Addr:         s.cfg.AdminAddr,
 		Handler:      s.wrap(adminMux),
 		TLSConfig:    tlsConf,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: adminWriteTimeout,
+		WriteTimeout: writeTimeout,
 		IdleTimeout:  120 * time.Second,
 	}
 	s.monitor = &http.Server{
