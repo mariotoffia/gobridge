@@ -72,8 +72,9 @@ func TestCloseSourceBounded_PassesReleaseDeadlineIntoClose(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	require.True(t, mgr.closeSourceBounded(ctx, "session failure"),
-		"a cooperative Close completes within the ceiling")
+	closeErr, completed := mgr.closeSourceBounded(ctx, mgr.releaseTimeout(), "session failure")
+	require.NoError(t, closeErr)
+	require.True(t, completed, "a cooperative Close completes within the ceiling")
 
 	sess.mu.Lock()
 	defer sess.mu.Unlock()

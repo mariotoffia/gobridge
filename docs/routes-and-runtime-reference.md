@@ -138,7 +138,7 @@ For routes targeting exclusive sessions. Manages lease acquisition and outbox dr
 | `drain_strategy` | object | no | -- | Advanced drain polling strategy |
 | `connect_after_lease` | bool | no | `true` | Defer the source transport connect until this instance wins the lease. Omitted resolves to `true` -- the safe default for the exclusive single-owner session a route source always is, since it stops a booting standby from resuming a broker-persisted subscription and consuming without the lease. Set `false` to opt out. |
 | `renew_call_timeout` | duration | no | derived | Bounds a single lease-renew store call, so a hung backend cannot stretch step-down and takeover unboundedly. Folded into the failover-safety invariant below. Empty derives `min(renew_interval/2, 5s)` (floor 1s). |
-| `acquire_poll_interval` | duration | no | derived | How often a standby retries acquiring the lease while another instance owns it. Empty derives `min(renew_interval, lease_ttl/4, 5s)` (floor 1ms). Declared SLO validation budgets two independent `max(1ms, ceil(1.25 × interval))` boundaries for positive jitter. |
+| `acquire_poll_interval` | duration | no | derived | How often a standby retries acquiring the lease while another instance owns it. Empty derives `min(renew_interval, lease_ttl/4, 5s)`. Rejected below the `250ms` cadence floor. Declared SLO validation budgets two independent `max(1ms, ceil(1.25 × interval))` boundaries for positive jitter. |
 | `failover_slo` | duration | no | undeclared | Optional failure-detection-to-`ServiceLevelFull` objective. Must be positive when present. If timing capability or any budget term is unknown, startup fails closed. |
 | `startup_allowance` | duration | no | `0s` | Explicit nonnegative process-start allowance added to a declared failover budget. Maximum `10m`. |
 
@@ -149,7 +149,33 @@ guard). The per-call `renew_call_timeout` is part of the span because the renew
 loop resets its timer only **after** each renew call returns, so a hung backend
 that burns the full timeout on every attempt widens the real detection window.
 When `renew_interval` is left empty the interval, jitter, and call timeout are
-all derived and this check is skipped.
+all derived and this cross-field check is skipped -- the derived values satisfy
+it by construction.
+
+**Resolved-cadence rules.** Blueprint validation additionally resolves the
+cadence exactly as the session manager does -- through the same domain code, so
+the rejection lands at commit rather than after the durable write -- defaults, derivation, then the expiry-margin
+clamp -- and rejects an exclusive session on either of two grounds.
+
+*The clamp had to cut the renew interval or the per-call timeout.* This is what
+guards the **derived** path, which the cross-field check above cannot see because
+that check only runs on a pinned `renew_interval`. A large `max_renew_fails`
+against a modest `lease_ttl` leaves no per-attempt budget: `lease_ttl: 5s` with
+`max_renew_fails: 5`, or `lease_ttl: 45s` with `max_renew_fails: 50`, both
+collapse to a 1ms renew interval and a 1ms standby poll. The owner then renews
+back to back while every standby issues a full claim round per millisecond; the
+store throttles, and those throttling errors are counted as transient renew
+failures -- a self-inflicted overload that ends in an ownership change. Lower
+`max_renew_fails`, raise `lease_ttl`, or pin a shorter `renew_interval`. A clamp
+that only sheds `lease_renew_jitter` is **not** rejected: jitter exists to spread
+renewal load, the clamp trims it first by design, and what remains is a healthy
+cadence (the session manager logs a warning).
+
+*The resolved `renew_interval` or `acquire_poll_interval` is below `250ms`.* In
+practice this binds on explicitly pinned values -- a derived cadence that is
+below the floor has always been clamped first, so the rule above catches it. The
+floor is the cadence below which the lease store, not the timing model, decides
+ownership.
 
 **Declared failover budget.** When `failover_slo` is present, preflight requires
 `lease_ttl + 2 × max(1ms, ceil(1.25 × acquire_poll_interval)) +
@@ -528,6 +554,16 @@ not the YAML shape, but they change *when* and *how* config errors surface:
   the delivery-stall signal, alongside `DLQEntries`, `MessagesDropped`, and
   `OutboxDepth` for the `shared_outbox` mode. `route_dead` (a route flapping at
   the supervisor backoff cap) is the separate *pipeline* fault state.
+- **Route fault blast radius.** A route whose receiver fails is restarted in
+  isolation — backed off, counted on `RouteRestarts`, marked not-ready, and
+  latched `route_dead` after repeated quick flaps — only when the source can be
+  re-entered. That holds for SQS, MQTT and HTTP, whose broker client belongs to
+  the session. A source the route runner must close on exit (Service Bus, AMQP
+  1.0, AMQP 0-9-1) is single-use: the runtime has no factory to rebuild it from,
+  so the route escalates to a terminal runtime and the backstop is a **process
+  restart** with freshly-built transports (`/live` fails closed). Size the
+  restart budget for those transports accordingly; `route_dead` never latches
+  for them.
 - **Supervisor health.** `Supervisor.Degraded() (bool, string)` reports whether
   the last reconfiguration failed (with a reason) while the previous runtime
   keeps serving; `Supervisor.Terminal() bool` reports an unrecoverable state.

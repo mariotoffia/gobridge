@@ -95,9 +95,15 @@ func WithPluginRegistry(reg *ports.Registry) Option {
 	return func(a *App) { a.pluginRegistry = reg }
 }
 
-// WithShutdownTimeout sets the graceful shutdown deadline. Defaults to 30s.
+// WithShutdownTimeout pins the graceful shutdown deadline, overriding the boot
+// config's bridge.shutdown_timeout. Unset, the App adopts that field (30s when
+// it too is unset), so the one budget an operator writes down is the one the
+// process actually spends.
 func WithShutdownTimeout(d time.Duration) Option {
-	return func(a *App) { a.shutdownTimeout = d }
+	return func(a *App) {
+		a.shutdownTimeout = d
+		a.shutdownTimeoutPinned = d > 0
+	}
 }
 
 type App struct {
@@ -142,16 +148,21 @@ type App struct {
 	// DynamoDB client in Start). rolloutDriver is this App's barrier host, built in
 	// Start ONLY when the boot config opts into cluster.rollout: coordinated; nil
 	// otherwise, so a deployment that did not opt in keeps the ADR 0012 refusal.
-	// stopRolloutDrive stops the drive goroutine on Stop.
+	// stopRolloutDrive stops the drive goroutine on Stop, bounded by the process
+	// shutdown budget it is handed.
 	rolloutConfig    bridge.ClusterRolloutConfig
 	rolloutDriver    *bridge.ClusterRolloutDriver
-	stopRolloutDrive func()
+	stopRolloutDrive func(context.Context)
 
 	watchCancel context.CancelFunc
 	watchWg     sync.WaitGroup
 
-	shutdownTimeout      time.Duration
-	terminalPollInterval time.Duration
+	shutdownTimeout time.Duration
+	// shutdownTimeoutPinned records that a caller supplied the budget through
+	// WithShutdownTimeout, so Start must not replace it with the boot config's
+	// bridge.shutdown_timeout.
+	shutdownTimeoutPinned bool
+	terminalPollInterval  time.Duration
 
 	// clk drives the terminal-backstop poll ticker. Defaults to
 	// clock.System; tests keep real time (poll interval is injectable).
@@ -278,7 +289,28 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	startOK := false
 	defer func() {
-		if !startOK && a.metricsExporter != nil {
+		if startOK {
+			return
+		}
+		// The runtime is installed BEFORE the transport, admin and monitor
+		// listeners and before the config watcher, so every failure below leaves
+		// it running — sessions connected, stores open, drainers and lease
+		// renewals live — with no reference left to stop it. Release it under a
+		// bounded, detached context so a retried Start (or a caller falling back
+		// to another port) cannot run two runtimes against the same brokers and
+		// leases.
+		if rt := a.runtimeRef.Get(); rt != nil {
+			cleanupCtx, cleanupCancel := context.WithTimeout(
+				context.WithoutCancel(ctx), a.shutdownTimeout)
+			if stopErr := stopRuntime(cleanupCtx, rt, a.appliedRef.Get()); stopErr != nil && a.logger != nil {
+				a.logger.Warn("bootstrap: stopping the installed runtime after a failed start", "error", stopErr)
+			}
+			cleanupCancel()
+			a.runtimeRef.Set(nil)
+			a.appliedRef.Set(nil)
+			a.lastAppliedFingerprint = ""
+		}
+		if a.metricsExporter != nil {
 			_ = a.metricsExporter.Close(context.Background())
 			a.metricsExporter = nil
 		}
@@ -349,6 +381,18 @@ func (a *App) Start(ctx context.Context) error {
 	// Finding 2).
 	if err := checkIgnoredHTTPBlock(a.logger, bootCfg); err != nil {
 		return err
+	}
+
+	// One process budget, and it is the one the operator wrote down. Run spends
+	// a.shutdownTimeout on the whole SIGTERM path — config watcher, rollout
+	// drive, HTTP servers, runtime drain, stores, telemetry — so leaving it on
+	// an invisible 30s constant while bridge.shutdown_timeout said something
+	// else meant the documented budget governed nothing. An explicit
+	// WithShutdownTimeout still wins (library and test callers).
+	if !a.shutdownTimeoutPinned {
+		if d := bootCfg.Bridge.ShutdownTimeoutDuration(); d > 0 {
+			a.shutdownTimeout = d
+		}
 	}
 
 	if _, err := a.applyLogicalIfChanged(ctx, bootCfg, true); err != nil {
@@ -558,15 +602,26 @@ func (a *App) Stop(ctx context.Context) error {
 	}
 	a.mu.Unlock()
 
-	// Wait for watchLoop goroutine to finish before tearing down resources
-	// it may still be using (e.g. mid-applyLogicalConfig).
-	a.watchWg.Wait()
+	// Wait for watchLoop goroutine to finish before tearing down resources it may
+	// still be using (e.g. mid-applyLogicalConfig) — but SELECTABLY against the
+	// shutdown budget. A reload's own teardown is deliberately not bounded by
+	// process shutdown, so an unconditional wait here put a stuck reload ahead of
+	// the runtime drain, the HTTP shutdown and the metrics flush: SIGTERM never
+	// reached them before the platform's SIGKILL. When the budget runs out we
+	// proceed; the watcher context is already cancelled and the goroutine unwinds
+	// on its own.
+	if !waitCtx(ctx, a.watchWg.Wait) && a.logger != nil {
+		a.logger.Warn("bootstrap: shutdown budget expired waiting for the config watcher to unwind; " +
+			"continuing with runtime and server teardown")
+	}
 
 	// Stop the coordinated cluster rollout drive before tearing down the runtime it
 	// swaps: this waits for its goroutine to exit and resigns the coordinator lease
 	// so a successor takes over immediately instead of waiting out the lease TTL.
+	// The wait is bounded by the same budget — a lease store that will not release
+	// must not hold the rest of shutdown behind it.
 	if a.stopRolloutDrive != nil {
-		a.stopRolloutDrive()
+		a.stopRolloutDrive(ctx)
 		a.stopRolloutDrive = nil
 	}
 
@@ -809,11 +864,6 @@ func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfi
 		}
 	}
 
-	// Apply bridge.log_level first so debug logging takes effect immediately
-	// on reload — even when the reload that raised the level is itself being
-	// diagnosed. A no-op when no LevelVar was wired (WithLogLevelVar).
-	a.applyLogLevel(logical)
-
 	if err := validateDeploymentProfile(a.cfg, logical); err != nil {
 		return err
 	}
@@ -880,7 +930,7 @@ func (a *App) applyOverlap(
 	oldApplied *ports.BridgeConfig,
 	oldRegistry *factoryRegistry,
 ) error {
-	if err := plan.runtime.Start(ctx); err != nil {
+	if err := plan.runtime.Start(a.runtimeStartCtx(ctx)); err != nil {
 		// RECONFIG-2: a candidate whose late Start fails still opened stores,
 		// sessions, and adapter resources during Build. Stop it before returning so
 		// repeated failing applies do not leak store handles and background state.
@@ -936,12 +986,24 @@ func (a *App) applyPrepareCommit(
 
 	if oldRuntime != nil {
 		if err := stopRuntime(context.Background(), oldRuntime, oldApplied); err != nil {
-			// RECONFIG-2: prepare/commit stops the old runtime BEFORE committing the
-			// new one, so a failed stop leaves the old runtime in an uncertain state
-			// (its exclusive broker session / lease may still be held). Proceeding to
-			// commit a new runtime onto the same identity would risk two owners.
-			// Abort instead: keep the old runtime installed (runtimeRef unchanged) and
-			// surface the error as committed_not_applied so an operator reconciles.
+			// prepare/commit stops the old runtime BEFORE committing the new one,
+			// so a failed stop leaves ownership uncertain (its exclusive broker
+			// session / lease may still be held). Committing a replacement onto
+			// the same identity would risk two owners, so abort.
+			//
+			// The old runtime cannot be kept installed either: Runtime.Stop has no
+			// early error return, so it has already cancelled its work context and
+			// closed managers, sessions and stores, and a stopped runtime is
+			// single-use. Leaving it in runtimeRef bridged nothing behind a green
+			// /live — and because appliedRef and the fingerprint still named its
+			// config, the admin transaction's disk rollback re-emitted that same
+			// config and applyLogicalIfChanged SKIPPED the rebuild, so nothing
+			// ever recovered. Release the never-committed plan's store handles,
+			// clear the fingerprint so a re-emit does rebuild, and wedge
+			// (ADR-0004) so the backstop restarts the task.
+			plan.plan.Close()
+			a.lastAppliedFingerprint = ""
+			a.enterWedgedState()
 			return fmt.Errorf("bootstrap: abort prepare/commit swap; old runtime did not stop cleanly "+
 				"(uncertain ownership, refusing to commit a replacement): %w", err)
 		}
@@ -958,7 +1020,7 @@ func (a *App) applyPrepareCommit(
 		a.recoverPrevious(ctx, oldApplied)
 		return fmt.Errorf("bootstrap: complete runtime: %w", err)
 	}
-	if err := newRuntime.Start(ctx); err != nil {
+	if err := newRuntime.Start(a.runtimeStartCtx(ctx)); err != nil {
 		// RECONFIG-2: stop the committed-but-unstarted candidate before recovering,
 		// so its opened stores/sessions are released rather than leaked.
 		_ = stopRuntime(context.Background(), newRuntime, plan.logical)
@@ -990,7 +1052,7 @@ func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) 
 		// Overlap mode: plan.runtime was already built by prepareRuntimePlan.
 	}
 	if err == nil {
-		err = plan.runtime.Start(ctx)
+		err = plan.runtime.Start(a.runtimeStartCtx(ctx))
 	}
 	if err != nil {
 		// RECONFIG-2: the recovery candidate itself failed to commit/start. Stop it
@@ -1089,6 +1151,27 @@ func (a *App) configWatchHealth() httpapi.ConfigWatchHealth {
 	return status
 }
 
+// runtimeStartCtx returns the context a newly installed runtime must live under:
+// the process-scoped watch context, never the caller's apply context.
+//
+// An admin config commit applies IN-BAND on a context the httpapi transaction
+// detaches from the request but still bounds with its apply deadline and
+// cancels the moment Commit returns. A runtime started on it therefore had its
+// lifetime tied to the apply: the start-context watcher observed the cancel
+// seconds later and stopped the freshly installed runtime, leaving the process
+// installed-but-stopped — /live still 200, because a clean stop is not terminal
+// — until some unrelated config arrived. Runtimes outlive the apply that built
+// them; only shutdown ends them.
+//
+// Before Start has published rootCtx (the initial boot apply) the caller's
+// context IS the process context, so it is the right one.
+func (a *App) runtimeStartCtx(ctx context.Context) context.Context {
+	if a.rootCtx != nil {
+		return a.rootCtx
+	}
+	return ctx
+}
+
 // enterWedgedState records that a prepare/commit swap AND its recovery both
 // failed, leaving the App with no active runtime and no self-recovery path. It
 // tears the request-facing surface down to a clean "nothing running" state and
@@ -1104,6 +1187,13 @@ func (a *App) enterWedgedState() {
 }
 
 func (a *App) installPlan(plan *runtimePlan) {
+	// bridge.log_level is committed WITH the runtime, never ahead of it. Applied
+	// at the top of the reload path it changed live process verbosity even for a
+	// candidate that deployment-profile validation or the build then rejected,
+	// leaving the running system matching no config an operator could read back.
+	// The cost is that a reload raising the level to debug does not log its own
+	// build at debug; the state being truthful is worth more.
+	a.applyLogLevel(plan.logical)
 	// A successful apply/recovery clears any prior wedged latch: the App now
 	// has an active runtime again and can self-heal.
 	a.wedged.Store(false)

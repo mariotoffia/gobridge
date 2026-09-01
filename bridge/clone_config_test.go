@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -179,8 +178,10 @@ func TestCredentialRefresher_NormalClose_NoFailureMetric(t *testing.T) {
 }
 
 // ===========================================================================
-// Finding #3 (supervisor.go:690) — a failed OLD-runtime stop must abort the
-// swap; the NEW runtime must not start (no double-run).
+// A failed OLD-runtime stop must abort the swap so the new runtime never starts
+// alongside a half-stopped one. What happens to the supervisor afterwards is
+// pinned in supervisor_stop_ownership_test.go (it wedges — the torn-down runtime
+// can never serve again).
 // ===========================================================================
 
 // closeFailExclusiveFactory builds exclusive-identity sessions whose Close
@@ -191,54 +192,6 @@ func closeFailExclusiveFactory() *exclusiveTransportFactory {
 		return &failingSession{closeErr: errors.New("broker close hung")}, nil
 	}
 	return ef
-}
-
-func TestSupervisor_OldStopFails_AbortsSwap_PrepareCommit(t *testing.T) {
-	onSwap, swaps := swapChan(1)
-	s := NewSupervisor(
-		WithSupervisorBlueprintValidator(config.Validate),
-		WithOnSwap(onSwap),
-	)
-	s.RegisterTransport("fake", &fakeTransportFactory{})
-	s.RegisterTransport("exclusive", closeFailExclusiveFactory())
-	s.RegisterStoreFactory("memory", &fakeStoreFactory{})
-
-	ch := make(chan *ports.BridgeConfig, 1)
-	cancel, _ := quickSupervisorRun(s, supervisorTestConfigWithSession("r1", "s1"), ch)
-	defer cancel()
-	oldRt := s.Runtime()
-	require.NotNil(t, oldRt)
-
-	require.True(t, sendConfig(ch, supervisorTestConfigWithSession("r2", "s1"), time.Second))
-	ev := awaitSwap(t, swaps)
-	require.Error(t, ev.Error)
-	assert.Contains(t, ev.Error.Error(), "stop old runtime",
-		"a failed old-runtime stop must fail the reload instead of starting the new runtime")
-	assert.Same(t, oldRt, s.Runtime(), "the new runtime must NOT have been swapped in")
-}
-
-func TestSupervisor_OldStopFails_AbortsSwap_Overlap(t *testing.T) {
-	onSwap, swaps := swapChan(1)
-	s := NewSupervisor(
-		WithSupervisorBlueprintValidator(config.Validate),
-		WithOnSwap(onSwap),
-		WithSwapMode(SwapOverlap),
-	)
-	s.RegisterTransport("fake", &fakeTransportFactory{})
-	s.RegisterTransport("exclusive", closeFailExclusiveFactory())
-	s.RegisterStoreFactory("memory", &fakeStoreFactory{})
-
-	ch := make(chan *ports.BridgeConfig, 1)
-	cancel, _ := quickSupervisorRun(s, supervisorTestConfigWithSession("r1", "s1"), ch)
-	defer cancel()
-	oldRt := s.Runtime()
-	require.NotNil(t, oldRt)
-
-	require.True(t, sendConfig(ch, supervisorTestConfigWithSession("r2", "s1"), time.Second))
-	ev := awaitSwap(t, swaps)
-	require.Error(t, ev.Error)
-	assert.Contains(t, ev.Error.Error(), "stop old runtime")
-	assert.Same(t, oldRt, s.Runtime(), "overlap swap must not start the new runtime when old stop failed")
 }
 
 // ===========================================================================

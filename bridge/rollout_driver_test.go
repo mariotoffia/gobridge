@@ -105,7 +105,7 @@ func TestClusterRolloutDriver_DrivesCommitOverAFakeHost(t *testing.T) {
 	require.Equal(t, boot, resolved)
 
 	stop := d.Start(context.Background(), clock.System, nil)
-	defer stop()
+	defer stop(context.Background())
 
 	candidate := soloCohortConfig(7)
 	candidate.Bindings[0].Address = "addr/rolled"

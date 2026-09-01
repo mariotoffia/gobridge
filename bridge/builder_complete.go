@@ -55,11 +55,13 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 	}
 	defer func() {
 		if retErr != nil {
-			for id, s := range sessions {
-				if closeErr := s.Close(ctx); closeErr != nil && b.logger != nil {
-					b.logger.Warn("closing session after build failure", "session", id, "error", closeErr)
-				}
-			}
+			// Detached and bounded, exactly like the receiver/sender teardown
+			// below: the build context is routinely already expired here (a
+			// deadline-bounded swap), and closing a session with a dead context
+			// makes the broker client refuse the disconnect — so the client id /
+			// durable session is still held broker-side when the recovery build
+			// immediately reconnects with the same identity.
+			closeBuiltContextClosers(ctx, b.logger, "session", sessions)
 		}
 	}()
 
@@ -787,16 +789,10 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context, managedStore ports.
 	// a leak on every hot-reload (Finding 6). Skip them with a warning.
 	referenced := referencedSessionIDs(b.cfg)
 
-	cleanup := func(exclude string) {
-		for id, s := range sessions {
-			if id == exclude {
-				continue
-			}
-			if closeErr := s.Close(ctx); closeErr != nil && b.logger != nil {
-				b.logger.Warn("closing session after partial failure", "session", id, "error", closeErr)
-			}
-		}
-	}
+	// Same detached bounded teardown as the failure path in complete(): a
+	// partially-built session set is disconnected under a live context even when
+	// the build context has already expired.
+	cleanup := func() { closeBuiltContextClosers(ctx, b.logger, "session", sessions) }
 
 	for _, sd := range b.cfg.Sessions {
 		if !referenced[sd.ID] {
@@ -809,12 +805,12 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context, managedStore ports.
 		}
 		tf, ok := b.transports[sd.Transport]
 		if !ok {
-			cleanup("")
+			cleanup()
 			return nil, nil, fmt.Errorf("bridge: no transport factory registered for %q (session %q)", sd.Transport, sd.ID)
 		}
 		uri, err := b.resolveConfigCredentials(ctx, sd.Config, fmt.Sprintf("session %q", sd.ID))
 		if err != nil {
-			cleanup("")
+			cleanup()
 			return nil, nil, err
 		}
 		if uri != "" {
@@ -822,12 +818,12 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context, managedStore ports.
 		}
 		spec, err := sessionSpecWithManagedSubscriptions(sd, b.cfg, managedStore)
 		if err != nil {
-			cleanup("")
+			cleanup()
 			return nil, nil, fmt.Errorf("bridge: create session spec %q: %w", sd.ID, err)
 		}
 		sess, err := tf.NewSession(ctx, spec)
 		if err != nil {
-			cleanup("")
+			cleanup()
 			return nil, nil, fmt.Errorf("bridge: create session %q: %w", sd.ID, err)
 		}
 		if sess != nil {

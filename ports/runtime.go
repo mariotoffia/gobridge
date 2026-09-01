@@ -35,9 +35,16 @@ type RouteHealth struct {
 	InFlight     int  // currently-processing delivery count
 	// RouteDead reports a route that has restarted K consecutive times without
 	// ever reaching its stability window — a steady-state flap wedged at the
-	// supervisor backoff cap (e.g. a single-use receiver whose Run cannot be
-	// re-entered). Per-route supervision keeps global liveness green by design, so
-	// ops must alert on this STATE rather than on the restart rate alone.
+	// supervisor backoff cap (a source that keeps failing immediately, such as a
+	// deleted queue or a revoked credential). Per-route supervision keeps global
+	// liveness green by design, so ops must alert on this STATE rather than on
+	// the restart rate alone.
+	//
+	// It latches only for sources the route runner can re-enter — those whose
+	// broker client belongs to the session, not the receiver. A receiver the
+	// runner closes on exit is single-use, so its route escalates to a terminal
+	// runtime (process restart) instead of flapping, and never reaches this
+	// state.
 	RouteDead bool
 }
 

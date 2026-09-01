@@ -182,7 +182,7 @@ HTTP method receive HTTP 405 with a correct `Allow` header.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/admin/bridge` | Instance info (`instance_id`, `running`, route count) |
-| POST | `/api/v1/admin/bridge/start` | Start the bridge (`AdminOperationTimeout`, default 30s) |
+| POST | `/api/v1/admin/bridge/start` | Start the bridge (`AdminOperationTimeout`, default 30s). Resume means a FRESH runtime -- a stopped one is single-use. Any previous runtime that is not running is stopped first, releasing its broker sessions, store handles and leases, so a runtime that tripped terminal (unhealthy but still flagged running) can never be orphaned beside the replacement |
 | POST | `/api/v1/admin/bridge/stop` | Stop the bridge (`AdminOperationTimeout`, default 30s) |
 | GET | `/api/v1/admin/routes` | List all routes with delivery/dispatch mode |
 | POST | `/api/v1/admin/routes/{routeID}/inject` | Inject a test message (JSON payload, 1 MB limit) |

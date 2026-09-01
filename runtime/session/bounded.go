@@ -155,12 +155,34 @@ func (m *Manager) boundedReconcile(ctx context.Context, plan connectivity.Sessio
 // has to unwind faster than the ceiling timer — a coin flip whose losing side
 // is a false wedge.
 //
-// It returns whether Close actually COMPLETED within the ceiling. A false return
-// means the ceiling fired while Close was still parked (the adapter ignored ctx):
-// the source is STILL subscribed, so the caller MUST NOT release the lease — a
-// wedged-but-subscribed session cannot be safely handed off to a standby.
-func (m *Manager) closeSourceBounded(ctx context.Context, reason string) bool {
-	ceiling := m.releaseTimeout()
+// It returns Close's error (nil when the transport closed cleanly) and whether
+// Close actually COMPLETED within the ceiling.
+//
+// The hand-off gate is COMPLETION, not the error, and the property it stands for
+// is "has this source stopped consuming". A Close that RETURNS has stopped
+// ingress — the adapters shut their inbound router down first, before any
+// disconnect or bounded drain — so the caller may hand the lease to a standby
+// even when that Close reports an error. What such an error reports is that
+// deliveries the pipeline ALREADY accepted were still settling, and those are
+// version-fenced on outbox Complete and Claim: a straggler can duplicate at the
+// destination but can never double-commit, the same at-least-once window every
+// failover already has. Retaining the lease on every slow settle would instead
+// extend an outage to the full lease TTL on the very paths that exist to recover
+// from one.
+//
+// A false completion is the case where that property is UNKNOWN: the ceiling
+// fired while Close was still parked, so the adapter never reached its own
+// teardown and the source may still be subscribed. The caller MUST NOT release
+// the lease then — a still-consuming old owner cannot be handed off.
+//
+// ceiling is the caller's budget. Internal recovery paths pass releaseTimeout();
+// Manager.Close passes the remaining time its caller allowed, because
+// Runtime.Stop closes every managed session sequentially under ONE deadline and
+// a per-manager budget of our own would let n sessions overrun it n-fold.
+//
+// Only Manager.Close propagates the error, because it is the one caller whose
+// own return value is the process's teardown result.
+func (m *Manager) closeSourceBounded(ctx context.Context, ceiling time.Duration, reason string) (error, bool) {
 	abortAfter := ceiling - closeAbortMargin
 	if abortAfter <= 0 {
 		abortAfter = ceiling / 2
@@ -171,10 +193,10 @@ func (m *Manager) closeSourceBounded(ctx context.Context, reason string) bool {
 		return m.session.Close(c)
 	})
 	if err != nil {
-		m.log(ctx, slog.LevelWarn, "source session close during session-failure recovery failed or timed out",
+		m.log(ctx, slog.LevelWarn, "bounded source session close failed or timed out",
 			"reason", reason, "error", err, "completed", completed)
 	}
-	return completed
+	return err, completed
 }
 
 // closeAbortMargin is how much earlier than the manager's hard ceiling the

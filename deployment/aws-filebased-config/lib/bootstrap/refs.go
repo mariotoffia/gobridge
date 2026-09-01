@@ -107,3 +107,21 @@ func stopRuntime(ctx context.Context, rt *goruntime.Runtime, cfg *ports.BridgeCo
 	defer cancel()
 	return rt.Stop(stopCtx)
 }
+
+// waitCtx runs wait on its own goroutine and reports whether it finished before
+// ctx ended. The abandoned goroutine is harmless: every caller has already
+// cancelled the work the wait is for, so it unwinds on its own — the point is
+// that a stuck unwind must not consume the process shutdown budget.
+func waitCtx(ctx context.Context, wait func()) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		wait()
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}

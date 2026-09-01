@@ -106,6 +106,20 @@ may need a process restart to complete takeover.
    session (see [Scenario 8](../scenarios/08-clustered-exclusive-sessions.md)).
    A terminal runtime fails `GET /api/v1/monitor/live` closed.
 
+6. A **session failure** is not a node failure and must not cost a TTL. When a
+   reconnect reconcile fails, or the transport's event stream dies, the owner
+   closes its source, releases the lease, and the supervisor restarts that one
+   session. On the default `connect_after_lease` profile the restarted session
+   briefly re-seizes the lease (the store's same-owner path grants it at once)
+   and only then discovers the single-use transport refuses to start again. That
+   node is now provably dead, so it **releases** before going terminal: a standby
+   takes over within one `acquire_poll_interval`, not one `lease_ttl`.
+
+   So a `LeaseTransfers` advance that lags a session failure by roughly a full
+   `lease_ttl` is a symptom, not the design — check that the restarting node
+   logged `lease released` with `reason=deferred connect failure` before it went
+   terminal.
+
 ## Action
 
 - **Takeover completed (`LeaseTransfers` advanced, standby `running`, `ready`):**

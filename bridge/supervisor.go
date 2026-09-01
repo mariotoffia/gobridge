@@ -492,7 +492,12 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 	if err != nil {
 		return fmt.Errorf("supervisor: initial durable session identity preflight: %w", err)
 	}
-	rt, err := s.buildRuntime(ctx, appliedInitial)
+	// Bounded like every reload build: an unbounded initial construction lets a
+	// hung external call (NewSession against a partitioned broker, a credential
+	// resolve that never returns) block Run forever, with no runtime, no health
+	// surface and no terminal signal. The shipped command wraps this in its own
+	// outer wait; a custom composition root got nothing.
+	rt, err := s.buildRuntimeBounded(ctx, appliedInitial)
 	if err != nil {
 		return fmt.Errorf("supervisor: initial build: %w", err)
 	}
@@ -517,11 +522,11 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 	// barrier is wired, so a non-clustered or ADR-0012 deployment starts nothing.
 	stopDrive := s.startRolloutDrive(ctx)
 	if stopDrive == nil {
-		stopDrive = func() {}
+		stopDrive = func(context.Context) {}
 	}
 	// Backstop only: every shutdown path below goes through shutdown(), which
 	// stops the drive FIRST. This defer covers a path that returns without it.
-	defer stopDrive()
+	defer func() { stopDrive(context.Background()) }()
 
 	// shutdown drains the bridge in the one order that is safe: stop the barrier
 	// drive, THEN stop the runtime. The drive can be mid-swap (a committed
@@ -531,7 +536,16 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 	// ever Stop. stopDrive waits for that goroutine to unwind, which is bounded by
 	// the swap deadline, and it is idempotent so the defer above is harmless.
 	shutdown := func() error {
-		stopDrive()
+		// One shutdown budget covers the drive AND the runtime drain: the drive
+		// is waited on first (a committed rollout applies on ITS goroutine, so
+		// draining first could start a replacement nothing would ever stop), but
+		// a barrier store call that never returns must not hold SIGTERM ahead of
+		// the drain. drain_timeout bounds the wait; the drive is already
+		// cancelled and unwinds on its own afterwards.
+		driveCtx, driveCancel := context.WithTimeout(
+			context.WithoutCancel(ctx), s.drainTimeoutFrom(s.Config()))
+		stopDrive(driveCtx)
+		driveCancel()
 		return s.stopCurrent(ctx)
 	}
 
@@ -721,6 +735,17 @@ func (s *Supervisor) StartBridge(ctx context.Context) error {
 	s.mu.RUnlock()
 	if rt != nil && rt.IsRunning() {
 		return nil
+	}
+	if rt != nil {
+		// The runtime is not running, but that covers two very different states:
+		// a deliberate StopBridge (already torn down; Stop is an idempotent
+		// no-op) and a component-failure trip, which flips healthy and cancels
+		// the work context but leaves running=true and never closes anything.
+		// Publishing a replacement over the second state orphaned its broker
+		// sessions, store handles and leases for the process lifetime AND
+		// disarmed the terminal backstop, because Terminal() then reads the new
+		// runtime. Release it first.
+		s.stopAbandoned(ctx, rt, cfg)
 	}
 	if cfg == nil {
 		return fmt.Errorf("supervisor: no config available to start bridge")
@@ -1167,20 +1192,23 @@ func (s *Supervisor) applyOverlap(
 			// The old runtime did NOT stop cleanly (e.g. a hung broker close).
 			// Starting the freshly built runtime now would leave TWO runtimes
 			// live against the same brokers — duplicate consumption,
-			// exclusive-identity conflicts, stale lease writes
-			// (supervisor.go:690, Chunk 3). Refuse the swap: release the
-			// built-but-unstarted new runtime and fail the reload, leaving the
-			// old (not-fully-stopped) runtime as the still-current one.
+			// exclusive-identity conflicts, stale lease writes. Refuse the swap
+			// and release the built-but-unstarted new runtime.
+			//
+			// The old runtime cannot be retained either: Stop has no early error
+			// return, so by the time it reports a failure it has already
+			// cancelled the work context and closed managers, sessions and
+			// stores — and a stopped runtime is single-use. Keeping it as the
+			// current one left the process bridging nothing behind a green
+			// /live. Wedge instead (ADR-0004): Terminal() trips, /live fails
+			// closed, and the orchestrator restarts the process with
+			// freshly-built transports, which is also the only thing that clears
+			// the hung residue.
 			if s.logger != nil {
-				s.logger.Error("supervisor: old runtime stop failed; aborting swap to avoid running two runtimes", "error", stopErr)
+				s.logger.Error("supervisor: old runtime stop failed; wedging rather than serving a torn-down runtime", "error", stopErr)
 			}
 			s.stopAbandoned(ctx, newRt, newCfg)
-			// The retained old runtime is in an ambiguous half-stopped state
-			// (drain timed out / broker close hung), so it is NOT plainly
-			// healthy. Surface a degraded signal so operators can observe it
-			// rather than reading a clean health; a later successful reload
-			// clears it.
-			s.markDegraded("old runtime stop failed during reload; retained runtime may be half-stopped")
+			s.wedgeAfterFailedStop(stopErr)
 			return nil, fmt.Errorf("stop old runtime: %w", stopErr)
 		}
 	}
@@ -1214,6 +1242,20 @@ func (s *Supervisor) stopAbandoned(ctx context.Context, rt *runtime.Runtime, cfg
 	if stopErr := rt.Stop(stopCtx); stopErr != nil && s.logger != nil {
 		s.logger.Warn("supervisor: stopping abandoned runtime", "error", stopErr)
 	}
+}
+
+// wedgeAfterFailedStop drops the torn-down runtime and enters the terminal
+// wedged state. It is the answer to a Runtime.Stop that reported an error during
+// a swap: that runtime has already released (or hung on) everything it owned and
+// is single-use, so there is nothing left to serve with. Terminal() then trips,
+// /live fails closed, and the composition-root backstop restarts the process —
+// the only thing that can clear hung plugin residue (ADR-0004).
+func (s *Supervisor) wedgeAfterFailedStop(stopErr error) {
+	s.mu.Lock()
+	s.rt = nil
+	s.wedged = true
+	s.mu.Unlock()
+	s.markDegraded(fmt.Sprintf("old runtime stop failed during reload; no runtime is serving: %v", stopErr))
 }
 
 // recoverOldOrWedge rebuilds and restarts the previous config after a failed
@@ -1266,12 +1308,16 @@ func (s *Supervisor) applyPrepareCommit(
 	// call (NewSession against a partitioned broker, credential resolve) cannot
 	// strand the bridge. This is critical for prepare-commit: complete() runs
 	// AFTER the old runtime is stopped, so an unbounded hang there routes nothing
-	// forever. On deadline the error routes into recoverOldOrWedge below (HIGH:
-	// no deadline on swap build/complete phase).
-	phaseCtx, phaseCancel := s.swapPhaseCtx(ctx)
-	defer phaseCancel()
-
-	prep, err := builder.prepare(phaseCtx)
+	// forever. On deadline the error routes into recoverOldOrWedge below.
+	//
+	// prepare and complete get SEPARATE deadlines because the old runtime's Stop
+	// sits between them and is allowed to consume the whole drain budget. One
+	// deadline spanning both charged construction for that drain, so a
+	// slow-but-successful stop handed complete() a spent context and the reload
+	// failed deterministically on every retry.
+	prepCtx, prepCancel := s.swapPhaseCtx(ctx)
+	defer prepCancel()
+	prep, err := builder.prepare(prepCtx)
 	if err != nil {
 		return nil, fmt.Errorf("prepare: %w", err)
 	}
@@ -1286,22 +1332,22 @@ func (s *Supervisor) applyPrepareCommit(
 			// The old runtime did NOT stop cleanly. complete() below opens the
 			// NEW exclusive-identity sessions/receivers; doing so while the old
 			// runtime may still hold them causes broker identity conflicts and
-			// double consumption (supervisor.go:690, Chunk 3). Refuse the swap:
-			// release the prep-opened store handles and fail the reload, leaving
-			// the old (not-fully-stopped) runtime current instead of overlapping.
+			// double consumption. Refuse the swap and release the prep-opened
+			// store handles. The old runtime is already torn down and single-use
+			// (see applyOverlap), so it cannot be retained either: wedge so the
+			// orchestrator restarts the process.
 			if s.logger != nil {
-				s.logger.Error("supervisor: old runtime stop failed; aborting prepare-commit swap to avoid running two runtimes", "error", stopErr)
+				s.logger.Error("supervisor: old runtime stop failed; wedging rather than serving a torn-down runtime", "error", stopErr)
 			}
 			builder.closeStoreHandles(prep.stores)
-			// Retained old runtime is in an ambiguous half-stopped state; surface
-			// a degraded signal (cleared by a later successful reload) rather than
-			// reporting plain health.
-			s.markDegraded("old runtime stop failed during reload; retained runtime may be half-stopped")
+			s.wedgeAfterFailedStop(stopErr)
 			return nil, fmt.Errorf("stop old runtime: %w", stopErr)
 		}
 	}
 
-	newRt, err := builder.complete(phaseCtx, prep)
+	completeCtx, completeCancel := s.swapPhaseCtx(ctx)
+	defer completeCancel()
+	newRt, err := builder.complete(completeCtx, prep)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Error("supervisor: Complete failed, attempting recovery with old config", "error", err)

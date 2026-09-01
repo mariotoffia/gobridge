@@ -63,11 +63,19 @@ func (d *ClusterRolloutDriver) Coordinated(cfg *ports.BridgeConfig) bool {
 
 // Start launches the barrier drive — one goroutine running the applier on every
 // tick and the coordinator half whenever this member holds the lease — and returns
-// a stop function that cancels it and waits for the goroutine to exit. It returns
-// nil when the deployment is not coordinated, so the drive is opt-in exactly like
-// the barrier. clk and metrics are supplied here (not at construction) because a
-// composition root finalises them after wiring the barrier.
-func (d *ClusterRolloutDriver) Start(ctx context.Context, clk clock.Clock, metrics ports.MetricsExporter) func() {
+// a stop function that cancels it and waits for the goroutine to exit UNDER THE
+// CALLER'S SHUTDOWN BUDGET. It returns nil when the deployment is not
+// coordinated, so the drive is opt-in exactly like the barrier. clk and metrics
+// are supplied here (not at construction) because a composition root finalises
+// them after wiring the barrier.
+//
+// The stop function takes a context because the drive is the FIRST thing a
+// process shutdown waits on: a barrier store call that never returns would
+// otherwise hold SIGTERM ahead of the runtime drain and the HTTP shutdown until
+// the platform SIGKILLed the process mid-drain. The wait is abandoned when the
+// context ends; the drive goroutine is already cancelled and unwinds on its own.
+// Stop is idempotent.
+func (d *ClusterRolloutDriver) Start(ctx context.Context, clk clock.Clock, metrics ports.MetricsExporter) func(context.Context) {
 	if !coordinatedRollout(d.host.Config()) {
 		return nil
 	}
@@ -101,13 +109,21 @@ func (d *ClusterRolloutDriver) Start(ctx context.Context, clk clock.Clock, metri
 	})
 
 	loopCtx, cancel := context.WithCancel(ctx)
-	var wg sync.WaitGroup
-	wg.Go(func() {
+	driveDone := make(chan struct{})
+	go func() {
+		defer close(driveDone)
 		d.drive(loopCtx, clk, applier, coord)
-	})
-	return func() {
+	}()
+	return func(stopCtx context.Context) {
 		cancel()
-		wg.Wait()
+		if stopCtx == nil {
+			<-driveDone
+			return
+		}
+		select {
+		case <-driveDone:
+		case <-stopCtx.Done():
+		}
 	}
 }
 
@@ -204,7 +220,7 @@ func (s *Supervisor) resolveCoordinatedBoot(ctx context.Context, cfg *ports.Brid
 
 // startRolloutDrive delegates to the rollout driver, passing the Supervisor's
 // finalised clock and metrics. It returns nil when no barrier is wired.
-func (s *Supervisor) startRolloutDrive(ctx context.Context) func() {
+func (s *Supervisor) startRolloutDrive(ctx context.Context) func(context.Context) {
 	if s.rolloutDriver == nil {
 		return nil
 	}

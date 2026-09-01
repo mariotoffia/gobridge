@@ -97,7 +97,7 @@ func TestClusterRolloutDriver_ConfirmWindow_HappyPath(t *testing.T) {
 	require.NotNil(t, d)
 
 	stop := d.Start(context.Background(), clock.System, nil)
-	defer stop()
+	defer stop(context.Background())
 
 	candidate := soloWindowConfig(7, 5*time.Second)
 	candidate.Bindings[0].Address = "addr/confirmed"
@@ -146,7 +146,7 @@ func TestClusterRolloutDriver_ConfirmWindow_DeadmanRevert(t *testing.T) {
 	require.NotNil(t, d)
 
 	stop := d.Start(context.Background(), clock.System, nil)
-	defer stop()
+	defer stop(context.Background())
 
 	candidate := soloWindowConfig(7, 60*time.Millisecond)
 	candidate.Bindings[0].Address = "addr/never-converges"

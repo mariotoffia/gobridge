@@ -120,6 +120,148 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ### Fixed
 
+- **SIGTERM killed in-flight deliveries before the drain.** Both shipped
+  binaries cancel their process context on `SIGTERM` and only then stop the
+  runtime, and every route, receiver, sender and delivery context was derived
+  from that same context — so the cancel reached in-flight sends first and
+  `Runtime.Stop`'s "settle accepted deliveries before cancelling" phase never
+  ran. Every rolling restart aborted work mid-send: duplicates on redelivery,
+  and losses under `on_permanent_failure: drop`. Routes now run on a context
+  detached from the caller's; `Stop` is the only thing that cancels them, and
+  cancelling the start context drives a `Stop` under the configured budget
+  instead of an abort. The builder also passes `bridge.drain_timeout` into the
+  runtime, so the runtime and the supervisor bound teardown identically instead
+  of the runtime falling back to an internal 5s ceiling.
+
+- **A second `Stop` reported a clean shutdown over a failed one.** Two callers
+  race on every signal (the start-context watcher and the composition root's own
+  stop). The loser returned `nil`, so `cmd/gobridge` logged "bridge stopped" and
+  the file-based app returned success over a drain that had actually failed.
+  Every `Stop` now returns the result of the teardown that ran. `Stop` errors
+  also name the phase that failed — background components, a session manager, a
+  named unmanaged session, a role-tagged store handle, or the metrics flush.
+  **Operational consequence:** `gobridge-filebased` now exits `1` when a
+  shutdown's drain genuinely failed (overran its budget, or a transport refused
+  to close) where it previously exited `0`.
+
+- **A committed config installed a runtime and then stopped it.** The file-based
+  app applies an admin config commit in-band on the context the httpapi
+  transaction detaches from the request but still cancels when `Commit` returns.
+  The new runtime was started on it, so its start-context watcher stopped the
+  freshly installed runtime moments later and the process was left
+  installed-but-stopped — `/live` still 200, because a clean stop is not
+  terminal — until an unrelated config arrived. Runtimes are now started under
+  the process-scoped context; only shutdown ends them.
+
+- **A failed old-runtime `Stop` left a torn-down runtime installed and serving
+  nothing.** `Runtime.Stop` has no early error return, so a reported failure
+  arrives after the work context is cancelled and managers, sessions and stores
+  are closed — and a stopped runtime is single-use. Both swap paths kept it as
+  the current runtime behind a green `/live`, and in the file-based app the
+  applied fingerprint still named its config, so the admin transaction's disk
+  rollback was recognised as already-applied and skipped: nothing ever
+  recovered. Both now wedge (`Terminal()` true, `/live` 503) so the orchestrator
+  restarts the task with freshly-built transports; the file-based app also
+  releases the never-committed build plan's store handles and clears the
+  fingerprint.
+
+- **`/bridge/start` could orphan a runtime that had tripped terminal.** The gate
+  read `IsRunning()` (running **and** healthy), and a component-failure trip
+  flips healthy while leaving the runtime flagged running and closing nothing.
+  A resume therefore published a fresh runtime beside a live one still holding
+  its broker sessions, store handles and leases — for the process lifetime,
+  since the terminal backstop then read the new runtime. The previous runtime is
+  now stopped before a replacement is built.
+
+- **A slow drain made prepare/commit reloads fail deterministically.** The swap
+  phase deadline was armed before the old runtime's `Stop`, which may consume
+  the whole `drain_timeout`, so construction inherited a spent context and every
+  retry failed the same way. Construction now gets its own deadline, derived
+  after the drain returns.
+
+- **Process shutdown could stall behind an unbounded wait.** The config-watcher
+  join and the coordinated-rollout drive stop were unbounded, and the drive
+  resigns its coordinator lease on the way out under a context bounded only by
+  `lease_ttl` — so a stuck reload or a lease store that would not release held
+  `SIGTERM` ahead of the runtime drain, the HTTP shutdown and the metrics flush
+  until the platform's SIGKILL. Both waits are now bounded by the process
+  shutdown budget — and in the file-based app that budget is now
+  `bridge.shutdown_timeout` from the boot config rather than an invisible 30s
+  constant, so the field documented as the total shutdown grace period actually
+  governs it. An explicit `bootstrap.WithShutdownTimeout` still wins.
+
+- **A failed startup left a runtime running with nobody to stop it.** The
+  file-based app installs the runtime before it opens the transport, admin and
+  monitor listeners and before the config watcher, and every failure after that
+  point returned an error while the runtime kept its sessions, stores and lease
+  renewals live. It is now released under a bounded, detached context.
+
+- **A rejected reload changed live logging.** `bridge.log_level` was applied at
+  the top of the reload path, before deployment-profile validation and before
+  anything was built, so a rejected candidate changed process verbosity while
+  desired and running state stayed on the old config. The level is now committed
+  with the runtime.
+
+- **Sessions were disconnected with an expired build context.** When a build
+  failed, receivers and senders were closed under a detached bounded budget but
+  sessions were closed with the original — routinely already-expired — build
+  context, so brokers refused the disconnect and still held the client id when
+  the recovery build reconnected with the same identity. Sessions now use the
+  same detached teardown.
+
+- **The initial supervisor build was unbounded.** Every reload build ran under
+  the swap deadline; the initial one did not, so a composition root without its
+  own outer wait blocked in `Run` forever on a hung construction call, with no
+  runtime, no health surface and no terminal signal.
+
+- **A session failure could leave a dead owner holding the lease for a full
+  TTL.** On the default `connect_after_lease` profile, a reconnect-reconcile
+  failure (or a dead transport event stream) closed the source, released the
+  lease and restarted the session — and the restarted session re-seized the
+  lease through the store's same-owner path before discovering that the
+  single-use MQTT transport refuses to start after close. That terminal failure
+  kept the freshly re-seized lease, so takeover waited out `lease_ttl` (45s in
+  the HA preset, 360s by default) plus a poll instead of one acquire poll.
+  Nothing has been accepted on a failed deferred connect — no subscription, no
+  delivery, no unsettled work — so the lease is now released before the process
+  goes terminal. The reconcile / managed-migration phase still retains the lease:
+  there, durable route work may still unwind.
+
+- **Lease timings could silently collapse to a millisecond store storm.**
+  `lease_ttl: 5s` with `max_renew_fails: 5`, or `lease_ttl: 45s` with
+  `max_renew_fails: 50`, left no per-attempt renew budget, so construction
+  clamped the derived renew interval and the standby acquire poll to 1 ms and
+  only logged a warning. Validation looked at an explicitly pinned
+  `renew_interval` only, so the derived path — the production path — passed.
+  The cadence resolution now lives in the domain (`routing.LeaseTimingRequest`),
+  and the session manager, the builder and the **blueprint validator** all
+  resolve through it, so an unserveable cadence is rejected before the config
+  transaction's durable write instead of at apply. An exclusive session is
+  refused when the expiry-margin clamp had to cut the renew interval or the
+  per-call timeout, or when the resolved renew interval or acquire poll falls
+  below a documented `250ms` floor. A clamp that only sheds `lease_renew_jitter`
+  is still accepted — the clamp trims jitter first by design and the remaining
+  cadence is healthy.
+
+- **`Manager.Close` released the lease before closing the source session.** A
+  standby could seize the partition and activate while this node stayed
+  connected and subscribed for the whole duration of `session.Close`. MQTT hides
+  that behind client-ID takeover; an exclusive AMQP 0-9-1 / 1.0 consumer really
+  does double-consume. Close now follows the same close-then-release discipline
+  as step-down, activation failure and session-failure recovery, under the same
+  bounded, detached context — and skips the release entirely when the source
+  Close ignored its context and never returned. The close is bounded by the
+  caller's remaining deadline rather than by a budget of its own, so tearing down
+  many managed sessions can no longer overrun `bridge.shutdown_timeout`.
+
+- **A terminal deferred connect could hand off the lease before its source had
+  quiesced.** Releasing on a permanent-closure marker assumes nothing of ours can
+  still send, but a session can latch that marker asynchronously — the MQTT
+  ingress-poison rejection returns immediately and quiesces on a goroutine — so
+  the marker alone was not evidence. The source is now closed under the bounded
+  teardown before the lease is released, and a close that never returns keeps the
+  lease until natural expiry.
+
 - **A shutdown could acknowledge and discard in-flight messages.** When the
   bridge cancelled a delivery — a SIGTERM, a reconfiguration swap that outran
   the drain budget, or a receiver restarting its route — the cancellation

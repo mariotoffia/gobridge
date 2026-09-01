@@ -130,10 +130,10 @@ func DefaultConfig(sessionID string, exclusive bool) Config {
 	return Config{
 		SessionID:           sessionID,
 		Exclusive:           exclusive,
-		LeaseTTL:            360 * time.Second,
-		RenewInterval:       110 * time.Second, // 110*3=330s < 360s TTL: final renew off the expiry boundary
-		RenewJitter:         5 * time.Second,
-		MaxRenewFails:       3,
+		LeaseTTL:            routing.DefaultLeaseTTL,
+		RenewInterval:       routing.DefaultRenewInterval, // 110*3=330s < 360s TTL: final renew off the expiry boundary
+		RenewJitter:         routing.DefaultRenewJitter,
+		MaxRenewFails:       routing.DefaultMaxRenewFails,
 		StepDownGrace:       routing.DefaultStepDownGrace,
 		DrainStrategy:       persistence.NewFixedPoll(persistence.DefaultFixedPollInterval),
 		DrainBatchSize:      100,
@@ -192,188 +192,18 @@ func DefaultConfig(sessionID string, exclusive bool) Config {
 // Declare and validate an end-to-end FailoverSLO before making latency claims.
 func HAConfig(sessionID string, exclusive bool) Config {
 	cfg := DefaultConfig(sessionID, exclusive)
-	cfg.LeaseTTL = 45 * time.Second
+	cfg.LeaseTTL = routing.HALeaseTTL
 	// RenewInterval/RenewJitter/RenewCallTimeout are pinned so the FULL
 	// worst-case renew span (now including the per-call timeout)
 	// stays strictly under the TTL: MaxRenewFails × (RenewInterval +
 	// RenewJitter/2 + RenewCallTimeout) = 3 × (10 + 0.5 + 3) = 40.5s < 45s,
 	// leaving a 10% margin for clock slack.
-	cfg.RenewInterval = 10 * time.Second
-	cfg.RenewJitter = 1 * time.Second
-	cfg.RenewCallTimeout = 3 * time.Second
-	cfg.MaxRenewFails = 3
-	cfg.StepDownGrace = 5 * time.Second
+	cfg.RenewInterval = routing.HARenewInterval
+	cfg.RenewJitter = routing.HARenewJitter
+	cfg.RenewCallTimeout = routing.HARenewCallTimeout
+	cfg.MaxRenewFails = routing.DefaultMaxRenewFails
+	cfg.StepDownGrace = routing.HAStepDownGrace
 	return cfg
-}
-
-// deriveRenewInterval returns a renew interval that places the FULL
-// MaxRenewFails-th worst-case detection span — interval + jitter/2 + per-call
-// renew timeout — at ~75% of the TTL, reserving ~25% of the TTL as
-// headroom for clock slack before the lease would expire. This is the
-// production derivation path once an operator supplies only LeaseTTL: the
-// owner tolerates MaxRenewFails-1 transient renew failures and the recovering
-// attempt still lands before the expiry boundary, even when every failing renew
-// call burns the full RenewCallTimeout before failing.
-func deriveRenewInterval(ttl time.Duration, maxRenewFails int) time.Duration {
-	if maxRenewFails < 1 {
-		maxRenewFails = 1
-	}
-	// Budget per attempt for interval + jitter/2 + callTimeout, targeting 75%
-	// of the TTL across all MaxRenewFails attempts.
-	perAttempt := (ttl * 3) / (time.Duration(maxRenewFails) * 4)
-	// Reserve the per-call renew timeout (bounded by its 5s cap) so it does not
-	// erode the headroom the way it once did. Never let the reserve
-	// consume more than half the per-attempt budget for tiny TTLs.
-	reserve := 5 * time.Second
-	if reserve > perAttempt/2 {
-		reserve = perAttempt / 2
-	}
-	// jitter is interval/4 (deriveRenewJitter), so jitter/2 = interval/8. Solve
-	// interval + interval/8 + reserve = perAttempt  ⇒  interval = (perAttempt-reserve)*8/9.
-	interval := ((perAttempt - reserve) * 8) / 9
-	if interval < time.Millisecond {
-		interval = time.Millisecond
-	}
-	return interval
-}
-
-// deriveRenewJitter returns a jitter derived from the renew interval rather
-// than a fixed constant: a quarter of the interval spreads renewals
-// enough to avoid a thundering herd while contributing only RenewInterval/8
-// per attempt to the worst-case span, comfortably inside the headroom
-// reserved by deriveRenewInterval.
-func deriveRenewJitter(renewInterval time.Duration) time.Duration {
-	j := renewInterval / 4
-	if j < 0 {
-		j = 0
-	}
-	return j
-}
-
-// deriveAcquirePollInterval returns how often a standby retries Acquire while
-// waiting to take over. A standby must poll FASTER than the owner renews so
-// failover is bounded by ~LeaseTTL rather than by the owner's renew cadence:
-// the smaller of the renew interval and a quarter of the TTL, capped at 5s so
-// even large-TTL deployments retry promptly, and floored to avoid a busy loop.
-func deriveAcquirePollInterval(renewInterval, ttl time.Duration) time.Duration {
-	poll := renewInterval
-	if q := ttl / 4; q > 0 && q < poll {
-		poll = q
-	}
-	const maxPoll = 5 * time.Second
-	if poll > maxPoll {
-		poll = maxPoll
-	}
-	if poll < time.Millisecond {
-		poll = time.Millisecond
-	}
-	return poll
-}
-
-// deriveRenewCallTimeout bounds a single Acquire/Renew store call at
-// min(RenewInterval/2, 5s), floored at 1s so tiny (test) intervals do not
-// create spuriously short deadlines. This stops a hung DynamoDB call from
-// stretching step-down and takeover unboundedly.
-func deriveRenewCallTimeout(renewInterval time.Duration) time.Duration {
-	const (
-		maxTimeout = 5 * time.Second
-		minTimeout = 1 * time.Second
-	)
-	t := renewInterval / 2
-	if t > maxTimeout {
-		t = maxTimeout
-	}
-	if t < minTimeout {
-		t = minTimeout
-	}
-	return t
-}
-
-// renewWorstCaseSpan is the maximum wall-clock time the owner may take to
-// detect a definitive lease loss through renewal failures: MaxRenewFails
-// attempts, each delayed by the renew interval plus the maximum positive
-// jitter (RenewJitter/2) AND the time a single renew call may burn before it
-// fails (up to RenewCallTimeout).
-//
-// renewLoop (manager_lease.go) resets the renew timer AFTER the renew call
-// returns, so the real spacing between consecutive attempts is
-// interval + jitter/2 + call-duration, and a hung backend burns the full
-// RenewCallTimeout on every attempt. Omitting RenewCallTimeout under-counts the
-// span by MaxRenewFails × RenewCallTimeout, which in short-TTL profiles can
-// push real detection PAST the lease TTL. Keeping this
-// strictly below LeaseTTL guarantees the owner detects loss and steps down
-// before its OWN lease would expire, so it stops sending before a new owner
-// takes over.
-func renewWorstCaseSpan(renewInterval, renewJitter, renewCallTimeout time.Duration, maxRenewFails int) time.Duration {
-	if maxRenewFails < 1 {
-		maxRenewFails = 1
-	}
-	if renewCallTimeout < 0 {
-		renewCallTimeout = 0
-	}
-	perAttempt := renewInterval + renewJitter/2 + renewCallTimeout
-	return perAttempt * time.Duration(maxRenewFails)
-}
-
-// clampRenewTimings enforces the expiry-margin invariant defensively at
-// construction time: if the worst-case renew span (which now folds in the
-// per-call renew timeout) meets or exceeds the TTL it sheds jitter
-// first (cheap — jitter only spreads load), then, if still unsafe, reserves the
-// per-call timeout budget and shrinks the renew interval so the span fits within
-// 90% of the TTL. In the pathological case where the per-call timeout alone
-// exhausts a per-attempt budget it is clamped too. It returns the (possibly
-// adjusted) values and whether any clamp occurred so the caller can warn. This
-// is a safety net; Config.Validate reports the same violation as a hard error
-// for callers that want to fail fast.
-func clampRenewTimings(ttl, renewInterval, renewJitter, renewCallTimeout time.Duration, maxRenewFails int) (time.Duration, time.Duration, time.Duration, bool) {
-	if maxRenewFails < 1 {
-		maxRenewFails = 1
-	}
-	if renewInterval < time.Millisecond {
-		renewInterval = time.Millisecond
-	}
-	if renewJitter < 0 {
-		renewJitter = 0
-	}
-	if renewCallTimeout < 0 {
-		renewCallTimeout = 0
-	}
-	if renewWorstCaseSpan(renewInterval, renewJitter, renewCallTimeout, maxRenewFails) < ttl {
-		return renewInterval, renewJitter, renewCallTimeout, false
-	}
-
-	limit := (ttl * 9) / 10 // hard ceiling for the worst-case span
-	perAttemptLimit := limit / time.Duration(maxRenewFails)
-
-	// The per-call timeout consumes part of every attempt's budget. If it does
-	// not even leave room for a minimal renew interval, clamp it too — a
-	// hung-call ceiling larger than the whole per-attempt budget can never
-	// satisfy the invariant on its own.
-	if renewCallTimeout > perAttemptLimit-time.Millisecond {
-		renewCallTimeout = perAttemptLimit - time.Millisecond
-		if renewCallTimeout < 0 {
-			renewCallTimeout = 0
-		}
-	}
-	available := perAttemptLimit - renewCallTimeout // budget for interval + jitter/2
-
-	if renewInterval < available {
-		if maxJitter := 2 * (available - renewInterval); renewJitter > maxJitter {
-			renewJitter = maxJitter
-		}
-		if renewWorstCaseSpan(renewInterval, renewJitter, renewCallTimeout, maxRenewFails) < ttl {
-			return renewInterval, renewJitter, renewCallTimeout, true
-		}
-	}
-
-	// Jitter alone insufficient (renew interval already too large): drop jitter
-	// and shrink the interval to fit the budget left after the per-call timeout.
-	renewJitter = 0
-	renewInterval = available
-	if renewInterval < time.Millisecond {
-		renewInterval = time.Millisecond
-	}
-	return renewInterval, renewJitter, renewCallTimeout, true
 }
 
 // EffectiveLeaseTTL resolves the lease lifetime exactly as Manager construction
@@ -401,41 +231,6 @@ func (c Config) PostAcquireActivationBudget() (budget, teardownMargin time.Durat
 	return ttl - teardownMargin, teardownMargin
 }
 
-// EffectiveFailoverLeaseTiming resolves the three lease-side inputs used by
-// failover-budget preflight exactly as Manager construction resolves them.
-func (c Config) EffectiveFailoverLeaseTiming() (ttl, acquirePoll, renewCallTimeout time.Duration) {
-	defaults := DefaultConfig(c.SessionID, c.Exclusive)
-	ttl = c.EffectiveLeaseTTL()
-	maxFails := c.MaxRenewFails
-	if maxFails <= 0 {
-		maxFails = defaults.MaxRenewFails
-	}
-	renewInterval := c.RenewInterval
-	renewDerived := renewInterval <= 0
-	if renewDerived {
-		renewInterval = deriveRenewInterval(ttl, maxFails)
-	}
-	renewJitter := c.RenewJitter
-	if renewJitter < 0 {
-		renewJitter = 0
-	}
-	if renewJitter == 0 && renewDerived {
-		renewJitter = deriveRenewJitter(renewInterval)
-	}
-	renewCallTimeout = c.RenewCallTimeout
-	if renewCallTimeout <= 0 {
-		renewCallTimeout = deriveRenewCallTimeout(renewInterval)
-	}
-	renewInterval, _, renewCallTimeout, _ = clampRenewTimings(
-		ttl, renewInterval, renewJitter, renewCallTimeout, maxFails,
-	)
-	acquirePoll = c.AcquirePollInterval
-	if acquirePoll <= 0 {
-		acquirePoll = deriveAcquirePollInterval(renewInterval, ttl)
-	}
-	return ttl, acquirePoll, renewCallTimeout
-}
-
 // Validate reports whether the lease timings are internally consistent. It is
 // intended for callers (e.g. the composition root) that want to fail fast on a
 // misconfigured session rather than rely on the manager's defensive clamp.
@@ -444,7 +239,9 @@ func (c Config) EffectiveFailoverLeaseTiming() (ttl, acquirePoll, renewCallTimeo
 // any combination whose worst-case jittered renew span — including the per-call
 // renew timeout — would reach the TTL: the owner could then fail to
 // detect lease loss before its lease expires, permitting two owners to send
-// concurrently. Zero-valued knobs are treated as "derive" and are always safe.
+// concurrently. Zero-valued knobs mean "derive", which is not the same as safe:
+// validateLeaseCadence below resolves them the way the manager does and rejects
+// a resolution that does not fit or that no lease store could serve.
 func (c Config) Validate() error {
 	if c.LeaseTTL < 0 || c.RenewInterval < 0 || c.RenewJitter < 0 ||
 		c.StepDownGrace < 0 || c.AcquirePollInterval < 0 || c.RenewCallTimeout < 0 ||
@@ -490,5 +287,35 @@ func (c Config) Validate() error {
 	if c.StepDownGrace >= ttl {
 		return fmt.Errorf("session %q: StepDownGrace=%s must be < LeaseTTL=%s", c.SessionID, c.StepDownGrace, ttl)
 	}
+	if c.Exclusive {
+		if err := c.validateLeaseCadence(); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// validateLeaseCadence rejects a configuration whose RESOLVED cadence — the one
+// the manager will actually run, after derivation and the expiry-margin clamp —
+// is unusable, rather than letting construction quietly clamp it and warn.
+//
+// Two failures reach here that the explicit worst-case span check above cannot
+// see, because it only runs when RenewInterval is pinned:
+//
+//   - The expiry-margin clamp had to cut the renew interval or the per-call
+//     timeout. A large MaxRenewFails against a modest TTL leaves no per-attempt
+//     budget, so the interval collapses toward the 1 ms floor and the operator's
+//     declared failure tolerance is silently not what runs. A clamp that only
+//     SHEDS JITTER is not rejected: jitter exists to spread load, the clamp trims
+//     it first by design, and what remains is a healthy cadence.
+//   - The resolved renew interval or standby acquire poll sits below
+//     MinimumLeaseCadence. The owner then renews and every standby claims faster
+//     than the store can serve, and the resulting throttling errors are counted
+//     as transient renew failures — the store outage becomes a self-inflicted
+//     ownership change.
+//
+// Only exclusive sessions reach this: a non-exclusive session never acquires a
+// lease, so its lease knobs are inert.
+func (c Config) validateLeaseCadence() error {
+	return c.resolveLeaseTiming().ValidateCadence(fmt.Sprintf("session %q", c.SessionID))
 }

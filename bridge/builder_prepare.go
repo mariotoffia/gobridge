@@ -217,6 +217,19 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 		runtime.WithOutboxStore(stores.outbox),
 		runtime.WithDLQStore(stores.dlq),
 		runtime.WithManagedSubscriptionStore(stores.managedSubscriptions),
+		// bridge.drain_timeout is the ceiling the supervisor puts on
+		// Runtime.Stop (stopCurrent / stopAbandoned / every swap). Give the
+		// runtime the SAME ceiling so the two agree: without it the runtime fell
+		// back to an internal 5s budget, so whichever Stop won the SIGTERM race
+		// clamped the close phase to 5s while the supervisor still held a 30s
+		// drain open — the configured budget governed nothing, and the
+		// store-close grace clamped to zero mid-drain.
+		//
+		// The pre-cancel settle phase keeps its own default ceiling
+		// (WithStopQuiesce unset): it is already bounded by this same Stop
+		// context, and pinning it to the full drain would leave nothing of the
+		// budget for closing sessions, stores and telemetry.
+		runtime.WithShutdownTimeout(b.cfg.Bridge.DrainTimeoutDuration()),
 	}
 	if b.cfg.Bridge.InstanceID != "" {
 		rtOpts = append(rtOpts, runtime.WithInstanceID(b.cfg.Bridge.InstanceID))

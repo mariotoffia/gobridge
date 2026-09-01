@@ -477,11 +477,20 @@ func (s *Session) Close(ctx context.Context) error {
 		return MapError(disconnErr)
 	}
 	if !handlersDrained {
-		// Ingress IS stopped (the router was shut down before any bounded wait),
-		// but deliveries the route pipeline already accepted are still settling.
-		// The session manager releases an exclusive lease as soon as Close
-		// returns, so reporting success here would hand ownership over while
-		// this owner's pipeline can still send.
+		// Ingress IS stopped: router.shutdown() ran above, BEFORE the disconnect
+		// and before any bounded wait, so no further message enters the route
+		// pipeline however this returns. What is unfinished is the SETTLEMENT of
+		// deliveries the pipeline already accepted, so report it rather than
+		// success — an operator needs to see that the drain budget was too short.
+		//
+		// It is not a refusal to hand over the lease. The session manager gates a
+		// hand-off on whether ingress is known to have stopped, which a returning
+		// Close establishes either way; retaining a lease on every slow settle
+		// would extend an outage to the full lease TTL on exactly the paths that
+		// exist to recover from one. A straggling send from this owner is
+		// version-fenced on outbox Complete and Claim: a duplicate at the
+		// destination is possible, a double commit is not — the same
+		// at-least-once window every failover already has.
 		return shared.ErrTimeout.WithMessage(
 			"mqtt: session close stopped ingress but gave up waiting for in-flight deliveries to settle")
 	}

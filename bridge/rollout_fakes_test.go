@@ -27,6 +27,13 @@ func newElectionLeaseStore() *electionLeaseStore {
 	return &electionLeaseStore{free: true}
 }
 
+// Owner reports the current holder, or "" when the lease is free.
+func (s *electionLeaseStore) Owner() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.owner
+}
+
 func (s *electionLeaseStore) Acquire(
 	_ context.Context, _ string, ownerID string, _ time.Duration, _ map[string]string,
 ) (persistence.LeaseToken, error) {

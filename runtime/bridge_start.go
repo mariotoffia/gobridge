@@ -91,27 +91,54 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		)
 	}
 
-	ctx, rt.cancel = context.WithCancel(ctx)
+	// Routes, receivers, senders, session managers and drainers all derive their
+	// context from the one built here. It is DETACHED from the caller's context
+	// (values preserved, cancellation dropped) so Stop is the ONLY thing that can
+	// cancel in-flight work.
+	//
+	// Both shipped binaries cancel the context they passed to Start when they
+	// receive SIGTERM, and only then ask the supervisor/app to stop the runtime.
+	// While the work context was derived from the caller's, that cancel reached
+	// every in-flight send/persist/processor first, so Stop's "settle accepted
+	// deliveries before cancelling" phase never ran: sends aborted, sources
+	// redelivered, and every rolling restart produced duplicates (or, under a
+	// drop policy, loss). Detaching moves teardown entirely onto Stop, which is
+	// bounded by the configured drain budget.
+	//
+	// Cancelling the Start context is still a valid way to shut a runtime down —
+	// the watcher below turns it into a Stop.
+	stopSignal := ctx.Done()
+	ctx, rt.cancel = context.WithCancel(context.WithoutCancel(ctx))
 
 	// Watch the caller-supplied Start context. If it is cancelled WITHOUT a Stop
 	// (the caller cancels the ctx it passed to Start, rather than calling Stop),
-	// every background goroutine exits on the derived ctx — but running/healthy
-	// stay advertised, leaving a dead runtime that still reports healthy on /live
-	// and ready on /ready. Drive Stop so resources are released and
-	// health flips. A Stop that itself cancelled the ctx already set terminal, so
-	// this observes terminal and does nothing (no double teardown). The watcher
-	// is deliberately NOT in rt.wg (Stop waits on rt.wg, so enrolling it would
-	// deadlock); it always terminates because ctx is cancelled by either Stop or
-	// the caller.
-	watchCtx := ctx
+	// nothing tears the runtime down on its own any more — the work context is
+	// detached — so running/healthy would stay advertised on a runtime nobody is
+	// going to stop. Drive Stop so resources are released and health flips. A
+	// Stop already under way sets stopped/terminal, which this observes so there
+	// is no double teardown. The watcher is deliberately NOT in rt.wg (Stop waits
+	// on rt.wg, so enrolling it would deadlock); it always terminates, because
+	// either the caller's context ends or rt.cancel closes the work context, and
+	// whichever comes first releases the select.
+	watchDone := ctx.Done()
 	go func() {
-		<-watchCtx.Done()
+		select {
+		case <-stopSignal:
+		case <-watchDone:
+			// Stop (or a component-failure trip) cancelled the work context: the
+			// teardown is already owned by that caller.
+			return
+		}
 		rt.mu.Lock()
 		stopping := rt.terminal || !rt.running
 		rt.mu.Unlock()
 		if stopping {
 			return
 		}
+		// The budget the builder derives from bridge.drain_timeout — the same
+		// ceiling the supervisor gives its own stopCurrent, so whichever of the
+		// two wins the race performs an identically-bounded teardown. The 5s
+		// fallback applies only to a hand-wired runtime that set no budget.
 		stopBudget := rt.shutdownTimeout
 		if stopBudget <= 0 {
 			stopBudget = 5 * time.Second

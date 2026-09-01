@@ -234,16 +234,36 @@ func TestValidate_SessionRenewTiming_OK(t *testing.T) {
 	require.NoError(t, Validate(cfg))
 }
 
-// TestValidate_SessionRenewTiming_DerivedRenewSkipped validates that an empty
-// renew_interval (derived from lease_ttl downstream, contract) is not
-// subjected to the invariant, so a derive-config never produces a false
-// split-brain rejection even with a tiny lease_ttl.
-func TestValidate_SessionRenewTiming_DerivedRenewSkipped(t *testing.T) {
+// TestValidate_SessionRenewTiming_DerivedRenewNotSubjectToSpanRule validates
+// that an empty renew_interval (derived from lease_ttl downstream) is not
+// subjected to the explicit worst-case-span rule, so a derive-config never
+// produces a false split-brain rejection. The derived values satisfy that
+// invariant by construction.
+func TestValidate_SessionRenewTiming_DerivedRenewNotSubjectToSpanRule(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Session.RenewInterval = ""
+	cfg.Routes[0].Session.LeaseTTL = "360s"
+
+	require.NoError(t, Validate(cfg))
+}
+
+// TestValidate_SessionRenewTiming_DerivedRenewCollapsesRejected pins the other
+// half: "derived" is not the same as "safe". A lease_ttl too small for the
+// failure tolerance leaves no per-attempt budget, so the derived renew interval
+// and the standby acquire poll collapse toward the 1 ms floor — the owner renews
+// back to back and every standby claims per millisecond until the lease store
+// throttles, and those throttling errors are counted as transient renew
+// failures. Validation must catch that HERE: the admin config transaction
+// validates, writes durably and only then applies, so a rule the builder alone
+// enforces costs a durable write plus a failed apply plus a rollback.
+func TestValidate_SessionRenewTiming_DerivedRenewCollapsesRejected(t *testing.T) {
 	cfg := validConfig()
 	cfg.Routes[0].Session.RenewInterval = ""
 	cfg.Routes[0].Session.LeaseTTL = "1s"
 
-	require.NoError(t, Validate(cfg))
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "leaves no room for the renew cadence")
 }
 
 // Verifies Validate rejects routes with no bindings.
