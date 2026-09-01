@@ -151,7 +151,7 @@ DynamoDB costs apply only when a store role is configured with `type: dynamodb`
 (lease, outbox, or DLQ). Memory and SQLite stores incur no DynamoDB charge. All
 three GoBridge tables are created `PAY_PER_REQUEST` (on-demand), so you pay per
 request unit consumed rather than for provisioned capacity. See
-[AWS Overview](overview.md#dynamodb-stores) for the exact table schemas.
+[Storage and Secrets](storage-and-secrets.md#dynamodb-stores) for the exact table schemas.
 
 ### On-Demand Pricing Dimensions
 

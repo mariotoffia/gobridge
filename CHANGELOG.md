@@ -149,7 +149,63 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   [MQTT settlement recovery](docs/transports/mqtt-settlement-recovery.md) as its
   own page, split out of the MQTT behaviour reference.
 
+### Changed
+
+- **`docs/aws-deployment/overview.md` is split into a hub plus six pages.** The
+  overview kept growing past the point where it could be reviewed or navigated. It
+  is now the architecture plus a page map, with
+  [Deployment Topologies](docs/aws-deployment/topologies.md),
+  [Compute and Runtime Metrics](docs/aws-deployment/compute.md),
+  [Storage and Secrets](docs/aws-deployment/storage-and-secrets.md),
+  [Container Image](docs/aws-deployment/container-image.md),
+  [CDK Construct Library](docs/aws-deployment/cdk-constructs.md) and
+  [IAM Least Privilege](docs/aws-deployment/iam.md) beside it. No content was
+  dropped; every inbound link and anchor was repointed. Bookmarks to
+  `overview.md` itself still resolve.
+
 ### Fixed
+
+- **The HA deployment fingerprint no longer rejects every real config change.**
+  The `dynamodb_coordinated_ha` profile stamped a hash of the WHOLE logical config
+  at synth and required an exact match at runtime. Any change an operator actually
+  committed — a new route, an edited binding — therefore failed deployment
+  admission on every member, after the cohort had already agreed to run it: a
+  committed generation nobody could apply. The stamped value is now
+  `bridge.DeploymentProfileFingerprint`, a hash of only the fields the deployment
+  provisions (`deployment_mode`, the `bridge.cluster` shape, and the durable
+  identity of every deployment-owned store: lease, outbox, DLQ, managed
+  subscriptions). Operator content
+  — routes, receivers, senders, sessions, processors — is out of it by design: it
+  is what a coordinated rollout exists to change. Changing an existing durable
+  session identity or an exclusive route's `session_id` is still refused, by the
+  live-reload preflight that owns that rule.
+
+  The same check now runs before a member VOTES on a candidate as well as before
+  it applies one, and it runs before the reload seam proposes anything, so a
+  config this deployment forbids is Nacked instead of committed cohort-wide and
+  then refused by everyone.
+
+- **A coordinated cohort now has a durable baseline from its first boot.** Before
+  the first rollout committed there was no committed-config artifact, so boot
+  resolution fell back to whatever the member's own config source held — and the
+  operator's change is durably written to that source BEFORE the barrier decides
+  on it, so a member restarting in that window booted a candidate no peer was
+  running. The deployment now stamps the digest of the document it seeds
+  (`dynamodb_ha_baseline_config_digest`), and a member booting on exactly that
+  document records and verifies it as the cohort's generation-zero committed
+  artifact before it serves. The write is monotonic: every member seeding the same
+  baseline is a no-op, a committed generation is never rewound, and a DIFFERENT
+  config at generation zero fails startup closed rather than overwriting what the
+  cohort recovers to. Deep health gains `baseline_generation` and
+  `baseline_digest` under `config_watch.rollout`, and the seed decision is
+  audited as `cluster_rollout_baseline_seed`.
+
+- **The production rollout voter now runs blueprint validation.** The shipped
+  file-based composition root never wired `bridge.WithBlueprintValidator`, so the
+  paths that build a config the config manager never emitted — the vote's
+  candidate and the bytes decoded from the durable committed artifact — reached
+  the builder unvalidated. A dangling reference in a candidate now Nacks at the
+  vote instead of failing every member after commit.
 
 - **A black-holed rollout store can no longer wedge the coordinated cluster
   rollout drive.** Every rollout store, coordinator-lease and committed-artifact

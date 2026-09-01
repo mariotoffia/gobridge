@@ -613,7 +613,7 @@ fault from a stalled queue.
   gap) also fails closed. The lease role additionally requires
   `DescribeTimeToLive` and fails closed unless TTL is verified disabled on the
   fencing table. See
-  [IAM Least Privilege](aws-deployment/overview.md#iam-least-privilege) for the
+  [IAM Least Privilege](aws-deployment/iam.md) for the
   exact actions and posture.
 - **Retention is the deduplication window.** The outbox keeps completed and
   expired rows for `retention` / `compaction_grace` before piggybacked compaction

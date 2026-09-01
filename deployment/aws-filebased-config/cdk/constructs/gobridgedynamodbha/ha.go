@@ -2,8 +2,6 @@ package gobridgedynamodbha
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"math"
 	"sort"
@@ -22,7 +20,6 @@ import (
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
-	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	cdkconstructs "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/gobridgebase"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/singleton"
@@ -167,15 +164,30 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 		_ = mat.Close()
 		panic(fmt.Sprintf("GoBridgeDynamoDBHA: invalid coordinated HA config: %v", err))
 	}
-	fingerprint, err := profileConfigFingerprint(mat.Config)
+	// Two distinct identities are stamped from the SAME materialized document.
+	//
+	// The deployment-profile fingerprint covers only the fields this construct
+	// PROVISIONS (topology, cohort shape, the deployment-owned store identities).
+	// It must survive every later config change an operator commits,
+	// which is why it is not a hash of the whole document: doing that made every
+	// real change fail admission on every member after the cohort committed it.
+	//
+	// The baseline digest is the full content identity of THIS document, and only
+	// this one. A coordinated member uses it to seed the cohort's generation-zero
+	// committed artifact at boot, so a restart before the first rollout recovers to
+	// the config this deployment admitted rather than to whatever the mutable EFS
+	// document happens to hold.
+	fingerprint := bridge.DeploymentProfileFingerprint(mat.Config)
+	baseline, err := bridge.ConfigArtifactDigest(mat.Config)
 	_ = mat.Close()
 	if err != nil {
-		panic(fmt.Sprintf("GoBridgeDynamoDBHA: fingerprint coordinated HA config: %v", err))
+		panic(fmt.Sprintf("GoBridgeDynamoDBHA: digest coordinated HA config: %v", err))
 	}
 	bootstrapControl.DynamoDBHALeaseTableName = inspected.tables.lease
 	bootstrapControl.DynamoDBHAOutboxTableName = inspected.tables.outbox
 	bootstrapControl.DynamoDBHAManagedSubscriptionsTableName = inspected.tables.managedSubscriptions
 	bootstrapControl.DynamoDBHAConfigFingerprint = fingerprint
+	bootstrapControl.DynamoDBHABaselineConfigDigest = baseline
 	bootstrapWorker = bootstrapControl
 	bootstrapWorker.NodeRole = infra.NodeRoleWorker
 
@@ -622,15 +634,6 @@ func validateTask9Admission(cfg *ports.BridgeConfig) error {
 	}
 	plan.Close()
 	return nil
-}
-
-func profileConfigFingerprint(cfg *ports.BridgeConfig) (string, error) {
-	data, err := cfgparser.MarshalYAML(cfg)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
 }
 
 func requireTwoAvailabilityZones(vpc awsec2.IVpc, selection *awsec2.SubnetSelection) {

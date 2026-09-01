@@ -143,7 +143,7 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 - [x] Run `go -C deployment/aws-filebased-config/lib test -race -count=1 ./bootstrap -run 'Test.*ClusterReload'`.
 - [x] Emit actionable rejection text and deployment events; defer final rollout capability docs to Chunk 17.
 - [x] Accept when autoscaled workers cannot enable coordinated rollout or overlap incompatible identities, and reload tests pin full-session restart.
-- **Landed:** `cf86968f`. **Residual (HIGH-9, carried to Chunk 17):** 0/100 constrains counts, not order — at desired ≥2 ECS still replaces in batches; nothing rejects startup beside an incompatible generation; `docs/aws-deployment/overview.md:73-76` overclaims whole-cohort replacement.
+- **Landed:** `cf86968f`. **Residual (HIGH-9, carried to Chunk 17):** 0/100 constrains counts, not order — at desired ≥2 ECS still replaces in batches; nothing rejects startup beside an incompatible generation; `docs/aws-deployment/topologies.md:28` overclaims whole-cohort replacement.
 - **Suggested commit title:** `fix deployment rollout safety defaults`
 
 ### Chunk 2: Explicit operational tradeoff contracts
@@ -431,13 +431,17 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 - **Dependencies:** Chunks 10, 14.
 - **Files/packages:** `deployment/aws-filebased-config/lib/bootstrap/config.go`, `rollout.go`, `registry.go`, `bridge/rollout_joiner.go`, rollout store ports/adapters.
 - **Tests:** bootstrap rollout/profile tests, joiner tests, rollout store conformance.
-- [ ] Add failing genuine-live-change, invalid-blueprint vote, write-before-propose restart, and baseline-conflict tests.
-- [ ] Run `go -C deployment/aws-filebased-config/lib test -race -count=1 ./bootstrap -run 'Test.*Rollout'` and `go test -race -count=1 ./bridge -run 'Test.*(Rollout|CommittedArtifact)'`; expect current admission failures.
-- [ ] Define an immutable deployment-profile fingerprint, wire `WithBlueprintValidator`, and seed/verify generation zero before readiness through monotonic committed-artifact storage.
-- [ ] Re-run the exact failing commands above plus rollout-store conformance; expect pass.
-- [ ] Run `make test-integration` for DynamoDB Local baseline and restart behavior.
-- [ ] Record baseline generation/digest and profile mismatch in deep health and audit logs.
-- [ ] Accept when a real live-safe delta passes both vote/apply, invalid graph Nacks before commit, and no member boots uncommitted source bytes.
+- [x] Add failing genuine-live-change, invalid-blueprint vote, write-before-propose restart, and baseline-conflict tests.
+- [x] Run `go -C deployment/aws-filebased-config/lib test -race -count=1 ./bootstrap -run 'Test.*Rollout'` and `go test -race -count=1 ./bridge -run 'Test.*(Rollout|CommittedArtifact)'`; expect current admission failures.
+- [x] Define an immutable deployment-profile fingerprint, wire `WithBlueprintValidator`, and seed/verify generation zero before readiness through monotonic committed-artifact storage.
+- [x] Re-run the exact failing commands above plus rollout-store conformance; expect pass.
+- [x] Run `make test-integration` for DynamoDB Local baseline and restart behavior.
+- [x] Record baseline generation/digest and profile mismatch in deep health and audit logs.
+- [x] Accept when a real live-safe delta passes both vote/apply, invalid graph Nacks before commit, and no member boots uncommitted source bytes.
+- **Landed:** `bridge.DeploymentProfileFingerprint` (`bridge/deployment_profile.go`) replaces the whole-config hash the HA construct stamped: it covers `deployment_mode`, the `bridge.cluster` shape and the three deployment-owned store identities, and nothing else, so a live-safe delta provably keeps the fingerprint while every deployment-provisioned field moves it. The same admission now runs at the VOTE (`appRolloutHost.PlanCandidate`) and BEFORE the reload seam proposes, so a forbidden config Nacks instead of being committed cohort-wide and then refused by everyone. `bridge.WithBlueprintValidator(config.Validate)` is wired in `lib/bootstrap/registry.go`, which covers the artifact-byte boot/reconcile paths the config manager never validated; the pinning test uses a dangling BINDING, which `Builder.Plan` accepts on its own. Generation zero is `ClusterRolloutDriver.SeedBaseline` + `CommittedBaseline`, driven by a new deployment-stamped `dynamodb_ha_baseline_config_digest`; `baseline_generation` / `baseline_digest` reach `/deephealth`, and the decision is audited as `cluster_rollout_baseline_seed`.
+- **Deviations from the work item, deliberate (both found by the adversarial review of the first implementation):** (1) The seed runs AFTER the boot config is built and installed, not before boot resolution — still before any listener, so still before readiness. Seeding earlier let a config the process then refuses to start on become the artifact every peer recovers to, which no redeploy could dislodge because boot resolution kept handing that config back. (2) A generation-zero digest CONFLICT is not fatal: the established baseline wins and the member adopts and reports it. Failing closed there bricked a redeploy that changes the config, since no member can tell its own new baseline from a divergent one; overwriting would retarget every peer's recovery point. Divergent deployments are still caught — by the profile fingerprint, and by the cohort converging on one artifact.
+- **Note:** the shipped autoscaled facade still refuses `rollout: coordinated` at synth, so the stamped baseline digest is inert on that path until static member slots land; it is stamped now so the runtime half is already proven when they do.
+- **Note:** the durable session identity and the exclusive route `session_id` are deliberately OUT of the profile fingerprint. Adding a durable session is live-safe, and a fingerprint cannot express "a superset of the admitted sessions"; changing an existing one is still refused by the live-reload preflight, which owns that rule.
 - **Suggested commit title:** `fix rollout admission and baseline`
 
 ### Chunk 16: Rollout convergence contract and fleet health

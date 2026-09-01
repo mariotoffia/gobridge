@@ -17,6 +17,7 @@ import (
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
+	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config/parser"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
@@ -293,12 +294,17 @@ func validateDynamoDBHAProfile(cfg deployinfra.BootstrapConfig, logical *ports.B
 		}
 	}
 
-	fingerprint, err := configFingerprint(logical)
-	if err != nil {
-		return err
-	}
-	if fingerprint != cfg.DynamoDBHAConfigFingerprint {
-		return fmt.Errorf("bootstrap: dynamodb_coordinated_ha logical config fingerprint does not match the deployment-owned admitted config")
+	// The IMMUTABLE deployment profile only (bridge.DeploymentProfileFingerprint):
+	// topology, cohort shape and the deployment-owned store identities. Hashing the
+	// whole logical config here used to reject every real config change after the
+	// cohort committed it, because an operator changing a route legitimately makes
+	// the running document differ from the one synth admitted. Operator content is
+	// gated by config.Validate and the reload preflight, not by this check.
+	if fingerprint := bridge.DeploymentProfileFingerprint(logical); fingerprint != cfg.DynamoDBHAConfigFingerprint {
+		return fmt.Errorf("bootstrap: dynamodb_coordinated_ha logical config does not match the " +
+			"deployment profile this deployment admitted (deployment_mode, bridge.cluster shape, or a " +
+			"deployment-owned store identity was changed); those fields are provisioned by the deployment " +
+			"and can only change through a redeploy")
 	}
 	return nil
 }

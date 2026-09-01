@@ -103,6 +103,22 @@ type BootstrapConfig struct {
 	DynamoDBHAManagedSubscriptionsTableName string `json:"dynamodb_ha_managed_subscriptions_table_name,omitempty"`
 	DynamoDBHAConfigFingerprint             string `json:"dynamodb_ha_config_fingerprint,omitempty"`
 
+	// DynamoDBHABaselineConfigDigest is the artifact digest of the exact config
+	// DOCUMENT this deployment admitted and seeded. A coordinated member uses it
+	// to seed the cohort's generation-zero committed artifact at boot, so a member
+	// restarting before the first rollout has ever committed recovers to the
+	// deployment's own baseline instead of whatever the mutable config source
+	// happens to hold at that moment.
+	//
+	// It is deliberately NOT the same value as DynamoDBHAConfigFingerprint: the
+	// fingerprint is the IMMUTABLE deployment profile (which every later committed
+	// config still matches), while this is the full content identity of one
+	// document (which only the un-edited deploy baseline matches).
+	//
+	// Empty disables baseline seeding, which leaves the conservative joiner rule
+	// in place — the behaviour of a composition root that has not opted in.
+	DynamoDBHABaselineConfigDigest string `json:"dynamodb_ha_baseline_config_digest,omitempty"`
+
 	// DynamoDBHARolloutTableName names the DynamoDB table backing the coordinated
 	// cluster rollout barrier's shared state (proposals, acks, the durable
 	// last-committed config artifact). Empty selects the adapter default
@@ -314,6 +330,18 @@ func (c BootstrapConfig) Validate() error {
 		fingerprint, err := hex.DecodeString(c.DynamoDBHAConfigFingerprint)
 		if err != nil || len(fingerprint) != 32 {
 			return fmt.Errorf("infra: dynamodb_coordinated_ha config fingerprint must be a 64-character SHA-256 hex value")
+		}
+	}
+
+	// The baseline digest is optional on every topology (empty disables baseline
+	// seeding), but a value that is present must be a real digest: a truncated or
+	// mistyped one would silently never match the loaded document, so the member
+	// would skip the seed and keep the very restart window the digest exists to
+	// close, with nothing to show for it.
+	if c.DynamoDBHABaselineConfigDigest != "" {
+		baseline, err := hex.DecodeString(c.DynamoDBHABaselineConfigDigest)
+		if err != nil || len(baseline) != 32 {
+			return fmt.Errorf("infra: dynamodb_ha_baseline_config_digest must be a 64-character SHA-256 hex value")
 		}
 	}
 

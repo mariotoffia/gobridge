@@ -92,3 +92,65 @@ func TestIntegration_AppCoordinatedRolloutOverDynamoDB(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "debug", got.Bridge.LogLevel, "the real codec decodes the artifact DynamoDB stored")
 }
+
+// TestIntegration_AppSeedsAndRecoversTheRolloutBaselineOverDynamoDB proves the
+// generation-zero baseline over REAL DynamoDB, through the App's own boot path.
+//
+// What only this proves is that the seed's monotonic conditional write behaves
+// under actual DynamoDB conditional expressions: the first member establishes
+// generation zero, and a member restarting after an operator wrote a change the
+// cohort has not proposed recovers to that baseline instead of booting the
+// uncommitted document its config source hands it.
+func TestIntegration_AppSeedsAndRecoversTheRolloutBaselineOverDynamoDB(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	client := ddblocal.Client(t) // skips when DynamoDB Local is not available
+
+	rolloutTable := ddblocal.UniqueTable("app-baseline")
+	leaseTable := ddblocal.UniqueTable("app-baseline-lease")
+	require.NoError(t, dynamodblease.NewStore(client, dynamodblease.WithTableName(leaseTable)).
+		EnsureTable(context.Background()))
+	ddblocal.CleanupTable(t, client, leaseTable)
+	ddblocal.CleanupTable(t, client, rolloutTable)
+
+	cfgPath := t.TempDir() + "/bridge.yaml"
+	require.NoError(t, os.WriteFile(cfgPath, []byte(coordinatedConfigYAML(1, "info")), 0o600))
+	baseline := baselineDigestOnDisk(t, cfgPath)
+
+	newMember := func() *App {
+		bcfg := coordinatedBootstrapCfg(t)
+		bcfg.ConfigFilePath = cfgPath
+		bcfg.PollInterval = "1h"
+		bcfg.DynamoDBHARolloutTableName = rolloutTable
+		bcfg.DynamoDBHALeaseTableName = leaseTable
+		bcfg.DynamoDBHABaselineConfigDigest = baseline
+		app := NewApp(bcfg,
+			WithDynamoDBClient(client),
+			WithParameterResolver(staticParameterResolver{"/admin": "admin-secret-key-123456"}),
+		)
+		app.rolloutConfig.PollInterval = 5 * time.Millisecond
+		app.rolloutConfig.LeaseTTL = 20 * time.Millisecond
+		return app
+	}
+
+	first := newMember()
+	require.NoError(t, first.Start(t.Context()))
+	require.Equal(t, 1, first.CurrentAppliedConfig().Version)
+
+	rolloutStore := dynamodbrollout.NewStore(client, dynamodbrollout.WithTableName(rolloutTable))
+	committed, err := rolloutStore.CommittedConfig(context.Background())
+	require.NoError(t, err, "the generation-zero baseline must be durable in DynamoDB before the member serves")
+	assert.Equal(t, uint64(0), committed.Generation)
+	require.NoError(t, first.Stop(context.Background()))
+
+	// The operator's change is durably written before any rollout carries it.
+	require.NoError(t, os.WriteFile(cfgPath, []byte(coordinatedConfigYAML(2, "debug")), 0o600))
+
+	second := newMember()
+	require.NoError(t, second.Start(t.Context()))
+	t.Cleanup(func() { _ = second.Stop(context.Background()) })
+	assert.Equal(t, 1, second.CurrentAppliedConfig().Version,
+		"a restart in the write-before-propose window boots the cohort's committed baseline")
+	assert.Equal(t, "info", second.CurrentAppliedConfig().Bridge.LogLevel)
+}

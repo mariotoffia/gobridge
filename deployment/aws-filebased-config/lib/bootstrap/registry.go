@@ -10,6 +10,7 @@ import (
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
 	"github.com/mariotoffia/gobridge/bridge"
+	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -22,7 +23,13 @@ type factoryRegistry struct {
 }
 
 func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistry {
-	var opts []bridge.BuilderOption
+	// Blueprint validation on EVERY build this root performs. The config manager
+	// validates what it emits, but the coordinated rollout paths build configs the
+	// manager never emitted — the vote's candidate and the bytes decoded from the
+	// durable committed artifact — and those reached the builder unvalidated. A
+	// dangling reference in a candidate must Nack at the vote; discovering it after
+	// the cohort commits fails every member at once.
+	opts := []bridge.BuilderOption{bridge.WithBlueprintValidator(config.Validate)}
 	if a.logger != nil {
 		opts = append(opts, bridge.WithLogger(a.logger))
 	}

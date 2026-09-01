@@ -121,6 +121,43 @@ If a **coordinated** rollout will not resolve (deep health
   boots on the last committed config — see
   [Operating a coordinated cohort](../cluster/operating.md#when-a-change-doesnt-go-through).
 
+## The generation-zero baseline
+
+A coordinated cohort recovers a restarting member to the config the cohort last
+**committed**. Before the very first rollout commits there is no such record, so
+the deployment establishes one at startup instead.
+
+- The deployment stamps the digest of the exact config document it seeds
+  (`dynamodb_ha_baseline_config_digest` in bootstrap). When a member boots on
+  precisely that document, it records it as the cohort's **generation zero** and
+  verifies the write by reading it back, before it starts serving.
+- The record is written only after this member has built and installed that
+  config, so a config a member cannot run never becomes the cohort's baseline.
+- Every member of the cohort writes the same baseline; that is a no-op, not a
+  conflict. Once any rollout has committed, the baseline write is ignored — it can
+  never rewind the cohort to its deploy state. If a **different** baseline is
+  already established (a peer's, or an earlier deploy's), that one wins: this
+  member adopts and reports it instead of overwriting it.
+- After that, a member restarting while the config source still holds a change
+  the cohort has not committed boots the **committed** config and offers the
+  change to the barrier, instead of running a config no peer is running.
+
+Read it in deep health under `config_watch.rollout`: `baseline_generation` and
+`baseline_digest` are what a restart of that member would recover to.
+
+Read the `cluster_rollout_baseline_seed` audit event to see what a member did:
+
+| Outcome | Meaning |
+|---|---|
+| `verified` | This member established the baseline, or re-wrote the identical one, and read it back. |
+| `superseded` | A different baseline was already established; this member adopted it. Expect this on a redeploy whose config changed — the change then rolls through the barrier as usual. |
+| `adopted` | This member's document is not the deployment baseline (normal after a committed change); it reports the baseline that stands. |
+| `skipped` | Not the deployment baseline **and** no baseline exists yet — the conservative joiner rule applies, as before any seed. |
+| `failed` | The rollout store could not be written or read. Startup fails; this is a store outage, not a config problem. |
+
+If members disagree about which document is the baseline for long, they were
+deployed from different config documents. Redeploy the cohort from one.
+
 ## Related
 
 - [Operating a coordinated cohort](../cluster/operating.md) — the no-downtime

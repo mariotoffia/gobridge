@@ -563,7 +563,7 @@ Required environment: `GOBRIDGE_INT_*` variables (account/region/image), live AW
 |-----|-------|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Module-internal architecture, DDD mapping, runtime/CDK layering. |
 | [UBIQUITOUS.md](./UBIQUITOUS.md) | Terms unique to this deployment profile. |
-| [docs/aws-deployment/overview.md](../../docs/aws-deployment/overview.md) | End-to-end AWS architecture, IAM, image build. |
+| [docs/aws-deployment/overview.md](../../docs/aws-deployment/overview.md) | End-to-end AWS architecture, and the page map to topologies, storage, image, CDK constructs, and IAM. |
 | [docs/aws-deployment/configuration.md](../../docs/aws-deployment/configuration.md) | Full bootstrap + bridge config reference. |
 | [docs/aws-deployment/tco.md](../../docs/aws-deployment/tco.md) | Cost analysis with worked use cases. |
 | [docs/scenarios/cdk/](../../docs/scenarios/cdk/) | Default-VPC, custom-VPC, API GW, production, multi-bridge cluster. |

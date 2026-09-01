@@ -1,6 +1,6 @@
 # aws-filebased-config — Architecture
 
-Internal architecture of the deployment profile: Go module layering, CDK construct composition, single vs cluster topology, the synth-time validation pipeline ("tier B"), and why peer discovery is EFS-mediated instead of Cloud Map. End-to-end AWS architecture (VPC, ALB, IAM JSON) lives in [docs/aws-deployment/overview.md](../../docs/aws-deployment/overview.md). The DDD mapping lives in [../../DDD.md](../../DDD.md) and the local glossary in [UBIQUITOUS.md](./UBIQUITOUS.md).
+Internal architecture of the deployment profile: Go module layering, CDK construct composition, single vs cluster topology, the synth-time validation pipeline ("tier B"), and why peer discovery is EFS-mediated instead of Cloud Map. End-to-end AWS architecture (VPC, ALB) lives in [docs/aws-deployment/overview.md](../../docs/aws-deployment/overview.md), which maps to the topology, storage, image, construct, and IAM (JSON policy) pages beside it. The DDD mapping lives in [../../DDD.md](../../DDD.md) and the local glossary in [UBIQUITOUS.md](./UBIQUITOUS.md).
 
 ## Module Topology
 
@@ -293,4 +293,4 @@ See [../../DDD.md](../../DDD.md) for the project-level model and [UBIQUITOUS.md]
 | [README.md](./README.md) | Construct surface, quickstarts, secrets policy, what-it-provisions. |
 | [UBIQUITOUS.md](./UBIQUITOUS.md) | Profile-local glossary. |
 | [../../DDD.md](../../DDD.md) | Project-wide DDD model. |
-| [docs/aws-deployment/overview.md](../../docs/aws-deployment/overview.md) | End-to-end AWS architecture (VPC, ALB, IAM JSON). |
+| [docs/aws-deployment/overview.md](../../docs/aws-deployment/overview.md) | End-to-end AWS architecture (VPC, ALB), and the page map to the topology, storage, image, construct, and IAM pages. |

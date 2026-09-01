@@ -22,6 +22,8 @@ import (
 	"github.com/aws/jsii-runtime-go"
 
 	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
+	bridgecore "github.com/mariotoffia/gobridge/bridge"
+	"github.com/mariotoffia/gobridge/ports"
 
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgealarms"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgealbattachment"
@@ -783,3 +785,77 @@ func TestGoBridgeDynamoDBHA_AlarmsCoverHAAndExternalDuration(t *testing.T) {
 }
 
 var _ awscloudwatch.IAlarm
+
+// TestGoBridgeDynamoDBHA_StampsAnImmutableProfileAndABaselineDigest proves the
+// two identities this construct stamps through the real HA root.
+//
+// The deployment-profile fingerprint must ADMIT a genuine operator change: the
+// construct used to stamp a hash of the whole logical config, so the first real
+// change a cohort committed failed admission on every member afterwards — a
+// committed generation nobody could run. It must still REJECT a change to a field
+// the construct provisions.
+//
+// The baseline digest is the separate, full content identity of the document this
+// deployment seeded, which a coordinated member uses to establish the cohort's
+// generation-zero committed artifact.
+func TestGoBridgeDynamoDBHA_StampsAnImmutableProfileAndABaselineDigest(t *testing.T) {
+	h := newHAHarness(t, nil)
+	cfg := bootstrapFromControlTask(t, h)
+
+	if len(cfg.DynamoDBHABaselineConfigDigest) != 64 {
+		t.Fatalf("baseline digest length = %d, want SHA-256 hex", len(cfg.DynamoDBHABaselineConfigDigest))
+	}
+	if cfg.DynamoDBHABaselineConfigDigest == cfg.DynamoDBHAConfigFingerprint {
+		t.Fatal("the baseline digest must be the document's content identity, not the deployment profile")
+	}
+
+	mat, err := source.NewAsset(writeHAYAML(t, validHAYAML)).Materialize()
+	if err != nil {
+		t.Fatalf("materialize deployed config: %v", err)
+	}
+	defer func() { _ = mat.Close() }()
+
+	if got := bridgecore.DeploymentProfileFingerprint(mat.Config); got != cfg.DynamoDBHAConfigFingerprint {
+		t.Fatalf("profile fingerprint of the deployed document = %q, want the stamped %q",
+			got, cfg.DynamoDBHAConfigFingerprint)
+	}
+
+	// A genuine operator change — the kind a coordinated rollout carries.
+	changed := *mat.Config
+	changed.Version = mat.Config.Version + 1
+	added := mat.Config.Routes[0]
+	added.ID = "rolled-route"
+	changed.Routes = append(append([]ports.RouteDef{}, mat.Config.Routes...), added)
+	if got := bridgecore.DeploymentProfileFingerprint(&changed); got != cfg.DynamoDBHAConfigFingerprint {
+		t.Fatal("a genuine live change must still match the admitted deployment profile")
+	}
+
+	// A change to a field the deployment provisions must not.
+	repointed := *mat.Config
+	repointed.Stores.Outbox = nil
+	if got := bridgecore.DeploymentProfileFingerprint(&repointed); got == cfg.DynamoDBHAConfigFingerprint {
+		t.Fatal("removing a deployment-owned store must not match the admitted deployment profile")
+	}
+}
+
+// bootstrapFromControlTask decodes the bootstrap JSON stamped into the control
+// task definition of a synthesized HA stack.
+func bootstrapFromControlTask(t *testing.T, h *haHarness) infra.BootstrapConfig {
+	t.Helper()
+	tasks := assertions.Template_FromStack(h.stack, nil).
+		FindResources(jsii.String("AWS::ECS::TaskDefinition"), nil)
+	for _, raw := range *tasks {
+		container := mainContainerFromTask(t, *raw)
+		envs := container["Environment"].([]any)
+		if envValue(envs, "GOBRIDGE_NODE_ROLE") != string(infra.NodeRoleControl) {
+			continue
+		}
+		var cfg infra.BootstrapConfig
+		if err := json.Unmarshal([]byte(envValue(envs, "GOBRIDGE_FILEBASED_BOOTSTRAP_JSON")), &cfg); err != nil {
+			t.Fatalf("decode bootstrap: %v", err)
+		}
+		return cfg
+	}
+	t.Fatal("control task definition not found")
+	return infra.BootstrapConfig{}
+}

@@ -348,6 +348,13 @@ type ClusterRolloutHealth struct {
 	// artifact this member has verified as written — what it would boot on. Below
 	// Generation while a write is still being retried.
 	ArtifactGeneration uint64 `json:"artifact_generation"`
+	// BaselineGeneration and BaselineDigest are the durable committed artifact this
+	// member VERIFIED at startup: the config a restart of this member would recover
+	// to before any rollout of this process lifetime. BaselineDigest is empty when
+	// the deployment stamped no admitted baseline document, which means the member
+	// falls back to its own config source on restart.
+	BaselineGeneration uint64 `json:"baseline_generation"`
+	BaselineDigest     string `json:"baseline_digest,omitempty"`
 	// TerminalGeneration is a generation whose SAFE state this member could not
 	// reach: a committed config it could not durably record, or a provisional one
 	// it could not revert. Non-zero means this member cannot repair itself and

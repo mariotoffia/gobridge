@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbrollout"
 	"github.com/mariotoffia/gobridge/bridge"
 	cfgparser "github.com/mariotoffia/gobridge/config/parser"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -79,6 +81,13 @@ func (h appRolloutHost) Config() *ports.BridgeConfig { return h.a.appliedRef.Get
 // Plan path (never Build), because a vote only needs to prove the candidate builds
 // on this member — the real swap runs the full apply path at commit time.
 func (h appRolloutHost) PlanCandidate(ctx context.Context, cfg *ports.BridgeConfig) (func(), error) {
+	// Deployment admission runs HERE as well as on the apply path. A candidate that
+	// violates the immutable deployment profile must be Nacked before the cohort
+	// commits it; admitting it at the vote and refusing it at the apply produces a
+	// committed generation that every member then declines to run.
+	if err := h.a.admitDeploymentProfile(ctx, cfg, "vote"); err != nil {
+		return nil, err
+	}
 	inputs, err := resolveInputs(ctx, h.a.parameterResolver, h.a.cfg, h.a.pluginRegistry, cfg)
 	if err != nil {
 		return nil, err
@@ -187,6 +196,139 @@ func (a *App) buildRolloutDriver(ctx context.Context) error {
 	a.rolloutConfig = rc
 	a.rolloutDriver = bridge.NewClusterRolloutDriver(newAppRolloutHost(a), rc)
 	return nil
+}
+
+// rolloutBaseline is the durable committed artifact this member VERIFIED at
+// startup: the generation the cohort is actually on, and the digest of the config
+// a restart would recover to.
+type rolloutBaseline struct {
+	Generation uint64
+	Digest     string
+}
+
+// seedRolloutBaseline establishes the cohort's generation-zero committed artifact
+// for the config document THIS deployment admitted, before the process serves.
+//
+// Without it, a coordinated cohort has no durable artifact until its first
+// rollout commits, so the boot resolution falls back to whatever the member's own
+// config source currently holds. The operator's change is durably written to that
+// source BEFORE the barrier decides on it, so a member restarting in that window
+// booted a candidate no peer was running.
+//
+// The barrier cannot seed this itself: it cannot tell a deploy baseline from an
+// un-proposed candidate (bridge/rollout_joiner.go says so explicitly), and seeding
+// the wrong one would durably poison the baseline. The composition root can,
+// because the deployment stamps the digest of the document it admitted. So the
+// seed happens ONLY when the config this member has just built and installed is
+// that exact document; any other config keeps the conservative joiner rule.
+//
+// A store failure is FATAL — a member that believed it had a baseline but did not
+// would leave the restart window open silently. An ALREADY-ESTABLISHED, different
+// baseline is not a failure: it is the cohort's answer, and this member adopts it
+// (see bridge.SeedBaseline).
+func (a *App) seedRolloutBaseline(ctx context.Context, cfg *ports.BridgeConfig) error {
+	if a.rolloutDriver == nil || a.cfg.DynamoDBHABaselineConfigDigest == "" {
+		return nil
+	}
+	digest, err := bridge.ConfigArtifactDigest(cfg)
+	if err != nil {
+		return fmt.Errorf("bootstrap: cannot identify the boot config against the deployment's admitted "+
+			"cluster rollout baseline: %w", err)
+	}
+	if digest != a.cfg.DynamoDBHABaselineConfigDigest {
+		// Normal once the cohort has moved on: this member is running a committed
+		// generation, or the deployment baseline was established by a peer. There is
+		// nothing to seed, but there IS a recovery point, so publish the one that
+		// stands rather than reporting none.
+		a.recordEstablishedBaseline(ctx, cfg)
+		return nil
+	}
+	gen, established, err := a.rolloutDriver.SeedBaseline(ctx, cfg)
+	if err != nil {
+		a.auditRollout(ctx, "cluster_rollout_baseline_seed", "failed", map[string]any{
+			"reason": err.Error(), "config_version": cfg.Version,
+		})
+		return err
+	}
+	a.baselineRef.Store(&rolloutBaseline{Generation: gen, Digest: established})
+	outcome := "verified"
+	if established != digest {
+		// A peer, or an earlier deploy, already established the cohort's baseline.
+		// That artifact is what this member recovers to, so report it as what it is
+		// rather than claiming this deployment's document is the baseline.
+		outcome = "superseded"
+	}
+	a.logger.Info("bootstrap: recorded the cluster rollout committed-config baseline",
+		"outcome", outcome, "baseline_generation", gen, "baseline_digest", established)
+	a.auditRollout(ctx, "cluster_rollout_baseline_seed", outcome, map[string]any{
+		"baseline_generation": gen, "baseline_digest": established, "config_version": cfg.Version,
+	})
+	return nil
+}
+
+// recordEstablishedBaseline publishes the baseline the cohort already has, for a
+// member that had nothing to seed. A member with no baseline at all is a normal
+// pre-first-seed state, not a failure, and is reported as an absent baseline.
+func (a *App) recordEstablishedBaseline(ctx context.Context, cfg *ports.BridgeConfig) {
+	gen, established, err := a.rolloutDriver.CommittedBaseline(ctx)
+	if err != nil {
+		// Not fatal: the boot resolution already read this store and failed closed if
+		// it could not, so nothing here decides what this member RUNS — only what it
+		// reports it would recover to. The error is carried into the audit detail so
+		// an absent baseline is never confused with an unreadable one.
+		reason := "no baseline has been established yet"
+		if !errors.Is(err, shared.ErrNotFound) {
+			reason = "the committed-config artifact could not be read: " + err.Error()
+		}
+		a.logger.Info("bootstrap: this member has no recorded cluster rollout baseline to recover to",
+			"config_version", cfg.Version, "reason", reason)
+		a.auditRollout(ctx, "cluster_rollout_baseline_seed", "skipped", map[string]any{
+			"reason":         reason,
+			"config_version": cfg.Version,
+		})
+		return
+	}
+	a.baselineRef.Store(&rolloutBaseline{Generation: gen, Digest: established})
+	a.auditRollout(ctx, "cluster_rollout_baseline_seed", "adopted", map[string]any{
+		"reason":              "loaded config is not the deployment-admitted baseline document",
+		"baseline_generation": gen, "baseline_digest": established, "config_version": cfg.Version,
+	})
+}
+
+// auditRollout emits one coordinated-rollout audit event through the same slog
+// audit shape the runtime and admin API use, so baseline and admission decisions
+// are queryable beside lease and DLQ audit rather than buried in free-form logs.
+func (a *App) auditRollout(ctx context.Context, action, outcome string, detail map[string]any) {
+	if a.logger == nil {
+		return
+	}
+	newSlogAuditLogger(a.logger).Log(ctx, ports.AuditEvent{
+		Timestamp:  a.clk.Now(),
+		Action:     action,
+		Actor:      a.cfg.MemberID,
+		Resource:   "cluster_rollout",
+		ResourceID: a.cfg.BridgeID,
+		Outcome:    outcome,
+		Detail:     detail,
+	})
+}
+
+// admitDeploymentProfile runs deployment-profile admission for logical and audits
+// a denial. It is the single gate BOTH the vote and the apply run, so the rules
+// that decide what this deployment may run cannot differ between the two.
+func (a *App) admitDeploymentProfile(ctx context.Context, logical *ports.BridgeConfig, phase string) error {
+	err := validateDeploymentProfile(a.cfg, logical)
+	if err == nil {
+		return nil
+	}
+	version := 0
+	if logical != nil {
+		version = logical.Version
+	}
+	a.auditRollout(ctx, "deployment_profile_admission", "denied", map[string]any{
+		"phase": phase, "reason": err.Error(), "config_version": version,
+	})
+	return err
 }
 
 // reconcileBootApplyResult tells the config manager the outcome of the boot apply.

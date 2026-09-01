@@ -856,7 +856,7 @@ units / 2048 MiB). The `High` row is a single-instance vertical ceiling; the
 clustered profile instead scales horizontally, sizing each worker task lower and
 multiplying capacity by worker count. For Fargate task-size defaults and the
 horizontal-vs-vertical trade-off, see
-[AWS Deployment — Sizing Guidance](aws-deployment/overview.md#sizing-guidance).
+[AWS Deployment — Sizing Guidance](aws-deployment/compute.md#sizing-guidance).
 
 ### Horizontal Scaling
 

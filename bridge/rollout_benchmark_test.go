@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -251,6 +252,49 @@ func BenchmarkRolloutOps_BoundedCall(b *testing.B) {
 	for b.Loop() {
 		if err := ops.run(ctx, rolloutOpRead, noop); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkDeploymentProfileFingerprint measures the deployment-admission
+// identity every member recomputes before it votes on a candidate and again
+// before it applies one — twice per config change per member, plus once per boot.
+//
+// It is benchmarked against config size on purpose: the whole reason the profile
+// is a PROJECTION rather than a hash of the document is that it must not scale
+// with operator content. A regression that started hashing the routes would show
+// here as growth across the sizes, long before it showed up as latency on a
+// cohort's config change.
+func BenchmarkDeploymentProfileFingerprint(b *testing.B) {
+	for _, routes := range []int{1, 10, 100} {
+		cfg := benchConfig(routes)
+		b.Run(fmt.Sprintf("routes=%d", routes), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if DeploymentProfileFingerprint(cfg) == "" {
+					b.Fatal("fingerprint must not be empty")
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkSeedBaseline measures the boot-time generation-zero seed: one encode,
+// one conditional write, one verifying read. It runs once per process start, so
+// what matters is that it stays a constant handful of store calls rather than
+// growing with the cohort or the config — a seed that became expensive would be
+// paid on every task replacement during a rolling deploy.
+func BenchmarkSeedBaseline(b *testing.B) {
+	codec := newConfigCodecFake()
+	rc := testRolloutConfig(memoryrollout.NewStore(), "node-a")
+	rc.Encode, rc.Decode = codec.encode, codec.decode
+	d := NewClusterRolloutDriver(newFakeRolloutHost(nil), rc)
+	cfg := benchConfig(10)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, _, err := d.SeedBaseline(context.Background(), cfg); err != nil {
+			b.Fatalf("SeedBaseline: %v", err)
 		}
 	}
 }
