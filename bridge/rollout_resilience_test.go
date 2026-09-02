@@ -184,12 +184,14 @@ func TestRolloutApplier_RetriesAFailedAdopt(t *testing.T) {
 		"a retry must converge the member instead of stranding it behind the cohort")
 }
 
-// TestRolloutApplier_GivesUpAfterRepeatedAdoptFailures proves the retry is
-// BOUNDED and that giving up is loud. An unbounded retry would rebuild the
-// runtime every poll interval forever whenever the cause is deterministic —
-// a self-inflicted outage rather than a recovery — so after the cap the member
-// stops and reports the divergence instead.
-func TestRolloutApplier_GivesUpAfterRepeatedAdoptFailures(t *testing.T) {
+// TestRolloutApplier_PacesAFailingAdoptPastTheBound proves the retry is BOUNDED.
+// Retrying a DETERMINISTIC failure every poll interval rebuilds the runtime
+// forever — a self-inflicted outage rather than a recovery — so past the cap the
+// member backs off to a capped cadence and reports the divergence as terminal.
+// (It keeps trying at that cadence; that half is
+// TestClusterRolloutApply_ConvergesOnceTheApplyCauseClears. Here the poll
+// interval is an hour, so the backoff means no further attempt lands.)
+func TestRolloutApplier_PacesAFailingAdoptPastTheBound(t *testing.T) {
 	store := memoryrollout.NewStore()
 	rc := testRolloutConfig(store, "node-a")
 	rc.PollInterval = time.Hour
@@ -219,15 +221,17 @@ func TestRolloutApplier_GivesUpAfterRepeatedAdoptFailures(t *testing.T) {
 	}
 
 	assert.Equal(t, int32(1+maxAdoptAttempts), tf.builds.Load(),
-		"the initial build plus exactly maxAdoptAttempts swap attempts, then no more")
+		"the initial build plus exactly maxAdoptAttempts swap attempts, then the backoff paces it")
 	degraded, reason := s.Degraded()
 	assert.True(t, degraded, "an unapplied committed generation must be surfaced, not silently dropped")
-	assert.Contains(t, reason, "older config generation")
+	assert.Contains(t, reason, "OLDER CONFIG GENERATION")
 
 	status := applier.obs.status()
 	assert.Equal(t, string(persistence.RolloutCommitted), status.State)
 	assert.False(t, status.Applied,
 		"committed AND not-applied is the signal that identifies a split member")
+	assert.Equal(t, uint64(1), status.TerminalGeneration,
+		"a member that cannot reach the cohort's decision must say so, so it can be replaced")
 }
 
 // TestJoinerRule_StagesTheBootConfigSoTheMemberCanVote proves a member that

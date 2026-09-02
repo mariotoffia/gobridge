@@ -35,6 +35,9 @@ type fakeRolloutHost struct {
 	// last confirmed one it has to revert to.
 	refuse   map[int]int
 	degraded string
+	// logger is what RolloutLogger hands the applier. Nil (the default) keeps the
+	// barrier silent, which is what most tests want.
+	logger *slog.Logger
 }
 
 func newFakeRolloutHost(initial *ports.BridgeConfig) *fakeRolloutHost {
@@ -94,7 +97,19 @@ func (h *fakeRolloutHost) MarkDegraded(reason string) {
 	h.degraded = reason
 }
 
-func (h *fakeRolloutHost) RolloutLogger() *slog.Logger { return nil }
+func (h *fakeRolloutHost) RolloutLogger() *slog.Logger {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.logger
+}
+
+// allow clears a refusal, modelling the transient cause of a failed swap going
+// away — a broker that comes back, a store that stops throttling.
+func (h *fakeRolloutHost) allow(version int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.refuse, version)
+}
 
 // Converged reports the running config as converged unless the test marked its
 // version unconverged (the confirm-window failure a UC-CR9-style test injects).

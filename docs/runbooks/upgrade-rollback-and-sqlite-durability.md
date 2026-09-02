@@ -15,7 +15,7 @@ undelivered messages silently. Read the durability section before you scale.
    worker) first.
 3. Gate on readiness before shifting traffic — do **not** trust `/health` alone,
    which stays green before sessions connect
-   ([deployment-guide.md#health-endpoints](../deployment-guide.md#health-endpoints)):
+   ([health-and-shutdown.md#health-endpoints](../health-and-shutdown.md#health-endpoints)):
 
    ```bash
    curl -s "http://<host>:8081/api/v1/monitor/ready?level=subscribed"   # 200 → every subscription acked
@@ -28,7 +28,7 @@ undelivered messages silently. Read the durability section before you scale.
 Redeploy the previous image digest. Because the process exits non-zero on an
 unrecoverable startup or runtime fault, a task that fails to start on the new
 image is restarted by the orchestrator rather than left wedged
-([deployment-guide.md#exit-codes](../deployment-guide.md#exit-codes)). If a bad
+([health-and-shutdown.md#exit-codes](../health-and-shutdown.md#exit-codes)). If a bad
 **config** rode along with the image, revert it with the transactions API — see
 [Config Rollback](config-rollback.md).
 

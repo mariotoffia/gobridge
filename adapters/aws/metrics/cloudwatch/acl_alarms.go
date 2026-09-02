@@ -90,6 +90,16 @@ func DefaultRollupMetrics() []string {
 		shared.MetricMessagesDropped,
 		shared.MetricMessagesExpired,
 		shared.MetricMessagesFiltered,
+		// Coordinated cluster rollout convergence gauges. Each is emitted with NO
+		// runtime dimension, so on a fleet WITH instance tagging its base series
+		// carries only instance_id and a dimensionless fleet alarm would miss it.
+		// They are exactly the series a fleet alarm must read: whether ANY member is
+		// off the decided generation, cannot repair itself, or has stopped being
+		// able to see the rollout row at all — questions no per-instance view
+		// answers, and no single member can answer about the cohort.
+		shared.MetricClusterRolloutDiverged,
+		shared.MetricClusterRolloutTerminal,
+		shared.MetricClusterRolloutObservationAge,
 	}
 }
 

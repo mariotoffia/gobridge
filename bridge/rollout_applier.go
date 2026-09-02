@@ -3,7 +3,6 @@ package bridge
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"time"
 
@@ -36,8 +35,10 @@ import (
 // (rolloutBarrier.stage) and the applier builds from that. The safety hole §5
 // named for option (b) — `current` is written before the barrier decides, so a
 // member restarting after an ABORTED rollout would boot the rejected config
-// while the cohort keeps the old one (a mixed-version cohort, which forbids)
-// — is closed by the joiner rule in rollout_joiner.go, NOT left open.
+// while the cohort keeps the old one, which is a member running a generation the
+// cohort never agreed on — is closed by the joiner rule in rollout_joiner.go,
+// NOT left open. (That guarantee is absolute; the per-member convergence window
+// AFTER a commit is the separate, bounded one — see ADR 0013.)
 //
 // A consequence worth stating: there are no FETCHED candidate bytes, so the
 // design's "verify the digest before decoding hostile input" obligation is met
@@ -53,13 +54,6 @@ import (
 // It is caller-driven — one step() per observation — so unit tests drive it
 // deterministically without a goroutine or a clock; Supervisor.Run wires the
 // cadence (rollout_loop.go).
-// maxAdoptAttempts bounds how many times a member retries applying a committed
-// generation before it gives up and reports the divergence instead. Retrying is
-// what converges a member whose swap failed transiently; NOT bounding it would
-// rebuild the runtime every poll interval forever when the cause is
-// deterministic, which is an outage rather than a recovery.
-const maxAdoptAttempts = 3
-
 type rolloutApplier struct {
 	// host is the runtime the applier votes for and swaps; barrier is the shared
 	// proposer/candidate/committed-artifact state. The two were once a single
@@ -74,11 +68,6 @@ type rolloutApplier struct {
 	// clk stamps the confirm-window deadman check (design §8.1). System clock in
 	// production; a fake in tests. Only read from the drive goroutine.
 	clk clock.Clock
-
-	// attemptGen/attempts count consecutive apply attempts for one committed
-	// generation. Both are touched only from the drive goroutine.
-	attemptGen uint64
-	attempts   int
 
 	// Confirm-window provisional state (design §8.1). All touched only from the
 	// drive goroutine, so no lock is needed.
@@ -108,24 +97,28 @@ type rolloutApplier struct {
 	// terminal Confirmed row. It advances only after a read-back check, never on
 	// the strength of a write that merely reported success.
 	artifactGen uint64
-	// pendingArtifact and pendingRevert are the two local safety operations this
-	// member owes and has not completed: recording the committed artifact, and
-	// getting back to the last confirmed generation. Both retry under a bounded
-	// backoff and end in terminalGen when the bound is reached (rollout_recovery.go).
+	// applyRepair, pendingArtifact and pendingRevert are the three local safety
+	// operations this member owes and has not completed: reaching the generation
+	// the cohort decided on, recording the committed artifact, and getting back to
+	// the last confirmed generation. All three retry and end in terminalGen when
+	// the bound is reached (rollout_recovery.go). applyRepair paces only AFTER the
+	// bound: the first attempts chase a transient cause and want the drive's own
+	// cadence, while past the bound the cause is deterministic and the capped
+	// backoff is what keeps a doomed swap from rebuilding the runtime every poll.
+	applyRepair *rolloutRepair
+	// attemptedGen is the generation applyCommittedGeneration attempted during the
+	// CURRENT observation; step resets it. See step for why.
+	attemptedGen    uint64
 	pendingArtifact *rolloutRepair
 	pendingRevert   *rolloutRepair
 	// terminalGen is a generation whose SAFE state this member could not reach
-	// within the bounded retries. It is a latch: the member cannot get itself back
-	// to a state consistent with the cohort's decision and needs operator
-	// attention. WHICH attention differs by cause, and the reason carries it —
-	// see markUnsafe.
-	terminalGen uint64
-	// gaveUpGen is the generation whose swap this member gave up on after the bounded
-	// retries. The base adopt path gets this bound from its gate guard; the confirm-
-	// window paths do not consult the gate (they must keep running convergence /
-	// deadman logic after a successful swap), so this latch is what stops them
-	// rebuilding the runtime every poll when a swap deterministically fails.
-	gaveUpGen uint64
+	// within the bounded retries, and terminalClass which operation could not
+	// reach it. It is a latch: the member cannot get itself back to a state
+	// consistent with the cohort's decision and needs operator attention. WHICH
+	// attention differs by cause, and the reason carries it — see markUnsafe. The
+	// class is what lets a completing repair retract only ITS OWN latch.
+	terminalGen   uint64
+	terminalClass string
 }
 
 // step performs one observation of the rollout row and acts on it. Store
@@ -136,6 +129,13 @@ type rolloutApplier struct {
 // outage flips no state, and members keep serving the old config). Every
 // protocol outcome (Nack, no candidate yet, not our cohort) is a normal return.
 func (a *rolloutApplier) step(ctx context.Context) error {
+	// One apply attempt per observation: adopt and the reconcile fallback below
+	// both drive applyCommittedGeneration, and letting both attempt the same
+	// generation back-to-back would burn two retries on one transient failure.
+	// Recorded by the attempt itself, so a path that did NOT attempt (a member
+	// that never staged the candidate) leaves the fallback free to converge it
+	// from the durable artifact.
+	a.attemptedGen = 0
 	r, err := rolloutOpValue(ctx, a.ops(), rolloutOpRead, a.store.Current)
 	if err != nil {
 		if errors.Is(err, shared.ErrNotFound) {
@@ -154,25 +154,21 @@ func (a *rolloutApplier) step(ctx context.Context) error {
 	// member whose own config source has not delivered the candidate, which is
 	// otherwise invisible and is the most common reason a rollout hangs.
 	if a.obs != nil {
-		cand, staged := a.barrier.candidate(r.ConfigDigest())
-		// "applied" is answered by CONTENT, not by the local gate: after a
-		// restart the gate is empty even though this member is running the
-		// generation, and after a failed swap the gate may be set even though it
-		// is not. Content is the only answer an operator can act on.
-		applied := staged && configContentEqual(a.host.Config(), cand.frozen)
+		staged, applied := a.observedState(r)
 		a.obs.observe(r, a.memberID, staged, applied)
 	}
-	// adoptGen is the generation adopt already handled this step (the active
-	// committed rollout). reconcile must not re-drive it in the same step or it
-	// would burn a second retry attempt back-to-back on a transient failure.
-	var adoptGen uint64
+	// decidedGen is the generation the observed row has DECIDED, and zero while it
+	// has decided nothing. The reconcile fallback below must not converge to a
+	// durable artifact older than it: that generation is superseded, and the two
+	// paths would reset each other's bounded retry.
+	var decidedGen uint64
 	switch r.State() {
 	case persistence.RolloutProposed, persistence.RolloutStaging:
 		if err := a.vote(ctx, r); err != nil {
 			return err
 		}
 	case persistence.RolloutCommitted:
-		adoptGen = r.Generation()
+		decidedGen = r.Generation()
 		if r.ConfirmDeadline().IsZero() {
 			// Base protocol: final commit — swap and advance the committed artifact.
 			if err := a.adopt(ctx, r); err != nil {
@@ -185,12 +181,11 @@ func (a *rolloutApplier) step(ctx context.Context) error {
 			}
 		}
 	case persistence.RolloutConfirmed:
-		adoptGen = r.Generation()
+		decidedGen = r.Generation()
 		if err := a.adoptConfirmed(ctx, r); err != nil {
 			return err
 		}
 	case persistence.RolloutReverted:
-		adoptGen = r.Generation()
 		a.revertProvisional(ctx, r)
 	default:
 		// Aborted. Nothing to discard: the candidate build is released the
@@ -202,7 +197,38 @@ func (a *rolloutApplier) step(ctx context.Context) error {
 	// what this member applied — a commit it missed because the active row moved on
 	// (residual seq (2)). Runs AFTER adopt so the normal path (which applies with
 	// the staged candidate's source pointer) wins and this is a no-op then.
-	return a.reconcileMissedCommit(ctx, adoptGen)
+	return a.reconcileMissedCommit(ctx, decidedGen)
+}
+
+// observedState answers the two questions the observation publishes about THIS
+// member: does it hold the candidate its own config source must deliver, and is
+// it running the generation's config.
+//
+// "applied" is answered against the DIGEST the cohort agreed on, which is the
+// only answer that holds in every shape this member can be in. The alternatives
+// each have a hole, and both holes report a correctly-converged member as
+// diverged — a fleet alarm firing on a healthy cohort:
+//
+//   - the local applied-generation gate is in-memory, so a member that RESTARTED
+//     onto the committed artifact runs the generation with an empty gate. It is
+//     also not seeded at boot, and a deployment that wires no config codec never
+//     advances it at all, so there the answer would be "not applied" forever.
+//   - the staged candidate is absent for a member that was down when its config
+//     source delivered the change. That member converges through the durable
+//     artifact, which it decodes and applies without ever staging anything.
+//
+// The running config's canonical digest has none of that history in it: it is
+// what this member is running, right now, compared against what the cohort
+// agreed to run. It costs one canonicalisation per poll. The gate is the
+// fallback for the one config that cannot be canonicalised at all, which no
+// config loaded through the normal path can be.
+func (a *rolloutApplier) observedState(r persistence.Rollout) (staged, applied bool) {
+	_, staged = a.barrier.candidate(r.ConfigDigest())
+	digest, ok := configCanonicalBytesDigest(a.host.Config())
+	if !ok {
+		return staged, a.gate.applied >= r.Generation()
+	}
+	return staged, digest == r.ConfigDigest()
 }
 
 // vote runs the pre-build gate for an undecided rollout and records this node's
@@ -235,7 +261,21 @@ func (a *rolloutApplier) step(ctx context.Context) error {
 // config.Validate.
 func (a *rolloutApplier) vote(ctx context.Context, r persistence.Rollout) error {
 	if !slices.Contains(r.MembershipEpoch(), a.memberID) {
-		return nil // not a voter in this epoch; the aggregate would reject us
+		// Not a voter in this epoch: the aggregate would reject the vote, so
+		// abstaining is correct. Say so anyway. The cohort's only other outcome
+		// here is a deadline abort, and an abort whose cause is "a member the
+		// roster does not list was waiting to vote" leaves no trace on the one node
+		// an operator actually logs into. Naming this member and the roster it is
+		// missing from IS the diagnosis — a config that lists the wrong members, or
+		// a member started under the wrong identity.
+		if a.host.RolloutLogger() != nil {
+			a.host.RolloutLogger().Warn("supervisor: abstaining from the coordinated cluster rollout vote; "+
+				"this member is not in the rollout's frozen membership epoch, so it cannot vote and the "+
+				"cohort will never count it. Check bridge.cluster.members against this member's identity",
+				"generation", r.Generation(), "config_version", r.ConfigVersion(),
+				"member", a.memberID, "epoch", r.MembershipEpoch())
+		}
+		return nil
 	}
 	if _, acked := r.Acks()[a.memberID]; acked {
 		return nil
@@ -345,106 +385,6 @@ func (a *rolloutApplier) adopt(ctx context.Context, r persistence.Rollout) error
 		a.requireCommittedArtifact(ctx, r.Generation(), r.ConfigVersion(), cand.frozen)
 	}
 	return nil
-}
-
-// applyCommittedGeneration swaps the runtime to a committed generation and owns
-// the bounded-retry / give-up-degraded behaviour shared by adopt (a staged
-// candidate) and reconcileMissedCommit (config decoded from the durable
-// artifact). apply is the pointer handed to applyBarrierCommitted (adopt passes
-// the source pointer so the manager correlates the swap; reconcile has only the
-// decoded config); content is the agreed content the swap is verified against. It
-// returns true once this member is running that content.
-func (a *rolloutApplier) applyCommittedGeneration(ctx context.Context, gen uint64, version int, apply, content *ports.BridgeConfig) bool {
-	// Restart-safe idempotence without a durable counter: a node that already runs
-	// this generation's content must not rebuild its runtime just because its
-	// in-memory gate was reset by the restart.
-	if configContentEqual(a.host.Config(), content) {
-		a.gate.record(gen)
-		return true
-	}
-	if a.host.RolloutLogger() != nil {
-		a.host.RolloutLogger().Info("supervisor: coordinated cluster rollout committed; applying the candidate",
-			"generation", gen, "config_version", version)
-	}
-	if a.attemptGen != gen {
-		a.attemptGen, a.attempts = gen, 0
-	}
-	a.attempts++
-	a.host.ApplyCommitted(ctx, apply)
-
-	// Did the swap actually take? applyConfig publishes the new config only on a
-	// path that adopted it (including the admin-paused branch, which records it
-	// for resume) and restores the OLD config when the swap fails. Comparing
-	// content is therefore the honest answer, and it matters: the barrier has
-	// already committed cluster-wide, so a member that silently fails to apply
-	// leaves the mixed-version cohort forbids.
-	if configContentEqual(a.host.Config(), content) {
-		a.gate.record(gen)
-		a.obs.observeRetry(rolloutRepairApply, 0)
-		return true
-	}
-	// The swap failed. It recovered the old config, counted a reload failure, and
-	// latched degraded — but on its own that leaves this member on the previous
-	// generation while its peers moved on. Retry a bounded number of times: the
-	// common causes (a broker refusing a connection, a store briefly unopenable)
-	// are transient, and a retry genuinely converges the cohort.
-	if a.attempts < maxAdoptAttempts {
-		a.obs.observeRetry(rolloutRepairApply, a.attempts)
-		if a.host.RolloutLogger() != nil {
-			a.host.RolloutLogger().Error("supervisor: applying the committed cluster rollout failed; retrying "+
-				"(this member runs an OLDER generation than the cohort until it succeeds)",
-				"generation", gen, "attempt", a.attempts, "max_attempts", maxAdoptAttempts)
-		}
-		return false
-	}
-	// Out of retries: stop rebuilding the runtime in a loop and leave the
-	// divergence loudly visible instead. RolloutStatus reports applied=false and
-	// the supervisor stays degraded, so an operator sees WHICH member diverged
-	// rather than a cohort that merely looks committed everywhere. gaveUpGen latches
-	// the give-up so the confirm-window paths (which do not consult the gate) also
-	// stop rebuilding.
-	a.gate.record(gen)
-	a.gaveUpGen = gen
-	a.obs.observeRetry(rolloutRepairApply, 0)
-	if a.host.RolloutLogger() != nil {
-		a.host.RolloutLogger().Error("supervisor: giving up applying the committed cluster rollout after repeated "+
-			"failures; THIS MEMBER RUNS AN OLDER CONFIG GENERATION THAN THE COHORT. Investigate this "+
-			"node and restart it once the cause is fixed",
-			"generation", gen, "config_version", version, "attempts", a.attempts)
-	}
-	a.host.MarkDegraded(fmt.Sprintf("coordinated cluster rollout generation %d committed but could not "+
-		"be applied on this member after %d attempts; it runs an older config generation than the rest "+
-		"of the cohort", gen, a.attempts))
-	return false
-}
-
-// adoptable picks which of the staged pointers to apply.
-//
-// Normally the SOURCE pointer: the config manager correlates apply results by
-// exact pointer identity, so a swap event carrying the frozen clone would be
-// discarded as foreign and leave the desired-vs-running divergence signal
-// (ReconfigurePending, and deep health's Degraded) latched true forever after a
-// perfectly successful rollout. applyConfig re-freezes whatever it is given, and
-// freezing is content-preserving, so the build normally sees exactly the content
-// the cohort agreed on.
-//
-// "Normally" is doing real work there. The re-freeze reads the source pointer
-// AGAIN, at commit time, while the digest the cohort agreed on was computed from
-// the frozen snapshot taken at propose time. Configs are immutable by contract
-// once emitted, so the two cannot diverge — but this barrier exists precisely to
-// guarantee every member applies the same bytes, and "by contract" is not a
-// guarantee. If they ever diverge, apply the AGREED content and accept the lost
-// correlation: a stale divergence gauge is an operator annoyance, whereas
-// applying un-agreed content is the split-brain the whole protocol prevents.
-func (a *rolloutApplier) adoptable(cand stagedCandidate) *ports.BridgeConfig {
-	if cand.source == nil || !configContentEqual(cand.source, cand.frozen) {
-		if a.host.RolloutLogger() != nil && cand.source != nil {
-			a.host.RolloutLogger().Warn("supervisor: the staged candidate's source config changed after it was " +
-				"proposed; applying the content the cohort agreed on instead")
-		}
-		return cand.frozen
-	}
-	return cand.source
 }
 
 // transientBuildFailure reports whether a candidate build failed for a reason

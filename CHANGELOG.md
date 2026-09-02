@@ -66,6 +66,21 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ### Added
 
+- **Fleet convergence signals for the coordinated cluster rollout, and alarms to
+  match.** The barrier is atomic BEFORE the store Commit and per-member AFTER it,
+  so a member whose local swap fails runs an older generation than its peers — and
+  every signal that described the shared rollout row read "committed" identically
+  on both. Deep health's `config_watch.rollout` now also carries `converged` (who
+  the confirm barrier still waits for) and `observed_at` beside the existing
+  `applied` / `observation_age_ms` / `stale`, and a rollout that is decided but
+  not applied, observed stale, or terminal now sets `config_watch.degraded` with
+  the reason. A new `ClusterRolloutDiverged` gauge joins `ClusterRolloutTerminal`
+  and `ClusterRolloutObservationAge` in `DefaultRollupMetrics()`, and
+  `gobridgealarms.AlarmsProps.EnableClusterRolloutAlarms` installs a fleet-maximum
+  alarm on each. See [ADR 0013](docs/adr/0013-coordinated-cluster-config-rollout.md),
+  whose guarantee is now stated as written rather than as "no mixed-version
+  cohort".
+
 - **`empty` in deep health, and an empty bridge no longer claims to be ready.**
   `GET /api/v1/monitor/deephealth` now reports `"empty": true` for an instance
   that carries no routes and no sessions, and such an instance is capped at the
@@ -164,6 +179,50 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   `overview.md` itself still resolve.
 
 ### Fixed
+
+- **A cluster rollout member that cannot apply the committed generation no longer
+  stays behind the cohort forever.** After three failed swap attempts the member
+  gave up permanently: it recorded the generation as applied in its own gate,
+  stopped retrying, and ran the previous config until someone noticed. Every cause
+  that outlasts three fast attempts and then clears — a broker down for ten
+  minutes, a store throttling a burst — therefore produced a permanently split
+  cohort. The retry is now bounded in RATE rather than in total: unpaced for the
+  first attempts, then capped exponential backoff, and it keeps going, so a
+  member converges on its own when the cause clears. At the bound it declares
+  itself terminal with a reason naming replacement as the repair, which reaches
+  `terminal_generation` in deep health and the `ClusterRolloutTerminal` alarm.
+
+- **A cluster rollout member that converged through the durable committed
+  artifact no longer reports itself diverged.** `applied` was answered from the
+  staged candidate, so a member that was down when its config source delivered the
+  change — and therefore converged by decoding the artifact, which it never stages
+  — reported `applied: false` for as long as the committed row stayed current, as
+  did every member for one poll after a restart. With the divergence alarm added
+  above that would have paged on a healthy cohort. It is now answered by comparing
+  the running config's canonical digest against the one the cohort agreed on,
+  which carries no process history. The same member is also no longer blocked from
+  converging at all when a committed row is current: the reconcile fallback was
+  suppressed for the whole observation whenever the row was decided, rather than
+  only when an apply had actually been attempted — while a member owing BOTH the
+  active row's generation and an older durable artifact could alternate between
+  the two paths, resetting its own backoff and rebuilding the runtime every poll.
+
+- **A cluster rollout member's terminal latch now tracks which repair set it.**
+  The three local repairs — reaching the decided generation, recording the durable
+  artifact, reverting a provisional one — shared one latch, so a completed revert
+  retracted an artifact latch it had not fixed (silencing the only signal that
+  names a member which would boot the wrong config), while an apply that genuinely
+  ended a revert latch left it standing. A member whose revert failed and whose
+  generation the cohort then CONFIRMED kept reporting "replace this member" and
+  never recorded the artifact for the config it was running. A member whose swap
+  went terminal also suppressed its own confirm-window deadman, so it went on
+  chasing a generation the cohort had abandoned — and would have joined it if the
+  cause cleared.
+
+- **A rollout voter outside the frozen membership epoch now logs why it
+  abstained.** It named neither itself nor the roster, so a rollout that
+  deadline-aborted because one member could not vote left no local cause on the
+  one node an operator logs into.
 
 - **The HA deployment fingerprint no longer rejects every real config change.**
   The `dynamodb_coordinated_ha` profile stamped a hash of the WHOLE logical config

@@ -19,7 +19,7 @@ diagnosing why leadership churns.
 1. Check each instance's role. `/api/v1/monitor/topology` (authenticated) reports
    running state and the compact route list; `/api/v1/monitor/ready` returns the
    failover `role` — `active`, `standby`, or `standalone`
-   ([http-api.md#monitor-api-endpoints](../http-api.md#monitor-api-endpoints)).
+   ([http-api-monitor.md](../http-api-monitor.md)).
    Exactly one active owner per exclusive session is correct; two is the
    split-brain you are looking for.
 

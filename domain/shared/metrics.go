@@ -418,6 +418,16 @@ const (
 // succeeds. A non-zero value that stays non-zero is a member repairing itself;
 // one that reaches the bound becomes the terminal gauge below.
 //
+// MetricClusterRolloutDiverged is the fleet convergence signal: a 0/1 gauge that
+// reads 1 while this member is NOT running the generation the cohort has already
+// decided on (committed or confirmed), and 0 otherwise. It is the one rollout
+// series that is genuinely per-member — every other one describes the shared row,
+// which reads "committed" identically on a converged member and on one whose swap
+// failed. The barrier is atomic before the commit and per-member after it
+// (ADR 0013), so a short 1 during a rollout is normal; a 1 that persists past the
+// apply repair's bound is a split cohort. Alarm on the fleet MAXIMUM over several
+// evaluation periods.
+//
 // MetricClusterRolloutTerminal reports the rollout generation whose SAFE state
 // this member could not reach — a committed config it could not durably record,
 // or a provisional config it could not revert — and zero when there is none. It
@@ -436,6 +446,7 @@ const (
 	MetricClusterRolloutStoreCalls     = "ClusterRolloutStoreCalls"
 	MetricClusterRolloutObservationAge = "ClusterRolloutObservationAge"
 	MetricClusterRolloutRetries        = "ClusterRolloutRetries"
+	MetricClusterRolloutDiverged       = "ClusterRolloutDiverged"
 	MetricClusterRolloutTerminal       = "ClusterRolloutTerminal"
 )
 

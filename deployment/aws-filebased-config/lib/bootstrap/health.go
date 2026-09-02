@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/httpapi"
 )
 
@@ -53,6 +54,10 @@ func (a *App) degradedConfigWatch() (bool, string) {
 func (a *App) configWatchHealth() httpapi.ConfigWatchHealth {
 	degraded, reason := a.degradedConfigWatch()
 	status := httpapi.ConfigWatchHealth{Degraded: degraded, Reason: reason}
+	// The rollout block first: it is the one part of this projection that does not
+	// come from the config manager, so a deployment wired without one must still
+	// publish it rather than reporting a coordinated cohort as having no barrier.
+	a.applyRolloutHealth(&status)
 	if a.manager == nil {
 		return status
 	}
@@ -73,39 +78,73 @@ func (a *App) configWatchHealth() httpapi.ConfigWatchHealth {
 			status.Reason = "desired configuration is not running"
 		}
 	}
-	// Surface the coordinated cluster rollout barrier (design §9) so an operator
-	// reading deep health during a rollout sees WHO the cohort is waiting for
-	// instead of a bare "desired configuration is not running". Omitted entirely
-	// when no barrier runs.
-	if a.rolloutDriver != nil {
-		if r, ok := a.rolloutDriver.Status(); ok {
-			status.Rollout = &httpapi.ClusterRolloutHealth{
-				MemberID:        r.MemberID,
-				Generation:      r.Generation,
-				State:           r.State,
-				ConfigVersion:   r.ConfigVersion,
-				Epoch:           r.Epoch,
-				Acked:           r.Acked,
-				Nacked:          r.Nacked,
-				Reason:          r.Reason,
-				CandidateStaged: r.Staged,
-				Applied:         r.Applied,
-
-				ObservationAgeMS:   r.ObservationAge.Milliseconds(),
-				Stale:              r.Stale,
-				LastError:          r.LastError,
-				ArtifactGeneration: r.ArtifactGeneration,
-				TerminalGeneration: r.TerminalGeneration,
-				TerminalReason:     r.TerminalReason,
-			}
-			// The generation-zero baseline this member verified at startup: what a
-			// restart of THIS member would recover to. An operator diagnosing a
-			// mixed cohort reads it beside the observed generation.
-			if b := a.baselineRef.Load(); b != nil {
-				status.Rollout.BaselineGeneration = b.Generation
-				status.Rollout.BaselineDigest = b.Digest
-			}
-		}
-	}
 	return status
+}
+
+// applyRolloutHealth folds the coordinated cluster rollout barrier (design §9)
+// into the projection, so an operator reading deep health during a rollout sees
+// WHO the cohort is waiting for instead of a bare "desired configuration is not
+// running" — and so a member the barrier has left behind says so on the field
+// every health check already watches. A no-op when no barrier runs.
+func (a *App) applyRolloutHealth(status *httpapi.ConfigWatchHealth) {
+	if a.rolloutDriver == nil {
+		return
+	}
+	r, ok := a.rolloutDriver.Status()
+	if !ok {
+		return
+	}
+	status.Rollout = rolloutHealth(r, a.baselineRef.Load())
+	if degraded, reason := r.DegradedState(); degraded {
+		status.Degraded = true
+		status.Reason = appendReason(status.Reason, reason)
+	}
+}
+
+// rolloutHealth projects one rollout observation, plus the generation-zero
+// baseline this member verified at startup, into the deep-health block.
+//
+// Every field here answers a question divergence raises and nothing else does:
+// Converged is who the confirm barrier still waits for, Applied whether THIS
+// member runs the decided generation, ObservedAt/Stale whether the rest of the
+// block is current at all, and BaselineGeneration what a restart of this member
+// would recover to. baseline is nil when the deployment stamped no admitted
+// baseline document.
+func rolloutHealth(r bridge.RolloutStatus, baseline *rolloutBaseline) *httpapi.ClusterRolloutHealth {
+	out := &httpapi.ClusterRolloutHealth{
+		MemberID:        r.MemberID,
+		Generation:      r.Generation,
+		State:           r.State,
+		ConfirmPending:  r.ConfirmPending,
+		ConfigVersion:   r.ConfigVersion,
+		Epoch:           r.Epoch,
+		Acked:           r.Acked,
+		Nacked:          r.Nacked,
+		Converged:       r.Converged,
+		Reason:          r.Reason,
+		CandidateStaged: r.Staged,
+		Applied:         r.Applied,
+
+		ObservedAt:         r.ObservedAt,
+		ObservationAgeMS:   r.ObservationAge.Milliseconds(),
+		Stale:              r.Stale,
+		LastError:          r.LastError,
+		ArtifactGeneration: r.ArtifactGeneration,
+		TerminalGeneration: r.TerminalGeneration,
+		TerminalReason:     r.TerminalReason,
+	}
+	if baseline != nil {
+		out.BaselineGeneration = baseline.Generation
+		out.BaselineDigest = baseline.Digest
+	}
+	return out
+}
+
+// appendReason joins a further degraded cause onto an existing reason, so a
+// rollout divergence never overwrites (or is overwritten by) a config-watch one.
+func appendReason(existing, add string) string {
+	if existing == "" {
+		return add
+	}
+	return existing + "; " + add
 }

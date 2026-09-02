@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -317,6 +318,12 @@ type ClusterRolloutHealth struct {
 	// no rollout has ever been proposed in this cohort.
 	Generation uint64 `json:"generation"`
 	State      string `json:"state,omitempty"`
+	// ConfirmPending reports that a "committed" state is PROVISIONAL: a confirm
+	// window is open, so the cohort has not decided and reverts if the window
+	// expires before every member converges. It is the difference between "this
+	// member is behind the cohort" (page) and "the cohort is still making up its
+	// mind" (wait), so read it before acting on applied=false.
+	ConfirmPending bool `json:"confirm_pending,omitempty"`
 	// ConfigVersion is the config version the rollout carries.
 	ConfigVersion int `json:"config_version"`
 	// Epoch is the frozen membership epoch; Acked and Nacked are who has voted.
@@ -324,6 +331,11 @@ type ClusterRolloutHealth struct {
 	Epoch  []string `json:"epoch,omitempty"`
 	Acked  []string `json:"acked,omitempty"`
 	Nacked []string `json:"nacked,omitempty"`
+	// Converged lists the members that recorded post-swap convergence during an
+	// active confirm window. Epoch minus Converged is who the confirm barrier is
+	// waiting for before it can confirm; the ones still missing when the window
+	// expires are why the cohort reverts.
+	Converged []string `json:"converged,omitempty"`
 	// Reason carries the abort reason or nack aggregation when present.
 	Reason string `json:"reason,omitempty"`
 	// CandidateStaged reports whether THIS member has received the candidate
@@ -336,14 +348,20 @@ type ClusterRolloutHealth struct {
 	// committed on every member, but a member whose local swap failed is still
 	// on the previous generation. Alert on state=committed AND applied=false.
 	Applied bool `json:"applied"`
-	// ObservationAgeMS is how long ago this member last read the rollout row, and
-	// Stale reports that the age has outrun the barrier's poll cadence. Read these
-	// FIRST: every other field here is a projection of that observation, so a
-	// stale block describes the cohort as it WAS, not as it is. LastError says why
-	// the member stopped being able to look.
-	ObservationAgeMS int64  `json:"observation_age_ms"`
-	Stale            bool   `json:"stale"`
-	LastError        string `json:"last_error,omitempty"`
+	// ObservedAt is when this member last successfully read the rollout row, and
+	// Stale reports that the observation has outrun the barrier's poll cadence.
+	// ObservationAgeMS is how long ago that read was — or, for a member that has
+	// never managed one (ObservedAt absent), how long the drive has been trying.
+	// Read these FIRST: every other field here is a projection of that
+	// observation, so a stale block describes the cohort as it WAS, not as it is.
+	// The absolute instant is what makes two MEMBERS' blocks comparable — each
+	// one's age is measured at its own read, so ages alone cannot say whose view
+	// is older. Omitted entirely when this member has never managed a read.
+	// LastError says why it stopped being able to look.
+	ObservedAt       time.Time `json:"observed_at,omitzero"`
+	ObservationAgeMS int64     `json:"observation_age_ms"`
+	Stale            bool      `json:"stale"`
+	LastError        string    `json:"last_error,omitempty"`
 	// ArtifactGeneration is the generation whose durable last-committed config
 	// artifact this member has verified as written — what it would boot on. Below
 	// Generation while a write is still being retried.

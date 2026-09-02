@@ -21,9 +21,9 @@ import (
 // has NOT agreed to run. Without this gate a member restarting in that window —
 // or at any time after an ABORTED rollout, since the rejected document stays in
 // the source until the operator rolls it back — would boot straight onto a
-// config no other member is running. That is the mixed-version cohort goal
-// forbids and, since ADR 0012 refuses clustered live reload outright today, it
-// would be a safety REGRESSION rather than a limitation.
+// config no member has agreed to run. That is the pre-commit guarantee ADR 0013
+// makes absolute and, since ADR 0012 refuses clustered live reload outright
+// today, breaking it would be a safety REGRESSION rather than a limitation.
 //
 // The rule is deliberately narrow: it refuses only what the barrier has
 // explicitly not-committed. In particular it does NOT require the boot config to
@@ -184,8 +184,8 @@ func (d *ClusterRolloutDriver) checkRolloutJoinerRule(ctx context.Context, cfg *
 		}
 		return fmt.Errorf("bridge: cluster.rollout: coordinated requires the rollout store to be "+
 			"readable at startup so this node can tell a cohort-committed config from one the cohort "+
-			"rejected; booting without that check could start this node on a config no other member "+
-			"is running (a mixed-version cohort). Refusing to start (config_version=%d): %w",
+			"rejected; booting without that check could start this node on a config the cohort never "+
+			"agreed to run. Refusing to start (config_version=%d): %w",
 			cfg.Version, err)
 	}
 	digest, ok := configCanonicalBytesDigest(cfg)
@@ -214,8 +214,9 @@ func (d *ClusterRolloutDriver) checkRolloutJoinerRule(ctx context.Context, cfg *
 	default:
 		return fmt.Errorf("bridge: refusing to start on a config whose cluster rollout is still "+
 			"UNDECIDED (generation=%d state=%q config_version=%d). Starting now would apply the "+
-			"candidate ahead of the all-member commit barrier — exactly the mixed-version cohort the "+
-			"barrier prevents. Wait for the rollout to commit or abort, then start this node; "+
+			"candidate ahead of the all-member commit barrier — running a generation the cohort has "+
+			"not agreed on, which is exactly what the barrier prevents. Wait for the rollout to "+
+			"commit or abort, then start this node; "+
 			"see docs/runbooks/cluster-config-rollout.md",
 			r.Generation(), r.State(), r.ConfigVersion())
 	}

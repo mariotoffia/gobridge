@@ -298,3 +298,51 @@ func BenchmarkSeedBaseline(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkRolloutObserverStatus is the health-probe read path: every
+// /deephealth request projects the last observation, and a load balancer plus a
+// dashboard plus an operator can hit that concurrently with the drive writing
+// the next observation. It is the one rollout path whose cost is driven by
+// something other than the poll cadence, so it is worth pinning separately.
+func BenchmarkRolloutObserverStatus(b *testing.B) {
+	store := memoryrollout.NewStore()
+	ctx := context.Background()
+	r, err := store.Propose(ctx, persistence.RolloutProposal{
+		ProposerID: "node-a", ConfigDigest: "d", ConfigVersion: 3,
+		Members: []string{"node-a", "node-b", "node-c"}, TTL: time.Hour,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	obs := newRolloutObserver(nil, clock.System, time.Second, "node-a")
+	obs.observe(r, "node-a", true, false)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if st := obs.status(); st.MemberID == "" {
+			b.Fatal("empty status")
+		}
+	}
+}
+
+// BenchmarkRolloutObserverObserve measures the write half — one observation,
+// including the divergence gauge and the one-hot state gauges. The drive pays it
+// once per poll on every member, so a per-observation allocation regression here
+// is a fleet-wide one.
+func BenchmarkRolloutObserverObserve(b *testing.B) {
+	store := memoryrollout.NewStore()
+	ctx := context.Background()
+	r, err := store.Propose(ctx, persistence.RolloutProposal{
+		ProposerID: "node-a", ConfigDigest: "d", ConfigVersion: 3,
+		Members: []string{"node-a", "node-b", "node-c"}, TTL: time.Hour,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	obs := newRolloutObserver(&ports.RecordingExporter{}, clock.System, time.Second, "node-a")
+
+	b.ReportAllocs()
+	for b.Loop() {
+		obs.observe(r, "node-a", true, false)
+	}
+}

@@ -35,16 +35,25 @@ non-no-op live reload of (or into) a clustered deployment, fail-closed
 `bootstrap.App.applyLogicalConfig`). Operators must replace the whole cohort.
 
 Goal: allow an operator to POST a config change to **any one node** and have
-the cluster apply it **atomically-in-effect**: every member stages it as a
-candidate, and only when **all members acknowledge** does it commit; any
-failure aborts everywhere and the old config keeps serving.
+the cluster **decide** on it atomically: every member stages it as a candidate,
+and only when **all members acknowledge** does it commit; any failure aborts
+everywhere and the old config keeps serving. Applying the committed generation is
+then per-member and eventual — see G2/G2b below and ADR 0013.
 
 ## 2. Goals and non-goals
 
 Goals
 
 - G1 One-shot operator flow: `POST` → propagate → all-ACK → commit.
-- G2 No mixed-version cohort through any supported path (0012's invariant kept).
+- G2 No member applies a generation the cohort did not agree on, through any
+  supported path (the decision half of 0012's invariant). Applying the agreed
+  generation is per-member and eventual: see ADR 0013 "What the barrier
+  guarantees, precisely" for the bounded, observable convergence window this
+  leaves, and G2b below for what closes it.
+- G2b The convergence window is bounded and visible: a member that cannot apply a
+  decided generation retries at a capped backoff, declares itself terminal past
+  the attempt bound, and publishes `applied` / `stale` / `terminal_generation` in
+  deep health and as fleet-alarmable metrics.
 - G3 Crash-safe: coordinator or member death mid-rollout never wedges or
   splits the cluster; the protocol resolves to Committed or Aborted.
 - G4 Reuse the existing coordination substrate (shared store, conditional
@@ -396,7 +405,8 @@ baseline, so the artifact is established by the first real commit, not seeded).
 **Composition obligations.** A coordinated root MUST wire `config.Validate`
 (an Ack proves the candidate passes the `BlueprintValidator` and builds, but not
 the runtime route-graph validation that runs at commit — without it a dangling
-reference is acked by all, committed, then fails every swap; G2 still holds).
+reference is acked by all, committed, then fails every swap; G2 still holds —
+every member reached the same decision and the same outcome).
 It MUST also re-sync the config manager after a barrier swap
 (`Manager.AdoptRunning` / `NotifyApplyResult`), or `ReconfigurePending` /
 deep-health `Degraded` can latch despite correct convergence.

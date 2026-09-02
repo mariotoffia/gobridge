@@ -82,7 +82,7 @@ func (d *ClusterRolloutDriver) Start(ctx context.Context, clk clock.Clock, metri
 	if clk == nil {
 		clk = clock.System
 	}
-	obs := newRolloutObserver(metrics, clk, d.barrier.pollInterval)
+	obs := newRolloutObserver(metrics, clk, d.barrier.pollInterval, d.barrier.memberID)
 	d.mu.Lock()
 	d.obs = obs
 	d.mu.Unlock()
@@ -164,10 +164,16 @@ func (d *ClusterRolloutDriver) drive(ctx context.Context, clk clock.Clock, appli
 	}
 }
 
-// Status returns this member's last observation of the barrier, and false before
-// Start has taken its first observation or when no barrier runs. It is safe for
-// concurrent use and never blocks on a store call — health probes read the last
-// observation, they do not trigger a new one.
+// Status returns this member's last observation of the barrier, and false when no
+// barrier runs. It is safe for concurrent use and never blocks on a store call —
+// health probes read the last observation, they do not trigger a new one.
+//
+// Between Start and the drive's first successful read it reports a snapshot with
+// no rollout in it, and that is deliberate rather than a gap: the member is
+// identified, ObservedAt is zero (so deep health omits it), and the freshness is
+// measured from when the drive began — so a member whose store has never answered
+// reads as stale with a reason, not as a cohort with no rollout. Returning false
+// there would hide exactly the case an operator needs to see.
 func (d *ClusterRolloutDriver) Status() (RolloutStatus, bool) {
 	d.mu.RLock()
 	obs := d.obs

@@ -3,7 +3,7 @@
 
 **Goal:** Close every stable finding in the canonical `PROD_READY_ISSUES.md` ledger with tested behavior, truthful contracts, safe migrations, and release evidence.
 
-**Plan status:** Chunks 1–7 landed and are checked off below with their residuals; chunks 1–4 are the commits `cf86968f`, `84939bf5`, `f0c9685c`, `b781f741`. The ledger re-verification at HEAD `b781f741` added 22 findings (HIGH-14…20, MEDIUM-18…25, LOW-20…26), withdrew LOW-7 and LOW-19, and downgraded MEDIUM-12 and BLOCKER-2; the coverage matrix and two new chunks (24, 25) absorb them. Chunks 24 and 25 are placed at the end of Phase 1 by dependency but carry P0 defects — schedule them immediately after Chunk 5.
+**Plan status:** Chunks 1–16, 24 and 25 landed and are checked off below with their residuals; chunks 1–4 are the commits `cf86968f`, `84939bf5`, `f0c9685c`, `b781f741`. Chunk 17 is the next one open. The ledger re-verification at HEAD `b781f741` added 22 findings (HIGH-14…20, MEDIUM-18…25, LOW-20…26), withdrew LOW-7 and LOW-19, and downgraded MEDIUM-12 and BLOCKER-2; the coverage matrix and two new chunks (24, 25) absorb them. Chunks 24 and 25 are placed at the end of Phase 1 by dependency but carry P0 defects — schedule them immediately after Chunk 5.
 
 **Architecture:** Keep domain and port contracts inward-facing. Change shared contracts and persistence formats before adapters, then wire composition roots, deployment, observability, and documentation. Coordinated rollout stays disabled in the shipped autoscaled high-availability facade until the static-member implementation and its deployment proof pass.
 
@@ -113,10 +113,10 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 | 10 | done | LOW-3, LOW-4, NEW-MEDIUM-12, NEW-MEDIUM-13, NEW-MEDIUM-14, NEW-MEDIUM-15, NEW-LOW-6 |
 | 11 | done | HIGH-6, HIGH-15, HIGH-20, MEDIUM-3, MEDIUM-4, MEDIUM-6, MEDIUM-23, MEDIUM-25 (premise corrected; see the ledger), LOW-15, LOW-20, NEW-MEDIUM-9, NEW-TEST-1 |
 | 12 | done | LOW-7 (withdrawn), LOW-13, LOW-14, NEW-MEDIUM-10, NEW-MEDIUM-11, NEW-LOW-5 |
-| 13 | waiting | LOW-5, LOW-11, LOW-12, MEDIUM-20, NEW-LOW-2, NEW-LOW-3 |
-| 14 | waiting | HIGH-2, HIGH-7, LOW-2 |
-| 15 | waiting | BLOCKER-2, MEDIUM-2, MEDIUM-12 (downgraded; hardening) |
-| 16 | waiting | HIGH-5, MEDIUM-5, LOW-8, LOW-9, DOC-5 |
+| 13 | done | LOW-5, LOW-11, LOW-12, MEDIUM-20, NEW-LOW-2, NEW-LOW-3 |
+| 14 | done | HIGH-2, HIGH-7, LOW-2 |
+| 15 | done | BLOCKER-2, MEDIUM-2, MEDIUM-12 (downgraded; hardening) |
+| 16 | done | HIGH-5, MEDIUM-5, LOW-8, LOW-9, DOC-5 |
 | 17 | waiting | BLOCKER-1, DOC-12 |
 | 18 | waiting | HIGH-3, HIGH-4, TEST-3, DOC-7, DOC-14 |
 | 19 | waiting | DOC-3, DOC-6, DOC-13 |
@@ -125,7 +125,7 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 | 22 | waiting | DOC-2, DOC-9, DOC-11 |
 | 23 | waiting | TEST-1, TEST-2, TEST-4, TEST-5, TEST-6, TEST-7, TEST-8, TEST-9, TEST-10, TEST-11, TEST-12 |
 | 24 | done | HIGH-16, MEDIUM-21, LOW-22, LOW-23 |
-| 25 | waiting | HIGH-17, MEDIUM-24, LOW-21 |
+| 25 | done | HIGH-17, MEDIUM-24, LOW-21 |
 
 ## Phase 0: Stop unsafe claims and freeze accepted contracts
 
@@ -451,13 +451,16 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 - **Dependencies:** Chunks 14–15.
 - **Files/packages:** `bridge/rollout_status.go`, rollout applier files, `httpapi/monitor.go`, bootstrap health mapping, alarm construct, ADR 0013.
 - **Tests:** rollout apply-failure/restart tests, monitor response tests, alarm synth tests.
-- [ ] Add failing committed-not-applied, stale observation, missing convergence, roster abstention, and terminal replacement tests.
-- [ ] Run `go test -race -count=1 ./bridge ./httpapi -run 'Test.*Rollout'` and `go -C deployment/aws-filebased-config/lib test -race -count=1 ./bootstrap -run 'Test.*RolloutHealth'`; expect omitted fields.
-- [ ] Add `ObservedAt`, stale calculation, `Applied`, `Converged`, degraded rules, roster logging, bounded repair, and fleet convergence alarms.
-- [ ] Re-run the exact failing commands above; expect pass.
-- [ ] Run `make test`.
-- [ ] Rewrite ADR 0013 and source comments to state pre-commit barrier and post-commit per-member convergence.
-- [ ] Accept when mixed state is never hidden or permanent in a live member, stale observers degrade, and no text claims cohort-atomic runtime apply.
+- [x] Add failing committed-not-applied, stale observation, missing convergence, roster abstention, and terminal replacement tests.
+- [x] Run `go test -race -count=1 ./bridge ./httpapi -run 'Test.*Rollout'` and `go -C deployment/aws-filebased-config/lib test -race -count=1 ./bootstrap -run 'Test.*RolloutHealth'`; expect omitted fields.
+- [x] Add `ObservedAt`, stale calculation, `Applied`, `Converged`, degraded rules, roster logging, bounded repair, and fleet convergence alarms.
+- [x] Re-run the exact failing commands above; expect pass.
+- [x] Run `make test`.
+- [x] Rewrite ADR 0013 and source comments to state pre-commit barrier and post-commit per-member convergence.
+- [x] Accept when mixed state is never hidden or permanent in a live member, stale observers degrade, and no text claims cohort-atomic runtime apply.
+- **Landed:** the convergence window is now bounded in RATE rather than in total. `applyCommittedGeneration` (`bridge/rollout_apply.go`) used to give up permanently after three attempts — recording the generation in its own gate as if applied — so any cause outlasting three fast retries (a broker down ten minutes, a store throttling a burst) produced a permanently split cohort. It now runs unpaced for those attempts, then keeps retrying at the capped exponential backoff the other two local repairs already used, and declares itself terminal at the bound with a reason naming replacement. `Applied` is answered by comparing the running config's canonical digest against the one the cohort agreed on — not against a staged candidate, which a member that converged from the durable artifact or restarted never holds. `ConfirmPending`, `Converged` and `ObservedAt` reach `/deephealth`, and `bridge.RolloutStatus.DegradedState` is the single degraded rule both composition roots call (the reference binary published none of it). Fleet alarms: a new `ClusterRolloutDiverged` 0/1 gauge joins `ClusterRolloutTerminal` and `ClusterRolloutObservationAge` in `DefaultRollupMetrics()`, all three republished every tick — a level emitted once and then silent cannot sustain a multi-period alarm — and `gobridgealarms.AlarmsProps.EnableClusterRolloutAlarms` installs a fleet-maximum alarm on each, independent of deployment shape.
+- **Adversarial review found and fixed nine defects in the first implementation**, six of them introduced by it. The load-bearing ones: an apply-class terminal latch suppressed the confirm-window deadman, so a member went on chasing a generation the cohort had abandoned and would have joined it if the cause cleared; `applyRepair` is a single generation-keyed slot, so a member owing both the active row's generation and an older durable artifact alternated between the two paths, resetting its own backoff and rebuilding the runtime every poll; the three repairs shared one terminal latch, so a completed revert retracted an artifact latch it had not fixed and a confirm of a generation whose revert had failed left "replace this member" standing while never recording the artifact; and the fleet alarms were installed only inside the DynamoDB-HA branch — the one facade that REJECTS a coordinated cohort at synth — so they could be created only where they can never fire.
+- **Deviation from the work item, deliberate:** a PROVISIONAL commit (an open confirm window) never counts as divergence, in the gauge or in the degraded rule. The window exists precisely to handle a member that cannot converge, by reverting the whole cohort, so alarming there pages for the protocol working. `confirm_pending` carries the distinction to the operator.
 - **Suggested commit title:** `publish rollout convergence truth`
 
 ### Chunk 17: Static HA member slots and rollout infrastructure

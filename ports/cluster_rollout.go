@@ -188,7 +188,9 @@ type RolloutHost interface {
 	// the new running config on success and restore the previous one on failure:
 	// the drive verifies the swap took by comparing Config() content afterwards,
 	// and retries or marks the member degraded based on that, so a silent failure
-	// here would leave a mixed-version cohort undetected.
+	// here would leave this member on an older generation than the cohort with
+	// nothing reporting it — the post-commit convergence window (ADR 0013) is safe
+	// only because it is detected.
 	ApplyCommitted(ctx context.Context, cfg *BridgeConfig)
 
 	// MarkDegraded latches a fatal divergence: a generation the cohort committed

@@ -1,14 +1,12 @@
 package bridge
 
 import (
+	"fmt"
 	"slices"
-	"sync"
+	"strings"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/persistence"
-	"github.com/mariotoffia/gobridge/domain/shared"
-	"github.com/mariotoffia/gobridge/ports"
 )
 
 // Coordinated cluster rollout observability (design §9).
@@ -30,9 +28,15 @@ type RolloutStatus struct {
 	Generation uint64
 	// State is the observed rollout state ("proposed" | "staging" | "committed"
 	// | "aborted" | "confirmed" | "reverted"), empty when no rollout has ever been
-	// proposed. "committed" with a non-empty Converged/ConfirmPending is a confirm
-	// window in progress (design §8.1).
+	// proposed.
 	State string
+	// ConfirmPending reports that the observed "committed" state is PROVISIONAL:
+	// a confirm window (design §8.1) is open, so the cohort has not decided yet
+	// and will revert if the window expires before every member converges. It is
+	// the difference between "this member is behind the cohort" and "the cohort
+	// is still making up its mind", which is the difference between paging and
+	// waiting.
+	ConfirmPending bool
 	// ConfigVersion is the config version the rollout carries.
 	ConfigVersion int
 	// Epoch is the frozen membership epoch, sorted.
@@ -52,16 +56,25 @@ type RolloutStatus struct {
 	// config source must deliver before it can vote. A false here on a
 	// long-staging rollout identifies this member as the one holding it up.
 	Staged bool
-	// Applied reports whether this member is actually RUNNING the generation.
-	// It is meaningful only once State is "committed", and it is the signal that
-	// distinguishes a healthy cohort from a split one: the rollout row says
-	// committed on every member, but a member whose local swap failed is still
-	// on the previous generation. Alert on committed AND NOT applied.
+	// Applied reports whether this member is actually RUNNING the generation's
+	// config — answered by comparing its running config against the digest the
+	// cohort agreed on, so it holds after a restart, after a catch-up from the
+	// durable artifact, and for a member that never staged the candidate.
+	//
+	// It is the signal that distinguishes a healthy cohort from a split one: the
+	// rollout row reads committed on every member, but a member whose local swap
+	// failed is still on the previous generation. Alert on a FINAL commit (or a
+	// confirm) that is not applied — see ConfirmPending.
 	Applied bool
-	// ObservationAge is how long ago this member last read the rollout row, and
-	// Stale reports that the age has outrun the barrier's poll cadence. Every
-	// other field is a projection of that observation, so an operator must read
-	// these two first: a stale status describes the cohort as it WAS.
+	// ObservedAt is when this member last successfully read the rollout row, and
+	// zero before it has ever managed one. ObservationAge is the same fact
+	// relative to the reader's own clock, and Stale reports that the age has
+	// outrun the barrier's poll cadence. Every other field is a projection of that
+	// observation, so an operator must read these first: a stale status describes
+	// the cohort as it WAS. The absolute instant is what makes two MEMBERS'
+	// snapshots comparable — each one's age is measured at its own read time, so
+	// ages alone cannot say whose view is older.
+	ObservedAt     time.Time
 	ObservationAge time.Duration
 	Stale          bool
 	// LastError is the most recent remote-call failure, so a stale status says
@@ -80,262 +93,65 @@ type RolloutStatus struct {
 	TerminalReason     string
 }
 
-// staleObservationTicks is how many poll intervals an observation may age before
-// it is reported stale. Three tolerates one slow store call and one missed tick
-// without crying wolf, while still going stale long before an operator could
-// mistake a frozen snapshot for a live one.
-const staleObservationTicks = 3
-
-// rolloutObserver turns each applier observation into metrics and the
-// deep-health snapshot. It is owned by the applier (single goroutine), except
-// for the snapshot, which is read concurrently by health handlers.
-type rolloutObserver struct {
-	metrics ports.MetricsExporter
-	// clk stamps and ages observations. Nil means the system clock (hand-wired
-	// appliers in tests and benchmarks).
-	clk clock.Clock
-	// staleAfter is how old an observation may be before status() calls it
-	// stale. Zero means staleObservationTicks x the default poll interval.
-	staleAfter time.Duration
-
-	mu   sync.RWMutex
-	snap RolloutStatus
-	// resolved records the last generation whose terminal outcome was counted,
-	// so the resolution counter fires once per rollout rather than on every
-	// poll of an already-decided row.
-	resolved uint64
-	// observedAt is when the rollout row was last successfully read; zero before
-	// the first observation, where startedAt (when the drive began) is the
-	// baseline instead — a drive that has NEVER managed a read is not fresh, it
-	// just has nothing to be stale about yet. lastErr is the most recent
-	// remote-call failure, kept so an operator reading a stale status learns WHY
-	// it is stale rather than only that it is.
-	startedAt  time.Time
-	observedAt time.Time
-	lastErr    string
-	// artifactGen, terminalGen and terminalReason are this member's LOCAL safety
-	// state, published alongside the shared row: which generation it has durably
-	// recorded, and which generation's safe state it could not reach at all.
-	artifactGen    uint64
-	terminalGen    uint64
-	terminalReason string
-}
-
-// newRolloutObserver builds the observer for one drive.
-func newRolloutObserver(metrics ports.MetricsExporter, clk clock.Clock, pollInterval time.Duration) *rolloutObserver {
-	o := &rolloutObserver{
-		metrics:    metrics,
-		clk:        clk,
-		staleAfter: staleObservationTicks * orDefault(pollInterval, defaultRolloutPollInterval),
+// DegradedState reports whether the coordinated rollout makes this member's
+// live-reconfiguration health degraded, and why. Every composition root that
+// surfaces a rollout in deep health calls it, so the shipped AWS root and the
+// reference binary cannot answer the same question differently.
+//
+// The barrier is atomic BEFORE the commit and per-member AFTER it (ADR 0013), so
+// a member that has not yet applied a decided generation is not a protocol
+// violation — it is the convergence window, and the window is only safe because
+// it is VISIBLE. These three rules are what make it visible on the field every
+// deployment's health check already watches:
+//
+//   - decided but not applied: this member runs an older generation than its
+//     peers. Left un-degraded it looks identical to a converged member, because
+//     every other signal describes the shared row, which reads the same on both.
+//     A PROVISIONAL commit is excluded for the same reason the divergence gauge
+//     excludes it: the confirm window itself handles a member that cannot
+//     converge, by reverting the cohort.
+//   - stale observation: the block is a snapshot of a row this member can no
+//     longer read, so "committed everywhere, all acked" may be minutes out of
+//     date. A stale observer that reports healthy is worse than one reporting
+//     nothing, because it answers the operator's question wrongly.
+//   - terminal: this member cannot reach the generation's safe state on its own
+//     and needs an operator; the reason says which action.
+func (r RolloutStatus) DegradedState() (bool, string) {
+	var reasons []string
+	if r.divergedFromCohort() {
+		reasons = append(reasons, fmt.Sprintf(
+			"coordinated cluster rollout generation %d (config version %d) is %s for the cohort but is "+
+				"NOT applied on this member, which runs an older config generation than its peers",
+			r.Generation, r.ConfigVersion, r.State))
 	}
-	o.startedAt = o.now()
-	return o
-}
-
-// now reads the observer's clock, defaulting to the system clock so a
-// hand-wired observer (tests, benchmarks) needs no clock to work.
-func (o *rolloutObserver) now() time.Time {
-	if o.clk == nil {
-		return clock.System.Now()
-	}
-	return o.clk.Now()
-}
-
-// rolloutStates returns every state the gauge reports, so exactly one series
-// reads 1 and the rest read 0 — a gauge that only ever set the CURRENT state
-// would leave the previous state latched at 1 forever in any pull-based
-// exporter.
-func rolloutStates() []persistence.RolloutState {
-	return []persistence.RolloutState{
-		persistence.RolloutProposed,
-		persistence.RolloutStaging,
-		persistence.RolloutCommitted,
-		persistence.RolloutAborted,
-		persistence.RolloutConfirmed,
-		persistence.RolloutReverted,
-	}
-}
-
-// observe publishes one observation. staged reports whether this member holds
-// the candidate config for the observed digest; applied reports whether it is
-// actually running that generation's content.
-func (o *rolloutObserver) observe(r persistence.Rollout, memberID string, staged, applied bool) {
-	o.mu.Lock()
-	o.observedAt = o.now()
-	o.lastErr = ""
-	o.snap = RolloutStatus{
-		MemberID:      memberID,
-		Generation:    r.Generation(),
-		State:         string(r.State()),
-		ConfigVersion: r.ConfigVersion(),
-		Epoch:         r.MembershipEpoch(),
-		Acked:         sortedKeys(r.Acks()),
-		Nacked:        sortedKeys(r.Nacks()),
-		Converged:     sortedKeys(r.Converged()),
-		Reason:        r.Reason(),
-		Staged:        staged,
-		Applied:       applied,
-	}
-	// Count a terminal outcome exactly once per generation. Done under the same
-	// lock as the snapshot so the counter and the snapshot cannot disagree about
-	// which generation was last resolved. Window-aware: a provisional (windowed)
-	// commit is NOT yet resolved — it counts only at Confirmed/Reverted.
-	countResolution := r.IsTerminal() && o.resolved != r.Generation()
-	if countResolution {
-		o.resolved = r.Generation()
-	}
-	o.mu.Unlock()
-
-	if o.metrics == nil {
-		return
-	}
-	for _, st := range rolloutStates() {
-		value := 0.0
-		if st == r.State() {
-			value = 1
+	if r.Stale {
+		reason := fmt.Sprintf(
+			"the coordinated cluster rollout observation is stale (%s old); this member cannot read the "+
+				"rollout row, so the cohort state reported here describes the cohort as it WAS",
+			r.ObservationAge.Round(time.Second))
+		if r.LastError != "" {
+			reason += ": " + r.LastError
 		}
-		o.metrics.Gauge(shared.MetricClusterRolloutState, value,
-			shared.Tag{Key: shared.TagKeyState, Value: string(st)})
+		reasons = append(reasons, reason)
 	}
-	o.metrics.Gauge(shared.MetricClusterRolloutAcks, float64(len(r.Acks())))
-	o.metrics.Gauge(shared.MetricClusterRolloutEpoch, float64(len(r.MembershipEpoch())))
-	if countResolution {
-		o.metrics.Counter(shared.MetricClusterRolloutResolved, 1,
-			shared.Tag{Key: shared.TagKeyOutcome, Value: rolloutOutcome(r.State())})
+	if r.TerminalGeneration != 0 {
+		reasons = append(reasons, r.TerminalReason)
 	}
+	if len(reasons) == 0 {
+		return false, ""
+	}
+	return true, strings.Join(reasons, "; ")
 }
 
-// rolloutOutcome maps a terminal rollout state to the resolution counter's
-// outcome tag. Committed is the base-protocol success; Confirmed/Reverted are the
-// confirm-window (design §8.1) terminal outcomes; anything else is an abort.
-func rolloutOutcome(state persistence.RolloutState) string {
-	switch state {
-	case persistence.RolloutCommitted:
-		return "committed"
-	case persistence.RolloutConfirmed:
-		return "confirmed"
-	case persistence.RolloutReverted:
-		return "reverted"
-	default:
-		return "aborted"
+// divergedFromCohort is DegradedState's half of the divergence question, kept in
+// step with the rolloutDiverged gauge: only a FINAL decision counts, so the two
+// signals never disagree about the same observation.
+func (r RolloutStatus) divergedFromCohort() bool {
+	if r.Applied || r.ConfirmPending {
+		return false
 	}
-}
-
-// status returns the last observation, aged against the clock. Freshness is
-// computed at READ time, not at observation time, so a drive that has stopped
-// observing entirely — the store black-holed, the goroutine gone — reports a
-// growing age rather than a snapshot frozen at the moment it last worked.
-func (o *rolloutObserver) status() RolloutStatus {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-	out := o.snap
-	out.LastError = o.lastErr
-	out.ArtifactGeneration = o.artifactGen
-	out.TerminalGeneration = o.terminalGen
-	out.TerminalReason = o.terminalReason
-	if since := o.freshnessBaseline(); !since.IsZero() {
-		out.ObservationAge = o.now().Sub(since)
-		out.Stale = out.ObservationAge > o.staleBudget()
-	}
-	return out
-}
-
-// freshnessBaseline is the instant the observation age is measured from: the
-// last successful read, or — before there has been one — when the drive started.
-// Callers hold at least a read lock.
-func (o *rolloutObserver) freshnessBaseline() time.Time {
-	if !o.observedAt.IsZero() {
-		return o.observedAt
-	}
-	return o.startedAt
-}
-
-// staleBudget is how old an observation may be before it is stale.
-func (o *rolloutObserver) staleBudget() time.Duration {
-	return orDefault(o.staleAfter, staleObservationTicks*defaultRolloutPollInterval)
-}
-
-// observeAbsent records a successful read that found NO rollout row. It is a
-// genuine observation of the shared row — "the cohort has no rollout in flight"
-// is an answer, not a missing one — so it keeps this member's freshness signal
-// alive during the long stretches between rollouts.
-func (o *rolloutObserver) observeAbsent() {
-	if o == nil {
-		return
-	}
-	o.mu.Lock()
-	o.observedAt = o.now()
-	o.lastErr = ""
-	o.mu.Unlock()
-}
-
-// observeCall meters one remote call the barrier made. It is nil-safe because
-// the proposer path runs before the drive exists.
-func (o *rolloutObserver) observeCall(class, outcome string, err error) {
-	if o == nil {
-		return
-	}
-	if err != nil {
-		o.mu.Lock()
-		o.lastErr = err.Error()
-		o.mu.Unlock()
-	}
-	if o.metrics != nil {
-		o.metrics.Counter(shared.MetricClusterRolloutStoreCalls, 1,
-			shared.Tag{Key: shared.TagKeyOperation, Value: class},
-			shared.Tag{Key: shared.TagKeyOutcome, Value: outcome})
-	}
-}
-
-// observeRetry publishes how many consecutive attempts a local safety operation
-// has taken without completing; zero once it completes.
-func (o *rolloutObserver) observeRetry(class string, attempts int) {
-	if o == nil || o.metrics == nil {
-		return
-	}
-	o.metrics.Gauge(shared.MetricClusterRolloutRetries, float64(attempts),
-		shared.Tag{Key: shared.TagKeyOperation, Value: class})
-}
-
-// observeArtifact records the generation whose durable committed artifact this
-// member has VERIFIED as written.
-func (o *rolloutObserver) observeArtifact(gen uint64) {
-	if o == nil {
-		return
-	}
-	o.mu.Lock()
-	o.artifactGen = gen
-	o.mu.Unlock()
-}
-
-// observeTerminal records a generation whose safe state this member could not
-// reach. It is a latch: the member cannot repair itself and needs replacing.
-func (o *rolloutObserver) observeTerminal(gen uint64, reason string) {
-	if o == nil {
-		return
-	}
-	o.mu.Lock()
-	o.terminalGen, o.terminalReason = gen, reason
-	o.mu.Unlock()
-	if o.metrics != nil {
-		o.metrics.Gauge(shared.MetricClusterRolloutTerminal, float64(gen))
-	}
-}
-
-// publishFreshness emits the observation-age gauge. The drive calls it every
-// tick — including ticks whose store read failed, which are exactly the ticks
-// that make the age worth reporting.
-func (o *rolloutObserver) publishFreshness() {
-	if o == nil || o.metrics == nil {
-		return
-	}
-	o.mu.RLock()
-	since := o.freshnessBaseline()
-	o.mu.RUnlock()
-	if since.IsZero() {
-		return
-	}
-	o.metrics.Gauge(shared.MetricClusterRolloutObservationAge, o.now().Sub(since).Seconds())
+	return r.State == string(persistence.RolloutCommitted) ||
+		r.State == string(persistence.RolloutConfirmed)
 }
 
 // RolloutStatus returns this member's last observation of the coordinated

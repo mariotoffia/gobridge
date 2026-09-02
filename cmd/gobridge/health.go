@@ -59,27 +59,51 @@ func configWatchHealth(sup *bridge.Supervisor, mgr *config.Manager, bootHTTP *po
 	// the barrier so an operator reading /deephealth sees WHO the cohort is
 	// waiting for instead of a bare "desired configuration is not running".
 	if rollout, ok := sup.RolloutStatus(); ok {
-		status.Rollout = &httpapi.ClusterRolloutHealth{
-			MemberID:        rollout.MemberID,
-			Generation:      rollout.Generation,
-			State:           rollout.State,
-			ConfigVersion:   rollout.ConfigVersion,
-			Epoch:           rollout.Epoch,
-			Acked:           rollout.Acked,
-			Nacked:          rollout.Nacked,
-			Reason:          rollout.Reason,
-			CandidateStaged: rollout.Staged,
-			Applied:         rollout.Applied,
-
-			ObservationAgeMS:   rollout.ObservationAge.Milliseconds(),
-			Stale:              rollout.Stale,
-			LastError:          rollout.LastError,
-			ArtifactGeneration: rollout.ArtifactGeneration,
-			TerminalGeneration: rollout.TerminalGeneration,
-			TerminalReason:     rollout.TerminalReason,
+		status.Rollout = rolloutHealth(rollout)
+		// The same rule the shipped AWS root applies, from the same place: a
+		// member the barrier has left behind, a stale observer or one that cannot
+		// reach a generation's safe state must degrade here too. Two roots serving
+		// one JSON contract may not answer the same question differently.
+		if degraded, reason := rollout.DegradedState(); degraded {
+			status.Degraded = true
+			if status.Reason == "" {
+				status.Reason = reason
+			} else {
+				status.Reason += "; " + reason
+			}
 		}
 	}
 	return status
+}
+
+// rolloutHealth projects one rollout observation into the deep-health block.
+// Every field answers a question divergence raises and nothing else does:
+// Converged is who a confirm window still waits for, Applied whether THIS member
+// runs the decided generation, ConfirmPending whether that decision is even
+// final, and ObservedAt/Stale whether the rest of the block is current at all.
+func rolloutHealth(r bridge.RolloutStatus) *httpapi.ClusterRolloutHealth {
+	return &httpapi.ClusterRolloutHealth{
+		MemberID:        r.MemberID,
+		Generation:      r.Generation,
+		State:           r.State,
+		ConfirmPending:  r.ConfirmPending,
+		ConfigVersion:   r.ConfigVersion,
+		Epoch:           r.Epoch,
+		Acked:           r.Acked,
+		Nacked:          r.Nacked,
+		Converged:       r.Converged,
+		Reason:          r.Reason,
+		CandidateStaged: r.Staged,
+		Applied:         r.Applied,
+
+		ObservedAt:         r.ObservedAt,
+		ObservationAgeMS:   r.ObservationAge.Milliseconds(),
+		Stale:              r.Stale,
+		LastError:          r.LastError,
+		ArtifactGeneration: r.ArtifactGeneration,
+		TerminalGeneration: r.TerminalGeneration,
+		TerminalReason:     r.TerminalReason,
+	}
 }
 
 // terminalPollInterval is how often the liveness backstop checks whether the

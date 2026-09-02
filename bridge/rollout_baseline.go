@@ -19,7 +19,8 @@ import (
 // config source currently holds. In the window between an operator writing a
 // change to that source and the barrier proposing it, "whatever the source holds"
 // is a candidate the cohort has NOT agreed to run, and a member restarting there
-// forms the mixed-version cohort the barrier exists to prevent.
+// would run a generation no member agreed on — the one thing the barrier makes
+// impossible rather than merely bounded (ADR 0013).
 //
 // The barrier cannot close that itself: a member cannot locally tell a deploy
 // baseline from an un-proposed candidate, which is why the joiner deliberately

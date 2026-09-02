@@ -124,7 +124,7 @@ func (a *rolloutApplier) tick(ctx context.Context) error {
 	a.driveRevert(ctx)
 	err := a.step(ctx)
 	a.driveArtifact(ctx)
-	a.obs.publishFreshness()
+	a.obs.publishLevels()
 	return err
 }
 
@@ -151,11 +151,16 @@ func (a *rolloutApplier) requireRevert(ctx context.Context, gen uint64, reason s
 	if a.revertCfg == nil || a.revertedGen == gen {
 		return
 	}
-	if a.terminalGen == gen {
-		// This member already exhausted its attempts at this generation's safe
-		// state. Re-arming on the next observation of the same Reverted row would
-		// turn the bound into a rebuild-every-poll loop, which is the outage the
-		// bound exists to prevent.
+	if a.terminalGen == gen && a.terminalClass == rolloutRepairRevert {
+		// This member already exhausted its attempts at THIS repair. Re-arming on
+		// the next observation of the same Reverted row would turn the bound into a
+		// rebuild-every-poll loop, which is the outage the bound exists to prevent.
+		//
+		// The class matters: a member that could not APPLY the generation is also
+		// latched terminal at it, and that member still owes the revert. Skipping it
+		// there would leave the deadman unable to latch the generation as reverted,
+		// so the member would keep chasing a provisional generation whose window has
+		// closed — and swap to it if the cause ever cleared.
 		return
 	}
 	if a.pendingRevert == nil || a.pendingRevert.gen != gen {
@@ -231,7 +236,7 @@ func (a *rolloutApplier) finishRevert() {
 	a.revertedGen = gen
 	a.pendingRevert = nil
 	a.obs.observeRetry(rolloutRepairRevert, 0)
-	a.clearUnsafe(gen)
+	a.clearUnsafe(rolloutRepairRevert, gen)
 }
 
 // requireCommittedArtifact records that this member owes the durable
@@ -244,7 +249,15 @@ func (a *rolloutApplier) requireCommittedArtifact(
 	if a.barrier == nil || a.barrier.encode == nil || a.barrier.committedStore == nil {
 		return
 	}
-	if a.artifactGen >= gen || a.terminalGen == gen {
+	if a.artifactGen >= gen {
+		return
+	}
+	if a.terminalGen == gen && a.terminalClass == rolloutRepairArtifact {
+		// Already gave up on THIS generation's artifact (a digest mismatch, which
+		// no retry resolves). The class matters: a member latched terminal at the
+		// same generation for a failed REVERT still owes the artifact — and a
+		// cohort that then confirms that generation leaves it running the right
+		// config with no durable record of it, so a restart would boot it older.
 		return
 	}
 	if a.pendingArtifact == nil || a.pendingArtifact.gen != gen {
@@ -278,7 +291,7 @@ func (a *rolloutApplier) driveArtifact(ctx context.Context) {
 		a.pendingArtifact = nil
 		a.obs.observeArtifact(p.gen)
 		a.obs.observeRetry(rolloutRepairArtifact, 0)
-		a.clearUnsafe(p.gen)
+		a.clearUnsafe(rolloutRepairArtifact, p.gen)
 		return
 	}
 	// A digest mismatch at this generation is corruption, not an outage: two
@@ -331,25 +344,33 @@ func (a *rolloutApplier) verifyCommittedArtifact(ctx context.Context, gen uint64
 }
 
 // markUnsafe latches a generation whose safe state this member could not reach
-// on its own: it cannot boot on what the cohort committed, or it is running what
-// the cohort rejected. Neither resolves without operator action, which is why it
-// is louder than the bounded give-up on an APPLY (that one leaves the member on
-// an older but valid generation).
+// on its own: it is not running what the cohort decided, it cannot boot on what
+// the cohort committed, or it is running what the cohort rejected. None of the
+// three resolves reliably without operator action.
 //
 // It says nothing about whether retrying continues — the caller decides that,
-// because the right answer differs: a member that cannot RECORD the artifact is
-// running the correct config and must keep trying (replacing it is what would
-// boot it on the older generation), while a member that cannot REVERT is running
-// rejected config and replacing it IS the repair. The reason text carries that
-// difference to the operator, who is the one who acts on it.
+// because the right answer differs by class:
 //
-// Idempotent per generation: the artifact path calls it on every further failed
-// attempt.
+//   - APPLY: this member is running an OLDER generation than the cohort. It keeps
+//     retrying at the capped backoff (the cause is often a dependency that comes
+//     back), and replacing it is the repair if it does not — a replacement boots
+//     on the committed artifact, which is the generation the cohort decided.
+//   - ARTIFACT: this member runs the CORRECT config and only its boot state is
+//     stale, so it keeps retrying and must NOT be replaced — replacing it is the
+//     one action that would boot it on the older generation.
+//   - REVERT: this member is running config the cohort REJECTED, and replacing it
+//     IS the repair.
+//
+// The reason text carries that difference to the operator, who is the one who
+// acts on it.
+//
+// Idempotent per generation: the apply and artifact paths call it on every
+// further failed attempt.
 func (a *rolloutApplier) markUnsafe(gen uint64, class, reason string) {
 	if a.terminalGen == gen {
 		return
 	}
-	a.terminalGen = gen
+	a.terminalGen, a.terminalClass = gen, class
 	if a.host.RolloutLogger() != nil {
 		a.host.RolloutLogger().Error("supervisor: THIS MEMBER CANNOT REACH THE SAFE STATE OF A COORDINATED "+
 			"CLUSTER ROLLOUT GENERATION on its own and needs operator attention",
@@ -359,24 +380,18 @@ func (a *rolloutApplier) markUnsafe(gen uint64, class, reason string) {
 	a.obs.observeTerminal(gen, reason)
 }
 
-// clearUnsafe retracts the latch once a repair for gen actually completes — the
-// store came back and the artifact landed, or the revert finally took. A latch
-// for an EARLIER generation is cleared too: an artifact that now holds
-// generation N answers for every generation below it, because that is what this
-// member would boot on.
-//
-// It is called only from a repair that VERIFIABLY completed, never from a
-// successful apply: a member running the committed config with its artifact
-// still unwritten is exactly the unsafe state the latch describes.
+// clearUnsafe retracts the latch when a repair that VERIFIABLY completed ends the
+// condition the latch names. class is the repair that completed and gen the
+// generation it reached; see unsafeResolvedBy for which combinations count.
 //
 // The host's own degraded latch is not retracted here (RolloutHost has no
 // un-degrade, and it clears on the next successful reload); the rollout status
 // and its gauge are, because they describe a condition that is genuinely over.
-func (a *rolloutApplier) clearUnsafe(gen uint64) {
-	if a.terminalGen == 0 || a.terminalGen > gen {
+func (a *rolloutApplier) clearUnsafe(class string, gen uint64) {
+	if !a.unsafeResolvedBy(class, gen) {
 		return
 	}
-	a.terminalGen = 0
+	a.terminalGen, a.terminalClass = 0, ""
 	a.obs.observeTerminal(0, "")
 	if a.host.RolloutLogger() != nil {
 		a.host.RolloutLogger().Info("supervisor: the coordinated cluster rollout state this member could "+
@@ -385,65 +400,28 @@ func (a *rolloutApplier) clearUnsafe(gen uint64) {
 	}
 }
 
-// reconcileMissedCommit converges a running member to the durable last-committed
-// artifact when it is AHEAD of the generation this member has applied — the case
-// where the member missed a commit because the active rollout row was overwritten
-// by the next proposal before it observed the commit (design residual seq (2)),
-// or was down when the commit happened and never staged the candidate. It fetches
-// the committed BYTES (option (a)), so it needs no staged candidate.
+// unsafeResolvedBy reports whether a completed repair of class that reached gen
+// genuinely ends the latched condition. The split is between the two latches
+// about what this member is RUNNING and the one about what it would BOOT on:
 //
-// A no-op when no codec is wired, the artifact is not ahead, or the decoded bytes
-// fail their digest check (the running config is then kept — better than building
-// a corrupt artifact). Returns a store error to the caller for retry.
-//
-// wiring dependency: reconcile (like the joiner's boot substitution)
-// applies a config the config MANAGER did not emit — the decoded artifact, not a
-// manager-correlated pointer. A production composition root that wires
-// onSwap -> ports config manager NotifyApplyResult must reconcile the manager's
-// desired/running fingerprint after a barrier-driven swap (e.g. re-sync running to
-// the committed config), or ReconfigurePending / deep-health Degraded can latch
-// true despite the member being correctly converged. The barrier is not wired into
-// any production root today, so this does not manifest here. Wiring the barrier
-// into a production root is what makes this reconcile step mandatory.
-func (a *rolloutApplier) reconcileMissedCommit(ctx context.Context, adoptGen uint64) error {
-	if a.barrier.decode == nil || a.barrier.committedStore == nil {
-		return nil
+//   - APPLY and REVERT both mean "this member is not running the config it
+//     should be". Either repair completing at or past the latched generation ends
+//     that: applying a generation the cohort decided means it no longer runs the
+//     rejected one, and completing a revert means the generation it could not
+//     reach has been abandoned. Which of the two ran does not matter — the
+//     condition is the same one, and the member is out of it.
+//   - ARTIFACT means "a restart would boot the wrong config". No swap changes
+//     that, and no swap says anything about it: a member running the committed
+//     config with its artifact still unwritten is exactly what the latch
+//     describes. Only a verified artifact write resolves it, and only for that
+//     generation or a later one — an artifact holding generation N answers for
+//     every generation below it, because that is what the member would boot on.
+func (a *rolloutApplier) unsafeResolvedBy(class string, gen uint64) bool {
+	if a.terminalGen == 0 || a.terminalGen > gen {
+		return false
 	}
-	committed, err := rolloutOpValue(ctx, a.ops(), rolloutOpRead, a.barrier.committedStore.CommittedConfig)
-	if errors.Is(err, shared.ErrNotFound) {
-		return nil
+	if a.terminalClass == rolloutRepairArtifact || class == rolloutRepairArtifact {
+		return a.terminalClass == class
 	}
-	if err != nil {
-		return err
-	}
-	if !a.gate.admits(committed.Generation) {
-		return nil // already applied this generation (or newer), or the baseline seed
-	}
-	if adoptGen >= committed.Generation {
-		// adopt already drove this generation (or newer) through the staged-candidate
-		// path in this same step — including a transient failure that left the gate
-		// unrecorded. Re-driving it here would consume a second retry attempt in the
-		// same poll; leave it to adopt's next-poll retry.
-		return nil
-	}
-	cfg, err := a.barrier.decode(committed.ConfigBytes)
-	if err != nil {
-		if a.host.RolloutLogger() != nil {
-			a.host.RolloutLogger().Error("supervisor: the durable last-committed rollout artifact could not be "+
-				"decoded to reconcile a missed commit; the running config is kept",
-				"generation", committed.Generation, "error", err)
-		}
-		return nil
-	}
-	// Integrity: the reconstructed config must match the digest the artifact
-	// records, or the bytes are corrupt and must not be built.
-	if raw, ok := configCanonicalBytes(cfg); !ok || candidateConfigDigest(raw) != committed.Digest {
-		if a.host.RolloutLogger() != nil {
-			a.host.RolloutLogger().Error("supervisor: the durable last-committed rollout artifact failed its digest "+
-				"check on reconcile; the running config is kept", "generation", committed.Generation)
-		}
-		return nil
-	}
-	a.applyCommittedGeneration(ctx, committed.Generation, committed.ConfigVersion, cfg, cfg)
-	return nil
+	return true
 }

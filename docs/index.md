@@ -17,6 +17,8 @@ walks a working bridge end to end. Then skim the
 | [Scenario 1: MQTT-to-MQTT](scenarios/01-mqtt-to-mqtt.md) | A complete working bridge, start to finish |
 | [Configuration Overview](configuration-overview.md) | How configuration is layered, sourced and reloaded |
 | [Deployment Guide](deployment-guide.md) | Running GoBridge for real |
+| [Health Checks and Graceful Shutdown](health-and-shutdown.md) | Probes, shutdown sequence and budgets, exit codes |
+| [Container and Orchestrator Deployment](container-deployment.md) | Image pinning, probe wiring, building your own image |
 | [Troubleshooting](troubleshooting.md) | Symptoms, causes and fixes |
 
 ## Configuration
@@ -26,6 +28,7 @@ walks a working bridge end to end. Then skim the
 | [Configuration Overview](configuration-overview.md) | Lifecycle, sources, layering, dynamic reconfiguration |
 | [Configuration Reference](configuration-reference.md) | Field-by-field `BridgeConfig` reference |
 | [Routes and Runtime Reference](routes-and-runtime-reference.md) | Route shape and runtime behaviour |
+| [Programmatic API](programmatic-api.md) | Delivery hooks, the builder, runtime lifecycle |
 | [Transport Configuration](transport-configuration.md) | Options common to every transport |
 | [Processors and Stores](processors-and-stores.md) | Filter, transform, circuit breaker, tenant; store backends |
 | [Config Stores](config-stores.md) | Where configuration is read from and written to |
@@ -48,6 +51,7 @@ walks a working bridge end to end. Then skim the
 | [Credentials and HTTP API](credentials-and-http-api.md) | Credential URIs, admin and monitor APIs |
 | [Credential Rotation](credentials-rotation.md) | Rotating secrets without downtime |
 | [HTTP API](http-api.md) · [Examples](http-api-examples.md) | Administering a running bridge |
+| [Monitor API Endpoints](http-api-monitor.md) | Health, liveness, readiness, topology and deep health |
 
 ## Clustering
 

@@ -124,6 +124,28 @@ func TestDefaultRollupMetrics_CoversSilentLossCounters(t *testing.T) {
 	}
 }
 
+// TestDefaultRollupMetrics_CoversClusterRolloutConvergence pins the fleet
+// convergence series. Each is emitted with no runtime dimension, so on a fleet
+// with instance tagging the base series carries only instance_id and the
+// dimensionless fleet alarm the CDK bundle installs would never match it — the
+// alarm would sit in INSUFFICIENT_DATA while the cohort ran mixed generations,
+// which is the exact failure the alarm exists to catch.
+func TestDefaultRollupMetrics_CoversClusterRolloutConvergence(t *testing.T) {
+	rollups := map[string]bool{}
+	for _, name := range DefaultRollupMetrics() {
+		rollups[name] = true
+	}
+	for _, want := range []string{
+		shared.MetricClusterRolloutDiverged,
+		shared.MetricClusterRolloutTerminal,
+		shared.MetricClusterRolloutObservationAge,
+	} {
+		if !rollups[want] {
+			t.Errorf("DefaultRollupMetrics() missing cluster rollout convergence metric %q", want)
+		}
+	}
+}
+
 // H-OBS: message loss must be alarmable out-of-the-box. A terminal drop is
 // critical (any drop), sustained expiry is a warning, and a non-empty DLQ is a
 // warning. Fails before the fix that shipped these default alarms.

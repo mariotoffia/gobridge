@@ -87,6 +87,26 @@ type AlarmsProps struct {
 	// LeaseAcquireFailures alarm threshold (default 3).
 	OutboxDepthThreshold          *float64
 	LeaseAcquireFailuresThreshold *float64
+
+	// EnableClusterRolloutAlarms opts in to the fleet convergence alarms for a
+	// cohort running bridge.cluster.rollout: coordinated. OFF by default, because
+	// a deployment without the barrier emits none of these series. It is
+	// independent of the deployment shape — any composition root can drive the
+	// barrier, so these are not tied to one facade.
+	//
+	// They are the alarms the rollout contract requires. The barrier is atomic
+	// BEFORE the commit and per-member AFTER it, so the cohort's shared rollout
+	// row reads "committed" identically on a member that swapped and on one whose
+	// swap failed — no signal derived from that row can tell them apart. These
+	// three read the PER-MEMBER series instead, rolled up to the fleet, and answer
+	// the three questions the post-commit window raises: is anyone not running the
+	// decided generation, can anyone no longer repair itself, and is anyone no
+	// longer able to see the row at all.
+	//
+	// Like every other rollup alarm here they carry NO dimensions, so the exporter
+	// must be configured with WithRollupMetrics(DefaultRollupMetrics()...) —
+	// otherwise they sit in INSUFFICIENT_DATA on a fleet with instance tagging.
+	EnableClusterRolloutAlarms bool
 }
 
 // GoBridgeAlarms is the bundle construct exposing each generated
@@ -125,6 +145,10 @@ type GoBridgeAlarms struct {
 	reconcileFailures   awscloudwatch.IAlarm
 	mqttSessionTakeover awscloudwatch.IAlarm
 	mqttQoSDowngraded   awscloudwatch.IAlarm
+
+	clusterRolloutDiverged       awscloudwatch.IAlarm
+	clusterRolloutTerminal       awscloudwatch.IAlarm
+	clusterRolloutObservationAge awscloudwatch.IAlarm
 }
 
 const (
@@ -460,9 +484,31 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 			"Sum", jsii.Number(0), period, evals, topicAction,
 			awscloudwatch.TreatMissingData_NOT_BREACHING,
 			"GoBridge MQTT broker granted a lower QoS than requested; delivery guarantees are weaker than configured.")
+
+	}
+
+	// Fleet convergence alarms for a coordinated cohort. Deliberately OUTSIDE the
+	// deployment-shape branches above: the barrier runs wherever a composition
+	// root drives it, and gating these on one facade would install them only where
+	// they cannot fire.
+	if props.EnableClusterRolloutAlarms {
+		g.newClusterRolloutAlarms(c, rolloutMetricsNamespace(props), period, evals, topicAction)
 	}
 
 	return g
+}
+
+// rolloutMetricsNamespace is where a coordinated cohort publishes its runtime
+// metrics: the HA construct's own namespace when the bundle is wired to one,
+// otherwise the rollup namespace (overridable, defaulting to the runtime's).
+func rolloutMetricsNamespace(props *AlarmsProps) string {
+	if props.DynamoDBHA != nil {
+		return props.DynamoDBHA.MetricsNamespace()
+	}
+	if props.RollupMetricsNamespace != nil && *props.RollupMetricsNamespace != "" {
+		return *props.RollupMetricsNamespace
+	}
+	return rollupNamespaceDefault
 }
 
 func newDynamoDBAlarms(scope constructs.Construct, prefix string, table awsdynamodb.ITable,
@@ -605,8 +651,9 @@ func (g *GoBridgeAlarms) OutboxRecordFailuresAlarm() awscloudwatch.IAlarm {
 	return g.outboxRecordFailures
 }
 func (g *GoBridgeAlarms) OutboxDrainStalledAlarm() awscloudwatch.IAlarm { return g.outboxDrainStalled }
-func (g *GoBridgeAlarms) DLQDepthAlarm() awscloudwatch.IAlarm           { return g.dlqDepth }
-func (g *GoBridgeAlarms) DLQWriteFailuresAlarm() awscloudwatch.IAlarm   { return g.dlqWriteFailures }
+
+func (g *GoBridgeAlarms) DLQDepthAlarm() awscloudwatch.IAlarm         { return g.dlqDepth }
+func (g *GoBridgeAlarms) DLQWriteFailuresAlarm() awscloudwatch.IAlarm { return g.dlqWriteFailures }
 
 func (g *GoBridgeAlarms) MQTTIngressPoisonAlarm() awscloudwatch.IAlarm { return g.mqttIngressPoison }
 func (g *GoBridgeAlarms) ReconcileFailuresAlarm() awscloudwatch.IAlarm { return g.reconcileFailures }

@@ -54,12 +54,12 @@ func (a *rolloutApplier) adoptProvisional(ctx context.Context, r persistence.Rol
 		a.provisionalDeadline = r.ConfirmDeadline().
 			Add(time.Duration(confirmDeadmanGraceTicks) * a.barrier.pollInterval)
 	}
-	// Swap provisionally, idempotent once applied. Skip re-applying once this member
-	// has GIVEN UP on the swap for this gen, so a deterministically-failing swap does
-	// not rebuild the runtime every poll (the deadman below still runs, so a stuck
-	// member on a dead-coordinator cohort still reverts to N-1).
+	// Swap provisionally, idempotent once applied. A deterministically-failing swap
+	// paces itself past the bound (applyCommittedGeneration), so this does not
+	// rebuild the runtime every poll; the deadman below still runs, so a stuck
+	// member on a dead-coordinator cohort still reverts to N-1.
 	swapped := configContentEqual(a.host.Config(), cand.frozen)
-	if !swapped && a.gaveUpGen != gen {
+	if !swapped {
 		swapped = a.applyCommittedGeneration(ctx, gen, r.ConfigVersion(), a.adoptable(cand), cand.frozen)
 	}
 	if swapped {
@@ -130,16 +130,19 @@ func (a *rolloutApplier) adoptConfirmed(ctx context.Context, r persistence.Rollo
 	// The cohort confirmed, so N is the config to run even if a local deadman had
 	// reverted this member to N-1 in a prior tick — and any revert still owed for N
 	// is now the WRONG outcome, so it is cancelled rather than left to fire.
-	// Idempotent when this member already runs N; suppress rebuild churn once it
-	// has given up on the swap (that member is degraded and alarmed, — a confirmed
-	// gen it cannot apply is a per-node convergence failure, not a retry-forever).
+	// Idempotent when this member already runs N; a swap that keeps failing paces
+	// itself past the bound and reports terminal, so this cannot become a
+	// rebuild-every-poll loop.
 	a.cancelRevert(gen)
 	a.revertedGen = 0
-	applied := configContentEqual(a.host.Config(), cand.frozen)
-	if !applied && a.gaveUpGen != gen {
-		applied = a.applyCommittedGeneration(ctx, gen, r.ConfigVersion(), a.adoptable(cand), cand.frozen)
-	}
-	if applied {
+	// Route through applyCommittedGeneration even when the content already
+	// matches — its first branch IS that check, and going through it is what
+	// resolves an outstanding repair and its terminal latch. A member whose
+	// REVERT of this generation failed to the bound never left it, so a confirm
+	// finds it already running the config: skipping the call there would leave it
+	// latched "running the REJECTED config, replace this member" for a generation
+	// the cohort has since confirmed.
+	if applied := a.applyCommittedGeneration(ctx, gen, r.ConfigVersion(), a.adoptable(cand), cand.frozen); applied {
 		// NOW advance the durable last-committed artifact — only on Confirm, so a
 		// crash reboots onto the CONFIRMED generation, never a provisional one. The
 		// generation is latched only once the write is verified durable, so a

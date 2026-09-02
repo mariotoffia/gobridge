@@ -92,12 +92,22 @@ here — you do not need anything below.
 ## Setup 3 — Coordinated rollout (no-downtime changes)
 
 If you change config often and want to avoid the outage, turn on **coordinated
-mode**. Now a safe change is rolled out to the whole cohort atomically: it is
-proposed to a shared store, **every** process validates and prepares it, and
-only once all of them agree does a single elected process ("the coordinator")
-commit it — at which point they all swap together. If any process cannot accept
-the change, nothing swaps and the old config keeps running. No process ever runs
-a config the others have not agreed to ([ADR 0013](../adr/0013-coordinated-cluster-config-rollout.md)).
+mode**. A safe change is now *decided* atomically: it is proposed to a shared
+store, **every** process validates and prepares it, and only once all of them
+agree does a single elected process ("the coordinator") commit it. If any process
+cannot accept the change, nothing swaps and the old config keeps running. No
+process ever runs a config the others have not agreed to
+([ADR 0013](../adr/0013-coordinated-cluster-config-rollout.md)).
+
+The *decision* is atomic; the *swap* is per process. After the commit each member
+applies the change locally, and one of them can fail where the others succeed —
+so for a few seconds (and, if a member's broker or store is unhealthy, longer)
+the cohort can be running two generations. That window is bounded and visible,
+not hidden: the failing member retries, reports `applied: false` in deep health,
+and eventually declares itself unrepairable so you can replace it. Alarm on it —
+see [Watching it roll out](operating.md#watching-it-roll-out). If you cannot
+tolerate that window at all, use a [confirm window](#setup-4--confirm-window-auto-revert-on-failure), which
+reverts the whole cohort instead of leaving it split.
 
 ### What you need first
 

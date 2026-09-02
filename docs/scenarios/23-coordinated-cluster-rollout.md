@@ -15,10 +15,18 @@ change to a cohort for exactly this reason (see
 
 **Coordinated rollout** lifts that restriction for *live-safe* changes. You post
 the new config to one node; every member validates and builds it; and only once
-**all** of them agree does a single elected coordinator commit it — at which point
-they all swap together. If any member can't accept the change, nothing swaps and
-the old config keeps serving. No process ever runs a config the others haven't
-agreed to.
+**all** of them agree does a single elected coordinator commit it. If any member
+can't accept the change, nothing swaps and the old config keeps serving. No
+process ever runs a config the others haven't agreed to.
+
+The *decision* is atomic; the swap after it is per member. Each one applies the
+committed generation locally, normally within a poll of the commit — but a member
+whose broker or store is unhealthy can fail where its peers succeed, and then the
+cohort runs two generations until it recovers or is replaced. That window is
+bounded and alarmed rather than prevented; see
+[Operating a coordinated cohort](../cluster/operating.md#after-the-commit-state-committed-with-applied-false).
+The [confirm window](#variation-confirm-window-auto-revert) below is what removes
+it, by reverting the whole cohort instead of leaving it split.
 
 This is the worked example for the [cluster configuration guide](../cluster/README.md)
 and [ADR 0013](../adr/0013-coordinated-cluster-config-rollout.md). For the

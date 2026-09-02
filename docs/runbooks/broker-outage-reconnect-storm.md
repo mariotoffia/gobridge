@@ -14,7 +14,7 @@ mistaking a broker outage for a bridge fault and restarting healthy tasks.
 - `GET /api/v1/monitor/health` still returns `{"status":"ok"}` — health does not
   reflect broker connectivity by design, so the pod is not restarted for a
   transient reconnect
-  ([deployment-guide.md#health-endpoints](../deployment-guide.md#health-endpoints)).
+  ([health-and-shutdown.md#health-endpoints](../health-and-shutdown.md#health-endpoints)).
 
 ## Diagnosis
 
@@ -27,7 +27,7 @@ mistaking a broker outage for a bridge fault and restarting healthy tasks.
    ```
 
    `/api/v1/monitor/deephealth` (authenticated) reports per-session state
-   ([http-api.md#monitor-api-endpoints](../http-api.md#monitor-api-endpoints)).
+   ([http-api-monitor.md](../http-api-monitor.md)).
 
 2. Read the error code to classify the cause. Every rejected CONNECT is counted
    on `MQTTConnectFailures`, tagged `session_id` and the bounded `code`, and the
@@ -97,7 +97,7 @@ mistaking a broker outage for a bridge fault and restarting healthy tasks.
 - **Outage exceeds your SLO budget** — escalate to the broker/dependency owner.
   A clustered instance whose lease store also went unreachable steps down and
   eventually goes terminal; the process then exits non-zero so the orchestrator
-  restarts it ([deployment-guide.md#exit-codes](../deployment-guide.md#exit-codes)).
+  restarts it ([health-and-shutdown.md#exit-codes](../health-and-shutdown.md#exit-codes)).
 
 ## Related runbooks
 
