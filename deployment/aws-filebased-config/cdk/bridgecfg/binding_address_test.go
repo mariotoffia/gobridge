@@ -3,9 +3,9 @@ package bridgecfg_test
 import (
 	"testing"
 
+	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/bridgecfg"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
-	"github.com/mariotoffia/gobridge/config"
 )
 
 // A binding carries the transport destination one envelope is sent to, and the
