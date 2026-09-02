@@ -3,7 +3,7 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test test-integration test-long-running lint lint-fix check check-all clean tidy sync help
+.PHONY: all build test test-integration test-local-deploy test-long-running lint lint-fix check check-all clean tidy sync help
 .PHONY: install vulncheck update update-major outdated
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
@@ -22,6 +22,10 @@ export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
 # `make docker-build IMAGE=ghcr.io/mariotoffia/gobridge IMAGE_TAG=v1.2.3`).
 IMAGE      ?= ghcr.io/mariotoffia/gobridge
 IMAGE_TAG  ?= dev
+
+# The runtime image tag the local deployment proof deploys. It is built by
+# docker-build and never pushed.
+IMAGE_LOCAL_TAG ?= gobridge-filebased:local
 GIT_SHA    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 RELEASE_LAYER            ?= -1
@@ -77,7 +81,8 @@ docker-build: ## Build the production runtime image (gobridge-filebased, no push
 	docker build \
 		--build-arg VERSION=$(IMAGE_TAG) \
 		--build-arg GIT_SHA=$(GIT_SHA) \
-		-t $(IMAGE):$(IMAGE_TAG) .
+		-t $(IMAGE):$(IMAGE_TAG) \
+		-t $(IMAGE_LOCAL_TAG) .
 
 update-seeder-image: ## Refresh the pinned seeder (aws-cli) digest and commit-ready image.txt
 	$(MAKE) -C deployment/aws-filebased-config update-seeder-image
@@ -199,6 +204,11 @@ test: audit-timings audit-test-timings ## Run unit tests (no Docker, integration
 	@cd deployment/aws-filebased-config/cdk && AWS_EC2_METADATA_DISABLED=true \
 		go test -count=1 -timeout 120s -tags=integration_aws \
 		-run '^TestLookupVpc_ExplicitAttributesProduceCompleteAssembly$$' ./integration
+	# The local deployment backend shares files with the credentialed one, so a
+	# change made while working either path can break the other. Nothing else in
+	# any gate compiles this tag, and an edit that only breaks it would otherwise
+	# reach a branch green.
+	@cd deployment/aws-filebased-config/cdk && go vet -tags=integration_local ./integration
 	@echo "Running unit tests across all modules..."
 	@echo "Report will be saved to: reports/test-unit.log"
 	@bash -c 'set -o pipefail; { rc=0; for modfile in $$(find . -name go.mod -not -path "./.worktrees/*" -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
@@ -250,6 +260,38 @@ test-integration: audit-timings audit-test-timings ## Run all tests including in
 		grep -E "^FAIL\s" reports/test-integration.log || true; \
 	fi; \
 	exit $$rc'
+
+# Local deployment proof: the aws-filebased-config CDK profile deployed against
+# local emulation and driven end to end. No AWS account and no credentials —
+# the emulators, the CDK CLI wrapper and the runtime image are all provisioned
+# here, so a clean checkout with Docker and Node can run it.
+LOCAL_DEPLOY_TOOLS := .tools/local-deploy
+
+test-local-deploy: audit-timings audit-test-timings docker-build ## Deploy the AWS profile against local emulation and drive it (requires Docker + Node)
+	@mkdir -p reports $(LOCAL_DEPLOY_TOOLS)
+	@echo "Installing the local CDK CLI into $(LOCAL_DEPLOY_TOOLS) ..."
+	@cd $(LOCAL_DEPLOY_TOOLS) && npm install --silent --no-fund --no-audit --no-save aws-cdk aws-cdk-local >/dev/null
+	@echo "Running the local deployment proof..."
+	@echo "Report will be saved to: reports/test-local-deploy.log"
+	@bash -c 'set -o pipefail; start=$$(date +%s); \
+		PATH="$(CURDIR)/$(LOCAL_DEPLOY_TOOLS)/node_modules/.bin:$$PATH" \
+		GOBRIDGE_INT_LOCAL=1 GOBRIDGE_LOCAL_IMAGE=$(IMAGE_LOCAL_TAG) \
+		JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 \
+		go -C deployment/aws-filebased-config/cdk test -count=1 -timeout=60m -v \
+			-tags=integration_local ./integration/... 2>&1 | tee reports/test-local-deploy.log; \
+		rc=$$?; \
+		echo ""; \
+		echo "command:  go test -tags=integration_local ./integration/... (deployment/aws-filebased-config/cdk)"; \
+		if [ $$rc -eq 0 ]; then echo "status:   PASS"; else echo "status:   FAIL"; fi; \
+		echo "tests:    $$(grep -cE "^(    )*--- (PASS|FAIL|SKIP):" reports/test-local-deploy.log || true)"; \
+		echo "duration: $$(( $$(date +%s) - start ))s"; \
+		echo "report:   reports/test-local-deploy.log"; \
+		if [ $$rc -ne 0 ]; then \
+			echo ""; \
+			echo "FAILED tests:"; \
+			grep -E "^(    )*--- FAIL:" reports/test-local-deploy.log || true; \
+		fi; \
+		exit $$rc'
 
 test-long-running: audit-timings audit-test-timings ## Run long-running stress tests (requires Docker, -tags=longrunning)
 	@mkdir -p reports
@@ -522,7 +564,8 @@ audit-test-timings: ## Check for new time.Sleep or Gosched spin-polling in test 
 	@VIOLATIONS=$$({ rg --no-heading -n -g '*_test.go' -g '!testutil/wait/*' \
 		'time\.Sleep\(' . ; \
 		rg --no-heading -n -g '!*_test.go' -g '!testutil/wait/*' -g '!testutil/dockerexec/*' \
-		'time\.Sleep\(' testutil ports/storetest tests/testutil ; } \
+		'time\.Sleep\(' testutil ports/storetest tests/testutil \
+		deployment/aws-filebased-config/cdk/integration ; } \
 		| sort \
 		| grep -v -F -f audit/test-timing-allowlist.txt); \
 	if [ -n "$$VIOLATIONS" ]; then \

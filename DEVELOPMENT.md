@@ -143,6 +143,24 @@ The test utilities check these environment variables before starting Docker cont
 
 When an environment variable is set, the test utility uses the existing service instead of starting a container.
 
+### Local deployment proof
+
+`make test-local-deploy` deploys the `aws-filebased-config` CDK profile against
+local emulation and drives the running system. It needs Docker and Node, no AWS
+account and no credentials: it builds the runtime image, installs the CDK CLI
+and its local wrapper under `.tools/`, stands the emulators on one Docker
+network, and reclaims everything — including the containers the emulator
+launched — when it finishes.
+
+| Variable | Effect |
+|----------|--------|
+| `GOBRIDGE_INT_LOCAL=1` | Take the local branch instead of skipping on missing `GOBRIDGE_INT_*`. Set by the Make target. |
+| `GOBRIDGE_INT_KEEP=1` | Leave the stack, the containers and the shared config directory in place for a post-mortem. |
+| `GOBRIDGE_LOCAL_IMAGE` | Runtime image the slots deploy (default `gobridge-filebased:local`, built by `make docker-build`). |
+
+Two local runs cannot share a machine: the emulator starts an image registry of
+its own on a fixed host port.
+
 ## Linting
 
 ```bash

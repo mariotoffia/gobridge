@@ -238,6 +238,21 @@ func WebSocketURL(t testing.TB) string {
 	return wsURL
 }
 
+// ContainerName returns the name of the shared container this process started,
+// so a caller that has to reach the broker from ANOTHER container can attach it
+// to a Docker network by name. It is empty when MQTT_BROKER_URL pointed the
+// tests at an externally managed broker, which the caller must handle: there is
+// no container here to attach.
+//
+// Same start/skip semantics as [BrokerURL].
+func ContainerName(t testing.TB) string {
+	t.Helper()
+	_ = BrokerURL(t)
+	mu.Lock()
+	defer mu.Unlock()
+	return containerName
+}
+
 // Shutdown stops the Mosquitto container if one was started.
 // Safe to call multiple times or when no container was started.
 func Shutdown() {

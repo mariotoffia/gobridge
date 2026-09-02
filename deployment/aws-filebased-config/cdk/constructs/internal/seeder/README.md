@@ -3,9 +3,10 @@
 Init container that materializes (or drift-checks) `bridge.yaml` on the EFS
 RW mount before the main GoBridge service container starts.
 
-The container image is the upstream `public.ecr.aws/aws-cli/aws-cli` pinned
-by [image.txt](image.txt) — that image already ships `aws`, `python3`, and
-`PyYAML`. See [MANIFEST.md](MANIFEST.md) for pin/override semantics.
+The container image is based on the upstream `public.ecr.aws/aws-cli/aws-cli`
+pinned by [image.txt](image.txt), which ships `aws` and `python3` but NOT the
+`PyYAML` the canonicalizer needs — [Dockerfile](Dockerfile) layers that on.
+See [MANIFEST.md](MANIFEST.md) for pin/override semantics.
 
 ## Env contract
 

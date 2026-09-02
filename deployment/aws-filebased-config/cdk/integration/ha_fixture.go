@@ -1,5 +1,5 @@
-//go:build integration_aws
-// +build integration_aws
+//go:build integration_aws || integration_local
+// +build integration_aws integration_local
 
 package integration
 
@@ -47,6 +47,13 @@ type haSandbox struct {
 	AdminParam          string
 	ProbeCIDR           string
 	Samples             int
+
+	// PlaintextBroker opts the session into sending its credentials in the clear.
+	// The credentialed sandbox never sets it — its broker speaks TLS. A local
+	// run's broker is an anonymous container on a private per-run network with
+	// no TLS listener, so the guard has nothing to protect there and would only
+	// stop the cohort from starting.
+	PlaintextBroker bool
 }
 
 type haFixture struct {
@@ -126,17 +133,18 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox, slots *ha.Mem
 
 	mqttConfig := &paho.Config{
 		Session: paho.SessionOptions{
-			BrokerURLs:            []string{env.BrokerURL},
-			ClientID:              env.MQTTClientID,
-			KeepAlive:             30,
-			ConnectTimeout:        5 * time.Second,
-			ReconnectTimeout:      5 * time.Second,
-			ReconcileTimeout:      5 * time.Second,
-			ReconnectDelay:        time.Second,
-			ReconnectMaxDelay:     5 * time.Second,
-			UnmatchedGrace:        time.Second,
-			CleanStart:            false,
-			SessionExpiryInterval: 3600,
+			BrokerURLs:                []string{env.BrokerURL},
+			ClientID:                  env.MQTTClientID,
+			KeepAlive:                 30,
+			ConnectTimeout:            5 * time.Second,
+			ReconnectTimeout:          5 * time.Second,
+			ReconcileTimeout:          5 * time.Second,
+			ReconnectDelay:            time.Second,
+			ReconnectMaxDelay:         5 * time.Second,
+			UnmatchedGrace:            time.Second,
+			CleanStart:                false,
+			SessionExpiryInterval:     3600,
+			AllowPlaintextCredentials: env.PlaintextBroker,
 		},
 		CredentialsURIRef: parameterURI(env.MQTTCredentialParam),
 	}
@@ -148,8 +156,12 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox, slots *ha.Mem
 	leaseStore.SetDecoded(&awsstore.DynamoDBConfig{TableName: awsstore.DefaultDynamoDBLeaseTableName}, nil)
 	outboxStore := &ports.StoreConfig{Type: awsstore.DynamoDBKind}
 	outboxStore.SetDecoded(&awsstore.DynamoDBConfig{
-		TableName:          awsstore.DefaultDynamoDBOutboxTableName,
-		StaleClaimDuration: 20 * time.Second,
+		TableName: awsstore.DefaultDynamoDBOutboxTableName,
+		// Must exceed the route's send timeout, which this fixture leaves at its
+		// default: at or below it another owner reclaims and re-sends a record
+		// whose first delivery has not even timed out yet, and the construct
+		// refuses the stack at synth.
+		StaleClaimDuration: 60 * time.Second,
 		CompactionGrace:    24 * time.Hour,
 	}, nil)
 	historyStore := &ports.StoreConfig{Type: awsstore.DynamoDBKind}
@@ -192,7 +204,14 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox, slots *ha.Mem
 		Routes: []ports.RouteDef{{
 			ID: "mqtt-ha-route", ReceiverID: "mqtt-in", DeliveryMode: "shared_outbox",
 			Bindings: []string{"sqs-out-binding"},
-			Policy:   ports.PolicyDef{AckAfter: "outbox_persist", MaxInFlight: 10, MaxOutboxDepth: 1000},
+			// This profile provisions no DLQ table, so the route must say what it
+			// does with a failure rather than name a store that is not there:
+			// without these three the runtime refuses to start rather than drop
+			// messages silently.
+			Policy: ports.PolicyDef{
+				AckAfter: "outbox_persist", MaxInFlight: 10, MaxOutboxDepth: 1000,
+				OnExpired: "drop", OnPermanentFailure: "drop", AllowRetryDrop: true,
+			},
 			Session: &ports.RouteSessionDef{
 				SessionID: haLeaseID, SenderID: "sqs-out",
 				LeaseTTL: "10s", RenewInterval: "2s", RenewJitter: "500ms",

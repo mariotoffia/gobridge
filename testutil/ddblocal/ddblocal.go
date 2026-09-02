@@ -162,6 +162,21 @@ func Client(t testing.TB) *dynamodb.Client {
 	return newClient(ep)
 }
 
+// ContainerName returns the name of the container this process started, so a
+// caller that has to reach DynamoDB Local from ANOTHER container can attach it
+// to a Docker network by name. It is empty when DYNAMODB_ENDPOINT pointed the
+// tests at an externally managed instance, which the caller must handle: there
+// is no container here to attach.
+//
+// Same start/skip semantics as [Endpoint].
+func ContainerName(t testing.TB) string {
+	t.Helper()
+	_ = Endpoint(t)
+	mu.Lock()
+	defer mu.Unlock()
+	return containerName
+}
+
 // Shutdown stops the DynamoDB Local container if one was started.
 // Safe to call multiple times or when no container was started.
 func Shutdown() {

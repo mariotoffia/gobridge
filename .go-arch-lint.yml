@@ -41,6 +41,10 @@ allow:
 exclude:
   - .claude
   - .git
+  # Third-party CLI tooling `make test-local-deploy` installs for itself. The
+  # CDK npm package ships Go project templates, which are not this module's
+  # source and belong to no component.
+  - .tools
   - .worktrees
   - audit
   - domain/clock/clocktest

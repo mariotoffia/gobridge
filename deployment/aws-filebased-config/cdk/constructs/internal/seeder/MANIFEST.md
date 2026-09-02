@@ -1,11 +1,17 @@
 # Seeder Image Manifest
 
 The seeder init container runs the upstream `public.ecr.aws/aws-cli/aws-cli`
-image directly. That image already ships everything the seeder needs:
+image. That image ships most of what the seeder needs:
 
 - `aws` CLI v2 (S3 download, SigV4 IRSA support).
-- `python3` with `PyYAML` (canonicalizer).
+- `python3`.
 - Coreutils (`mktemp`, `mv`, `sha256sum`).
+
+It does **not** ship `PyYAML`, which `seeder.sh` gates on: without it the
+seeder exits 50 (`canonicalizer_missing`) and the main container never gets a
+config. No published `aws-cli` tag ships it. [`Dockerfile`](Dockerfile) layers
+the package on, and a deployment that uses the base image directly is broken
+until its `SeederImage` names an image that has a canonicalizer.
 
 ## Pin format
 

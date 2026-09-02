@@ -1,5 +1,5 @@
-//go:build integration_aws
-// +build integration_aws
+//go:build integration_aws || integration_local
+// +build integration_aws integration_local
 
 package integration
 
@@ -35,12 +35,39 @@ type SandboxEnv struct {
 	Keep              bool
 }
 
+// localSandboxHook synthesizes a SandboxEnv against local emulation. Only the
+// integration_local build installs it; under integration_aws it stays nil and
+// the branch below cannot be taken, so "real account, real money" keeps meaning
+// exactly that.
+var localSandboxHook func(t *testing.T) SandboxEnv
+
+// cdkBinaryName is the CLI that drives deploy and destroy. The local build
+// swaps it for the emulator-aware wrapper; the outputs-file contract, the
+// argument list and the cleanup are identical either way.
+var cdkBinaryName = "cdk"
+
+// postSynthHook rewrites the synthesized cloud assembly before it is deployed,
+// and postDeployHook runs once the stack is up. Both are local-only: the
+// emulator needs the task definitions adjusted for what it can actually back,
+// and the DynamoDB data plane needs the deployed schema mirrored to it.
+var (
+	postSynthHook  func(t *testing.T, asmDir, stackName string)
+	postDeployHook func(t *testing.T, outputs StackOutputs)
+)
+
 // RequireSandbox reads the GOBRIDGE_INT_* env vars. Ordinary tagged tests
 // retain the existing explicit skip when sandbox configuration is absent. When
 // GOBRIDGE_INT_HA=1 requests credentialed release proof, missing base variables
 // fail instead, so the requested proof cannot silently pass by skipping.
+//
+// GOBRIDGE_INT_LOCAL=1 takes the local branch instead: the sandbox is stood up
+// against local emulation, so nothing is read from the environment and nothing
+// is skipped.
 func RequireSandbox(t *testing.T) SandboxEnv {
 	t.Helper()
+	if localSandboxHook != nil && os.Getenv("GOBRIDGE_INT_LOCAL") == "1" {
+		return localSandboxHook(t)
+	}
 	env, err := sandboxEnvFrom(os.Getenv)
 	if err != nil {
 		if os.Getenv("GOBRIDGE_INT_HA") == "1" {
@@ -171,6 +198,9 @@ func DeployStack(t *testing.T, app awscdk.App, env SandboxEnv, stackName string)
 	// The app's default cloud assembly is at app.Outdir(); copy/move
 	// is unnecessary — we just point cdk at it.
 	asmDir := *app.Outdir()
+	if postSynthHook != nil {
+		postSynthHook(t, asmDir, stackName)
+	}
 
 	outFile := filepath.Join(t.TempDir(), "outputs.json")
 
@@ -182,12 +212,12 @@ func DeployStack(t *testing.T, app awscdk.App, env SandboxEnv, stackName string)
 		"--outputs-file", outFile,
 		"--ci",
 	}
-	t.Logf("cdk %s", strings.Join(args, " "))
-	cmd := exec.Command("cdk", args...)
+	t.Logf("%s %s", cdkBinaryName, strings.Join(args, " "))
+	cmd := exec.Command(cdkBinaryName, args...)
 	cmd.Stdout = testWriter{t}
 	cmd.Stderr = testWriter{t}
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("cdk deploy %s: %v", stackName, err)
+		t.Fatalf("%s deploy %s: %v", cdkBinaryName, stackName, err)
 	}
 
 	t.Cleanup(func() {
@@ -212,6 +242,9 @@ func DeployStack(t *testing.T, app awscdk.App, env SandboxEnv, stackName string)
 			flat[k] = v
 		}
 	}
+	if postDeployHook != nil {
+		postDeployHook(t, flat)
+	}
 	return flat
 }
 
@@ -224,12 +257,12 @@ func DestroyStack(t *testing.T, env SandboxEnv, stackName, asmDir string) {
 		return
 	}
 	args := []string{"destroy", stackName, "--app", asmDir, "--force", "--ci"}
-	t.Logf("cdk %s", strings.Join(args, " "))
-	cmd := exec.Command("cdk", args...)
+	t.Logf("%s %s", cdkBinaryName, strings.Join(args, " "))
+	cmd := exec.Command(cdkBinaryName, args...)
 	cmd.Stdout = testWriter{t}
 	cmd.Stderr = testWriter{t}
 	if err := cmd.Run(); err != nil {
-		t.Logf("cdk destroy %s failed: %v", stackName, err)
+		t.Logf("%s destroy %s failed: %v", cdkBinaryName, stackName, err)
 	}
 }
 

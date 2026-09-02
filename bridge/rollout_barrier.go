@@ -387,10 +387,16 @@ func (b *rolloutBarrier) joinActive(ctx context.Context, digest string) error {
 			"check whether it carries this delta, so the change cannot be safely deferred to it: %w", err)
 	}
 	if r.ConfigDigest() != digest {
+		// Both digests are named because the two cases an operator has to tell
+		// apart look identical without them: someone really is rolling a
+		// different change, or every member computed a different digest for the
+		// SAME change — in which case no member can ever join the proposer and
+		// the rollout deadline-aborts on one ack, however long anyone waits.
 		return fmt.Errorf("bridge: a DIFFERENT cluster config rollout is already in flight "+
-			"(generation=%d state=%q config_version=%d); one rollout at a time is the barrier's "+
-			"invariant, so this delta was NOT proposed. Wait for the in-flight rollout to commit or "+
-			"abort, then retry", r.Generation(), r.State(), r.ConfigVersion())
+			"(generation=%d state=%q config_version=%d in_flight_digest=%s this_delta_digest=%s); one "+
+			"rollout at a time is the barrier's invariant, so this delta was NOT proposed. Wait for the "+
+			"in-flight rollout to commit or abort, then retry",
+			r.Generation(), r.State(), r.ConfigVersion(), r.ConfigDigest(), digest)
 	}
 	if r.State() != persistence.RolloutProposed && r.State() != persistence.RolloutStaging {
 		// Already committed (provisionally or finally), confirmed, reverted, or

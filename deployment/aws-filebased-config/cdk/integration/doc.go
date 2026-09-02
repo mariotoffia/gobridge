@@ -1,5 +1,5 @@
-//go:build integration_aws
-// +build integration_aws
+//go:build integration_aws || integration_local
+// +build integration_aws integration_local
 
 // Package integration hosts the opt-in AWS integration tests for the
 // aws-filebased-config CDK profile.

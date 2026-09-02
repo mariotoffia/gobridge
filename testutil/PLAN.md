@@ -529,3 +529,64 @@ what it deliberately does not copy, and the two caveats T12b must carry.
 CloudFormation still creates the table (so the deploy path is exercised and
 `AWS::DynamoDB::Table` is proven to provision); the mirror copies the resulting
 schema to DynamoDB Local, where the data plane actually runs.
+
+---
+
+## 6. Probe answers
+
+Run against `floci/floci:2.0.1` on Docker 29.5.3, `aws-cdk-local` 4.x driving
+`cdk` 2.x, on 2026-09-02.
+
+### P1 — EFS through ECS: **NO**. The harness-side rewrite is required.
+
+CloudFormation *does* carry `AWS::EFS::FileSystem`, `AccessPoint` and
+`MountTarget` — the stack deploys and the filesystem id comes back in the
+outputs — but the ECS task container gets **no mount at all**. A task whose
+task definition declares `efsVolumeConfiguration` plus a `mountPoints` entry
+starts with an empty `Mounts` array; `test -d /mnt/cfg` inside it exits 1.
+`dockerVolumeConfiguration` is ignored the same way.
+
+What floci *does* honour is `host` + `sourcePath`: it becomes a real Docker
+bind mount, shared between tasks and visible to the test process on the host
+(verified in both directions — a file written on the host is read by the task,
+and a file written by the task is read on the host).
+
+So the mitigation §6 anticipated is mandatory: the local harness rewrites the
+synthesized `EFSVolumeConfiguration` to a `Host.SourcePath` bind mount before
+deploy. It also has to inject the endpoint environment variables there, because
+the task definitions carry a fixed environment map with no operator escape
+hatch — and the emulator endpoints are exactly what must differ locally.
+
+### P2 — CDK deploy: **YES**, and `cdklocal bootstrap` is required.
+
+`cdklocal bootstrap aws://000000000000/us-east-1` succeeds in ~5s, and without
+it a deploy fails on the missing `/cdk-bootstrap/hnb659fds/version` SSM
+parameter. After it, `deploy --app <cloud-assembly> --outputs-file` and
+`destroy --force` behave exactly as the credentialed harness expects, so the
+outputs-file contract needs no local branch. `cdklocal` refuses to start when
+`AWS_ENDPOINT_URL` is set without `AWS_ENDPOINT_URL_S3`, so the harness must
+set both.
+
+### Incidental findings the harness depends on
+
+- ECS **services** launch tasks and replace one that is stopped, and
+  multi-container task definitions run every container. **`dependsOn` is not
+  supported at all**: a definition registered with one reads back without it,
+  and a gated container starts beside the container it is gated on rather than
+  after it. So an init container's gate is not exercised locally — a member can
+  boot before its seeder has written, exit, and be replaced until the document
+  is there.
+- CloudFormation drops a task definition's `Volumes` and `MountPoints`
+  entirely; the same definition registered through the ECS API keeps both, and
+  a `host` volume becomes a real bind mount. That asymmetry is why the harness
+  re-registers after deploy.
+- Task containers join the network named by `FLOCI_SERVICES_DOCKER_NETWORK`,
+  so name resolution between the bridge, the emulators and the broker works.
+- `DescribeTasks` returns **no `attachments`**, so there is no
+  `privateIPv4Address`. A local member is addressed by inspecting the Docker
+  container floci launched for it (`floci-ecs-<task-id>-<container-name>`).
+
+### P3, P4 — not run
+
+P3 gates the Lambda topology, which is not in this chunk. P4 is informative
+only; the DynamoDB Local split stands either way.

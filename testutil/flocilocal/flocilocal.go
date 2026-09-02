@@ -71,6 +71,11 @@ type options struct {
 	cleanOrphans bool
 	memory       string // e.g. "512m", "1g" — passed to --memory
 	cpus         string // e.g. "1.0", "2.0" — passed to --cpus
+
+	// servicesNetwork and servicesAlias opt into the emulator running ECS tasks
+	// and Lambda functions as real containers. See [WithServicesNetwork].
+	servicesNetwork string
+	servicesAlias   string
 }
 
 var (
@@ -92,6 +97,25 @@ type Option func(*options)
 // test suites to prevent resource leaks from crashed runs.
 func WithCleanOrphans(enabled bool) Option {
 	return func(o *options) { o.cleanOrphans = enabled }
+}
+
+// WithServicesNetwork puts the emulator on an existing Docker network under
+// alias, bind-mounts the host Docker socket, and tells the emulator to launch
+// the containers it runs — ECS tasks, Lambda functions — on that same network.
+//
+// This is what a DEPLOYMENT test needs and an API test does not. Without it the
+// socket is deliberately not mounted: handing every test binary the host daemon
+// is a privilege the suite has no use for. With it, a launched task container
+// resolves the emulator (and every other container the caller attached) by name,
+// which is the only way a deployed workload can reach its AWS endpoint.
+//
+// The network must already exist; the caller owns its lifecycle, because the
+// other containers it has to join outlive and precede this one.
+func WithServicesNetwork(network, alias string) Option {
+	return func(o *options) {
+		o.servicesNetwork = network
+		o.servicesAlias = alias
+	}
 }
 
 // WithMemory sets the Docker --memory limit for the container (e.g. "512m", "1g").
@@ -177,6 +201,20 @@ func Endpoint(t testing.TB) string {
 func AWSConfig(t testing.TB) aws.Config {
 	t.Helper()
 	return newAWSConfig(Endpoint(t))
+}
+
+// ContainerName returns the name of the container this process started, so a
+// caller can attach a sidecar to its network namespace or reach it by name. It
+// is empty when FLOCI_ENDPOINT pointed the tests at an externally managed
+// emulator, which the caller must handle: there is no container here.
+//
+// Same start/skip semantics as [Endpoint].
+func ContainerName(t testing.TB) string {
+	t.Helper()
+	_ = Endpoint(t)
+	mu.Lock()
+	defer mu.Unlock()
+	return containerName
 }
 
 // Shutdown stops the Floci container this process started, if any. Safe to
@@ -269,14 +307,22 @@ func startContainer() (string, string, func(), error) {
 	name := containerPrefix + fmt.Sprintf("%d", port)
 	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
 
-	// The Docker socket is deliberately NOT bind-mounted. Floci needs it only
-	// to run ECS tasks and Lambda functions as real containers; nothing here
-	// does, and handing every test binary the host daemon is a privilege the
-	// suite has no use for.
+	// The Docker socket is bind-mounted only for [WithServicesNetwork]. Floci
+	// needs it to run ECS tasks and Lambda functions as real containers; a test
+	// that only calls AWS APIs does not, and handing every test binary the host
+	// daemon is a privilege the suite has no use for.
 	args := []string{
 		"run", "-d",
 		"--name", name,
 		"-p", fmt.Sprintf("127.0.0.1:%d:%d", port, gatewayPort),
+	}
+	if opts.servicesNetwork != "" {
+		args = append(args,
+			"--network", opts.servicesNetwork,
+			"--network-alias", opts.servicesAlias,
+			"-v", "/var/run/docker.sock:/var/run/docker.sock",
+			"-e", "FLOCI_SERVICES_DOCKER_NETWORK="+opts.servicesNetwork,
+		)
 	}
 	if opts.memory != "" {
 		args = append(args, "--memory", opts.memory)

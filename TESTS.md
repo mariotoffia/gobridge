@@ -363,6 +363,34 @@ brokers → assertions) is end-to-end, not adapter-level. Lives in
 
 ---
 
+## 5.6 Deployment tests
+
+A deployment test deploys the shipped CDK profile and drives the running system,
+so it proves what synth assertions assume. They live in
+`deployment/aws-filebased-config/cdk/integration/` and are the one place build
+tags are correct: they gate not "is Docker here" but cost.
+
+| Tag | Backend | Gate |
+|---|---|---|
+| `integration_aws` | a real, credentialed AWS sandbox | `GOBRIDGE_INT_*`. Real account, real money. |
+| `integration_local` | the same stack via `cdklocal`, on emulators | `GOBRIDGE_INT_LOCAL=1`, Docker and Node. No account, no credentials. |
+
+One harness serves both: the sandbox, the deploy/destroy calls and the
+outputs-file contract are shared, and the local backend is one branch in each.
+What a deployed system must do is asserted once against a probe the two backends
+supply differently, so the proofs cannot drift apart. `GOBRIDGE_INT_KEEP=1`
+keeps the stack and everything it runs on.
+
+**What a local run proves, and what it does not.** It proves the runtime
+contract on a deployed cohort, and — because the emulator runs each task
+definition as a real container — that the synthesized shape wires identity
+correctly. It does NOT prove AWS ECS behaves as declared: the emulator drops
+task-definition volumes, serves no task metadata, cannot carry EFS, and has no
+container-dependency model, so the harness restores the first three and says so
+where it does. The fourth cannot be, so a local member may start before its
+init container has run — the cohort still settles, but no claim may rest on
+start ordering. Any published claim must name which half it rests on.
+
 ## 6. Long-running tests
 
 Catch what unit/integration cannot: goroutine leaks, soak behaviour,
@@ -486,6 +514,11 @@ make test
 # Uncached unit + integration. Requires Docker. Mandatory in CI and used by
 # `make check-all`.
 make test-integration
+
+# The AWS deployment profile, deployed against local emulation and driven
+# end to end (build tag `integration_local`, Docker + Node required, no AWS
+# account and no credentials). Provisions its own CDK CLI under `.tools/`.
+make test-local-deploy
 
 # Long-running suite (build tag `longrunning`, Docker required, hours).
 make test-long-running
