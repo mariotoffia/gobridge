@@ -3,7 +3,7 @@
 
 **Goal:** Close every stable finding in the canonical `PROD_READY_ISSUES.md` ledger with tested behavior, truthful contracts, safe migrations, and release evidence.
 
-**Plan status:** Chunks 1–16, 24 and 25 landed and are checked off below with their residuals; chunks 1–4 are the commits `cf86968f`, `84939bf5`, `f0c9685c`, `b781f741`. Chunk 17 is the next one open. The ledger re-verification at HEAD `b781f741` added 22 findings (HIGH-14…20, MEDIUM-18…25, LOW-20…26), withdrew LOW-7 and LOW-19, and downgraded MEDIUM-12 and BLOCKER-2; the coverage matrix and two new chunks (24, 25) absorb them. Chunks 24 and 25 are placed at the end of Phase 1 by dependency but carry P0 defects — schedule them immediately after Chunk 5.
+**Plan status:** Chunks 1–16, 24 and 25 landed and are checked off below with their residuals; chunks 1–4 are the commits `cf86968f`, `84939bf5`, `f0c9685c`, `b781f741`. Chunk 17 is landed and closed; its deployment residual moved to the new Chunk 26 (an executed multi-member rollout proof on a local deployment, now specified against local AWS emulation in `testutil/SPEC.md`), which is scheduled independently. Chunk 27 follows it with the emulator migration and the rest of the deployment e2e matrix. Chunk 18 is the next one open. The ledger re-verification at HEAD `b781f741` added 22 findings (HIGH-14…20, MEDIUM-18…25, LOW-20…26), withdrew LOW-7 and LOW-19, and downgraded MEDIUM-12 and BLOCKER-2; the coverage matrix and two new chunks (24, 25) absorb them. Chunks 24 and 25 are placed at the end of Phase 1 by dependency but carry P0 defects — schedule them immediately after Chunk 5.
 
 **Architecture:** Keep domain and port contracts inward-facing. Change shared contracts and persistence formats before adapters, then wire composition roots, deployment, observability, and documentation. Coordinated rollout stays disabled in the shipped autoscaled high-availability facade until the static-member implementation and its deployment proof pass.
 
@@ -117,7 +117,7 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 | 14 | done | HIGH-2, HIGH-7, LOW-2 |
 | 15 | done | BLOCKER-2, MEDIUM-2, MEDIUM-12 (downgraded; hardening) |
 | 16 | done | HIGH-5, MEDIUM-5, LOW-8, LOW-9, DOC-5 |
-| 17 | waiting | BLOCKER-1, DOC-12 |
+| 17 | done | BLOCKER-1 (deployment residual open, executed in 26), DOC-12 |
 | 18 | waiting | HIGH-3, HIGH-4, TEST-3, DOC-7, DOC-14 |
 | 19 | waiting | DOC-3, DOC-6, DOC-13 |
 | 20 | waiting | LOW-18, LOW-19 (withdrawn), DOC-1, DOC-4, DOC-10, NEW-MEDIUM-16 |
@@ -126,6 +126,8 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 | 23 | waiting | TEST-1, TEST-2, TEST-4, TEST-5, TEST-6, TEST-7, TEST-8, TEST-9, TEST-10, TEST-11, TEST-12 |
 | 24 | done | HIGH-16, MEDIUM-21, LOW-22, LOW-23 |
 | 25 | done | HIGH-17, MEDIUM-24, LOW-21 |
+| 26 | waiting | none — closes the BLOCKER-1 deployment residual whose primary mapping stays with Chunk 17, so the mapping count is unchanged |
+| 27 | waiting | none — test infrastructure and coverage breadth; adds no issue mapping |
 
 ## Phase 0: Stop unsafe claims and freeze accepted contracts
 
@@ -470,14 +472,69 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 - **Dependencies:** Chunks 1 and 14–16.
 - **Files/packages:** HA CDK `data.go`, `ha.go`, bootstrap model, internal grants/registry, AWS deployment and cluster references.
 - **Tests:** HA data/synth tests, grant checker tests, bootstrap parser tests, AWS integration fixture.
-- [ ] Add failing synth tests for two stable member slots, unique restart-stable `member_id`, rollout table, exact IAM, dependencies, and JSON field examples.
-- [ ] Run `go -C deployment/aws-filebased-config/cdk test -count=1 ./constructs/gobridgedynamodbha ./constructs/internal/grants ./registry` and `go -C deployment/aws-filebased-config/lib test -race -count=1 ./bootstrap -run 'Test.*Bootstrap'`; expect missing resources and fields.
-- [ ] Provision one stable service/task slot per roster member, create the retained rollout table, grant required data-plane calls, inject slot identity, and seed baseline before task readiness.
-- [ ] Re-run the exact failing commands above; expect pass.
-- [ ] Run `make -C deployment/aws-filebased-config integration-aws` for propose through restart/revert on two deployed members.
-- [ ] Publish generated/tested cluster and bootstrap field tables; keep the interchangeable-worker facade rejection explicit.
-- [ ] Accept when the static-slot profile completes rollout and rollback after restart, while autoscaled workers still cannot claim coordinated rollout.
+- [x] Add failing synth tests for two stable member slots, unique restart-stable `member_id`, rollout table, exact IAM, dependencies, and JSON field examples.
+- [x] Run `go -C deployment/aws-filebased-config/cdk test -count=1 ./constructs/gobridgedynamodbha ./constructs/internal/grants ./registry` and `go -C deployment/aws-filebased-config/lib test -race -count=1 ./bootstrap -run 'Test.*Bootstrap'`; expect missing resources and fields.
+- [x] Provision one stable service/task slot per roster member, create the retained rollout table, grant required data-plane calls, inject slot identity, and seed baseline before task readiness.
+- [x] Re-run the exact failing commands above; expect pass.
+- [x] Write the deployed propose-through-restart/revert proof for two members and keep it runnable: `make -C deployment/aws-filebased-config integration-aws` with `GOBRIDGE_INT_HA_ROLLOUT=1` runs `TestIntegration_HA_StaticSlotCoordinatedRolloutSurvivesRestart`. **Executing it needs a credentialed AWS sandbox and is Chunk 26's job, not this one's.**
+- [x] Publish generated/tested cluster and bootstrap field tables; keep the interchangeable-worker facade rejection explicit.
+- [x] Accept when the static-slot profile synthesizes a cohort that can complete rollout and rollback after restart, while autoscaled workers still cannot claim coordinated rollout. The executed multi-member run is Chunk 26.
+- **Landed:** `MemberSlots` (`constructs/gobridgedynamodbha/static_slots.go`) turns the DynamoDB HA facade into a static member-slot profile: one single-task ECS service per roster member, each with its OWN task definition carrying its own restart-stable `member_id`. That is the whole point — an autoscaled service hands every replacement task a fresh ECS task id, so a member could never re-enter the roster it left, which is why the facade rejected a coordinated cohort at synth. The rejection is UNCHANGED and still fires whenever `MemberSlots` is nil; `MemberSlots` is the deployment ATTESTING its slots, cross-checked as a set against `bridge.cluster.members`, so neither the config nor the infrastructure can drift into the other. The control task is a member too (it runs the same clustered runtime from the same document, so it joins the same cohort). The construct also creates the retained, deletion-protected, TTL-free rollout table (`<bridge.id>-rollouts`, the same source as the three store names), grants every task role exactly the two calls the rollout store makes (`GetItem`, `PutItem` — no `DescribeTable`: unlike every other store adapter this one has no schema preflight, and its only `DescribeTable` caller is the waiter after a `CreateTable` that is deliberately not granted), and stamps the rollout table name and each slot identity into that slot's bootstrap. Baseline seeding needed no runtime change: Chunk 15 already seeds generation zero before any listener, and the digest was already stamped — this is the deployment that makes it reachable.
+- **Fleet surfaces followed the shape, because a single-valued accessor is how N-1 slots go dark silently.** The ALB attachment registers every slot on the monitor target group and every worker slot on the transport group (previously `resolved.worker`, one service); the alarm construct installs one capacity alarm PER slot — which also keeps a metric-math alarm inside CloudWatch's input budget forever — and sums every slot in the fleet warm-standby alarm; and the rollout table joins the other three deployment-owned tables in the throttle/system-error alarms. The roster is bounded at eight worker slots for the one alarm that still has to sum.
+- **Adversarial review found nine defects in the first implementation, three of them fatal to the deployed proof and one fatal to the existing one.** The load-bearing ones: the deployed proof read `rollout` at the top of `/deephealth` when it is nested under `config_watch`, so it would have found no members at all and failed after burning its full budget; it treated `baseline_generation == 0` as "no baseline" when `SeedBaseline` writes the artifact AT generation zero, so it would have failed a correct cohort (the digest is the discriminator); it discarded the `503` that `/deephealth` returns, with a full body, for any member that is not traffic-ready — which a member mid-swap is; the two new `CfnOutput`s resolve to empty strings on the autoscaled path, and CloudFormation rejects an empty Output value, which would have broken the pre-existing failover proof; and the worker slots depended only on the control slot, so CloudFormation would have replaced every slot in PARALLEL — each at `MinimumHealthyPercent=0` — taking the whole worker cohort down at once, exactly the gap the profile exists to avoid. The slots are now chained. Three synth tests were vacuous (the IAM one asserted actions the lease grant already puts on every role; the ALB one never built a transport target group because the harness config declares no HTTP receiver; the tag one was a substring over the template) and are now mutation-checked.
+- **Scope handed to Chunk 26:** the deployment half of BLOCKER-1 — an EXECUTED multi-member propose/restart/rollback run. Everything this chunk provisions is pinned at synth (and the runtime half was proved over DynamoDB in Chunks 14–16), but no cohort has actually been stood up and rolled. That run is a separate piece of work with its own harness, so it is its own chunk rather than an open box on this one.
+- **Deviations from the work item, deliberate:** (1) `MemberSlots` is an explicit prop rather than being inferred from `bridge.cluster.rollout: coordinated`, because inferring it would mean the synth-time rejection stops firing — the one thing the Goal forbids weakening — and would let a config edit silently change what infrastructure exists. (2) `EnsureTable` still runs and is still denied on a deployed member: the bootstrap already logs that a pre-provisioned table makes this expected, and the alternative (granting `CreateTable`, or keying the skip off the table name) either widens the grant or breaks the DynamoDB-Local integration test that relies on the name to auto-create.
 - **Suggested commit title:** `add static-slot coordinated rollout profile`
+
+### Chunk 26: Local AWS deployment harness and executed static-slot rollout proof
+
+- **Issues:** BLOCKER-1 (deployment residual only; its primary mapping stays with Chunk 17, so this chunk adds no new mapping).
+- **Goal:** Replace "tooling under investigation" with a real one — deploy the `aws-filebased-config` CDK profile against local emulation with no AWS account — then stand up a multi-member static-slot cohort on it and drive it through propose, commit, per-member convergence, member restart, and rollback.
+- **Dependencies:** Chunk 17.
+- **Design:** `testutil/SPEC.md`. Its §7 probe P1 (EFS through ECS) must be answered before this chunk starts; P2 (cdklocal) before its deploy step.
+- **Files/packages:** `deployment/aws-filebased-config/cdk/integration/` (`harness.go`, new `ddbmirror_local.go`, new local fixtures under build tag `integration_local`), `deployment/aws-filebased-config/Makefile`, `testutil/ddblocal`, `testutil/mqttlocal`, `testutil/dockerexec`.
+- **Tests:** one deployed multi-member cohort test per proved behaviour, under `integration_local`.
+- **Emulation split — do not blur it.** Every AWS API except DynamoDB is served by floci; DynamoDB is served by DynamoDB Local via `AWS_ENDPOINT_URL_DYNAMODB`, because floci does not document `ConditionExpression` semantics and this chunk's split-brain and lease-handoff assertions are compare-and-swap. An emulator that silently accepts a failing condition would make those tests pass while the invariant is broken — a false green, which is worse than a red.
+- **What a local run can and cannot prove — do not blur these either.** It proves the RUNTIME contract: distinct restart-stable `member_id`s reach the barrier, a live-safe delta is proposed once and committed once, every member applies it, a member killed mid-life rejoins under the same id and boots the COMMITTED generation rather than whatever its config source holds, and a rollback converges the cohort. Because floci runs ECS task definitions as real Docker containers, it also proves the synthesized shape WIRES identity correctly — one single-task service per slot, the id baked into that slot's task definition. It does not prove that AWS ECS hands a replacement task that identity; that still rests on Chunk 17's synth pins and the credentialed test Chunk 17 left runnable. Say which of the two any published claim rests on.
+- [ ] Add a failing deployed multi-member cohort test under `integration_local`: N slots, distinct `member_id`s, one rollout store, asserting one commit, all-member apply, and a single agreed generation.
+- [ ] Run `go -C deployment/aws-filebased-config/cdk test -tags=integration_local -count=1 ./integration/ -run 'TestLocal_StaticSlotCohort'`; expect no such harness.
+- [ ] Add the local branch to `RequireSandbox`: `GOBRIDGE_INT_LOCAL=1` synthesizes a `SandboxEnv` against floci instead of skipping on missing `GOBRIDGE_INT_*`. One branch in the existing function — no fork of the harness.
+- [ ] Point `DeployStack`/`DestroyStack` at `cdklocal` under the local branch, keeping the outputs-file contract identical.
+- [ ] Add `MirrorTable`: after deploy, copy each table's schema (keys, attributes, GSIs, LSIs, stream spec, TTL) from floci to DynamoDB Local, so CloudFormation still provisions the table while the data plane runs where conditional writes are real. Re-running against a warm DynamoDB Local must be a no-op.
+- [ ] Stand the containers on one network so the ECS task container resolves `floci`, `ddblocal` and `mosquitto` by name. Pick ONE mechanism — testcontainers with a dedicated network, or one compose file — not both. Leave `testutil/*` on per-binary containers and `dockerexec.FreePort()`.
+- [ ] If P1 showed floci does not carry a CloudFormation-declared EFS filesystem through to a shared Docker volume, add a harness-side CDK Aspect rewriting the synthesized `efsVolumeConfiguration`, beside the existing `ApplyDestroyAspect`. Never a test-mode branch inside `GoBridgeEfsConfig`.
+- [ ] Extend the cohort test to restart: stop one member, restart it under the SAME `member_id`, assert it boots the committed generation and rejoins without a new seat appearing.
+- [ ] Extend it to rollback: commit a second delta returning to the first config and require every member, the restarted one included, to converge.
+- [ ] Prove the confirm window on the same cohort: a member that cannot converge reverts the WHOLE cohort to the last confirmed generation rather than leaving it split.
+- [ ] Add `make test-local-deploy` following the `test-integration` pattern — full log to `reports/`, print command/status/count/duration.
+- [ ] Re-run the exact failing command above; expect pass.
+- [ ] Run `make test-integration`, then `make lint` and `make test`.
+- [ ] Record in `PROD_READY_ISSUES.md` which half of BLOCKER-1 this closed and which still rests on synth plus the unexecuted credentialed run.
+- [ ] Accept when a deployed multi-member cohort has completed propose, commit, convergence, restart and rollback in an executed local run, `make test-local-deploy` is green from a clean checkout with no AWS credentials, and no published text claims deployed evidence that does not exist.
+- **Suggested commit title:** `prove static-slot rollout on a local deployment`
+
+### Chunk 27: Local emulation migration and deployment e2e matrix
+
+- **Issues:** none new — this is test infrastructure and coverage breadth. It removes the LocalStack Community dependency and closes the coverage the ALB and alarm emulation gaps would otherwise leave open.
+- **Goal:** Retire the per-service emulator wrappers onto the single emulator Chunk 26 introduced, then extend the local deployment suite past the rollout cohort to the rest of the topologies.
+- **Dependencies:** Chunk 26. Its two halves are independent of each other and may run in parallel.
+- **Design:** `testutil/SPEC.md` §4 for the migration, §8 for the matrix, §6 for what each gap costs. Probe P3 gates the Lambda topology only.
+- **Files/packages:** `testutil/` (deleting `s3local`, `localstack`, `sqslocal`), the 21 test files importing them, `deployment/aws-filebased-config/cdk/integration/`, `DEVELOPMENT.md`, `TESTS.md`.
+- **Tests:** the existing 21 migrated files must stay green unchanged in behaviour; new deployment tests per topology.
+- [ ] Delete `testutil/s3local` — zero importers — and drop the `S3_ENDPOINT` row from `DEVELOPMENT.md`.
+- [ ] Migrate the 3 `testutil/localstack` importers to `testcontainers-floci-go` in `TestMain`, then delete the package and its `LOCALSTACK_ENDPOINT` row. Audit the LocalStack mentions across `docs/` — several are about AWS deployment, not the test helper.
+- [ ] Migrate the 18 `testutil/sqslocal` importers the same way, moving `UniqueQueue` into the calling packages, then delete the package. Do not resurrect a wrapper to hold the helper.
+- [ ] Verify no migrated assertion depended on SecureString encryption at rest — floci stores those in clear, so such a test would pass for the wrong reason.
+- [ ] Decide keep-or-delete for `testutil/testcontent`: no Go importer, one mention in `docs/timing-audit.md`. Do not delete blind.
+- [ ] Add the data-plane topologies and their tests: single SQS↔SQS, MQTT↔SQS, and the control/worker cluster whose shared config file proves EFS sharing.
+- [ ] Add the deployment-shape tests: outputs well-formed, idempotent redeploy without service replacement, destroy leaving nothing, and least-privilege — the task role's own credentials pass a granted call and are denied a non-granted one, which floci's SigV4 and IAM make testable off-account for the first time.
+- [ ] Add the resilience tests the cohort chunk did not cover: task restart losing no in-flight message, worker scale 1→3→1 without duplicate delivery, and DLQ redrive.
+- [ ] Cover the two emulation gaps rather than leaving them silent: assert the synthesized target-group health-check path is a path the container answers 200 on, and replay the alarm's own math expression through `GetMetricData` against real metric volume to assert it crosses the configured threshold. Alarm consequences are driven with `SetAlarmState`; ALB routing and CloudWatch's evaluation state machine stay AWS's, unclaimed.
+- [ ] Add the Lambda producer/consumer loop only if probe P3 passed; otherwise record it as out of local scope and leave it on `integration_aws`.
+- [ ] Run `make test-integration`, `make test-local-deploy`, then `make lint` and `make test`.
+- [ ] Update `TESTS.md` with the `integration_local` tag and the emulator split, and add a `docs/` page for running the deployment suite locally.
+- [ ] Accept when no `testutil` package wraps an AWS emulator, the 21 migrated files assert exactly what they asserted before, every topology in the matrix either has a test or a recorded reason it cannot have one locally, and both `make test-integration` and `make test-local-deploy` are green without AWS credentials.
+- **Suggested commit title:** `migrate local AWS emulation and extend deployment e2e`
 
 ### Chunk 18: Failure-mode-specific failover admission and proof
 

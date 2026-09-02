@@ -101,7 +101,11 @@ func requireHAFailoverSandbox(t *testing.T) haSandbox {
 	}
 }
 
-func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox) haFixture {
+// newHAFixture builds the credentialed HA stack. A non-nil slots opts the facade
+// into the static member-slot profile: the roster is written into the shared
+// config and the deployment provisions one single-task service per member, which
+// is the only shape that can host the coordinated rollout barrier.
+func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox, slots *ha.MemberSlots) haFixture {
 	t.Helper()
 	vpc := lookupVpc(stack, env.SandboxEnv)
 	outbound := awssqs.NewQueue(stack, jsii.String("HAOutbound"), &awssqs.QueueProps{
@@ -163,11 +167,23 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox) haFixture {
 	binding := ports.BindingDef{ID: "sqs-out-binding", SenderID: "sqs-out", Address: "ha-outbound"}
 	binding.SetDecoded(&sqsConfig, nil)
 
+	bridgeSettings := ports.BridgeSettings{
+		ID: "gobridge-ha-integration", DeploymentMode: "clustered",
+		ShutdownTimeout: "45s", PerRecordDrainTimeout: "2s", MaxDrainTimeout: "20s",
+	}
+	if slots != nil {
+		// The roster must name exactly the slots the deployment provisions; the
+		// construct rejects the stack at synth otherwise. The confirm window makes
+		// every commit provisional, so a member that cannot converge reverts the
+		// whole cohort rather than leaving it split.
+		bridgeSettings.Cluster = &ports.ClusterConfig{
+			Rollout:       "coordinated",
+			Members:       haMemberIDs(slots),
+			ConfirmWindow: "90s",
+		}
+	}
 	cfg := &ports.BridgeConfig{
-		Bridge: ports.BridgeSettings{
-			ID: "gobridge-ha-integration", DeploymentMode: "clustered",
-			ShutdownTimeout: "45s", PerRecordDrainTimeout: "2s", MaxDrainTimeout: "20s",
-		},
+		Bridge:    bridgeSettings,
 		Stores:    ports.StoresConfig{Lease: leaseStore, Outbox: outboxStore, ManagedSubscriptions: historyStore},
 		Sessions:  []ports.SessionDef{session},
 		Receivers: []ports.ReceiverDef{receiver},
@@ -204,6 +220,7 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox) haFixture {
 		ManagedSubscriptionBaselines: map[string][]string{haLeaseID: {}},
 		QueueRegistry:                queues,
 		SsmParamRegistry:             params,
+		MemberSlots:                  slots,
 	})
 
 	// Credentialed proof runs from an operator-controlled address with VPC
@@ -211,6 +228,12 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox) haFixture {
 	probePeer := awsec2.Peer_Ipv4(jsii.String(env.ProbeCIDR))
 	bridge.ControlSecurityGroup().AddIngressRule(probePeer, awsec2.Port_Tcp(jsii.Number(8081)), jsii.String("credentialed HA exact-task monitor probe"), jsii.Bool(false))
 	bridge.WorkerSecurityGroup().AddIngressRule(probePeer, awsec2.Port_Tcp(jsii.Number(8081)), jsii.String("credentialed HA exact-task monitor probe"), jsii.Bool(false))
+	if slots != nil {
+		// The rollout proof drives a config transaction against the control task's
+		// admin listener, and reads each slot's own /deephealth. Fixture-only
+		// ingress from the operator CIDR; the production facade is unchanged.
+		bridge.ControlSecurityGroup().AddIngressRule(probePeer, awsec2.Port_Tcp(jsii.Number(8080)), jsii.String("credentialed static-slot rollout admin probe"), jsii.Bool(false))
+	}
 
 	alb := elbv2.NewApplicationLoadBalancer(stack, jsii.String("HAALB"), &elbv2.ApplicationLoadBalancerProps{
 		Vpc: vpc, InternetFacing: jsii.Bool(true),
@@ -232,10 +255,18 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox) haFixture {
 		"ClusterArn":                    bridge.Cluster().ClusterArn(),
 		"ControlServiceName":            bridge.ControlService().ServiceName(),
 		"WorkerServiceName":             bridge.WorkerService().ServiceName(),
+		"WorkerServiceNames":            jsii.String(strings.Join(workerServiceNames(bridge), ",")),
 		"LeaseTableName":                bridge.Data().LeaseTableName(),
 		"LeaseID":                       jsii.String(haLeaseID),
 		"MetricsNamespace":              jsii.String(bridge.MetricsNamespace()),
 		"FailoverObjectiveMilliseconds": jsii.String(strconv.FormatInt(bridge.FailoverObjective().Milliseconds(), 10)),
+	}
+	if slots != nil {
+		// Only the static member-slot profile has a roster and a rollout table.
+		// CloudFormation rejects an Output whose Value is an empty string, so these
+		// must not be emitted on the autoscaled path at all.
+		outputs["MemberSlotIDs"] = jsii.String(strings.Join(bridge.MemberSlotIDs(), ","))
+		outputs["RolloutTableName"] = jsii.String(bridge.RolloutTableName())
 	}
 	for name, value := range outputs {
 		out := awscdk.NewCfnOutput(stack, jsii.String(name), &awscdk.CfnOutputProps{Value: value})
@@ -259,4 +290,23 @@ func missingHAOutput(outputs StackOutputs, names ...string) error {
 		return fmt.Errorf("credentialed HA stack outputs missing: %s", strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+// MemberIDs is the full roster the deployment provisions: the control slot and
+// every worker slot. It is what bridge.cluster.members must contain.
+func haMemberIDs(slots *ha.MemberSlots) []string {
+	if slots == nil {
+		return nil
+	}
+	return append([]string{slots.ControlMemberID}, slots.WorkerMemberIDs...)
+}
+
+// workerServiceNames returns the ECS service name of every worker-side service,
+// so the rollout proof can address one slot at a time.
+func workerServiceNames(bridge *ha.GoBridgeDynamoDBHA) []string {
+	names := make([]string, 0)
+	for _, svc := range bridge.WorkerServices() {
+		names = append(names, *svc.ServiceName())
+	}
+	return names
 }

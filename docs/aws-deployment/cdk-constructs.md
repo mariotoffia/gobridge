@@ -92,6 +92,22 @@ deployment-profile fingerprint are derived from the admitted bridge config and
 injected into bootstrap by the facade, not supplied independently by callers, as
 is the baseline config digest of the seeded document.
 
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `WorkerDesiredCount` | `*float64` | `2` | Interchangeable worker task count on the autoscaled shape. Rejected together with `MemberSlots`. |
+| `MemberSlots` | `*MemberSlots` | `nil` | Opts into the static member-slot shape: `{ControlMemberID, WorkerMemberIDs}`. One single-task ECS service per id, each with its own task definition and `member_id`. Requires two to eight worker ids, ids matching `[A-Za-z0-9][A-Za-z0-9_-]*` (≤ 64 characters), `bridge.cluster.rollout: coordinated`, and a `bridge.cluster.members` roster naming exactly these ids. The upper bound is the CloudWatch metric-math input budget of the fleet warm-standby alarm. |
+
+Only the static member-slot shape can host the coordinated cluster rollout
+barrier; the autoscaled shape rejects `rollout: coordinated` and a non-empty
+`bridge.cluster.members` at synth time. See
+[Two worker shapes](topologies.md#two-worker-shapes).
+
+With `MemberSlots` the facade also provisions the retained rollout coordination
+table, grants each task role `dynamodb:GetItem` and `dynamodb:PutItem` on it, and
+exposes `MemberSlotIDs()`,
+`RolloutTableName()`, `WorkerServices()` and `WorkerTaskDefinitions()` alongside
+the single-valued accessors.
+
 ### Worker seeder: AdoptValid vs AbortDeploy
 
 Workers mount EFS read-only and cannot write config, so their default seeder

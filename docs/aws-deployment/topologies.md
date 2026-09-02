@@ -22,23 +22,80 @@ The CDK library deliberately exposes two different multi-task profiles:
 config-control task and at least two worker tasks across a subnet selection that
 spans at least two Availability Zones. All three tasks participate in DynamoDB
 lease acquisition, so the normal steady state has one active holder and at
-least two warm candidates. Both services use a 0/100 non-overlapping replacement
-with Availability Zone rebalancing disabled, and the worker service is deployed
+least two warm candidates. Every service uses a 0/100 non-overlapping replacement
+with Availability Zone rebalancing disabled, and the worker services are deployed
 after the control service so the config seeder precedes the workers that read its
-output. Every deploy therefore replaces the whole cohort: expect an ingress gap
-and a breaching warm-standby alarm for its duration.
+output.
+
+`0/100` caps total tasks at the desired count, so a second cohort never runs
+beside the first. It constrains counts, not ORDER: on the autoscaled shape, at a
+desired count of two or more, the ECS scheduler may still replace in batches, so
+a revision that changes durable session identity or store targets still needs the
+scale-to-zero procedure in
+[the cluster config rollout runbook](../runbooks/cluster-config-rollout.md).
+Expect an ingress gap and a breaching warm-standby alarm for the duration of an
+autoscaled deploy. The static member-slot shape does not have that gap: each slot
+is a single-task service and the slots are chained, so a deploy replaces one slot
+at a time and the rest of the cohort keeps serving — at the price of a deploy
+whose duration grows with the roster.
+
+### Two worker shapes
+
+`GoBridgeDynamoDBHA` deploys its workers in one of two shapes, and the choice
+decides whether the cohort can take a **live** config change:
+
+| Shape | Selected by | Worker tasks | Live coordinated rollout |
+|---|---|---|---|
+| Autoscaled workers (default) | `MemberSlots` unset | One ECS service, `WorkerDesiredCount` interchangeable tasks | **No.** `bridge.cluster.rollout: coordinated` and a non-empty `bridge.cluster.members` are both **rejected at synth**. |
+| Static member slots | `MemberSlots` set | One single-task ECS service per roster member, each with its own task definition and `member_id` | **Yes.** The barrier runs; see [the cluster guide](../cluster/README.md). |
+
+The rejection is not a policy preference, it is the identity model. The rollout
+barrier freezes `bridge.cluster.members` as its membership epoch and counts
+acknowledgements against it, so a member must announce the same `member_id` after
+a restart. An autoscaled task gets a fresh ECS task id on every placement, so it
+can never re-enter the roster it left; a cohort of such tasks could never reach a
+quorum, and a half-satisfied cohort would commit generations no member applies.
+Rejecting the shape at synth beats deploying a stack that can only fail at boot.
+
+With `MemberSlots` the construct additionally creates the retained, deletion-
+protected rollout coordination table (named `<bridge.id>-rollouts` from the shared
+config document, the same source as the three store table names), grants every task
+role exactly `dynamodb:GetItem` and `dynamodb:PutItem` on it — the only two calls
+the rollout store makes — stamps each slot's `member_id` and the generation-zero
+baseline digest into that slot's bootstrap document, and orders the control slot
+first and then each worker slot after the previous one, so a deploy replaces at
+most one slot at a time. `WorkerDesiredCount` is rejected alongside `MemberSlots`: the roster is the
+slot count, and scaling a slot past one task would run two processes under one
+`member_id`.
+
+A config change that the barrier classifies as replacement-required — and every
+change to the deployment profile itself, including the image and the roster — is
+still a CloudFormation deploy in both shapes.
+
+A deploy that changes a **fingerprinted** field needs the shared config document
+on EFS to change with it, and the default control seeder mode (`SeedOnce`) will
+not do that: it keeps whatever document is already there and logs
+`hash_mismatch_kept_existing`. Every member then refuses to boot, because the
+document's deployment-profile fingerprint is not the one stamped into its task
+definition. Set `ControlSeederMode: "Overwrite"` for that deploy, or run the
+scale-to-zero procedure in
+[the cluster config rollout runbook](../runbooks/cluster-config-rollout.md).
+`SeedOnce` is the right default the rest of the time: it is what lets a live
+coordinated rollout (or an Admin-API commit) survive a control-task restart
+instead of being reverted to the last deployed document.
 
 ## Coordinated HA data plane
 
-`GoBridgeDynamoDBHA` creates exactly three encrypted, point-in-time-recoverable,
-delete-protected, retained `PAY_PER_REQUEST` tables. The key/index shapes are
-the adapter contracts, not deployment inventions:
+`GoBridgeDynamoDBHA` creates three encrypted, point-in-time-recoverable,
+delete-protected, retained `PAY_PER_REQUEST` tables — four with `MemberSlots`.
+The key/index shapes are the adapter contracts, not deployment inventions:
 
 | Table | Schema | TTL invariant |
 |---|---|---|
 | Lease (`gobridge-leases` default) | `PK` string hash key; no sort key or indexes | **Disabled.** The row carries the permanent monotonic fencing version. Deleting it can reset fencing and permit split brain. |
 | Shared outbox (`gobridge-outbox` default) | `PK`/`SK`; `ExpiryIndex` KEYS_ONLY, `RecordIDIndex` KEYS_ONLY, `ClaimIndex` ALL | Enabled on `ttl` only for terminal records and old fence metadata. Pending work is never TTL-reaped. |
 | Managed subscriptions (`gobridge-managed-subscriptions` default) | `storage_identity` string hash key | Disabled; exact MQTT filter history is durable. |
+| Rollout coordination (`<bridge.id>-rollouts`, **only with `MemberSlots`**) | `PK` string hash key; no sort key or indexes -- the rollout aggregate is one row | **Disabled.** The row holds the cohort's last committed config artifact, the point every restarting member recovers to. |
 
 The data API is `DynamoDBHAData`, returned by `bridge.Data()`. It is the only HA
 facade surface exposing table objects, names, and ARNs.

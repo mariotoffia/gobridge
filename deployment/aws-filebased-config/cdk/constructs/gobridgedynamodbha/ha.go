@@ -1,11 +1,7 @@
 package gobridgedynamodbha
 
 import (
-	"context"
 	"fmt"
-	"math"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
@@ -16,19 +12,15 @@ import (
 	"github.com/aws/constructs-go/constructs/v10"
 	"github.com/aws/jsii-runtime-go"
 
-	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
-	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/bridge"
-	"github.com/mariotoffia/gobridge/config"
 	cdkconstructs "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/gobridgebase"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/grants"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/singleton"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/validation"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
-	"github.com/mariotoffia/gobridge/domain/connectivity"
-	"github.com/mariotoffia/gobridge/ports"
 )
 
 const (
@@ -83,9 +75,21 @@ type DynamoDBHAProps struct {
 	ControlServiceName *string
 	WorkerServiceName  *string
 
+	// MemberSlots opts this deployment into the static member-slot profile: one
+	// single-task ECS service per coordinated-rollout cohort member, each carrying
+	// a restart-stable member_id. It is the only shipped shape that can host the
+	// coordinated rollout barrier. Nil (the default) deploys interchangeable
+	// autoscaled workers, which reject a coordinated config at synth.
+	//
+	// It is mutually exclusive with WorkerDesiredCount: the roster IS the slot
+	// count, and scaling a slot's service past one task would give one member_id to
+	// two running processes.
+	MemberSlots *MemberSlots
+
 	// WorkerDesiredCount defaults to two and may never be less than two. With
 	// the one control task this leaves at least one continuously polling warm
-	// standby after any single task loss.
+	// standby after any single task loss. It applies only to the autoscaled
+	// profile; see MemberSlots for the static member-slot alternative.
 	//
 	// The warm-standby invariant covers task LOSS, not deployment: config changes
 	// deploy by whole-cohort replacement (MinHealthyPercent=0), so the worker
@@ -105,23 +109,20 @@ type GoBridgeDynamoDBHA struct {
 	constructs.Construct
 
 	controlBase *gobridgebase.Built
-	workerBase  *gobridgebase.Built
+	workerBases []*gobridgebase.Built
 	control     awsecs.FargateService
-	worker      awsecs.FargateService
+	workers     []awsecs.FargateService
 	cluster     awsecs.ICluster
 	efsConfig   *cdkconstructs.GoBridgeEfsConfig
 	data        *DynamoDBHAData
 	controlSG   awsec2.ISecurityGroup
 	workerSG    awsec2.ISecurityGroup
+	memberSlots []string
+
+	rolloutTableName string
 
 	failoverObjective time.Duration
 	metricsNamespace  string
-}
-
-type inspectedHAConfig struct {
-	tables                       dataTableNames
-	failoverObjective            time.Duration
-	managedSubscriptionBaselines []managedSubscriptionBaseline
 }
 
 // NewGoBridgeDynamoDBHA creates the DynamoDB-coordinated HA facade.
@@ -139,6 +140,12 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 	bootstrapControl.Topology = infra.TopologyDynamoDBCoordinatedHA
 	bootstrapControl.MetricsExporter = infra.MetricsExporterCloudWatch
 	bootstrapControl.InstanceID = ""
+	// The cohort identity is the DEPLOYMENT's to assign, never the caller's: it is
+	// stamped per slot below, and must stay empty on every task that is not one.
+	// Scrubbing it here (like InstanceID) keeps a caller-supplied value from
+	// reaching the control task of an autoscaled deployment, where it would name a
+	// cohort seat that does not exist.
+	bootstrapControl.MemberID = ""
 	bootstrapWorker := bootstrapControl
 	bootstrapWorker.NodeRole = infra.NodeRoleWorker
 
@@ -159,7 +166,7 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 		_ = mat.Close()
 		panic(fmt.Sprintf("GoBridgeDynamoDBHA: Phase 1 validation failed: %v", err))
 	}
-	inspected, err := inspectHAConfig(mat.Config, props.ManagedSubscriptionBaselines)
+	inspected, err := inspectHAConfig(mat.Config, props.ManagedSubscriptionBaselines, props.MemberSlots)
 	if err != nil {
 		_ = mat.Close()
 		panic(fmt.Sprintf("GoBridgeDynamoDBHA: invalid coordinated HA config: %v", err))
@@ -188,8 +195,16 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 	bootstrapControl.DynamoDBHAManagedSubscriptionsTableName = inspected.tables.managedSubscriptions
 	bootstrapControl.DynamoDBHAConfigFingerprint = fingerprint
 	bootstrapControl.DynamoDBHABaselineConfigDigest = baseline
+	// The rollout coordination table and the slot identity are stamped only on the
+	// static member-slot profile. On the autoscaled profile both stay empty, so an
+	// interchangeable worker cannot even name a cohort to join.
+	bootstrapControl.DynamoDBHARolloutTableName = inspected.tables.rollout
+	if props.MemberSlots != nil {
+		bootstrapControl.MemberID = props.MemberSlots.ControlMemberID
+	}
 	bootstrapWorker = bootstrapControl
 	bootstrapWorker.NodeRole = infra.NodeRoleWorker
+	bootstrapWorker.MemberID = ""
 
 	selectedSubnets := props.VpcSubnets
 	if selectedSubnets == nil {
@@ -239,24 +254,34 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 		SeederImage:      props.SeederImage,
 		SeederMode:       props.ControlSeederMode,
 	})
-	workerBuilt := gobridgebase.New(c, jsii.String("WorkerBase"), &gobridgebase.Props{
-		Mode:             gobridgebase.ModeWorker,
-		Vpc:              props.Vpc,
-		EfsConfig:        efsConfig,
-		EfsKmsKey:        props.EfsKmsKey,
-		Image:            props.Image,
-		Bootstrap:        bootstrapWorker,
-		Source:           props.BridgeConfig,
-		QueueRegistry:    props.QueueRegistry,
-		SsmRegistry:      props.SsmParamRegistry,
-		CPU:              props.CPU,
-		MemoryMiB:        props.MemoryMiB,
-		MountPath:        props.MountPath,
-		LogRetention:     props.LogRetention,
-		LogRemovalPolicy: props.LogRemovalPolicy,
-		SeederImage:      props.SeederImage,
-		WorkerSeederMode: props.WorkerSeederMode,
-	})
+	// One worker-side deployment unit per slot. The autoscaled profile has exactly
+	// one, with no member identity; the static member-slot profile has one per
+	// roster worker, each pinned to a single task and stamped with its own
+	// restart-stable member_id — which is why each needs its OWN task definition.
+	slotSpecs := workerSlotSpecs(props.MemberSlots, workerDesired)
+	workerBases := make([]*gobridgebase.Built, 0, len(slotSpecs))
+	for _, spec := range slotSpecs {
+		slotBootstrap := bootstrapWorker
+		slotBootstrap.MemberID = spec.memberID
+		workerBases = append(workerBases, gobridgebase.New(c, jsii.String("WorkerBase"+spec.scopeSuffix), &gobridgebase.Props{
+			Mode:             gobridgebase.ModeWorker,
+			Vpc:              props.Vpc,
+			EfsConfig:        efsConfig,
+			EfsKmsKey:        props.EfsKmsKey,
+			Image:            props.Image,
+			Bootstrap:        slotBootstrap,
+			Source:           props.BridgeConfig,
+			QueueRegistry:    props.QueueRegistry,
+			SsmRegistry:      props.SsmParamRegistry,
+			CPU:              props.CPU,
+			MemoryMiB:        props.MemoryMiB,
+			MountPath:        props.MountPath,
+			LogRetention:     props.LogRetention,
+			LogRemovalPolicy: props.LogRemovalPolicy,
+			SeederImage:      props.SeederImage,
+			WorkerSeederMode: props.WorkerSeederMode,
+		}))
+	}
 
 	controlSG := props.ControlSecurityGroup
 	if controlSG == nil {
@@ -314,22 +339,29 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 	// desired count that MaxHealthyPercent=100 does not grant. That costs
 	// continuous AZ redistribution — spread becomes best-effort at launch — on top
 	// of an ingress gap for the length of a worker replacement.
-	workerProps := &awsecs.FargateServiceProps{
-		Cluster:                     cluster,
-		TaskDefinition:              workerBuilt.TaskDefinition,
-		DesiredCount:                jsii.Number(workerDesired),
-		MinHealthyPercent:           jsii.Number(0),
-		MaxHealthyPercent:           jsii.Number(100),
-		VpcSubnets:                  selectedSubnets,
-		SecurityGroups:              &[]awsec2.ISecurityGroup{workerSG},
-		AvailabilityZoneRebalancing: awsecs.AvailabilityZoneRebalancing_DISABLED,
-		EnableExecuteCommand:        jsii.Bool(false),
-		CircuitBreaker:              &awsecs.DeploymentCircuitBreaker{Rollback: jsii.Bool(true)},
+	workers := make([]awsecs.FargateService, 0, len(slotSpecs))
+	for i, spec := range slotSpecs {
+		workerProps := &awsecs.FargateServiceProps{
+			Cluster:                     cluster,
+			TaskDefinition:              workerBases[i].TaskDefinition,
+			DesiredCount:                jsii.Number(spec.desired),
+			MinHealthyPercent:           jsii.Number(0),
+			MaxHealthyPercent:           jsii.Number(100),
+			VpcSubnets:                  selectedSubnets,
+			SecurityGroups:              &[]awsec2.ISecurityGroup{workerSG},
+			AvailabilityZoneRebalancing: awsecs.AvailabilityZoneRebalancing_DISABLED,
+			EnableExecuteCommand:        jsii.Bool(false),
+			CircuitBreaker:              &awsecs.DeploymentCircuitBreaker{Rollback: jsii.Bool(true)},
+		}
+		if props.WorkerServiceName != nil {
+			// A caller-pinned physical name can only ever name ONE service. With static
+			// member slots there are several, so each takes the pinned name as a prefix
+			// and its own slot id as the suffix, keeping the names both stable and
+			// distinct.
+			workerProps.ServiceName = jsii.String(*props.WorkerServiceName + spec.scopeSuffix)
+		}
+		workers = append(workers, awsecs.NewFargateService(c, jsii.String("WorkerService"+spec.scopeSuffix), workerProps))
 	}
-	if props.WorkerServiceName != nil {
-		workerProps.ServiceName = props.WorkerServiceName
-	}
-	worker := awsecs.NewFargateService(c, jsii.String("WorkerService"), workerProps)
 
 	// Order the worker replacement AFTER the control service reaches steady state.
 	// Only the control task's seeder writes bridge.yaml onto EFS, and every task
@@ -342,14 +374,44 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 	// deployment policy used to hide that race behind a surviving old cohort; at
 	// 0/100 it does not, so this ordering is what keeps a failed deploy
 	// recoverable.
-	worker.Node().AddDependency(control)
+	services := append([]awsecs.FargateService{control}, workers...)
+	for i, worker := range workers {
+		worker.Node().AddDependency(control)
+		if i > 0 {
+			// Chain the slots. Every slot runs ONE task at MinimumHealthyPercent=0, so
+			// it stops that task before starting its replacement. CloudFormation
+			// updates independent resources in parallel, so without this chain a
+			// task-definition change (an image bump, a store identity, the roster)
+			// would take every slot down at the same instant — the same full ingress
+			// gap the autoscaled profile has, from a profile whose whole point is that
+			// members are individually addressable. Chained, at most one slot is down
+			// at a time; the price is a deploy that is linear in roster size.
+			worker.Node().AddDependency(workers[i-1])
+		}
+	}
 
-	for _, service := range []awsecs.FargateService{control, worker} {
+	for _, service := range services {
 		service.Node().AddDependency(data.lease)
 		service.Node().AddDependency(data.outbox)
 		service.Node().AddDependency(data.managedSubscriptions)
+		if data.rollout != nil {
+			// A slot that boots before its coordination store exists fails boot
+			// resolution: the joiner's read is the authoritative gate on the rollout
+			// store, so an absent table is a refusal to start, not a degraded start.
+			service.Node().AddDependency(data.rollout)
+		}
 		for _, initializer := range data.managedSubscriptionInitializers {
 			service.Node().AddDependency(initializer)
+		}
+	}
+
+	// Exactly the calls the rollout store makes, on exactly the deployment-owned
+	// table, for every task role in the cohort. The barrier runs on every member —
+	// control included — because any of them can be elected coordinator.
+	if data.rollout != nil {
+		grants.GrantDynamoDBRolloutStore(controlBuilt.TaskDefinition.TaskRole(), data.rollout)
+		for _, base := range workerBases {
+			grants.GrantDynamoDBRolloutStore(base.TaskDefinition.TaskRole(), data.rollout)
 		}
 	}
 
@@ -364,17 +426,23 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 		SsmParamRegistry: props.SsmParamRegistry,
 	})
 
+	rolloutCapability, advisory := tagValueConfigRollout, wholeCohortAdvisory
+	if props.MemberSlots != nil {
+		rolloutCapability, advisory = tagValueStaticSlotRollout, staticSlotAdvisory
+	}
 	awscdk.Tags_Of(c).Add(jsii.String(tagKeyTopology), jsii.String(tagValueTopology), nil)
 	awscdk.Tags_Of(c).Add(jsii.String(tagKeyHA), jsii.String(tagValueHA), nil)
-	awscdk.Tags_Of(c).Add(jsii.String(tagKeyConfigRollout), jsii.String(tagValueConfigRollout), nil)
-	awscdk.Annotations_Of(c).AddInfo(jsii.String(wholeCohortAdvisory))
+	awscdk.Tags_Of(c).Add(jsii.String(tagKeyConfigRollout), jsii.String(rolloutCapability), nil)
+	awscdk.Annotations_Of(c).AddInfo(jsii.String(advisory))
 
 	facade := &GoBridgeDynamoDBHA{
 		Construct:         c,
 		controlBase:       controlBuilt,
-		workerBase:        workerBuilt,
+		workerBases:       workerBases,
 		control:           control,
-		worker:            worker,
+		workers:           workers,
+		memberSlots:       props.MemberSlots.memberSlotIDs(),
+		rolloutTableName:  inspected.tables.rollout,
 		cluster:           cluster,
 		efsConfig:         efsConfig,
 		data:              data,
@@ -387,321 +455,3 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 	singleton.Enforce(c)
 	return facade
 }
-
-func inspectHAConfig(
-	cfg *ports.BridgeConfig,
-	declaredBaselines map[string][]string,
-) (inspectedHAConfig, error) {
-	if cfg == nil {
-		return inspectedHAConfig{}, fmt.Errorf("bridge config is nil")
-	}
-	if err := config.Validate(cfg); err != nil {
-		return inspectedHAConfig{}, err
-	}
-	if cfg.Bridge.DeploymentMode != "clustered" {
-		return inspectedHAConfig{}, fmt.Errorf("bridge.deployment_mode must be clustered")
-	}
-	if cfg.Bridge.Cluster != nil && len(cfg.Bridge.Cluster.Endpoints) > 0 {
-		return inspectedHAConfig{}, fmt.Errorf("bridge.cluster.endpoints must be omitted so every task advertises its ECS-resolved endpoint")
-	}
-	if err := rejectCoordinatedRollout(cfg); err != nil {
-		return inspectedHAConfig{}, err
-	}
-
-	lease, err := requiredDynamoDBStore("lease", cfg.Stores.Lease)
-	if err != nil {
-		return inspectedHAConfig{}, err
-	}
-	outbox, err := requiredDynamoDBStore("outbox", cfg.Stores.Outbox)
-	if err != nil {
-		return inspectedHAConfig{}, err
-	}
-	history, err := requiredDynamoDBStore("managed_subscriptions", cfg.Stores.ManagedSubscriptions)
-	if err != nil {
-		return inspectedHAConfig{}, err
-	}
-	names := dataTableNames{lease: lease, outbox: outbox, managedSubscriptions: history}
-	if lease == outbox || lease == history || outbox == history {
-		return inspectedHAConfig{}, fmt.Errorf("lease, outbox, and managed_subscriptions must use three distinct tables")
-	}
-
-	exclusive := map[string]string{}
-	for i := range cfg.Sessions {
-		session := &cfg.Sessions[i]
-		if session.SessionMode != string(connectivity.SessionExclusive) {
-			continue
-		}
-		mqtt, ok := session.Config.(*paho.Config)
-		if !ok || mqtt == nil || !paho.IsKind(session.Transport) {
-			return inspectedHAConfig{}, fmt.Errorf("exclusive session %q must use the MQTT Paho config", session.ID)
-		}
-		if err := mqtt.ValidateEffectiveSession(connectivity.SessionExclusive); err != nil {
-			return inspectedHAConfig{}, fmt.Errorf("exclusive session %q is not an effective stable MQTT session: %w", session.ID, err)
-		}
-		storageIdentity, err := mqtt.DurableSessionIdentity(connectivity.SessionExclusive)
-		if err != nil {
-			return inspectedHAConfig{}, fmt.Errorf(
-				"exclusive session %q durable identity: %w",
-				session.ID,
-				err,
-			)
-		}
-		exclusive[session.ID] = storageIdentity
-	}
-	if len(exclusive) == 0 {
-		return inspectedHAConfig{}, fmt.Errorf("at least one Exclusive MQTT session is required")
-	}
-	managedSubscriptionBaselines, err := validateManagedSubscriptionBaselines(
-		exclusive,
-		declaredBaselines,
-	)
-	if err != nil {
-		return inspectedHAConfig{}, err
-	}
-
-	var objective time.Duration
-	managedRoutes := 0
-	coveredSessions := map[string]struct{}{}
-	receiverSessions := make(map[string]string, len(cfg.Receivers))
-	for i := range cfg.Receivers {
-		receiverSessions[cfg.Receivers[i].ID] = cfg.Receivers[i].SessionID
-	}
-	bindingSessions := make(map[string]string, len(cfg.Bindings))
-	for i := range cfg.Bindings {
-		bindingSessions[cfg.Bindings[i].ID] = cfg.Bindings[i].SessionID
-	}
-	for i := range cfg.Routes {
-		route := &cfg.Routes[i]
-		referencedExclusive := ""
-		if sessionID := receiverSessions[route.ReceiverID]; sessionID != "" {
-			if _, ok := exclusive[sessionID]; ok {
-				referencedExclusive = sessionID
-			}
-		}
-		for _, bindingID := range route.Bindings {
-			sessionID := bindingSessions[bindingID]
-			if _, ok := exclusive[sessionID]; !ok {
-				continue
-			}
-			if referencedExclusive != "" && referencedExclusive != sessionID {
-				return inspectedHAConfig{}, fmt.Errorf("route %q references multiple Exclusive sessions", route.ID)
-			}
-			referencedExclusive = sessionID
-		}
-		if route.Session == nil {
-			if referencedExclusive != "" {
-				return inspectedHAConfig{}, fmt.Errorf("route %q references Exclusive session %q but has no explicit route.session failover budget", route.ID, referencedExclusive)
-			}
-			continue
-		}
-		if _, ok := exclusive[route.Session.SessionID]; !ok {
-			return inspectedHAConfig{}, fmt.Errorf("route %q session %q is not an Exclusive MQTT session", route.ID, route.Session.SessionID)
-		}
-		if referencedExclusive != "" && referencedExclusive != route.Session.SessionID {
-			return inspectedHAConfig{}, fmt.Errorf("route %q route.session %q diverges from referenced Exclusive session %q", route.ID, route.Session.SessionID, referencedExclusive)
-		}
-		coveredSessions[route.Session.SessionID] = struct{}{}
-		managedRoutes++
-		if route.DeliveryMode != "shared_outbox" {
-			return inspectedHAConfig{}, fmt.Errorf("route %q must use delivery_mode: shared_outbox", route.ID)
-		}
-		if route.Policy.AckAfter != "outbox_persist" {
-			return inspectedHAConfig{}, fmt.Errorf("route %q must use policy.ack_after: outbox_persist", route.ID)
-		}
-		if route.Session.FailoverSLO == "" || route.Session.StartupAllowance == "" {
-			return inspectedHAConfig{}, fmt.Errorf("route %q requires explicit failover_slo and startup_allowance", route.ID)
-		}
-		parsed, parseErr := time.ParseDuration(route.Session.FailoverSLO)
-		if parseErr != nil || parsed <= 0 {
-			return inspectedHAConfig{}, fmt.Errorf("route %q has invalid failover_slo %q", route.ID, route.Session.FailoverSLO)
-		}
-		if objective == 0 {
-			objective = parsed
-		} else if parsed != objective {
-			return inspectedHAConfig{}, fmt.Errorf("all coordinated routes must declare the same profile failover_slo")
-		}
-	}
-	if managedRoutes == 0 {
-		return inspectedHAConfig{}, fmt.Errorf("at least one lease-managed shared_outbox route is required")
-	}
-	for sessionID := range exclusive {
-		if _, ok := coveredSessions[sessionID]; !ok {
-			return inspectedHAConfig{}, fmt.Errorf("exclusive MQTT session %q is not covered by a lease-managed route.session", sessionID)
-		}
-	}
-
-	if err := validateTask9Admission(cfg); err != nil {
-		return inspectedHAConfig{}, err
-	}
-	return inspectedHAConfig{
-		tables:                       names,
-		failoverObjective:            objective,
-		managedSubscriptionBaselines: managedSubscriptionBaselines,
-	}, nil
-}
-
-func validateManagedSubscriptionBaselines(
-	required map[string]string,
-	declared map[string][]string,
-) ([]managedSubscriptionBaseline, error) {
-	for sessionID := range declared {
-		if _, ok := required[sessionID]; !ok {
-			return nil, fmt.Errorf(
-				"managed subscription baseline references unknown or unmanaged session %q",
-				sessionID,
-			)
-		}
-	}
-
-	sessionIDs := make([]string, 0, len(required))
-	for sessionID := range required {
-		sessionIDs = append(sessionIDs, sessionID)
-	}
-	sort.Strings(sessionIDs)
-
-	baselines := make([]managedSubscriptionBaseline, 0, len(sessionIDs))
-	for _, sessionID := range sessionIDs {
-		filters, ok := declared[sessionID]
-		if !ok {
-			return nil, fmt.Errorf(
-				"managed subscription baseline for Exclusive MQTT session %q is required",
-				sessionID,
-			)
-		}
-		seen := make(map[string]struct{}, len(filters))
-		validatedFilters := make([]string, 0, len(filters))
-		for _, filter := range filters {
-			if filter == "" {
-				return nil, fmt.Errorf(
-					"managed subscription baseline for session %q contains an empty filter",
-					sessionID,
-				)
-			}
-			if err := paho.ValidateMQTTTopicFilter(filter); err != nil {
-				return nil, fmt.Errorf(
-					"managed subscription baseline for session %q contains invalid filter %q: %w",
-					sessionID,
-					filter,
-					err,
-				)
-			}
-			if _, duplicate := seen[filter]; duplicate {
-				continue
-			}
-			seen[filter] = struct{}{}
-			validatedFilters = append(validatedFilters, filter)
-		}
-		sort.Strings(validatedFilters)
-		baselines = append(baselines, managedSubscriptionBaseline{
-			sessionID:       sessionID,
-			storageIdentity: required[sessionID],
-			filters:         validatedFilters,
-		})
-	}
-	return baselines, nil
-}
-
-func requiredDynamoDBStore(role string, store *ports.StoreConfig) (string, error) {
-	if store == nil || !strings.EqualFold(store.Type, awsstore.DynamoDBKind) {
-		return "", fmt.Errorf("stores.%s must use type: dynamodb", role)
-	}
-	cfg, ok := store.Config.(*awsstore.DynamoDBConfig)
-	if !ok || cfg == nil {
-		return "", fmt.Errorf("stores.%s has an incompatible DynamoDB plugin config", role)
-	}
-	name, err := awsstore.ResolveDynamoDBTableName(role, cfg.TableName)
-	if err != nil {
-		return "", err
-	}
-	if unresolved := awscdk.Token_IsUnresolved(name); unresolved != nil && *unresolved {
-		return "", fmt.Errorf("stores.%s table_name must be a resolved physical table_name; deploy-time tokens cannot be embedded safely in the immutable config asset", role)
-	}
-	return name, nil
-}
-
-// validateTask9Admission reuses the runtime composition preflight rather than
-// duplicating its checked budget formula. A nil SDK client keeps this synth-time
-// pass source-safe: store construction and schema preflight perform no calls.
-func validateTask9Admission(cfg *ports.BridgeConfig) error {
-	mqttFactory := paho.NewFactory(nil, nil)
-	builder := bridge.NewBuilder(cfg, bridge.WithBlueprintValidator(config.Validate)).
-		RegisterTransportFactory("mqtt", mqttFactory).
-		RegisterTransportFactory("mqtt.paho", mqttFactory).
-		RegisterStoreFactory(awsstore.DynamoDBKind, awsstore.NewDynamoDBStoreFactory(nil))
-	plan, err := builder.Plan(context.Background())
-	if err != nil {
-		return fmt.Errorf("task 9 failover admission rejected the profile: %w", err)
-	}
-	plan.Close()
-	return nil
-}
-
-func requireTwoAvailabilityZones(vpc awsec2.IVpc, selection *awsec2.SubnetSelection) {
-	selected := vpc.SelectSubnets(selection)
-	if selected.IsPendingLookup != nil && *selected.IsPendingLookup {
-		// Vpc.FromLookup uses a two-pass CDK context provider. The first pass
-		// intentionally returns placeholder subnets; the app is re-run after
-		// context resolution, when this same function enforces the real AZ set.
-		return
-	}
-	zones := map[string]struct{}{}
-	if selected.AvailabilityZones != nil {
-		for _, zone := range *selected.AvailabilityZones {
-			if zone != nil && *zone != "" {
-				zones[*zone] = struct{}{}
-			}
-		}
-	}
-	if len(zones) < 2 {
-		panic("GoBridgeDynamoDBHA: VpcSubnets must span at least two Availability Zones")
-	}
-}
-
-func validateProps(props *DynamoDBHAProps) {
-	if props == nil {
-		panic("GoBridgeDynamoDBHA: props must not be nil")
-	}
-	if props.Vpc == nil {
-		panic("GoBridgeDynamoDBHA: Vpc is required")
-	}
-	if props.Image == nil {
-		panic("GoBridgeDynamoDBHA: Image is required")
-	}
-	if props.BridgeConfig == nil {
-		panic("GoBridgeDynamoDBHA: BridgeConfig is required")
-	}
-	if props.WorkerDesiredCount != nil {
-		value := *props.WorkerDesiredCount
-		if math.IsNaN(value) || math.IsInf(value, 0) {
-			panic("GoBridgeDynamoDBHA: WorkerDesiredCount must be a resolved finite integer >= 2 to preserve a warm standby")
-		}
-		if unresolved := awscdk.Token_IsUnresolved(value); unresolved != nil && *unresolved {
-			panic("GoBridgeDynamoDBHA: WorkerDesiredCount must be a resolved finite integer >= 2; unresolved tokens cannot prove the warm-standby invariant")
-		}
-		if math.Trunc(value) != value || value < 2 {
-			panic("GoBridgeDynamoDBHA: WorkerDesiredCount must be a resolved finite integer >= 2 to preserve a warm standby")
-		}
-	}
-}
-
-func (g *GoBridgeDynamoDBHA) ControlService() awsecs.IService { return g.control }
-func (g *GoBridgeDynamoDBHA) WorkerService() awsecs.IService  { return g.worker }
-func (g *GoBridgeDynamoDBHA) ControlTaskDefinition() awsecs.FargateTaskDefinition {
-	return g.controlBase.TaskDefinition
-}
-func (g *GoBridgeDynamoDBHA) WorkerTaskDefinition() awsecs.FargateTaskDefinition {
-	return g.workerBase.TaskDefinition
-}
-func (g *GoBridgeDynamoDBHA) Cluster() awsecs.ICluster                    { return g.cluster }
-func (g *GoBridgeDynamoDBHA) EfsConfig() *cdkconstructs.GoBridgeEfsConfig { return g.efsConfig }
-func (g *GoBridgeDynamoDBHA) Data() *DynamoDBHAData                       { return g.data }
-func (g *GoBridgeDynamoDBHA) ControlSecurityGroup() awsec2.ISecurityGroup { return g.controlSG }
-func (g *GoBridgeDynamoDBHA) WorkerSecurityGroup() awsec2.ISecurityGroup  { return g.workerSG }
-func (g *GoBridgeDynamoDBHA) ControlPortMappings() []gobridgebase.PortMapping {
-	return g.controlBase.PortMappings
-}
-func (g *GoBridgeDynamoDBHA) WorkerPortMappings() []gobridgebase.PortMapping {
-	return g.workerBase.PortMappings
-}
-func (g *GoBridgeDynamoDBHA) FailoverObjective() time.Duration { return g.failoverObjective }
-func (g *GoBridgeDynamoDBHA) MetricsNamespace() string         { return g.metricsNamespace }

@@ -113,14 +113,24 @@ reverts the whole cohort instead of leaving it split.
 
 Coordinated mode has three prerequisites — all of them, or it will not start:
 
-1. **The versioned DynamoDB config source.** The shared store that can hold the
-   config and version it (the `dynamodb_coordinated_ha` deployment profile). A
-   file- or EFS-based cohort cannot use coordinated mode.
+1. **A shared rollout store.** A DynamoDB table holding the current proposal, the
+   per-member acknowledgements, and the durable last-committed config artifact.
+   The `dynamodb_coordinated_ha` deployment profile provisions it; the config
+   document itself may still live on EFS.
 2. **A member roster** — the fixed list of process identities in the cohort.
 3. **A stable `member_id` per process** — each process announces an id that must
    appear in the roster and must survive restarts. This is set in the
    deployment/bootstrap config (`member_id`), not in the shared logical config,
    because every process shares one config document.
+
+Prerequisite 3 is what decides the deployment shape. A process needs an identity
+that is the same after a restart, so an autoscaled pool cannot host a cohort:
+every replacement task is a new task with a new id, so it can never re-enter the
+roster it left. The AWS profile therefore runs a coordinated cohort as **static
+member slots** — one single-task ECS service per roster member, each with its own
+`member_id` — and **rejects `rollout: coordinated` at synth time** on its
+autoscaled worker shape rather than deploying a stack that can only fail at boot.
+See [the AWS deployment configuration reference](../aws-deployment/configuration.md).
 
 ### What you set
 
@@ -135,12 +145,36 @@ bridge:
     members: [node-a, node-b, node-c]   # every process, by its member_id
 ```
 
-And in each process's deployment/bootstrap config, its own identity:
+And in each process's deployment/bootstrap config, its own identity. In the AWS
+file-based profile that config is the JSON document supplied through
+`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` — one per member, differing only in
+`member_id` and `node_role`:
 
 <!-- docs-example: skip -->
-```yaml
-member_id: node-a     # must be one of bridge.cluster.members; stable across restarts
+```json
+{
+  "bridge_id": "gobridge-prod",
+  "config_file_path": "/var/lib/gobridge/bridge.yaml",
+  "admin_api_key_param": "/gobridge/prod/admin-api-key",
+  "topology": "dynamodb_coordinated_ha",
+  "node_role": "worker",
+  "member_id": "node-a",
+  "dynamodb_ha_lease_table_name": "gobridge-prod-leases",
+  "dynamodb_ha_outbox_table_name": "gobridge-prod-outbox",
+  "dynamodb_ha_managed_subscriptions_table_name": "gobridge-prod-managed-subscriptions",
+  "dynamodb_ha_rollout_table_name": "gobridge-prod-rollouts",
+  "dynamodb_ha_config_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+  "dynamodb_ha_baseline_config_digest": "0000000000000000000000000000000000000000000000000000000000000000"
+}
 ```
+
+`member_id` must be one of `bridge.cluster.members` and must be stable across
+restarts; it and `node_role` are the only two values that differ between the
+members. Everything below them is deployment-owned identity the CDK construct
+computes and stamps for you — the two digests are SHA-256 hex values over the
+admitted config, not operator-chosen strings, so the zeros above are a shape
+placeholder. Each field is described in the
+[bootstrap field reference](../aws-deployment/configuration.md#field-reference).
 
 That is all. The shipped image performs the rollout itself — there is nothing to
 run per change beyond writing the new config. Post it to the config source and

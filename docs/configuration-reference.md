@@ -105,6 +105,9 @@ classDiagram
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `endpoints` | map[capability]url | no | auto-discovered | Static override for THIS instance's advertised capability endpoints, keyed by capability (`http`) with a full URL value (`http://host:port`). NOT a peer/instance map. |
+| `rollout` | string | no | `refuse` | Live-config-change strategy for a clustered deployment. `refuse` (the default, also the meaning of an unset value) is ADR 0012: every live config delta is rejected and changes roll by whole-cohort replacement. `coordinated` opts into the rollout barrier; it additionally requires `members` and a rollout store wired by the composition root. Any other value is rejected at load -- an unrecognised strategy is never silently downgraded to `refuse`. |
+| `members` | list of string | yes when `rollout: coordinated` | -- | The cohort ROSTER: every member's stable `member_id`, listed identically on every member, without duplicates. It is the membership epoch the barrier freezes at propose time and counts acknowledgements against, so an id that no running process announces stalls every rollout. This is a peer list, unlike `endpoints`. Each id must match the `member_id` its process announces (in the AWS profile, the bootstrap `member_id`). |
+| `confirm_window` | duration | no | unset (base protocol) | Opts a coordinated rollout into the confirm window: a positive duration makes every commit PROVISIONAL. Each member swaps and must then reach convergence; the coordinator confirms once the whole cohort converged, and if confirmation never lands every member reverts to the last confirmed generation. Unset or `0s` is the base protocol, where a commit is final. A failed trial costs two disruptions (apply, then revert), which is why it is opt-in. Only valid with `rollout: coordinated`. |
 
 ```yaml
 bridge:
@@ -130,16 +133,23 @@ bridge:
     # a clustered node refuses every live config delta and changes are rolled by
     # whole-cohort replacement. "coordinated" opts into the barrier protocol in
     # docs/cluster/spec/cluster-config-rollout-protocol.md and additionally requires
-    # `members` below, a versioned CAS-capable config source, and a rollout store
-    # wired by the composition root. NOTE: no shipped composition root wires one
-    # yet, so "coordinated" currently fails every reload closed (visibly, with the
-    # running config still serving) rather than coordinating anything.
+    # `members` below and a rollout store wired by the composition root.
+    #
+    # The shipped AWS profile wires that store, but ONLY in its static member-slot
+    # shape (GoBridgeDynamoDBHA with MemberSlots): every cohort member runs as its
+    # own single-task ECS service with a restart-stable member_id. The autoscaled
+    # worker shape rejects "coordinated" at synth time, because interchangeable
+    # tasks cannot carry a stable member_id. See docs/cluster/README.md.
     rollout: refuse
     # The cohort ROSTER — the membership epoch the rollout barrier freezes and
     # counts acknowledgements against. Required and non-empty when rollout is
     # "coordinated"; identical on every member; no duplicates. This is a peer
     # list, unlike `endpoints` above.
     members: [instance-01, instance-02]
+    # Optional. A positive confirm window makes every commit provisional: each
+    # member applies, and unless the whole cohort converges before the window
+    # expires, every member reverts to the last confirmed generation.
+    # confirm_window: 90s
 ```
 
 ## `config_watch` -- File Watch Settings

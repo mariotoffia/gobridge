@@ -10,6 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.63.2
 	github.com/aws/aws-sdk-go-v2/service/ecs v1.79.1
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.46.5
+	github.com/aws/aws-sdk-go-v2/service/ssm v1.73.5
 	github.com/aws/constructs-go/constructs/v10 v10.8.1
 	github.com/aws/jsii-runtime-go v1.139.0
 	github.com/mariotoffia/gobridge/adapters/aws/store v0.0.0-00010101000000-000000000000
@@ -29,7 +30,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.12.13 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.36 // indirect
 	github.com/aws/aws-sdk-go-v2/service/signin v1.5.5 // indirect
-	github.com/aws/aws-sdk-go-v2/service/ssm v1.73.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.33.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.45.5 // indirect

@@ -19,6 +19,7 @@ package gobridgealarms
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awscloudwatch"
@@ -116,13 +117,14 @@ type AlarmsProps struct {
 type GoBridgeAlarms struct {
 	constructs.Construct
 
-	controlAbsence   awscloudwatch.IAlarm
-	workerDegraded   awscloudwatch.IAlarm
-	efsIO            awscloudwatch.IAlarm
-	albUnhealthyCtrl awscloudwatch.IAlarm
-	albUnhealthyWrk  awscloudwatch.IAlarm
-	alb5xxCtrl       awscloudwatch.IAlarm
-	alb5xxWrk        awscloudwatch.IAlarm
+	controlAbsence       awscloudwatch.IAlarm
+	workerDegraded       awscloudwatch.IAlarm
+	workerDegradedAlarms []awscloudwatch.IAlarm
+	efsIO                awscloudwatch.IAlarm
+	albUnhealthyCtrl     awscloudwatch.IAlarm
+	albUnhealthyWrk      awscloudwatch.IAlarm
+	alb5xxCtrl           awscloudwatch.IAlarm
+	alb5xxWrk            awscloudwatch.IAlarm
 
 	outboxDepth          awscloudwatch.IAlarm
 	dlqEntries           awscloudwatch.IAlarm
@@ -200,7 +202,7 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 	}
 
 	clusterName := resolveClusterName(props)
-	controlServiceName, workerServiceName := resolveServiceNames(props)
+	controlServiceName, workerServiceNames := resolveServiceNames(props)
 
 	topicAction := cwactions.NewSnsAction(props.AlarmTopic)
 
@@ -229,46 +231,61 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 	}
 
 	if (props.Cluster != nil || props.DynamoDBHA != nil) && !props.DisableWorkerDegraded {
-		running := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
-			Namespace:  jsii.String("ECS/ContainerInsights"),
-			MetricName: jsii.String("RunningTaskCount"),
-			DimensionsMap: &map[string]*string{
-				"ServiceName": workerServiceName,
-				"ClusterName": clusterName,
-			},
-			Statistic: jsii.String("Minimum"),
-			Period:    period,
-		})
-		desired := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
-			Namespace:  jsii.String("ECS/ContainerInsights"),
-			MetricName: jsii.String("DesiredTaskCount"),
-			DimensionsMap: &map[string]*string{
-				"ServiceName": workerServiceName,
-				"ClusterName": clusterName,
-			},
-			Statistic: jsii.String("Maximum"),
-			Period:    period,
-		})
-		expr := awscloudwatch.NewMathExpression(&awscloudwatch.MathExpressionProps{
-			Expression: jsii.String("IF(running < desired, 1, 0)"),
-			UsingMetrics: &map[string]awscloudwatch.IMetric{
-				"running": running,
-				"desired": desired,
-			},
-			Period: period,
-			Label:  jsii.String("WorkerCapacityDegraded"),
-		})
-		alarm := awscloudwatch.NewAlarm(c, jsii.String("WorkerDegraded"), &awscloudwatch.AlarmProps{
-			Metric:             expr,
-			Threshold:          jsii.Number(1),
-			EvaluationPeriods:  evals,
-			ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-			TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
-			AlarmDescription:   jsii.String("GoBridge worker service running task count below desired count."),
-		})
-		alarm.AddAlarmAction(topicAction)
-		alarm.AddOkAction(topicAction)
-		g.workerDegraded = alarm
+		// ONE alarm per worker-side service rather than one summed alarm over all of
+		// them. Two reasons, and the second is the load-bearing one:
+		//
+		//   - the alarm names the slot that is short a task, which is the first thing
+		//     an operator needs; and
+		//   - a summed expression grows two metric inputs per slot, and a CloudWatch
+		//     metric-math alarm has a hard cap on how many it may reference. A summed
+		//     alarm would therefore turn a large enough roster into a DEPLOY-time
+		//     failure, after the services and the retained rollout table already
+		//     exist. Per-slot alarms are three inputs each, forever.
+		for i, serviceName := range workerServiceNames {
+			// The first alarm keeps the bare construct id so an existing single-worker
+			// deployment does not see its alarm replaced.
+			id := "WorkerDegraded"
+			if i > 0 {
+				id = fmt.Sprintf("WorkerDegraded%d", i)
+			}
+			running := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
+				Namespace:     jsii.String("ECS/ContainerInsights"),
+				MetricName:    jsii.String("RunningTaskCount"),
+				DimensionsMap: &map[string]*string{"ServiceName": serviceName, "ClusterName": clusterName},
+				Statistic:     jsii.String("Minimum"),
+				Period:        period,
+			})
+			desired := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
+				Namespace:     jsii.String("ECS/ContainerInsights"),
+				MetricName:    jsii.String("DesiredTaskCount"),
+				DimensionsMap: &map[string]*string{"ServiceName": serviceName, "ClusterName": clusterName},
+				Statistic:     jsii.String("Maximum"),
+				Period:        period,
+			})
+			expr := awscloudwatch.NewMathExpression(&awscloudwatch.MathExpressionProps{
+				Expression: jsii.String("IF(running < desired, 1, 0)"),
+				UsingMetrics: &map[string]awscloudwatch.IMetric{
+					"running": running,
+					"desired": desired,
+				},
+				Period: period,
+				Label:  jsii.String("WorkerCapacityDegraded"),
+			})
+			alarm := awscloudwatch.NewAlarm(c, jsii.String(id), &awscloudwatch.AlarmProps{
+				Metric:             expr,
+				Threshold:          jsii.Number(1),
+				EvaluationPeriods:  evals,
+				ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+				TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
+				AlarmDescription:   jsii.String("GoBridge worker service running task count below desired count."),
+			})
+			alarm.AddAlarmAction(topicAction)
+			alarm.AddOkAction(topicAction)
+			g.workerDegradedAlarms = append(g.workerDegradedAlarms, alarm)
+			if g.workerDegraded == nil {
+				g.workerDegraded = alarm
+			}
+		}
 	}
 
 	if props.DynamoDBHA != nil {
@@ -277,14 +294,15 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 			DimensionsMap: &map[string]*string{"ServiceName": controlServiceName, "ClusterName": clusterName},
 			Statistic:     jsii.String("Minimum"), Period: period,
 		})
-		workerRunning := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
-			Namespace: jsii.String("ECS/ContainerInsights"), MetricName: jsii.String("RunningTaskCount"),
-			DimensionsMap: &map[string]*string{"ServiceName": workerServiceName, "ClusterName": clusterName},
-			Statistic:     jsii.String("Minimum"), Period: period,
-		})
+		workersExpr, workerMetrics := serviceCountSum(workerServiceNames, clusterName,
+			"RunningTaskCount", "Minimum", "wr", period)
+		using := map[string]awscloudwatch.IMetric{"control": controlRunning}
+		for id, metric := range workerMetrics {
+			using[id] = metric
+		}
 		warm := awscloudwatch.NewMathExpression(&awscloudwatch.MathExpressionProps{
-			Expression:   jsii.String("IF(control + workers < 2, 1, 0)"),
-			UsingMetrics: &map[string]awscloudwatch.IMetric{"control": controlRunning, "workers": workerRunning},
+			Expression:   jsii.String("IF(control + " + workersExpr + " < 2, 1, 0)"),
+			UsingMetrics: &using,
 			Period:       period, Label: jsii.String("WarmStandbyUnavailable"),
 		})
 		alarm := awscloudwatch.NewAlarm(c, jsii.String("WarmStandbyUnavailable"), &awscloudwatch.AlarmProps{
@@ -424,7 +442,16 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 			{name: "Lease", table: data.LeaseTable()},
 			{name: "Outbox", table: data.OutboxTable()},
 			{name: "ManagedSubscriptions", table: data.ManagedSubscriptionsTable()},
+			// The rollout table is nil on the autoscaled profile, which provisions
+			// none. Where it exists it is the barrier's only coordination store AND
+			// the boot-resolve gate, so throttling on it both stalls every rollout
+			// and can stop a replaced task from starting at all — the one table whose
+			// silence is least affordable.
+			{name: "Rollout", table: data.RolloutTable()},
 		} {
+			if table.table == nil {
+				continue
+			}
 			throttle, system := newDynamoDBAlarms(c, table.name, table.table, period, evals, topicAction)
 			g.dynamoThrottles = append(g.dynamoThrottles, throttle)
 			g.dynamoSystemErrors = append(g.dynamoSystemErrors, system)
@@ -615,8 +642,15 @@ func new5xxAlarm(scope constructs.Construct, id string, tg elbv2.ApplicationTarg
 	return alarm
 }
 
-func (g *GoBridgeAlarms) ControlAbsenceAlarm() awscloudwatch.IAlarm      { return g.controlAbsence }
-func (g *GoBridgeAlarms) WorkerDegradedAlarm() awscloudwatch.IAlarm      { return g.workerDegraded }
+func (g *GoBridgeAlarms) ControlAbsenceAlarm() awscloudwatch.IAlarm { return g.controlAbsence }
+func (g *GoBridgeAlarms) WorkerDegradedAlarm() awscloudwatch.IAlarm { return g.workerDegraded }
+
+// WorkerDegradedAlarms returns one capacity alarm per worker-side service: one
+// for the autoscaled profile, one per roster slot for the static member-slot
+// profile. WorkerDegradedAlarm returns the first of them.
+func (g *GoBridgeAlarms) WorkerDegradedAlarms() []awscloudwatch.IAlarm {
+	return append([]awscloudwatch.IAlarm(nil), g.workerDegradedAlarms...)
+}
 func (g *GoBridgeAlarms) EfsIOAlarm() awscloudwatch.IAlarm               { return g.efsIO }
 func (g *GoBridgeAlarms) AlbUnhealthyControlAlarm() awscloudwatch.IAlarm { return g.albUnhealthyCtrl }
 func (g *GoBridgeAlarms) AlbUnhealthyWorkerAlarm() awscloudwatch.IAlarm  { return g.albUnhealthyWrk }
@@ -703,14 +737,54 @@ func resolveClusterName(p *AlarmsProps) *string {
 	return p.Single.Cluster().ClusterName()
 }
 
-func resolveServiceNames(p *AlarmsProps) (control, worker *string) {
+// resolveServiceNames returns the control service name and EVERY worker-side
+// service name. The DynamoDB HA facade runs one autoscaled worker service, or one
+// single-task service per static member slot; an alarm built on only the first
+// would stay green while every other slot sat at zero tasks.
+func resolveServiceNames(p *AlarmsProps) (control *string, workers []*string) {
 	if p.Cluster != nil {
-		return svcName(p.Cluster.ControlService()), svcName(p.Cluster.WorkerService())
+		return svcName(p.Cluster.ControlService()), []*string{svcName(p.Cluster.WorkerService())}
 	}
 	if p.DynamoDBHA != nil {
-		return svcName(p.DynamoDBHA.ControlService()), svcName(p.DynamoDBHA.WorkerService())
+		names := make([]*string, 0, len(p.DynamoDBHA.WorkerServices()))
+		for _, svc := range p.DynamoDBHA.WorkerServices() {
+			names = append(names, svcName(svc))
+		}
+		return svcName(p.DynamoDBHA.ControlService()), names
 	}
 	return svcName(p.Single.ControlService()), nil
+}
+
+// serviceCountSum builds the metric-math term that sums one ECS Container
+// Insights task-count metric across every named service, plus the metrics that
+// term references. With a single service the term is that one metric id, so the
+// autoscaled profile's expressions are unchanged in shape.
+func serviceCountSum(
+	serviceNames []*string,
+	clusterName *string,
+	metricName, statistic, idPrefix string,
+	period awscdk.Duration,
+) (string, map[string]awscloudwatch.IMetric) {
+	if len(serviceNames) == 0 {
+		// No service to observe. Return the literal 0 rather than an empty term,
+		// which would splice into a syntactically invalid CloudWatch expression that
+		// only fails when the alarm is evaluated in the account.
+		return "0", map[string]awscloudwatch.IMetric{}
+	}
+	metrics := make(map[string]awscloudwatch.IMetric, len(serviceNames))
+	terms := make([]string, 0, len(serviceNames))
+	for i, name := range serviceNames {
+		id := fmt.Sprintf("%s%d", idPrefix, i)
+		metrics[id] = awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
+			Namespace:     jsii.String("ECS/ContainerInsights"),
+			MetricName:    jsii.String(metricName),
+			DimensionsMap: &map[string]*string{"ServiceName": name, "ClusterName": clusterName},
+			Statistic:     jsii.String(statistic),
+			Period:        period,
+		})
+		terms = append(terms, id)
+	}
+	return strings.Join(terms, " + "), metrics
 }
 
 func svcName(s awsecs.IService) *string { return s.ServiceName() }

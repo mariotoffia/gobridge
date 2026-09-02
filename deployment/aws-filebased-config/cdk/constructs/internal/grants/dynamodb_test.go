@@ -104,3 +104,30 @@ func renderedTemplate(t *testing.T, stack awscdk.Stack) string {
 	}
 	return string(raw)
 }
+
+// The coordinated cluster rollout store is one row, read with GetItem and
+// rewritten with a revision-gated conditional PutItem. It never updates in place,
+// never queries, never scans, and — unlike every other store adapter — has no
+// schema or TTL preflight, so it needs no DescribeTable either. Anything beyond
+// those two actions is privilege the running barrier cannot use. CreateTable in
+// particular stays out: the rollout table is deployment-owned and retained, so a
+// task role that could create it could also recreate a table an operator
+// deliberately deleted.
+func TestGrantDynamoDBRolloutStore_ExactRuntimeActions(t *testing.T) {
+	stack, role := newTestStack(t)
+	table := awsdynamodb.Table_FromTableArn(stack, jsii.String("Rollout"), jsii.String(tableARN))
+	grants.GrantDynamoDBRolloutStore(role, table)
+
+	actions := collectAllowActions(t, stack)
+	mustHave(t, actions, "dynamodb:GetItem", "dynamodb:PutItem")
+	requireNoDynamoMutations(t, actions)
+	mustNotHave(t, actions,
+		"dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan",
+		"dynamodb:TransactWriteItems", "dynamodb:DescribeTable", "dynamodb:DescribeTimeToLive")
+	requireExactTableResource(t, stack, "dynamodb:PutItem")
+
+	rendered := renderedTemplate(t, stack)
+	if strings.Contains(rendered, "/index/") {
+		t.Fatal("rollout grant must not reference any index: the store is a single-row aggregate with no GSI")
+	}
+}

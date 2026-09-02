@@ -19,6 +19,10 @@ type dataTableNames struct {
 	lease                string
 	outbox               string
 	managedSubscriptions string
+	// rollout is the coordinated cluster rollout coordination table. It is empty
+	// on the autoscaled profile, which has no barrier to coordinate; only the
+	// static member-slot profile provisions it.
+	rollout string
 }
 
 // DynamoDBHAData is the sole public data output for GoBridgeDynamoDBHA.
@@ -27,6 +31,7 @@ type DynamoDBHAData struct {
 	lease                           awsdynamodb.Table
 	outbox                          awsdynamodb.Table
 	managedSubscriptions            awsdynamodb.Table
+	rollout                         awsdynamodb.Table
 	managedSubscriptionInitializers []constructs.Construct
 }
 
@@ -36,20 +41,26 @@ type managedSubscriptionBaseline struct {
 	filters         []string
 }
 
-func newDynamoDBHAData(scope constructs.Construct, names dataTableNames) *DynamoDBHAData {
-	retainedTable := func(partitionKey string) *awsdynamodb.TableProps {
-		return &awsdynamodb.TableProps{
-			PartitionKey:       &awsdynamodb.Attribute{Name: jsii.String(partitionKey), Type: awsdynamodb.AttributeType_STRING},
-			BillingMode:        awsdynamodb.BillingMode_PAY_PER_REQUEST,
-			Encryption:         awsdynamodb.TableEncryption_AWS_MANAGED,
-			RemovalPolicy:      awscdk.RemovalPolicy_RETAIN,
-			DeletionProtection: jsii.Bool(true),
-			PointInTimeRecoverySpecification: &awsdynamodb.PointInTimeRecoverySpecification{
-				PointInTimeRecoveryEnabled: jsii.Bool(true),
-			},
-		}
+// retainedTable is the shared shape of every deployment-owned table: a single
+// string partition key, on-demand billing, AWS-managed encryption, and retention
+// that survives a stack delete. Each of these tables holds state the cohort cannot
+// reconstruct — fencing counters, undelivered records, broker-side subscription
+// history, the committed config artifact — so a CloudFormation-driven delete is
+// data loss, not cleanup.
+func retainedTable(partitionKey string) *awsdynamodb.TableProps {
+	return &awsdynamodb.TableProps{
+		PartitionKey:       &awsdynamodb.Attribute{Name: jsii.String(partitionKey), Type: awsdynamodb.AttributeType_STRING},
+		BillingMode:        awsdynamodb.BillingMode_PAY_PER_REQUEST,
+		Encryption:         awsdynamodb.TableEncryption_AWS_MANAGED,
+		RemovalPolicy:      awscdk.RemovalPolicy_RETAIN,
+		DeletionProtection: jsii.Bool(true),
+		PointInTimeRecoverySpecification: &awsdynamodb.PointInTimeRecoverySpecification{
+			PointInTimeRecoveryEnabled: jsii.Bool(true),
+		},
 	}
+}
 
+func newDynamoDBHAData(scope constructs.Construct, names dataTableNames) *DynamoDBHAData {
 	leaseProps := retainedTable("PK")
 	leaseProps.TableName = jsii.String(names.lease)
 	// Deliberately do not set TimeToLiveAttribute. The lease row is the
@@ -83,7 +94,18 @@ func newDynamoDBHAData(scope constructs.Construct, names dataTableNames) *Dynamo
 	historyProps.TableName = jsii.String(names.managedSubscriptions)
 	history := awsdynamodb.NewTable(scope, jsii.String("ManagedSubscriptionsTable"), historyProps)
 
-	return &DynamoDBHAData{lease: lease, outbox: outbox, managedSubscriptions: history}
+	data := &DynamoDBHAData{lease: lease, outbox: outbox, managedSubscriptions: history}
+	if names.rollout != "" {
+		// The rollout aggregate is one row under a fixed partition key, so the table
+		// needs no sort key and no index. It deliberately carries NO TTL: the row is
+		// the cohort's last committed config artifact, the point every restarting
+		// member recovers to, and a reaped artifact would send a restart back to
+		// whatever the mutable config source happens to hold.
+		rolloutProps := retainedTable("PK")
+		rolloutProps.TableName = jsii.String(names.rollout)
+		data.rollout = awsdynamodb.NewTable(scope, jsii.String("RolloutTable"), rolloutProps)
+	}
+	return data
 }
 
 func newManagedSubscriptionInitializers(
@@ -186,4 +208,31 @@ func (d *DynamoDBHAData) ManagedSubscriptionsTableName() *string {
 // ManagedSubscriptionsTableARN returns the history table ARN token.
 func (d *DynamoDBHAData) ManagedSubscriptionsTableARN() *string {
 	return d.managedSubscriptions.TableArn()
+}
+
+// RolloutTable returns the coordinated cluster rollout coordination table, or nil
+// on the autoscaled profile, which provisions none.
+func (d *DynamoDBHAData) RolloutTable() awsdynamodb.ITable { //nolint:ireturn // Public CDK data output intentionally returns the L2 table interface.
+	if d.rollout == nil {
+		return nil
+	}
+	return d.rollout
+}
+
+// RolloutTableName returns the rollout table physical-name token, or nil when the
+// profile provisions no rollout table.
+func (d *DynamoDBHAData) RolloutTableName() *string {
+	if d.rollout == nil {
+		return nil
+	}
+	return d.rollout.TableName()
+}
+
+// RolloutTableARN returns the rollout table ARN token, or nil when the profile
+// provisions no rollout table.
+func (d *DynamoDBHAData) RolloutTableARN() *string {
+	if d.rollout == nil {
+		return nil
+	}
+	return d.rollout.TableArn()
 }

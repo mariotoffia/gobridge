@@ -358,10 +358,12 @@ func NewGoBridgeALBAttachment(scope constructs.Construct, id *string, props *Att
 			// adapters/http/transport/receiver.go:178,381,385).
 			HealthCheck: hc,
 		})
-		transportTG.AddTarget(tgt.worker.LoadBalancerTarget(&awsecs.LoadBalancerTargetOptions{
-			ContainerName: jsii.String(gobridgebase.ContainerNameMain),
-			ContainerPort: jsii.Number(tgt.transportPort),
-		}))
+		for _, wrk := range tgt.workers {
+			transportTG.AddTarget(wrk.LoadBalancerTarget(&awsecs.LoadBalancerTargetOptions{
+				ContainerName: jsii.String(gobridgebase.ContainerNameMain),
+				ContainerPort: jsii.Number(tgt.transportPort),
+			}))
+		}
 		for i, p := range receiverPaths {
 			offset := OffsetReceiversBase + i*10
 			if offset >= ReservedSpan {
@@ -642,11 +644,16 @@ func buildHealthCheck(o *HealthCheckProps, monitorPort float64) *elbv2.HealthChe
 // resolved captures the services + container ports the attachment
 // wires into target groups.
 type resolved struct {
-	control, worker awsecs.BaseService
-	controlPort     float64 // admin: config API + status
-	monitorPort     float64 // health/live/ready probes
-	transportPort   float64 // HTTP receivers; only valid when hasTransport
-	hasTransport    bool    // config declares >=1 HTTP receiver
+	control awsecs.BaseService
+	// workers is every worker-side service. The DynamoDB HA facade runs ONE
+	// autoscaled worker service, or one single-task service per static member slot,
+	// so a transport target group that registered only the first would leave every
+	// other slot off the load balancer while its tasks ran and reported healthy.
+	workers       []awsecs.BaseService
+	controlPort   float64 // admin: config API + status
+	monitorPort   float64 // health/live/ready probes
+	transportPort float64 // HTTP receivers; only valid when hasTransport
+	hasTransport  bool    // config declares >=1 HTTP receiver
 	// monitorTargets is every distinct bridge service. The monitor TG
 	// registers all of them so the ALB may reach the monitor port on
 	// each service's security group (required for the port-overridden
@@ -662,7 +669,7 @@ func resolveTargets(p *AttachmentProps) resolved {
 		tp, ok := lookupPort(pm, gobridgebase.PortKindTransport)
 		return resolved{
 			control:        svc,
-			worker:         svc,
+			workers:        []awsecs.BaseService{svc},
 			controlPort:    adminPort(pm),
 			monitorPort:    monitorPortOf(pm),
 			transportPort:  tp,
@@ -675,7 +682,7 @@ func resolveTargets(p *AttachmentProps) resolved {
 		wrk := mustBaseService(p.Cluster.WorkerService())
 		tp, ok := lookupPort(p.Cluster.WorkerPortMappings(), gobridgebase.PortKindTransport)
 		return resolved{
-			control: ctrl, worker: wrk,
+			control: ctrl, workers: []awsecs.BaseService{wrk},
 			controlPort:   adminPort(p.Cluster.ControlPortMappings()),
 			monitorPort:   monitorPortOf(p.Cluster.ControlPortMappings()),
 			transportPort: tp, hasTransport: ok,
@@ -683,14 +690,19 @@ func resolveTargets(p *AttachmentProps) resolved {
 		}
 	}
 	ctrl := mustBaseService(p.DynamoDBHA.ControlService())
-	wrk := mustBaseService(p.DynamoDBHA.WorkerService())
+	// One target per worker-side service: the static member-slot profile runs one
+	// per roster member, and every slot serves ingress.
+	workers := make([]awsecs.BaseService, 0, len(p.DynamoDBHA.WorkerServices()))
+	for _, svc := range p.DynamoDBHA.WorkerServices() {
+		workers = append(workers, mustBaseService(svc))
+	}
 	tp, ok := lookupPort(p.DynamoDBHA.WorkerPortMappings(), gobridgebase.PortKindTransport)
 	return resolved{
-		control: ctrl, worker: wrk,
+		control: ctrl, workers: workers,
 		controlPort:   adminPort(p.DynamoDBHA.ControlPortMappings()),
 		monitorPort:   monitorPortOf(p.DynamoDBHA.ControlPortMappings()),
 		transportPort: tp, hasTransport: ok,
-		monitorTargets: []awsecs.BaseService{ctrl, wrk},
+		monitorTargets: append([]awsecs.BaseService{ctrl}, workers...),
 	}
 }
 

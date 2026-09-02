@@ -53,7 +53,7 @@ func TestHA_FailoverStopsVerifiedLeaseholder(t *testing.T) {
 	app := NewApp(t, env.SandboxEnv)
 	stackName := StackName(env.SandboxEnv, "dynamodb-ha")
 	stack := awscdk.NewStack(app, jsii.String(stackName), &awscdk.StackProps{Env: StackEnv(env.SandboxEnv)})
-	_ = newHAFixture(t, stack, env)
+	_ = newHAFixture(t, stack, env, nil)
 	ApplyDestroyAspect(stack)
 	outputs := DeployStack(t, app, env.SandboxEnv, stackName)
 	if err := missingHAOutput(outputs,
