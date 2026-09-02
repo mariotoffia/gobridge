@@ -80,6 +80,12 @@ const (
 	// itself. It has a fixed name and a fixed host port, which also means two
 	// local deployment runs cannot share a machine.
 	emulatorRegistryContainer = "floci-ecr-registry"
+
+	// emulatorTaskPrefix names every container the emulator launches for an ECS
+	// task. Nothing else on the machine can own one: floci launches task
+	// containers only when it is given the Docker socket, and only this harness
+	// gives it one.
+	emulatorTaskPrefix = "floci-ecs-"
 )
 
 // localBackend is everything the local run stands on. One per test binary,
@@ -266,6 +272,10 @@ func localShutdown() {
 		// nobody else's to clean up. Removing them by network membership takes
 		// exactly this run's containers and cannot reach another run's.
 		removeNetworkMembers(state.network)
+		// And by name, for anything that exited and was disconnected before the
+		// membership sweep ran — an init container that has finished is the
+		// common case, and it would otherwise outlive the network it named.
+		removeLaunchedTaskContainers()
 		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "network", "rm", state.network)
 	}
 	if state.seederLocal != "" {

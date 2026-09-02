@@ -25,22 +25,52 @@ import (
 // its absence would otherwise cost.
 
 // reclaimStrandedRuns removes what a previous local run left behind when it did
-// not reach its teardown. Every container of a run — the emulators, the harness
-// containers, and everything the emulator launched — is attached to that run's
-// own network, so membership is both the complete set and a set that cannot
-// contain anything else.
+// not reach its teardown.
+//
+// Two sweeps, because one of them alone leaks. Membership of a run's own network
+// is the complete set of that run's containers and cannot contain anything else,
+// so it is the primary sweep — but it is driven by the surviving NETWORK list,
+// and Docker lets a network be removed while stopped containers are still
+// attached to it. A run that was killed after its network went but before its
+// exited containers did is then invisible to that sweep forever: the container
+// still names the network, and `--filter network=` needs a name the network
+// store still knows.
+//
+// So the containers the emulator LAUNCHED are also swept by their own prefix.
+// That is safe here and nowhere else: floci launches task containers only when
+// it is handed the Docker socket, which only this harness does, and two local
+// deployment runs cannot share a machine anyway (the emulator binds its image
+// registry to a fixed host port). Every other container helper in the suite is
+// reclaimed by its own lifecycle, and none of them is swept by name.
 func reclaimStrandedRuns() {
 	out, err := dockerexec.Run(dockerexec.InspectTimeout,
 		"network", "ls", "--filter", "name="+localRunPrefix, "--format", "{{.Name}}")
+	if err == nil {
+		for _, network := range strings.Fields(string(out)) {
+			if !strings.HasPrefix(network, localRunPrefix) {
+				continue
+			}
+			removeNetworkMembers(network)
+			_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "network", "rm", network)
+		}
+	}
+	removeLaunchedTaskContainers()
+}
+
+// removeLaunchedTaskContainers force-removes every container the emulator
+// launched for an ECS task, in any state.
+//
+// Exited ones matter as much as running ones: an init container that has done
+// its job and stopped is still a container, and it is the one most likely to
+// outlive its run.
+func removeLaunchedTaskContainers() {
+	out, err := dockerexec.Run(dockerexec.InspectTimeout,
+		"ps", "-aq", "--filter", "name="+emulatorTaskPrefix)
 	if err != nil {
 		return
 	}
-	for _, network := range strings.Fields(string(out)) {
-		if !strings.HasPrefix(network, localRunPrefix) {
-			continue
-		}
-		removeNetworkMembers(network)
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "network", "rm", network)
+	for _, id := range strings.Fields(string(out)) {
+		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", id)
 	}
 }
 

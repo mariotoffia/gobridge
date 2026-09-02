@@ -119,6 +119,27 @@ Each of these was measured, not assumed.
 | **A destroyed stack can leave its log group behind**, and the profile names log groups from the construct id rather than the stack — so a later deployment of the same facade collides with a stack that no longer exists. | The harness removes the profile's log groups before each deploy. | Nothing: the collision itself is a real property of the profile (two deployments of the same facade in one account and region collide), which is why the suite deploys one topology at a time. |
 | **FIFO deduplication has no time window.** | A test that means to exercise dedup enqueues originals and duplicates before any consumer starts. | Amazon's five-minute window. |
 
+## Not yet stood up
+
+Three shapes an operator can choose today that no deployed run has exercised.
+They are open work, not gaps in the emulator — each is buildable here.
+
+- [ ] **SQLite stores on a deployed task.** Every run above uses in-memory
+      stores or DynamoDB. What a deployment adds over a unit test is the
+      filesystem: the SQLite stores refuse a parent directory that is not owned
+      by the process user with mode `0700`, which is a property of the image and
+      the mount rather than of the store.
+- [ ] **Config held in DynamoDB.** A base file plus a DynamoDB overlay is a
+      documented pattern ([configuration overview](../configuration-overview.md),
+      [config stores](../config-stores.md)), but the `aws-filebased-config`
+      profile wires a single `file` layer with no overlay, so it is reachable
+      only through the programmatic API today.
+- [ ] **Lambda either side of the bridge.** Probe P3 has never been run. It also
+      needs `testutil/SPEC.md` extended before a test can be written: packaging a
+      function for the emulator, asserting its event source mapping, and what a
+      closed producer→bridge→consumer loop asserts on are all questions the ECS
+      topologies never raised.
+
 ## Where the code lives
 
 - `deployment/aws-filebased-config/cdk/integration/` — the harness and the

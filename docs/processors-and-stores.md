@@ -481,9 +481,19 @@ independently in the `stores` section.
 | Role | Interface | Purpose |
 |------|-----------|---------|
 | **Lease** | `ports.LeaseStore` | Distributed lease acquisition for exclusive sessions. |
-| **Outbox** | `ports.OutboxStore` | Durable outbox for at-least-once delivery with shared sessions. |
+| **Outbox** | `ports.OutboxStore` | Durable outbox for at-least-once delivery with shared sessions. Only configure one when the route needs it -- see the note below. |
 | **DLQ** | `ports.DLQStore` | Dead-letter queue for permanently failed messages. |
 | **Managed subscriptions** | `ports.ManagedSubscriptionStore` | Durable exact MQTT filter history for persistent/exclusive sessions. |
+
+> **An outbox is not a crash-safety mechanism.** The bridge withholds the source
+> acknowledgement until the route settles, so a crash before the destination
+> accepts is already recovered by source redelivery — and a crash before the
+> OUTBOX write is recovered exactly the same way, no better. An outbox does not
+> add a durable copy; it MOVES the copy out of the source into this store and
+> adds a hop that can fail. Configure one for fan-out, back-pressure or
+> fencing — see
+> [Delivery Mode Selection](deployment-guide.md#delivery-mode-selection) — not
+> for durability you already have.
 
 ### YAML Structure
 

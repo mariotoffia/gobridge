@@ -490,15 +490,51 @@ reaches its limits.
 
 ### Delivery Mode Selection
 
-| Mode | Behavior | Trade-off |
-|------|----------|-----------|
-| `direct_hold` | Source held open until egress completes | Lower latency, no durability guarantee |
-| `shared_outbox` | Source ACKed after outbox persist | Higher latency, at-least-once durability |
+Choose on what the **source** can do, not on how much you care about the
+messages.
 
-Use `direct_hold` for low-latency scenarios where occasional message loss
-on crash is acceptable. Use `shared_outbox` when durability matters -- the
-outbox store persists messages before acknowledging the source, and the
-drainer delivers them asynchronously.
+| Mode | Behavior | Where the durable copy lives |
+|------|----------|------------------------------|
+| `direct_hold` | Source held open until egress completes | On the source, until the egress succeeds |
+| `shared_outbox` | Source ACKed after outbox persist | In the outbox store, from the moment the source is ACKed |
+
+**Use `direct_hold` for any single-destination route.** The bridge does not
+acknowledge the source until the egress succeeds -- it extends an SQS
+visibility window while it works, and on MQTT it simply does not send the
+PUBACK (the adapter runs the client with manual acknowledgement). A crash
+before the egress completes therefore loses nothing: the source redelivers.
+
+**An outbox does not improve on that, and this is the point most often got
+backwards.** Both modes have exactly one window in which a crash matters, and
+the two windows are the same size:
+
+| Mode | Crash window | On a crash inside it |
+|------|--------------|----------------------|
+| `direct_hold` | receive → destination accepts | Source not acknowledged → redelivered |
+| `shared_outbox` | receive → outbox write completes | Source not acknowledged → redelivered |
+
+Crashing before the outbox write is no better than crashing before the
+destination send. The outbox does not add a durable copy — with
+`ack_after: outbox_persist` the source is settled as soon as the record is
+persisted, so it **moves** the durable copy out of the source and into a store
+you operate — and it adds a second hop that can fail on its own. The route now
+needs the source, the outbox store and the destination, where it needed two of
+the three. Availability multiplies down.
+
+**Use `shared_outbox` when one of these is true** — none of which is crash
+safety:
+
+- **One message fans out to several destinations** and a partial success has to
+  survive a crash. Source redelivery cannot express "three of five accepted";
+  the outbox records progress per destination.
+- **The destination may be unavailable longer than the source will hold.** You
+  are choosing to own the buffer rather than let a visibility window expire or
+  a broker session lapse.
+- **You need ingress throughput decoupled from egress latency.**
+- **Several instances share an exclusive session.** `direct_hold` carries no
+  fencing token at the sender boundary, so a route that fails over has a
+  bounded duplicate-send window. `shared_outbox` fences it — this is duplicate
+  suppression, not durability.
 
 ## What's Next
 

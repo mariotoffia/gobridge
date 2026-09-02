@@ -1,12 +1,28 @@
-# Scenario 5: Durable Delivery with SharedOutbox
+# Scenario 5: Fan-out and Back-pressure with SharedOutbox
 
-Guarantee zero message loss across bridge crashes by decoupling ingress from egress with a persistent outbox.
+Decouple ingress from egress with a persistent outbox, and keep per-destination
+progress across a crash when one message has several destinations.
+
+> **An outbox is not crash protection.** Read the next three lines before
+> reaching for one.
+
+## What the outbox does NOT do
+
+An outbox does not protect you from a crash. The bridge only tells the source a
+message is handled once the work is finished, so if it dies the source simply
+sends the message again — and that is just as true when it dies before writing
+to the outbox as when it dies before reaching the destination. All the outbox
+changes is where the message waits, and it adds one more system that has to be
+working for anything to get through.
 
 ## Use Case
 
-IoT sensor data arrives on MQTT and must reach an SQS queue for downstream processing. If the bridge crashes between receiving an MQTT message and sending it to SQS, the message must not be lost. The default `direct_hold` mode holds the source delivery open during send, but if the process dies mid-flight, the message is gone -- the MQTT broker already delivered it, and the SQS send never completed.
-
-The `shared_outbox` delivery mode solves this by persisting messages to a durable store before acknowledging the source. A background drainer then reads from the outbox and delivers to the target. If the bridge crashes, the drainer picks up persisted records on restart.
+What the outbox is actually for is below, and this scenario is built on the
+first of them: IoT sensor data arrives on MQTT and must reach **several**
+destinations, and a crash after three of five have accepted must not replay all
+five. Source redelivery cannot express partial progress — the outbox records it
+per destination. The same store then absorbs a destination outage without
+holding the source open for its duration.
 
 ## Architecture
 
@@ -19,59 +35,79 @@ flowchart LR
     subgraph GoBridge
         R[Receiver\nmqtt-in]
         Route[Route\nsensor-ingest\ndelivery: shared_outbox]
-        OB[(Outbox Store)]
+        OB[(Outbox Store\none record per destination)]
         DR[Outbox Drainer]
-        S[Sender\nsqs-out]
+        S1[Sender\nsqs-events]
+        S2[Sender\nsqs-audit]
+        S3[Sender\nhttp-analytics]
     end
 
-    subgraph AWS
-        Q["SQS Queue\nsensor-events"]
+    subgraph Destinations
+        Q1["SQS\nsensor-events"]
+        Q2["SQS\nsensor-audit"]
+        H["HTTP endpoint\nno buffer of its own"]
     end
 
     T -->|subscribe| R
-    R -->|1. receive| Route
-    Route -->|2. persist| OB
+    R -->|1. receive once| Route
+    Route -->|2. persist 3 records| OB
     OB -->|3. ACK source| R
-    DR -->|4. claim records| OB
-    DR -->|5. send| S
-    S -->|6. SendMessage| Q
-    DR -->|7. complete| OB
+    DR -->|4. claim| OB
+    DR --> S1 --> Q1
+    DR --> S2 --> Q2
+    DR --> S3 --> H
+    DR -->|5. complete each\nindependently| OB
 
     style Route fill:#f96,stroke:#333
     style OB fill:#fcf,stroke:#333
     style DR fill:#cff,stroke:#333
 ```
 
+One message in, three destinations out. The outbox holds a record per
+destination, so each is completed on its own — and the HTTP endpoint, which
+cannot hold a request open while the bridge waits and has no queue of its own,
+is retried without replaying the two that already accepted.
+
 ## Direct Hold vs Shared Outbox
 
-The two delivery modes represent different trade-offs.
+Both modes survive a crash the same way: the source was never told the message
+was handled, so it sends it again. The difference shows up only when there is
+more than one destination.
 
 ```mermaid
 flowchart TD
-    subgraph "direct_hold"
-        DH1[Receive message] --> DH2[Send to target]
-        DH2 --> DH3{Success?}
-        DH3 -->|Yes| DH4[ACK source]
-        DH3 -->|No| DH5[Retry or\nreject source]
-        DH6["Crash window"] -.->|Process dies here\nMessage lost| DH2
+    subgraph "direct_hold — one destination"
+        DH1[Receive] --> DH2[Send]
+        DH2 --> DH3{Accepted?}
+        DH3 -->|Yes| DH4[Tell the source it is handled]
+        DH3 -->|No| DH5[Retry, then reject]
+        DH6["Crash anywhere before DH4"] -.->|Source was never told\nSo it sends it again| DH1
     end
 
-    subgraph "shared_outbox"
-        SO1[Receive message] --> SO2[Persist to outbox]
-        SO2 --> SO3[ACK source]
-        SO3 --> SO4[Drainer claims record]
-        SO4 --> SO5[Send to target]
-        SO5 --> SO6[Complete record]
-        SO7["Crash window"] -.->|Process dies here\nOutbox survives| SO4
+    subgraph "direct_hold — three destinations"
+        M1[Receive] --> M2[Send to A ok]
+        M2 --> M3[Send to B ok]
+        M3 --> M4["Crash before C"]
+        M4 -.->|Source sends it again\nA and B get a duplicate| M1
     end
 
-    style DH6 fill:#fcc,stroke:#c33
+    subgraph "shared_outbox — three destinations"
+        SO1[Receive] --> SO2[Write one record per destination]
+        SO2 --> SO3[Tell the source it is handled]
+        SO3 --> SO4[A done] --> SO5[B done] --> SO6["Crash before C"]
+        SO6 -.->|Restart: A and B already done\nOnly C is sent| SO7[C done]
+        SO8["Crash before SO2"] -.->|Source was never told\nSo it sends it again| SO1
+    end
+
+    style DH6 fill:#ffd,stroke:#cc3
+    style SO8 fill:#ffd,stroke:#cc3
+    style M4 fill:#fcc,stroke:#c33
     style SO7 fill:#cfc,stroke:#3c3
 ```
 
-With `direct_hold`, the source delivery stays open while the target send runs. Fast and simple, but a crash between receive and ACK means the message is in limbo. MQTT QoS 1 will redeliver, but there is a window where the broker may consider the message delivered if the TCP connection was already clean.
-
-With `shared_outbox`, the message is persisted before the source is acknowledged. The outbox survives crashes. After restart, the drainer finds pending records and delivers them.
+Read the two yellow boxes together: they are the same crash, with the same
+recovery, in both modes. The outbox earns its place in the red box — replaying
+every destination because one of them had not been reached yet.
 
 ## Configuration
 
@@ -111,24 +147,45 @@ receivers:
         qos: 1
 
 senders:
-  - id: sqs-out
+  - id: sqs-events
     transport: sqs
     options:
       queue_url: https://sqs.us-west-1.amazonaws.com/123456789/sensor-events
       region: us-west-1
       batch_size: 10
+  - id: sqs-audit
+    transport: sqs
+    options:
+      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/sensor-audit
+      region: us-west-1
+      batch_size: 10
+  # The destination that cannot buffer for itself. It is the reason this route
+  # keeps its own record of what has been accepted: an endpoint that is down
+  # has nowhere to hold the message, and replaying it would also replay the two
+  # queues above.
+  - id: http-analytics
+    transport: http
+    options:
+      url: https://analytics.internal/v1/sensors
 
 bindings:
-  - id: to-sqs
-    sender_id: sqs-out
+  - id: to-events
+    sender_id: sqs-events
     address: sensor-events
+  - id: to-audit
+    sender_id: sqs-audit
+    address: sensor-audit
+  - id: to-analytics
+    sender_id: http-analytics
+    address: https://analytics.internal/v1/sensors
 
 routes:
   - id: sensor-ingest
     receiver_id: mqtt-in
     delivery_mode: shared_outbox
-    dispatch_mode: single
-    bindings: [to-sqs]
+    # One message, three destinations, each completed on its own.
+    dispatch_mode: fan_out
+    bindings: [to-events, to-audit, to-analytics]
     policy:
       ack_after: outbox_persist
       max_in_flight: 100
@@ -138,7 +195,7 @@ routes:
       on_permanent_failure: dlq
     session:
       session_id: mqtt-conn
-      sender_id: sqs-out
+      sender_id: sqs-events
       drain_interval: 1s
       drain_batch_size: 50
 ```
@@ -176,8 +233,8 @@ keeps ingress latency low and is the boundary `shared_outbox` is built around.
 Setting `ack_after: target_accept` on a `shared_outbox` route is a startup error,
 not a stronger guarantee -- the drainer sends to the target asynchronously, so the
 source ACK can never be deferred to the target. If you need the source held open
-until the target accepts, use `delivery_mode: direct_hold` instead; that trades the
-outbox's crash durability for end-to-end confirmation before ACK. Omitting
+until the target accepts, use `delivery_mode: direct_hold` instead; that gives up
+per-destination progress and the buffer, not crash safety. Omitting
 `ack_after` on a `shared_outbox` route is the safe choice: it defaults to
 `outbox_persist`.
 
@@ -338,21 +395,29 @@ Two distinct paths return a claimed record to `pending`:
 |-----------|--------------|-----------------|
 | Simplicity | Simple, no stores needed | Requires outbox + lease stores |
 | Latency | Low (synchronous send) | Higher (persist + drain cycle) |
-| Crash safety | Message may be lost on crash | Message survives in outbox |
+| Crash safety | No loss -- the source is not acknowledged until the target accepts, so it redelivers | No loss, but for the same reason: the source is not acknowledged until the outbox write completes. The outbox adds nothing here |
+| Per-destination progress | A crash replays every destination | Recorded per destination; a crash replays only what had not been accepted |
 | Throughput | Bounded by target latency | Ingress decoupled from egress |
-| Multi-instance | Works independently | Requires lease coordination |
-| Resource usage | Minimal | Outbox storage + drainer goroutine |
+| Multi-instance | No fencing token at the sender boundary | Fenced by the owning session |
+| Resource usage | Minimal | Outbox storage + drainer goroutine, and one more system in series |
 
-**Use `direct_hold` when:**
-- Messages are non-critical or the source has its own redelivery (e.g., SQS visibility timeout)
-- Simplicity is preferred over durability
-- Latency is the primary concern
+**Use `direct_hold` for any single-destination route.** The source delivery is
+held open until the egress succeeds, so a crash means the source redelivers --
+an SQS visibility window, or an unsent MQTT PUBACK, both work. The source is
+already the durable buffer, and an outbox in front of it does not add a copy:
+with `ack_after: outbox_persist` the source is settled the moment the record is
+persisted, so the outbox **moves** the durable copy from the source into a
+store you operate, and makes the route depend on three systems instead of two.
 
 **Use `shared_outbox` when:**
-- Zero message loss is a hard requirement
-- The target may be temporarily unavailable (outbox buffers during outages)
+- One message fans out to several destinations and a partial success must survive a crash -- source redelivery cannot express "three of five accepted"
+- The target may be unavailable long enough that holding the source open is not viable, and you would rather own the buffer than let the source's redelivery window expire
 - You need to decouple ingress throughput from egress latency
-- Running multiple bridge instances that must coordinate delivery
+- Several instances share an exclusive session and the duplicate-send window across failover must be fenced
+
+Note that none of these is "so a crash does not lose the message". That is
+already true without an outbox, on any source the bridge can withhold
+acknowledgement from.
 
 ## Variations
 
@@ -457,7 +522,8 @@ routes:
   - id: sensor-ingest
     receiver_id: mqtt-in
     delivery_mode: shared_outbox
-    bindings: [to-sqs]
+    dispatch_mode: fan_out
+    bindings: [to-events, to-audit, to-analytics]
     policy:
       max_replay_attempts: 3
       on_permanent_failure: dlq
@@ -487,19 +553,26 @@ routes:
   - id: sensor-ingest
     receiver_id: mqtt-in
     delivery_mode: direct_hold
-    bindings: [to-sqs]
+    dispatch_mode: single
+    bindings: [to-events]
     policy:
       ack_after: target_accept   # direct_hold default; the source is held open until the target accepts
       max_in_flight: 50
 ```
 
-`direct_hold` trades the outbox's crash durability (a process death mid-send loses
-the in-flight message) for end-to-end confirmation before ACK. Pick one boundary:
-outbox durability with `shared_outbox`, or target confirmation with `direct_hold`.
+This gives up nothing in crash safety — the source is still not acknowledged
+until the destination accepts, so a crash still means redelivery — and it gives
+up the outbox store, its lease and a hop. What it costs is the two things the
+outbox is for: there is no per-destination progress to resume from, so it suits
+one destination, and there is no buffer, so a destination outage holds the
+source open until its own redelivery window runs out.
 
 ### Combined: Durable Fan-Out
 
-Combine `shared_outbox` with `fan_out` dispatch. Each binding gets its own outbox record, and the drainer delivers independently:
+This is the shape the main configuration above already uses, restated on its
+own: each binding gets its own outbox record and the drainer completes them
+independently, so a destination that was already accepted is not replayed when
+another one has to be retried.
 
 ```yaml
 routes:
@@ -507,7 +580,7 @@ routes:
     receiver_id: mqtt-in
     delivery_mode: shared_outbox
     dispatch_mode: fan_out
-    bindings: [to-sqs, to-archive]
+    bindings: [to-events, to-audit, to-analytics]
     policy:
       ack_after: outbox_persist
       max_outbox_depth: 5000

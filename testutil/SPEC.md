@@ -4,11 +4,45 @@ Decisions are **locked** unless a probe in §7 disproves them. Rationale and the
 evidence behind each decision live in `testutil/PLAN.md`; this file is what to
 build. `testutil/PLAN_DDB_MIRROR.md` holds the one drafted function.
 
-Executable work is Chunks 26, 27 and 28 in `PROD_READY_PLAN.md`, in the order
+Executable work was Chunks 26, 27 and 28 in `PROD_READY_PLAN.md`, in the order
 **27 → 26 → 28**: retire the wrappers, then build the deployment harness on the
-emulator that migration proved, then extend the matrix. Nothing in the
-codebase may reference this file; promote durable outcomes to an ADR or a
-`docs/` page before deleting it.
+emulator that migration proved, then extend the matrix. All three have landed;
+what remains is Chunk 29. Nothing in the codebase may reference this file;
+promote durable outcomes to an ADR or a `docs/` page before deleting it. The
+durable outcome of the matrix already lives at
+`docs/aws-deployment/local-deployment-suite.md`.
+
+## Status
+
+What this specification asked for, and what is built. A section marked **done**
+is implemented and exercised by `make test-local-deploy` on every run.
+
+| § | Item | Status |
+|---|---|---|
+| 1 | Emulator split — one emulator for every AWS API except DynamoDB, DynamoDB Local for that | **done** |
+| 2 | DynamoDB endpoint routing through `AWS_ENDPOINT_URL_DYNAMODB` | **done** |
+| 3 | Container lifecycle on `dockerexec`, digest-pinned, per-binary | **done** |
+| 4 | `testutil/` changes — `flocilocal` in, the three per-service wrappers out | **done** (Chunk 27) |
+| 5 | Deployment harness — `integration_local` tag, `RequireSandbox` local branch, `cdklocal`, `MirrorTable`, one shared network, `make test-local-deploy` | **done** |
+| 6 | Known gaps and their mitigations | **done, and superseded**: the measured list is `docs/aws-deployment/local-deployment-suite.md`, which carries three gaps this file never anticipated (no IAM evaluation, no `AWS::ECS::Service` update, `SetAlarmState` fires no actions) |
+| 7 | Probes P1 and P2 | **answered** (§7). P3 **not run** — the Lambda topology stays credentialed. P4 **not run** — informative only; the DynamoDB Local split stands either way |
+| 8 | Topology and behaviour matrix | **done except D5 and the confirm window** — see the table in §8 and the behaviour table in the `docs/` page |
+
+Open, and owned by Chunk 29 rather than by this file:
+
+- [ ] The confirm window on a deployed cohort. Convergence is decided by session
+      readiness, and neither lever that could withhold it is reachable through
+      the admin config API today.
+- [ ] Why a member does not vote on a subscription change, and making that
+      visible to an operator.
+- [ ] Probe P3, and with it the Lambda topology (D5/E8). P3 answers only
+      whether a Go function runs; §5 and §8 need extending before a test can be
+      written — how a function's code is packaged for the emulator, how its
+      event source mapping is asserted, and what a closed
+      producer→bridge→consumer loop asserts on. Owned by Chunk 30.
+- [ ] SQLite stores on a deployed task, and a config layer held in DynamoDB.
+      Neither shape was in this specification's scope and neither has ever been
+      deployed. Owned by Chunk 30.
 
 ---
 
