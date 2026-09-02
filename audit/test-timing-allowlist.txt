@@ -67,9 +67,9 @@
 ./tests/integration/integration_sqs_sender_batch_test.go:269:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 ./tests/longrunning/gap_processor_lifecycle_test.go:172:	time.Sleep(4 * time.Second) // ESSENTIAL: wait for circuit breaker ResetTimeout expiry
 ./tests/longrunning/gap_processor_lifecycle_test.go:183:		time.Sleep(1 * time.Second) // OTHER: pacing — allow probe to complete before next injection
-./tests/longrunning/longrunning_helpers_test.go:634:// replacing the brittle time.Sleep(200ms) pattern after Reconcile.
+./tests/longrunning/longrunning_helpers_test.go:633:// replacing the brittle time.Sleep(200ms) pattern after Reconcile.
 ./tests/longrunning/longrunning_perf_helpers_test.go:152:		time.Sleep(50 * time.Millisecond) // OTHER: let finalizers run between GC cycles
-./tests/longrunning/longrunning_test.go:464:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
+./tests/longrunning/longrunning_test.go:469:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 ./tests/longrunning/uc12_cluster_lease_test.go:242:		time.Sleep(2 * time.Second) // SYNC: wait between role samples to verify lease stability
 ./tests/longrunning/uc27_failure_recovery_b_test.go:79:	time.Sleep(2 * time.Second) // NEGATIVE: verify no poison messages leaked to MQTT
 ./tests/longrunning/uc27_failure_recovery_test.go:307:	time.Sleep(2 * time.Second) // NEGATIVE: verify expired messages did not reach MQTT
@@ -78,8 +78,8 @@
 ./tests/longrunning/uc38_outbox_modes_test.go:199:			time.Sleep(500 * time.Millisecond) // SYNC: poll interval for SQS queue depth check
 ./tests/longrunning/uc38_outbox_modes_test.go:289:	time.Sleep(idleWait) // SYNC: observe drain cycles during idle period
 ./tests/longrunning/uc38_outbox_modes_test.go:95:	time.Sleep(10 * time.Second) // OTHER: let outbox fill while sender is paused
-./tests/longrunning/uc42_broker_resilience_test.go:108:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
-./tests/longrunning/uc42_broker_resilience_test.go:238:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
+./tests/longrunning/uc42_broker_resilience_test.go:107:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
+./tests/longrunning/uc42_broker_resilience_test.go:237:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down before restart
 ./tests/longrunning/uc48_broker_multihop_test.go:302:		time.Sleep(time.Duration(flapDownSec) * time.Second) // OTHER: scenario timing — broker flap downtime
 ./tests/longrunning/uc48_broker_multihop_test.go:526:	time.Sleep(5 * time.Second) // OTHER: scenario timing — keep broker down during message queuing
 ./tests/longrunning/uc5_pipeline_chain_test.go:52:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error

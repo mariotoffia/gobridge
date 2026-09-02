@@ -55,7 +55,7 @@ import (
 //	   │  Exclusive session, shared sessionID/lease key │
 //	   └───────────────┬────────────────┬──────────────┘
 //	                   ▼                 ▼
-//	              real broker      real SQS (ddblocal/sqslocal/mqttlocal
+//	              real broker      real SQS (ddblocal/flocilocal/mqttlocal
 //	                                        shared by the parent, reached by
 //	                                        the children via *_ENDPOINT env)
 //
@@ -121,7 +121,7 @@ func TestUC3SeparateProcessFailover(t *testing.T) {
 			uc3spTopicEnv:       uc3spTopic,
 			uc3spInstanceEnv:    instanceID,
 			"DYNAMODB_ENDPOINT": infra.DDBEndpoint,
-			"SQS_ENDPOINT":      infra.SQSEndpoint,
+			"FLOCI_ENDPOINT":    infra.SQSEndpoint,
 		}
 	}
 	instA := mqttlocal.UniqueClientID("uc3sp-A")

@@ -31,7 +31,7 @@ import (
 //
 // Infrastructure:
 //   - RabbitMQ (AMQP 0-9-1) — source broker for both tests
-//   - ElasticMQ  (SQS)      — target for Test 1
+//   - SQS (local emulator)  — target for Test 1
 //   - Mosquitto  (MQTT)     — target for Test 2
 // ═══════════════════════════════════════════════════════════════════════════
 

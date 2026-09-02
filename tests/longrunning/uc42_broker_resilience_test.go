@@ -17,7 +17,6 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
 
 // =========================================================================
@@ -172,9 +171,9 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 	brokerURL := broker.URL()
 
 	// SQS queue with short visibility timeout for faster redelivery.
-	sqsInClient := sqslocal.Client(t)
-	sqsInName := sqslocal.UniqueQueue("uc43-in")
-	sqsInURL := sqslocal.CreateQueueWithAttrs(t, sqsInClient, sqsInName,
+	sqsInClient := newSQSClient(t)
+	sqsInName := uniqueQueueName("uc43-in")
+	sqsInURL := createSQSQueueWithAttrs(t, sqsInClient, sqsInName,
 		map[string]string{"VisibilityTimeout": "10"})
 
 	dlq := &lrDLQStore{}
@@ -191,7 +190,7 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 
 	sqsRx, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          sqsInURL,
-		Client:            sqslocal.Client(t),
+		Client:            newSQSClient(t),
 		MaxMessages:       10,
 		WaitTimeSeconds:   1,
 		VisibilityTimeout: 10,

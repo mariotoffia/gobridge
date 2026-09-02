@@ -18,7 +18,7 @@ require (
 	github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra v0.0.0
 	github.com/mariotoffia/gobridge/httpapi v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-00010101000000-000000000000
-	github.com/mariotoffia/gobridge/testutil/localstack v0.0.0
+	github.com/mariotoffia/gobridge/testutil/flocilocal v0.0.0
 	github.com/mariotoffia/gobridge/testutil/wait v0.0.0
 	github.com/stretchr/testify v1.11.1
 )
@@ -92,7 +92,7 @@ replace (
 	github.com/mariotoffia/gobridge/httpapi => ../../../httpapi
 	github.com/mariotoffia/gobridge/processors/circuitbreaker => ../../../processors/circuitbreaker
 	github.com/mariotoffia/gobridge/testutil/ddblocal => ../../../testutil/ddblocal
-	github.com/mariotoffia/gobridge/testutil/localstack => ../../../testutil/localstack
+	github.com/mariotoffia/gobridge/testutil/flocilocal => ../../../testutil/flocilocal
 	github.com/mariotoffia/gobridge/testutil/wait => ../../../testutil/wait
 )
 

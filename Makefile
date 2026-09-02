@@ -257,7 +257,7 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 	@echo "Report will be saved to: reports/test-long-running.log"
 	@bash -c 'set -o pipefail; AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
 	GOBRIDGE_MQTT_MEMORY=256m GOBRIDGE_MQTT_CPUS=2.0 \
-	GOBRIDGE_SQS_MEMORY=2g GOBRIDGE_SQS_CPUS=2.0 \
+	GOBRIDGE_AWS_EMULATOR_MEMORY=2g GOBRIDGE_AWS_EMULATOR_CPUS=2.0 \
 	GOBRIDGE_DDB_MEMORY=1g GOBRIDGE_DDB_CPUS=2.0 \
 		go -C tests/longrunning test -count=1 -race -timeout 10800s -v -tags=longrunning ./... 2>&1 | tee reports/test-long-running.log; \
 		rc=$$?; \

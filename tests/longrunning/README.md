@@ -7,15 +7,17 @@ loss tolerance.**
 ## Running
 
 ```bash
-# Requires Docker for ElasticMQ, Mosquitto, DynamoDB Local
+# Requires Docker for Floci, Mosquitto, DynamoDB Local
 make test-long-running
 
 # Single test
 go test -race -timeout 1200s -v -tags=longrunning -run TestUC1./tests/longrunning/...
 
-# With environment overrides (skip container auto-start)
+# With environment overrides (skip container auto-start).
+# Note: tests that call withFreshInfra force a fresh container per test and
+# ignore these, so the overrides apply only to tests that do not.
 DYNAMODB_ENDPOINT=http://127.0.0.1:8000 \
-SQS_ENDPOINT=http://127.0.0.1:9324 \
+FLOCI_ENDPOINT=http://127.0.0.1:4566 \
 MQTT_BROKER_URL=tcp://127.0.0.1:1883 \
   go test -race -timeout 1200s -v -tags=longrunning ./tests/longrunning/...
 ```

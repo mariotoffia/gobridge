@@ -23,7 +23,7 @@ import (
 
 // validates basic SQS to MQTT delivery using direct_hold.
 //
-// ElasticMQ to Mosquitto; the subscriber receives the same payload as sent to the queue.
+// the SQS emulator to Mosquitto; the subscriber receives the same payload as sent to the queue.
 func TestE2E_S1_SQSToMQTT_DirectHold(t *testing.T) {
 	queueURL, sqsClient := setupSQSQueue(t, "s1")
 	sessionID := mqttlocal.UniqueClientID("s1-mqtt")

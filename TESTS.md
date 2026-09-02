@@ -285,8 +285,27 @@ inject the dependency. The constructor under test should accept
 ## 5. Integration tests
 
 Verify an adapter conforms to its port contract against a **real**
-dependency (Docker-managed broker, DynamoDB Local, ElasticMQ, ASB
-emulator, MinIO).
+dependency (Docker-managed broker, AWS emulator, ASB emulator).
+
+**Which emulator serves what.** One helper per backend, and the split is
+deliberate:
+
+| Concern | Helper | Backend |
+|---|---|---|
+| SQS, SSM, CloudWatch, and every other emulated AWS API | `testutil/flocilocal` | Floci, one container serving all of them on one endpoint |
+| DynamoDB | `testutil/ddblocal` | DynamoDB Local |
+| MQTT, AMQP 0-9-1, AMQP 1.0, Azure Service Bus | `mqttlocal`, `rabbitmqlocal`, `artemislocal`, `asblocal` | the real brokers / Microsoft's emulator |
+
+DynamoDB is deliberately **not** served by the general AWS emulator. The
+store adapters are compare-and-swap end to end — leases, slots, outbox
+claims — and their correctness rests on `ConditionExpression` semantics.
+Amazon's own DynamoDB Local is the reference for those; a general emulator
+that silently accepted a failing condition would turn every one of those
+tests green while the invariant was broken. A false green is worse than a
+red.
+
+Brokers are not served by it either: it emulates AWS APIs, not MQTT, AMQP
+or Service Bus.
 
 ### 5.1 Skip discipline
 
@@ -422,11 +441,19 @@ long-running.
 
 ## 7. Fixtures and shared helpers
 
-- `testutil/*local` — Docker container helpers (DynamoDB, SQS, ASB,
-  S3, MQTT, RabbitMQ, Artemis, LocalStack). Each exposes `Configure`,
-  `Shutdown`, typed `Client(t)`. Readiness is a three-stage deterministic
-  gate (container running → protocol-truth probe → stabilize); teardown is
-  observable state (`docker` reports stopped/gone), never a sleep.
+- `testutil/*local` — Docker container helpers (AWS APIs, DynamoDB, ASB,
+  MQTT, RabbitMQ, Artemis). Each exposes `Configure`, `Shutdown`, and either
+  a typed `Client(t)` or, where one container serves many services,
+  `AWSConfig(t)`. Readiness is a three-stage deterministic gate (container
+  running → protocol-truth probe → stabilize); teardown is observable state
+  (`docker` reports stopped/gone), never a sleep. Per-service plumbing on top
+  of a container — creating a queue, a table, a topic — belongs in the test
+  package that needs it, not in another helper package.
+- `testutil/testcontent` — TID-tagged content verification: every test
+  message carries a unique id in a header and in the JSON payload, and the
+  assertion helpers compare sent against received by id to detect loss,
+  duplication and corruption. Reach for it in any delivery test that has to
+  account for every message.
 - `testutil/dockerexec` — bounded docker CLI wrapper plus the shared
   container gates (`WaitHealthy`, `WaitStopped`, `WaitGone`, `WaitLogLine`,
   `WaitTCP`, `WaitProbe`, `Stabilize`, `RemoveOrphans`, `FreePort`).

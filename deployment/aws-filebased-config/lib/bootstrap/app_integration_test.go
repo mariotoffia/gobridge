@@ -12,21 +12,18 @@ import (
 	"github.com/stretchr/testify/require"
 
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
-	"github.com/mariotoffia/gobridge/testutil/localstack"
+	"github.com/mariotoffia/gobridge/testutil/flocilocal"
 )
 
-func TestIntegration_AppStartsWithLocalstackSSMSecrets(t *testing.T) {
+func TestIntegration_AppStartsWithSSMSecrets(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	localstack.Configure(
-		localstack.WithServices("ssm"),
-		localstack.WithCleanOrphans(true),
-	)
-	t.Cleanup(localstack.Shutdown)
+	flocilocal.Configure(flocilocal.WithCleanOrphans(true))
+	t.Cleanup(flocilocal.Shutdown)
 
-	ssmClient := localstack.SSMClient(t)
+	ssmClient := awsssm.NewFromConfig(flocilocal.AWSConfig(t))
 	putSecureString(t, ssmClient, "/gobridge/admin", "admin-secret-key-123456")
 	putSecureString(t, ssmClient, "/gobridge/monitor", "monitor-secret-key-123")
 
@@ -40,8 +37,8 @@ func TestIntegration_AppStartsWithLocalstackSSMSecrets(t *testing.T) {
 		TransportHTTPAddr:  ":0",
 		AdminAPIKeyParam:   "/gobridge/admin",
 		MonitorAPIKeyParam: "/gobridge/monitor",
-		AWSRegion:          "us-west-1",
-		SSMEndpoint:        localstack.Endpoint(t),
+		AWSRegion:          flocilocal.Region,
+		SSMEndpoint:        flocilocal.Endpoint(t),
 		DevMode:            true,
 	})
 

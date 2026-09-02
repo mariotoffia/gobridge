@@ -11,14 +11,14 @@ import (
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
+	"github.com/mariotoffia/gobridge/testutil/flocilocal"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SQS Delivery Lifecycle Integration Tests
 //
 // Validates the full delivery lifecycle (Ack, Retry, Extend) and header
-// round-trip against a real SQS-compatible endpoint (ElasticMQ in Docker).
+// round-trip against a real SQS-compatible endpoint (the local AWS emulator in Docker).
 //
 // Summary:
 // ┌──────┬──────────────────────────────────────────────────────────┐
@@ -44,9 +44,9 @@ func TestIntegration_SQS_Delivery_AckRemovesMessage(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	client := sqslocal.Client(t)
-	name := sqslocal.UniqueQueue("id1")
-	queueURL := sqslocal.CreateQueueWithAttrs(t, client, name, map[string]string{
+	client := newSQSClient(t)
+	name := uniqueQueueName("id1")
+	queueURL := createSQSQueueWithAttrs(t, client, name, map[string]string{
 		"VisibilityTimeout": "30",
 	})
 
@@ -83,16 +83,16 @@ func TestIntegration_SQS_Delivery_RetryMakesMessageReappear(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	client := sqslocal.Client(t)
-	name := sqslocal.UniqueQueue("id2")
-	queueURL := sqslocal.CreateQueueWithAttrs(t, client, name, map[string]string{
+	client := newSQSClient(t)
+	name := uniqueQueueName("id2")
+	queueURL := createSQSQueueWithAttrs(t, client, name, map[string]string{
 		"VisibilityTimeout": "30",
 	})
 
 	sendToSQS(t, client, queueURL, `{"retry":"test"}`, nil)
 
 	autoExtend := false
-	ep := sqslocal.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 	receiver, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
@@ -144,16 +144,16 @@ func TestIntegration_SQS_Delivery_ExtendPreventsRedelivery(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	client := sqslocal.Client(t)
-	name := sqslocal.UniqueQueue("id3")
-	queueURL := sqslocal.CreateQueueWithAttrs(t, client, name, map[string]string{
+	client := newSQSClient(t)
+	name := uniqueQueueName("id3")
+	queueURL := createSQSQueueWithAttrs(t, client, name, map[string]string{
 		"VisibilityTimeout": "3",
 	})
 
 	sendToSQS(t, client, queueURL, `{"extend":"test"}`, nil)
 
 	autoExtend := false
-	ep := sqslocal.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 	receiver, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
@@ -279,15 +279,15 @@ func TestIntegration_SQS_AutoExtendKeepsMessageInvisible(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	client := sqslocal.Client(t)
-	name := sqslocal.UniqueQueue("id5")
-	queueURL := sqslocal.CreateQueueWithAttrs(t, client, name, map[string]string{
+	client := newSQSClient(t)
+	name := uniqueQueueName("id5")
+	queueURL := createSQSQueueWithAttrs(t, client, name, map[string]string{
 		"VisibilityTimeout": "4",
 	})
 
 	sendToSQS(t, client, queueURL, `{"autoextend":"test"}`, nil)
 
-	ep := sqslocal.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 	autoExtend := true

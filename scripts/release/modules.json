@@ -41,7 +41,7 @@
     "testutil/artemislocal",
     "testutil/asblocal",
     "testutil/ddblocal",
-    "testutil/localstack",
+    "testutil/flocilocal",
     "testutil/mqttlocal",
     "testutil/rabbitmqlocal",
     "testutil/wait"

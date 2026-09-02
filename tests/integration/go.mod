@@ -15,7 +15,7 @@ replace (
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox => ../../adapters/native/store/memoryoutbox
 	github.com/mariotoffia/gobridge/httpapi => ../../httpapi
 	github.com/mariotoffia/gobridge/testutil/ddblocal => ../../testutil/ddblocal
-	github.com/mariotoffia/gobridge/testutil/sqslocal => ../../testutil/sqslocal
+	github.com/mariotoffia/gobridge/testutil/flocilocal => ../../testutil/flocilocal
 	github.com/mariotoffia/gobridge/testutil/testcontent => ../../testutil/testcontent
 	github.com/mariotoffia/gobridge/testutil/wait => ../../testutil/wait
 )
@@ -33,7 +33,7 @@ require (
 	github.com/mariotoffia/gobridge/adapters/native/config/file v0.0.0
 	github.com/mariotoffia/gobridge/httpapi v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-00010101000000-000000000000
-	github.com/mariotoffia/gobridge/testutil/sqslocal v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge/testutil/flocilocal v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/testutil/wait v0.0.0
 )
 
@@ -51,7 +51,7 @@ require (
 )
 
 require (
-	github.com/aws/aws-sdk-go-v2 v1.43.5 // indirect
+	github.com/aws/aws-sdk-go-v2 v1.43.5
 	github.com/aws/aws-sdk-go-v2/config v1.32.36 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.35 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.36 // indirect

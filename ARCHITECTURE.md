@@ -1115,10 +1115,9 @@ gobridge/
 │   └── tenant/                          # Multi-tenant validation
 ├── cmd/gobridge/                        # Example binary
 ├── testutil/                            # Docker test helpers
+│   ├── flocilocal/
 │   ├── ddblocal/
-│   ├── sqslocal/
 │   ├── asblocal/
-│   ├── s3local/
 │   └── tlsgen/
 └── tests/integration/                   # End-to-end tests
 ```

@@ -19,7 +19,6 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
@@ -92,8 +91,8 @@ func TestRES005_AutoExtendFailureDuplicates(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	sqsClient := sqslocal.Client(t)
-	sqsInURL := sqslocal.CreateQueueWithAttrs(t, sqsClient, sqslocal.UniqueQueue("res005-in"),
+	sqsClient := newSQSClient(t)
+	sqsInURL := createSQSQueueWithAttrs(t, sqsClient, uniqueQueueName("res005-in"),
 		map[string]string{"VisibilityTimeout": "5"})
 	collector := newMQTTCollector(t, outTopic, "res005-col")
 

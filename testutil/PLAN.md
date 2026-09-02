@@ -1,6 +1,10 @@
 # testutil ↔ floci — evaluation and plan
 
-Status: **planning only**. Nothing here is implemented.
+Status: **partly implemented**. The `testutil/` half is done — `s3local`,
+`localstack` and `sqslocal` are deleted and `testutil/flocilocal` replaces
+them; where this file and `testutil/SPEC.md` disagree, SPEC.md is current. The
+deployment-harness half is not built yet, and §7's probe answers are still
+outstanding.
 Scratch document — delete when done. Anything durable (an endpoint
 convention, a build tag, a topology decision) must be promoted to an ADR or a
 page under `docs/` **before** this file is removed. Nothing in the codebase may
@@ -15,7 +19,7 @@ Repo-wide grep for the import path (excluding each package's own directory):
 | Package | Backing image | Go files importing it | Verdict |
 |---|---|---|---|
 | `testutil/localstack` (347 lines) | `localstack/localstack` (Community) | **3** | replaceable |
-| `testutil/sqslocal` (351 lines) | ElasticMQ | **18** | keep (for now) |
+| `testutil/sqslocal` (351 lines) | ElasticMQ | **18** | deleted |
 | `testutil/s3local` (264 lines) | MinIO | **0** | dead — delete |
 
 ### `testutil/localstack` — 3 importers

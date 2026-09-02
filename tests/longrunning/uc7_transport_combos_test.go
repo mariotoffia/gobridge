@@ -26,7 +26,7 @@ import (
 //
 // Validates that per-group message ordering is preserved when 3,000
 // messages in 3 FIFO groups flow through SQS -> MQTT -> SQS-OUT.
-// Uses standard queues with group headers since ElasticMQ FIFO support
+// Uses standard queues with group headers since emulated FIFO support
 // is limited. Verifies soft ordering within each group.
 //
 // Topology:

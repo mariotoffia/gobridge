@@ -13,16 +13,13 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
-	"github.com/mariotoffia/gobridge/testutil/localstack"
+	"github.com/mariotoffia/gobridge/testutil/flocilocal"
 )
 
 func TestMain(m *testing.M) {
-	localstack.Configure(
-		localstack.WithServices("ssm"),
-		localstack.WithCleanOrphans(true),
-	)
+	flocilocal.Configure(flocilocal.WithCleanOrphans(true))
 	code := m.Run()
-	localstack.Shutdown()
+	flocilocal.Shutdown()
 	os.Exit(code)
 }
 
@@ -30,9 +27,9 @@ func uniqueURI(prefix string) string {
 	return fmt.Sprintf("pms://test/%s/%d", prefix, time.Now().UnixNano())
 }
 
-// Verifies full Create → Get round-trip for password credentials against LocalStack SSM.
+// Verifies full Create → Get round-trip for password credentials against the AWS emulator.
 func TestIntegration_SSM_CreateAndGet_Password(t *testing.T) {
-	ep := localstack.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
 	ctx := context.Background()
 	uri := uniqueURI("password")
@@ -48,9 +45,9 @@ func TestIntegration_SSM_CreateAndGet_Password(t *testing.T) {
 	assert.Equal(t, "s3cret!", got.Password().Password().Reveal())
 }
 
-// Verifies full Create → Get round-trip for TLS credentials against LocalStack SSM.
+// Verifies full Create → Get round-trip for TLS credentials against the AWS emulator.
 func TestIntegration_SSM_CreateAndGet_TLS(t *testing.T) {
-	ep := localstack.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
 	ctx := context.Background()
 	uri := uniqueURI("tls")
@@ -75,9 +72,9 @@ func TestIntegration_SSM_CreateAndGet_TLS(t *testing.T) {
 
 // Verifies full Create → Get round-trip for an opaque password-only credential
 // (empty username, e.g. an Azure Service Bus SAS connection string) against
-// LocalStack SSM.
+// the AWS emulator.
 func TestIntegration_SSM_CreateAndGet_OpaqueSecret(t *testing.T) {
-	ep := localstack.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
 	ctx := context.Background()
 	uri := uniqueURI("opaque")
@@ -97,9 +94,9 @@ func TestIntegration_SSM_CreateAndGet_OpaqueSecret(t *testing.T) {
 
 // Verifies an admin Create of an unusable credential set is rejected locally
 // and never creates an SSM parameter, so a subsequent Get finds nothing
-// (end-to-end against LocalStack).
+// (end-to-end against the AWS emulator).
 func TestIntegration_SSM_Create_RejectsUnreadable(t *testing.T) {
-	ep := localstack.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
 	ctx := context.Background()
 	uri := uniqueURI("unreadable")
@@ -117,7 +114,7 @@ func TestIntegration_SSM_Create_RejectsUnreadable(t *testing.T) {
 
 // Verifies Create on an existing parameter returns ErrAlreadyExists.
 func TestIntegration_SSM_Create_AlreadyExists(t *testing.T) {
-	ep := localstack.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
 	ctx := context.Background()
 	uri := uniqueURI("dup")
@@ -132,7 +129,7 @@ func TestIntegration_SSM_Create_AlreadyExists(t *testing.T) {
 
 // Verifies Update overwrites the parameter and Get returns the new value.
 func TestIntegration_SSM_Update(t *testing.T) {
-	ep := localstack.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
 	ctx := context.Background()
 	uri := uniqueURI("update")
@@ -152,7 +149,7 @@ func TestIntegration_SSM_Update(t *testing.T) {
 
 // Verifies Delete removes the parameter so Get returns ErrNotFound.
 func TestIntegration_SSM_Delete(t *testing.T) {
-	ep := localstack.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
 	ctx := context.Background()
 	uri := uniqueURI("delete")
@@ -169,7 +166,7 @@ func TestIntegration_SSM_Delete(t *testing.T) {
 
 // Verifies Get on a non-existent parameter returns ErrNotFound.
 func TestIntegration_SSM_Get_NotFound(t *testing.T) {
-	ep := localstack.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
 	ctx := context.Background()
 
@@ -180,7 +177,7 @@ func TestIntegration_SSM_Get_NotFound(t *testing.T) {
 
 // Verifies List returns URIs for parameters created under the namespace.
 func TestIntegration_SSM_List(t *testing.T) {
-	ep := localstack.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	ns := fmt.Sprintf("listns-%d", time.Now().UnixNano())
 	repo := New(WithEndpoint(ep), WithRegion("us-west-1"), WithNamespace(ns))
 	ctx := context.Background()
@@ -206,7 +203,7 @@ func TestIntegration_SSM_List(t *testing.T) {
 
 // Verifies Update with version mismatch returns ErrVersionMismatch.
 func TestIntegration_SSM_Update_VersionMismatch(t *testing.T) {
-	ep := localstack.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	repo := New(WithEndpoint(ep), WithRegion("us-west-1"))
 	ctx := context.Background()
 	uri := uniqueURI("vcheck")

@@ -66,7 +66,7 @@ func runProcessKillBoundary(t *testing.T, infra *testInfra, boundary string, out
 			task14CrashTopicEnv:       topic,
 			task14CrashInstanceEnv:    instanceID,
 			"DYNAMODB_ENDPOINT":       infra.DDBEndpoint,
-			"SQS_ENDPOINT":            infra.SQSEndpoint,
+			"FLOCI_ENDPOINT":          infra.SQSEndpoint,
 		},
 		"TASK14_READY", "TASK14_CHECKPOINT:",
 	)

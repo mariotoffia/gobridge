@@ -152,7 +152,7 @@ func TestUC22_TenRule_MatchRule_Routing(t *testing.T) {
 	t.Logf("UC22: sent %d messages across %d rules", totalMsgs, ruleCount)
 
 	// Poll each queue for its 500 messages.
-	sqsClient := inClient // same localstack
+	sqsClient := inClient // same emulator
 	for i := 0; i < ruleCount; i++ {
 		bodies := pollSQSBodies(t, sqsClient, queueURLs[i], msgsPerRule, pollTimeout)
 		require.Len(t, bodies, msgsPerRule, "queue %d count", i)
@@ -234,7 +234,7 @@ func TestUC23_SubjectPrefix_Routing(t *testing.T) {
 	}
 	t.Logf("UC23: published %d messages across 3 prefixes", total)
 
-	// Poll each queue using the shared localstack SQS client.
+	// Poll each queue using the shared SQS client.
 	for i, url := range []string{qOrders, qEvents, qMetrics} {
 		bodies := pollSQSBodies(t, sqsC, url, perPrefix, pollTimeout)
 		require.Len(t, bodies, perPrefix, "prefix %s queue count", prefixes[i])

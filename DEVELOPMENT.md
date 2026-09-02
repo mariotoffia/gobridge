@@ -5,7 +5,7 @@ This guide covers everything you need to set up a development environment, build
 ## Prerequisites
 
 - **Go 1.25+** -- gobridge uses a Go workspace (`go.work`)
-- **Docker** -- required for integration tests (DynamoDB Local, ElasticMQ, Mosquitto, Azure Service Bus emulator)
+- **Docker** -- required for integration tests (Floci, DynamoDB Local, Mosquitto, Azure Service Bus emulator)
 - **Make** -- optional, provides convenient commands
 - **Dev tools** -- run `make install` to install all required tools
 
@@ -77,10 +77,9 @@ gobridge/
 │
 ├── cmd/gobridge/           # Example binary
 ├── testutil/               # Docker test helpers
+│   ├── flocilocal/         # Floci -- every AWS API except DynamoDB
 │   ├── ddblocal/           # DynamoDB Local
-│   ├── sqslocal/           # ElasticMQ (SQS-compatible)
 │   ├── asblocal/           # Azure Service Bus emulator
-│   ├── s3local/            # MinIO (S3-compatible)
 │   └── tlsgen/             # TLS certificate generator (pure crypto, no Docker)
 └── tests/integration/      # End-to-end integration tests
 ```
@@ -138,10 +137,9 @@ The test utilities check these environment variables before starting Docker cont
 | Variable | Default | Used By |
 |----------|---------|---------|
 | `DYNAMODB_ENDPOINT` | (auto-start DynamoDB Local) | `testutil/ddblocal` |
-| `SQS_ENDPOINT` | (auto-start ElasticMQ) | `testutil/sqslocal` |
+| `FLOCI_ENDPOINT` | (auto-start Floci) | `testutil/flocilocal` |
 | `MQTT_BROKER_URL` | (auto-start Mosquitto) | MQTT integration tests |
 | `ASB_CONNECTION_STRING` | (auto-start ASB emulator) | `testutil/asblocal` |
-| `S3_ENDPOINT` | (auto-start MinIO) | `testutil/s3local` |
 
 When an environment variable is set, the test utility uses the existing service instead of starting a container.
 

@@ -17,17 +17,22 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/testutil/flocilocal"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
 
 // TestUC79_FIFOMultiGroupConcurrent verifies that messages sent through an
 // SQS FIFO queue with 5 message groups are delivered in per-group order
 // through a DirectHold bridge route to MQTT output.
 //
-// NOTE: ElasticMQ FIFO has known limitations with per-group message cycling
-// under high volume (softwaremill/elasticmq#354). Reduced from 1000/10 to
-// 200/5 for reliable ElasticMQ execution.
+// The 200-message/5-group volume, the serialized MaxInFlight below, and the
+// decision to log ordering violations rather than assert on them were all
+// adopted for an SQS emulator this suite no longer uses — it implemented no
+// FIFO message-group locking. The current emulator delivered all 200 in order
+// across all 5 groups with no duplicates when this was last measured.
+// Restoring the original volume and turning the logs into assertions is a
+// deliberate widening of coverage, so it is left as its own change rather than
+// smuggled into an infrastructure swap.
 func TestUC79_FIFOMultiGroupConcurrent(t *testing.T) {
 	_ = withFreshInfra(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -44,7 +49,7 @@ func TestUC79_FIFOMultiGroupConcurrent(t *testing.T) {
 	// FIFO receiver.
 	fifoRcv, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          fifoURL,
-		Endpoint:          sqslocal.Endpoint(t),
+		Endpoint:          flocilocal.Endpoint(t),
 		Region:            "us-west-1",
 		MaxMessages:       10,
 		WaitTimeSeconds:   1,
@@ -70,7 +75,7 @@ func TestUC79_FIFOMultiGroupConcurrent(t *testing.T) {
 		ID: "uc79-fifo",
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliveryDirectHold,
-			MaxInFlight:  1, // serialize: ElasticMQ lacks FIFO group locking
+			MaxInFlight:  1, // serialize: see the note above this test
 		},
 		Resolver: goruntime.NewStaticResolver(
 			routing.DispatchPlan{BindingID: "uc79-bind", Address: "uc79/fifo/out"},
@@ -125,7 +130,7 @@ func TestUC79_FIFOMultiGroupConcurrent(t *testing.T) {
 		dupes := 0
 		for i := 1; i < len(seqs); i++ {
 			if seqs[i-1] == seqs[i] {
-				dupes++ // ElasticMQ can deliver duplicates (no group locking)
+				dupes++ // an emulator without group locking can deliver duplicates
 			} else if seqs[i-1] > seqs[i] {
 				outOfOrder++
 				if outOfOrder <= 5 {
@@ -138,10 +143,10 @@ func TestUC79_FIFOMultiGroupConcurrent(t *testing.T) {
 		t.Logf("UC79: group %d received %d messages (%d dupes)", g, len(seqs), dupes)
 	}
 
-	// ElasticMQ does NOT implement FIFO message group locking
-	// (softwaremill/elasticmq#354), so some ordering violations are expected.
+	// Logged rather than failed: see the note above this test for why this is
+	// not yet an assertion.
 	if outOfOrder > 0 {
-		t.Logf("UC79: %d ordering violations (ElasticMQ lacks group locking — expected)", outOfOrder)
+		t.Logf("UC79: %d ordering violations", outOfOrder)
 	}
 	assert.Equal(t, numGroups, len(groups),
 		"should have messages in all %d groups", numGroups)

@@ -42,14 +42,31 @@ against real AWS.
 
 ## 3. Container lifecycle
 
-- **floci** → `github.com/floci-io/testcontainers-floci-go`, one container per
-  test binary, started in `TestMain`. No `testutil` wrapper package is written
-  for it: `NewFlociContainer().Start(ctx)` is already the whole contract.
+- **floci** → `testutil/flocilocal`, one container per test binary, started in
+  `TestMain`, on `testutil/dockerexec` like every other container helper.
 - **Everything else** → `testutil/dockerexec`, unchanged.
 
-Adding `testcontainers-go` costs consumers nothing: every `testutil/*` helper is
-its own module and **none appear in `scripts/release/modules.json`** (31
-published modules, zero `testutil`).
+This reverses an earlier decision to depend on
+`github.com/floci-io/testcontainers-floci-go` directly. Two facts moved it:
+
+- `adapters/aws/credentials/ssm` and `adapters/aws/metrics/cloudwatch` are
+  **published** modules. The migration puts the emulator dependency in *their*
+  `go.mod`, not in a `testutil/*` one — so `testcontainers-go` and its ~60
+  indirect modules would ship in two published manifests. The earlier claim that
+  it "costs consumers nothing" rested on the dependency living in `testutil/*`,
+  which it does not.
+- `testutil/localstack` was already a `bootstrap_module` in
+  `scripts/release/modules.json`. `flocilocal` simply takes its slot, so the
+  release ceremony is unchanged either way — the public module bought nothing
+  there.
+
+What the module actually contributed was about fifteen lines: run the image,
+expose 4566, wait for health, hand back an endpoint. `dockerexec` already does
+that, with digest pinning, `MustSucceed`, orphan sweeping and log-on-failure
+that the module has no equivalent for, and `TESTS.md` §5 requires new container
+dependencies to arrive as a `testutil/<thing>local` package anyway. Chunk 26's
+`WithDedicatedNetwork()` becomes `docker network create` plus the
+`FLOCI_SERVICES_DOCKER_NETWORK` env var.
 
 ## 4. `testutil/` changes
 
@@ -61,16 +78,19 @@ published modules, zero `testutil`).
 | `localstack` | 3 — `adapters/aws/credentials/ssm`, `adapters/aws/metrics/cloudwatch`, `deployment/aws-filebased-config/lib/bootstrap` |
 | `sqslocal` | 18 — 9 in `tests/integration/`, 9 in `tests/longrunning/` |
 
-Each migrated file replaces its `Configure`/`Shutdown` pair with a floci
-container in `TestMain` and builds clients from `fc.GetEndpoint()`. The change
-is mechanical; queue-name uniqueness (`UniqueQueue`) moves into the calling
-package or a small local helper — do not resurrect a wrapper package for it.
+Each migrated file repoints its `Configure`/`Shutdown` pair at `flocilocal`
+and builds clients from `flocilocal.AWSConfig(t)`. The change is mechanical;
+queue plumbing (`UniqueQueue`, `CreateQueue`, `CreateQueueWithAttrs`) moves into
+the calling package — do not resurrect a per-service wrapper package for it.
 
 **Keep unchanged:** `ddblocal`, `mqttlocal`, `rabbitmqlocal`, `artemislocal`,
 `asblocal`, `tlsgen`, `wait`, `dockerexec`.
 
-**Open:** `testcontent` has no Go importer and one mention in
-`docs/timing-audit.md`. Decide keep-or-delete; do not delete blind.
+**Kept:** `testcontent`. It has no Go importer, but it is pure assertion logic
+with its own tests, no container and no release-bootstrap cost, and it is
+exactly the TID-based lost/duplicate accounting the deployment e2e matrix needs
+(§8 E5, E15, E16). The real defect was discoverability, so it is now listed in
+`TESTS.md` §7 alongside the other fixtures.
 
 **Watch for:** floci stores SecureString parameters in clear. Any assertion that
 depends on encryption at rest must be rewritten or moved — a test that passes
@@ -96,9 +116,11 @@ harness.
   conditional writes are real.
 - **Network.** Containers must resolve each other by name — floci launches the
   ECS task container, which must reach `mosquitto`, `ddblocal` and `floci:4566`.
-  Prefer `testcontainers-floci-go` + `WithDedicatedNetwork()`; fall back to one
-  `compose.yaml` under `deployment/aws-filebased-config/` with a per-run project
-  name. **One mechanism, not both.**
+  Prefer a dedicated Docker network created by the harness, with `flocilocal`
+  joining it and floci given `FLOCI_SERVICES_DOCKER_NETWORK` so the task
+  containers it launches land there too; fall back to one `compose.yaml` under
+  `deployment/aws-filebased-config/` with a per-run project name. **One
+  mechanism, not both.**
 - **`make test-local-deploy`**, following the `test-integration` pattern: full
   log to `reports/`, prints command/status/count/duration.
 
@@ -115,6 +137,7 @@ parallel packages is the flake class `TESTS.md` exists to prevent.
 | **Alarms do not auto-evaluate.** | Definition stays synth-asserted; consequence driven by `SetAlarmState`. Add **E25**: replay the alarm's own math expression through `GetMetricData` against real `PutMetricData` volume and assert it crosses the threshold. | CloudWatch's evaluation state machine — AWS's code |
 | **Container stdout does not reach the `awslogs` driver.** | Log assertions read `docker logs`. | none material |
 | **SQS max message size is 1 MB, not 256 KB.** | The 256 KB *rejection* case stays a unit test against the real limit. | none |
+| **FIFO deduplication has no time window.** Duplicates are suppressed only while the original is still in the queue; real SQS remembers a deduplication id for five minutes whether or not the message was consumed. Measured, not assumed: two identical sends with no consumer yield one message, but the same pair with a drain in between yields two. | A test that means to exercise dedup must enqueue both the originals and the duplicates before any consumer starts. | Amazon's five-minute window, which no local run asserts |
 
 ## 7. Probes — run before Chunk 27, and P1 before Chunk 26
 

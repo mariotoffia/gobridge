@@ -21,14 +21,13 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
 
 func TestUC52_VisibilityTimeoutExpiry(t *testing.T) {
 	_ = withFreshInfra(t)
-	client := sqslocal.Client(t)
-	name := sqslocal.UniqueQueue("uc52")
-	queueURL := sqslocal.CreateQueueWithAttrs(t, client, name, map[string]string{
+	client := newSQSClient(t)
+	name := uniqueQueueName("uc52")
+	queueURL := createSQSQueueWithAttrs(t, client, name, map[string]string{
 		"VisibilityTimeout": "3",
 	})
 
@@ -88,9 +87,9 @@ func TestUC52_VisibilityTimeoutExpiry(t *testing.T) {
 
 func TestUC53_AutoExtendUnderLoad(t *testing.T) {
 	_ = withFreshInfra(t)
-	client := sqslocal.Client(t)
-	name := sqslocal.UniqueQueue("uc53")
-	queueURL := sqslocal.CreateQueueWithAttrs(t, client, name, map[string]string{
+	client := newSQSClient(t)
+	name := uniqueQueueName("uc53")
+	queueURL := createSQSQueueWithAttrs(t, client, name, map[string]string{
 		"VisibilityTimeout": "5",
 	})
 
@@ -148,10 +147,15 @@ func TestUC53_AutoExtendUnderLoad(t *testing.T) {
 }
 
 func TestUC54_FIFODeduplication(t *testing.T) {
-	// NOTE: ElasticMQ has known limitations with FIFO queue message group
-	// cycling (softwaremill/elasticmq#354). Single-group high-volume sends
-	// stall after the initial batch. We use multiple groups and smaller
-	// batch sizes to work within ElasticMQ's constraints.
+	// Both batches are sent before the bridge starts, and that ordering is
+	// load-bearing. The local emulator deduplicates against the messages still
+	// in the queue; real SQS remembers a deduplication id for five minutes
+	// whether or not the message was consumed. With a consumer already
+	// draining, the duplicate batch would arrive after its originals were gone
+	// and none of it would be suppressed.
+	//
+	// Sends are spread over several message groups: a single group at this
+	// volume stalls after the first batch.
 	_ = withFreshInfra(t)
 	queueURL, client := setupFIFOQueue(t, "uc54")
 
@@ -172,7 +176,7 @@ func TestUC54_FIFODeduplication(t *testing.T) {
 		ID: "uc54-fifo-dedup",
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliveryDirectHold,
-			MaxInFlight:  1, // serialize to avoid ElasticMQ group cycling issues
+			MaxInFlight:  1, // serialize: one message per group in flight at a time
 		},
 		Resolver: goruntime.NewStaticResolver(
 			routing.DispatchPlan{BindingID: "uc54-bind", Address: "uc54/out"},
@@ -180,16 +184,15 @@ func TestUC54_FIFODeduplication(t *testing.T) {
 		SourceCapabilities: directHoldCaps,
 	}, receiver, sender, sess, nil))
 
-	require.NoError(t, rt.Start(ctx))
-	defer func() { _ = rt.Stop(context.Background()) }()
-
-	gobridgesync(t, 30*time.Second, rt)
-
-	// Use 5 groups to avoid ElasticMQ single-group stall.
 	const dedupCount = 100
 	groupFn := func(i int) string { return fmt.Sprintf("dedup-g%d", i%5) }
 	sendBulkToSQSFIFO(t, client, queueURL, dedupCount, groupFn)
 	sendBulkToSQSFIFO(t, client, queueURL, dedupCount, groupFn) // duplicates
+
+	require.NoError(t, rt.Start(ctx))
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	gobridgesync(t, 30*time.Second, rt)
 
 	lrWaitFor(t, 4*time.Minute, fmt.Sprintf("uc54: collector >= %d", dedupCount), func() bool {
 		return collector.count() >= dedupCount
@@ -202,20 +205,25 @@ func TestUC54_FIFODeduplication(t *testing.T) {
 	}))
 
 	total := collector.count()
-	t.Logf("uc54: total=%d (expected ~%d, tolerance 10%% for ElasticMQ dedup leaks)", total, dedupCount)
-	// ElasticMQ's content-based dedup can leak a small percentage of
-	// duplicates (softwaremill/elasticmq#354). Tolerate up to 10%.
+	t.Logf("uc54: total=%d (expected ~%d, tolerance 10%%)", total, dedupCount)
+	// A small percentage of duplicates may survive content-based dedup, so
+	// tolerate up to 10% rather than demanding an exact count.
 	maxAllowed := dedupCount + dedupCount/10
 	assert.LessOrEqual(t, total, maxAllowed,
-		"dedup should discard most duplicates (ElasticMQ tolerance: +10%%)")
+		"dedup should discard most duplicates (tolerance: +10%%)")
 	assert.GreaterOrEqual(t, total, dedupCount,
 		"should receive at least %d unique messages", dedupCount)
 }
 
 func TestUC55_FIFOOrdering(t *testing.T) {
-	// NOTE: ElasticMQ FIFO has known limitations with per-group message
-	// cycling under high volume (softwaremill/elasticmq#354). Reduced
-	// from 1000 to 200 messages for reliable ElasticMQ execution.
+	// The 200-message volume, and the decision below to log ordering
+	// violations rather than assert on them, were both adopted for an
+	// SQS emulator this suite no longer uses — it implemented no FIFO
+	// message-group locking. The current emulator delivered all 200 in
+	// order with no duplicates when this was last measured. Turning the
+	// logs into assertions and restoring the original volume is a
+	// deliberate widening of coverage, so it is left as its own change
+	// rather than smuggled into an infrastructure swap.
 	_ = withFreshInfra(t)
 	queueURL, client := setupFIFOQueue(t, "uc55")
 
@@ -279,22 +287,21 @@ func TestUC55_FIFOOrdering(t *testing.T) {
 		dupes := 0
 		for i := 1; i < len(seqs); i++ {
 			if seqs[i] == seqs[i-1] {
-				dupes++ // ElasticMQ can deliver duplicates (no group locking)
+				dupes++ // an emulator without group locking can deliver duplicates
 			} else if seqs[i] < seqs[i-1] {
 				outOfOrder++
-				// ElasticMQ does NOT implement FIFO message group locking
-				// (softwaremill/elasticmq#354), so out-of-order delivery is
-				// expected. Log as warning, not error.
-				t.Logf("uc55: group %s: ordering gap at index %d: %d < %d (ElasticMQ limitation)",
+				// Logged rather than failed: see the note at the top of this
+				// test for why this is not yet an assertion.
+				t.Logf("uc55: group %s: ordering gap at index %d: %d < %d",
 					g, i, seqs[i], seqs[i-1])
 			}
 		}
 		if dupes > 0 {
-			t.Logf("uc55: group %s: %d duplicate deliveries (ElasticMQ limitation)", g, dupes)
+			t.Logf("uc55: group %s: %d duplicate deliveries", g, dupes)
 		}
 	}
 	if outOfOrder > 0 {
-		t.Logf("uc55: %d ordering violations (ElasticMQ lacks FIFO group locking — expected)", outOfOrder)
+		t.Logf("uc55: %d ordering violations", outOfOrder)
 	}
 	t.Logf("uc55: received %d msgs across %d groups", len(msgs), len(groups))
 }

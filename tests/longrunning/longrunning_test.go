@@ -30,9 +30,9 @@ import (
 	"github.com/mariotoffia/gobridge/runtime/session"
 	"github.com/mariotoffia/gobridge/testutil/artemislocal"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
+	"github.com/mariotoffia/gobridge/testutil/flocilocal"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 	"github.com/mariotoffia/gobridge/testutil/rabbitmqlocal"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
@@ -45,8 +45,13 @@ func TestMain(m *testing.M) {
 	// Defaults are generous enough for 5+ concurrent bridges.
 	mqttMem := envOr("GOBRIDGE_MQTT_MEMORY", "256m")
 	mqttCPU := envOr("GOBRIDGE_MQTT_CPUS", "3.0")
-	sqsMem := envOr("GOBRIDGE_SQS_MEMORY", "512m")
-	sqsCPU := envOr("GOBRIDGE_SQS_CPUS", "3.0")
+	// The AWS emulator serves every AWS API this suite touches, not just SQS,
+	// so it gets the same 2g the Make target hands it. The default has to
+	// match, because running the package directly is a documented path and an
+	// out-of-memory emulator does not fail loudly here — the helper simply
+	// restarts it, silently discarding every queue mid-test.
+	awsMem := envOr("GOBRIDGE_AWS_EMULATOR_MEMORY", "2g")
+	awsCPU := envOr("GOBRIDGE_AWS_EMULATOR_CPUS", "3.0")
 	ddbMem := envOr("GOBRIDGE_DDB_MEMORY", "512m")
 	ddbCPU := envOr("GOBRIDGE_DDB_CPUS", "3.0")
 
@@ -62,9 +67,9 @@ func TestMain(m *testing.M) {
 		ddblocal.WithMemory(ddbMem),
 		ddblocal.WithCPUs(ddbCPU),
 	)
-	sqslocal.Configure(
-		sqslocal.WithMemory(sqsMem),
-		sqslocal.WithCPUs(sqsCPU),
+	flocilocal.Configure(
+		flocilocal.WithMemory(awsMem),
+		flocilocal.WithCPUs(awsCPU),
 	)
 	rabbitmqlocal.Configure(
 		rabbitmqlocal.WithCleanOrphans(true),
@@ -146,9 +151,9 @@ func isInfo() bool { return testLogLevel() <= slog.LevelInfo }
 
 func setupSQSQueue(t *testing.T, prefix string) (string, *awssqs.Client) {
 	t.Helper()
-	client := sqslocal.Client(t)
-	name := sqslocal.UniqueQueue(prefix)
-	queueURL := sqslocal.CreateQueueWithAttrs(t, client, name, map[string]string{
+	client := newSQSClient(t)
+	name := uniqueQueueName(prefix)
+	queueURL := createSQSQueueWithAttrs(t, client, name, map[string]string{
 		"VisibilityTimeout": "30",
 	})
 	return queueURL, client
@@ -158,7 +163,7 @@ func newSQSReceiver(t *testing.T, queueURL string) *sqsadapter.Receiver {
 	t.Helper()
 	r, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          queueURL,
-		Client:            sqslocal.Client(t),
+		Client:            newSQSClient(t),
 		MaxMessages:       10,
 		WaitTimeSeconds:   1,
 		VisibilityTimeout: 30,
@@ -171,7 +176,7 @@ func newSQSSender(t *testing.T, queueURL string) *sqsadapter.Sender {
 	t.Helper()
 	s, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueURL: queueURL,
-		Client:   sqslocal.Client(t),
+		Client:   newSQSClient(t),
 		Timeout:  10 * time.Second,
 		Logger:   testLogger(t),
 	})

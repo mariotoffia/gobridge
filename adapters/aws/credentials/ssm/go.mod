@@ -8,7 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.73.5
 	github.com/aws/smithy-go v1.27.7
 	github.com/mariotoffia/gobridge v0.0.0
-	github.com/mariotoffia/gobridge/testutil/localstack v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge/testutil/flocilocal v0.0.0-00010101000000-000000000000
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -18,7 +18,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.36 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.36 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.37 // indirect
-	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.66.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.16 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.36 // indirect
 	github.com/aws/aws-sdk-go-v2/service/signin v1.5.5 // indirect
@@ -33,5 +32,5 @@ require (
 
 replace (
 	github.com/mariotoffia/gobridge => ../../../..
-	github.com/mariotoffia/gobridge/testutil/localstack => ../../../../testutil/localstack
+	github.com/mariotoffia/gobridge/testutil/flocilocal => ../../../../testutil/flocilocal
 )

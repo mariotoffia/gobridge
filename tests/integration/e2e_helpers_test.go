@@ -24,8 +24,8 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/session"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
+	"github.com/mariotoffia/gobridge/testutil/flocilocal"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
@@ -35,9 +35,9 @@ import (
 
 func setupSQSQueue(t *testing.T, prefix string) (string, *awssqs.Client) {
 	t.Helper()
-	client := sqslocal.Client(t)
-	name := sqslocal.UniqueQueue(prefix)
-	queueURL := sqslocal.CreateQueueWithAttrs(t, client, name, map[string]string{
+	client := newSQSClient(t)
+	name := uniqueQueueName(prefix)
+	queueURL := createSQSQueueWithAttrs(t, client, name, map[string]string{
 		"VisibilityTimeout": "5",
 	})
 	return queueURL, client
@@ -49,7 +49,7 @@ func newSQSReceiver(t *testing.T, queueURL string) *sqsadapter.Receiver {
 	// Provide static credentials so tests don't depend on host AWS config.
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-	ep := sqslocal.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	r, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          queueURL,
 		Endpoint:          ep,
@@ -68,7 +68,7 @@ func newSQSSender(t *testing.T, queueURL string) *sqsadapter.Sender {
 	t.Helper()
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-	ep := sqslocal.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	s, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueURL: queueURL,
 		Endpoint: ep,
@@ -130,7 +130,7 @@ func newSQSSenderFIFO(t *testing.T, queueURL, groupID string) *sqsadapter.Sender
 	t.Helper()
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-	ep := sqslocal.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	s, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueURL:       queueURL,
 		Endpoint:       ep,
@@ -149,7 +149,7 @@ func newSQSReceiverWithVisibility(t *testing.T, queueURL string, visibilityTimeo
 	t.Helper()
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-	ep := sqslocal.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	autoExtend := false
 	r, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          queueURL,
