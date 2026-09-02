@@ -212,42 +212,66 @@ func waitCohortApplied(
 	return converged
 }
 
-// waitCohortAtGeneration polls until every listed member has settled BACK on the
-// given generation, running it, with no confirm window open — the shape a cohort
-// must end in when a proposal cannot be confirmed by everyone.
+// waitCohortRejected polls until every listed member agrees that a proposal past
+// after was NOT taken up, and returns the state they agree on.
 //
-// It is deliberately not waitCohortApplied with a different argument: this one
-// requires the exact generation rather than any newer one, so a cohort that
-// quietly carried the unconfirmable change forward fails instead of passing.
+// This is the shape a cohort must end in when one member cannot take a change:
+// every remaining member reads the SAME outcome for the SAME proposal, none of
+// them applied it, and no confirm window is left open — so all of them are still
+// running the config they were running before. A cohort where one member applied
+// and another did not is the split this exists to rule out, and it fails here
+// rather than being read as "settled".
 //
-// Applied is required for the same reason it is required of a converged cohort:
-// the rollout row can read committed on every member while one member's local
-// swap failed and it is still running the previous config, which is exactly the
-// split this function exists to rule out.
-func waitCohortAtGeneration(
+// The generation in a member's health block is the generation of the ROLLOUT it
+// last observed, not the generation it is running. That is why this waits for
+// agreement plus applied=false rather than for the previous generation number to
+// reappear — the number moves on even when nothing was applied.
+//
+// Agreement alone is not enough, and this is the trap: a proposal that has only
+// just been made reads the same on every member — same generation, nothing
+// applied, no confirm window — and would satisfy an agreement check the instant
+// it was proposed, while it was still perfectly capable of committing a second
+// later. So the outcome must be one the rollout cannot move on from.
+func waitCohortRejected(
 	t *testing.T,
 	ctx context.Context,
 	probe cohortProbe,
 	adminKey string,
 	roster []string,
-	generation uint64,
+	after uint64,
 	timeout time.Duration,
-) {
+) string {
 	t.Helper()
+	var agreed string
 	var last map[string]slotHealth
 	err := pollUntil(ctx, 5*time.Second, timeout, func() (bool, error) {
 		last, _ = observeSlots(ctx, probe, adminKey)
+		generation, state := uint64(0), ""
 		for _, id := range roster {
 			health, ok := last[id]
-			if !ok || !health.fresh() || !health.Applied || health.ConfirmPending || health.Generation != generation {
+			if !ok || !health.fresh() || health.ConfirmPending || health.Generation <= after {
 				return false, nil
 			}
+			if health.Applied || !rolloutIsSettled(health.State) {
+				return false, nil
+			}
+			if generation == 0 {
+				generation, state = health.Generation, health.State
+				continue
+			}
+			if health.Generation != generation || health.State != state {
+				return false, nil // members still disagree about the outcome
+			}
 		}
+		agreed = state
 		return true, nil
 	})
 	if err != nil {
-		t.Fatalf("cohort did not settle back on generation %d: %+v", generation, last)
+		t.Fatalf("the cohort never agreed that the proposal past generation %d was not taken up; a "+
+			"member that applied it while another did not is exactly the split this rules out: %+v",
+			after, last)
 	}
+	return agreed
 }
 
 // waitProposalObserved polls until at least one roster member has actually SEEN
@@ -441,6 +465,21 @@ func adminCallStatus(
 	}
 	return status
 }
+
+// rolloutIsSettled reports whether a rollout state is one the barrier cannot
+// move on from. "proposed", "staging" and "committed" are all states a rollout
+// passes THROUGH on its way to being applied, so a cohort sitting in one of them
+// has decided nothing yet.
+func rolloutIsSettled(state string) bool {
+	return state == rolloutStateAborted || state == rolloutStateReverted
+}
+
+// The two outcomes in which a proposal ends without being applied: the cohort
+// never agreed to it, or it agreed and then took it back.
+const (
+	rolloutStateAborted  = "aborted"
+	rolloutStateReverted = "reverted"
+)
 
 func keysOf(m map[string]slotHealth) []string {
 	out := make([]string, 0, len(m))

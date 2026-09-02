@@ -1866,13 +1866,24 @@ func configContentEqual(a, b *ports.BridgeConfig) bool {
 // configContentEqual (see there). ok is false on a marshal error so the caller
 // can fail closed. Both callers pass already-frozen configs, so the projection is
 // stable across repeated calls.
+//
+// It must ALSO be stable across a save and a reload, because that is the only
+// reason the projection exists: a cohort agrees on a change by comparing this
+// value, and the member proposing it holds the config in memory while every
+// other member reads the document that was written from it. Marshalling and
+// re-parsing does not preserve the difference between an absent collection and
+// an empty one — a nil slice is written out as `[]` and comes back non-nil — so
+// a projection that distinguished the two would give the same change two
+// different identities, and no member could ever join the proposer. Collapsing
+// them is not a loosening: in this config model an empty collection and an
+// absent one both mean "none", and nothing else is collapsed — an empty string,
+// a zero and a false are real values and stay.
 func configCanonicalBytes(cfg *ports.BridgeConfig) ([]byte, bool) {
 	if cfg == nil {
 		return nil, true
 	}
 	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	if err := enc.Encode(shared.RevealSecrets(cfg)); err != nil {
+	if !encodeCanonical(&buf, shared.RevealSecrets(cfg)) {
 		return nil, false
 	}
 	ok := true
@@ -1880,10 +1891,10 @@ func configCanonicalBytes(cfg *ports.BridgeConfig) ([]byte, bool) {
 		if !ok {
 			return
 		}
-		// enc.Encode writes each value followed by a newline, so the ordered
-		// stream of plugin payloads is self-delimiting; a nil PluginConfig encodes
-		// as "null", preserving its structural position.
-		if err := enc.Encode(shared.RevealSecrets(pc)); err != nil {
+		// Each value is written followed by a newline, so the ordered stream of
+		// plugin payloads is self-delimiting; a plugin config that carries
+		// nothing encodes as "null", preserving its structural position.
+		if !encodeCanonical(&buf, shared.RevealSecrets(pc)) {
 			ok = false
 		}
 	})
@@ -1891,6 +1902,72 @@ func configCanonicalBytes(cfg *ports.BridgeConfig) ([]byte, bool) {
 		return nil, false
 	}
 	return buf.Bytes(), true
+}
+
+// encodeCanonical appends one value to buf as JSON with every absent and empty
+// collection reduced to the same form, followed by a newline. It reports false
+// on a marshal error so the caller can fail closed.
+func encodeCanonical(buf *bytes.Buffer, value any) bool {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	var tree any
+	if err := json.Unmarshal(raw, &tree); err != nil {
+		return false
+	}
+	normalized, keep := withoutEmptyCollections(tree)
+	if !keep {
+		buf.WriteString("null\n")
+		return true
+	}
+	out, err := json.Marshal(normalized)
+	if err != nil {
+		return false
+	}
+	buf.Write(out)
+	buf.WriteByte('\n')
+	return true
+}
+
+// withoutEmptyCollections returns value with nulls and empty collections removed,
+// and reports whether anything is left to record.
+//
+// Object keys whose value carries nothing are dropped, which is what makes an
+// absent key and an empty one identical. Array ELEMENTS are never dropped —
+// position is meaning in an array — so an element that carries nothing stays as
+// a null placeholder and a shorter array still differs from a longer one.
+func withoutEmptyCollections(value any) (any, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return nil, false
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			if normalized, keep := withoutEmptyCollections(item); keep {
+				out[key] = normalized
+			}
+		}
+		if len(out) == 0 {
+			return nil, false
+		}
+		return out, true
+	case []any:
+		if len(typed) == 0 {
+			return nil, false
+		}
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			normalized, keep := withoutEmptyCollections(item)
+			if !keep {
+				normalized = nil
+			}
+			out = append(out, normalized)
+		}
+		return out, true
+	default:
+		return typed, true
+	}
 }
 
 // visitPluginConfigs visits every decoded PluginConfig on the blueprint in the

@@ -19,9 +19,14 @@ import (
 // barrier, one live-safe delta is proposed once and committed once, every
 // member applies it, a member whose task is replaced rejoins under the SAME id
 // on the COMMITTED generation rather than on whatever the shared config
-// document happens to hold, a rollback converges the cohort, and a member that
-// cannot converge inside the confirm window takes the WHOLE cohort back to the
-// last confirmed generation instead of leaving it split.
+// document happens to hold, a rollback converges the cohort, and a change one
+// member cannot take is applied by nobody rather than by some.
+//
+// One thing it does NOT cover: the confirm window, where a member ACCEPTS a
+// change and then fails to actually run it. Removing a member makes it fail to
+// answer at all, which the barrier resolves earlier and differently. Driving a
+// member to accept-then-fail needs a change that builds on every member and
+// runs on none, and that is its own piece of work.
 //
 // Because the emulator runs each ECS task definition as a real container, it
 // also proves the synthesized shape WIRES identity correctly — one single-task
@@ -127,12 +132,13 @@ func TestLocal_StaticSlotCohort(t *testing.T) {
 		t.Logf("cohort converged on rollback generation %d", rolledBack)
 	})
 
-	t.Run("confirm_window_reverts_the_whole_cohort", func(t *testing.T) {
+	t.Run("a_change_one_member_cannot_take_is_applied_by_nobody", func(t *testing.T) {
 		requireConverged(t)
-		// Take one slot away and leave it away. The barrier's roster is frozen
-		// from the config, so the absent member can never confirm, and the
-		// confirm window must return every remaining member to the last
-		// confirmed generation rather than leaving the cohort split across two.
+		// Take one slot away and leave it away. The barrier freezes the roster
+		// from the config, so the absent member can never answer for the change
+		// — and the whole point of the barrier is that the remaining members
+		// then keep running what they were running, together, instead of one
+		// applying the change and another not.
 		cohort.ScaleMember(t, ctx, staticSlotWorkerB, 0)
 		t.Cleanup(func() { cohort.ScaleMember(t, context.WithoutCancel(ctx), staticSlotWorkerB, 1) })
 
@@ -141,9 +147,10 @@ func TestLocal_StaticSlotCohort(t *testing.T) {
 
 		commitLogLevel(t, ctx, probe, controlHost, adminKey, "warn")
 		// The state a cohort is in the instant a commit is proposed is the same
-		// state it settles back into when the proposal is abandoned, so the
-		// revert assertion is vacuous unless the proposal is observed first.
+		// state it ends in when the proposal is abandoned, so the assertion
+		// below is vacuous unless the proposal is observed first.
 		waitProposalObserved(t, ctx, probe, adminKey, survivors, committed, 6*time.Minute)
-		waitCohortAtGeneration(t, ctx, probe, adminKey, survivors, committed, 6*time.Minute)
+		outcome := waitCohortRejected(t, ctx, probe, adminKey, survivors, committed, 6*time.Minute)
+		t.Logf("the cohort settled on %q and nobody applied the change", outcome)
 	})
 }

@@ -47,19 +47,7 @@ decides whether the cohort can take a **live** config change:
 | Shape | Selected by | Worker tasks | Live coordinated rollout |
 |---|---|---|---|
 | Autoscaled workers (default) | `MemberSlots` unset | One ECS service, `WorkerDesiredCount` interchangeable tasks | **No.** `bridge.cluster.rollout: coordinated` and a non-empty `bridge.cluster.members` are both **rejected at synth**. |
-| Static member slots | `MemberSlots` set | One single-task ECS service per roster member, each with its own task definition and `member_id` | **The shape the barrier needs** — see [the cluster guide](../cluster/README.md) and the limitation below. |
-
-> **A deployed cohort does not converge today.** Standing this shape up and
-> committing a live-safe change is proven to reach the barrier — every slot
-> comes up under its own restart-stable `member_id`, agrees on one membership
-> epoch and one baseline — and then to ABORT rather than commit: each member
-> computes a different candidate digest for the change than the member that
-> proposed it, so none of them can join the proposal and the rollout ends at
-> one acknowledgement. The cause is that a config document does not re-read as
-> the config that was written (a nil list is persisted as an empty one), so the
-> digest is not stable across a save. Until that is fixed, plan a live
-> coordinated change on this profile as unavailable and use whole-cohort
-> replacement.
+| Static member slots | `MemberSlots` set | One single-task ECS service per roster member, each with its own task definition and `member_id` | **Yes.** The barrier runs; see [the cluster guide](../cluster/README.md). |
 
 The rejection is not a policy preference, it is the identity model. The rollout
 barrier freezes `bridge.cluster.members` as its membership epoch and counts

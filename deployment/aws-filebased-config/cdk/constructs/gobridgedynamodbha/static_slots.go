@@ -94,12 +94,9 @@ const tagValueStaticSlotRollout = "coordinated-static-slots"
 // replaces alone at 0/100, so the cohort is briefly one task short rather than
 // entirely absent, but an in-flight rollout during such a deploy is abandoned.
 const staticSlotAdvisory = "GoBridgeDynamoDBHA: static member-slot profile. Every roster member runs as its " +
-	"own single-task ECS service with a restart-stable member_id, which is the shape the coordinated " +
-	"rollout barrier needs (docs/cluster/README.md). A live coordinated change does NOT converge on a " +
-	"deployed cohort today — every member computes a different candidate digest than the proposer, so " +
-	"the rollout aborts at one acknowledgement instead of committing; see docs/aws-deployment/" +
-	"topologies.md. Plan live changes as whole-cohort replacement until that is fixed. Also deployed by " +
-	"replacement: anything the barrier refuses as " +
+	"own single-task ECS service with a restart-stable member_id, so this cohort CAN take a live " +
+	"coordinated config change through the rollout barrier (docs/cluster/README.md) instead of " +
+	"whole-cohort replacement. Still deployed by replacement: anything the barrier refuses as " +
 	"live-unsafe, and every change to the deployment profile itself — store table identities, the " +
 	"cohort roster, the container image, the task definition. A profile change ALSO needs the shared " +
 	"config document on EFS to change with it: the default control seeder mode is SeedOnce, which keeps " +
