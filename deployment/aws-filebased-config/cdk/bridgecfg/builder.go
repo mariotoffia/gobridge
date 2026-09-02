@@ -38,6 +38,18 @@ type Builder struct {
 	bindingIDs  map[string]struct{}
 	routeIDs    map[string]struct{}
 
+	// senderAddresses records the transport destination each declared
+	// sender resolves to, keyed by sender id.
+	//
+	// A binding MUST carry an address — the runtime validator refuses a
+	// config whose binding has none — and the builder synthesises the
+	// binding for the common one-sender route, so the address has to come
+	// from somewhere. It comes from the sender that owns the destination:
+	// only the transport-specific With*Sender method knows what "the
+	// destination" means for its transport, so each one records it here and
+	// WithRoute reads it back without knowing any transport at all.
+	senderAddresses map[string]string
+
 	// scanSecrets toggles the plaintext-secrets pass run from
 	// Build. On by default.
 	scanSecrets bool
@@ -49,12 +61,13 @@ type Builder struct {
 // chain remains uninterrupted.
 func New(name string) *Builder {
 	b := &Builder{
-		sessionIDs:  map[string]struct{}{},
-		receiverIDs: map[string]struct{}{},
-		senderIDs:   map[string]struct{}{},
-		bindingIDs:  map[string]struct{}{},
-		routeIDs:    map[string]struct{}{},
-		scanSecrets: true,
+		sessionIDs:      map[string]struct{}{},
+		receiverIDs:     map[string]struct{}{},
+		senderIDs:       map[string]struct{}{},
+		bindingIDs:      map[string]struct{}{},
+		routeIDs:        map[string]struct{}{},
+		senderAddresses: map[string]string{},
+		scanSecrets:     true,
 	}
 	if name == "" {
 		b.fail(errors.New("bridgecfg: New: bridge name must not be empty"))

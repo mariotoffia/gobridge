@@ -382,14 +382,24 @@ supply differently, so the proofs cannot drift apart. `GOBRIDGE_INT_KEEP=1`
 keeps the stack and everything it runs on.
 
 **What a local run proves, and what it does not.** It proves the runtime
-contract on a deployed cohort, and — because the emulator runs each task
+contract on a deployed stack, and — because the emulator runs each task
 definition as a real container — that the synthesized shape wires identity
-correctly. It does NOT prove AWS ECS behaves as declared: the emulator drops
+correctly. It does NOT prove AWS behaves as declared: the emulator drops
 task-definition volumes, serves no task metadata, cannot carry EFS, and has no
 container-dependency model, so the harness restores the first three and says so
 where it does. The fourth cannot be, so a local member may start before its
-init container has run — the cohort still settles, but no claim may rest on
-start ordering. Any published claim must name which half it rests on.
+init container has run — the deployment still settles, but no claim may rest on
+start ordering. It also does not evaluate IAM, never evaluates an alarm, cannot
+update an `AWS::ECS::Service`, and does not route a load balancer to a task.
+Any published claim must name which half it rests on.
+
+**The matrix, and the reason for every entry that has no local test**, lives in
+`docs/aws-deployment/local-deployment-suite.md`. A behaviour that cannot be
+proved locally is recorded there with what was measured, not with an
+assumption — and where a gap can be partly closed from the other side (the
+health-check path probed against the container, the alarm's own query replayed
+through `GetMetricData`, the deployed role's policy read back through IAM), it
+is.
 
 ## 6. Long-running tests
 

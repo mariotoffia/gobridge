@@ -202,8 +202,42 @@ func DeployStack(t *testing.T, app awscdk.App, env SandboxEnv, stackName string)
 		postSynthHook(t, asmDir, stackName)
 	}
 
-	outFile := filepath.Join(t.TempDir(), "outputs.json")
+	flat := cdkDeploy(t, stackName, asmDir)
 
+	t.Cleanup(func() {
+		if env.Keep {
+			t.Logf("GOBRIDGE_INT_KEEP=1 → leaving stack %s in place", stackName)
+			return
+		}
+		DestroyStack(t, env, stackName, asmDir)
+	})
+
+	if postDeployHook != nil {
+		postDeployHook(t, flat)
+	}
+	return flat
+}
+
+// cdkDeploy runs one `cdk deploy` against an already-synthesized cloud assembly
+// and returns the stack outputs it wrote.
+//
+// It registers no cleanup and runs no hook, so a caller that deploys the SAME
+// assembly a second time — to prove the deploy is idempotent — gets exactly the
+// deploy and nothing else.
+func cdkDeploy(t *testing.T, stackName, asmDir string) StackOutputs {
+	t.Helper()
+	outputs, err := cdkDeployE(t, stackName, asmDir)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	return outputs
+}
+
+// cdkDeployE is cdkDeploy without the fatal: a caller that treats a failed
+// deploy as an answer rather than an error gets to say so itself.
+func cdkDeployE(t *testing.T, stackName, asmDir string) (StackOutputs, error) {
+	t.Helper()
+	outFile := filepath.Join(t.TempDir(), "outputs.json")
 	args := []string{
 		"deploy",
 		stackName,
@@ -214,27 +248,23 @@ func DeployStack(t *testing.T, app awscdk.App, env SandboxEnv, stackName string)
 	}
 	t.Logf("%s %s", cdkBinaryName, strings.Join(args, " "))
 	cmd := exec.Command(cdkBinaryName, args...)
-	cmd.Stdout = testWriter{t}
-	cmd.Stderr = testWriter{t}
+	var captured strings.Builder
+	cmd.Stdout = io.MultiWriter(testWriter{t}, &captured)
+	cmd.Stderr = io.MultiWriter(testWriter{t}, &captured)
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("%s deploy %s: %v", cdkBinaryName, stackName, err)
+		// The tail, not the whole transcript: every line is already in the test
+		// log, and what a caller needs from the error is the reason CloudFormation
+		// gave — which is at the end.
+		return nil, fmt.Errorf("%s deploy %s: %w\n%s",
+			cdkBinaryName, stackName, err, lastBytes(captured.String(), 4000))
 	}
-
-	t.Cleanup(func() {
-		if env.Keep {
-			t.Logf("GOBRIDGE_INT_KEEP=1 → leaving stack %s in place", stackName)
-			return
-		}
-		DestroyStack(t, env, stackName, asmDir)
-	})
-
 	raw, err := os.ReadFile(outFile)
 	if err != nil {
-		t.Fatalf("read outputs file: %v", err)
+		return nil, fmt.Errorf("read outputs file: %w", err)
 	}
 	var nested map[string]map[string]string
 	if err := json.Unmarshal(raw, &nested); err != nil {
-		t.Fatalf("parse outputs json: %v", err)
+		return nil, fmt.Errorf("parse outputs json: %w", err)
 	}
 	flat := StackOutputs{}
 	for _, m := range nested {
@@ -242,10 +272,7 @@ func DeployStack(t *testing.T, app awscdk.App, env SandboxEnv, stackName string)
 			flat[k] = v
 		}
 	}
-	if postDeployHook != nil {
-		postDeployHook(t, flat)
-	}
-	return flat
+	return flat, nil
 }
 
 // DestroyStack runs `cdk destroy --force` against the supplied stack.
@@ -264,6 +291,14 @@ func DestroyStack(t *testing.T, env SandboxEnv, stackName, asmDir string) {
 	if err := cmd.Run(); err != nil {
 		t.Logf("%s destroy %s failed: %v", cdkBinaryName, stackName, err)
 	}
+}
+
+// lastBytes returns the final n bytes of s, marked when it was truncated.
+func lastBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return "…\n" + s[len(s)-n:]
 }
 
 // httpGet issues a GET with a 30s default timeout and returns

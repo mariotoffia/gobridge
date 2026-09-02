@@ -69,7 +69,20 @@ func (b *Builder) WithRouteOpts(receiverID string, senderOrBindingIDs []string, 
 		if !b.reserveID(b.bindingIDs, "binding", bindID) {
 			return b
 		}
-		bind := ports.BindingDef{ID: bindID, SenderID: id}
+		// The address is REQUIRED by the runtime validator, and a synthetic
+		// binding is the one place nobody else can supply it. It is the
+		// sender's own destination, recorded when the sender was declared:
+		// without it the whole config is rejected at startup and the
+		// deployment comes up bridging nothing.
+		address := b.senderAddresses[id]
+		if address == "" {
+			b.fail(fmt.Errorf(
+				"bridgecfg: route from %q: sender %q declares no transport destination, so the "+
+					"synthesised binding would carry no address and the runtime would reject the config",
+				receiverID, id))
+			return b
+		}
+		bind := ports.BindingDef{ID: bindID, SenderID: id, Address: address}
 		if sd := b.findSender(id); sd != nil {
 			bind.SessionID = sd.SessionID
 			bind.SetDecoded(sd.Config, nil)

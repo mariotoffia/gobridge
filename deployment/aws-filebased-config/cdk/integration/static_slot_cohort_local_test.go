@@ -24,17 +24,22 @@ import (
 //
 // One thing it does NOT cover: the confirm window, where a member ACCEPTS a
 // change and then fails to actually run it. Removing a member makes it fail to
-// answer at all, which the barrier resolves earlier and differently. Driving a
-// member to accept-then-fail needs a change that builds on every member and
-// runs on none, and that is its own piece of work.
+// ANSWER, which the barrier resolves earlier and differently — at the vote — and
+// that is the phase named for it below. Driving accept-then-fail needs a change
+// every member votes for and none can converge on, and the two levers this
+// deployment exposes both fall short: a session's transport options cannot be
+// changed through the admin config API at all (a plugin config is not part of
+// the overlay's wire form), and a subscription change — the one lever that is —
+// was acked only by the member that proposed it, so the barrier aborted at the
+// vote rather than committing provisionally.
 //
 // Because the emulator runs each ECS task definition as a real container, it
 // also proves the synthesized shape WIRES identity correctly — one single-task
 // service per slot, the id baked into that slot's own task definition. It does
 // NOT prove that AWS ECS hands a replacement task that identity. That still
-// rests on the construct's synth assertions and on the credentialed test the
-// static-slot chunk left runnable. Any published claim must say which of the
-// two it rests on.
+// rests on the construct's synth assertions and on the credentialed test that
+// deploys the same fixture against a real account. Any published claim must say
+// which of the two it rests on.
 func TestLocal_StaticSlotCohort(t *testing.T) {
 	env := RequireSandbox(t)
 	cohort := DeployLocalCohort(t, env, staticSlotRoster())

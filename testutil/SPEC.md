@@ -160,14 +160,18 @@ Each probe's answer is recorded in `testutil/PLAN.md` §7.
 
 | # | Topology | Status |
 |---|---|---|
-| D1 | Single Fargate task, SQS in/out, config on EFS | after P1 |
-| D2 | Single task, MQTT↔SQS (`mqttlocal` broker on the shared network) | after D1 |
-| D3 | Cluster: control task RW config + N worker tasks RO | after D1 |
-| D4 | DynamoDB HA, static slots and leases | ungated (DynamoDB Local) |
-| D5 | Go producer/consumer Lambdas either side of the bridge | after P3 |
-| D6 | Alarms + SNS | after D1 |
-| D7 | ALB attachment | synth only |
-| D8 | Config rollout over D3 | after D3 |
+| D1 | Single Fargate task, SQS in/out, config on EFS | **landed** — `TestLocal_SQSDataPlane` |
+| D2 | Single task, MQTT↔SQS (`mqttlocal` broker on the shared network) | **landed** — `TestLocal_MQTTSubjectAndAddressMapping` |
+| D3 | Cluster: control task RW config + N worker tasks RO | **landed** — `TestLocal_ClusterSharedConfigAndScaling` |
+| D4 | DynamoDB HA, static slots and leases | **landed** — `TestLocal_StaticSlotCohort` |
+| D5 | Go producer/consumer Lambdas either side of the bridge | **not local** — P3 not run; stays on `integration_aws` |
+| D6 | Alarms + SNS | **landed** — `TestLocal_DeadLetterAndAlarms` |
+| D7 | ALB attachment | synth only, plus E24 against the container |
+| D8 | Config rollout over D3 | **landed** — `TestLocal_StaticSlotCohort` |
+
+The per-behaviour outcome, and the measured reason behind every entry that has
+no local test, is `docs/aws-deployment/local-deployment-suite.md`. That page is
+the durable record; this table is the design's own view of it.
 
 **Data plane** — E1 SQS↔SQS roundtrip · E2 MQTT→SQS with `Subject`/`Address`
 mapping · E3 SQS→MQTT · E4 attribute/header fidelity · E5 batch-of-10 without

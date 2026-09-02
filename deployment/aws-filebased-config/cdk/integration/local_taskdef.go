@@ -5,7 +5,7 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"sort"
 	"testing"
 	"time"
@@ -13,8 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	ecstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
-
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 )
 
 // Restoring the storage CloudFormation declared and the emulator dropped.
@@ -76,6 +74,10 @@ func restoreTaskVolumes(t *testing.T, outputs StackOutputs) {
 	if state == nil {
 		t.Fatal("task definition restore ran before the local sandbox was stood up")
 	}
+	if state.currentConfigDir == "" {
+		t.Fatal("no shared config directory was bound for this stack; the assembly rewrite and the " +
+			"storage restore disagree about which deployment is being restored")
+	}
 	if len(state.taskSpecs) == 0 {
 		t.Fatal("the assembly declared no task storage to restore; the rewrite and the restore disagree")
 	}
@@ -92,6 +94,8 @@ func restoreTaskVolumes(t *testing.T, outputs StackOutputs) {
 		t.Fatalf("list deployed services: %v", err)
 	}
 	restored := 0
+	restoredFamilies := map[string]struct{}{}
+	state.deployedTaskDefs = map[string]string{}
 	for _, serviceARN := range listed.ServiceArns {
 		described, err := client.DescribeServices(ctx, &ecs.DescribeServicesInput{
 			Cluster: aws.String(cluster), Services: []string{serviceARN},
@@ -105,13 +109,19 @@ func restoreTaskVolumes(t *testing.T, outputs StackOutputs) {
 		if err != nil {
 			t.Fatalf("describe the task definition of %s: %v", serviceARN, err)
 		}
-		memberID := taskDefinitionMemberID(definition.TaskDefinition)
-		spec, ok := state.taskSpecs[memberID]
+		family := aws.ToString(definition.TaskDefinition.Family)
+		spec, ok := state.taskSpecs[family]
 		if !ok {
-			t.Fatalf("deployed task definition announces member_id %q, which the assembly never declared "+
-				"(it declared %v)", memberID, sortedSpecKeys(state.taskSpecs))
+			t.Fatalf("deployed task definition belongs to family %q, which the assembly never declared "+
+				"(it declared %v)", family, sortedSpecKeys(state.taskSpecs))
 		}
-		revision := registerRestoredTaskDefinition(t, ctx, client, definition.TaskDefinition, spec, state.configDir)
+		restoredFamilies[family] = struct{}{}
+		// Remember what CloudFormation registered before rolling off it. The
+		// restore is invisible to CloudFormation, so a proof that asks whether
+		// re-deploying the same template is a no-op has to put the service back
+		// on the revision the template declares first.
+		state.deployedTaskDefs[serviceARN] = aws.ToString(described.Services[0].TaskDefinition)
+		revision := registerRestoredTaskDefinition(t, ctx, client, definition.TaskDefinition, spec, state.currentConfigDir)
 		if _, err := client.UpdateService(ctx, &ecs.UpdateServiceInput{
 			Cluster: aws.String(cluster), Service: aws.String(serviceARN),
 			TaskDefinition: aws.String(revision),
@@ -120,11 +130,38 @@ func restoreTaskVolumes(t *testing.T, outputs StackOutputs) {
 		}
 		restored++
 	}
-	if restored != len(state.taskSpecs) {
-		t.Fatalf("restored %d services but the assembly declared storage for %d member slots",
-			restored, len(state.taskSpecs))
+	if len(restoredFamilies) != len(state.taskSpecs) {
+		t.Fatalf("restored the storage of %v but the assembly declared it for %v: a task definition "+
+			"nothing rolled onto still runs without the shared config document",
+			sortedKeySet(restoredFamilies), sortedSpecKeys(state.taskSpecs))
 	}
-	t.Logf("restored task storage on %d deployed services, bound to %s", restored, state.configDir)
+	t.Logf("restored task storage on %d deployed services, bound to %s", restored, state.currentConfigDir)
+}
+
+// restoreDeployedTaskDefinitions rolls every service back onto the revision
+// CloudFormation registered, undoing the harness's own storage restore.
+//
+// It exists for one caller: the proof that re-deploying the same assembly
+// changes nothing. CloudFormation compares the template against the state it
+// recorded at deploy, and the harness moved the services off that state after
+// the deploy, so without this the second deploy is answering a question about
+// the harness rather than about the profile.
+func restoreDeployedTaskDefinitions(t *testing.T, ctx context.Context, cluster string) {
+	t.Helper()
+	state := localState
+	if state == nil || len(state.deployedTaskDefs) == 0 {
+		t.Fatal("no deployed task definitions were recorded, so the services cannot be put back on them")
+	}
+	client := ecs.NewFromConfig(localAWSConfig(t))
+	for service, definition := range state.deployedTaskDefs {
+		if _, err := client.UpdateService(ctx, &ecs.UpdateServiceInput{
+			Cluster: aws.String(cluster), Service: aws.String(service),
+			TaskDefinition: aws.String(definition),
+		}); err != nil {
+			t.Fatalf("roll service %s back onto the task definition CloudFormation registered: %v",
+				service, err)
+		}
+	}
 }
 
 // quiesceServices scales every service in the deployed cluster to zero and waits
@@ -227,27 +264,22 @@ func countMountPoints(definition *ecstypes.TaskDefinition) int {
 	return total
 }
 
-// taskDefinitionMemberID reads the member id a task definition stamps into its
-// bootstrap document, or "" when it carries none.
-func taskDefinitionMemberID(definition *ecstypes.TaskDefinition) string {
-	for _, container := range definition.ContainerDefinitions {
-		for _, pair := range container.Environment {
-			if aws.ToString(pair.Name) != bootstrapDocumentVariable {
-				continue
-			}
-			var bootstrap infra.BootstrapConfig
-			if err := json.Unmarshal([]byte(aws.ToString(pair.Value)), &bootstrap); err != nil {
-				return ""
-			}
-			return bootstrap.MemberID
-		}
-	}
-	return ""
-}
-
 // declaredTaskSpec extracts the storage one synthesized task definition declares,
-// keyed later by the member id it stamps in.
-func declaredTaskSpec(properties map[string]any) (string, localTaskSpec) {
+// keyed by the FAMILY it declares.
+//
+// The family, not the member id: the static member-slot profile is the only
+// topology that stamps a member id, and every topology needs its storage put
+// back. CDK always emits a family — it derives one from the construct path when
+// the operator supplies none — and it is what DescribeTaskDefinition reports
+// back for the deployed revision, so it matches the assembly to the deployment
+// without depending on a CloudFormation-generated physical name.
+func declaredTaskSpec(properties map[string]any) (string, localTaskSpec, error) {
+	family, _ := properties["Family"].(string)
+	if family == "" {
+		return "", localTaskSpec{}, fmt.Errorf(
+			"declares no literal Family, so the storage the emulator drops cannot be matched back " +
+				"to the deployed revision")
+	}
 	spec := localTaskSpec{}
 	for _, value := range asList(properties["Volumes"]) {
 		volume, _ := value.(map[string]any)
@@ -255,25 +287,14 @@ func declaredTaskSpec(properties map[string]any) (string, localTaskSpec) {
 		if _, bound := volume["Host"]; !bound || name == "" {
 			// bindVolumesToHost rewrote every EFS volume to a host bind mount, so
 			// anything else here is a volume this harness has no way to back.
-			return "", localTaskSpec{}
+			return "", localTaskSpec{}, fmt.Errorf(
+				"declares a volume this harness cannot back (%v)", value)
 		}
 		spec.Volumes = append(spec.Volumes, name)
 	}
-	memberID := ""
 	for _, value := range asList(properties["ContainerDefinitions"]) {
 		container, _ := value.(map[string]any)
 		name, _ := container["Name"].(string)
-		for _, entry := range asList(container["Environment"]) {
-			pair, _ := entry.(map[string]any)
-			if pair["Name"] != bootstrapDocumentVariable {
-				continue
-			}
-			document, _ := pair["Value"].(string)
-			var bootstrap infra.BootstrapConfig
-			if err := json.Unmarshal([]byte(document), &bootstrap); err == nil {
-				memberID = bootstrap.MemberID
-			}
-		}
 		for _, entry := range asList(container["MountPoints"]) {
 			mount, _ := entry.(map[string]any)
 			readOnly, _ := mount["ReadOnly"].(bool)
@@ -284,12 +305,21 @@ func declaredTaskSpec(properties map[string]any) (string, localTaskSpec) {
 			})
 		}
 	}
-	return memberID, spec
+	return family, spec, nil
 }
 
 func asList(value any) []any {
 	list, _ := value.([]any)
 	return list
+}
+
+func sortedKeySet(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for key := range set {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func sortedSpecKeys(specs map[string]localTaskSpec) []string {

@@ -161,6 +161,12 @@ launched — when it finishes.
 Two local runs cannot share a machine: the emulator starts an image registry of
 its own on a fixed host port.
 
+The suite deploys one stack per topology — the SQS data plane, the MQTT bridge,
+the control/worker cluster, the static-slot cohort, and the shape, redeploy,
+destroy and dead-letter proofs. What each one proves, what the emulator cannot
+back, and the measured reason behind every matrix entry that has no local test
+is [docs/aws-deployment/local-deployment-suite.md](docs/aws-deployment/local-deployment-suite.md).
+
 ## Linting
 
 ```bash

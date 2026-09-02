@@ -86,5 +86,6 @@ Beyond the pages in the map above.
 | [Monitoring and Observability](monitoring.md) | CloudWatch metrics, structured logging, and alerting. |
 | [HTTP API and Networking](http-api.md) | ALB target groups, security groups, and TLS termination. |
 | [Total Cost of Ownership](tco.md) | Fargate, EFS, and SSM cost breakdown with worked examples. |
+| [Running the Deployment Suite Locally](local-deployment-suite.md) | Deploying and driving this profile with no AWS account: what it proves, what it does not, and the measured emulation gaps. |
 | [CDK Scenarios](../scenarios/cdk/) | Complete, runnable CDK deployment examples. |
 | [Deployment Guide](../deployment-guide.md) | Platform-agnostic deployment considerations. |

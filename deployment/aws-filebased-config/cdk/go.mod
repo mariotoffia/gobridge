@@ -8,13 +8,18 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.36
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.35
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.66.4
+	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.85.0
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.63.2
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.327.0
 	github.com/aws/aws-sdk-go-v2/service/ecs v1.79.1
+	github.com/aws/aws-sdk-go-v2/service/iam v1.62.0
+	github.com/aws/aws-sdk-go-v2/service/sns v1.45.0
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.46.5
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.73.5
+	github.com/aws/aws-sdk-go-v2/service/sts v1.45.5
 	github.com/aws/constructs-go/constructs/v10 v10.8.1
 	github.com/aws/jsii-runtime-go v1.139.0
+	github.com/eclipse/paho.golang v0.23.0
 	github.com/mariotoffia/gobridge/adapters/aws/store v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0-00010101000000-000000000000
@@ -23,9 +28,11 @@ require (
 	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-20260507130243-4750750b6096
 	github.com/mariotoffia/gobridge/testutil/flocilocal v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/testutil/mqttlocal v0.0.0
+	github.com/mariotoffia/gobridge/testutil/testcontent v0.0.0
 )
 
 require (
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.20 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.36 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.1 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.1 // indirect
@@ -36,11 +43,9 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/signin v1.5.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.33.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.5 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sts v1.45.5 // indirect
 	github.com/aws/smithy-go v1.28.1 // indirect
 	github.com/cdklabs/cloud-assembly-schema-go/awscdkcloudassemblyschema/v54 v54.17.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/eclipse/paho.golang v0.23.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
@@ -64,6 +69,7 @@ require (
 
 require (
 	github.com/Masterminds/semver/v3 v3.5.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/cloudformation v1.65.1
 	github.com/cdklabs/awscdk-asset-awscli-go/awscliv1/v2 v2.2.293 // indirect
 	github.com/cdklabs/awscdk-asset-node-proxy-agent-go/nodeproxyagentv6/v2 v2.1.2 // indirect
 	github.com/fatih/color v1.19.0 // indirect
@@ -122,3 +128,5 @@ replace github.com/mariotoffia/gobridge/testutil/mqttlocal => ../../../testutil/
 replace github.com/mariotoffia/gobridge/testutil/ddblocal => ../../../testutil/ddblocal
 
 replace github.com/mariotoffia/gobridge/testutil/flocilocal => ../../../testutil/flocilocal
+
+replace github.com/mariotoffia/gobridge/testutil/testcontent => ../../../testutil/testcontent

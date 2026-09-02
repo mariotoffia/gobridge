@@ -18,7 +18,6 @@ import (
 	ecstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-	"github.com/aws/jsii-runtime-go"
 
 	ha "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgedynamodbha"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
@@ -45,25 +44,16 @@ const (
 
 // LocalCohort is the deployed cohort and the handles a proof needs to drive it.
 type LocalCohort struct {
-	Outputs  StackOutputs
-	AdminKey string
+	LocalStack
 
-	clusterARN string
-	services   map[string]string
-	ecs        *ecs.Client
-	backend    *localBackend
+	// services maps a member id to the ECS service that runs that slot.
+	services map[string]string
 }
 
 // DeployLocalCohort deploys the static member-slot HA stack against local
 // emulation and returns it ready to drive.
 func DeployLocalCohort(t *testing.T, env SandboxEnv, slots *ha.MemberSlots) LocalCohort {
 	t.Helper()
-	state := localState
-	if state == nil {
-		t.Fatal("DeployLocalCohort requires the local sandbox; call RequireSandbox first")
-	}
-	seedLocalParameters(t)
-
 	sandbox := haSandbox{
 		SandboxEnv:          env,
 		Image:               localBridgeImage(),
@@ -79,26 +69,21 @@ func DeployLocalCohort(t *testing.T, env SandboxEnv, slots *ha.MemberSlots) Loca
 		PlaintextBroker: true,
 	}
 
-	app := NewApp(t, env)
-	stackName := StackName(env, "local-ha-slots")
-	stack := awscdk.NewStack(app, jsii.String(stackName), &awscdk.StackProps{Env: StackEnv(env)})
-	_ = newHAFixture(t, stack, sandbox, slots)
-	ApplyDestroyAspect(stack)
-
-	outputs := DeployStack(t, app, env, stackName)
-	if err := missingHAOutput(outputs,
+	deployed := DeployLocal(t, env, "local-ha-slots", func(stack awscdk.Stack) {
+		_ = newHAFixture(t, stack, sandbox, slots)
+	})
+	if err := missingHAOutput(deployed.Outputs,
 		"ClusterArn", "ControlServiceName", "WorkerServiceNames", "MemberSlotIDs", "RolloutTableName"); err != nil {
 		t.Fatal(err)
 	}
+	// The cohort's whole protocol is compare-and-swap against this table, and it
+	// runs on DynamoDB Local rather than where CloudFormation created it. A table
+	// the mirror missed would surface as a cohort that never converges, which
+	// names nothing.
+	requireMirroredTable(t, deployed.Outputs["RolloutTableName"])
 
-	cohort := LocalCohort{
-		Outputs:    outputs,
-		AdminKey:   localAdminKey,
-		clusterARN: outputs["ClusterArn"],
-		ecs:        ecs.NewFromConfig(localAWSConfig(t)),
-		backend:    state,
-	}
-	cohort.services = cohort.mapSlotServices(t, outputs, slots)
+	cohort := LocalCohort{LocalStack: deployed}
+	cohort.services = cohort.mapSlotServices(t, deployed.Outputs, slots)
 	return cohort
 }
 

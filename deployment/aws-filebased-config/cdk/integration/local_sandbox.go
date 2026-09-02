@@ -85,19 +85,31 @@ const (
 // localBackend is everything the local run stands on. One per test binary,
 // built by the first RequireSandbox and torn down by TestMain.
 type localBackend struct {
-	network        string
-	runDir         string
-	configDir      string
-	flociEndpoint  string
-	dynamoEndpoint string
-	brokerURL      string
-	prober         string
-	responder      string
-	metadata       string
-	seederPinned   string
-	seederLocal    string
-	taskSpecs      map[string]localTaskSpec
-	env            SandboxEnv
+	network string
+	runDir  string
+	// configDir is the run's BASE directory for shared config filesystems;
+	// stackConfigDir carves one subdirectory out of it per deployed stack.
+	configDir string
+	// currentConfigDir is the directory the stack being deployed right now binds
+	// its shared config volume to. Every stack gets its own, because the seeder
+	// writes the config document ONCE and does not overwrite an existing one: two
+	// stacks sharing a directory means the second one's tasks boot the first
+	// one's config and address resources that no longer exist.
+	currentConfigDir string
+	flociEndpoint    string
+	dynamoEndpoint   string
+	brokerURL        string
+	prober           string
+	responder        string
+	metadata         string
+	seederPinned     string
+	seederLocal      string
+	taskSpecs        map[string]localTaskSpec
+	// deployedTaskDefs records, per deployed service, the task definition
+	// CloudFormation put it on before the harness rolled it onto a restored one.
+	deployedTaskDefs map[string]string
+	mirrored         []string
+	env              SandboxEnv
 }
 
 var localState *localBackend
@@ -114,7 +126,7 @@ func init() {
 // task storage the emulator's CloudFormation dropped put back.
 func afterLocalDeploy(t *testing.T, outputs StackOutputs) {
 	t.Helper()
-	mirrorDeployedTables(t, outputs)
+	localState.mirrored = mirrorDeployedTables(t, outputs)
 	restoreTaskVolumes(t, outputs)
 	// Registered AFTER DeployStack registered its destroy, so it runs BEFORE it:
 	// the emulator refuses to delete a cluster that still has running tasks, and
@@ -301,6 +313,27 @@ func localRunDirectories(t *testing.T, state *localBackend) {
 	if err := os.Chmod(state.configDir, 0o777); err != nil {
 		t.Fatalf("open shared config directory: %v", err)
 	}
+}
+
+// stackConfigDir creates and returns the shared config directory one stack's
+// tasks bind to.
+//
+// One per stack, and this is load-bearing. Every task of a stack must see the
+// SAME document — that is what the control-writes/workers-read profile is — and
+// no task may see a DIFFERENT stack's, because the seeder writes the document
+// once and leaves an existing one alone. A shared directory across stacks means
+// the second deployment's tasks boot the first deployment's config and address
+// queues that were destroyed with it.
+func stackConfigDir(t *testing.T, state *localBackend, stackName string) string {
+	t.Helper()
+	dir := filepath.Join(state.configDir, stackName)
+	if err := os.MkdirAll(dir, 0o777); err != nil {
+		t.Fatalf("create the shared config directory of %s: %v", stackName, err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatalf("open the shared config directory of %s: %v", stackName, err)
+	}
+	return dir
 }
 
 // bootstrapLocalEnvironment runs `cdklocal bootstrap` once per binary. Without

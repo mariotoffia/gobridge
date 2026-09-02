@@ -85,7 +85,33 @@ func (b *Builder) WithSQSSender(id string, ref registry.QueueRef, opts ...SQSSen
 	def := ports.SenderDef{ID: id, Transport: sqsTransport}
 	def.SetDecoded(cfg, nil)
 	b.cfg.Senders = append(b.cfg.Senders, def)
+	// An SQS sender's transport destination is its queue. Record the name
+	// rather than the URL: the sender accepts either as a binding address,
+	// but a name-only sender (one whose URL is resolved lazily at first
+	// Send) has no URL to record at synth time.
+	b.senderAddresses[id] = sqsSenderAddress(cfg, ref)
 	return b
+}
+
+// sqsSenderAddress is the queue an SQS sender sends to, in the form a binding
+// address may carry it.
+//
+// Order matters. An explicit QueueName is what the sender itself resolves
+// against, so it wins. A resolved CDK ref contributes the queue's physical name
+// — a synth-time token that CloudFormation renders into the deployed config, and
+// which matches the last path segment of the URL the same ref produced. The
+// logical registry name is the last resort, which is also what an unresolved ref
+// puts in QueueName.
+func sqsSenderAddress(cfg *sqs.Config, ref registry.QueueRef) string {
+	if cfg.QueueName != "" {
+		return cfg.QueueName
+	}
+	if ref.IsResolved() {
+		if name := ref.Queue().QueueName(); name != nil && *name != "" {
+			return *name
+		}
+	}
+	return ref.Name()
 }
 
 // WithSQSRegion is the canonical option for steering the AWS region

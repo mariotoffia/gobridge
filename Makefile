@@ -277,7 +277,7 @@ test-local-deploy: audit-timings audit-test-timings docker-build ## Deploy the A
 		PATH="$(CURDIR)/$(LOCAL_DEPLOY_TOOLS)/node_modules/.bin:$$PATH" \
 		GOBRIDGE_INT_LOCAL=1 GOBRIDGE_LOCAL_IMAGE=$(IMAGE_LOCAL_TAG) \
 		JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 \
-		go -C deployment/aws-filebased-config/cdk test -count=1 -timeout=60m -v \
+		go -C deployment/aws-filebased-config/cdk test -count=1 -timeout=90m -v \
 			-tags=integration_local ./integration/... 2>&1 | tee reports/test-local-deploy.log; \
 		rc=$$?; \
 		echo ""; \

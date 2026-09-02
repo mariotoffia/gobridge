@@ -61,6 +61,7 @@ func rewriteLocalAssembly(t *testing.T, asmDir, stackName string) {
 	}
 	rewritten, substituted := 0, 0
 	state.taskSpecs = map[string]localTaskSpec{}
+	state.currentConfigDir = stackConfigDir(t, state, stackName)
 	containerEnv := localContainerEnvironment()
 	functionEnv := localFunctionEnvironment()
 	for logicalID, value := range resources {
@@ -74,20 +75,23 @@ func rewriteLocalAssembly(t *testing.T, asmDir, stackName string) {
 			if properties == nil {
 				t.Fatalf("task definition %s has no properties", logicalID)
 			}
-			bindVolumesToHost(t, logicalID, properties, state.configDir)
+			bindVolumesToHost(t, logicalID, properties, state.currentConfigDir)
 			addContainerEnvironment(t, logicalID, properties, containerEnv)
 			substituted += useLocalSeederImage(properties, state.seederPinned, state.seederLocal)
-			memberID, spec := declaredTaskSpec(properties)
-			if memberID == "" {
-				t.Fatalf("task definition %s either stamps in no member_id or declares a volume this "+
-					"harness cannot back, so its storage cannot be restored after deploy", logicalID)
+			family, spec, err := declaredTaskSpec(properties)
+			if err != nil {
+				t.Fatalf("task definition %s: %v", logicalID, err)
 			}
 			if len(spec.Volumes) == 0 || len(spec.Mounts) == 0 {
 				t.Fatalf("task definition %s declares no shared storage after the rewrite (%d volumes, "+
-					"%d mounts): the cohort would have no config document and every member would boot "+
-					"the empty default", logicalID, len(spec.Volumes), len(spec.Mounts))
+					"%d mounts): the deployment would have no config document and every member would "+
+					"boot the empty default", logicalID, len(spec.Volumes), len(spec.Mounts))
 			}
-			state.taskSpecs[memberID] = spec
+			if _, clash := state.taskSpecs[family]; clash {
+				t.Fatalf("two task definitions declare the family %q, so the storage restored after "+
+					"deploy could be the wrong one", family)
+			}
+			state.taskSpecs[family] = spec
 			rewritten++
 		case lambdaFunctionType:
 			// The custom resources CloudFormation runs during the deploy are
@@ -112,7 +116,7 @@ func rewriteLocalAssembly(t *testing.T, asmDir, stackName string) {
 	if err := os.WriteFile(path, out, 0o600); err != nil {
 		t.Fatalf("write rewritten template: %v", err)
 	}
-	t.Logf("local assembly: %d task definitions bound to %s", rewritten, state.configDir)
+	t.Logf("local assembly: %d task definitions bound to %s", rewritten, state.currentConfigDir)
 }
 
 // localContainerEnvironment is what every container of the deployment's own

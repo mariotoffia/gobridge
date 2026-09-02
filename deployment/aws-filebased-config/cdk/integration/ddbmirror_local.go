@@ -31,12 +31,14 @@ import (
 // deployment still owns what exists, the reference emulator owns how it behaves.
 
 // mirrorDeployedTables copies every table this deployment created into the
-// DynamoDB the bridge actually talks to.
+// DynamoDB the bridge actually talks to, and returns what it mirrored.
 //
 // It enumerates rather than reading table names out of the stack outputs: the
-// deployment owns four tables and publishes two, and a store whose table was
-// never mirrored fails far from its cause.
-func mirrorDeployedTables(t *testing.T, _ StackOutputs) {
+// HA deployment owns four tables and publishes two, and a store whose table was
+// never mirrored fails far from its cause. A topology that declares no table
+// mirrors nothing, which is not an error — only a deployment that NEEDS a table
+// can say that one is missing, so that assertion lives with the topology.
+func mirrorDeployedTables(t *testing.T, _ StackOutputs) []string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -60,15 +62,29 @@ func mirrorDeployedTables(t *testing.T, _ StackOutputs) {
 	}
 	mirrored := append([]string(nil), names.TableNames...)
 	sort.Strings(mirrored)
-	if len(mirrored) == 0 {
-		t.Fatal("the deploy created no DynamoDB tables, so every store the cohort needs is missing")
-	}
 	for _, name := range mirrored {
 		if err := MirrorTable(ctx, source, target, name); err != nil {
 			t.Fatalf("mirror table %s: %v", name, err)
 		}
 	}
 	t.Logf("mirrored %d deployed tables to DynamoDB Local: %v", len(mirrored), mirrored)
+	return mirrored
+}
+
+// requireMirroredTable fails unless a table the deployment created is present in
+// the DynamoDB the bridge actually talks to.
+func requireMirroredTable(t *testing.T, name string) {
+	t.Helper()
+	if strings.TrimSpace(name) == "" {
+		t.Fatal("no table name to check; the deployment published none")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := dynamodb.NewFromConfig(localAWSConfig(t)).DescribeTable(ctx,
+		&dynamodb.DescribeTableInput{TableName: aws.String(name)}); err != nil {
+		t.Fatalf("table %s was created by the deploy but is absent from the DynamoDB the data plane "+
+			"talks to, so every conditional write against it would fail: %v", name, err)
+	}
 }
 
 // MirrorTable copies a table's schema and current contents from src to dst and
