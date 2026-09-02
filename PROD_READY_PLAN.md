@@ -3,7 +3,7 @@
 
 **Goal:** Close every stable finding in the canonical `PROD_READY_ISSUES.md` ledger with tested behavior, truthful contracts, safe migrations, and release evidence.
 
-**Plan status:** Chunks 1–16, 24 and 25 landed and are checked off below with their residuals; chunks 1–4 are the commits `cf86968f`, `84939bf5`, `f0c9685c`, `b781f741`. Chunk 17 is landed and closed; its deployment residual moved to the new Chunk 26 (an executed multi-member rollout proof on a local deployment, now specified against local AWS emulation in `testutil/SPEC.md`), which is scheduled independently. Chunk 27 follows it with the emulator migration and the rest of the deployment e2e matrix. Chunk 18 is the next one open. The ledger re-verification at HEAD `b781f741` added 22 findings (HIGH-14…20, MEDIUM-18…25, LOW-20…26), withdrew LOW-7 and LOW-19, and downgraded MEDIUM-12 and BLOCKER-2; the coverage matrix and two new chunks (24, 25) absorb them. Chunks 24 and 25 are placed at the end of Phase 1 by dependency but carry P0 defects — schedule them immediately after Chunk 5.
+**Plan status:** Chunks 1–16, 24 and 25 landed and are checked off below with their residuals; chunks 1–4 are the commits `cf86968f`, `84939bf5`, `f0c9685c`, `b781f741`. Chunk 17 is landed and closed; its deployment residual moved to the new Chunk 26 (an executed multi-member rollout proof on a local deployment, now specified against local AWS emulation in `testutil/SPEC.md`), which is scheduled independently. Chunk 27 (retiring the per-service emulator wrappers) has no dependencies and is scheduled BEFORE Chunk 26 — like Chunks 24 and 25, its number is identity, not execution order. Chunk 28 follows Chunk 26 with the rest of the deployment e2e matrix. Execution order for the three is 27 → 26 → 28. Chunk 18 is the next one open. The ledger re-verification at HEAD `b781f741` added 22 findings (HIGH-14…20, MEDIUM-18…25, LOW-20…26), withdrew LOW-7 and LOW-19, and downgraded MEDIUM-12 and BLOCKER-2; the coverage matrix and two new chunks (24, 25) absorb them. Chunks 24 and 25 are placed at the end of Phase 1 by dependency but carry P0 defects — schedule them immediately after Chunk 5.
 
 **Architecture:** Keep domain and port contracts inward-facing. Change shared contracts and persistence formats before adapters, then wire composition roots, deployment, observability, and documentation. Coordinated rollout stays disabled in the shipped autoscaled high-availability facade until the static-member implementation and its deployment proof pass.
 
@@ -127,7 +127,8 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 | 24 | done | HIGH-16, MEDIUM-21, LOW-22, LOW-23 |
 | 25 | done | HIGH-17, MEDIUM-24, LOW-21 |
 | 26 | waiting | none — closes the BLOCKER-1 deployment residual whose primary mapping stays with Chunk 17, so the mapping count is unchanged |
-| 27 | waiting | none — test infrastructure and coverage breadth; adds no issue mapping |
+| 27 | waiting | none — test infrastructure; adds no issue mapping. Runs BEFORE 26. |
+| 28 | waiting | none — deployment coverage breadth; adds no issue mapping |
 
 ## Phase 0: Stop unsafe claims and freeze accepted contracts
 
@@ -490,8 +491,8 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 
 - **Issues:** BLOCKER-1 (deployment residual only; its primary mapping stays with Chunk 17, so this chunk adds no new mapping).
 - **Goal:** Replace "tooling under investigation" with a real one — deploy the `aws-filebased-config` CDK profile against local emulation with no AWS account — then stand up a multi-member static-slot cohort on it and drive it through propose, commit, per-member convergence, member restart, and rollback.
-- **Dependencies:** Chunk 17.
-- **Design:** `testutil/SPEC.md`. Its §7 probe P1 (EFS through ECS) must be answered before this chunk starts; P2 (cdklocal) before its deploy step.
+- **Dependencies:** Chunks 17 and 27. **Runs after Chunk 27**, which vendors `testcontainers-floci-go` and proves floci against real gobridge tests on the smallest surface. Building a deployment harness on an emulator no test has exercised is the expensive order.
+- **Design:** `testutil/SPEC.md`. Its §7 probe P1 (EFS through ECS) must be answered before this chunk starts; P2 (cdklocal) before its deploy step. Both probes may run in parallel with Chunk 27.
 - **Files/packages:** `deployment/aws-filebased-config/cdk/integration/` (`harness.go`, new `ddbmirror_local.go`, new local fixtures under build tag `integration_local`), `deployment/aws-filebased-config/Makefile`, `testutil/ddblocal`, `testutil/mqttlocal`, `testutil/dockerexec`.
 - **Tests:** one deployed multi-member cohort test per proved behaviour, under `integration_local`.
 - **Emulation split — do not blur it.** Every AWS API except DynamoDB is served by floci; DynamoDB is served by DynamoDB Local via `AWS_ENDPOINT_URL_DYNAMODB`, because floci does not document `ConditionExpression` semantics and this chunk's split-brain and lease-handoff assertions are compare-and-swap. An emulator that silently accepts a failing condition would make those tests pass while the invariant is broken — a false green, which is worse than a red.
@@ -513,44 +514,45 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 - [ ] Accept when a deployed multi-member cohort has completed propose, commit, convergence, restart and rollback in an executed local run, `make test-local-deploy` is green from a clean checkout with no AWS credentials, and no published text claims deployed evidence that does not exist.
 - **Suggested commit title:** `prove static-slot rollout on a local deployment`
 
-### Chunk 27: Local emulation migration and deployment e2e matrix
+### Chunk 27: Retire the per-service AWS emulator wrappers
 
-- **Issues:** none new — this is test infrastructure and coverage breadth. It removes the LocalStack Community dependency and closes the coverage the ALB and alarm emulation gaps would otherwise leave open.
-- **Goal:** Retire the per-service emulator wrappers onto the single emulator Chunk 26 introduced, then extend the local deployment suite past the rollout cohort to the rest of the topologies.
-- **Dependencies:** Chunk 26. Its two halves are independent of each other and may run in parallel.
-- **Design:** `testutil/SPEC.md` §4 for the migration, §8 for the matrix, §6 for what each gap costs. Probe P3 gates the Lambda topology only.
-- **Files/packages:** `testutil/` (deleting `s3local`, `localstack`, `sqslocal`), the 21 test files importing them, `deployment/aws-filebased-config/cdk/integration/`, `DEVELOPMENT.md`, `TESTS.md`.
-- **Tests:** the existing 21 migrated files must stay green unchanged in behaviour; new deployment tests per topology.
+- **Issues:** none new — test infrastructure. It removes the LocalStack Community dependency and is the on-ramp for Chunks 26 and 28.
+- **Goal:** Replace three per-service emulator wrapper packages with one emulator used directly, so 962 lines of Docker lifecycle code go away and the deployment work that follows builds on a dependency that already has test coverage.
+- **Dependencies:** none. **Schedule this before Chunk 26** — it is the smallest surface on which floci is introduced, vendored and proved.
+- **Design:** `testutil/SPEC.md` §1–§4.
+- **Files/packages:** `testutil/s3local`, `testutil/localstack`, `testutil/sqslocal` (all deleted), the 21 test files importing them, `DEVELOPMENT.md`, `TESTS.md`.
+- **Tests:** the 21 migrated files must assert exactly what they asserted before. This chunk changes infrastructure, not coverage — a migration that quietly weakens an assertion is a regression wearing a refactor's clothes.
+- **Not migrated:** `ddblocal` stays on DynamoDB Local, and `mqttlocal`, `rabbitmqlocal`, `artemislocal`, `asblocal` stay on `dockerexec`. floci replaces AWS APIs, not brokers, and not the one emulator Amazon itself publishes.
 - [ ] Delete `testutil/s3local` — zero importers — and drop the `S3_ENDPOINT` row from `DEVELOPMENT.md`.
-- [ ] Migrate the 3 `testutil/localstack` importers to `testcontainers-floci-go` in `TestMain`, then delete the package and its `LOCALSTACK_ENDPOINT` row. Audit the LocalStack mentions across `docs/` — several are about AWS deployment, not the test helper.
-- [ ] Migrate the 18 `testutil/sqslocal` importers the same way, moving `UniqueQueue` into the calling packages, then delete the package. Do not resurrect a wrapper to hold the helper.
-- [ ] Verify no migrated assertion depended on SecureString encryption at rest — floci stores those in clear, so such a test would pass for the wrong reason.
+- [ ] Migrate the 3 `testutil/localstack` importers to `testcontainers-floci-go` started once per test binary in `TestMain`, then delete the package and its `LOCALSTACK_ENDPOINT` row. Audit the LocalStack mentions across `docs/` — several are about AWS deployment, not the test helper.
+- [ ] Verify no migrated assertion depended on SecureString encryption at rest: floci stores those in clear, so such a test would pass for the wrong reason.
+- [ ] Migrate the 18 `testutil/sqslocal` importers the same way, moving `UniqueQueue` into the calling packages. Do not resurrect a wrapper package to hold it.
+- [ ] Delete `testutil/sqslocal`.
 - [ ] Decide keep-or-delete for `testutil/testcontent`: no Go importer, one mention in `docs/timing-audit.md`. Do not delete blind.
-- [ ] Add the data-plane topologies and their tests: single SQS↔SQS, MQTT↔SQS, and the control/worker cluster whose shared config file proves EFS sharing.
-- [ ] Add the deployment-shape tests: outputs well-formed, idempotent redeploy without service replacement, destroy leaving nothing, and least-privilege — the task role's own credentials pass a granted call and are denied a non-granted one, which floci's SigV4 and IAM make testable off-account for the first time.
-- [ ] Add the resilience tests the cohort chunk did not cover: task restart losing no in-flight message, worker scale 1→3→1 without duplicate delivery, and DLQ redrive.
-- [ ] Cover the two emulation gaps rather than leaving them silent: assert the synthesized target-group health-check path is a path the container answers 200 on, and replay the alarm's own math expression through `GetMetricData` against real metric volume to assert it crosses the configured threshold. Alarm consequences are driven with `SetAlarmState`; ALB routing and CloudWatch's evaluation state machine stay AWS's, unclaimed.
+- [ ] Update `TESTS.md` with the emulator split — which backend serves which AWS API, and why DynamoDB is not one of them.
+- [ ] Run `make test-integration`, then `make lint` and `make test`.
+- [ ] Accept when no `testutil` package wraps an AWS emulator, the 21 migrated files assert what they asserted before, and `make test-integration` is green without AWS credentials.
+- **Suggested commit title:** `retire per-service AWS emulator wrappers`
+
+### Chunk 28: Deployment e2e matrix
+
+- **Issues:** none new — coverage breadth. It closes the coverage the ALB and alarm emulation gaps would otherwise leave silent.
+- **Goal:** Extend the local deployment suite past Chunk 26's rollout cohort to the rest of the topologies, so the profile's data plane, deployment shape, resilience and observability are each proved on a deployed stack rather than at synth.
+- **Dependencies:** Chunk 26. Probe P3 (`testutil/SPEC.md` §7) gates the Lambda topology only.
+- **Design:** `testutil/SPEC.md` §8 for the matrix, §6 for what each emulation gap costs.
+- **Files/packages:** `deployment/aws-filebased-config/cdk/integration/`, `docs/`.
+- **Tests:** one deployment test per topology in the matrix, under `integration_local`.
+- [ ] Add the data-plane topologies and their tests: single SQS↔SQS, MQTT↔SQS with `Subject`/`Address` mapping, and the control/worker cluster whose shared config file proves EFS sharing.
+- [ ] Add the deployment-shape tests: outputs well-formed, idempotent redeploy without service replacement, destroy leaving nothing.
+- [ ] Add the least-privilege test: the task role's own credentials pass a granted call and are denied a non-granted one. floci's SigV4 and IAM make this testable off-account for the first time.
+- [ ] Add the resilience tests Chunk 26 did not cover: task restart losing no in-flight message, worker scale 1→3→1 without duplicate delivery, and DLQ redrive.
+- [ ] Cover the two emulation gaps rather than leaving them silent: assert the synthesized target-group health-check path is a path the container answers 200 on, and replay the alarm's own math expression through `GetMetricData` against real metric volume to assert it crosses the configured threshold.
+- [ ] Drive alarm consequences with `SetAlarmState`. ELB routing and CloudWatch's evaluation state machine stay AWS's and are claimed by nobody.
 - [ ] Add the Lambda producer/consumer loop only if probe P3 passed; otherwise record it as out of local scope and leave it on `integration_aws`.
-- [ ] Run `make test-integration`, `make test-local-deploy`, then `make lint` and `make test`.
-- [ ] Update `TESTS.md` with the `integration_local` tag and the emulator split, and add a `docs/` page for running the deployment suite locally.
-- [ ] Accept when no `testutil` package wraps an AWS emulator, the 21 migrated files assert exactly what they asserted before, every topology in the matrix either has a test or a recorded reason it cannot have one locally, and both `make test-integration` and `make test-local-deploy` are green without AWS credentials.
-- **Suggested commit title:** `migrate local AWS emulation and extend deployment e2e`
-
-### Chunk 18: Failure-mode-specific failover admission and proof
-
-- **Issues:** HIGH-3, HIGH-4, TEST-3, DOC-7, DOC-14.
-- **Goal:** Make broker-path policy explicit, compute truthful budgets, and prove the published 30–60-second profile.
-- **Dependencies:** Chunks 13 and 17.
-- **Files/packages:** `runtime/session/config.go`, manager files, `bridge/failover_budget.go`, HA CDK validation, long-running failover tests, architecture and route references.
-- **Tests:** failover budget unit tests, broker-path-isolation long-running test, published-profile separate-process test.
-- [ ] Add failing divergent-policy, impossible broker-path SLO, activation-edge, isolated broker path, and published 49-second profile tests.
-- [ ] Run `go test -race -count=1 ./bridge ./runtime/session -run 'Test.*Failover'`; expect missing delay/release terms.
-- [ ] Add owner-death and broker-path formulas, explicit HA policy admission, and activation-state arming independent of event delivery.
-- [ ] Run unit tests and `make test-integration`; expect pass.
-- [ ] Run `make test-long-running` for process death, broker-path isolation, fencing advance, Full readiness, and message conservation.
-- [ ] Replace TTL-only figures with both derived profiles, full formulas, measured endpoint, and sample requirements.
-- [ ] Accept when every claimed failure mode passes admission and measured SLO; disabled broker-path failover is an explicit deployment decision, not a default assumption.
-- **Suggested commit title:** `prove failure mode failover budgets`
+- [ ] Run `make test-local-deploy`, `make test-integration`, then `make lint` and `make test`.
+- [ ] Add a `docs/` page for running the deployment suite locally, and record every matrix entry that has no local test together with the reason it cannot have one.
+- [ ] Accept when every topology in the matrix either has a passing test or a recorded reason it cannot have one locally, and `make test-local-deploy` is green from a clean checkout with no AWS credentials.
+- **Suggested commit title:** `extend local deployment e2e matrix`
 
 ## Phase 4: Operator contracts and release evidence
 

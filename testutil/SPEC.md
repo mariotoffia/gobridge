@@ -4,7 +4,9 @@ Decisions are **locked** unless a probe in §7 disproves them. Rationale and the
 evidence behind each decision live in `testutil/PLAN.md`; this file is what to
 build. `testutil/PLAN_DDB_MIRROR.md` holds the one drafted function.
 
-Executable work is Chunks 26 and 27 in `PROD_READY_PLAN.md`. Nothing in the
+Executable work is Chunks 26, 27 and 28 in `PROD_READY_PLAN.md`, in the order
+**27 → 26 → 28**: retire the wrappers, then build the deployment harness on the
+emulator that migration proved, then extend the matrix. Nothing in the
 codebase may reference this file; promote durable outcomes to an ADR or a
 `docs/` page before deleting it.
 
@@ -119,7 +121,8 @@ parallel packages is the flake class `TESTS.md` exists to prevent.
 Spike code lives in the scratchpad, never the repo; binaries get a `.out` suffix.
 Each probe's answer is recorded in `testutil/PLAN.md` §7.
 
-- **P1 — EFS through ECS. BLOCKING.** Deploy an EFS filesystem, an access point
+- **P1 — EFS through ECS. BLOCKING for Chunk 26**, and runnable in parallel
+  with Chunk 27. Deploy an EFS filesystem, an access point
   and two ECS tasks mounting it; write from task A, read from task B. Decides
   whether §6's Aspect is needed.
 - **P2 — CDK deploy.** `cdklocal bootstrap` + `deploy` + `--outputs-file` +
