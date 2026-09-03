@@ -8,7 +8,7 @@ the entry's `LastError` before you act.
 ## Symptom
 
 - The `DLQ Growing` alarm fires: `DLQEntries` sum > 0
-  ([monitoring.md#cloudwatch-alarms](../aws-deployment/monitoring.md#cloudwatch-alarms))
+  ([alarms.md](../aws-deployment/alarms.md))
   or the guide's `DLQEntries` sum > 100 alert
   ([deployment-guide.md#observability](../deployment-guide.md#observability)).
 - Logs show `POISON_MESSAGE`, `INVALID_PAYLOAD`, or `SCHEMA_VIOLATION`.

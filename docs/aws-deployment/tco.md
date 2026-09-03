@@ -502,6 +502,8 @@ outbox, or DLQ stores adds the request-based cost described in
 | Guide | Description |
 |-------|-------------|
 | [AWS Overview](overview.md) | Architecture, CDK constructs, and design decisions. |
-| [Monitoring](monitoring.md) | CloudWatch metrics, structured logging, and alerting. |
+| [Monitoring](monitoring.md) | The CloudWatch exporter and the complete metric catalogue. |
+| [CloudWatch alarms](alarms.md) | Provisioned and hand-authored alarms, and the rollup metrics they need. |
+| [Logging, dashboards and tracing](logging-and-dashboards.md) | Structured logging, dashboards, tracing, and Grafana. |
 | [CDK Scenario 4](../scenarios/cdk/04-production-stack.md) | VPC endpoint and alarm CDK code for production. |
 | [Deployment Guide](../deployment-guide.md) | Platform-agnostic deployment considerations. |

@@ -66,6 +66,16 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ### Added
 
+- **A stuck-MQTT-settlement runbook.**
+  [`docs/runbooks/stuck-mqtt-settlement.md`](docs/runbooks/stuck-mqtt-settlement.md)
+  starts from the symptom that has no error code: a connected session, green
+  readiness, no failing route, and throughput gone. It separates a slow
+  downstream from a receive window at its legitimate ceiling, a wedged route
+  runner, repeated recovery recycles, a recovery the broker cannot complete, and
+  post-stall duplicates — and names the three destructive non-actions
+  (`clean_start: true`, shortening `session_expiry_interval`, restarting to
+  unstick it) that each turn a stall into silent loss.
+
 - **Fleet convergence signals for the coordinated cluster rollout, and alarms to
   match.** The barrier is atomic BEFORE the store Commit and per-member AFTER it,
   so a member whose local swap fails runs an older generation than its peers — and
@@ -166,6 +176,30 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ### Changed
 
+- **`docs/aws-deployment/monitoring.md` is split into three pages, and its metric
+  catalogue and alarm inventory are now derived from source.** The page claimed
+  the CDK bundle "currently creates only `OutboxDepth`, `DLQEntries`,
+  `LeaseExpiries`, and `LeaseAcquireFailures`" while the bundle synthesizes 38
+  alarms, and its metric tables omitted 17 series the runtime emits — among them
+  every cluster-rollout signal, the config-degraded gauge, the DLQ intake hold,
+  the route-owner-unknown counter and the post-reload strand counter. Monitoring
+  keeps the exporter and the complete catalogue (and the `#key-metrics` anchor);
+  [CloudWatch alarms](docs/aws-deployment/alarms.md) carries the full inventory
+  with each alarm's statistic, threshold, missing-data treatment and provisioning
+  shape, the rollup metrics every built-in alarm depends on, the DLQ-depth
+  sampler prerequisite, and the signals nothing provisions;
+  [Logging, dashboards and tracing](docs/aws-deployment/logging-and-dashboards.md)
+  carries the rest. Tests parse the pages and compare them against the metric
+  constants and the synthesized CloudFormation template, in both directions.
+
+- **`docs/transports/mqtt-options.md` states where each ingress cap is enforced
+  and what a violating packet costs.** Sizing memory from `max_payload_bytes`
+  alone understates the peak: a packet that breaches a local representational cap
+  is decoded in full before the callback refuses it. The three boundaries — the
+  broker's whole-packet limit, the raw-bytes predecode guard, and the decoded
+  callback — are now a table, and the published property caps and default byte
+  bound are derived from the constants by a test.
+
 - **`docs/aws-deployment/overview.md` is split into a hub plus six pages.** The
   overview kept growing past the point where it could be reviewed or navigated. It
   is now the architecture plus a page map, with
@@ -199,6 +233,20 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   refuse-mode and independent-mode deployments.
 
 ### Fixed
+
+- **Four shipped CloudWatch alarms could never fire.** The `GoBridgeAlarms` CDK
+  bundle provisions dimensionless alarms on `MQTTIngressPoisonDropped`,
+  `ReconcileFailures`, `MQTTSessionTakeover` and `MQTTQoSDowngraded`, but the
+  runtime emits all four tagged with `session_id` and none of them was in
+  `DefaultRollupMetrics()`. A zero-dimension alarm never matches a dimensioned
+  series, so every one of them sat at `INSUFFICIENT_DATA` permanently — an
+  acked-and-dropped poison packet, a `client_id` collision, a broker QoS cap and
+  a subscription reconcile that never converges were all provisioned, visible in
+  the console, and incapable of alerting. The four metrics are now rolled up.
+  Two tests keep the two halves in agreement across modules that cannot import
+  each other: the CDK suite asserts every dimensionless alarm it synthesizes has
+  a rollup copy listed in the published table, and the exporter suite asserts
+  `DefaultRollupMetrics()` matches that same table.
 
 - **An MQTT publisher can no longer make the bridge decode tens of thousands of
   User Properties per packet.** The CONNECT advertises only a whole-packet

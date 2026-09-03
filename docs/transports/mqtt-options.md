@@ -79,6 +79,26 @@ immediately, which is what the runtime does on shutdown, so this is visible
 only to a library consumer that closes a session while holding a longer-lived
 context open.
 
+### Where each ingress cap is enforced
+
+Sizing memory from `max_payload_bytes` alone understates the peak, because the
+caps do not all bite at the same point. Three boundaries matter, and only the
+first two happen before the SDK builds Go objects:
+
+| Boundary | What it enforces | What a violation costs |
+|---|---|---|
+| Broker (CONNECT-advertised Maximum Packet Size) | `max_payload_bytes` + the 128 KiB metadata allowance, as ONE whole-packet limit. It is the only inbound limit a compliant broker enforces. | Nothing reaches the bridge. |
+| Predecode connection guard (raw bytes, after TLS/WebSocket, before Paho decodes) | Structural validity of the PUBLISH, Remaining Length validated before allocation, total size against the advertised maximum, and the User Property list truncated to **129** entries on the raw bytes (`MQTTIngressUserPropertiesTruncated`). | One raw wire packet buffered. A malformed packet or a total above the advertised maximum fails the session closed — only a broken broker can produce either. |
+| Decoded publish callback (after Paho has built Go objects) | The LOCAL representational caps the broker cannot see: an oversized body, more than **128** User Properties, or topic-plus-properties metadata over 128 KiB. The packet is acked and dropped (`MQTTIngressPoisonDropped`), never failed. | One fully decoded packet — the `transientDecodedPacketSize` term below. The packet is refused only AFTER it has been materialised. |
+
+The third row is the memory boundary that matters: **a packet that violates a
+local cap is decoded in full before anything refuses it.** That cost is budgeted
+as `crossing`, not as a retained slot, because it exists for the duration of one
+decode and nothing keeps it. The property caps are split for exactly this reason
+— 128 is what a packet may RETAIN, 129 is the most the SDK will ever DECODE — so
+the guard bounds the decode while the callback still sees the violation and
+refuses the packet.
+
 ### Ingress byte model
 
 Every MQTT session that can own inbound state is validated independently:

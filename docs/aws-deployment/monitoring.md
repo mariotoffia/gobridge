@@ -2,9 +2,11 @@
 
 GoBridge provides three observability pillars -- structured logging, metrics, and
 distributed tracing -- through pluggable port interfaces. On AWS, these map to
-CloudWatch Logs, CloudWatch Metrics, and X-Ray (via an OTLP sidecar). This guide
-covers how to configure each pillar, set up alarms, build dashboards, and connect
-everything to Grafana.
+CloudWatch Logs, CloudWatch Metrics, and X-Ray (via an OTLP sidecar).
+
+This page covers the metrics pillar: the exporter, and the complete catalogue of
+every series the runtime and its adapters publish. Alarms, logging, dashboards
+and tracing each have their own page, listed under [Page map](#page-map).
 
 For architecture overview, see [AWS Overview](overview.md).
 For generic observability guidance, see [Deployment Guide](../deployment-guide.md#observability).
@@ -43,99 +45,6 @@ flowchart LR
 
 ---
 
-## Structured Logging
-
-GoBridge uses Go's `slog` package with a JSON handler. The
-`observability.CorrelationHandler` wraps any `slog.Handler` and automatically
-injects `correlation_id`, `trace_id`, and `span_id` from context into every log
-record.
-
-### Setup
-
-```go
-import (
-    "log/slog"
-    "os"
-
-    "github.com/mariotoffia/gobridge/observability"
-    "github.com/mariotoffia/gobridge/runtime"
-)
-
-jsonHandler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-    Level: slog.LevelInfo,
-})
-logger := slog.New(observability.NewCorrelationHandler(jsonHandler))
-
-rt := runtime.New(
-    runtime.WithLogger(logger),
-)
-```
-
-### JSON Log Format
-
-Every log line is a single JSON object on stderr. The Fargate `awslogs` driver
-sends each line to CloudWatch Logs as-is:
-
-```json
-{
-  "time": "2026-04-06T10:15:32.004Z",
-  "level": "INFO",
-  "msg": "delivery completed",
-  "route_id": "ingest",
-  "envelope_id": "e-abc123",
-  "correlation_id": "corr-7f3a9b",
-  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
-  "span_id": "00f067aa0ba902b7",
-  "latency_ms": 12
-}
-```
-
-### Log Levels
-
-| Level | Usage |
-|-------|-------|
-| `ERROR` | Delivery failures, transport disconnects, store errors |
-| `WARN` | Circuit breaker state changes, config reload warnings, DLQ writes |
-| `INFO` | Startup, shutdown, delivery completions, lease acquisitions |
-| `DEBUG` | Per-message flow details, header parsing, resolver decisions |
-
-### CloudWatch Logs Insights Queries
-
-Find errors in the last hour:
-
-```text
-fields @timestamp, @message
-| filter level = "ERROR"
-| sort @timestamp desc
-| limit 50
-```
-
-Track configuration reload events:
-
-```text
-fields @timestamp, msg, error
-| filter msg like /config reload/
-| sort @timestamp desc
-```
-
-Trace a single request by correlation ID:
-
-```text
-fields @timestamp, msg, correlation_id, route_id
-| filter correlation_id = "abc-123"
-| sort @timestamp asc
-```
-
-Count errors by route over the last 24 hours:
-
-```text
-fields route_id
-| filter level = "ERROR"
-| stats count(*) as error_count by route_id
-| sort error_count desc
-```
-
----
 
 ## CloudWatch Metrics
 
@@ -193,28 +102,22 @@ rt := runtime.New(
 A single background flusher goroutine drains the buffer on the flush interval,
 governed so a slow `PutMetricData` cannot stack overlapping flushes.
 
-`DefaultRollupMetrics()` returns `OutboxDepth`, `LeaseExpiries`, `DLQEntries`,
-`LeaseAcquireFailures`, `CredentialRefreshFailures`, `SQSVisibilityExtensions`,
-and the silent-loss + backlog signals `DLQDepth`, `MessagesDropped`,
-`MessagesExpired`, and `MessagesFiltered`.
-
-`CredentialRefreshFailures` and `DLQDepth` are the dimensionless entries. Each is
-emitted with **no** runtime dimension, yet is rolled up so it still fires on
-instance-tagged fleets: with `WithInstanceTag`, the base series carries only
-`instance_id`, which a zero-dimension alarm would miss, so the dimensionless
-rollup copy gives the alarm something to match. Without instance tagging the base
-and rollup copies coincide — a harmless double count (`DLQDepth` is a gauge whose
-rollup takes the fleet `Maximum`). `CredentialRefreshFailures` has **no** default
-alarm; add your own if you want to alert on a secrets backend that is unreachable
-or denying access. `MessagesDropped/Expired/Filtered` carry `route_id`, so their
-rollup copies are what the default fleet alarms below match.
+Every built-in alarm reads a **dimensionless** series, and the runtime emits most
+metrics with a `route_id` / `session_id` / `partition` dimension. `WithRollupMetrics`
+is what bridges the two, and the metrics it must cover are listed in
+[Rollup metrics the built-in alarms require](alarms.md#rollup-metrics-the-built-in-alarms-require).
+Configure the rollup list **and** the namespace the alarms read, or the alarms sit
+at `INSUFFICIENT_DATA` — they do not fail loudly, they simply never fire.
 
 ### Key Metrics
 
 The runtime emits the following metrics under `GoBridge/Runtime`. Dimensions are
 the exact `shared.Tag` keys set at each emission site. Every `*Latency` metric is
-Milliseconds published as a `StatisticSet` (no percentiles); `OutboxDepth` is a
-Count gauge; everything else is a Count counter.
+Milliseconds published as a `StatisticSet` (no percentiles). The Unit column of
+each table below carries the rest, and the distinction that matters is
+counter versus gauge: a counter only ever increases and is read with `Sum`, a
+gauge reports a current value and is read with `Maximum`. Reading a gauge with
+`Sum` produces a number that means nothing.
 
 **Messages & delivery**
 
@@ -256,6 +159,7 @@ from the intentional filter and TTL counters.
 | `OutboxExpiredBeforeSend` | `route_id` | Count | Record expired before the drainer launched its send |
 | `OutboxDrainStalled` | `session_id`, `route_id` | Count | Drain batch whose in-flight sends did not return within the watchdog grace (a sender ignoring `ctx`) |
 | `DrainSkippedNoLease` | `session_id`, `route_id` | Count | Drain cycle skipped because the drainer held no lease |
+| `OutboxStranded` | `partition` | Count | Durable records left with NO drainer after an explicitly forced destructive reload, re-counted on the new runtime's store after a successful swap. The value is the pending count. Non-zero means an operator must drain that partition by hand or restore a route/session for it; a non-forced orphaning reload is refused before the swap, so this can only follow a deliberate override |
 
 > **`OutboxDepth` reports the true backlog; `OutboxClaimBatchSize` is liveness.**
 > This partition-keyed depth gauge is emitted from two sites, each reporting a
@@ -316,6 +220,8 @@ table. See [ADR 0005](../adr/0005-outbox-partition-claim-design.md) and the
 | `LeaseAcquireFailures` | `lease_id` | Count | Failed lease acquisitions |
 | `LeaseExpiries` | `lease_id` | Count | Leases that expired without renewal (step-down) |
 | `LeaseTransfers` | `lease_id` | Count | Lease re-acquired by this instance (hand-off) |
+| `BrokerHealthStepDown` | `lease_id` | Count | An active exclusive owner released its lease because its broker path stayed non-converged past the configured threshold, so a healthy standby could take over a node-local broker outage. Emitted **only** when `broker_health_step_down` is configured (opt-in), so a zero series on a deployment without it is expected, not healthy |
+| `RouteOwnerUnknown` | `reason` | Count | A route-locator decision taken while the owner of an exclusivity-sensitive route could not be determined. `reason` is the whole value of the metric: `lease_expired` (this node's clock is at or past the owner-written expiry), `lease_unowned` (no lease row — a normal transfer window), `store_unavailable` (a lease-store error with no usable cached owner), or `store_breaker_open` (refused without calling a repeatedly-failing store). Fleet clock skew above the renew margin shows up here as rising `lease_expired` against a **healthy** owner, and a whole-fleet cold start as `lease_expired` for one observation window. Both are advisory routing effects only — the locator mints no token, so data-path fencing stays skew-immune — which is exactly why the signal is needed: without it, 502/503 responses have no way to separate skew from a dead store |
 
 **DLQ**
 
@@ -327,6 +233,7 @@ table. See [ADR 0005](../adr/0005-outbox-partition-claim-design.md) and the
 | `DLQDuplicateSuppressed` | none | Count | DLQ writes the store refused as an existing entry — the same terminal event recorded twice, collapsed onto one row and reported as success. A rising value means settlement is failing after DLQ writes land, not that the DLQ store is unhealthy |
 | `DLQRedrives` | `route_id` | Count | DLQ entries an admin redrive re-injected successfully |
 | `DLQRedriveFailures` | `route_id` | Count | Redrive attempts that failed during or after the claim |
+| `DLQWriteHold` | none | Milliseconds | Wall-clock time a synchronous DLQ write held its caller, and with it a route and a global concurrency slot. The write is deliberately synchronous and confirmed **before** the source delivery is settled — evidence must be at least as durable as the message it describes — so a DLQ-store outage backpressures intake instead of losing evidence. The hold is bounded by the router's attempt/timeout/backoff budget (10.5 s in the shipped wiring). Emitted on every route call, success and failure, so the series has a baseline instead of silence; a sustained maximum approaching the ceiling means the DLQ store, not the route, is stalling intake |
 
 **Circuit breaker**
 
@@ -361,6 +268,66 @@ table. See [ADR 0005](../adr/0005-outbox-partition-claim-design.md) and the
 | `CredentialRotationApplied` | none | Count | Rotations applied to a live transport — one per target whose `ApplyCredentials` succeeded (a URI shared by N sessions counts N on one rotation). Success counterpart to `CredentialRefreshFailures`. Not rolled up; no default alarm. |
 | `CredentialResolveFailure` | `code` | Count | Repository fetch failures at the resolver choke point, tagged with the bounded error code (`NOT_AUTHORIZED`, `UNAVAILABLE`, `NOT_FOUND`, …) so a permission denial is distinguishable from a backend outage. Covers build-time resolves, rotation polls, and reactive re-resolves. Not rolled up; no default alarm. |
 | `CredentialStaleServed` | `code` | Count | Stale-while-error serves — the resolver returned an expired last-known-good credential after a retryable fetch error (`code` is the retryable error). A rising value flags a secrets backend unreachable longer than the cache TTL. Never emitted for permanent errors. Not rolled up; no default alarm. |
+
+**Reconfiguration**
+
+| Metric | Dimensions | Unit | Description |
+|--------|-----------|------|-------------|
+| `ConfigReloads` | `state` | Count | Live reconfiguration attempts, tagged `state=success` or `state=failure`. A rising failure rate means the running runtime keeps rejecting a config it is offered |
+| `ConfigDegraded` | none | Count (gauge) | `1` while the configuration machinery is degraded, back to `0` when a reload next succeeds or the condition resolves. Two conditions raise it and `/deephealth` (`ConfigWatchHealth.Reason`) says which: live reconfiguration is no longer available (the config-change stream closed and the bridge runs blind on its last good config), or a reload was **applied** but its transport sessions never converged within the transport's activation budget — reload success is green while the transport cannot reach its broker state (an ACL-denied topic, rotated-away credentials). The second clears on its own when the sessions converge |
+
+**Cluster rollout**
+
+Emitted by every member of a coordinated cohort. A rollout is the one config
+change whose outcome is not local — a member can be perfectly healthy while the
+cohort's barrier is stuck — so no per-node signal covers them.
+
+| Metric | Dimensions | Unit | Description |
+|--------|-----------|------|-------------|
+| `ClusterRolloutState` | `state` | Count (gauge) | `1` on exactly one of `proposed`, `staging`, `committed`, `aborted`, from this member's own observation of the shared rollout row. Alert on `proposed` or `staging` reading `1` for longer than the rollout TTL: the barrier is not converging |
+| `ClusterRolloutAcks` | none | Count (gauge) | How many epoch members have acknowledged the active rollout. Below `ClusterRolloutEpoch` while the state gauge sits on `staging`, it identifies a specific member holding the cohort up |
+| `ClusterRolloutEpoch` | none | Count (gauge) | The frozen epoch size — the member count the acks are measured against |
+| `ClusterRolloutResolved` | `outcome` | Count | Terminal outcomes, `outcome=committed` or `outcome=aborted`. Every member counts the same resolution, so the series is per-member: a member that never observes a resolution its peers did has diverged. A rising aborted rate means changes are being rejected — read the rollout row's reason, or `/deephealth`, for which member and why |
+| `ClusterRolloutStoreCalls` | `operation`, `outcome` | Count | Every rollout-store and coordinator-lease call the barrier makes, by class (`read`, `vote`, `decide`, `lease`, `artifact`, `propose`) and outcome (`success`, `failure`, `timeout`, `blocked`). `timeout` means the call blew its own budget and was abandoned; `blocked` means the barrier refused to start a call because an earlier abandoned one has still not returned. Either, sustained, means the rollout store is not answering |
+| `ClusterRolloutObservationAge` | none | Seconds (gauge) | How long ago this member last read the rollout row. Every other rollout series is a projection of that read, so an operator needs to know whether it is two seconds or ten minutes old before acting on it. Alert above a few poll intervals |
+| `ClusterRolloutRetries` | `operation` | Count (gauge) | Consecutive attempts at a local safety operation this member has not yet completed (`apply`, `artifact`, `revert`), and zero once it succeeds. A non-zero value that stays non-zero is a member repairing itself; one that reaches the bound becomes `ClusterRolloutTerminal` |
+| `ClusterRolloutDiverged` | none | Count (gauge) | `1` while this member is NOT running the generation the cohort has already decided on. The one genuinely per-member rollout series: every other one describes the shared row, which reads `committed` identically on a converged member and on one whose swap failed. The barrier is atomic before the commit and per-member after it ([ADR 0013](../adr/0013-coordinated-cluster-config-rollout.md)), so a short `1` during a rollout is normal; a `1` that persists past the apply repair's bound is a split cohort. Alarm on the fleet **Maximum** over several evaluation periods |
+| `ClusterRolloutTerminal` | none | Count (gauge) | The rollout generation whose safe state this member could not reach — a committed config it could not durably record, or a provisional one it could not revert — and zero when there is none. Not a rate: any non-zero value needs an operator, and `/deephealth` carries which action. A member that cannot record the artifact is running the CORRECT config and must **not** be replaced (that would boot it on the older generation) — repair the rollout store. A member that cannot revert is running rejected config, and replacing it is the repair |
+
+**Generic delivery (opt-in wrappers)**
+
+Emitted **only** through `runtime.NewInstrumentedReceiver` /
+`runtime.NewInstrumentedReceiverCapabilityPreserving` — a library API for
+embedders. The shipped adapters self-instrument under adapter-specific names
+instead (`SQSReceiveLatency`, `ASBReceiveLatency`, `SQSVisibilityExtensions`, …),
+so these two series are absent on a config-driven deployment.
+
+| Metric | Dimensions | Unit | Description |
+|--------|-----------|------|-------------|
+| `AckLatency` | caller-supplied | Milliseconds | Time to settle a delivery on the source transport |
+| `VisibilityExtensions` | caller-supplied | Count | Visibility/lock extensions taken on an in-flight delivery |
+
+The dimension key **and** value are arguments to the wrapper constructor, so the
+embedder chooses them; keep them low-cardinality, as the warning below requires.
+
+**Transport (MQTT)**
+
+The MQTT adapter self-instruments its own counters and gauges, tagged
+`session_id`. They are catalogued with their operator guidance in
+[Troubleshooting — MQTT](../troubleshooting.md#mqtt-adaptersmqtttransportpaho);
+the three the shipped alarms read are `MQTTIngressPoisonDropped`
+(acked-and-dropped ingress that breached a local cap — acknowledged loss),
+`MQTTSessionTakeover` (another client on the same `client_id`) and
+`MQTTQoSDowngraded` (the broker granted weaker delivery than configured).
+
+Two more are worth a hand-authored alarm and have none:
+[`MQTTEgressRejected`](alarms.md#alarms-you-must-author-yourself) — a publish
+refused before any byte reached the socket, returned to the route as permanent
+and therefore DLQ'd rather than retried — and `MQTTReceiverEmitRejected` on its
+`outcome=lost` dimension, which is acknowledged best-effort loss. The un-acked
+window is reported by `MQTTUnsettled`, `MQTTOldestUnsettledAge` and
+`MQTTReceiveWindowUtilization`; when it stops draining, follow the
+[stuck-settlement runbook](../runbooks/stuck-mqtt-settlement.md).
 
 **Transport (SQS)**
 
@@ -397,14 +364,8 @@ Warn log and thus metrics-invisible. Alert on a rising rate on any of the three.
 
 Dimensions map directly to `shared.Tag` key-value pairs. The dimension keys in
 use are `route_id`, `session_id`, `lease_id`, `partition`, `entity`, `category`,
-`reason`, `processor`, `key`, `to`, `queue_url`, and `instance_id` (added by
-`WithInstanceTag`, never on rollup copies).
-
-The generic `AckLatency` and `VisibilityExtensions` metrics are emitted **only**
-by the opt-in `runtime.NewInstrumentedReceiver` /
-`runtime.NewInstrumentedReceiverCapabilityPreserving` wrappers (a library API
-for embedders); the SQS and Service Bus adapters self-instrument under
-adapter-specific names (`SQSReceiveLatency`, `ASBReceiveLatency`, `SQSVisibilityExtensions`, …).
+`reason`, `processor`, `key`, `to`, `queue_url`, `state`, `outcome`, `operation`,
+`code`, and `instance_id` (added by `WithInstanceTag`, never on rollup copies).
 
 > **Adapter metrics now emit on the config-driven path (SQS).** The SQS
 > factory threads a `MetricsExporter` into every receiver and sender it builds,
@@ -434,463 +395,24 @@ adapter-specific names (`SQSReceiveLatency`, `ASBReceiveLatency`, `SQSVisibility
 > than silently truncated. These events are logged via `slog.Default()` unless
 > a logger is set with `WithLogger` (or suppressed with `WithLogger(nil)`).
 
-### Rollup and Self-Metrics
+### Exporter loss accounting
 
-`WithRollupMetrics` emits a second copy of each named metric with **no
-dimensions** so a dimensionless alarm can match it; rollup copies never carry the
-`instance_id` tag. The exporter also emits two zero-dimension health counters
-through its own pipeline. `ExporterRejectedDatums` counts emissions rejected at
-`add()` time before they enter the pipeline: the value was NaN or ±Inf, which
-would otherwise fail the whole all-or-nothing `PutMetricData` batch.
-`ExporterDroppedDatums` counts datums that entered the pipeline and were then
-lost: the buffer hard cap, retry-buffer overflow on requeue, or a non-retryable
-(validation-class) `PutMetricData` rejection after buffering.
-
----
-
-## CloudWatch Alarms
-
-### Recommended Alarms
-
-| Alarm | Metric / Source | Threshold | Period | Action |
-|-------|----------------|-----------|--------|--------|
-| Unhealthy Tasks | ECS `RunningTaskCount` | < desired count | 1 min | SNS (critical) |
-| High Error Rate | `RouteErrors` / `MessagesReceived` | > 5% | 5 min | SNS (high) |
-| CPU Utilization | ECS `CPUUtilization` | > 80% | 5 min | SNS (warn) |
-| Memory Utilization | ECS `MemoryUtilization` | > 80% | 5 min | SNS (warn) |
-| DLQ Growing | `DLQEntries` | > 0 (sum) | 5 min | SNS (high) |
-| DLQ Depth | `DLQDepth` | > 0 (max) | 5 min | SNS (warn) |
-| Message Loss | `MessagesDropped` | > 0 (sum) | 5 min | SNS (critical) |
-| TTL Loss (sustained) | `MessagesExpired` | > 0 (sum, 3 periods) | 5 min ×3 | SNS (warn) |
-| Outbox Depth Critical | `OutboxDepth` | > 10,000 | 5 min | SNS (critical) |
-| Lease Acquire Failures | `LeaseAcquireFailures` | > 3 (sum) | 5 min | SNS (critical) |
-| Outbox Backlog Deep | `DynamoDBOutboxClaimScanPages` | > 0 (sum) | 15 min | SNS (warn) |
-| Store Unhealthy | `SQLiteStoreUnhealthy` | > 0 (sum) | 5 min | SNS (critical) |
-
-`DynamoDBOutboxClaimScanPages` and `SQLiteStoreUnhealthy` are store-adapter
-counters that carry dimensions (`partition`, `entity`) and are **not** part of
-`DefaultAlarms` / `DefaultRollupMetrics`. Alarm on the dimensioned series --
-summed across partitions for the scan-pages counter, or on `entity=outbox` for
-the store-health counter. `SQLiteStoreUnhealthy` applies to single-instance
-SQLite outbox deployments; DynamoDB deployments watch the scan-pages counter
-instead.
-
-### Built-In Alarm Provisioning
-
-The CloudWatch adapter provides `DefaultAlarms` and `EnsureAlarms` to create
-alarms programmatically. `DefaultAlarms` returns pre-defined alarm definitions
-for outbox depth, DLQ entries, lease expiries, lease acquire failures, SQS
-visibility extensions, and the silent-loss signals — `DLQDepth` (backlog > 0),
-`MessagesDropped` (any terminal loss, critical), and sustained `MessagesExpired`
-(TTL loss). These alarm definitions carry **no dimensions**, so they
-match only the zero-dimension **rollup** series. Configure the exporter with
-`WithRollupMetrics(cwmetrics.DefaultRollupMetrics()...)` and the **same
-namespace** you pass to `DefaultAlarms`, or every alarm sits at
-`INSUFFICIENT_DATA`.
-
-```go
-import cwmetrics "github.com/mariotoffia/gobridge/adapters/aws/metrics/cloudwatch"
-
-alarms := cwmetrics.DefaultAlarms("GoBridge/Runtime",
-    "arn:aws:sns:eu-west-1:123456789012:gobridge-alerts",
-)
-
-err := cwmetrics.EnsureAlarms(ctx, cwClient, alarms)
-if err != nil {
-    log.Fatalf("alarm setup: %v", err)
-}
-```
-
-The runtime does **not** call `EnsureAlarms` for you — alarm provisioning is a
-deploy-time concern. In CDK, the `GoBridgeAlarms` construct exposes a rollup
-alarm set declaratively via `EnableRollupAlarms` (opt-in, off by default). It
-requires an exporter configured with rollup metrics whose namespace matches the
-construct's `RollupMetricsNamespace`; a mismatch leaves the alarms at
-`INSUFFICIENT_DATA`.
-
-> **The new silent-loss alarms ship in `DefaultAlarms()`, not yet in the CDK
-> construct.** `DefaultAlarms()`/`EnsureAlarms()` provision the `DLQDepth`,
-> `MessagesDropped`, and `MessagesExpired` alarms described above. The
-> `GoBridgeAlarms` CDK construct currently creates only `OutboxDepth`,
-> `DLQEntries`, `LeaseExpiries`, and `LeaseAcquireFailures`; adding the
-> silent-loss alarms to the construct is tracked separately. Until then, provision
-> them via `DefaultAlarms()`/`EnsureAlarms()` (the Go call above) or an equivalent
-> hand-authored CDK alarm.
-
-> **`DLQDepth` requires the composition-root DLQ sampler to be active.** The
-> `GoBridge-DLQDepth-Warning` alarm uses `TreatMissingData=notBreaching`, so with
-> NO sampler emitting `DLQDepth` it sits silent rather than false-alarming. The
-> gauge is emitted only when the composition root calls `runtime.ReportDLQDepth`
-> on a periodic cadence against a DLQ store that implements
-> `ports.DLQDepthReporter` (see the store/DLQ wiring). Until that sampler is
-> wired, the alarm cannot fire — verify the sampler is running before relying on
-> it. (`notBreaching` is deliberate: `breaching` would false-alarm every fleet
-> until the sampler lands.)
-
-### CDK Alarm Examples
-
-Create alarms in CDK (Go):
-
-```go
-import (
-    "github.com/aws/aws-cdk-go/awscdk/v2/awscloudwatch"
-    "github.com/aws/jsii-runtime-go"
-)
-
-// DLQ entries alarm
-awscloudwatch.NewAlarm(stack, jsii.String("DLQEntriesAlarm"), &awscloudwatch.AlarmProps{
-    AlarmName:          jsii.String("GoBridge-DLQEntries-Warning"),
-    Metric: awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
-        Namespace:  jsii.String("GoBridge/Runtime"),
-        MetricName: jsii.String("DLQEntries"),
-        Statistic:  jsii.String("Sum"),
-        Period:     awscdk.Duration_Minutes(jsii.Number(5)),
-    }),
-    Threshold:          jsii.Number(0),
-    EvaluationPeriods:  jsii.Number(1),
-    ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
-    TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
-    AlarmDescription:   jsii.String("[WARNING] DLQ entries detected"),
-})
-
-// High error rate alarm (composite math expression)
-errMetric := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
-    Namespace:  jsii.String("GoBridge/Runtime"),
-    MetricName: jsii.String("RouteErrors"),
-    Statistic:  jsii.String("Sum"),
-    Period:     awscdk.Duration_Minutes(jsii.Number(5)),
-})
-recvMetric := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
-    Namespace:  jsii.String("GoBridge/Runtime"),
-    MetricName: jsii.String("MessagesReceived"),
-    Statistic:  jsii.String("Sum"),
-    Period:     awscdk.Duration_Minutes(jsii.Number(5)),
-})
-
-awscloudwatch.NewAlarm(stack, jsii.String("ErrorRateAlarm"), &awscloudwatch.AlarmProps{
-    AlarmName: jsii.String("GoBridge-ErrorRate-High"),
-    Metric: awscloudwatch.NewMathExpression(&awscloudwatch.MathExpressionProps{
-        Expression: jsii.String("(errors / received) * 100"),
-        UsingMetrics: &map[string]awscloudwatch.IMetric{
-            "errors":   errMetric,
-            "received": recvMetric,
-        },
-        Period: awscdk.Duration_Minutes(jsii.Number(5)),
-    }),
-    Threshold:          jsii.Number(5),
-    EvaluationPeriods:  jsii.Number(1),
-    ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
-    AlarmDescription:   jsii.String("[HIGH] Error rate exceeds 5%"),
-})
-```
-
-Add SNS actions for notifications:
-
-```go
-alarmAction := awscloudwatchactions.NewSnsAction(snsTopic)
-dlqAlarm.AddAlarmAction(alarmAction)
-dlqAlarm.AddOkAction(alarmAction)
-```
+The exporter reports its own losses through its own pipeline, with no dimensions.
+`ExporterRejectedDatums` counts emissions rejected at `add()` time before they
+enter the pipeline: the value was NaN or ±Inf, which would otherwise fail the
+whole all-or-nothing `PutMetricData` batch. `ExporterDroppedDatums` counts datums
+that entered the pipeline and were then lost: the buffer hard cap, retry-buffer
+overflow on requeue, or a non-retryable (validation-class) `PutMetricData`
+rejection after buffering. Both are worth a hand-authored alarm — a metrics
+pipeline dropping datums makes every other signal on this page an undercount.
 
 ---
 
-## CloudWatch Dashboard
+## Page map
 
-A well-designed dashboard provides at-a-glance health for the bridge. Organize
-widgets into four rows.
-
-### Recommended Layout
-
-| Row | Widget | Metric | Type |
-|-----|--------|--------|------|
-| 1 | Throughput | `MessagesReceived`, `MessagesSent` | Line graph |
-| 1 | Error Rate | `RouteErrors` / `MessagesReceived` | Number (%) |
-| 2 | Delivery Latency | `DeliveryE2ELatency` (Average, Maximum) | Line graph |
-| 2 | In-Flight Messages | per-route `in_flight` (monitor deep-health JSON) | Gauge |
-| 3 | Outbox Depth | `OutboxDepth` | Area chart |
-| 3 | DLQ Entries | `DLQEntries` | Bar chart |
-| 4 | ECS CPU/Memory | ECS `CPUUtilization`, `MemoryUtilization` | Stacked area |
-| 4 | Task Count | ECS `RunningTaskCount` | Number |
-
-In-flight count is not published to CloudWatch. The monitor deep-health
-response reports it per route as `in_flight` (backed by `RouteRunner.InFlight()`
-in `runtime/route/runner.go`); scrape that endpoint if you want it on a widget.
-
-### Dashboard JSON (Abbreviated)
-
-```json
-{
-  "widgets": [
-    {
-      "type": "metric",
-      "x": 0, "y": 0, "width": 12, "height": 6,
-      "properties": {
-        "title": "Message Throughput",
-        "metrics": [
-          ["GoBridge/Runtime", "MessagesReceived", { "stat": "Sum", "period": 60 }],
-          ["GoBridge/Runtime", "MessagesSent", { "stat": "Sum", "period": 60 }]
-        ],
-        "view": "timeSeries",
-        "region": "eu-west-1",
-        "period": 60
-      }
-    },
-    {
-      "type": "metric",
-      "x": 12, "y": 0, "width": 12, "height": 6,
-      "properties": {
-        "title": "Error Rate (%)",
-        "metrics": [
-          [{ "expression": "(m1 / m2) * 100", "label": "Error %", "id": "e1" }],
-          ["GoBridge/Runtime", "RouteErrors", { "stat": "Sum", "period": 300, "id": "m1", "visible": false }],
-          ["GoBridge/Runtime", "MessagesReceived", { "stat": "Sum", "period": 300, "id": "m2", "visible": false }]
-        ],
-        "view": "timeSeries",
-        "region": "eu-west-1"
-      }
-    },
-    {
-      "type": "metric",
-      "x": 0, "y": 6, "width": 12, "height": 6,
-      "properties": {
-        "title": "Delivery Latency (ms)",
-        "metrics": [
-          ["GoBridge/Runtime", "DeliveryE2ELatency", { "stat": "Average", "period": 60 }],
-          ["GoBridge/Runtime", "DeliveryE2ELatency", { "stat": "Maximum", "period": 60 }]
-        ],
-        "view": "timeSeries",
-        "region": "eu-west-1"
-      }
-    },
-    {
-      "type": "metric",
-      "x": 12, "y": 6, "width": 12, "height": 6,
-      "properties": {
-        "title": "Outbox & DLQ",
-        "metrics": [
-          ["GoBridge/Runtime", "OutboxDepth", { "stat": "Maximum", "period": 60 }],
-          ["GoBridge/Runtime", "DLQEntries", { "stat": "Sum", "period": 60 }]
-        ],
-        "view": "timeSeries",
-        "region": "eu-west-1"
-      }
-    }
-  ]
-}
-```
-
----
-
-## Distributed Tracing
-
-GoBridge supports distributed tracing through the `ports.Tracer` interface. The
-OTLP tracing adapter (`adapters/otel/tracing/`) exports spans over HTTP to any
-OTLP-compatible collector.
-
-> **Not wired in the `aws-filebased-config` profile.** That deployment profile
-> has no `traces_exporter` surface and provisions no OTLP collector; wiring a
-> tracer requires a custom composition root (the wiring point is documented in
-> `deployment/aws-filebased-config/lib/bootstrap/registry.go`).
-
-### ADOT Sidecar on Fargate
-
-Deploy the AWS Distro for OpenTelemetry (ADOT) collector as a sidecar container
-in the same Fargate task definition. The collector receives OTLP spans and
-forwards them to X-Ray.
-
-```yaml
-# ECS task definition excerpt
-containerDefinitions:
-  - name: gobridge
-    image: 123456789012.dkr.ecr.eu-west-1.amazonaws.com/gobridge:latest
-    # ...
-
-  - name: adot-collector
-    image: public.ecr.aws/aws-observability/aws-otel-collector:latest
-    command: ["--config=/etc/ecs/otel-config.yaml"]
-    portMappings:
-      - containerPort: 4318
-        protocol: tcp
-```
-
-### Go Bootstrap
-
-```go
-import oteltracing "github.com/mariotoffia/gobridge/adapters/otel/tracing"
-
-tracer, err := oteltracing.New(ctx,
-    oteltracing.WithEndpoint("http://localhost:4318"),
-    oteltracing.WithServiceName("gobridge"),
-    oteltracing.WithServiceVersion("1.0.0"),
-    oteltracing.WithEnvironment("production"),
-    oteltracing.WithSamplerRatio(0.1),
-)
-if err != nil {
-    log.Fatalf("tracer init: %v", err)
-}
-defer tracer.Close(ctx)
-
-rt := runtime.New(
-    runtime.WithTracer(tracer),
-)
-```
-
-### Trace Propagation
-
-The runtime creates a `bridge.handleDelivery` span around each message delivery.
-The span carries `route_id`, `envelope_id`, and — when an ingress `traceparent`
-is present — `trace_id` as attributes. W3C `traceparent` headers are extracted
-from ingress messages and propagated through the bridge. If no trace context
-exists, the tracer starts a new root span.
-
-### Sampling Strategy
-
-| Environment | Ratio | Rationale |
-|-------------|-------|-----------|
-| Development | `1.0` | Capture every span for debugging |
-| Staging | `0.5` | Moderate coverage with reasonable cost |
-| Production | `0.1` | 10% sampling balances cost and visibility |
-
-Unsampled messages still receive `correlation_id` in logs, so you can always
-search CloudWatch Logs by correlation ID even without a matching trace.
-
-### Cost Considerations
-
-X-Ray charges per trace recorded and per trace scanned. At 0.1 sampling with
-10,000 messages/minute, you record approximately 1,000 traces/minute. Use the
-[Total Cost of Ownership](tco.md) guide to estimate tracing costs for your
-throughput.
-
----
-
-## Log-Based Metric Filters
-
-CloudWatch metric filters extract numeric metrics from log patterns. Use them for
-events that are logged but not emitted as explicit metrics.
-
-### Recommended Filters
-
-| Filter Name | Pattern | Metric |
-|-------------|---------|--------|
-| Circuit breaker open | `{ $.msg = "circuit breaker state change" && $.to = "open" }` | `CircuitBreakerOpen` |
-| Config reload failure | `{ $.msg = "*config reload rejected*" }` | `ConfigReloadFailures` |
-| Error log count | `{ $.level = "ERROR" }` | `ErrorLogCount` |
-
-### CDK Metric Filter Example
-
-```go
-import (
-    "github.com/aws/aws-cdk-go/awscdk/v2/awslogs"
-    "github.com/aws/jsii-runtime-go"
-)
-
-awslogs.NewMetricFilter(stack, jsii.String("CircuitBreakerOpenFilter"),
-    &awslogs.MetricFilterProps{
-        LogGroup:       logGroup,
-        FilterName:     jsii.String("CircuitBreakerOpen"),
-        FilterPattern:  awslogs.FilterPattern_All(
-            awslogs.FilterPattern_StringValue(
-                jsii.String("$.msg"), jsii.String("="), jsii.String("circuit breaker state change"),
-            ),
-            awslogs.FilterPattern_StringValue(
-                jsii.String("$.to"), jsii.String("="), jsii.String("open"),
-            ),
-        ),
-        MetricNamespace: jsii.String("GoBridge/Logs"),
-        MetricName:      jsii.String("CircuitBreakerOpen"),
-        MetricValue:     jsii.String("1"),
-        DefaultValue:    jsii.Number(0),
-    },
-)
-
-awslogs.NewMetricFilter(stack, jsii.String("ErrorLogFilter"),
-    &awslogs.MetricFilterProps{
-        LogGroup:       logGroup,
-        FilterName:     jsii.String("ErrorLogCount"),
-        FilterPattern:  awslogs.FilterPattern_StringValue(
-            jsii.String("$.level"), jsii.String("="), jsii.String("ERROR"),
-        ),
-        MetricNamespace: jsii.String("GoBridge/Logs"),
-        MetricName:      jsii.String("ErrorLogCount"),
-        MetricValue:     jsii.String("1"),
-        DefaultValue:    jsii.Number(0),
-    },
-)
-```
-
-You can then create alarms on these log-derived metrics using the same approach
-shown in the CloudWatch Alarms section. Place them in the `GoBridge/Logs`
-namespace to distinguish them from runtime-emitted metrics.
-
----
-
-## Connecting to Grafana
-
-If your organization uses Grafana, you can query CloudWatch, X-Ray, and
-CloudWatch Logs through native data source plugins.
-
-### IAM Role for Grafana
-
-Create a read-only IAM role that Grafana assumes:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "cloudwatch:DescribeAlarmsForMetric",
-        "cloudwatch:GetMetricData",
-        "cloudwatch:GetMetricStatistics",
-        "cloudwatch:ListMetrics",
-        "logs:GetLogEvents",
-        "logs:GetLogGroupFields",
-        "logs:GetQueryResults",
-        "logs:StartQuery",
-        "logs:StopQuery",
-        "xray:GetTraceSummaries",
-        "xray:BatchGetTraces",
-        "xray:GetServiceGraph"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-```
-
-### Data Source Configuration
-
-| Data Source | Plugin | Namespace / Settings |
-|-------------|--------|---------------------|
-| CloudWatch Metrics | `cloudwatch` | Namespace: `GoBridge/Runtime` |
-| CloudWatch Logs | `cloudwatch` | Log group: `/ecs/gobridge` |
-| X-Ray Traces | `x-ray` | Region: match your deployment |
-
-### Dashboard Panels
-
-| Panel | Query |
-|-------|-------|
-| Throughput | CloudWatch: `SUM(MessagesReceived)`, `SUM(MessagesSent)` over 1 min |
-| Error rate | CloudWatch math: `(RouteErrors / MessagesReceived) * 100` |
-| Max latency | CloudWatch: `MAX(DeliveryE2ELatency)` over 1 min |
-| Avg latency | CloudWatch: `AVG(DeliveryE2ELatency)` over 1 min |
-| Outbox depth | CloudWatch: `MAX(OutboxDepth)` over 1 min |
-| Log search | CloudWatch Logs Insights: filter by `correlation_id` or `route_id` |
-| Trace drilldown | X-Ray: search by trace ID from log panel link |
-
-The `correlation_id` field is the join key across all three data sources.
-
----
-
-## Summary
-
-| Pillar | AWS Service | GoBridge Adapter | Config |
-|--------|-------------|-----------------|--------|
-| Logging | CloudWatch Logs | `observability.CorrelationHandler` | `runtime.WithLogger(logger)` |
-| Metrics | CloudWatch Metrics | `adapters/aws/metrics/cloudwatch` | `runtime.WithMetrics(exporter)` |
-| Tracing | X-Ray via ADOT | `adapters/otel/tracing` | `runtime.WithTracer(tracer)` |
-
-See [CDK Scenario 4](../scenarios/cdk/04-production-stack.md) for a complete
-production stack that wires monitoring, alarms, and dashboards together.
-For cost implications of observability, see [Total Cost of Ownership](tco.md).
+| Page | Covers |
+|------|--------|
+| [CloudWatch alarms](alarms.md) | Which alarms are provisioned by the CDK bundle, by `DefaultAlarms()`, and by nobody; the rollup metrics they depend on; how to author the rest. |
+| [Logging, dashboards and tracing](logging-and-dashboards.md) | Structured logging and Logs Insights queries, dashboard layout, ADOT/X-Ray tracing, log-based metric filters, and Grafana. |
+| [Troubleshooting](../troubleshooting.md) | Error codes, and the adapter diagnostic metrics (MQTT, AMQP, HTTP) this page's catalogue points at. |
+| [Operational runbooks](../runbooks/README.md) | The incident path behind each signal: what to check, and what is safe to do. |

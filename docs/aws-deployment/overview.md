@@ -83,7 +83,9 @@ Beyond the pages in the map above.
 | Guide | Description |
 |-------|-------------|
 | [Configuration on AWS](configuration.md) | Bridge YAML reference with AWS-specific settings. |
-| [Monitoring and Observability](monitoring.md) | CloudWatch metrics, structured logging, and alerting. |
+| [Monitoring and Observability](monitoring.md) | The CloudWatch exporter and the complete metric catalogue. |
+| [CloudWatch alarms](alarms.md) | What the CDK bundle provisions, what `DefaultAlarms()` provisions, what nobody does, and the rollup metrics they all need. |
+| [Logging, dashboards and tracing](logging-and-dashboards.md) | Structured logging, dashboard layout, ADOT/X-Ray tracing, log-metric filters, Grafana. |
 | [HTTP API and Networking](http-api.md) | ALB target groups, security groups, and TLS termination. |
 | [Total Cost of Ownership](tco.md) | Fargate, EFS, and SSM cost breakdown with worked examples. |
 | [Running the Deployment Suite Locally](local-deployment-suite.md) | Deploying and driving this profile with no AWS account: what it proves, what it does not, and the measured emulation gaps. |

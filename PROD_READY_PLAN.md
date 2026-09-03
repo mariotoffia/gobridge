@@ -664,20 +664,21 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 
 ## Phase 4: Operator contracts and release evidence
 
-### Chunk 19: Monitoring, ingress, and stuck-settlement guidance
+### Chunk 19: Monitoring, ingress, and stuck-settlement guidance — LANDED
 
 - **Issues:** DOC-3, DOC-6, DOC-13.
 - **Goal:** Make loss, divergence, decoded-memory risk, and settlement stalls actionable.
 - **Dependencies:** Chunks 4, 8, 13, 16, 18.
-- **Files/packages:** `docs/aws-deployment/monitoring.md`, MQTT options/behavior docs, `docs/runbooks/stuck-mqtt-settlement.md`, runbook index, alarm construct.
-- **Tests:** alarm synth assertions and `scripts/doccheck/main_test.go`.
-- [ ] Add failing checks for the complete alarm inventory, callback enforcement wording, and runbook index/required symptoms.
-- [ ] Run `go -C deployment/aws-filebased-config/cdk test -count=1 ./constructs/gobridgealarms` and `go test -race -count=1 ./scripts/doccheck -run 'Test.*(Alarm|Ingress|Runbook)'`; expect stale assertions.
-- [ ] Update built-in versus hand-authored alarms, rollup/sampler needs, decoded property memory boundary, thresholds, diagnosis, and safe recovery.
-- [ ] Re-run the exact failing commands above; expect pass.
-- [ ] Run `make test`.
-- [ ] Verify each metric name against source constants and each alarm against synth output.
-- [ ] Accept when an operator can distinguish drop, reconnect, divergence, store, and pinned-window causes without source inspection.
+- **Files/packages:** `docs/aws-deployment/monitoring.md` (split into a metric catalogue plus `alarms.md` and `logging-and-dashboards.md`), `docs/troubleshooting.md`, MQTT options docs, `docs/runbooks/stuck-mqtt-settlement.md`, runbook index, `adapters/aws/metrics/cloudwatch`.
+- **Tests:** alarm synth assertions plus derived doc checks next to each source of truth. `scripts/doccheck` was NOT created: the repository's established idiom is a doc test beside the thing it derives from (`ports/cluster_reference_doc_test.go`), and `tests/docsexamples` already exists for docs-as-fixtures, so a fourth mechanism would have been a new module for file reads.
+- [x] Add failing checks for the complete alarm inventory, callback enforcement wording, and runbook index/required symptoms. Landed as `domain/shared/metrics_reference_doc_test.go` (shared metric constants ↔ catalogue, both directions), `adapters/mqtt/transport/paho/metrics_reference_doc_test.go` (adapter constants ↔ the diagnostic table), `adapters/mqtt/transport/paho/ingress_caps_doc_test.go` (the published property caps and default byte bound ↔ the constants), `adapters/aws/metrics/cloudwatch/rollup_reference_doc_test.go` (`DefaultRollupMetrics` ↔ the published list), `deployment/.../gobridgedynamodbha/alarm_inventory_doc_test.go` (synthesized alarms ↔ the inventory, plus every dimensionless alarm has a rollup copy) and `tests/docsexamples/runbook_index_test.go`.
+- [x] Run the checks; expect stale assertions. 17 shared metrics undocumented, 38 alarms against an inventory naming 4, one adapter metric undocumented, no stuck-settlement runbook.
+- [x] Update built-in versus hand-authored alarms, rollup/sampler needs, decoded property memory boundary, thresholds, diagnosis, and safe recovery.
+- [x] Re-run the exact failing commands above; expect pass. Every assertion also mutation-checked.
+- [x] Run `make test`.
+- [x] Verify each metric name **and dimension** against source constants and each alarm against synth output. This found a real defect, fixed here: the four MQTT alarms the CDK bundle provisions (`MQTTIngressPoisonDropped`, `ReconcileFailures`, `MQTTSessionTakeover`, `MQTTQoSDowngraded`) are dimensionless, the metrics are emitted per `session_id`, and none was in `DefaultRollupMetrics()` — so all four sat at `INSUFFICIENT_DATA` permanently, indistinguishable from health. Added to the rollup list, with benchmarks measuring what a rollup match costs on the emission path (~30 ns and 2 allocations; list length costs nothing).
+- [x] Accept when an operator can distinguish drop, reconnect, divergence, store, and pinned-window causes without source inspection. **Met.**
+- **Residual for Chunk 21:** `docs/index.md`'s runbook count is now pinned by a test rather than removed, and the pre-existing broken anchors in `troubleshooting.md`/`mqtt-behavior.md` and the `_template.md` placeholder link are untouched.
 - **Suggested commit title:** `complete production monitoring guidance`
 
 ### Chunk 20: Public runtime, cluster, and shutdown contracts

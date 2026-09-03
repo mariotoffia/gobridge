@@ -173,9 +173,9 @@ const (
 	metricOutboxDrainStalled   = "OutboxDrainStalled"
 	metricDLQDepth             = "DLQDepth"
 	metricDLQWriteFailures     = "DLQWriteFailures"
-	// MQTT rollup metric names (mirror adapters/mqtt/.../metrics.go). The MQTT
-	// docs instruct operators to alert on these; wiring them here closes the gap
-	// where the bundle carried none of them (finding §8 alarms.go).
+	// MQTT rollup metric names (mirror adapters/mqtt/.../metrics.go). Kept as
+	// literals because the CDK constructs must not depend on an adapter module.
+	// The MQTT docs instruct operators to alert on all four.
 	metricMQTTIngressPoisonDropped = "MQTTIngressPoisonDropped"
 	metricReconcileFailures        = "ReconcileFailures"
 	metricMQTTSessionTakeover      = "MQTTSessionTakeover"
@@ -492,9 +492,12 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 			"Sum", jsii.Number(0), period, evals, topicAction,
 			awscloudwatch.TreatMissingData_NOT_BREACHING, "GoBridge failed to write a dead-letter entry.")
 
-		// MQTT operational alarms the transport docs instruct operators to wire
-		// (finding §8 alarms.go). Sum>0 over the window with NOT_BREACHING on missing
-		// data (these are event counters, absent when healthy).
+		// MQTT operational alarms the transport docs instruct operators to wire.
+		// Sum>0 over the window with NOT_BREACHING on missing data (these are event
+		// counters, absent when healthy). Each is emitted per session_id, so these
+		// dimensionless alarms match ONLY the rollup copies — the exporter must be
+		// configured with the default rollup list or none of them can ever fire; see
+		// docs/aws-deployment/alarms.md.
 		g.mqttIngressPoison = newRollupAlarm(c, "HAMQTTIngressPoisonDropped", ns, metricMQTTIngressPoisonDropped,
 			"Sum", jsii.Number(0), period, evals, topicAction,
 			awscloudwatch.TreatMissingData_NOT_BREACHING,

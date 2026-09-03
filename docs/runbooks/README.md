@@ -19,6 +19,7 @@ metric names ([monitoring](../aws-deployment/monitoring.md)), error codes
 | [Node down / failover](node-down-failover.md) | An instance/task died — confirm the standby took over. `LeaseTransfers` / `LeaseExpiries` advanced. |
 | [Config rollback](config-rollback.md) | A committed config change caused errors and must be reverted. |
 | [MQTT ingress poison](mqtt-ingress-poison.md) | `MQTTIngressPoisonDropped` non-zero — an authorized publisher sends packets the bridge is configured to refuse; each drop is acknowledged loss. |
+| [Stuck MQTT settlement](stuck-mqtt-settlement.md) | `MQTTOldestUnsettledAge` climbing and `MQTTReceiveWindowUtilization` near `1.0` — ingress slows or stops while the session stays connected and no route reports an error. |
 | [MQTT SUBACK rejection / QoS downgrade flap](mqtt-suback-rejection-flap.md) | `ReconcileFailures` climbs every ~30s and never converges; readiness stuck below Full; exclusive session churns its lease. |
 | [Orchestrator kill before shutdown drain](shutdown-timeout.md) | The task exited `137` (`SIGKILL`) or `2` before graceful drain finished; check for best-effort loss and redelivery duplicates. |
 

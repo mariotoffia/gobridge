@@ -402,8 +402,11 @@ using the CDK constructs, the programmatic path is
 `cloudwatch.EnsureAlarms(ctx, client, cloudwatch.DefaultAlarms(ns, snsTopic))`
 alongside an exporter constructed with
 `WithRollupMetrics(DefaultRollupMetrics()...)` and the **same namespace** --
-see [Monitoring](aws-deployment/monitoring.md). The CDK constructs provision
-the rollup alarms declaratively (`gobridgealarms`, `EnableRollupAlarms`).
+see [Monitoring](aws-deployment/monitoring.md). Which alarms the shipped CDK
+bundle provisions for each deployment shape, which ones `DefaultAlarms()`
+provisions instead, and which ones you must author yourself are listed in
+[CloudWatch alarms](aws-deployment/alarms.md) — together with the rollup
+metrics every built-in alarm depends on to match a series at all.
 
 ## Scaling Considerations
 

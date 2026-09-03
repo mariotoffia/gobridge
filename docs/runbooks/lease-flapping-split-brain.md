@@ -10,7 +10,7 @@ diagnosing why leadership churns.
 
 - Leadership bounces between instances; `LeaseTransfers` / `LeaseExpiries` climb.
 - The `Lease Acquire Failures` alarm fires (`LeaseAcquireFailures` > 3)
-  ([monitoring.md#cloudwatch-alarms](../aws-deployment/monitoring.md#cloudwatch-alarms)).
+  ([alarms.md](../aws-deployment/alarms.md)).
 - Logs show `STALE_FENCING_TOKEN` or `NO_ROUTE_OWNER`.
 - You suspect two instances are both acting as owner (duplicate deliveries).
 
