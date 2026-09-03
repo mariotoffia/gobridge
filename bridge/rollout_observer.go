@@ -191,7 +191,7 @@ func (o *rolloutObserver) observe(r persistence.Rollout, memberID string, staged
 //   - a reverted (or aborted) rollout's correct outcome IS the previous
 //     generation, so a member running it is right. One that could not get back
 //     there reports that through the terminal signal instead.
-//   - a PROVISIONAL commit — one carrying a confirm window (design §8.1) — has
+//   - a PROVISIONAL commit — one carrying a confirm window (ADR 0014) — has
 //     not decided either. The window exists precisely to handle members that
 //     cannot converge: it reverts the whole cohort. A member deliberately still
 //     on N-1 during the window (it never staged the candidate, so the "reboot
@@ -218,7 +218,7 @@ func boolGauge(v bool) float64 {
 
 // rolloutOutcome maps a terminal rollout state to the resolution counter's
 // outcome tag. Committed is the base-protocol success; Confirmed/Reverted are the
-// confirm-window (design §8.1) terminal outcomes; anything else is an abort.
+// confirm-window (ADR 0014) terminal outcomes; anything else is an abort.
 func rolloutOutcome(state persistence.RolloutState) string {
 	switch state {
 	case persistence.RolloutCommitted:

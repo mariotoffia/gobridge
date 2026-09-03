@@ -10,6 +10,46 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Added — documentation structure is now tested
+
+- Published Markdown is checked the way code is. Every relative link resolves,
+  every `#fragment` names a heading that exists (compared against GitHub's own
+  slug), every table row belongs to a table, no page states a count of files the
+  repository can count for itself, no page cites a Go source LINE, no governed
+  page exceeds 500 lines, and no page is unreachable. The scanner reads whole
+  documents rather than single lines, because a link whose text wraps is still
+  one link — that blind spot was hiding two broken anchors.
+- The route-policy and MQTT option tables are derived from the structs the
+  parser and decoder fill, in both directions, so a new config key cannot ship
+  undocumented and a documented key cannot be one nothing reads.
+- `make lint` gained `scripts/lint-planning-refs.sh`: non-test Go source may not
+  carry a planning-document identifier (`Chunk N`, `RECONFIG-n`, `Phase-n`,
+  `Finding N`, `c13-…`, "the design doc"). Those point at worklists that were
+  deleted. Use an ADR, a canonical document plus section, a live page under
+  `docs/`, or plain English instead.
+
+### Changed — documentation layout
+
+- Eighteen oversized pages were split. `ARCHITECTURE.md`, `PLUGIN.md`,
+  `TESTS.md` and `DDD.md` are now hubs with a contents table; their detail lives
+  under `docs/internals/`, and the `§n` section numbers are unchanged, so an
+  existing `ARCHITECTURE.md §15` reference still means the same section.
+- `docs/transports/mqtt-options.md` documents `assert_stable_client_identity`,
+  the flag the MQTT factory names when it refuses a persistent session with a
+  hostname suffix.
+- `docs/routes-and-runtime-reference.md` documents `replay_budget`: a record is
+  poisoned only once BOTH the attempt count and this 15-minute wall-clock budget
+  are spent, so raising `max_replay_attempts` alone changes nothing.
+- The SQLite `retention` row rejoined its table — it had been sitting after a
+  blockquote, rendering as a paragraph of pipe characters.
+
+### Fixed
+
+- A published `sessions` example in the configuration model put the MQTT options
+  one level too high (`options.broker_url` instead of `options.session.broker_url`)
+  and had never parsed. It now decodes through the real builder like every other
+  published example.
+
 ### Changed — BREAKING (`ports.BackoffDef.Jitter`)
 
 - `routes[].policy.backoff.jitter` is now a `*float64`, so an omitted field and

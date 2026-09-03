@@ -32,7 +32,7 @@ func ParseReadinessLevel(s string) (ReadinessLevel, bool) {
 // achieved. Computed from a single DeepHealth snapshot so the result
 // is internally consistent.
 //
-// Finding 22: the level is Role-aware. A STANDBY instance (exclusive
+// The level is Role-aware. A STANDBY instance (exclusive
 // sessions configured but none currently holding a lease) is not dispatching
 // traffic for its exclusive routes, so it MUST NOT advertise LevelFull — the
 // pre-traffic gate and failover routers treat LevelFull as "route real traffic

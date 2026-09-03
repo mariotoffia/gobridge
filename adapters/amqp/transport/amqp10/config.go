@@ -53,7 +53,7 @@ type SessionOptions struct {
 	// non-TLS scheme. SASL PLAIN transmits the credentials in cleartext
 	// frames, so by default it is REJECTED at config validation on a
 	// plaintext "amqp://" (or schemeless) address — the username and
-	// password would travel on the wire in the clear (c7-plain-plaintext).
+	// password would travel on the wire in the clear.
 	// Set this to true to explicitly opt into that insecure path (e.g. a
 	// trusted private network or local development); it is a deliberate,
 	// auditable override, never the default. It has no effect on a TLS
@@ -285,7 +285,7 @@ func (o *SessionOptions) validate(credentialsPending bool) error {
 				"use amqps:// or amqp+ssl:// (refusing to connect in cleartext)", o.Address))
 	}
 
-	// c7-plain-plaintext: SASL PLAIN (explicit sasl_mechanism=plain, or
+	// SASL PLAIN (explicit sasl_mechanism=plain, or
 	// the inferred default when a username is present) sends the
 	// credentials in cleartext. Over a non-TLS scheme that puts them on
 	// the wire in the clear, so reject unless allow_insecure_plain is set.
@@ -335,7 +335,7 @@ const amqpMinFrameSize = 512
 // drop that never FINs) goes undetected — no bytes arrive, the read
 // deadline fires, and the monitor reconnects.
 //
-// c7-idle-timeout: this is intentionally HA-oriented (<= 30s) so
+// This is intentionally HA-oriented (<= 30s) so
 // half-open detection meets the 30-60s failover target — a standby can
 // reattach well inside the window. The monitor ticker deliberately does
 // NOT probe a live connection (see ConnectionMonitorFallback), so this
@@ -380,7 +380,7 @@ func (o *SessionOptions) usesSASLPlain() bool {
 // validatePlainOverPlaintext fails closed when SASL PLAIN credentials
 // would travel over a non-TLS scheme. SASL PLAIN sends the
 // username/password in cleartext frames, so on a plaintext "amqp://" (or
-// schemeless) address they are exposed on the wire (c7-plain-plaintext).
+// schemeless) address they are exposed on the wire.
 // The only escape hatch is an explicit allow_insecure_plain opt-in, so
 // the insecure path is a deliberate, auditable operator decision rather
 // than a silent default. A TLS scheme (amqps:// / amqp+ssl://) already
@@ -509,7 +509,7 @@ func (o *SessionOptions) applyDefaults() {
 		o.ConnectionMonitorFallback = 30 * time.Second
 	}
 	if o.ContainerID == "" {
-		// Finding 16: an empty container-id must NOT fall through to the
+		// An empty container-id must NOT fall through to the
 		// SDK, which generates a NEW random container-id on every dial.
 		// Brokers key durable subscriptions on container-id + link name,
 		// so a per-dial identity orphans the subscription on every
@@ -639,8 +639,8 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 		tc.KeyFile, _ = optString(sub, "key_file")
 		// In-memory PEM material (documented ca_cert_pem/cert_pem/key_pem)
 		// was silently dropped by this map path, so programmatic callers
-		// that passed PEM bytes ended up with no client cert / CA at all
-		// (finding 8). Honor them here; BuildTLSConfig gives PEM precedence
+		// that passed PEM bytes ended up with no client cert / CA at all.
+		// Honor them here; BuildTLSConfig gives PEM precedence
 		// over the file fields.
 		if v, ok := optString(sub, "ca_cert_pem"); ok {
 			tc.CACertPEM = shared.NewSecret(v)

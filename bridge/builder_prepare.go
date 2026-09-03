@@ -241,8 +241,8 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 		rtOpts = append(rtOpts, runtime.WithDeliveryHook(b.hook))
 	}
 	// Forward observability into the runtime so a config-driven deployment
-	// exports real metrics/traces/audit instead of the Noop defaults
-	// (Finding 15). The Builder/Supervisor previously had no seam to pass
+	// exports real metrics/traces/audit instead of the Noop defaults.
+	// The Builder/Supervisor previously had no seam to pass
 	// these through despite runtime.WithMetrics/WithTracer/WithAuditLogger
 	// existing.
 	if b.metrics != nil {
@@ -259,7 +259,7 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 	if err != nil {
 		// buildStores already opened handles; a failure here (e.g. clustered
 		// endpoint resolution) must release them rather than leak on every
-		// failed reload (builder_prepare.go:229, Chunk 3).
+		// failed reload (builder_prepare.go:229).
 		b.closeStoreHandles(stores)
 		return nil, err
 	}
@@ -343,7 +343,7 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 	// nil-store guard, or the clustered-distribution rejection below) must not
 	// leak the handles already created — a watcher-driven reload that keeps
 	// failing would otherwise leak a SQLite handle / network client every cycle
-	// (builder_prepare.go:229, Chunk 3). closeStoreHandles is best-effort and
+	// (builder_prepare.go:229). closeStoreHandles is best-effort and
 	// skips in-memory stores (no io.Closer), mirroring runtime.Stop teardown.
 	defer func() {
 		if retErr != nil {
@@ -427,7 +427,7 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 	}
 
 	// Clustered posture is implied by configured cluster endpoints even when
-	// deployment_mode is unset (cluster finding 11): forwarding between
+	// deployment_mode is unset: forwarding between
 	// instances with a process-local lease/outbox/DLQ store silently breaks
 	// exclusivity and durability, so the store-distribution guard keys on
 	// either signal.
@@ -480,7 +480,7 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 
 	// Wrap stores with metrics decorators when an exporter is configured so
 	// lease/outbox latency and failure metrics are actually emitted for
-	// config-driven deployments (Finding 15). Wrapping happens AFTER the
+	// config-driven deployments. Wrapping happens AFTER the
 	// distributed-store validation so leaseDist/outboxDist reflect the real
 	// backing factory, not the decorator. A nil clock defaults to the system
 	// clock inside the decorator. No DLQ decorator exists in the runtime, so

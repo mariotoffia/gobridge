@@ -43,6 +43,13 @@ jobs:
         with:
           go-version: '1.25'
 
+      # Fails fast, and names the exact file:line, when a pull request breaks a
+      # link, an anchor, a reference table, or the page-length threshold. The
+      # same checks run again inside `make test`; this step exists so a
+      # documentation regression is reported in seconds instead of minutes.
+      - name: Check published documentation structure
+        run: go -C tests/docsexamples test -count=1 -run 'TestGovernedMarkdown_|TestMarkdownScanner_' ./...
+
       - name: Run uncached module tests
         run: make test
 

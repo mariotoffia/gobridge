@@ -84,7 +84,7 @@ func newDefaultCredentialStore(
 	metrics ports.MetricsExporter,
 	logger *slog.Logger,
 ) (*runtime.CredentialResolver, error) {
-	// Finding 4: thread the runtime metrics exporter and logger into the
+	// Thread the runtime metrics exporter and logger into the
 	// resolver so credential resolve failures (tagged by error code), stale
 	// serves, and rotations are observable — previously the resolver emitted
 	// nothing.
@@ -121,7 +121,7 @@ func newDefaultCredentialStore(
 
 	resolver.Register(ssmrepo.New(opts...))
 
-	// Finding 11: register the native file:// credential repository when an
+	// Register the native file:// credential repository when an
 	// operator opts in via CredentialFilePath, so file:// credential URIs
 	// resolve in this profile too (SSM/pms:// is always registered above).
 	// This is opt-in (empty path => skip) because the profile runs on a

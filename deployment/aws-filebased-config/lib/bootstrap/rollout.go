@@ -37,7 +37,7 @@ import (
 // that sentinel across the module boundary, surfaces committed_not_applied instead
 // of rolling the durable write BACK. Rolling back would fight the barrier: the
 // cohort still commits the deferred delta, so a rollback would leave the durable
-// config and the running runtime permanently split (adversarial-review Finding 1).
+// config and the running runtime permanently split.
 var errRolloutDeferred = fmt.Errorf("bootstrap: config reload deferred to the coordinated cluster "+
 	"rollout barrier: %w", ports.ErrApplyInFlight)
 
@@ -378,7 +378,7 @@ func (a *App) clusterReloadSeam(ctx context.Context, logical *ports.BridgeConfig
 		// safe here because a manager-emitted config is immutable by contract and the
 		// App never mutates it in place — resolveInputs clones before injecting
 		// secrets — so the frozen snapshot the applier builds/digests against cannot
-		// diverge from the source. (adversarial-review Finding 3: latent, safe today.)
+		// diverge from the source.
 		if err := a.rolloutDriver.Propose(ctx, oldApplied, logical, logical); err != nil {
 			return true, fmt.Errorf("bootstrap: refusing the live-safe delta fail-closed; proposing it to "+
 				"the coordinated cluster rollout barrier failed, so the running config keeps serving: %w", err)
@@ -416,7 +416,7 @@ func (a *App) refuseClusteredReload(logical *ports.BridgeConfig, reason string) 
 // file watcher re-emitting the same config does not swap again, and re-syncs the
 // config manager.
 //
-// The manager re-sync (Phase-6 composition obligation) is the load-bearing part:
+// The manager re-sync, which only the composition root can do, is the load-bearing part:
 // the barrier applies a config the manager never EMITTED (the applier's candidate,
 // or the decoded committed artifact), so NotifyApplyResult would drop it as a
 // foreign pointer and leave ReconfigurePending — and deep-health Degraded — latched

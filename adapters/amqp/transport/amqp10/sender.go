@@ -52,7 +52,7 @@ type Sender struct {
 	// attach creates a new sender link on the current session connection.
 	// It defaults to defaultAttach (session-backed); tests may override it
 	// to exercise the attach path — notably the SendBatch attach timeout
-	// (finding 4) — without a live broker.
+	// — without a live broker.
 	attach func(ctx context.Context) (senderLinkAPI, amqpConn, error)
 }
 
@@ -190,7 +190,7 @@ func (s *Sender) handleSendFailure(ctx context.Context, failed senderLinkAPI, fa
 		}
 		closeLinkAsync(failed, timeout)
 		// The link is down until Send re-establishes it: reflect that in
-		// Session.Health and record the cause (finding 9).
+		// Session.Health and record the cause.
 		if s.session != nil {
 			s.session.markSenderLink(s, false)
 			s.session.noteLinkError(err)
@@ -227,7 +227,7 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([
 
 	// Bound the initial link attach the same way Send bounds its own
 	// attach: without this, a broker that accepts TCP but never answers
-	// the attach hangs the batch caller indefinitely (finding 4). Only
+	// the attach hangs the batch caller indefinitely. Only
 	// the attach is bounded here — each per-message Send below applies
 	// its own cfg.Timeout.
 	attachCtx, cancel := s.applyTimeout(ctx)
@@ -278,7 +278,7 @@ func (s *Sender) createLink(ctx context.Context) error {
 	s.linkConn = conn
 
 	// Register this sender's link for health reporting: a subsequent
-	// failure marks it down and degrades Session.Health (finding 9).
+	// failure marks it down and degrades Session.Health.
 	if s.session != nil {
 		s.session.registerSender(s)
 	}
@@ -298,7 +298,7 @@ func (s *Sender) createLink(ctx context.Context) error {
 //
 // (ireturn allow-list category 5): defaultAttach must return the
 // senderLinkAPI interface so unit tests can inject a fake attach that
-// exercises the SendBatch attach timeout (finding 4) without a broker.
+// exercises the SendBatch attach timeout without a broker.
 //
 //nolint:ireturn // senderLinkAPI is an adapter-internal mock seam
 func (s *Sender) defaultAttach(ctx context.Context) (senderLinkAPI, amqpConn, error) {

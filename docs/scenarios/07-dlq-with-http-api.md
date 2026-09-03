@@ -196,7 +196,7 @@ routes, so verify delivery:
 { "redriven": 2, "failed": 0, "warning": "runtime lacks redrive-safe injection: replays reuse the original envelope id and may be silently deduplicated by the outbox on shared_outbox routes; verify delivery" }
 ```
 
-See [HTTP API Reference](../http-api.md#dlq-redrive) for the full contract (207
+See [HTTP API Reference](../http-api-admin.md#dlq-redrive) for the full contract (207
 on partial failure, per-entry `errors`).
 
 ### Purge DLQ Entries

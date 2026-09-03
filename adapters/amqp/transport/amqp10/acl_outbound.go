@@ -41,7 +41,7 @@ func headersToMessage(headers map[string]any) *amqp.Message {
 			hasProps = true
 		}
 	}
-	// Finding 5 (domain invariant): the amqp10.subject header is
+	// Domain invariant: the amqp10.subject header is
 	// deliberately NOT mapped to Properties.Subject. Envelope.Subject is
 	// the SOLE egress source for the AMQP Subject (applied in
 	// envelopeToMessage), so a free-form amqp10.subject header can never

@@ -52,8 +52,8 @@ func (s *InstrumentedSender) Send(ctx context.Context, msg ports.OutboundMessage
 	return err
 }
 
-// SetRouteID forwards the optional ports.RouteIDSetter capability (finding 14
-// family: instrumentation wrappers must not strip optional interfaces). When
+// SetRouteID forwards the optional ports.RouteIDSetter capability — an
+// instrumentation wrapper must not strip an optional interface. When
 // inner does not implement it, the call is a no-op — behaviourally identical
 // to the runtime's capability probe failing on the unwrapped sender.
 func (s *InstrumentedSender) SetRouteID(routeID string) {
@@ -123,8 +123,8 @@ func (r *InstrumentedReceiver) Run(ctx context.Context, emit func(context.Contex
 	})
 }
 
-// Close forwards the optional ports.ContextCloser capability (finding 14
-// family): the route runner probes `Close(context.Context) error` on shutdown,
+// Close forwards the optional ports.ContextCloser capability: the route
+// runner probes `Close(context.Context) error` on shutdown,
 // and a bare wrapper would strip it, leaking the inner receiver's resources.
 // A no-op when inner does not implement it.
 func (r *InstrumentedReceiver) Close(ctx context.Context) error {
@@ -145,7 +145,7 @@ func (r *InstrumentedReceiver) SetRouteID(routeID string) {
 
 // NewInstrumentedReceiverCapabilityPreserving decorates inner with
 // receive-latency metrics while preserving its optional
-// ports.ReceiverStartedSignaler capability (finding 14 family). This is the
+// ports.ReceiverStartedSignaler capability. This is the
 // constructor library consumers should prefer; the bridge's own composition
 // root never wraps receivers (adapters self-instrument), so nothing in-repo
 // exercises either constructor in production.

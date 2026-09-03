@@ -47,7 +47,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	defer rt.mu.Unlock()
 
 	if rt.terminal || rt.stopped {
-		// Finding 3: Stop closes the outbox/DLQ/lease stores and cancels every
+		// Stop closes the outbox/DLQ/lease stores and cancels every
 		// drainer/manager, but the drainers/managers/entries are never rebuilt.
 		// A restart would append fresh drainers over CLOSED stores and duplicate
 		// work. The runtime is single-use — for BOTH a clean deliberate Stop
@@ -72,7 +72,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		return err
 	}
 
-	// Finding: shared_outbox drainer config bleed. Exactly one drainer exists per
+	// Shared_outbox drainer config bleed. Exactly one drainer exists per
 	// outbox session partition, so if two DIFFERENT routes resolve to the same
 	// session with divergent sender or drain/replay/DLQ policy, one route's
 	// records would silently drain under the other's configuration. Detect that
@@ -395,7 +395,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		})
 	}
 
-	// Finding 12: DLQ writes are fenced PER OWNING SESSION, not by an
+	// DLQ writes are fenced PER OWNING SESSION, not by an
 	// instance-global "any lease held" gate. Build the set of exclusive
 	// sessions (only they carry a lease) so the router can decide per DLQ entry:
 	//   - empty sessionID (ingress failure with no owning session): allow — no

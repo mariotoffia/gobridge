@@ -111,7 +111,7 @@ func (s *Store) Propose(ctx context.Context, proposal persistence.RolloutProposa
 		if !cur.IsTerminal() {
 			// Window-aware: a provisionally-committed rollout (confirm window pending)
 			// is non-terminal, so this refuses a new propose until it confirms/reverts
-			// (design §8.1 "new proposals refused while the window is pending").
+			// (ADR 0014 "new proposals refused while the window is pending").
 			return persistence.Rollout{}, shared.ErrAlreadyExists.
 				WithMessage("a rollout is already active").
 				With("generation", cur.Generation()).With("state", string(cur.State()))
@@ -148,7 +148,7 @@ func (s *Store) Nack(ctx context.Context, generation uint64, memberID, reason st
 }
 
 // Commit commits the rollout under the coordinator's fencing token. When the
-// rollout carries a confirm window (design §8.1) the commit is PROVISIONAL and the
+// rollout carries a confirm window (ADR 0014) the commit is PROVISIONAL and the
 // store stamps the confirm deadline from its clock + the frozen window.
 func (s *Store) Commit(ctx context.Context, generation uint64, token persistence.LeaseToken) error {
 	return s.mutate(ctx, generation, "commit", func(r persistence.Rollout) (persistence.Rollout, *shared.BridgeError) {
@@ -160,7 +160,7 @@ func (s *Store) Commit(ctx context.Context, generation uint64, token persistence
 }
 
 // Converge records a member's post-swap convergence on a provisionally-committed
-// generation (confirm window, design §8.1).
+// generation (confirm window, ADR 0014).
 func (s *Store) Converge(ctx context.Context, generation uint64, memberID string) error {
 	return s.mutate(ctx, generation, "converge", func(r persistence.Rollout) (persistence.Rollout, *shared.BridgeError) {
 		return r.WithConverged(memberID, s.clk.Now())
@@ -168,7 +168,7 @@ func (s *Store) Converge(ctx context.Context, generation uint64, memberID string
 }
 
 // Confirm confirms a provisionally-committed rollout under the coordinator's
-// fencing token (confirm window success, design §8.1).
+// fencing token (confirm window success, ADR 0014).
 func (s *Store) Confirm(ctx context.Context, generation uint64, token persistence.LeaseToken) error {
 	return s.mutate(ctx, generation, "confirm", func(r persistence.Rollout) (persistence.Rollout, *shared.BridgeError) {
 		return r.WithConfirm(token)
@@ -176,7 +176,7 @@ func (s *Store) Confirm(ctx context.Context, generation uint64, token persistenc
 }
 
 // Revert reverts a provisionally-committed rollout under the coordinator's fencing
-// token (confirm window deadman, design §8.1).
+// token (confirm window deadman, ADR 0014).
 func (s *Store) Revert(ctx context.Context, generation uint64, token persistence.LeaseToken, reason string) error {
 	return s.mutate(ctx, generation, "revert", func(r persistence.Rollout) (persistence.Rollout, *shared.BridgeError) {
 		return r.WithRevert(token, reason)

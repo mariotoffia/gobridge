@@ -42,8 +42,7 @@ type Sender struct {
 	// authGrace gives a plain (non-KMS) API auth failure a bounded,
 	// clock-driven grace window before it is classified permanent, so a
 	// static-key rotation / IAM-propagation gap is retried instead of
-	// DLQ/drop-then-ACK-ing the source during a purely transient window
-	// (Finding: c8-auth-permanent).
+	// DLQ/drop-then-ACK-ing the source during a purely transient window.
 	authGrace *authGrace
 
 	// authFailureCB is the reactive-recovery hook. The
@@ -59,7 +58,7 @@ type Sender struct {
 	// maxMessageBytes is the SQS message-size ceiling (body + attributes)
 	// enforced when selecting egress attributes. Defaults to
 	// sqsMaxMessageBytes (256 KiB); override with WithMaxMessageBytes for
-	// queues whose MaximumMessageSize has been raised (Finding 4).
+	// queues whose MaximumMessageSize has been raised.
 	maxMessageBytes int
 }
 
@@ -71,7 +70,7 @@ type SenderOption func(*Sender)
 // attributes) the sender enforces when selecting message attributes. Use it
 // for queues whose MaximumMessageSize has been raised above the 256 KiB
 // default so a large body does not silently drop ALL attributes — including
-// the rank-0 idempotency-key / traceparent propagation headers (Finding 4).
+// the rank-0 idempotency-key / traceparent propagation headers.
 // Non-positive values are ignored so the default ceiling is retained.
 func WithMaxMessageBytes(n int) SenderOption {
 	return func(s *Sender) {

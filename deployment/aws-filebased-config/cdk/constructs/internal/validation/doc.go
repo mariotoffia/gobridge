@@ -3,7 +3,7 @@
 //
 // # Two-phase design
 //
-// The design doc splits synth-time validation in two phases:
+// Synth-time validation runs in two phases, defined here:
 //
 //   - Phase 1 (this package): cheap, deterministic, fast-fail. Runs
 //     against the already-parsed *ports.BridgeConfig (carried by
@@ -24,7 +24,7 @@
 //
 // # Rows covered
 //
-// This package implements the Phase 1 rows of the Validation Matrix:
+// This package implements these Phase 1 rules:
 //
 //  1. yaml unparseable                       — enforced upstream by
 //     config.ParseFile (called by source.Materialize), which wraps the
@@ -42,8 +42,8 @@
 //  8. bridge.id (called bridge.name in the matrix) regex.
 //  9. bridge.cluster.endpoints malformed URL.
 //
-// Rows 9 (priority collision), 10 (subnet selection), 11 (multiple
-// GoBridge in a stack) and the Phase-2 SQS/SSM URI cross-checks live
+// Priority collision, subnet selection, multiple GoBridge constructs in
+// one stack, and the Phase 2 SQS/SSM URI cross-checks live
 // in other constructs (attachment ctor, Efs construct, singleton).
 //
 // # Validation order (deterministic)

@@ -64,7 +64,7 @@ func (b *Builder) WithMQTTBroker(sessionID, brokerURL string, opts ...MQTTOption
 // pipeline.
 //
 // The ref is captured by name; an unresolved ref still produces a
-// well-formed URI. Phase-2 validation reports the missing SSM
+// well-formed URI. The aggregated annotation pass reports the missing SSM
 // registration with an actionable annotation so the operator sees
 // every miss in a single synth pass.
 func MQTTCredsFromSSM(ref registry.ParamRef) MQTTOption {

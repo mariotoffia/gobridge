@@ -144,8 +144,8 @@ func (r *Router) MaxWriteHold() time.Duration {
 }
 
 // SetTokenFn sets the function used to check lease validity before DLQ writes.
-// The check is SCOPED to the sessionID that owns the failing route/record
-// (finding 12): the DLQ write is fenced only when the failing route's own
+// The check is SCOPED to the sessionID that owns the failing route/record:
+// the DLQ write is fenced only when the failing route's own
 // session holds an exclusive lease. Wiring supplies a resolver that returns
 // held=true for a session with no lease to fence on — a non-exclusive session,
 // or an ingress failure with no owning session (empty sessionID) — so a standby

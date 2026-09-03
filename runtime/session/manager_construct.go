@@ -97,8 +97,7 @@ func newManager(cfg Config, session ports.Session, leaseStore ports.LeaseStore, 
 	// StepDownGrace must stay strictly below LeaseTTL: a stepping-down owner
 	// drains in-flight Send+Complete for StepDownGrace BEFORE releasing, so a
 	// grace at or above the TTL lets the old owner keep draining PAST its own
-	// lease expiry and overlap the new owner (finding: StepDownGrace>=LeaseTTL
-	// accepted on the main construction path). Config.Validate rejects this as a
+	// lease expiry and overlap the new owner. Config.Validate rejects this as a
 	// hard error; here — mirroring clampRenewTimings — newManager (which returns
 	// no error) clamps defensively and warns so a hand-tuned or programmatic
 	// Config can never breach the invariant on the construction path.

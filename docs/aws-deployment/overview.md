@@ -83,11 +83,14 @@ Beyond the pages in the map above.
 | Guide | Description |
 |-------|-------------|
 | [Configuration on AWS](configuration.md) | Bridge YAML reference with AWS-specific settings. |
+| [Hot-reload and production config updates](config-reload.md) | How a live reload reaches every task, and the procedure for changing config in production. |
 | [Monitoring and Observability](monitoring.md) | The CloudWatch exporter and the complete metric catalogue. |
 | [CloudWatch alarms](alarms.md) | What the CDK bundle provisions, what `DefaultAlarms()` provisions, what nobody does, and the rollup metrics they all need. |
 | [Logging, dashboards and tracing](logging-and-dashboards.md) | Structured logging, dashboard layout, ADOT/X-Ray tracing, log-metric filters, Grafana. |
 | [HTTP API and Networking](http-api.md) | ALB target groups, security groups, and TLS termination. |
+| [API Gateway and custom domains](api-gateway.md) | Fronting the admin API with API Gateway, and putting a custom domain in front of it. |
 | [Total Cost of Ownership](tco.md) | Fargate, EFS, and SSM cost breakdown with worked examples. |
+| [Cost optimization checklist](cost-optimization.md) | The actionable savings, in the order worth doing them. |
 | [Running the Deployment Suite Locally](local-deployment-suite.md) | Deploying and driving this profile with no AWS account: what it proves, what it does not, and the measured emulation gaps. |
 | [CDK Scenarios](../scenarios/cdk/) | Complete, runnable CDK deployment examples. |
 | [Deployment Guide](../deployment-guide.md) | Platform-agnostic deployment considerations. |

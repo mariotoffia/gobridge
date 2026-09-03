@@ -194,28 +194,28 @@ Both refresher layers expose a post-rotation callback so a caller can
 invalidate a downstream cache the instant a new secret is applied:
 
 - `bridge.WithRotationCallback(fn func(uri string))`
-  (`bridge/credential_refresh.go:56-60`) -- invoked with the URI after each
+  (`bridge/credential_refresh.go`) -- invoked with the URI after each
   **applied** rotation on the builder's refresher.
 - `runtime/credentials.WithOnRotation(fn func(uri string))`
-  (`runtime/credentials/poll.go:87-108`) -- the same hook on the polled
+  (`runtime/credentials/poll.go`) -- the same hook on the polled
   pull-to-push wrapper. It fires only on an actual rotation, never on the
-  initial fetch (`poll.go:184`).
+  initial fetch (`poll.go`).
 
 The composition root wires `InvalidateCache` for **one path only**: a decoupled
 push store registered with `WithPushCredentialStore`. When that push store is
 present AND the pull store exposes `InvalidateCache(uri)`, the builder registers
 `InvalidateCache` as the refresher's rotation callback
-(`bridge/builder_complete.go:96-99`), gated by `pullCacheNeedsRotationInvalidation`
-(`bridge/builder.go:165-167`, which returns true only when `pushCredStore != nil`).
+(`bridge/builder_complete.go`), gated by `pullCacheNeedsRotationInvalidation`
+(`bridge/builder.go`, which returns true only when `pushCredStore != nil`).
 A push rotation then evicts the rotated URI from the pull cache so the next resolve
 fetches the fresh secret instead of a stale one.
 
 The polled path is deliberately NOT wired to `InvalidateCache`. That covers
 `WithPolledCredentialStore` and any `file://` / SSM pull store the builder wraps in
-a `PollBasedWrapper` via `effectivePushStore` (`bridge/builder.go:144-154`). The
+a `PollBasedWrapper` via `effectivePushStore` (`bridge/builder.go`). The
 wrapper wraps the SAME resolver and refreshes that resolver's cache through
 `ResolveUncached` on the poll that detects the rotation, before it publishes the new
-`CredentialSet` (`runtime/credentials/poll.go:290-345`). Invalidating there would
+`CredentialSet` (`runtime/credentials/poll.go`). Invalidating there would
 delete the just-cached fresh entry and blind the `CredentialStaleServed` signal for
 up to one poll interval, so the callback is left off that path on purpose.
 
@@ -344,7 +344,7 @@ the PEM fields.
 
 When an amqp091 session has an explicitly configured (or rotated) username, it
 **always** wins over any userinfo embedded in `broker_url`
-(`adapters/amqp/transport/amqp091/acl_client.go:152-169`). URL userinfo is used
+(`adapters/amqp/transport/amqp091/acl_client.go`). URL userinfo is used
 only when no explicit username is configured. This precedence is what makes
 rotation correct: without it a rotation would report success while every redial
 silently re-authenticated with the old, soon-to-be-revoked credentials baked

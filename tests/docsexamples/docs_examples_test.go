@@ -183,7 +183,7 @@ func newFullRegistry(t *testing.T) *ports.Registry {
 
 // repoRoot resolves the repository root relative to this module
 // (tests/docsexamples) and sanity-checks the docs tree exists.
-func repoRoot(t *testing.T) string {
+func repoRoot(t testing.TB) string {
 	t.Helper()
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	require.NoError(t, err)
@@ -194,7 +194,7 @@ func repoRoot(t *testing.T) string {
 
 // markdownFiles returns the repo-relative, sorted list of markdown
 // files to scan: docs/**/*.md plus the root README.md when present.
-func markdownFiles(t *testing.T, root string) []string {
+func markdownFiles(t testing.TB, root string) []string {
 	t.Helper()
 	var files []string
 	err := filepath.WalkDir(filepath.Join(root, "docs"), func(path string, d fs.DirEntry, err error) error {

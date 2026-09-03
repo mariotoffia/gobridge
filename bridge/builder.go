@@ -87,7 +87,7 @@ func WithPushCredentialStore(cs ports.PushCredentialStore) BuilderOption {
 // The poll wrapper is NOT constructed here: doing so captured whatever
 // b.logger happened to be at option-application time, making the result
 // depend on option ordering (WithLogger applied after this call was
-// silently ignored, Finding 13). Instead the pull store and config are
+// silently ignored). Instead the pull store and config are
 // recorded and the wrapper is built at build time via effectivePushStore
 // with the fully-resolved logger.
 func WithPolledCredentialStore(cs ports.PullCredentialStore, cfg ports.PollBasedWrapperConfig) BuilderOption {
@@ -101,7 +101,7 @@ func WithPolledCredentialStore(cs ports.PullCredentialStore, cfg ports.PollBased
 // WithMetrics forwards a MetricsExporter to the runtime so config-driven
 // deployments export real metrics instead of the Noop exporter. Without
 // this seam the Builder and Supervisor had no way to pass an exporter
-// through to runtime.WithMetrics (Finding 15). nil is ignored.
+// through to runtime.WithMetrics. nil is ignored.
 func WithMetrics(m ports.MetricsExporter) BuilderOption {
 	return func(b *Builder) {
 		if m != nil {
@@ -110,7 +110,7 @@ func WithMetrics(m ports.MetricsExporter) BuilderOption {
 	}
 }
 
-// WithTracer forwards a Tracer to the runtime (Finding 15). nil is ignored.
+// WithTracer forwards a Tracer to the runtime. nil is ignored.
 func WithTracer(t ports.Tracer) BuilderOption {
 	return func(b *Builder) {
 		if t != nil {
@@ -119,7 +119,7 @@ func WithTracer(t ports.Tracer) BuilderOption {
 	}
 }
 
-// WithAuditLogger forwards an AuditLogger to the runtime (Finding 15).
+// WithAuditLogger forwards an AuditLogger to the runtime.
 // nil is ignored.
 func WithAuditLogger(a ports.AuditLogger) BuilderOption {
 	return func(b *Builder) {
@@ -140,7 +140,7 @@ var _ reactiveCredentialStore = (*credentials.PollBasedWrapper)(nil)
 // effectivePushStore returns the push credential store the build should
 // use: an explicitly-provided one wins; otherwise a poll wrapper is built
 // lazily around the recorded pull store using the fully-resolved logger so
-// the result is independent of option ordering (Finding 13).
+// the result is independent of option ordering.
 func (b *Builder) effectivePushStore() ports.PushCredentialStore {
 	if b.pushCredStore != nil {
 		return b.pushCredStore
@@ -161,7 +161,7 @@ func (b *Builder) effectivePushStore() ports.PushCredentialStore {
 // wraps this SAME resolver and refreshes its cache via ResolveUncached on the
 // detecting poll BEFORE publishing, so invalidating there would delete the
 // just-cached fresh entry and blind stale-serve for up to a poll interval
-// after every rotation (adversarial Finding 1).
+// after every rotation.
 func (b *Builder) pullCacheNeedsRotationInvalidation() bool {
 	return b.pushCredStore != nil
 }

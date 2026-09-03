@@ -13,7 +13,7 @@
 // distinct (envelope_id, binding_id) pairs can never alias onto the same SK.
 // Envelope IDs are producer-controlled, so a raw concatenation would let a
 // crafted ID collide two distinct messages onto one SK and silently drop one
-// as a false duplicate (finding c13-sk-collision).
+// as a false duplicate.
 //
 // GSIs:
 //   - ExpiryIndex: PK=has_expiry (sparse), SK=expires_at (for expire sweeps;
@@ -77,7 +77,7 @@
 // is. Because the SK is keyed on envelope/binding ID — lexicographically
 // uncorrelated with age — this age-ordered access path is what keeps a
 // deep-backlog drain (an egress outage on an exclusive session) from going
-// O(backlog) per batch and self-throttling DynamoDB (c13-claim-quadratic). The
+// O(backlog) per batch and self-throttling DynamoDB. The
 // GSI is eventually consistent (a GSI cannot be read strongly consistent); the
 // per-record claim transaction re-validates status and the fence, so a stale
 // index entry only ever costs a skipped candidate, never a double claim.

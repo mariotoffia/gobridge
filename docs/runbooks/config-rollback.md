@@ -20,7 +20,7 @@ delivery. The transaction flow is reversible, which is the point of this runbook
 ## Diagnosis
 
 1. Read the current effective (redacted) config and its version
-   ([http-api.md#config-transactions](../http-api.md#config-transactions)):
+   ([http-api.md#config-transactions](../http-api-admin.md#config-transactions)):
 
    ```bash
    curl -s -H "X-API-Key: ${ADMIN_KEY}" \
@@ -132,11 +132,11 @@ curl -s -X POST -H "X-API-Key: ${ADMIN_KEY}" \
 - **After a `committed_not_applied`** — reconcile deliberately: the committed
   version is on disk, so either restart the affected instance to load it, or open
   a new transaction to converge disk and runtime
-  ([http-api.md#config-transactions](../http-api.md#config-transactions)).
+  ([http-api.md#config-transactions](../http-api-admin.md#config-transactions)).
 
 PATCH merge semantics (empty-string, empty-list, and `"[REDACTED]"` preserve the
 current value; secrets and `session_id` cannot be cleared) are documented in
-[http-api.md#config-transactions](../http-api.md#config-transactions).
+[http-api.md#config-transactions](../http-api-admin.md#config-transactions).
 
 ## Related
 

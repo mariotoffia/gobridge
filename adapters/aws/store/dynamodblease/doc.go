@@ -44,7 +44,7 @@
 // it at version 1 while the outbox high-water mark still sits at v >> 1 — every
 // subsequent claim then fails with ErrStaleFencingToken and the partition stalls
 // (a split-brain window). The build-time Preflight therefore ENFORCES this
-// invariant (finding c13-lease-ttl-warn): it calls dynamodb:DescribeTimeToLive
+// invariant: it calls dynamodb:DescribeTimeToLive
 // and, if TTL is ENABLED/ENABLING on the lease table, FAILS the build with
 // shared.ErrInvalidConfig naming the table and status. A DescribeTimeToLive that
 // itself fails (missing permission, throttle, or an emulator gap) proves nothing

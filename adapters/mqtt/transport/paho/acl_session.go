@@ -65,13 +65,13 @@ func (s *Session) ConnectionManager() *autopaho.ConnectionManager {
 //
 // Two protocol hazards ARE handled here:
 //
-//   - Short SUBACK (c4-short-suback): a broker that returns FEWER reason
+//   - Short SUBACK: a broker that returns FEWER reason
 //     codes than requested subscriptions leaves the tail topics
 //     unconfirmed. Those topics have no broker proof of subscription, so
 //     they are treated as a FAILURE (not silently assumed accepted) —
 //     otherwise the health would report Full while a subscription was
 //     never established and silently never delivers.
-//   - Granted QoS (c4-qos-downgrade): a success reason code (0x00/0x01/
+//   - Granted QoS: a success reason code (0x00/0x01/
 //     0x02) IS the QoS the broker granted, which may be LOWER than the
 //     requested QoS. The succeeded spec carries the GRANTED QoS so the caller
 //     can retain broker-observed state for cleanup while keeping that topic out
@@ -84,7 +84,7 @@ func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
 		if i >= len(reasons) {
 			// Short SUBACK: no reason code for this topic ⇒ no broker
 			// confirmation. Treat it as a failure rather than assuming
-			// acceptance (c4-short-suback); do NOT mark it active.
+			// acceptance; do NOT mark it active.
 			if firstErr == nil {
 				firstErr = shared.ErrProtocolError.WithMessage(
 					"mqtt: SUBACK returned fewer reason codes than requested subscriptions")

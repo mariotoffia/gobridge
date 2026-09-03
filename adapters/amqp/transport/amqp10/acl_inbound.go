@@ -108,7 +108,7 @@ var errIngressRejected = errors.New("amqp10: inbound message rejected at ingress
 // amqp-sequence-only body). messageToEnvelope returns it so the receive
 // loop settles the message via the errIngressRejected path (counted +
 // warned) instead of silently forwarding an EMPTY envelope while Acking
-// and deleting the source — irrecoverable body loss (finding 1).
+// and deleting the source — irrecoverable body loss.
 var errUnrepresentableBody = errors.New("amqp10: message body cannot be represented as bytes")
 
 // receiverLink wraps a *amqp.Receiver, exposing only the operations
@@ -325,7 +325,7 @@ func bridgeHeaderString(msg *amqp.Message, key string) string {
 //     faithfully represented as bytes and is REJECTED via
 //     errUnrepresentableBody so the message is settled through the
 //     ingress-rejected path (counted + warned) rather than Acked-and-
-//     forwarded empty (finding 1).
+//     forwarded empty.
 //   - No body sections at all: a legitimately empty message → nil body.
 func messageBody(msg *amqp.Message) ([]byte, error) {
 	switch {
@@ -362,8 +362,8 @@ func messageBody(msg *amqp.Message) ([]byte, error) {
 // into the string form the
 // envelope ID uses. A deterministic rendering (uuid canonical form,
 // ulong decimal, binary hex) preserves downstream message-id dedup for
-// non-string ids instead of substituting a random envelope ID
-// (finding 6). Returns "" for an unrecognised type so the caller falls
+// non-string ids instead of substituting a random envelope ID.
+// Returns "" for an unrecognised type so the caller falls
 // back to a generated ID.
 func messageIDToString(id any) string {
 	switch v := id.(type) {

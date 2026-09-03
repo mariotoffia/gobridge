@@ -17,7 +17,7 @@ A relational backend answers "oldest N pending" with `ORDER BY created_at, seq
 LIMIT N`. DynamoDB cannot: a `Query` returns items in sort-key order, and the
 outbox sort key is `OUTBOX#<envelope_id>#<binding_id>` — lexicographic by
 envelope ID, effectively random with respect to record age
-(`adapters/aws/store/dynamodboutbox/acl_store.go:66-71`). Claiming the first N
+(`adapters/aws/store/dynamodboutbox/acl_store.go`). Claiming the first N
 items DynamoDB returns would starve records whose envelope IDs sort late and
 break the ordering the other backends provide.
 
@@ -31,7 +31,7 @@ future work.
   N pending records by ascending `(CreatedAt, Seq)` as a cross-backend contract
   (`ports/stores_outbox.go`). `Seq` is monotonic per partition; `limit <= 0` is a
   fencing no-op; stores must not filter by replay count. The contract test
-  `ClaimLimitReturnsOldestN` (`ports/storetest/outbox.go:55`, `:264`) enforces it
+  `ClaimLimitReturnsOldestN` (`ports/storetest/outbox.go`, `:264`) enforces it
   for every backend.
 
 - **QueryPending is preview, not selection.** `QueryPending` returns depth /
@@ -50,8 +50,8 @@ future work.
 
 - **Per-partition fence row.** A single fence row per partition holds the
   monotonic `max_claim_version` and an atomic `seq_counter`
-  (`attrSeqCounter = "seq_counter"`, `acl_store.go:38-50`). `Persist` allocates
-  `Seq` by incrementing the counter (`allocateSeqs`, `acl_store.go:415-473`);
+  (`attrSeqCounter = "seq_counter"`, `acl_store.go`). `Persist` allocates
+  `Seq` by incrementing the counter (`allocateSeqs`, `acl_store.go`);
   `Claim` condition-checks the same fence row inside its `TransactWriteItems`.
   Both paths touch one row per partition, so a hot partition contends on it.
 
@@ -103,10 +103,10 @@ future work.
 
 - **Contention is measured.** `Claim` conflicts increment
   `MetricOutboxClaimConflicts = "OutboxClaimConflicts"`
-  (`domain/shared/metrics.go:45`), tagged with the partition. It counts
+  (`domain/shared/metrics.go`), tagged with the partition. It counts
   DynamoDB `TransactionConflict` (real contention) and distinguishes it from
   `ConditionalCheckFailed` (a claimer that legitimately lost the race),
-  `acl_store.go:96-100`.
+  `acl_store.go`.
 
 ## Consequences
 

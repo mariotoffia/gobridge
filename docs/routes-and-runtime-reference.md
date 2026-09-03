@@ -21,7 +21,7 @@ Routes define the message flow from a receiver through processors to bindings.
 | `resolver` | object | no | -- | Content-based binding resolver (see [Resolver](#routesresolver----content-based-resolver)) |
 | `session` | object | no | -- | Route session management (for exclusive sessions) |
 
-**Delivery modes:**
+### Delivery modes
 
 `direct_hold` settles the source only once the destination has accepted, so its
 precondition is that the source **redelivers a message it was never told to
@@ -29,7 +29,7 @@ settle** -- that is what makes the crash window between the send and the settle
 recoverable. Sources that provide it: SQS, Azure Service Bus in PeekLock, AMQP
 0-9-1, AMQP 1.0, and MQTT on a route whose session survives the process and whose
 subscriptions are QoS 1 or 2 (see
-[capabilities](transport-configuration.md#capabilities)). An HTTP ingress is
+[capabilities](transport-configuration.md#transport-capabilities-matrix)). An HTTP ingress is
 admitted on the other argument -- the caller is still holding the request, so
 nothing has been settled and the retry is theirs. A route the runtime turns down
 is named at config load with the precondition it failed.
@@ -43,11 +43,11 @@ now has to run.
 - **`direct_hold`** -- Source held open until egress completes. No inter-instance fencing; destinations must handle duplicates idempotently in clustered mode. When a `resolver` is configured, multiple bindings are allowed -- the resolver selects one per message. **Rejected at config load for a clustered exclusive route whose ingress is the HTTP transport:** a request forwarded to an owner that has just stepped down can be sent by the old owner while the new owner handles a retry (forwarded HTTP requests skip the ownership re-check, and `direct_hold` carries no fencing token at the sender boundary), a bounded duplicate-send window across failover. Use `shared_outbox` for that class. Non-clustered or non-HTTP-exclusive `direct_hold` routes are unaffected.
 - **`shared_outbox`** -- Source acknowledged after persisting to outbox. Outbox drainer delivers asynchronously. Requires `stores.outbox`.
 
-**Dispatch modes:**
+### Dispatch modes
 - **`single`** -- Send to first matching binding (or resolver-selected binding).
 - **`fan_out`** -- Send to all bindings.
 
-**Trusting bridge-to-bridge headers (`trust_bridge_headers`):**
+### Trusting bridge-to-bridge headers (`trust_bridge_headers`)
 
 By default every route strips all reserved `x-bridge.*` headers from an inbound
 delivery at ingress, so an external producer can never inject bridge metadata
@@ -73,10 +73,12 @@ it on a receiver reachable by untrusted producers would let them spoof
 | `max_in_flight` | int | no | 100 | Max concurrent messages in this route |
 | `ack_after` | string | no | `target_accept` | `target_accept` or `outbox_persist` |
 | `max_replay_attempts` | int | no | 5 | Max times a record may be claimed before it is eligible for poison (claims include deferrals/reclaims; poisoning also requires the wall-clock `replay_budget` to be spent) |
+| `replay_budget` | duration | no | `15m` | Wall-clock ceiling, measured from a record's FIRST attempt, on how long the outbox drainer keeps redelivering it. It is the **age** half of the poison gate and applies **AND**-ed with `max_replay_attempts`: a record is poisoned to the DLQ only once **both** the attempt count and this budget are spent, so raising one alone changes nothing. Negative is rejected at config load; `0` takes the default. |
 | `max_outbox_depth` | int | no | 10000 | Max pending outbox records before backpressure |
 | `on_expired` | string | no | `dlq` | `drop` or `dlq` |
 | `on_permanent_failure` | string | no | `dlq` | `drop` or `dlq` |
 | `on_filtered` | string | no | `drop` | `drop` or `dlq` |
+| `backoff` | object | no | -- | Retry backoff ladder for this route (see [Retry Backoff](#routespolicybackoff----retry-backoff)) |
 | `send_timeout` | duration | no | `30s` | Timeout for individual send operations |
 | `depth_cache_ttl` | duration | no | `1s` | How long outbox depth counts are cached |
 | `allow_unfenced` | bool | no | false | Allow direct_hold with shared consumer sources (risk: no fencing) |

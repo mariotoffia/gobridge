@@ -78,7 +78,7 @@ type ClusterRolloutStore interface {
 	// token. Requires the barrier; enforces fencing and
 	// terminal-immutability. Idempotent under a same-or-newer token.
 	//
-	// If the rollout was proposed with a confirm window (design §8.1,
+	// If the rollout was proposed with a confirm window (ADR 0014,
 	// RolloutProposal.ConfirmWindow > 0), the commit is PROVISIONAL: the rollout
 	// becomes Committed but NON-terminal, the store stamps a confirm deadline from
 	// its clock + the frozen window, and the rollout is resolved by Confirm or
@@ -87,7 +87,7 @@ type ClusterRolloutStore interface {
 	Commit(ctx context.Context, generation uint64, token persistence.LeaseToken) error
 
 	// Converge records memberID's post-swap convergence (its readiness
-	// check passed) on a provisionally-committed generation (design §8.1). Legal
+	// check passed) on a provisionally-committed generation (ADR 0014). Legal
 	// only while the rollout is Committed with an active confirm window; enforces
 	// the confirm-window bookkeeping:
 	//
@@ -124,7 +124,7 @@ type ClusterRolloutStore interface {
 }
 
 // ClusterCommittedConfigStore is the durable last-committed configuration
-// artifact (design Phase-4 residual): the exact config bytes a (re)joining member
+// artifact: the exact config bytes a (re)joining member
 // boots on and a member that missed a commit reconciles to. It is a SEPARATE port
 // from ClusterRolloutStore (kept small per the project's interface rule) because
 // it is a distinct concern with a distinct lifecycle: the active rollout row is
@@ -201,7 +201,7 @@ type RolloutHost interface {
 	// Converged reports whether THIS member has converged on its running config:
 	// the post-swap readiness check (every non-standby session connected
 	// and its subscriptions satisfied) is met. It is the confirm-window signal
-	// (design §8.1): an Ack proves validated+built, Converged proves
+	// (ADR 0014): an Ack proves validated+built, Converged proves
 	// converged-against-the-real-broker. The drive calls it after a provisional swap
 	// to decide whether to record this member's Converge. Best-effort and
 	// non-blocking; false when no runtime is active.

@@ -20,7 +20,7 @@ import (
 // gated on whether the PRIOR PLAN held subscriptions (desired-state history),
 // not on the volatile activeSubs snapshot a reconnect may have just reset —
 // so a subscription resumed by a clean_start=false broker is torn down even
-// in the post-reconnect window (c4-remove-subs). Only a subless transition —
+// in the post-reconnect window. Only a subless transition —
 // an empty plan re-affirming a prior plan that had no subscriptions (a
 // sender-only session) — is a no-op, so a SessionManager that never had
 // subscriptions cannot churn the broker.
@@ -177,7 +177,7 @@ func (s *Session) reconcileUnderGate(
 	// hot reconfig removed the last MQTT receiver): the managed subscriptions
 	// this session established MUST be UNSUBSCRIBED, else the broker keeps
 	// delivering on stale subscriptions the router then ack-drops as orphans
-	// forever (c4-remove-subs).
+	// forever.
 	//
 	// The teardown is gated on the last-APPLIED history (whether the plan we
 	// last SUCCESSFULLY reconciled held subscriptions), NOT on the volatile

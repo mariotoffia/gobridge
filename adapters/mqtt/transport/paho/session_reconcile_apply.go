@@ -129,7 +129,7 @@ func (s *Session) reconcile(
 	// the reconnect window: handleConnectionUp reset activeSubs to empty but a
 	// clean_start=false broker still holds the resumed subscriptions, so
 	// without them an empty plan would fail to tear anything down and orphan
-	// the broker sub (c4-remove-subs). Unsubscribing a topic the broker does
+	// the broker sub. Unsubscribing a topic the broker does
 	// not actually hold is harmless (the broker ignores it).
 	var toUnsub []string
 	unsubSeen := make(map[string]struct{})

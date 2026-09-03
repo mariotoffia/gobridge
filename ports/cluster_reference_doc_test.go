@@ -31,15 +31,18 @@ const clusterReferenceHeading = "### `bridge.cluster`"
 // name, e.g. "| `confirm_window` | duration | no | ... |".
 var docFieldRow = regexp.MustCompile("^\\|\\s*`([a-z0-9_]+)`\\s*\\|")
 
-func documentedClusterFields(t *testing.T) map[string]bool {
+// documentedFields collects the field names of the table under heading in doc,
+// stopping at the next heading of the same or higher level.
+func documentedFields(t *testing.T, doc, heading string) map[string]bool {
 	t.Helper()
-	body, err := os.ReadFile(clusterReferenceDoc)
-	require.NoError(t, err, "the configuration reference page must exist")
+	body, err := os.ReadFile(doc)
+	require.NoError(t, err, "the reference page %s must exist", doc)
 
+	level := len(heading) - len(strings.TrimLeft(heading, "#"))
 	fields := map[string]bool{}
 	inSection, inFence := false, false
 	for _, line := range strings.Split(string(body), "\n") {
-		if strings.HasPrefix(line, clusterReferenceHeading) {
+		if strings.HasPrefix(line, heading) {
 			inSection = true
 			continue
 		}
@@ -56,21 +59,22 @@ func documentedClusterFields(t *testing.T) map[string]bool {
 		if inFence {
 			continue
 		}
-		if strings.HasPrefix(line, "#") {
-			break // the next heading ends the cluster section
+		if depth := len(line) - len(strings.TrimLeft(line, "#")); depth > 0 && depth <= level {
+			break // the next heading at this level or above ends the section
 		}
 		if match := docFieldRow.FindStringSubmatch(line); match != nil {
 			fields[match[1]] = true
 		}
 	}
 	require.NotEmpty(t, fields, "no field rows parsed from the %s section of %s — the table shape changed",
-		clusterReferenceHeading, clusterReferenceDoc)
+		heading, doc)
 	return fields
 }
 
-func parsedClusterFields(t *testing.T) map[string]bool {
+// parsedFields returns the YAML keys the parser reads for one config struct.
+func parsedFields(t *testing.T, v any) map[string]bool {
 	t.Helper()
-	typ := reflect.TypeOf(ports.ClusterConfig{})
+	typ := reflect.TypeOf(v)
 	fields := map[string]bool{}
 	for i := range typ.NumField() {
 		name, _, _ := strings.Cut(typ.Field(i).Tag.Get("yaml"), ",")
@@ -79,12 +83,13 @@ func parsedClusterFields(t *testing.T) map[string]bool {
 		}
 		fields[name] = true
 	}
+	require.NotEmpty(t, fields, "no yaml keys found on %T", v)
 	return fields
 }
 
 func TestClusterConfigReference_DocumentsEveryParsedField(t *testing.T) {
-	documented := documentedClusterFields(t)
-	parsed := parsedClusterFields(t)
+	documented := documentedFields(t, clusterReferenceDoc, clusterReferenceHeading)
+	parsed := parsedFields(t, ports.ClusterConfig{})
 
 	var undocumented, phantom []string
 	for name := range parsed {

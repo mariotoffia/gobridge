@@ -328,8 +328,8 @@ func (m *configTxnManager) Commit(ctx context.Context, txnID string) (int, error
 			// write back would fight the runtime. Keep the committed config on
 			// disk and surface committed_not_applied; the file watcher / next
 			// swap converges the observable state. This is the reconciliation
-			// path for the "crash after durable write leaves an unapplied config"
-			// finding: the durable write is deliberately RETAINED so a restart
+			// path for a crash after the durable write leaves an unapplied
+			// config: the durable write is deliberately RETAINED so a restart
 			// recovers the committed config instead of losing it to a rollback.
 			if errors.Is(applyErr, ports.ErrApplyInFlight) {
 				return newVersion, fmt.Errorf("%w: version %d is committed to disk; apply is in-flight and the running state is not confirmed (not rolled back): %w",
@@ -433,9 +433,8 @@ func (m *configTxnManager) commitDurable(ctx context.Context, txnID string) (*po
 
 	// CAS: read the current on-disk config once. Its version drives the
 	// check-and-set, and the config itself is retained as the rollback target
-	// if the post-lock apply fails (Finding: committed_not_applied restart
-	// bomb). A missing file (fs.ErrNotExist) is first-write: version 0 and no
-	// prior config to restore.
+	// if the post-lock apply fails. A missing file (fs.ErrNotExist) is
+	// first-write: version 0 and no prior config to restore.
 	prior, err := m.store.Load(ctx)
 	var diskVersion int
 	switch {

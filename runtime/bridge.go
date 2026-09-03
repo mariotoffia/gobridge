@@ -45,12 +45,12 @@ type Runtime struct {
 	shutdownTimeout time.Duration
 
 	// stopQuiesce OVERRIDES the pre-cancel drain budget in Stop. Stop always
-	// drains in-flight deliveries BEFORE it cancels the runtime context (finding:
-	// SIGTERM cancels work before quiescing): it waits for every route to reach
-	// InFlight==0 (via WaitQuiescent) so a rolling restart lets current work
-	// settle instead of aborting mid-delivery and forcing a duplicate on
-	// redelivery. This field only tunes the budget; zero selects
-	// defaultStopDrainBudget (see stopDrainBudget), NOT the old abort-style Stop.
+	// drains in-flight deliveries BEFORE it cancels the runtime context: it
+	// waits for every route to reach InFlight==0 (via WaitQuiescent) so a
+	// rolling restart lets current work settle instead of aborting
+	// mid-delivery and forcing a duplicate on redelivery. This field only
+	// tunes the budget; zero selects defaultStopDrainBudget (see
+	// stopDrainBudget), NOT the old abort-style Stop.
 	stopQuiesce time.Duration
 
 	// randFloat supplies the [0,1) value used to jitter session-restart
@@ -81,9 +81,8 @@ type Runtime struct {
 	// terminal, and closed as the very last action of that Stop (after every
 	// resource is released and errs is joined). A concurrent second Stop that
 	// observes terminal blocks on it, so "Stop returned ⇒ resources released"
-	// holds for every caller, not just the first (finding: double-Stop early
-	// return). nil when terminal was tripped by a background component rather
-	// than a Stop call.
+	// holds for every caller, not just the first. nil when terminal was tripped
+	// by a background component rather than a Stop call.
 	stopDone chan struct{}
 	// stopErr is the result of the Stop that performed the teardown, published
 	// just before stopDone closes. Every later or concurrent Stop returns it, so
@@ -363,8 +362,7 @@ func (rt *Runtime) startBackground(ctx context.Context, name string, fn func(con
 // runtime is still live — an anomalous early exit (e.g. a closed broker Events
 // channel mis-reported as a clean stop). superviseSession converts a live-ctx
 // nil return into this error so the death is surfaced as a per-session
-// degradation and restarted in isolation, never swallowed as a clean stop
-// (finding 23).
+// degradation and restarted in isolation, never swallowed as a clean stop.
 var errSessionUnexpectedStop = errors.New("runtime: session manager stopped unexpectedly while runtime is running")
 
 // superviseSession wraps a session manager's Run so a transient failure
@@ -442,7 +440,7 @@ func (rt *Runtime) superviseSession(sid string, run func(context.Context) error)
 				return nil
 			}
 			if err == nil {
-				// Finding 23: the session manager returned nil while the runtime
+				// The session manager returned nil while the runtime
 				// is still live. A session should only stop cleanly on shutdown
 				// (ctx cancelled, handled above) or on ErrStaleFencingToken
 				// (lease lost, handled below). A nil return here means the

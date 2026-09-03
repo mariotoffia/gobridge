@@ -22,7 +22,7 @@ const (
 	// therefore measures broker-delegated retry scheduling, NOT a failure
 	// — the previous name ("Unhonored") asserted a non-honoring broker on
 	// every delayed retry, a 100% false positive on honoring brokers
-	// (finding 5 / G). See acl_delivery.go Retry.
+	// See acl_delivery.go Retry.
 	MetricAMQP10DelayedRetryDeferred = "AMQP10DelayedRetryDeferred"
 	// MetricAMQP10IngressRejected counts inbound messages that failed
 	// envelope conversion at ingress and were rejected back to the

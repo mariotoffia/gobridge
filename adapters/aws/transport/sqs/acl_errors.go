@@ -89,8 +89,8 @@ func MapError(err error) *shared.BridgeError {
 		return shared.ErrProtocolError.Wrap(err).WithMessage("unsupported operation")
 	}
 
-	// KMS (server-side encryption) errors need code-specific classification
-	// (Finding 3). The string fallback below lower-cases the message and
+	// KMS (server-side encryption) errors need code-specific classification.
+	// The string fallback below lower-cases the message and
 	// matches "KmsAccessDenied" as "accessdenied" → permanent ErrNotAuthorized,
 	// which false-DLQs every send during the 10-120s a freshly-granted KMS
 	// key policy or IAM role takes to propagate. These typed checks MUST
@@ -152,8 +152,8 @@ func MapError(err error) *shared.BridgeError {
 	// genuinely-misconfigured policy must DLQ rather than retry forever.
 	// The propagation window for a freshly-rotated static key / IAM role
 	// (10-120s of AccessDenied for a condition that WILL self-heal) is
-	// handled OUTSIDE this pure function by authGrace.classify (Finding:
-	// c8-auth-permanent): the send path (sendOne / sendBatchChunk) and the
+	// handled OUTSIDE this pure function by authGrace.classify: the send
+	// path (sendOne / sendBatchChunk) and the
 	// receive poll loop route every error through a per-adapter authGrace
 	// that treats a plain auth failure as transient ErrTemporaryAuthFailure
 	// while inside a bounded, clock-driven grace window and only escalates
@@ -190,7 +190,7 @@ func MapError(err error) *shared.BridgeError {
 // back-pressure, a transient InternalError — was flattened to a terminal
 // rejected/transient verdict that does not match how the SAME condition
 // classifies on the single-message send path (MapError). Classifying the Code
-// first keeps a retryable target outage retryable (Chunk 13) instead of
+// first keeps a retryable target outage retryable instead of
 // turning it into a permanent reject that costs the source its retry.
 //
 // It returns (nil, false) for a Code outside that set so the caller falls back
@@ -261,7 +261,7 @@ func containsAny(s string, substrs ...string) bool {
 const authGraceWindow = 120 * time.Second
 
 // authGrace gives plain API auth failures a bounded, clock-driven grace
-// window (Finding: c8-auth-permanent). It is held per Sender/Receiver so the
+// window. It is held per Sender/Receiver so the
 // classification can be stateful without contaminating the pure MapError.
 //
 // The first plain auth failure of a streak records its instant; every auth

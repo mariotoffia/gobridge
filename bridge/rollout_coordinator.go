@@ -37,7 +37,7 @@ const (
 	// barrier unsatisfiable — flip to Aborted with the returned reason.
 	rolloutActionAbort
 	// rolloutActionConfirm: a provisionally-committed rollout whose whole epoch
-	// converged — flip to Confirmed (confirm window, design §8.1).
+	// converged — flip to Confirmed (confirm window, ADR 0014).
 	rolloutActionConfirm
 	// rolloutActionRevert: a provisionally-committed rollout whose confirm window
 	// expired without whole-epoch convergence — flip to Reverted with the reason.
@@ -54,7 +54,7 @@ func decideRollout(r persistence.Rollout, membership []string, now time.Time) (r
 	if r.IsTerminal() {
 		return rolloutActionWait, ""
 	}
-	// Confirm window (design §8.1): a provisionally-committed rollout is past the
+	// Confirm window (ADR 0014): a provisionally-committed rollout is past the
 	// pre-commit barrier, so it is driven by convergence, not acks. Confirm once the
 	// whole epoch converged; revert when the confirm window expires without it. This
 	// is checked before the pre-commit logic below because a windowed Committed
@@ -210,7 +210,7 @@ func (c *rolloutCoordinator) observe(ctx context.Context) (bool, error) {
 // firstSideEffectAllowed reports whether a coordinator elected at electedAt has
 // waited out its lock-delay by now. lockDelay is one previous-lease duration
 // (all coordinators share the lease TTL, so the TTL is the delay). Chubby-style
-// belt-and-braces over the fencing epoch (design §6).
+// belt-and-braces over the fencing epoch (ADR 0013).
 func firstSideEffectAllowed(electedAt time.Time, lockDelay time.Duration, now time.Time) bool {
 	return !now.Before(electedAt.Add(lockDelay))
 }

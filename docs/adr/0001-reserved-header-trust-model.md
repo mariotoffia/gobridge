@@ -18,8 +18,8 @@ bypassing the route's filters and destinations. Headers cross the trust
 boundary; routing decisions must not depend on them.
 
 All bridge-internal headers share the reserved prefix `x-bridge.`
-(`domain/messaging/headers.go:8`), including `HeaderRouteOverride =
-"x-bridge.route-override"` (`headers.go:28`).
+(`domain/messaging/headers.go`), including `HeaderRouteOverride =
+"x-bridge.route-override"` (`headers.go`).
 
 ## Decision
 
@@ -28,20 +28,20 @@ out-of-band from typed struct fields — never from the wire.
 
 - **Strip at ingress.** `doHandleDelivery` calls
   `StripReservedHeaders` on the envelope before any consumption site reads it
-  (`runtime/route/runner.go:383`,
+  (`runtime/route/runner.go`,
   `env.ReplaceHeaders(messaging.StripReservedHeaders(env.Headers()))`). This is
   the sole chokepoint. `StripReservedHeaders` drops every key matching the
-  reserved prefix (`headers.go:93`). An externally-supplied
+  reserved prefix (`headers.go`). An externally-supplied
   `x-bridge.route-override` is gone before routing looks at it.
 
 - **Re-stamp from a typed field.** A trusted binding override rides a Go struct
   field, not a header. `Runtime.InjectToBinding` constructs a
   `syntheticDelivery{env, binding}` where the binding ID is a struct field
-  (`runtime/bridge_routes.go:131`, `:161-172`). Only an internally-constructed
+  (`runtime/bridge_routes.go`, `:161-172`). Only an internally-constructed
   delivery satisfies the `bindingOverrider` interface
-  (`runtime/route/runner.go:335`); transport-created deliveries never implement
+  (`runtime/route/runner.go`); transport-created deliveries never implement
   it. After the strip, `doHandleDelivery` re-stamps `HeaderRouteOverride` from
-  that interface (`runner.go:396-400`) so the override is present for the
+  that interface (`runner.go`) so the override is present for the
   routing decision but originated in-process, not from the message.
 
 - **Processors may set overrides post-strip.** A processor running after ingress

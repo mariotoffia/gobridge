@@ -429,7 +429,7 @@ curl -s -X DELETE -H "X-API-Key: ${API_KEY}" \
 
 To reverse a change that already committed, open a new transaction, PATCH the
 previous values back, and commit. The full endpoint table, status codes, and
-merge semantics live in the [HTTP API Reference](../../http-api.md#config-transactions);
+merge semantics live in the [HTTP API Reference](../../http-api-admin.md#config-transactions);
 the [config-rollback runbook](../../runbooks/config-rollback.md) walks the
 incident case.
 

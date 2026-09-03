@@ -21,7 +21,7 @@ import (
 // looking for a series nothing emits. Neither shows up anywhere else, so the
 // declared wire values and the documented rows are compared directly.
 
-const mqttMetricsReferenceDoc = "../../../../docs/troubleshooting.md"
+const mqttMetricsReferenceDoc = "../../../../docs/adapter-diagnostic-metrics.md"
 
 const mqttMetricsReferenceHeading = "### MQTT (`adapters/mqtt/transport/paho`)"
 

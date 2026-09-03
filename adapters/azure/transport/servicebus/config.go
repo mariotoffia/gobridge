@@ -282,8 +282,7 @@ func (c *ReceiverConfig) applyDefaults() {
 }
 
 // defaultMaxLockRenewalDuration bounds per-delivery lock auto-renewal
-// when max_lock_renewal_duration is unset (finding: a hung pipeline
-// must not hold a message invisible forever).
+// when max_lock_renewal_duration is unset.
 const defaultMaxLockRenewalDuration = 5 * time.Minute
 
 func (c *ReceiverConfig) autoExtendEnabled() bool {

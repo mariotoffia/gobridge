@@ -10,7 +10,7 @@ import (
 )
 
 // The barrier drive: one goroutine per node that observes the rollout row on a
-// cadence and acts on it (design §6). Every member runs the applier half;
+// cadence and acts on it (ADR 0013). Every member runs the applier half;
 // whichever member holds the coordinator lease additionally runs the coordinator
 // half, so there is no separate coordinator process and no node-to-node RPC.
 //

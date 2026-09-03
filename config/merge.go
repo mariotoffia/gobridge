@@ -35,7 +35,7 @@ func DefaultMerge(base, overlay *ports.BridgeConfig) (*ports.BridgeConfig, error
 
 	// Version is an optimistic-concurrency counter: a non-zero overlay version
 	// is the newer committed version and wins; a zero overlay leaves the base
-	// version intact instead of silently dropping it to 0 (Finding 8).
+	// version intact instead of silently dropping it to 0.
 	if overlay.Version != 0 {
 		out.Version = overlay.Version
 	}
@@ -65,7 +65,7 @@ func DefaultMerge(base, overlay *ports.BridgeConfig) (*ports.BridgeConfig, error
 		// Defensive deep-clone for symmetry with the HTTP/Cluster clones: with
 		// no overlay ConfigWatch, out.ConfigWatch still aliases base.ConfigWatch
 		// (via `out := *base`) so a later mutation of the merged config could
-		// reach back into the cached base layer (Finding 10).
+		// reach back into the cached base layer.
 		cw := *out.ConfigWatch
 		out.ConfigWatch = &cw
 	}
@@ -90,7 +90,7 @@ func DefaultMerge(base, overlay *ports.BridgeConfig) (*ports.BridgeConfig, error
 		// Defensive deep-clone: with no overlay HTTP block, out.HTTP still
 		// aliases base.HTTP (via `out := *base`). Clone it for symmetry with
 		// the Cluster clone above so a later mutation of the merged config
-		// cannot reach back into the cached base layer (Finding 10).
+		// cannot reach back into the cached base layer.
 		h := *out.HTTP
 		out.HTTP = &h
 	}
@@ -168,7 +168,7 @@ func mergeBridgeSettings(base, overlay *ports.BridgeSettings) {
 		base.LogLevel = overlay.LogLevel
 	}
 	// Cluster was silently dropped: an overlay that added or changed cluster
-	// endpoints never took effect after a merge (Finding 8). Overlay replaces
+	// endpoints never took effect after a merge. Overlay replaces
 	// base when set; the endpoint map is cloned so the merged config never
 	// aliases the overlay's map.
 	if overlay.Cluster != nil {
@@ -193,8 +193,8 @@ func mergeStores(base, overlay *ports.StoresConfig) {
 // mergeStoreRole returns a clone of the overlay store when set, otherwise a
 // clone of the base store. Cloning the base (rather than aliasing its pointer
 // via `out := *base`) keeps the merged config from reaching back into the
-// cached base layer if a consumer later mutates the store entry (Finding 10 —
-// symmetry with the overlay clone and the Cluster clone).
+// cached base layer if a consumer later mutates the store entry, in symmetry
+// with the overlay clone and the Cluster clone.
 func mergeStoreRole(base, overlay *ports.StoreConfig) *ports.StoreConfig {
 	if overlay != nil {
 		sc := *overlay

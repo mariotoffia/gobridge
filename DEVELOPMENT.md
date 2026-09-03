@@ -233,7 +233,7 @@ The repo is a multi-module `go.work` workspace. The rules below keep it consumab
 - **The workspace can lie:** using a new sibling API at HEAD without bumping the require compiles locally but breaks consumers. `GOWORK=off go build ./...` in the module is the check; CI runs it per published module (see RELEASE.md).
 - **Internal-only modules** (`tests/`, `testutil/`, `scripts/`, `deployment/`) are never tagged or published and may keep local `replace` directives.
 
-> **Current state:** published modules still carry `replace` directives and `v0.0.0` requires; the migration steps are in [RELEASE.md — First release checklist](RELEASE.md#first-release-checklist).
+> **Current state:** published modules still carry `replace` directives and `v0.0.0` requires; the migration steps are in [RELEASE.md — Release procedure](RELEASE.md#release-procedure).
 
 ## Base image digests
 

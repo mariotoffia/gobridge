@@ -44,7 +44,7 @@ func (a *App) Start(ctx context.Context) error {
 	//
 	// Built BEFORE the credential store so the store's runtime.Credential
 	// resolver can emit credential resolve/stale metrics through this same
-	// exporter (Finding 4).
+	// exporter.
 	if a.metricsExporter == nil {
 		exporter, err := newMetricsExporter(ctx, a.cfg, a.logger)
 		if err != nil {
@@ -111,7 +111,7 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.logicalRef.Set(logicalCfg)
 
-	// Coordinated cluster rollout boot resolution (design Phase 6). ONLY a
+	// Coordinated cluster rollout boot resolution (ADR 0013). ONLY a
 	// coordinated boot config wires the barrier host; every other deployment boots
 	// exactly as before. The joiner resolves which config this member actually boots
 	// on — the durable last-committed config when the boot config is a candidate the
@@ -142,8 +142,7 @@ func (a *App) Start(ctx context.Context) error {
 	// Enforce that policy BEFORE building the runtime or starting any server: a
 	// tls_cert_file/tls_key_file pair is an explicit "encrypt this" the profile
 	// cannot satisfy, so fail closed rather than silently serve the admin API in
-	// plaintext; a bare addrs/keys block is warned and ignored (Chunk 16
-	// Finding 2).
+	// plaintext; a bare addrs/keys block is warned and ignored.
 	if err := checkIgnoredHTTPBlock(a.logger, bootCfg); err != nil {
 		return err
 	}
@@ -272,12 +271,12 @@ func (a *App) Start(ctx context.Context) error {
 	a.rootCtx = watchCtx
 	a.started = true
 
-	// RECONFIG-1: watch the INITIALLY-applied runtime for convergence too (initial
+	// Watch the INITIALLY-applied runtime for convergence too (initial
 	// startup has the same truthfulness gap as a reload). installPlan skipped
 	// starting it during the pre-rootCtx initial apply, so start it here.
 	a.startConvergenceWatch(watchCtx, a.runtimeRef.Get(), a.appliedRef.Get())
 
-	// Start the coordinated cluster rollout drive (design Phase 6): one goroutine
+	// Start the coordinated cluster rollout drive (ADR 0013): one goroutine
 	// per member running the applier every tick and the coordinator half while this
 	// member holds the lease. nil when no barrier is wired or the boot config is not
 	// coordinated, so this is a no-op for every non-coordinated deployment.

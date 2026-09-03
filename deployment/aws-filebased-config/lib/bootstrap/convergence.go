@@ -11,7 +11,7 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
-// Post-swap convergence watch for the shipped AWS bootstrap (RECONFIG-1).
+// Post-swap convergence watch for the shipped AWS bootstrap.
 //
 // A committed swap proves only that the new runtime BUILT and its Start returned;
 // MQTT dials and reconciles in background goroutines, so a syntactically-valid
@@ -132,7 +132,7 @@ func (a *App) runConvergenceWatch(ctx context.Context, rt *goruntime.Runtime, co
 			if a.markConvergenceDegraded(rt, reason) {
 				marked = true
 				a.logger.Warn("bootstrap: reload applied but NOT converged — apply succeeded while the "+
-					"transport has not reached its declared broker state (RECONFIG-1); ConfigDegraded=1 with "+
+					"transport has not reached its declared broker state; ConfigDegraded=1 with "+
 					"the convergence reason until sessions converge or the config is reverted",
 					"config_version", configVersion, "budget", budget.String())
 			} else {

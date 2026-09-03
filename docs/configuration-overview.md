@@ -279,7 +279,7 @@ routes:
 ## Go Bootstrap Pattern
 
 The reference `cmd/gobridge/main.go` shows the wiring pattern. It is a minimal
-demo/reference binary, **not** a production build (`cmd/gobridge/main.go:7`); a
+demo/reference binary, **not** a production build (`cmd/gobridge/main.go`); a
 production composition root registers only the transports and stores it actually
 uses.
 

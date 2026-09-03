@@ -17,7 +17,7 @@ import (
 // Preflight validates that the configured DynamoDB table's key schema matches
 // what the LEASE role needs and ENFORCES that DynamoDB TTL is DISABLED on it. It
 // is a build-time safeguard against a misprovisioned or copy-pasted table name
-// and against a fatal TTL misconfiguration (finding c13-lease-ttl-warn).
+// and against a fatal TTL misconfiguration.
 //
 // The lease row IS the monotonic fencing counter of record. Two dangers:
 //   - Wrong key schema (e.g. an outbox/DLQ table with extra keys or a different
@@ -71,7 +71,7 @@ func (s *Store) Preflight(ctx context.Context) error {
 }
 
 // checkLeaseTableTTL enforces the TTL-DISABLED invariant on the lease table at
-// build time (finding c13-lease-ttl-warn). The lease row IS the monotonic
+// build time. The lease row IS the monotonic
 // fencing counter of record: an ENABLED (or ENABLING) DynamoDB TTL lets a reaper
 // delete a fence row and reset its version to 1 while the outbox high-water mark
 // sits at v≫1, opening a split-brain window in which every subsequent claim

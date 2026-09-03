@@ -86,7 +86,7 @@ func (r *Receiver) classify(err error) *shared.BridgeError {
 // would produce a client that fails every request with
 // InvalidClientTokenId, so rotation would *degrade* a previously working
 // ambient-role client. The adapter rejects the material up front and
-// leaves the existing client in place instead (Finding 6). Surface it as
+// leaves the existing client in place instead. Surface it as
 // shared.ErrNotAuthorized so callers classify it consistently.
 var ErrTemporaryCredentialsUnsupported = errors.New(
 	"sqs: temporary/STS credentials (ASIA-prefixed access key) are unsupported; " +

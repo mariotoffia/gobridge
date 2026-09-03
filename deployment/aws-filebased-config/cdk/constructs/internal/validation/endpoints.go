@@ -46,7 +46,7 @@ func sortedEndpointKeys(cfg *ports.BridgeConfig) []string {
 	return keys
 }
 
-// formatEndpointError renders an *ErrEndpointURL as a Phase-2 friendly
+// formatEndpointError renders an *ErrEndpointURL as a Phase 2 friendly
 // message. Phase 2 needs all three of (a) what was found, (b) what was
 // expected, (c) how to fix; the typed Error() text already covers (a)
 // and (b), so this helper appends (c).

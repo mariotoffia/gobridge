@@ -39,7 +39,7 @@ const (
 // credential poll-based wrapper when CredentialPollInterval is unset. It
 // MUST mirror runtime/credentials.DefaultCredentialPollInterval; the literal
 // is duplicated because this package is intentionally zero-dependency and
-// cannot import the runtime module (Finding 2).
+// cannot import the runtime module.
 const DefaultCredentialPollInterval = 5 * time.Minute
 
 // DefaultMountPath is the SINGLE canonical container directory where the
@@ -47,7 +47,7 @@ const DefaultCredentialPollInterval = 5 * time.Minute
 // outbox/DLQ state. It is FHS-conformant for runtime state.
 //
 // This constant is the one source of truth shared by the CDK task-def mount
-// (internal/gobridgebase), the Phase-1 store-path validator
+// (internal/gobridgebase), the fast-fail store-path validator
 // (internal/validation), and ServiceProps normalization. Keeping them
 // byte-identical is REQUIRED: a validator/mount mismatch either rejects a
 // correct config at synth or silently validates a store path that then writes
@@ -138,7 +138,7 @@ type BootstrapConfig struct {
 	// must leave at least 20 percent of ContainerMemoryBytes as headroom.
 	ReservedMemoryBytes uint64 `json:"reserved_memory_bytes,omitempty"`
 
-	// Credential poll-based wrapper knobs (Finding 2). These control how the
+	// Credential poll-based wrapper knobs. These control how the
 	// runtime lifts a pull-style credential store (SSM, file) into the
 	// push-style rotation source that reaches long-lived transport sessions.
 	// Exposing them here lets an operator shrink the auth-failure blast radius
@@ -147,8 +147,8 @@ type BootstrapConfig struct {
 	//
 	//   CredentialFilePath  - base directory backing file:// credential URIs.
 	//                         Empty (default) registers NO file store; set it
-	//                         to enable file:// credentials in this profile
-	//                         (Finding 11). SSM (pms://) is always registered.
+	//                         to enable file:// credentials in this profile.
+	//                         SSM (pms://) is always registered.
 	//   CredentialPollInterval - poll cadence (e.g. "1m"); empty falls back to
 	//                         DefaultCredentialPollInterval.
 	//   CredentialPollJitter - +/- jitter applied per poll to de-synchronize a
@@ -158,7 +158,7 @@ type BootstrapConfig struct {
 	//   CredentialEmitOnStart - when nil (default) the wrapper emits on start
 	//                         so a rotation that landed in the build->watch
 	//                         window is surfaced on the first tick rather than
-	//                         silently baselined (Finding 1). Set to false only
+	//                         silently baselined. Set to false only
 	//                         to restore the legacy silent-baseline behaviour.
 	CredentialFilePath     string `json:"credential_file_path,omitempty"`
 	CredentialPollInterval string `json:"credential_poll_interval,omitempty"`
@@ -263,7 +263,7 @@ func (c BootstrapConfig) EffectivePollInterval() time.Duration {
 
 // EffectiveCredentialPollInterval returns the credential poll cadence as a
 // time.Duration, falling back to DefaultCredentialPollInterval on parse error
-// or non-positive values (Finding 2).
+// or non-positive values.
 func (c BootstrapConfig) EffectiveCredentialPollInterval() time.Duration {
 	if c.CredentialPollInterval == "" {
 		return DefaultCredentialPollInterval
@@ -293,7 +293,7 @@ func (c BootstrapConfig) EffectiveCredentialPollJitter() time.Duration {
 // EffectiveCredentialEmitOnStart reports whether the credential poll-based
 // wrapper should emit an initial rotation on start. It defaults to true so a
 // rotation that landed in the build->watch window is surfaced on the first
-// tick rather than silently adopted as the dedup baseline (Finding 1); set
+// tick rather than silently adopted as the dedup baseline; set
 // CredentialEmitOnStart to false to restore the legacy behaviour.
 func (c BootstrapConfig) EffectiveCredentialEmitOnStart() bool {
 	if c.CredentialEmitOnStart == nil {

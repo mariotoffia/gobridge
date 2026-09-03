@@ -167,7 +167,7 @@ the cohort can be running two generations. That window is bounded and visible,
 not hidden: the failing member retries, reports `applied: false` in deep health,
 and eventually declares itself unrepairable so you can replace it. Alarm on it —
 see [Watching it roll out](operating.md#watching-it-roll-out). If you cannot
-tolerate that window at all, use a [confirm window](#setup-4--confirm-window-auto-revert-on-failure), which
+tolerate that window at all, use a [confirm window](#setup-5--confirm-window-auto-revert-on-failure), which
 reverts the whole cohort instead of leaving it split.
 
 ### What you need first

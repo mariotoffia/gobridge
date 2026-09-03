@@ -9,7 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 )
 
-// Coordinated cluster rollout observability (design §9).
+// Coordinated cluster rollout observability (ADR 0013).
 //
 // A rollout is the one config change whose outcome is not local: this member can
 // be perfectly healthy while the cohort's barrier is stuck behind a peer that
@@ -31,7 +31,7 @@ type RolloutStatus struct {
 	// proposed.
 	State string
 	// ConfirmPending reports that the observed "committed" state is PROVISIONAL:
-	// a confirm window (design §8.1) is open, so the cohort has not decided yet
+	// a confirm window (ADR 0014) is open, so the cohort has not decided yet
 	// and will revert if the window expires before every member converges. It is
 	// the difference between "this member is behind the cohort" and "the cohort
 	// is still making up its mind", which is the difference between paging and
@@ -46,7 +46,7 @@ type RolloutStatus struct {
 	Acked  []string
 	Nacked []string
 	// Converged lists the members that recorded post-swap convergence during an
-	// active confirm window (design §8.1), sorted. Epoch minus Converged is who the
+	// active confirm window (ADR 0014), sorted. Epoch minus Converged is who the
 	// confirm barrier is waiting for before it can Confirm; the ones still missing
 	// when the window expires are why the cohort reverts.
 	Converged []string

@@ -6,9 +6,9 @@ import (
 )
 
 // ErrInvalidBridgeID is returned when cfg.Bridge.ID does not match
-// the bridge-name regex required by the Validation Matrix. The
-// matrix names the field "bridge.name"; on the typed Go side it is
-// BridgeSettings.ID. The Error message documents the mapping.
+// the required bridge-name regex. Operator-facing text calls the field
+// "bridge.name"; on the typed Go side it is BridgeSettings.ID. The Error
+// message documents the mapping.
 var ErrInvalidBridgeID = errors.New("bridge.id: invalid value")
 
 // ErrEndpointURL is returned when an entry in

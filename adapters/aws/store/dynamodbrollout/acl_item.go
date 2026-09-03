@@ -35,7 +35,7 @@ const (
 	attrDeadline     = "deadline_ms"
 	attrCoordVersion = "coord_version"
 
-	// Confirm window (design §8.1). All three are absent for a base-protocol
+	// Confirm window (ADR 0014). All three are absent for a base-protocol
 	// rollout; confirm_deadline_ms and converged are also absent pre-commit.
 	attrConfirmWindowMs   = "confirm_window_ms"
 	attrConfirmDeadlineMs = "confirm_deadline_ms"

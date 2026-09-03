@@ -14,10 +14,10 @@ const (
 	MetricSQSMalformedMessages    = "SQSMalformedMessages"
 	// MetricSQSDroppedAttributes counts envelope headers dropped from a
 	// send because they would have exceeded the SQS per-message attribute
-	// count or size limits (Finding 11).
+	// count or size limits.
 	MetricSQSDroppedAttributes = "SQSDroppedAttributes"
 
-	// Failure counters (Finding 5). The nine metrics above are all
+	// Failure counters. The nine metrics above are all
 	// latency/success; a poll, settlement (Ack/Retry) or auto-extend
 	// failure was previously only a Warn log and thus metrics-invisible.
 	// All three are tagged solely by TagKeyQueueURL (bounded cardinality),
@@ -37,7 +37,7 @@ const (
 
 	// MetricSQSMissingRedrivePolicy counts receiver startups whose
 	// best-effort redrive-policy check ran and found the source queue has NO
-	// native redrive policy (maxReceiveCount -> DLQ) (Chunk 13).
+	// native redrive policy (maxReceiveCount -> DLQ).
 	// Without a redrive policy a malformed ("poison") message the receiver
 	// cannot convert would redeliver every visibility timeout forever, so the
 	// absence is surfaced as a metric plus a startup warning. Emitted at most
@@ -48,7 +48,7 @@ const (
 
 	// MetricSQSPoisonDropped counts malformed ("poison") messages the adapter
 	// DELETED as a backstop after ApproximateReceiveCount reached the
-	// configured poison_max_receives (Chunk 13). The delete is a
+	// configured poison_max_receives. The delete is a
 	// controlled, observable drop that breaks an otherwise-unbounded
 	// redelivery hot loop on a source queue with no native redrive policy.
 	// Tagged solely by TagKeyQueueURL.

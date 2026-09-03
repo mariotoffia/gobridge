@@ -7,7 +7,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 )
 
-// Confirm-window (design §8.1) applier methods, split from rollout_applier.go: the
+// Confirm-window (ADR 0014) applier methods, split from rollout_applier.go: the
 // provisional swap, per-member convergence recording, the confirmed-artifact
 // advance, and the revert-to-N-1 (observed Revert + local deadman). The applier
 // struct, its step() routing, and the shared apply/gate helpers live in
@@ -16,11 +16,11 @@ import (
 // confirmDeadmanGraceTicks delays a member's LOCAL confirm-window deadman revert
 // past the confirm deadline by this many poll intervals, so the coordinator's
 // Revert (which members follow directly) wins in the healthy case. The local
-// deadman is the belt-and-braces for a DEAD coordinator (design §8.1): without a
+// deadman is the belt-and-braces for a DEAD coordinator (ADR 0014): without a
 // coordinator to write Reverted, each member still reverts on its own timer.
 const confirmDeadmanGraceTicks = 3
 
-// adoptProvisional drives the confirm-window (design §8.1) path for a
+// adoptProvisional drives the confirm-window (ADR 0014) path for a
 // provisionally-committed generation: swap provisionally (WITHOUT advancing the
 // durable committed artifact, so a crash reboots onto the last CONFIRMED gen),
 // record convergence once this member is ready, and revert locally if the confirm

@@ -7,8 +7,8 @@ import "github.com/mariotoffia/gobridge/domain/shared"
 // (or the pre-rollout baseline seed), plus the generation and version that
 // produced them. It exists to answer, durably and independent of whatever
 // volatile candidate the config source's `current` slot may hold, "what config
-// should a member actually run?" — the missing piece flagged in the rollout
-// design's Phase-4 residual.
+// should a member actually run?" — which neither the candidate slot nor the
+// per-member applied state can answer on their own.
 //
 // It is the artifact behind option (a): a member fetches these BYTES rather than
 // re-deriving them, so a member that (re)joins after a restart boots on the

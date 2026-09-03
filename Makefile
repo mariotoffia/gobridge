@@ -347,6 +347,8 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 	@bash -c 'set -o pipefail; bash scripts/lint-arch-mapping-test.sh 2>&1 | tee reports/arch-mapping.log'
 	@echo "=== x-bridge header governance ==="
 	@bash -c 'set -o pipefail; bash scripts/lint-xbridge-headers.sh --self-test 2>&1 | tee reports/xbridge-headers.log'
+	@echo "=== planning-reference governance ==="
+	@bash -c 'set -o pipefail; bash scripts/lint-planning-refs.sh --self-test 2>&1 | tee reports/planning-refs.log'
 	@echo "=== gofmt ==="
 	@FILES=$$(gofmt -l $$(git ls-files '*.go')); \
 	echo "$$FILES" > reports/gofmt.log; \
@@ -423,6 +425,7 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 	@echo "  Blocking reports:"
 	@echo "    reports/go-arch-lint.log         reports/go-arch-lint-graph.svg"
 	@echo "    reports/arch-mapping.log         reports/gofmt.log"
+	@echo "    reports/xbridge-headers.log      reports/planning-refs.log"
 	@echo "    reports/go-vet.log               reports/golangci.log"
 	@echo "    reports/aggcheck.log             reports/aclcheck.log"
 	@echo "    reports/cfgshape.log             reports/registrychk.log"

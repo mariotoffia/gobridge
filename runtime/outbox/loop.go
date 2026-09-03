@@ -59,7 +59,7 @@ func (d *Drainer) Run(ctx context.Context) error {
 		case <-timer.C():
 			token, hasLease := d.tokenFn()
 			if !hasLease {
-				// Finding 11: a non-exclusive session never acquires a lease, so
+				// A non-exclusive session never acquires a lease, so
 				// its shared_outbox drainer would skip EVERY cycle and never
 				// drain — previously a fully silent stall. Surface it: a counter
 				// on every skip and a rate-limited warning so the permanent
@@ -71,7 +71,7 @@ func (d *Drainer) Run(ctx context.Context) error {
 				timer.Reset(d.strategy.NextInterval(0))
 				continue
 			}
-			// Finding 19: sweep expired-but-unclaimed pending records to the
+			// Sweep expired-but-unclaimed pending records to the
 			// expired terminal state at a slow cadence. Runs under lease
 			// ownership (checked above) and independent of egress readiness —
 			// expiry is a durability-cleanup concern, not a send concern.
@@ -169,7 +169,7 @@ func (d *Drainer) finalDrain(parent context.Context) error {
 
 // maybeExpire runs OutboxStore.Expire at most once per expireInterval, sweeping
 // this partition's pending records whose expires_at has passed into the expired
-// terminal state (finding 19). Without this the port's Expire method is dead
+// terminal state. Without this the port's Expire method is dead
 // code and expired records that were never claimed linger pending forever. The
 // caller has already confirmed lease ownership, so exactly one instance performs
 // the sweep per partition. Expire is pending-only (claimed records are reclaimed
@@ -475,7 +475,7 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 	// send+complete operations even after the parent ctx is cancelled. The
 	// budget must never undercut a single record's SendTimeout + Complete
 	// margin and it scales with the number of sequential send "waves" the batch
-	// needs (finding 10). The previous min(1.5×SendTimeout, 10s-ceiling)
+	// needs. The previous min(1.5×SendTimeout, 10s-ceiling)
 	// silently capped any SendTimeout above ~6.7s (and any batch too large for
 	// the ceiling), killing in-flight sends every cycle and stranding/poisoning
 	// healthy records. The configured MaxDrainTimeout/DrainTimeout may only
@@ -493,7 +493,7 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 
 	// unlaunchedFrom records the first group index that was never launched
 	// because the batch deadline/cancel fired; those claimed-but-unattempted
-	// groups are released after wg.Wait (finding 9).
+	// groups are released after wg.Wait.
 	unlaunchedFrom := len(groups)
 
 loop:
@@ -530,7 +530,7 @@ loop:
 			for ri, rec := range group {
 				if ctx.Err() != nil || batchCtx.Err() != nil {
 					// Batch deadline fired before this record was attempted:
-					// release the unattempted tail (finding 9) so it retries
+					// release the unattempted tail so it retries
 					// next cycle instead of stranding claimed. Use a detached
 					// ctx since batchCtx is already done.
 					atomic.AddInt64(&deferredReleases, int64(len(group)-ri))
@@ -547,7 +547,7 @@ loop:
 						// processRecord already released THIS record; release the
 						// unsent tail too and count the whole run as deferred so
 						// the group is re-claimed and retried in order — never
-						// counted as success (finding 9).
+						// counted as success.
 						atomic.AddInt64(&deferredReleases, int64(len(group)-ri))
 						d.releaseRemainder(context.WithoutCancel(ctx), group[ri+1:], token)
 					case errors.Is(err, errReleasedForRetry):
@@ -650,7 +650,7 @@ loop:
 	workCancel()
 
 	// Release any groups never launched because the batch deadline/cancel
-	// fired — they were claimed this cycle but never attempted (finding 9).
+	// fired — they were claimed this cycle but never attempted.
 	for _, g := range groups[unlaunchedFrom:] {
 		atomic.AddInt64(&deferredReleases, int64(len(g)))
 		d.releaseRemainder(context.WithoutCancel(ctx), g, token)

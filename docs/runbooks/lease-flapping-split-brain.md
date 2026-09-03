@@ -40,7 +40,7 @@ diagnosing why leadership churns.
 4. Rule out a shared transport identity. `MQTTSessionTakeover` means two
    instances connected with the same `client_id` and are kicking each other —
    a different failure that looks like flapping
-   ([troubleshooting.md#adapter--runtime-diagnostic-metrics](../troubleshooting.md#adapter--runtime-diagnostic-metrics)).
+   ([troubleshooting.md#adapter--runtime-diagnostic-metrics](../adapter-diagnostic-metrics.md)).
 
 ## Action
 
@@ -54,7 +54,7 @@ diagnosing why leadership churns.
 - **Stuck / stale lease records**: inspect the `LeaseStore` (DynamoDB) directly
   and verify every instance reads the same store
   ([troubleshooting.md#no_route_owner](../troubleshooting.md#no_route_owner)).
-- Background and invariants: [ARCHITECTURE.md §16 — Clustered Deployment](../../ARCHITECTURE.md#16-clustered-deployment).
+- Background and invariants: [ARCHITECTURE.md §16 — Clustered Deployment](../internals/architecture-contracts-and-clustering.md#16-clustered-deployment).
 
 ## Standalone multi-replica split brain (no distributed lease store)
 

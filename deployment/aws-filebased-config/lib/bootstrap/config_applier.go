@@ -128,7 +128,7 @@ func (a *App) applyOverlap(
 	oldRegistry *factoryRegistry,
 ) error {
 	if err := plan.runtime.Start(a.runtimeStartCtx(ctx)); err != nil {
-		// RECONFIG-2: a candidate whose late Start fails still opened stores,
+		// A candidate whose late Start fails still opened stores,
 		// sessions, and adapter resources during Build. Stop it before returning so
 		// repeated failing applies do not leak store handles and background state.
 		// Bounded teardown (context.Background) like every other reload-path stop.
@@ -209,7 +209,7 @@ func (a *App) applyPrepareCommit(
 
 	newRuntime, err := plan.plan.Commit(ctx)
 	if err != nil {
-		// RECONFIG-2: a partially-built candidate from a failed Commit still holds
+		// A partially-built candidate from a failed Commit still holds
 		// resources; stop it (nil-safe) before rebuilding the previous runtime.
 		if newRuntime != nil {
 			_ = stopRuntime(context.Background(), newRuntime, plan.logical)
@@ -218,7 +218,7 @@ func (a *App) applyPrepareCommit(
 		return fmt.Errorf("bootstrap: complete runtime: %w", err)
 	}
 	if err := newRuntime.Start(a.runtimeStartCtx(ctx)); err != nil {
-		// RECONFIG-2: stop the committed-but-unstarted candidate before recovering,
+		// Stop the committed-but-unstarted candidate before recovering,
 		// so its opened stores/sessions are released rather than leaked.
 		_ = stopRuntime(context.Background(), newRuntime, plan.logical)
 		a.recoverPrevious(ctx, oldApplied)
@@ -252,7 +252,7 @@ func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) 
 		err = plan.runtime.Start(a.runtimeStartCtx(ctx))
 	}
 	if err != nil {
-		// RECONFIG-2: the recovery candidate itself failed to commit/start. Stop it
+		// The recovery candidate itself failed to commit/start. Stop it
 		// (nil-safe) so it does not leak resources on top of the failed swap before
 		// entering the wedged state that the orchestrator restarts out of.
 		if plan.runtime != nil {
@@ -286,7 +286,7 @@ func (a *App) installPlan(plan *runtimePlan) {
 	// closeSupersededHTTP and Stop). Stored last, after handlerRef already
 	// points at this registry's mux.
 	a.registryRef.Store(plan.registry)
-	// RECONFIG-1: begin (supersede) the post-swap convergence watch for the
+	// Begin (supersede) the post-swap convergence watch for the
 	// freshly installed runtime. Skipped during the pre-rootCtx initial apply
 	// (Start begins the initial watch explicitly once rootCtx exists).
 	if a.rootCtx != nil {

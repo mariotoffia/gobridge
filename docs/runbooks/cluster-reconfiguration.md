@@ -106,7 +106,7 @@ safe, and GoBridge does not claim portable broker redistribution.
   re-committing the previous config through the admin transaction flow or
   restoring the config file at its source
   ([Config rollback](config-rollback.md),
-  [HTTP API — Config transactions](../http-api.md#config-transactions)).
+  [HTTP API — Config transactions](../http-api-admin.md#config-transactions)).
 
 ## Verify convergence
 

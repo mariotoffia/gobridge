@@ -169,5 +169,5 @@ QoS 1/2 delivery was redistributed. Brokers may pin it to the persistent
 ClientID. GoBridge now retains history through reconnect verification; a matching
 replay is held unacknowledged and causes terminal fail-closed migration. Operators
 must restore the exact old identity/configuration and handler, drain the replay,
-and retry. See the [MQTT transport reference](../transports/mqtt.md#removing-filters-restore-drain-retry)
+and retry. See the [MQTT transport reference](../transports/mqtt-durable-sessions.md#removing-filters-restore-drain-retry)
 and [migration runbook](../runbooks/mqtt-managed-subscription-migration.md).

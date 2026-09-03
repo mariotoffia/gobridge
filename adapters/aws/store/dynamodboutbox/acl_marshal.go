@@ -30,7 +30,7 @@ const skSeparator = "#"
 // skSeparator, so distinct (envelope, binding) pairs can never collapse onto
 // the same key.
 //
-// c13-sk-collision: RAW concatenation ("OUTBOX#"+env+"#"+binding) was NOT
+// RAW concatenation ("OUTBOX#"+env+"#"+binding) was NOT
 // injective. Within one partition, (env="order", binding="eu#prod") and
 // (env="order#eu", binding="prod") both produced "OUTBOX#order#eu#prod", so
 // the second DISTINCT record hit attribute_not_exists(SK), was treated as an

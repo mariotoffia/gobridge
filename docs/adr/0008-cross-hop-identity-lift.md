@@ -14,24 +14,24 @@ ordering suppression break downstream of the relay.
 
 [ADR 0001](0001-reserved-header-trust-model.md) strips every `x-bridge.*` key
 from untrusted transport input at ingress (`StripReservedHeaders`,
-`domain/messaging/headers.go:93`). A message arriving on a transport is external
+`domain/messaging/headers.go`). A message arriving on a transport is external
 input, so the strip is unconditional and correct — but it erases the three
 identity keys along with everything else, so a naive relay drops the identity at
 each receiving hop.
 
 `NewEnvelope` funnels every constructed envelope through that strip:
 `NewHeadersFromMap` applies `StripReservedHeaders` semantics to the
-caller-supplied header map (`domain/messaging/envelope.go:127`,
-`domain/messaging/headers.go:230`). Any value that must survive ingress has to
+caller-supplied header map (`domain/messaging/envelope.go`,
+`domain/messaging/headers.go`). Any value that must survive ingress has to
 enter by another door.
 
 ## Decision
 
 Lift the three identity keys from the ingress wire into the typed
 `EnvelopeInput` fields `IdempotencyKey` / `DeduplicationID` / `OrderingKey`
-(`domain/messaging/envelope.go:76-78`). `NewEnvelope` re-stamps them into their
+(`domain/messaging/envelope.go`). `NewEnvelope` re-stamps them into their
 reserved headers with `SetHeader` **after** the strip
-(`domain/messaging/envelope.go:137-145`) — the same typed-field, post-strip
+(`domain/messaging/envelope.go`) — the same typed-field, post-strip
 mechanism ADR 0001 uses for the route override.
 
 The difference from ADR 0001: there the value originates in-process (an
@@ -44,22 +44,22 @@ re-stamp it after the strip has run.
 Per-transport sources (the lift is the sole path; the wire header is still
 stripped):
 
-- **SQS** — `convertMessage` (`adapters/aws/transport/sqs/acl_inbound.go:155`):
+- **SQS** — `convertMessage` (`adapters/aws/transport/sqs/acl_inbound.go`):
   idempotency key from the `x-bridge.idempotency-key` message attribute (`:216`,
   `bridgeAttrString` `:239`); dedup ID and ordering key from the native FIFO
   coordinates `MessageDeduplicationId` / `MessageGroupId` (`:217-218`).
 - **AMQP 1.0** — `messageToEnvelope`
-  (`adapters/amqp/transport/amqp10/acl_inbound.go:182`): all three from
+  (`adapters/amqp/transport/amqp10/acl_inbound.go`): all three from
   application properties (`:235-237`, `bridgeHeaderString` `:249`).
 - **HTTP** — `receiver.go`: from the `Idempotency-Key` / `X-Dedup-Id` /
   `X-Ordering-Key` request headers
-  (`adapters/http/transport/receiver.go:395-397`), lifted into `EnvelopeInput`
+  (`adapters/http/transport/receiver.go`), lifted into `EnvelopeInput`
   (`:438-440`).
 
 The lift is **unconditional** — none of the three converters consult
 `trust_bridge_headers`. That flag is a route-policy field
-(`domain/routing/policy.go:164`) evaluated later in the route runner
-(`runtime/route/runner.go:415`); it governs preservation of the broader
+(`domain/routing/policy.go`) evaluated later in the route runner
+(`runtime/route/runner.go`); it governs preservation of the broader
 bridge-to-bridge header set (correlation-id, causation-id, tenant-id,
 forwarded-*, …). Identity must survive even when that broader preservation is
 off, so the three keys are lifted regardless.

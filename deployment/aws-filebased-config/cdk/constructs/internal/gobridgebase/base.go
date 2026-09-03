@@ -58,7 +58,7 @@ const (
 
 // defaultMountPath is the container directory where EFS is mounted.
 // Derived from the single canonical infra.DefaultMountPath so the mount, the
-// Phase-1 store-path validator and ServiceProps normalization never disagree
+// fast-fail store-path validator and ServiceProps normalization never disagree
 // (a split path silently loses outbox/DLQ durability on task replacement).
 const defaultMountPath = infra.DefaultMountPath
 

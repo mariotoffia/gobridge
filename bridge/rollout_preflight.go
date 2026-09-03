@@ -9,7 +9,7 @@ import (
 )
 
 // rolloutDeltaClass classifies a config delta for coordinated-rollout eligibility
-// (design §8). It exists so the coordinated cluster-rollout path can never admit
+// (ADR 0013). It exists so the coordinated cluster-rollout path can never admit
 // a change the single-node reload path would reject.
 type rolloutDeltaClass int
 
@@ -24,7 +24,7 @@ const (
 )
 
 // rolloutModeCoordinated is the cluster.rollout value that opts a clustered
-// deployment into the coordinated rollout barrier (design §8). Any other value
+// deployment into the coordinated rollout barrier (ADR 0013). Any other value
 // — including the empty default — keeps the legacy refuse-live-reconfig path.
 const rolloutModeCoordinated = "coordinated"
 
@@ -179,7 +179,7 @@ func classifyRolloutDelta(oldCfg, newCfg *ports.BridgeConfig) (rolloutDeltaClass
 		}
 	}
 	// A deployment-mode change is a topology transition, not a live-safe delta
-	// (design §8). The store predicates above do not see it.
+	// (ADR 0013). The store predicates above do not see it.
 	if oldCfg.Bridge.DeploymentMode != newCfg.Bridge.DeploymentMode {
 		return rolloutReplacementRequired, fmt.Sprintf(
 			"deployment_mode change %q -> %q is a topology transition",

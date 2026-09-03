@@ -45,8 +45,7 @@ func validateSessionDurationFields(ve *ports.BlueprintValidationError, prefix st
 	// Build-time-consumed session duration fields (bridge/convert.go
 	// toSessionConfigE / toDrainStrategyE) that were previously parsed ONLY at
 	// build time — validate them here too so a bad value fails validation
-	// instead of escaping to a restart-time apply failure (finding: validation
-	// misses fields parsed later at build). These mirror the builder's parse
+	// instead of escaping to a restart-time apply failure. These mirror the builder's parse
 	// exactly (reject only an unparseable duration) so no value the builder
 	// would accept is rejected here. drain_interval is also guarded for
 	// mutual-exclusion with drain_strategy in validateRouteDrainStrategy.

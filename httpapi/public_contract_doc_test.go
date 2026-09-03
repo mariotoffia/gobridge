@@ -30,7 +30,10 @@ const (
 	healthShutdownDoc = "../docs/health-and-shutdown.md"
 	monitorAPIDoc     = "../docs/http-api-monitor.md"
 	nodeDownRunbook   = "../docs/runbooks/node-down-failover.md"
-	architecturePage  = "../ARCHITECTURE.md"
+	// ARCHITECTURE.md is a hub: the HTTP API endpoint tables and the cluster
+	// role vocabulary live on the topic pages its contents table routes to.
+	architecturePage  = "../docs/internals/architecture-operational-surfaces.md"
+	architectureRoles = "../docs/internals/architecture-contracts-and-clustering.md"
 	openAPIPaths      = "../spec/httpapi/http-api.yaml"
 	openAPIComponents = "../spec/httpapi/components.yaml"
 	releaseNotesDoc   = "../docs/release-notes.md"
@@ -66,7 +69,7 @@ func TestReadyPublicContract_BareProbeRequiresFullLevel(t *testing.T) {
 func TestReadyPublicContract_RoleVocabularyMatchesRuntime(t *testing.T) {
 	roles := []string{ports.RoleActive, ports.RoleStandby, ports.RoleStandalone}
 	foreign := regexp.MustCompile("`leader`|role: leader")
-	for _, page := range []string{nodeDownRunbook, monitorAPIDoc, architecturePage} {
+	for _, page := range []string{nodeDownRunbook, monitorAPIDoc, architectureRoles} {
 		body := readDoc(t, page)
 		for _, role := range roles {
 			require.Contains(t, body, "`"+role+"`", "%s must name the %q role", page, role)
@@ -107,7 +110,7 @@ func openAPIOperations(t *testing.T) []string {
 }
 
 // documentedOperations returns "METHOD /path" for every row of the endpoint
-// tables under the given ARCHITECTURE.md headings.
+// tables under the given architecture headings.
 func documentedOperations(t *testing.T, headings ...string) []string {
 	t.Helper()
 	row := regexp.MustCompile("^\\|\\s*`([A-Z]+)`\\s*\\|\\s*`(/[^`]+)`")
@@ -137,14 +140,14 @@ func documentedOperations(t *testing.T, headings ...string) []string {
 	return ops
 }
 
-// The endpoint tables in ARCHITECTURE.md must list exactly the operations the
+// The published endpoint tables must list exactly the operations the
 // OpenAPI document declares — the same document the handlers are registered
 // from — so a renamed or added path cannot leave the architecture page pointing
 // at a 404.
 func TestEndpointPublicContract_ArchitectureTablesMatchTheOpenAPIPaths(t *testing.T) {
 	require.Equal(t, openAPIOperations(t),
 		documentedOperations(t, "### Admin Server", "### Monitor Server"),
-		"ARCHITECTURE.md endpoint tables must match spec/httpapi/http-api.yaml")
+		"the published endpoint tables must match spec/httpapi/http-api.yaml")
 }
 
 // Redrive injects a fresh envelope first and deletes the entry only after the

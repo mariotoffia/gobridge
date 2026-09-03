@@ -385,7 +385,7 @@ The HTTP admin API provides transactional config editing over the file-based sto
 
 The transaction manager uses `config.DefaultMerge` to apply patches and `config.WriteFile` for atomic commits with version-based CAS (compare-and-swap) to prevent lost updates.
 
-See the [HTTP API Reference](http-api.md#config-transactions) for the full endpoint
+See the [HTTP API Reference](http-api-admin.md#config-transactions) for the full endpoint
 table, status codes, and merge semantics, and [Credentials & HTTP API](credentials-and-http-api.md)
 for authentication.
 

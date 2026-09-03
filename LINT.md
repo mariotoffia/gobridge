@@ -18,17 +18,19 @@ Stages execute in order. The first blocking failure stops the build; advisory st
 | # | Stage | Tool | Blocking | Catches |
 |---|---|---|---|---|
 | 1 | Architecture | `go-arch-lint check` + `graph` + `scripts/lint-arch-mapping-test.sh` | yes | Outward dependency edges, component vendor-opt-in violations, sentinel-package drift. |
-| 2 | Format | `gofmt -l` | yes | Files not run through `gofmt`. Auto-fix: `make lint-fix`. |
-| 3 | Vet | `go vet` per workspace module | yes | Stdlib correctness issues (printf, shadow, unreachable, …). |
-| 4 | Lint | `golangci-lint run` per workspace module | yes | Full ruleset from `.golangci.yml` (`depguard`, `forbidigo`, `wrapcheck`, `interfacebloat`, `gochecknoglobals`, `gochecknoinits`, …). |
-| 5 | Aggregate | `aggcheck` on `domain/` | yes | Aggregate-shaped types not in `*_aggregate.go` or missing `Validate()`. Pure value objects / read-only snapshots (e.g. `shared.Secret`, `LeaseInfo`) carry a `// value-object` marker to opt out of the heuristic track; aggregate roots carry `// aggregate-root` to opt into the strict no-exported-mutable-state / guarded-transition checks. |
-| 6 | ACL | `aclcheck` per adapter module | yes | Vendor SDK imports outside `acl_*.go` or `acl/`, **and** export-confinement: SDK-originated types must not appear in exported signatures (type-origin check, not just import location). |
-| 7 | Config shape | `cfgshape` per workspace module | yes | Plugin config decoded as `map[string]any` instead of typed `ports.PluginConfig`. Enforces the non-empty-`Validate()`-body rule only; the Validate test-reference check is intentionally **not** enforced. |
-| 8 | Registry coverage | `registrychk` | yes | AWS-deployable kind missing CDK `With<Kind>*` builder or grants helper. |
-| 9 | Registry symmetry | `pluginsym` | yes | Decoder ↔ wired factory mismatch in `cmd/gobridge/main.go`. |
-| 10 | Module graph | `go mod graph` → `reports/arch-graph.txt` | no | Workspace module-level edges. Diff across PRs for new vendor deps. |
-| 11 | Duplicate scan | `dupl -threshold 75` → `reports/dupl.log` | no | Repeated logic blocks ≥75 tokens. Prompt for a missing aggregate, value object, or domain service. |
-| 12 | Repeated literals | `goconst -min-occurrences 4 -min-length 5` → `reports/goconst.log` | no | Strings or numbers repeated ≥4 times. Prompt for a missing domain constant. |
+| 2 | Header namespace | `scripts/lint-xbridge-headers.sh --self-test` | yes | An `x-bridge.*` string literal outside `domain/messaging` that is neither a registered header value nor annotated `// x-bridge-local: <reason>`. |
+| 3 | Planning references | `scripts/lint-planning-refs.sh --self-test` | yes | A planning-document identifier in non-test Go source — `Chunk N`, `RECONFIG-n`, `Phase-n`, `Finding N`, `c13-…`, `the design doc`. Each points at a document that no longer exists. |
+| 4 | Format | `gofmt -l` | yes | Files not run through `gofmt`. Auto-fix: `make lint-fix`. |
+| 5 | Vet | `go vet` per workspace module | yes | Stdlib correctness issues (printf, shadow, unreachable, …). |
+| 6 | Lint | `golangci-lint run` per workspace module | yes | Full ruleset from `.golangci.yml` (`depguard`, `forbidigo`, `wrapcheck`, `interfacebloat`, `gochecknoglobals`, `gochecknoinits`, …). |
+| 7 | Aggregate | `aggcheck` on `domain/` | yes | Aggregate-shaped types not in `*_aggregate.go` or missing `Validate()`. Pure value objects / read-only snapshots (e.g. `shared.Secret`, `LeaseInfo`) carry a `// value-object` marker to opt out of the heuristic track; aggregate roots carry `// aggregate-root` to opt into the strict no-exported-mutable-state / guarded-transition checks. |
+| 8 | ACL | `aclcheck` per adapter module | yes | Vendor SDK imports outside `acl_*.go` or `acl/`, **and** export-confinement: SDK-originated types must not appear in exported signatures (type-origin check, not just import location). |
+| 9 | Config shape | `cfgshape` per workspace module | yes | Plugin config decoded as `map[string]any` instead of typed `ports.PluginConfig`. Enforces the non-empty-`Validate()`-body rule only; the Validate test-reference check is intentionally **not** enforced. |
+| 10 | Registry coverage | `registrychk` | yes | AWS-deployable kind missing CDK `With<Kind>*` builder or grants helper. |
+| 11 | Registry symmetry | `pluginsym` | yes | Decoder ↔ wired factory mismatch in `cmd/gobridge/main.go`. |
+| 12 | Module graph | `go mod graph` → `reports/arch-graph.txt` | no | Workspace module-level edges. Diff across PRs for new vendor deps. |
+| 13 | Duplicate scan | `dupl -threshold 75` → `reports/dupl.log` | no | Repeated logic blocks ≥75 tokens. Prompt for a missing aggregate, value object, or domain service. |
+| 14 | Repeated literals | `goconst -min-occurrences 4 -min-length 5` → `reports/goconst.log` | no | Strings or numbers repeated ≥4 times. Prompt for a missing domain constant. |
 
 The five custom analyzers (`aggcheck`, `aclcheck`, `cfgshape`, `registrychk`, `pluginsym`) build automatically as `lint` prerequisites; no separate `make build-*` invocation is needed.
 
@@ -61,6 +63,8 @@ Use the reports to read full output without scrolling stdout, to diff across bra
 | `reports/go-arch-lint.log` | `go-arch-lint check` | yes |
 | `reports/go-arch-lint-graph.svg` | `go-arch-lint graph` | yes (graph regenerated even if check passes) |
 | `reports/arch-mapping.log` | `scripts/lint-arch-mapping-test.sh` | yes |
+| `reports/xbridge-headers.log` | `scripts/lint-xbridge-headers.sh` | yes |
+| `reports/planning-refs.log` | `scripts/lint-planning-refs.sh` | yes |
 | `reports/gofmt.log` | `gofmt -l` | yes |
 | `reports/go-vet.log` | `go vet` per module | yes |
 | `reports/golangci.log` | `golangci-lint run` per module | yes |
@@ -81,6 +85,8 @@ Locate the offending file:line in the named report. Apply the fix.
 |---|---|---|
 | `go-arch-lint` outward edge | `reports/go-arch-lint.log` | Move the type inward, introduce a port, or wire at the composition root. |
 | `arch-mapping` sentinel drift | `reports/arch-mapping.log` | Restore the mapping. If the rename is deliberate, update `scripts/lint-arch-mapping-test.sh`. |
+| ungoverned `x-bridge.*` literal | `reports/xbridge-headers.log` | Reference a `domain/messaging` constant, or annotate the line `// x-bridge-local: <reason>` when the key is transport-local and stripped at ingress. |
+| planning identifier in source | `reports/planning-refs.log` | Write the rule in plain English — what must hold, and why — or cite a durable reference: an ADR, a canonical root doc plus section, a live page under `docs/`, a `UBIQUITOUS.md` term. |
 | `depguard` | `reports/golangci.log` | Same as `go-arch-lint` — `depguard` is the per-file mirror. |
 | `interfacebloat` | `reports/golangci.log` | Split the port interface; plugins implement the subset they need. |
 | `forbidigo time.Now` | `reports/golangci.log` | Inject `clock.Clock`; call `clk.Now()`. |

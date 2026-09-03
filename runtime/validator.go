@@ -95,7 +95,7 @@ func drainRelevant(p routing.RoutePolicy) drainRelevantPolicy {
 
 // validateSharedOutboxPartitions rejects a configuration where two or more
 // shared_outbox routes drain the SAME session partition with divergent
-// drain-relevant policy (finding 17 +). A session partition has
+// drain-relevant policy. A session partition has
 // exactly one drainer — the first route to claim it wins (bridge_start
 // drainerSessions guard) — so the other routes' records would be silently
 // drained under the first route's SendTimeout / MaxReplayAttempts / ReplayBudget
@@ -235,7 +235,7 @@ func validateDirectHold(ve *ValidationError, prefix string, entry *routeEntry, p
 		ve.add(prefix + "direct_hold invalid: shared consumer source requires fencing (use shared_outbox) or set AllowUnfenced")
 	}
 
-	// Finding 4: direct_hold dispatches a SINGLE leg (DispatchSingle). A
+	// Direct_hold dispatches a SINGLE leg (DispatchSingle). A
 	// resolver that yields more than one plan has its extra plans silently
 	// discarded at runtime (only plans[0] is sent). We cannot in general know
 	// how many plans an arbitrary resolver returns before it runs, but a
@@ -264,7 +264,7 @@ func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry,
 		ve.add(prefix + "shared_outbox invalid: no LeaseStore configured for exclusive session")
 	}
 
-	// Finding 11: a non-exclusive session never acquires a lease (only
+	// A non-exclusive session never acquires a lease (only
 	// runExclusive sets hasLease), so its outbox drainer's TokenFn reports
 	// "not held" on every cycle and the partition NEVER drains — the source is
 	// ACKed after persist and the records silently strand. shared_outbox

@@ -58,7 +58,7 @@ type Config struct {
 	// Receiver resilience tuning. These map directly to the
 	// ReceiverConfig backoff/init knobs that previously had no plugin
 	// surface, so outage/failover behaviour could not be tuned from
-	// deployment config (Finding 10). Durations decode from strings such
+	// deployment config. Durations decode from strings such
 	// as "30s" via the config parser's StringToTimeDuration hook. Zero /
 	// omitted values fall back to the ReceiverConfig defaults.
 	InitTimeout           time.Duration `mapstructure:"init_timeout" yaml:"init_timeout,omitempty" json:"init_timeout,omitempty"`
@@ -80,7 +80,7 @@ type Config struct {
 	// MaximumMessageSize has been provisioned above 256 KiB. Without this an
 	// operator who raises a queue's limit via YAML cannot lift the ceiling, so
 	// a body over 256 KiB silently drops ALL egress attributes — including the
-	// rank-0 x-bridge.idempotency-key / traceparent headers (Finding 4).
+	// rank-0 x-bridge.idempotency-key / traceparent headers.
 	MaxMessageBytes int `mapstructure:"max_message_bytes" yaml:"max_message_bytes,omitempty" json:"max_message_bytes,omitempty"`
 
 	// resolvedCreds holds the static credential material resolved from
@@ -88,7 +88,7 @@ type Config struct {
 	// into ReceiverConfig/SenderConfig.InitialCredentials so the INITIAL
 	// SQS client is built with it — previously ApplyCredentials discarded
 	// the material and the first client always fell back to the ambient
-	// SDK chain (Finding 3/HIGH). It is unexported and never decoded from
+	// SDK chain. It is unexported and never decoded from
 	// config; the redaction-safe PasswordCredential keeps it log-safe.
 	resolvedCreds *connectivity.PasswordCredential
 }
@@ -120,12 +120,12 @@ func (c *Config) CredentialsURI() string {
 // into the initial SQS client via toReceiverConfig/toSenderConfig →
 // ensureClient, so a `credentials_uri` actually changes the identity of
 // the first client instead of being silently dropped in favour of the
-// ambient SDK chain (Finding 3). The URI is then cleared to mark
+// ambient SDK chain. The URI is then cleared to mark
 // resolution done so it is not re-resolved on subsequent passes.
 //
 // Temporary/STS material (ASIA-prefixed access key) is rejected up front
 // (fail the build) rather than producing a client that would fail every
-// request — see ErrTemporaryCredentialsUnsupported (Finding 6).
+// request — see ErrTemporaryCredentialsUnsupported.
 func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 	if c == nil {
 		return errors.New("sqs: nil config")
@@ -150,8 +150,8 @@ func (Config) Kind() string { return QualifiedKind }
 // (10). The registry decoder (register.go) decodes into this value so an
 // OMITTED key keeps the default while an EXPLICIT `wait_time_seconds: 0`
 // (or `max_messages: 0`) survives decode as 0 and is rejected with a
-// clear error instead of being silently coerced back to the default
-// (Finding 12). Mirrors paho.DefaultConfig().
+// clear error instead of being silently coerced back to the default.
+// Mirrors paho.DefaultConfig().
 func DefaultConfig() Config {
 	return Config{
 		MaxMessages:     10,
@@ -194,8 +194,8 @@ func (c Config) Validate() error {
 	if c.PollBackoffInitial > 0 && c.PollBackoffMax > 0 && c.PollBackoffMax < c.PollBackoffInitial {
 		return errors.New("sqs: poll_backoff_max must be >= poll_backoff_initial")
 	}
-	// poison_max_receives is an adapter-enforced backstop for poison messages
-	// (Chunk 13): 0 disables it (rely on native redrive), any positive
+	// poison_max_receives is an adapter-enforced backstop for poison messages:
+	// 0 disables it (rely on native redrive), any positive
 	// value bounds the redelivery hot loop. Its destructive delete must not
 	// preempt a native DLQ, so poison_max_receives == 1 (drop on first receive)
 	// requires the explicit poison_drop_without_dlq opt-in; the queue-aware
@@ -248,7 +248,7 @@ func (c Config) toReceiverConfig() ReceiverConfig {
 // ports.VisibilityTimeoutConfig, so the builder threads this per-route
 // value into the runtime validator's SourceVisibilityTimeout in
 // preference to the hardcoded Factory.VisibilityTimeout() constant
-// (Finding 2, wired in bridge/builder_complete.go, Phase 1b).
+// (wired in bridge/builder_complete.go, Phase 1b).
 func (c Config) EffectiveVisibilityTimeout() time.Duration {
 	if c.VisibilityTimeout > 0 {
 		return time.Duration(c.VisibilityTimeout) * time.Second
@@ -265,7 +265,7 @@ func (c Config) EffectiveVisibilityTimeout() time.Duration {
 // Below the floor the runtime runs a fixed, non-renewed window, so the
 // validator must still enforce the finite SendTimeout-vs-window check to
 // prevent source redelivery mid-send. It satisfies
-// ports.VisibilityTimeoutConfig (Finding 2 /).
+// ports.VisibilityTimeoutConfig.
 func (c Config) AutoExtendEnabled() bool {
 	flag := c.AutoExtend == nil || *c.AutoExtend
 	effSecs := c.VisibilityTimeout

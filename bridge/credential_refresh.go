@@ -85,8 +85,8 @@ type CredentialRefresher struct {
 	// watchers maps a URI to the set of CredentialAware targets that share it.
 	// Exactly ONE poller goroutine is started per URI (on first registration)
 	// and it fans the rotation out to every target; additional Watch calls for
-	// the same URI append to the slice instead of spawning a duplicate poller
-	// (Finding 14). A nil slice value means "poller starting/failed"; presence
+	// the same URI append to the slice instead of spawning a duplicate poller.
+	// A nil slice value means "poller starting/failed"; presence
 	// of the key means a poller has been (or is being) established.
 	watchers map[string][]CredentialAware
 }
@@ -178,7 +178,7 @@ func (r *CredentialRefresher) NotifyAuthFailure(uri string, err error) {
 // is registered by multiple targets (e.g. two sessions share
 // credentials), a SINGLE poller is spawned for the URI and each
 // registered target receives the rotation — duplicate Watch calls no
-// longer spawn duplicate pollers (Finding 14).
+// longer spawn duplicate pollers.
 //
 // Sessions that do not implement CredentialAware are silently skipped
 // with a debug log — this is intentional so mixed transports (MQTT
@@ -244,7 +244,7 @@ func (r *CredentialRefresher) watchTarget(uri string, target any, kind string) {
 
 	if alreadyWatching {
 		// A poller already exists for this URI; the target we just appended
-		// will be served by it. Do not spawn a duplicate poller (Finding 14).
+		// will be served by it. Do not spawn a duplicate poller.
 		return
 	}
 
@@ -256,7 +256,7 @@ func (r *CredentialRefresher) watchTarget(uri string, target any, kind string) {
 		// Surface the failed watcher as a metric, not just a log: a failed
 		// Watch means rotation is silently disabled for this URI for the whole
 		// process lifetime, so it must be observable/alertable rather than
-		// permanently silent (credential_refresh.go:221, Chunk 3).
+		// permanently silent (credential_refresh.go:221).
 		r.metrics.Counter(shared.MetricCredentialRefreshFailures, 1)
 		// Drop the key so a later Watch for the same URI can retry
 		// establishing a poller rather than being suppressed as a duplicate.
@@ -288,7 +288,7 @@ func (r *CredentialRefresher) run(
 				// process restarts. Previously this exited silently — surface it
 				// with a WARN + a failure metric so a dead credential watcher is
 				// observable/alertable instead of a silent auth time-bomb on the
-				// next rotation (credential_refresh.go:221, Chunk 3).
+				// next rotation (credential_refresh.go:221).
 				// ponytail: we surface (log + metric) rather than auto-restart
 				// with backoff — the push store owns reconnection, and an
 				// unconditional re-Watch loop here could hot-spin against a store

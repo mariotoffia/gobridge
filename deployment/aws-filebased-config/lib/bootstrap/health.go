@@ -22,7 +22,7 @@ import (
 // all) is a separate, harder failure already surfaced via /live and the
 // terminal backstop, so it is intentionally not folded in here.
 func (a *App) degradedConfigWatch() (bool, string) {
-	// RECONFIG-1: an applied-but-not-converged swap is a degraded state even when
+	// An applied-but-not-converged swap is a degraded state even when
 	// the config-watch layer itself is healthy. Report it alongside (or instead of)
 	// a watcher error so operators see the same ConfigDegraded signal the generic
 	// Supervisor emits.
@@ -81,7 +81,7 @@ func (a *App) configWatchHealth() httpapi.ConfigWatchHealth {
 	return status
 }
 
-// applyRolloutHealth folds the coordinated cluster rollout barrier (design §9)
+// applyRolloutHealth folds the coordinated cluster rollout barrier (ADR 0013)
 // into the projection, so an operator reading deep health during a rollout sees
 // WHO the cohort is waiting for instead of a bare "desired configuration is not
 // running" — and so a member the barrier has left behind says so on the field

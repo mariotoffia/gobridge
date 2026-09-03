@@ -23,14 +23,19 @@ import (
 // The method set is derived from ports.DLQStore rather than restated, so the
 // listing cannot drift from the interface without a red test.
 
-const architectureDoc = "../ARCHITECTURE.md"
+// ARCHITECTURE.md is a hub: the store ports and the cluster section live on the
+// topic pages its contents table routes to.
+const (
+	architectureStoresDoc  = "../docs/internals/architecture-stores-and-configuration.md"
+	architectureClusterDoc = "../docs/internals/architecture-contracts-and-clustering.md"
+)
 
 // architectureSection returns the body of the Markdown section that starts with
 // the given heading line and ends at the next heading of any level.
-func architectureSection(t *testing.T, heading string) string {
+func architectureSection(t *testing.T, doc, heading string) string {
 	t.Helper()
-	body, err := os.ReadFile(architectureDoc)
-	require.NoError(t, err, "ARCHITECTURE.md must exist")
+	body, err := os.ReadFile(doc)
+	require.NoError(t, err, "%s must exist", doc)
 
 	var section []string
 	inSection := false
@@ -47,7 +52,7 @@ func architectureSection(t *testing.T, heading string) string {
 		}
 		section = append(section, line)
 	}
-	require.NotEmpty(t, section, "no %q section found in %s — the heading moved", heading, architectureDoc)
+	require.NotEmpty(t, section, "no %q section found in %s — the heading moved", heading, doc)
 	return strings.Join(section, "\n")
 }
 
@@ -92,9 +97,9 @@ func dlqStorePortMethods() []string {
 }
 
 func TestDLQStorePublicContract_ListsThePortMethods(t *testing.T) {
-	section := architectureSection(t, "### DLQStore")
+	section := architectureSection(t, architectureStoresDoc, "### DLQStore")
 	require.Equal(t, dlqStorePortMethods(), goFenceMethods(t, section),
-		"the DLQStore listing in %s must name exactly the methods ports.DLQStore declares", architectureDoc)
+		"the DLQStore listing in %s must name exactly the methods ports.DLQStore declares", architectureStoresDoc)
 }
 
 // The runtime redrives a dead-lettered message by injecting a fresh envelope
@@ -103,7 +108,7 @@ func TestDLQStorePublicContract_ListsThePortMethods(t *testing.T) {
 // implementer reading "idempotent Write" plus a Replay method would build a
 // store-side replay the runtime never calls.
 func TestDLQStorePublicContract_DescribesInjectThenDeleteRedrive(t *testing.T) {
-	section := architectureSection(t, "### DLQStore")
+	section := architectureSection(t, architectureStoresDoc, "### DLQStore")
 	require.Contains(t, section, "at-least-once",
 		"the DLQStore section must state the redrive delivery guarantee")
 	require.NotContains(t, section, "Replay",
@@ -116,7 +121,7 @@ func TestDLQStorePublicContract_DescribesInjectThenDeleteRedrive(t *testing.T) {
 // architecture page must describe that ladder rather than the ADR 0012 world it
 // superseded.
 func TestClusterPublicContract_ArchitectureNamesLiveRolloutModes(t *testing.T) {
-	section := architectureSection(t, "### Cluster Reconfiguration")
+	section := architectureSection(t, architectureClusterDoc, "### Cluster Reconfiguration")
 	for _, mode := range []string{"`refuse`", "`independent`", "`coordinated`"} {
 		require.Contains(t, section, mode, "the cluster section must name the %s rollout mode", mode)
 	}

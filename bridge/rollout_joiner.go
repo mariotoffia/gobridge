@@ -11,7 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// The joiner rule (design §6): "a starting member adopts only the last Committed
+// The joiner rule (ADR 0013): "a starting member adopts only the last Committed
 // configuration; it never acks a rollout proposed before it joined".
 //
 // It exists because the candidate travels through each member's OWN config
@@ -76,7 +76,7 @@ func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Cont
 		// would durably poison the baseline and split the cohort. Fall back to the
 		// conservative joiner rule (refuse an aborted/undecided boot config, boot on
 		// current otherwise) until the first commit establishes the artifact. (An
-		// explicit deploy-time seed is a Phase-6 composition concern.)
+		// explicit deploy-time seed is a composition-root concern.)
 		if jerr := d.checkRolloutJoinerRule(ctx, cfg); jerr != nil {
 			return nil, jerr
 		}

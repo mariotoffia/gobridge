@@ -264,7 +264,7 @@ func (s *stage1Bridge) toBridgeConfig(registry *ports.Registry) (*ports.BridgeCo
 	// it omits its own `transport` and instead names a `session_id`. The
 	// builder already supports this inheritance (a receiver with no transport
 	// uses its session's), but the parser used to hard-require transport,
-	// making the feature unreachable from YAML (Finding 12).
+	// making the feature unreachable from YAML.
 	sessionKindByID := make(map[string]string, len(s.Sessions))
 	for _, s1 := range s.Sessions {
 		sessionKindByID[s1.ID] = s1.Transport
@@ -367,7 +367,7 @@ func decodeSession(registry *ports.Registry, s stage1Session) (ports.SessionDef,
 // session it references (inheritance). Returns "" when neither resolves, which
 // the caller turns into a clear "missing transport" error. This makes the
 // session-inherited-transport feature the builder already supports reachable
-// from YAML (Finding 12).
+// from YAML.
 func resolveTransportKind(transport, sessionID string, sessionKind map[string]string) string {
 	if transport != "" {
 		return transport

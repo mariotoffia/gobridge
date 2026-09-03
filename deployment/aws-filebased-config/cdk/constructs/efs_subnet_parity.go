@@ -8,8 +8,8 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
 )
 
-// AssertEfsSubnetParity enforces Validation Matrix row 14
-// ("GoBridgeEfsConfig VpcSubnets must match GoBridge cluster VpcSubnets").
+// AssertEfsSubnetParity enforces that a GoBridgeEfsConfig's VpcSubnets match
+// the GoBridge cluster's VpcSubnets.
 //
 // An EFS mount target serves its entire availability zone. A Fargate task
 // placed in an AZ with no mount target cannot mount the filesystem — the

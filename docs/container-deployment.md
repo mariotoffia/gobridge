@@ -224,14 +224,14 @@ mode, which also covers network filesystems that drop inotify events.
 
 - **`cmd/gobridge` and library embeddings** honor the config `http:` block: set
   `tls_cert_file` and `tls_key_file` (both, or neither) to serve the admin and
-  monitor APIs over HTTPS in-process (`cmd/gobridge/main.go:233-234`). Renewed
+  monitor APIs over HTTPS in-process (`cmd/gobridge/main.go`). Renewed
   certificates hot-reload without a restart — the server reloads the pair when
   either file's modification time changes on the next TLS handshake. See the
   [`http:` field reference](http-api.md#http-api-configuration) for the fields.
 - **The AWS file-based profile (the shipped image) does not honor the `http:`
   block.** It sources the admin/monitor listen addresses, CORS origins, and API
   keys from the bootstrap config (env/SSM) rather than `bridge.yaml`
-  (`deployment/aws-filebased-config/lib/bootstrap/app.go:301-305`), and it sets
+  (`deployment/aws-filebased-config/lib/bootstrap/app.go`), and it sets
   no in-process TLS — TLS terminates at the ALB in front of the task. The
   `http:` block's `tls_cert_file` / `tls_key_file` (and its admin/monitor
   addresses and keys) are ignored on that image.

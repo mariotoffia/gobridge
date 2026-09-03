@@ -12,7 +12,7 @@ import (
 
 // The coordinated cluster-rollout barrier is hosted on a RUNTIME, not baked into
 // one. The Supervisor is one host; the shipped file-based bootstrap.App is the
-// other (design Phase 6 "ship step"). The seam between them is the ports.RolloutHost
+// other. The seam between them is the ports.RolloutHost
 // port — the whole of what the barrier drive needs from its host — so ONE barrier
 // implementation serves both without either duplicating the ~600-line drive or
 // migrating to the other's swap machinery.

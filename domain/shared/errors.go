@@ -424,7 +424,7 @@ var (
 		Message: "rollout candidate digest mismatch",
 	}
 	// ErrRolloutNotConfirmable indicates Confirm was invoked on a committed
-	// rollout whose confirm window (design §8.1) is not satisfiable as confirmed:
+	// rollout whose confirm window (ADR 0014) is not satisfiable as confirmed:
 	// the window is inactive (base protocol, confirm_window == 0), or not every
 	// membership-epoch member has recorded convergence yet (the
 	// all-member confirm barrier). Permanent for this observation: the coordinator

@@ -25,9 +25,9 @@ const defaultMountPath = infra.DefaultMountPath
 // directories under the mount root.
 const controlOnlySubdir = "control-only"
 
-// bridgeIDPattern is the regex required by the Validation Matrix
-// row 8. The matrix names the field bridge.name; on the typed Go
-// side it is BridgeSettings.ID.
+// bridgeIDPattern is the regex a bridge identifier must match. Operator-
+// facing text calls the field bridge.name; on the typed Go side it is
+// BridgeSettings.ID.
 var bridgeIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
 
 // pathFieldNames lists the lower-cased keys treated as filesystem
@@ -57,7 +57,7 @@ type Phase1Input struct {
 	NodeRole     infra.NodeRole
 }
 
-// Phase1 runs the fast-fail Phase-1 validators in deterministic
+// Phase1 runs the fast-fail validators in deterministic
 // order against in.Materialized.Config. It returns the FIRST failure
 // as a typed error (see errors.go), or nil on success.
 //

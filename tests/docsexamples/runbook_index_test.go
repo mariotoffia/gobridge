@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -25,12 +24,7 @@ import (
 const (
 	runbookDir   = "../../docs/runbooks"
 	runbookIndex = "../../docs/runbooks/README.md"
-	docsIndex    = "../../docs/index.md"
 )
-
-// runbookCountClaim matches the docs index row that states how many runbooks
-// this directory holds.
-var runbookCountClaim = regexp.MustCompile(`\[Runbooks\]\(runbooks/\)\s*\|\s*(\d+) incident procedures`)
 
 // runbookLink matches a Markdown link whose target is a sibling runbook page.
 var runbookLink = regexp.MustCompile(`\]\(([a-z0-9-]+\.md)[^)]*\)`)
@@ -78,26 +72,6 @@ func TestRunbookIndex_ListsEveryRunbook(t *testing.T) {
 	require.Emptyf(t, missing,
 		"runbooks that %s does not link, so nothing leads an operator to them: %s",
 		runbookIndex, strings.Join(missing, ", "))
-}
-
-// TestRunbookIndex_DocsIndexCountsEveryRunbook keeps the one number the docs
-// index states about this directory honest. A hand-maintained count rots the
-// first time a runbook is added, and it rots quietly: the figure looks
-// authoritative and nothing contradicts it.
-func TestRunbookIndex_DocsIndexCountsEveryRunbook(t *testing.T) {
-	body, err := os.ReadFile(docsIndex)
-	require.NoError(t, err, "the docs index must exist")
-
-	claimed := runbookCountClaim.FindStringSubmatch(string(body))
-	require.NotNilf(t, claimed,
-		"%s no longer states a runbook count in the form this test checks; either restore it or "+
-			"drop this test along with the claim", docsIndex)
-
-	count, err := strconv.Atoi(claimed[1])
-	require.NoError(t, err)
-	require.Equalf(t, len(runbookPages(t)), count,
-		"%s claims %d incident procedures, but %s holds a different number of pages",
-		docsIndex, count, runbookDir)
 }
 
 func TestRunbookIndex_LinksNoMissingRunbook(t *testing.T) {

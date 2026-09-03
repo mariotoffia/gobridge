@@ -167,7 +167,7 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 		dc = outbox.NewDepthCache(cfg.DepthCacheTTL, cfg.Clock)
 	}
 
-	// Finding 3: a delivery hook is a passive observer (ports/hooks.go) and MUST
+	// A delivery hook is a passive observer (ports/hooks.go) and MUST
 	// NOT alter settlement. Wrap any real hook so a panic in OnAttempt/OnSettled
 	// is contained here instead of unwinding into the delivery goroutine, where
 	// the Run-loop recover would see an unsettled delivery (a hook can panic
@@ -299,7 +299,7 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 		closed bool
 	)
 
-	// Finding 5 (Wave A) + Finding 4 (Wave B): bounded, at-most-once receiver
+	// Bounded, at-most-once receiver
 	// Close that PRESERVES drain-then-close on graceful shutdown. Historically
 	// Close ran only AFTER receiver.Run returned, so a receiver blocked inside a
 	// broker client that needs Close to unblock its Run loop wedged shutdown
@@ -380,12 +380,12 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 		}
 		wg.Add(1)
 		mu.Unlock()
-		// Finding 16: count in-flight BEFORE spawning the goroutine. If we
+		// Count in-flight BEFORE spawning the goroutine. If we
 		// incremented inside the goroutine, WaitQuiescent could snapshot 0
 		// between "emit accepted the delivery" and "goroutine started",
 		// reporting quiescence with an accepted-but-unstarted delivery.
 		r.inFlight.Add(1)
-		// Finding 18: wrap the delivery so terminal settlement (Ack/Retry) is
+		// Wrap the delivery so terminal settlement (Ack/Retry) is
 		// observable from the panic-recovery path — a panic AFTER settlement
 		// must not trigger a duplicate retry on an already-settled delivery.
 		tracked := &settleTrackingDelivery{Delivery: del}
@@ -421,7 +421,7 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 						r.metrics.Counter(shared.MetricDeliveryPanics, 1,
 							shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID},
 						)
-						// Finding 18: a panic AFTER the delivery already reached a
+						// A panic AFTER the delivery already reached a
 						// terminal state (e.g. in a tracer/metric/hook call fired
 						// after ACK) must not re-settle it — retrying an acked
 						// delivery is duplicate noise.
@@ -455,7 +455,7 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 						// honour any deadline the caller already set.
 						retryCtx, retryCancel := context.WithTimeout(ctx, r.panicRetryTimeout)
 						defer retryCancel()
-						// Finding 2: panics outside RunChain (resolver, hooks,
+						// Panics outside RunChain (resolver, hooks,
 						// tracer, metrics) reach here. Route the recovery through
 						// the SAME receive-count poison gate the send path uses so
 						// a deterministically-panicking resolver cannot spin an
@@ -625,7 +625,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		}
 	}
 
-	// Finding 15: count every delivery that ENTERS the pipeline here — the sole
+	// Count every delivery that ENTERS the pipeline here — the sole
 	// choke point shared by both the Run receive loop and Runtime.Inject
 	// (HandleDelivery). Previously only the Run callback emitted it, so injected
 	// deliveries were invisible to the conservation law even though they emit
@@ -896,7 +896,7 @@ func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *m
 
 // recoverDelivery settles a delivery whose processing goroutine panicked
 // OUTSIDE the processor chain (resolver, hooks, tracer, metrics — RunChain has
-// its own recovery). Finding 2 /: it routes the poison decision through the
+// its own recovery). It routes the poison decision through the
 // SAME native-or-ledger cap the send path uses (replayCapReached), NOT the raw
 // native receive count. A count-less source (MQTT/AMQP091/HTTP, receiveCount
 // always 0) with a deterministically-panicking resolver/hook/tracer would
@@ -953,7 +953,7 @@ func (r *RouteRunner) recoverDelivery(ctx context.Context, del ports.Delivery, c
 
 // settleTrackingDelivery wraps a ports.Delivery to record terminal settlement.
 // A delivery is "settled" once Ack or Retry has succeeded. The panic-recovery
-// path consults Settled() so a panic AFTER settlement (finding 18) does not
+// path consults Settled() so a panic AFTER settlement does not
 // re-settle an already-terminal delivery. Extend is a visibility operation, not
 // a settlement, so it is not tracked.
 //

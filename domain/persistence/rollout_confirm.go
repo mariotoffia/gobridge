@@ -8,7 +8,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// Confirm window (design §8.1 — NETCONF/NSO confirmed-commit) additions to the
+// Confirm window (ADR 0014 — NETCONF/NSO confirmed-commit) additions to the
 // Rollout aggregate: a windowed commit is PROVISIONAL, members Converge, and a
 // fenced coordinator Confirms (whole-epoch converged) or Reverts (deadline). These
 // layer onto the base state machine in rollout.go; the terminality of a windowed
@@ -89,9 +89,9 @@ func (r Rollout) WithConverged(memberID string, at time.Time) (Rollout, *shared.
 }
 
 // WithConfirm confirms a provisionally-committed rollout under the coordinator's
-// fencing token. The fence runs first. Requires the confirm barrier (
-// active window + every epoch member converged). An already-confirmed rollout
-// under a same-or-newer token is an idempotent no-op; confirming a
+// fencing token. The fence runs first. Requires the confirm barrier
+// (an active window plus every epoch member converged). An already-confirmed
+// rollout under a same-or-newer token is an idempotent no-op; confirming a
 // reverted/aborted rollout, or a base-protocol commit, is terminal-illegal.
 func (r Rollout) WithConfirm(tok LeaseToken) (Rollout, *shared.BridgeError) {
 	if err := r.checkFence(tok, "confirm"); err != nil {

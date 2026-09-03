@@ -147,9 +147,9 @@ var ErrEmptyPath = errors.New("gobridgecdk: BridgeYamlAsset path must not be emp
 var ErrNilConfig = errors.New("gobridgecdk: BridgeYamlInline config must not be nil")
 
 // ErrYamlParse wraps every config.ParseFile failure observed by
-// Materialize, covering both Validation Matrix Phase-1 rows that share
-// this boundary: row 1 "yaml unparseable" and row 2 "Stage-1 validator
-// fail". The matrix requires the operator-facing message to lead with
+// Materialize, covering both fast-fail rules that share this boundary:
+// an unparseable YAML document and a stage-1 validator failure. The
+// operator-facing message must lead with
 // the "bridge.yaml: " prefix; the underlying parser error (which carries
 // the yaml line/col, or the stage-1 field detail) stays wrapped behind
 // it so both errors.Is checks and the detail survive.

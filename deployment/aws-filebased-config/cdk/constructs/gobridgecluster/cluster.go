@@ -16,7 +16,7 @@
 // (shared_outbox, route.session leases), so there is no single-active
 // lease owner and no 30-60s failover path. Coordinated failover
 // requires DynamoDB-backed lease/outbox stores, which are out of this
-// reference construct's scope (c15-cluster-notha). See the
+// reference construct's scope. See the
 // GoBridgeCluster type doc for the full non-HA advisory.
 package gobridgecluster
 
@@ -41,7 +41,7 @@ import (
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 )
 
-// Non-HA honesty markers (c15-cluster-notha). GoBridgeCluster is a
+// Non-HA honesty markers. GoBridgeCluster is a
 // filesystem-replicated SCALE-OUT topology, not coordinated-failover
 // HA. The tag keys/values below are stamped onto every taggable
 // resource the construct synthesizes and DO reach the deployed stack,
@@ -67,7 +67,7 @@ const (
 		"topology=filesystem_replicated, under which the runtime rejects shared_outbox " +
 		"and route.session, so there is no single-active lease owner and no 30-60s " +
 		"failover path. Coordinated-failover HA requires DynamoDB-backed lease/outbox " +
-		"stores, which are out of this reference construct's scope (c15-cluster-notha)."
+		"stores, which are out of this reference construct's scope."
 )
 
 // AutoScalingProps opts the worker service into target-tracking CPU
@@ -236,7 +236,7 @@ type ClusterProps struct {
 // honest at the deployed-resource level (not just in source), the
 // construct stamps gobridge:topology / gobridge:ha tags onto every
 // taggable resource and emits a synth-time info annotation stating the
-// non-HA nature (c15-cluster-notha).
+// non-HA nature.
 //
 // The control DesiredCount is hard-coded to 1 and NOT exposed as a
 // prop: it is a runtime invariant of the single-LeaseStore-writer
@@ -301,7 +301,7 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 	// one control + N workers share a single EFS filesystem. Force
 	// Topology=filesystem_replicated on both copies (regardless of what the
 	// caller left in props.Bootstrap, whose zero value normalizes to
-	// "single"). This is load-bearing: both the Phase-1 synth validator and
+	// "single"). This is load-bearing: both the fast-fail synth validator and
 	// the runtime guard (lib/bootstrap.validateFilesystemProfile) return
 	// early on the "single" topology, so leaving the default in place would
 	// silently permit shared_outbox routes and route.session leases on
@@ -310,7 +310,7 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 	bootstrapControl.Topology = infra.TopologyFilesystemReplicated
 	bootstrapWorker.Topology = infra.TopologyFilesystemReplicated
 
-	// Be HONEST about what this construct is (c15-cluster-notha). The name
+	// Be HONEST about what this construct is. The name
 	// "Cluster" can read as "HA / coordinated failover", but forcing
 	// filesystem_replicated above makes this a SCALE-OUT topology: N
 	// replicas independently read one EFS config, there is no single-active

@@ -142,7 +142,7 @@ func (r *CredentialResolver) Resolve(ctx context.Context, uri string) (*connecti
 	// because the leader's own ctx died while this caller's ctx is still
 	// healthy, we loop back — re-check the cache, then either join a newer
 	// flight or become the new leader — instead of returning the leader's
-	// spurious cancellation (finding: singleflight leader-ctx propagation).
+	// spurious cancellation.
 	for {
 		if creds := r.getCached(uri); creds != nil {
 			return creds, nil

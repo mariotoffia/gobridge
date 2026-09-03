@@ -9,9 +9,9 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// The generation-zero baseline (design cluster-config-rollout-protocol.md,
-// Phase-4 residual "an explicit deploy-time seed is a Phase-6 composition
-// concern").
+// The generation-zero baseline (docs/cluster/spec/cluster-config-rollout-protocol.md).
+// Seeding one explicitly at deploy time is a composition-root concern, not the
+// barrier's: this package only has to behave when no baseline exists yet.
 //
 // Before the first rollout ever commits there is no durable committed artifact,
 // so resolveBootFromCommittedArtifact has nothing to recover to and falls back to

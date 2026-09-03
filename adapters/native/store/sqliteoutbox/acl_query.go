@@ -226,8 +226,8 @@ const (
 // claimableWhere is the reusable predicate identifying rows a Claim may take:
 // a pending row, a row claimed under a strictly-older fence version (a
 // preempted owner), or — when time-stale reclaim is enabled — a row that is
-// still claimed but whose claim was stranded past the stale cutoff (
-// crash-recovery for an owner that died mid-drain without completing or
+// still claimed but whose claim was stranded past the stale cutoff
+// (crash-recovery for an owner that died mid-drain without completing or
 // releasing, mirroring the DynamoDB backend's stale-claim fallback). The
 // claim_version placeholder is always present; the claimed_at cutoff
 // placeholder is present only when staleEnabled, so a store configured

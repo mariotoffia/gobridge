@@ -117,7 +117,7 @@ type ReceiverConfig struct {
 	// static credentials provider instead of the ambient SDK chain. It
 	// carries the material resolved from a plugin `credentials_uri` at
 	// build time (Config.ApplyCredentials → toReceiverConfig). Temporary
-	// (STS) material is rejected when the client is built (Finding 3/6).
+	// (STS) material is rejected when the client is built.
 	InitialCredentials *connectivity.PasswordCredential
 }
 
@@ -163,7 +163,7 @@ type SenderConfig struct {
 	// Zero keeps the 262144 (256 KiB) default; raise it only to match a
 	// queue whose MaximumMessageSize has been provisioned above 256 KiB,
 	// otherwise a large body silently drops ALL attributes — including the
-	// rank-0 idempotency-key / traceparent headers (Finding 4). The factory
+	// rank-0 idempotency-key / traceparent headers. The factory
 	// projects it from the plugin Config and applies it via
 	// WithMaxMessageBytes.
 	MaxMessageBytes int
@@ -186,7 +186,7 @@ type SenderConfig struct {
 	// static credentials provider instead of the ambient SDK chain. It
 	// carries the material resolved from a plugin `credentials_uri` at
 	// build time (Config.ApplyCredentials → toSenderConfig). Temporary
-	// (STS) material is rejected when the client is built (Finding 3/6).
+	// (STS) material is rejected when the client is built.
 	InitialCredentials *connectivity.PasswordCredential
 }
 
@@ -230,7 +230,7 @@ func (c *ReceiverConfig) applyDefaults() {
 	if c.MaxMessages <= 0 || c.MaxMessages > 10 {
 		c.MaxMessages = 10
 	}
-	// FIFO ordering safety (Finding 5): the route runner dispatches
+	// FIFO ordering safety: the route runner dispatches
 	// deliveries concurrently, so a single ReceiveMessage returning
 	// several messages of one MessageGroupId could let them be reordered.
 	// SQS keeps a FIFO group locked to its in-flight message until that
@@ -295,7 +295,7 @@ func (c *SenderConfig) validate() error {
 	// FIFO + per-message DelaySeconds fail-fast: AWS rejects a non-zero
 	// DelaySeconds on a FIFO SendMessage/SendMessageBatch entry, so every
 	// send would DLQ at runtime as ErrInvalidPayload. Reject the
-	// combination at build instead (Finding 5), mirroring the FIFO
+	// combination at build instead, mirroring the FIFO
 	// message-group cross-validation above. FIFO is detected from the
 	// explicit flag, a default group, or the ".fifo" suffix.
 	if c.DelaySeconds > 0 && c.isFIFO() {

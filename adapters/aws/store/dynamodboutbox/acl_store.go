@@ -67,8 +67,8 @@ const (
 	// ClaimIndex GSI. It encodes (created_at millis, seq) as a zero-padded
 	// lexicographically-sortable string (see claimSortKey), so a Query on the
 	// ClaimIndex returns a partition's claimable records OLDEST-FIRST and Claim
-	// can STOP after `limit` instead of scanning the whole partition
-	// (c13-claim-quadratic). It is stamped once by Persist and removed at a
+	// can STOP after `limit` instead of scanning the whole partition.
+	// It is stamped once by Persist and removed at a
 	// terminal transition (Complete/Expire) so the index is sparse — it holds
 	// exactly the not-yet-terminal (pending/claimed) records — mirroring the
 	// has_expiry/ExpiryIndex pattern. Claim/Release never rewrite it, so a
@@ -376,8 +376,8 @@ func (s *Store) CreateTable(ctx context.Context) error {
 				Projection: &ddbtypes.Projection{ProjectionType: ddbtypes.ProjectionTypeKeysOnly},
 			},
 			{
-				// ClaimIndex is the per-partition age-ordered access path
-				// (c13-claim-quadratic): hash=PK, range=claim_sort, so a Query
+				// ClaimIndex is the per-partition age-ordered access path:
+				// hash=PK, range=claim_sort, so a Query
 				// returns a partition's claimable records OLDEST-FIRST and Claim
 				// stops after `limit` instead of paging the whole partition to
 				// find the oldest-N (which went O(backlog) after an outage). It
@@ -477,7 +477,7 @@ func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord
 		item["seq"] = &ddbtypes.AttributeValueMemberN{Value: u64(seqs[i])}
 		// Stamp the age-ordered ClaimIndex key now that both created_at (from
 		// marshalRecord) and the allocated seq are known, so Claim can query
-		// the partition oldest-first and stop after `limit` (c13-claim-quadratic).
+		// the partition oldest-first and stop after `limit`.
 		item[attrClaimSort] = &ddbtypes.AttributeValueMemberS{
 			Value: claimSortKey(numAttrI64(item, "created_at"), seqs[i]),
 		}
@@ -1174,7 +1174,7 @@ func (s *Store) claimOne(
 			// / ...) is NOT a lost race. Returning (nil, nil) here — as the code
 			// once did for EVERY non-fence reason — silently SKIPPED the record
 			// with no backoff signal, so a throttled partition self-throttled
-			// harder and validation faults hid forever (c13-txn-throttle).
+			// harder and validation faults hid forever.
 			// Classify through wrapErr so throttling surfaces as retryable
 			// shared.ErrThrottled (the drainer backs off) and permanent faults
 			// surface honestly, instead of being dropped.

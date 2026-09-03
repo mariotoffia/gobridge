@@ -42,7 +42,7 @@ type Delivery struct {
 	// settled: a settlement attempt has been claimed (may still be in
 	// flight). settleDone: that attempt has finished. settleOK: it
 	// finished successfully. The three flags let concurrent callers
-	// distinguish "in progress" from "previously failed" (finding 17).
+	// distinguish "in progress" from "previously failed".
 	settled    bool
 	settleDone bool
 	settleOK   bool
@@ -109,7 +109,7 @@ func (d *Delivery) Envelope() *messaging.Envelope { return d.env }
 // was already claimed by an earlier call. A concurrent second caller
 // used to get a misleading "already settled with error" while the first
 // attempt was merely still IN FLIGHT; the in-progress case now has its
-// own message (finding 17). Callers must hold no locks.
+// own message. Callers must hold no locks.
 func (d *Delivery) alreadySettledError() error {
 	d.mu.Lock()
 	done, ok := d.settleDone, d.settleOK
@@ -217,7 +217,7 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) erro
 
 	var err error
 	if after > 0 {
-		// Finding 2 (delayed-retry boundary): the broker, not this
+		// Delayed-retry boundary: the broker, not this
 		// client, ultimately controls redelivery timing for a modified
 		// outcome. The x-opt-delivery-time annotation asks the broker to
 		// schedule redelivery at now+after; a honoring broker applies the

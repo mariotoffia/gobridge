@@ -32,7 +32,7 @@ type Factory struct {
 // variadic metrics exporter is threaded into every Receiver and Sender
 // the factory builds so the adapter's twelve SQS metrics actually emit on
 // the config-driven/plugin path — without it the factory left cfg.Metrics
-// nil and each adapter fell back to a Noop exporter (Finding 8/HIGH). The
+// nil and each adapter fell back to a Noop exporter. The
 // signature mirrors paho.NewFactory; the variadic keeps existing
 // single-arg callers compiling.
 func NewFactory(logger *slog.Logger, metrics ...ports.MetricsExporter) *Factory {
@@ -115,7 +115,7 @@ type ReceiverFactory struct {
 
 // NewReceiverFactory returns a factory that creates SQS receivers. The
 // optional metrics exporter is applied to every ReceiverConfig so the
-// receiver's poll/receive/malformed metrics emit (Finding 8). The
+// receiver's poll/receive/malformed metrics emit. The
 // variadic keeps existing single-arg callers compiling.
 func NewReceiverFactory(logger *slog.Logger, metrics ...ports.MetricsExporter) *ReceiverFactory {
 	var m ports.MetricsExporter
@@ -150,7 +150,7 @@ type SenderFactory struct {
 
 // NewSenderFactory returns a factory that creates SQS senders. The
 // optional metrics exporter is applied to every SenderConfig so the
-// sender's send/batch/dropped-attribute metrics emit (Finding 8). The
+// sender's send/batch/dropped-attribute metrics emit. The
 // variadic keeps existing single-arg callers compiling.
 func NewSenderFactory(logger *slog.Logger, metrics ...ports.MetricsExporter) *SenderFactory {
 	var m ports.MetricsExporter
@@ -178,7 +178,7 @@ func (f *SenderFactory) NewSender(_ context.Context, spec ports.SenderSpec, _ po
 	// pass the functional option ONLY when the operator set a positive value
 	// so an absent/0 config keeps the 256 KiB default instead of zeroing the
 	// ceiling (which would drop ALL attributes, including the rank-0
-	// idempotency-key / traceparent headers) (Finding 4).
+	// idempotency-key / traceparent headers).
 	var opts []SenderOption
 	if cfg.MaxMessageBytes > 0 {
 		opts = append(opts, WithMaxMessageBytes(cfg.MaxMessageBytes))

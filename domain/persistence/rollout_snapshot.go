@@ -26,7 +26,7 @@ type RolloutSnapshot struct {
 	Reason             string
 	Deadline           time.Time
 	CoordinatorVersion uint64
-	// Confirm window (design §8.1). ConfirmWindow is frozen at Propose;
+	// Confirm window (ADR 0014). ConfirmWindow is frozen at Propose;
 	// ConfirmDeadline is stamped at a provisional commit (zero otherwise);
 	// Converged records post-swap convergence keyed by member id.
 	ConfirmWindow   time.Duration
@@ -145,7 +145,7 @@ func RehydrateRollout(s RolloutSnapshot) (Rollout, *shared.BridgeError) {
 				WithMessage("rollout convergence from a non-member").With("member", m)
 		}
 	}
-	// Confirm-window coherence (design §8.1): convergence and a confirm deadline
+	// Confirm-window coherence (ADR 0014): convergence and a confirm deadline
 	// only exist post-commit; a Confirmed rollout must carry whole-epoch
 	// convergence.
 	postCommit := s.State == RolloutCommitted || s.State == RolloutConfirmed || s.State == RolloutReverted
@@ -166,7 +166,7 @@ func RehydrateRollout(s RolloutSnapshot) (Rollout, *shared.BridgeError) {
 	// confirmDeadline (IsTerminal), so a windowed commit MUST carry a deadline and a
 	// base commit MUST NOT. A corrupt/dropped deadline that left confirmWindow > 0
 	// would otherwise rehydrate as a terminal final commit — silently skipping the
-	// whole confirm barrier — so fail closed on the mismatch (design §8.1).
+	// whole confirm barrier — so fail closed on the mismatch (ADR 0014).
 	if s.State == RolloutCommitted && (s.ConfirmWindow > 0) != !s.ConfirmDeadline.IsZero() {
 		return Rollout{}, shared.ErrInvalidRolloutProposal.
 			WithMessage("committed rollout confirm window and confirm deadline disagree").

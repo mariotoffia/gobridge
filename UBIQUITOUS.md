@@ -149,7 +149,7 @@ Layer-1 cross-context **facts** package. The values here are emitted by applicat
 
 ## Blueprint / Configuration (`ports/blueprint*.go` + `config/`)
 
-Layer-2 *supporting subdomain*: the parsed-but-not-yet-built shape of a bridge. The `ports/` types are schema-tagged DTOs (yaml/json struct tags, but no yaml/json runtime dependency); the YAML/JSON parser, validator, merger and on-disk store live in `config/`. See [DDD.md §3.7](DDD.md#37-blueprint--configuration--supporting-layer-2).
+Layer-2 *supporting subdomain*: the parsed-but-not-yet-built shape of a bridge. The `ports/` types are schema-tagged DTOs (yaml/json struct tags, but no yaml/json runtime dependency); the YAML/JSON parser, validator, merger and on-disk store live in `config/`. See [DDD.md §3.7](docs/internals/ddd-aggregates.md#37-blueprint--configuration--supporting-layer-2).
 
 | Term | Meaning |
 |---|---|

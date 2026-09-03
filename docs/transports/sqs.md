@@ -129,12 +129,12 @@ FIFO is detected from the explicit `fifo: true` flag, a default
 **Address validation is deliberately lenient.** Parse-time `Validate` checks only
 field ranges and consistency — it does not require a queue reference, so a config
 naming a wrong or arbitrary queue URL parses cleanly
-(`adapters/aws/transport/sqs/config_plugin.go:87-123`). Queue identity is
-enforced later: `ValidateQueue` at build time (`config_plugin.go:129-134`) and
+(`adapters/aws/transport/sqs/config_plugin.go`). Queue identity is
+enforced later: `ValidateQueue` at build time (`config_plugin.go`) and
 the sender's `ValidateAddress`, which is offline and structural — a name-only
 sender accepts any URL whose trailing segment matches the queue name, so a wrong
 region or account passes the build and is only caught at first `Send` once the
-canonical URL resolves (`sender.go:124-150`). Do not rely on config parse errors
+canonical URL resolves (`sender.go`). Do not rely on config parse errors
 to catch queue-URL typos.
 
 ## Credential resolution
@@ -241,7 +241,7 @@ so neither can be injected through an attribute.
   initialization failure returns `Run`'s error **without** closing the receiver's
   `Started()` channel, so a readiness probe never briefly observes a ready route
   for a receiver that failed to start. Supervise on `Run`'s returned error, not
-  on `Started()` alone (`adapters/aws/transport/sqs/receiver.go:105-108`).
+  on `Started()` alone (`adapters/aws/transport/sqs/receiver.go`).
 - **Per-poll timeout.** Each `ReceiveMessage` call has an explicit timeout of
   `WaitTimeSeconds + 10` seconds, protecting against network-level stalls
   beyond the SQS long-poll window. Failed polls back off with

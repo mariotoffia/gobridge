@@ -94,14 +94,14 @@ type Drainer struct {
 	lastNoLeaseWarn time.Time
 
 	// expireInterval bounds how often maybeExpire sweeps expired-but-unclaimed
-	// pending records (finding 19). lastExpire tracks the last sweep. Both are
+	// pending records. lastExpire tracks the last sweep. Both are
 	// touched only from the Run goroutine — no lock required.
 	expireInterval time.Duration
 	lastExpire     time.Time
 }
 
 // noLeaseWarnInterval bounds how often the drain-skipped-no-lease warning is
-// emitted per drainer (finding 11).
+// emitted per drainer.
 const noLeaseWarnInterval = 30 * time.Second
 
 // Config holds the configuration for a Drainer.
@@ -133,7 +133,7 @@ type Config struct {
 	// AND-gate; replay-count exhaustion alone never poisons.
 	ReplayBudget time.Duration
 	// ExpireInterval is how often the drainer sweeps expired-but-unclaimed
-	// pending records to the expired terminal state (finding 19). Zero
+	// pending records to the expired terminal state. Zero
 	// selects defaultExpireInterval. The sweep runs only under lease
 	// ownership so exactly one instance expires per partition.
 	ExpireInterval time.Duration
@@ -175,8 +175,8 @@ const (
 	defaultMaxDrainTimeout = 10 * time.Second
 
 	// defaultExpireInterval bounds how often the drainer sweeps
-	// expired-but-unclaimed pending records to the expired terminal state
-	// (finding 19). The sweep is a cheap indexed status+time scan; a slow
+	// expired-but-unclaimed pending records to the expired terminal state.
+	// The sweep is a cheap indexed status+time scan; a slow
 	// cadence keeps expired records from lingering forever without adding
 	// per-cycle cost.
 	defaultExpireInterval = time.Minute
@@ -255,7 +255,7 @@ func New(cfg Config) *Drainer {
 		replayBudget:          cfg.ReplayBudget,
 		expireInterval:        cfg.ExpireInterval,
 		// Seed lastExpire to now so the first Expire sweep waits a full
-		// interval (finding 19). This gives the active drain path priority:
+		// interval. This gives the active drain path priority:
 		// freshly-claimable expired records are handled per-record by
 		// processRecord (which emits OutboxExpiredBeforeSend and honors the
 		// OnExpired policy — DLQ/drop) instead of being blanket-swept to the
@@ -350,7 +350,7 @@ func (d *Drainer) log(ctx context.Context, level slog.Level, msg string, args ..
 }
 
 // warnDrainSkippedNoLease emits a rate-limited warning when a drain cycle is
-// skipped because the drainer holds no lease (finding 11). It fires at most
+// skipped because the drainer holds no lease. It fires at most
 // once per noLeaseWarnInterval per drainer so a permanently lease-less
 // configuration is visible without flooding the log.
 func (d *Drainer) warnDrainSkippedNoLease(ctx context.Context) {

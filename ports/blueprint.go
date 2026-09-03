@@ -118,7 +118,7 @@ type ClusterConfig struct {
 	Endpoints map[string]string `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
 	// Members is the STATIC roster of member ids forming the coordinated-rollout
 	// cohort. It is the membership epoch the rollout barrier freezes at Propose
-	// and compares live membership against (design §7), so it MUST be
+	// and compares live membership against (ADR 0013), so it MUST be
 	// identical on every member and MUST NOT contain duplicates.
 	//
 	// It is deliberately a SEPARATE key from Endpoints: Endpoints is THIS
@@ -157,7 +157,7 @@ type ClusterConfig struct {
 	//     store, a lease-elected coordinator and a non-empty Members roster.
 	Rollout string `yaml:"rollout,omitempty" json:"rollout,omitempty"`
 	// ConfirmWindow opts a coordinated rollout into the NETCONF/NSO confirm window
-	// (design §8.1): a Go duration string (e.g. "90s"). Empty or "0s" (the default)
+	// (ADR 0014): a Go duration string (e.g. "90s"). Empty or "0s" (the default)
 	// is the base protocol — a commit is final. A positive value makes every commit
 	// PROVISIONAL: each member swaps then must reach convergence, the coordinator
 	// confirms when the whole cohort converged, and if confirmation never lands every
@@ -167,7 +167,7 @@ type ClusterConfig struct {
 	ConfirmWindow string `yaml:"confirm_window,omitempty" json:"confirm_window,omitempty"`
 }
 
-// ConfirmWindowDuration parses the confirm window (design §8.1). Empty or malformed
+// ConfirmWindowDuration parses the confirm window (ADR 0014). Empty or malformed
 // yields 0 (the base protocol — commit is final); the config validator rejects a
 // malformed or non-positive value on the load path, so a value reaching here is
 // either absent or already valid.

@@ -41,7 +41,7 @@ func (s *Session) reportAuthFailure(err error) {
 // picks them up; if the session is currently connected, the existing
 // connection is closed so the reconnect loop runs immediately.
 //
-// SECURITY (c7-plain-plaintext): a credential rotation that would newly
+// SECURITY: a credential rotation that would newly
 // expose SASL PLAIN over a non-TLS scheme is REFUSED (fail-closed) via
 // validatePlainOverPlaintext — the session keeps its last-good creds and
 // no cleartext dial is issued. This closes the last credential-injection
@@ -59,7 +59,7 @@ func (s *Session) reportAuthFailure(err error) {
 //     s.opts.TLS on every dial and calls BuildTLSConfig freshly.
 //     applyAMQP10TLSMaterial swaps in a fresh *TLSConfig (rather than
 //     mutating the current one in place) so an in-flight dial keeps
-//     reading its immutable snapshot — see finding 2.
+//     reading its immutable snapshot.
 func (s *Session) ApplyCredentials(ctx context.Context, set *connectivity.CredentialSet) error {
 	if set == nil {
 		return shared.ErrInvalidPayload.WithMessage("amqp10: nil credential set")
@@ -90,7 +90,7 @@ func (s *Session) ApplyCredentials(ctx context.Context, set *connectivity.Creden
 			s.opts.Username = set.Password().Username()
 			s.opts.Password = set.Password().Password()
 
-			// c7-plain-plaintext holds on the RUNTIME rotation path too,
+			// The plaintext-credential gate holds on the RUNTIME rotation path too,
 			// not just the config/factory build boundary. go-amqp infers
 			// SASL PLAIN from a non-empty Username, so a rotation that
 			// injects a username into a plaintext amqp:// session (which
@@ -145,8 +145,8 @@ func (s *Session) ApplyCredentials(ctx context.Context, set *connectivity.Creden
 // race-free with an in-flight connect() reading the current *TLSConfig,
 // it NEVER mutates the pointed-to config in place: on a change it builds
 // a fresh *TLSConfig (preserving any file-based fields) and swaps the
-// pointer, so a concurrent dial keeps reading its immutable snapshot
-// (finding 2). Returns true when a swap occurred.
+// pointer, so a concurrent dial keeps reading its immutable snapshot.
+// Returns true when a swap occurred.
 func applyAMQP10TLSMaterial(opts **TLSConfig, mat *connectivity.TLSMaterial) bool {
 	if mat == nil {
 		return false

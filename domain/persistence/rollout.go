@@ -16,7 +16,7 @@ import (
 //	   │                 │
 //	   └────abort────────┴────────────────────────▶ Aborted    (terminal)
 //
-// Confirm window (confirm_window > 0, design §8.1 — NETCONF/NSO confirmed-commit):
+// Confirm window (confirm_window > 0, ADR 0014 — NETCONF/NSO confirmed-commit):
 // the commit is PROVISIONAL, so Committed is NON-terminal until a fenced decision
 // resolves it. Members Converge; the coordinator Confirms when the whole epoch
 // converged, or Reverts on the confirm deadline.
@@ -46,11 +46,11 @@ const (
 	RolloutAborted RolloutState = "aborted"
 	// RolloutConfirmed is the confirm-window terminal success state: after a
 	// provisional commit every member converged and the coordinator confirmed
-	// (design §8.1).
+	// (ADR 0014).
 	RolloutConfirmed RolloutState = "confirmed"
 	// RolloutReverted is the confirm-window terminal failure state: a provisional
 	// commit whose confirm window expired without whole-epoch convergence; every
-	// member reverts to the last confirmed generation (design §8.1).
+	// member reverts to the last confirmed generation (ADR 0014).
 	RolloutReverted RolloutState = "reverted"
 )
 
@@ -101,7 +101,7 @@ type RolloutProposal struct {
 	// TTL bounds how long the rollout may stay open before the coordinator
 	// aborts it on deadline. The store converts it to an absolute deadline.
 	TTL time.Duration
-	// ConfirmWindow is the optional NETCONF/NSO confirm window (design §8.1). Zero
+	// ConfirmWindow is the optional NETCONF/NSO confirm window (ADR 0014). Zero
 	// (the default) is the base protocol: Commit is final. A positive value makes
 	// Commit provisional -- members converge, the coordinator confirms or the
 	// deadline reverts. Frozen at propose time.
@@ -125,7 +125,7 @@ type Rollout struct {
 	nacks           map[string]string
 	reason          string
 	deadline        time.Time
-	// confirmWindow is the confirm window frozen at Propose (design §8.1). Zero
+	// confirmWindow is the confirm window frozen at Propose (ADR 0014). Zero
 	// means the base protocol (Commit is final/terminal). A positive value makes
 	// Commit provisional and stamps confirmDeadline.
 	confirmWindow time.Duration

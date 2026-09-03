@@ -12,9 +12,9 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// Coordinated cluster rollout — the applier half of the barrier (design §6).
+// Coordinated cluster rollout — the applier half of the barrier (ADR 0013).
 //
-// # Candidate transport (design §5 open item — DECIDED here: option (b))
+// # Candidate transport (ADR 0013 open item — DECIDED here: option (b))
 //
 // §5 sketched having the proposer write the candidate INACTIVE to the config
 // source and every member fetch it back by digest (option (a)). That is not what
@@ -58,18 +58,18 @@ type rolloutApplier struct {
 	// host is the runtime the applier votes for and swaps; barrier is the shared
 	// proposer/candidate/committed-artifact state. The two were once a single
 	// *Supervisor field; splitting them is what lets bootstrap.App host the same
-	// applier as the Supervisor (design Phase 6).
+	// applier as the Supervisor.
 	host     ports.RolloutHost
 	barrier  *rolloutBarrier
 	store    ports.ClusterRolloutStore
 	memberID string
 	gate     nodeRolloutGate
 	obs      *rolloutObserver
-	// clk stamps the confirm-window deadman check (design §8.1). System clock in
+	// clk stamps the confirm-window deadman check (ADR 0014). System clock in
 	// production; a fake in tests. Only read from the drive goroutine.
 	clk clock.Clock
 
-	// Confirm-window provisional state (design §8.1). All touched only from the
+	// Confirm-window provisional state (ADR 0014). All touched only from the
 	// drive goroutine, so no lock is needed.
 	//
 	//   - provisionalGen: the generation this member provisionally swapped to in
@@ -175,7 +175,7 @@ func (a *rolloutApplier) step(ctx context.Context) error {
 				return err
 			}
 		} else {
-			// Confirm window (design §8.1): provisional swap, converge, deadman revert.
+			// Confirm window (ADR 0014): provisional swap, converge, deadman revert.
 			if err := a.adoptProvisional(ctx, r); err != nil {
 				return err
 			}
@@ -190,7 +190,7 @@ func (a *rolloutApplier) step(ctx context.Context) error {
 	default:
 		// Aborted. Nothing to discard: the candidate build is released the
 		// instant it has proven itself (see vote), so an abort costs this node
-		// no cleanup — RECONFIG-2's candidate-cleanup obligation is discharged
+		// no cleanup — the candidate-cleanup obligation is discharged
 		// at proof time rather than deferred across the whole staging window.
 	}
 	// Fallback: converge to the durable last-committed artifact if it is AHEAD of

@@ -470,7 +470,7 @@ func (r *Receiver) buildStack(ctx context.Context, conn ConnectionConfig) (recei
 		stack.client = seam
 	}
 
-	// Finding 2 (no message duplication): the scheduled-retry sender
+	// No message duplication: the scheduled-retry sender
 	// addresses the entity by name. For a topic subscription the entity
 	// name is the TOPIC, so a scheduled retry would be published to the
 	// topic and fan out to *every* sibling subscription — duplicating the

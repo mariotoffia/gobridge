@@ -24,7 +24,7 @@ type SQSSenderOption func(*sqs.Config)
 //
 // QueueURL is taken from ref.Queue().QueueUrl() when the registry
 // resolved a real CDK handle; otherwise QueueName falls back to
-// ref.Name() and Phase-2 validation surfaces the missing
+// ref.Name() and the aggregated annotation pass surfaces the missing
 // registration. The builder itself never errors on an unresolved
 // ref — that decision lives in the construct so a single synth pass
 // can collect every miss.

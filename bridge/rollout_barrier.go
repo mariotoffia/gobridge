@@ -92,7 +92,7 @@ type ClusterRolloutConfig struct {
 	StoreCallTimeout time.Duration
 
 	// Encode and Decode round-trip a *ports.BridgeConfig through the durable
-	// last-committed config artifact (design Phase-4 residual): Encode on commit
+	// last-committed config artifact: Encode on commit
 	// (to persist the committed bytes), Decode on boot / reconcile (to rebuild the
 	// committed config a member boots on or converges to). They are INJECTED
 	// because bridge must not import config/parser (arch-lint): the composition
@@ -136,7 +136,7 @@ type rolloutBarrier struct {
 	// candMu guards the staged candidate below.
 	candMu sync.Mutex
 	// cand holds the candidate this node's OWN config source delivered, staged
-	// for the applier by digest (design §5, transport option (b) — see the
+	// for the applier by digest (ADR 0013, transport option (b) — see the
 	// candidate-transport note at the top of rollout_applier.go). Only one
 	// rollout is active at a time, so one slot is enough; a newer candidate
 	// overwrites the older one, which by then belongs to a rollout that has
@@ -186,7 +186,7 @@ func (b *rolloutBarrier) candidate(digest string) (stagedCandidate, bool) {
 }
 
 // writeCommittedArtifact durably records the config the cohort committed at
-// generation gen as the last-committed artifact (design Phase-4 residual). It is
+// generation gen as the last-committed artifact. It is
 // idempotent across the cohort — every adopting member writes the same
 // (generation, digest) pair, and the store treats a matching re-write as a no-op
 // — and a no-op when no codec is wired. The recorded digest is the CANONICAL
@@ -338,7 +338,7 @@ func (d *ClusterRolloutDriver) propose(ctx context.Context, oldCfg, newCfg, sour
 	return nil
 }
 
-// clusterConfirmWindow reads the coordinated-rollout confirm window (design §8.1)
+// clusterConfirmWindow reads the coordinated-rollout confirm window (ADR 0014)
 // from a config, or 0 when absent — the base protocol.
 func clusterConfirmWindow(cfg *ports.BridgeConfig) time.Duration {
 	if cfg == nil || cfg.Bridge.Cluster == nil {

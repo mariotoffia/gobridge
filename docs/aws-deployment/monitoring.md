@@ -314,7 +314,7 @@ embedder chooses them; keep them low-cardinality, as the warning below requires.
 
 The MQTT adapter self-instruments its own counters and gauges, tagged
 `session_id`. They are catalogued with their operator guidance in
-[Troubleshooting — MQTT](../troubleshooting.md#mqtt-adaptersmqtttransportpaho);
+[Troubleshooting — MQTT](../adapter-diagnostic-metrics.md#mqtt-adaptersmqtttransportpaho);
 the three the shipped alarms read are `MQTTIngressPoisonDropped`
 (acked-and-dropped ingress that breached a local cap — acknowledged loss),
 `MQTTSessionTakeover` (another client on the same `client_id`) and

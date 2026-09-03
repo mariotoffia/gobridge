@@ -45,7 +45,7 @@ func (d *Drainer) batchDeadline(batchCount int) time.Duration {
 }
 
 // batchTimeout returns the wall-clock budget for a whole drain batch's
-// send+complete work (finding 10). It must never undercut a single record's
+// send+complete work. It must never undercut a single record's
 // SendTimeout + Complete margin, and it scales with the sequential send depth
 // the batch needs: the number of concurrency waves (recordCount/maxConcurrency)
 // OR the longest ordering group (whose records send strictly sequentially),

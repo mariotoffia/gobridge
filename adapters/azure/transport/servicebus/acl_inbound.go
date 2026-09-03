@@ -742,7 +742,7 @@ type rawInbound struct {
 // All SDK types stay inside this ACL file; the SDK-free Receiver poll
 // loop consumes only []rawInbound.
 //
-// max_wait_time (finding 7): when configured, the receive is bounded by
+// max_wait_time: when configured, the receive is bounded by
 // a per-call deadline. ReceiveMessages blocks until messages arrive or
 // the context is done, so the deadline is how an idle long-poll returns.
 // A deadline that fires while the parent context is still live is a

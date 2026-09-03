@@ -128,7 +128,7 @@ func (a *rolloutApplier) tick(ctx context.Context) error {
 	return err
 }
 
-// runLocalDeadman fires this member's confirm-window deadman (design §8.1) from
+// runLocalDeadman fires this member's confirm-window deadman (ADR 0014) from
 // the CACHED provisional deadline, so it needs no store read. Delayed a few ticks
 // past the deadline so a live coordinator's Revert wins; this covers a dead one —
 // or a store that no decision can be written to.

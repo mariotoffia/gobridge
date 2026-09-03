@@ -31,7 +31,7 @@ type Receiver struct {
 	link     linkReceiver
 	linkConn amqpConn
 
-	// In-flight settlement tracking (finding: graceful shutdown).
+	// In-flight settlement tracking.
 	// inflightCount counts deliveries emitted to the pipeline whose
 	// settlement has not yet completed; inflightIdle is closed on every
 	// transition to zero so Close can wait event-driven (bounded by its
@@ -134,7 +134,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 	}
 
 	if r.session != nil {
-		// Finding 4: register for health tracking so Session.Health can
+		// Register for health tracking so Session.Health can
 		// report Degraded if this receiver's link detaches while the
 		// session connection itself is still alive.
 		r.session.registerReceiver(r)
@@ -272,8 +272,8 @@ func (r *Receiver) forceSettleRebuild(cause error) {
 		)
 	}
 	if r.session != nil {
-		r.session.noteLinkError(cause)       // finding 9: surface cause in Health
-		r.session.markReceiverLink(r, false) // finding 4: link is down
+		r.session.noteLinkError(cause)       // Surface cause in Health
+		r.session.markReceiverLink(r, false) // Link is down
 	}
 
 	if r.cfg.DurabilityMode == 0 {
@@ -353,7 +353,7 @@ func (r *Receiver) closeLink() {
 	// (verified against Artemis: a closing detach deletes, a connection
 	// drop — a NON-closing detach — preserves the durable terminus).
 	//
-	// c7-durable-close: merely nil-ing r.link (the previous behaviour) is
+	// Merely nil-ing r.link (the previous behaviour) is
 	// NOT a teardown — the link stays ATTACHED on the broker, which keeps
 	// delivering up to link credit into an abandoned link whose messages
 	// then sit UNSETTLED until the connection eventually drops (possibly
@@ -371,7 +371,7 @@ func (r *Receiver) closeLink() {
 			)
 		}
 		if r.session != nil {
-			r.session.markReceiverLink(r, false) // finding 4: link is down
+			r.session.markReceiverLink(r, false) // Link is down
 			if failedConn != nil {
 				// notifyDisconnect closes failedConn, clears session
 				// connection state and wakes the monitor; it no-ops when
@@ -386,7 +386,7 @@ func (r *Receiver) closeLink() {
 		r.logger.Log(context.Background(), logging.LevelTrace, "amqp10: closing receiver link",
 			"address", redactURL(r.cfg.Address))
 	}
-	// Finding 3: bound the detach. closeLink runs from Close on
+	// Bound the detach. closeLink runs from Close on
 	// shutdown; an unbounded context.Background() could hang the
 	// caller forever on an unresponsive broker. We derive from
 	// Background (not a — by now cancelled — Run ctx) on purpose so
@@ -426,7 +426,7 @@ func (r *Receiver) ensureLink(ctx context.Context) error {
 }
 
 func (r *Receiver) createLink(ctx context.Context) error {
-	// Finding: capture the session link and its owning connection under
+	// Capture the session link and its owning connection under
 	// ONE session lock so the (link, conn) pair can never be mismatched
 	// by a concurrent reconnect between two separate getter calls. A
 	// stale pairing would make notifyDisconnect drop a later legitimate
@@ -459,7 +459,7 @@ func (r *Receiver) createLink(ctx context.Context) error {
 	r.linkGeneration++
 	r.settleFailMu.Unlock()
 	if r.session != nil {
-		r.session.markReceiverLink(r, true) // finding 4: link is up
+		r.session.markReceiverLink(r, true) // Link is up
 	}
 	r.startedOnce.Do(func() { close(r.started) })
 	return nil
@@ -628,8 +628,8 @@ func (r *Receiver) handleLinkError(err error) {
 	r.mu.Unlock()
 
 	if r.session != nil {
-		r.session.noteLinkError(err)         // finding 9: surface cause in Health
-		r.session.markReceiverLink(r, false) // finding 4: link is down
+		r.session.noteLinkError(err)         // Surface cause in Health
+		r.session.markReceiverLink(r, false) // Link is down
 	}
 
 	if r.cfg.DurabilityMode > 0 {
@@ -665,7 +665,7 @@ func (r *Receiver) handleLinkError(err error) {
 	}
 
 	if r.session != nil {
-		// Finding: a link-scoped fault (e.g. *amqp.LinkError on a live
+		// A link-scoped fault (e.g. *amqp.LinkError on a live
 		// session) must rebuild only THIS link — escalating it via
 		// notifyDisconnect would tear down the shared connection and
 		// disrupt every other link on the session.

@@ -26,44 +26,44 @@ binding that failed. The design lives in `httpapi/admin_dlq.go`; the wire
 contract is documented in `spec/httpapi/components.yaml:425-455`.
 
 - **Claim-by-delete-first.** For each entry, `Delete` runs before `inject`
-  (`admin_dlq.go:365-380`). A re-sent request finds the entry already gone
+  (`admin_dlq.go`). A re-sent request finds the entry already gone
   (`deleted == 0`) and skips it instead of re-injecting (`:381-387`). Two admin
   instances race on `Delete`; only the one whose delete returns 1 owns the entry
   and injects it.
 
 - **At-most-once bias.** Deleting first trades an at-most-once window — a crash
   between delete and inject drops the entry — for no double delivery
-  (`admin_dlq.go:369-372`). For a manual redrive, losing a message is preferable
+  (`admin_dlq.go`). For a manual redrive, losing a message is preferable
   to delivering it twice.
 
 - **Detached restore contexts.** The claim→inject sequence runs under a context
   detached from the request (`context.WithoutCancel` + a bounded
-  `redriveTimeout`, `admin_dlq.go:342-348`) so an operator disconnect cannot
+  `redriveTimeout`, `admin_dlq.go`) so an operator disconnect cannot
   cancel an in-flight restore and permanently lose a claimed entry. On inject
   failure, the best-effort restore runs under its own fresh detached context, not
   the per-batch one, so a batch that exhausted its budget mid-loop does not fail
-  the restore on an already-expired context (`admin_dlq.go:402-410`).
+  the restore on an already-expired context (`admin_dlq.go`).
 
 - **Binding-scoped confinement.** The entry records the exact `BindingID` that
   failed. Redrive carries that binding out-of-band via `Runtime.InjectToBinding`
   (a typed field, not a header — see ADR 0001), confining the replay to that one
-  binding (`admin_dlq.go:389-397`). The N-1 healthy bindings on a fan-out route
+  binding (`admin_dlq.go`). The N-1 healthy bindings on a fan-out route
   receive no duplicate.
 
 - **Missing binding preserves the entry.** When the recorded `BindingID` no
   longer exists on a still-present but reconfigured route, `InjectToBinding`
   refuses **before** the pipeline runs and returns `ErrNotFound` (permanent)
   rather than falling back to a full-route fan-out that would duplicate-deliver
-  to the N-1 healthy legs (`runtime/route/runner.go:415-421`). The redrive is
+  to the N-1 healthy legs (`runtime/route/runner.go`). The redrive is
   reported as failed with the per-entry message `route or binding not found`,
   and the claimed DLQ entry is best-effort restored so the failure evidence is
-  kept for a later re-file (`admin_dlq.go:421-440`). This is deliberately
+  kept for a later re-file (`admin_dlq.go`). This is deliberately
   distinct from an in-band processor `ActionRoute` override, whose
   unknown-binding fall-through to normal resolution is intentional.
 
 - **Partial-failure status.** A redrive returns HTTP 200 when every requested
   entry redrove, or HTTP 207 Multi-Status when any entry failed, so the caller
-  inspects the per-entry result (`admin_dlq.go:426`, `:447-451`;
+  inspects the per-entry result (`admin_dlq.go`, `:447-451`;
   `components.yaml:451-455`).
 
 ## Consequences

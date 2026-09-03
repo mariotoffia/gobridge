@@ -132,7 +132,7 @@
 // (dropping every retained message). The only way to detach the live
 // durable link while PRESERVING the durable subscription is to drop the
 // whole connection — a non-closing detach of every link on it (see
-// Receiver.closeLink, c7-durable-close).
+// Receiver.closeLink).
 //
 // Consequence (blast radius): closing a durable receiver forces a full
 // connection teardown, which transiently blips EVERY sibling link on the
@@ -153,7 +153,7 @@
 // validation therefore REJECTS PLAIN (explicit sasl_mechanism=plain, the
 // inferred default when a username is present, or credentials embedded in
 // the Address URL — go-amqp selects PLAIN from userinfo) over a non-TLS
-// scheme by default (c7-plain-plaintext, fail-closed). Use amqps:// /
+// scheme by default (fail-closed). Use amqps:// /
 // amqp+ssl://, switch to SASL EXTERNAL (mTLS), or set
 // allow_insecure_plain=true to opt into the insecure path on a trusted
 // network as a deliberate, auditable choice.

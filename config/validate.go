@@ -117,7 +117,7 @@ func validateClusterRollout(ve *ValidationError, cfg *ports.BridgeConfig) {
 		// configuration error: there is no barrier to confirm.
 		if c.ConfirmWindow != "" {
 			ve.Addf("bridge.cluster.confirm_window: only valid when bridge.cluster.rollout is %q; the "+
-				"refuse/standalone paths have no rollout barrier to confirm (design §8.1)", rolloutModeCoordinated)
+				"refuse/standalone paths have no rollout barrier to confirm (ADR 0014)", rolloutModeCoordinated)
 		}
 		return
 	case rolloutModeIndependent:
@@ -178,7 +178,7 @@ func validateClusterRollout(ve *ValidationError, cfg *ports.BridgeConfig) {
 }
 
 // validateConfirmWindow rejects a malformed or non-positive confirm window on a
-// coordinated cohort (design §8.1). Empty is fine (the base protocol). A parse
+// coordinated cohort (ADR 0014). Empty is fine (the base protocol). A parse
 // failure or a value <= 0 must not silently disable the window — an operator who
 // wrote confirm_window expects a provisional apply, and a silent zero would give
 // them the base protocol under a different name.

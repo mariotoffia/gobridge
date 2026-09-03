@@ -164,7 +164,7 @@ Table creation and TTL setup (`dynamodb:CreateTable`, `dynamodb:UpdateTimeToLive
 are a deploy-time concern; the CDK constructs provision tables out-of-band. Grant
 those two actions only if you let the bridge self-provision through its
 `EnsureTable` helper. See the
-[DynamoDB Store](../processors-and-stores.md#dynamodb-store) reference for store
+[DynamoDB Store](../store-backends.md#dynamodb-store) reference for store
 behavior and [Monitoring](monitoring.md#key-metrics) for the backlog and
 store-health signals.
 

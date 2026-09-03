@@ -83,8 +83,8 @@ func (s *DebouncedStrategy) Filter(ctx context.Context, in <-chan *ports.BridgeC
 		// Go 1.23+ timer semantics (go.mod declares go 1.25): after Stop()/Reset()
 		// returns, the channel yields no stale value, so the historical
 		// `if !timer.Stop() { <-timer.C() }` drain is unnecessary AND unsafe —
-		// it can block forever when the fire raced the Stop (reconfig_strategy.go:92,
-		// Chunk 3). Create the timer stopped; Reset re-arms it before each use.
+		// it can block forever when the fire raced the Stop. Create the timer
+		// stopped; Reset re-arms it before each use.
 		timer := s.clk.NewTimer(s.quietPeriod)
 		timer.Stop()
 
@@ -97,7 +97,7 @@ func (s *DebouncedStrategy) Filter(ctx context.Context, in <-chan *ports.BridgeC
 				if !ok {
 					// Input closed: flush the final debounced config before
 					// exiting instead of dropping it with a best-effort
-					// non-blocking send (Finding 11). A change that arrived
+					// non-blocking send. A change that arrived
 					// just before close would otherwise be silently lost.
 					if pending != nil {
 						timer.Stop()
@@ -161,7 +161,7 @@ func (s *WindowedStrategy) Filter(ctx context.Context, in <-chan *ports.BridgeCo
 
 		var pending *ports.BridgeConfig
 		// Go 1.23+ timer semantics: no manual channel drain after Stop()/Reset()
-		// (reconfig_strategy.go:92, Chunk 3). Both timers are created stopped and
+		// (reconfig_strategy.go:92). Both timers are created stopped and
 		// re-armed via Reset when a batch opens.
 		quietTimer := s.clk.NewTimer(s.quietPeriod)
 		quietTimer.Stop()
@@ -192,7 +192,7 @@ func (s *WindowedStrategy) Filter(ctx context.Context, in <-chan *ports.BridgeCo
 				if !ok {
 					// Input closed: flush the final pending config with a
 					// blocking send (ctx-guarded) so a change batched just
-					// before close is not dropped (Finding 11).
+					// before close is not dropped.
 					if pending != nil {
 						quietTimer.Stop()
 						maxTimer.Stop()

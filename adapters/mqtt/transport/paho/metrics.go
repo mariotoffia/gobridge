@@ -118,7 +118,7 @@ const (
 	// MetricMQTTRouterDropped (QoS 0 best-effort overflow) and from the
 	// covered/orphan past-grace drops (MetricMQTTRouterCoveredDropped /
 	// MetricMQTTRouterUnmatchedDropped) so this protocol-violation loss is never
-	// masked (c4-qos12-overflow /).
+	// masked.
 	MetricMQTTRouterOverflowDropped = "MQTTRouterOverflowDropped"
 
 	// MetricMQTTRouterStalePurged counts publishes DISCARDED because they

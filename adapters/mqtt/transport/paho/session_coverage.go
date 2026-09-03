@@ -146,7 +146,7 @@ func (s *Session) unsubscribeOrphan(topic string) {
 // is the applied-state history Reconcile hands to s.reconcile so an empty
 // target plan tears down the topics actually established on the broker — even
 // when a reconnect has just reset the volatile activeSubs snapshot
-// (c4-remove-subs) AND even when a prior reconcile FAILED to unsubscribe them
+// AND even when a prior reconcile FAILED to unsubscribe them
 // (blocking-#2: the failed op's topics stay in the applied set until an
 // unsubscribe succeeds). Callers must hold s.mu.
 func (s *Session) appliedPlanTopicsLocked() []string {

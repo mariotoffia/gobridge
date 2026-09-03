@@ -93,7 +93,7 @@ type Manager struct {
 	// previous runtime, so runningVersion stays behind the desired config and
 	// ReconfigurePending reports the divergence — this stops the manager/source
 	// from silently claiming a live reload took effect while the old runtime
-	// still serves traffic (finding: desired-ahead-of-applied). -1 before the
+	// still serves traffic. -1 before the
 	// first confirmed apply. NOTE: like appliedVersion this is operator-facing
 	// observability only; the desired-vs-running DECISION is keyed on the content
 	// fingerprints below, never on the non-unique Version.
@@ -121,11 +121,10 @@ type Manager struct {
 	// the `Config` fields tagged json:"-" on the blueprint, so a plain
 	// json.Marshal of the config DROPS them and a change confined to a plugin's
 	// options (or a plugin secret) at an unchanged Version would be INVISIBLE —
-	// see configFingerprint, which projects each plugin's decoded options back in
-	// (finding: plugin options omitted from the fingerprint). desiredFingerprint
+	// see configFingerprint, which projects each plugin's decoded options back in.
+	// desiredFingerprint
 	// is the last config EMITTED downstream; runningFingerprint is the last one the
-	// applier CONFIRMED. ReconfigurePending is their inequality (finding:
-	// desired/running keyed on non-unique Version).
+	// applier CONFIRMED. ReconfigurePending is their inequality.
 	desiredFingerprint [sha256.Size]byte
 	runningFingerprint [sha256.Size]byte
 	// desiredConfig is the EXACT *ports.BridgeConfig pointer the manager last
@@ -137,16 +136,14 @@ type Manager struct {
 	// fingerprint, is what disambiguates an A→B→A flap: A#1 and A#2 are distinct
 	// allocations with identical content, so a delayed ack for A#1 that lands after
 	// A#2 was emitted is a DIFFERENT pointer and is ignored, whereas a content hash
-	// (identical for A#1 and A#2) cannot tell them apart (finding: content-only
-	// correlation lets a stale ack regress running).
+	// (identical for A#1 and A#2) cannot tell them apart.
 	desiredConfig *ports.BridgeConfig
 	// desiredHashErr is non-nil when the current desired config cannot be
 	// fingerprinted (e.g. a NaN/Inf or otherwise unserialisable value reached via
 	// the public ConditionDef.Value any). A config we cannot fingerprint can never
 	// be PROVEN converged, so ReconfigurePending fails closed (reports pending)
 	// instead of letting an unhashable config collapse to a zero fingerprint that
-	// would falsely compare equal to another unhashable one and read as converged
-	// (finding: marshal error collapses to a zero fingerprint).
+	// would falsely compare equal to another unhashable one and read as converged.
 	desiredHashErr error
 	stopCh         chan struct{}
 	doneCh         chan struct{} // closed when watchLoop exits
@@ -250,7 +247,7 @@ func (m *Manager) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 // result, and emits it on the returned channel. Invalid merged configs
 // are logged and dropped (not emitted).
 //
-// Boot vs steady-state (Finding 1): every layer watcher is established
+// Boot vs steady-state: every layer watcher is established
 // SYNCHRONOUSLY here. A first-attempt establishment failure is FATAL and
 // returned as *WatchStartError so the composition root exits non-zero instead
 // of running blind. Once past boot, a watcher that dies is retried with
@@ -389,8 +386,7 @@ func (m *Manager) clearWatchError(layer string) {
 // the PREVIOUS runtime. Use RunningVersion for the version the applier has
 // CONFIRMED, and ReconfigurePending / LastApplyError to detect a desired config
 // that has not (yet) taken effect. Reading AppliedVersion alone can report a
-// live reload as active while traffic is still served by the old runtime
-// (finding: desired-ahead-of-applied).
+// live reload as active while traffic is still served by the old runtime.
 //
 // ponytail: this is OBSERVATION ONLY. GoBridge deliberately does not coordinate
 // config versions across the cluster (no version barrier, no cluster rollback) —
@@ -426,7 +422,7 @@ func (m *Manager) RunningVersion() (version int, ok bool) {
 // It is keyed on a content fingerprint, NOT on BridgeConfig.Version: a content
 // change that reuses the operator version (e.g. an external file edit that does
 // not bump version) still diverges here, where a Version comparison would falsely
-// read as converged (finding: desired/running keyed on non-unique Version).
+// read as converged.
 //
 // It stays false until the first NotifyApplyResult so an unwired composition
 // root (no acknowledgement path) is not reported as permanently pending. Safe
@@ -438,7 +434,7 @@ func (m *Manager) ReconfigurePending() bool {
 		// The desired config cannot be fingerprinted, so convergence can never be
 		// PROVEN. Fail closed: report pending rather than let an unhashable desired
 		// masquerade as converged (a zero fingerprint must never read as a valid,
-		// matchable value — finding: marshal error collapses to a zero fingerprint).
+		// matchable value).
 		return true
 	}
 	return m.applyResultSeen && m.desiredFingerprint != m.runningFingerprint
@@ -474,8 +470,7 @@ func (m *Manager) LastApplyError() error {
 // A result whose content does NOT match the current desired config is for a
 // config the manager has already superseded — a late or out-of-order ack. It is
 // IGNORED: acting on it would regress the running config to an old version or
-// resurrect a stale error even though a newer config is already running
-// (finding: stale acks regress running).
+// resurrect a stale error even though a newer config is already running.
 //
 // Callers MUST only report definitive outcomes here. A committed-but-unconfirmed
 // result (ports.ErrApplyInFlight — bridge paused/deferred, or a swap still
@@ -496,7 +491,7 @@ func (m *Manager) NotifyApplyResult(cfg *ports.BridgeConfig, err error) {
 		// Ignoring it stops a stale ack from regressing running to an old
 		// generation whose CONTENT happens to match the current desired; content
 		// hashing alone cannot make this distinction (identical content ⇒ identical
-		// hash — finding: stale acks regress running).
+		// hash).
 		m.mu.Unlock()
 		if m.logger != nil {
 			m.logger.Debug("config manager: ignoring apply result for a superseded or foreign config "+
@@ -602,15 +597,14 @@ func (m *Manager) AdoptRunning(cfg *ports.BridgeConfig) {
 //     json:"-" on the blueprint (ports.blueprint.go);
 //  2. each decoded PluginConfig's options, in a fixed traversal order, so a
 //     change confined to a plugin's options (or a plugin secret) at an unchanged
-//     Version still changes the fingerprint (finding: plugin options omitted).
+//     Version still changes the fingerprint.
 //
 // encoding/json emits map keys in sorted order and struct fields in declaration
 // order, so equal content always produces equal bytes. It returns an error when
 // any part cannot be marshalled (e.g. a NaN/Inf reached via ConditionDef.Value
 // any): callers MUST treat that as "cannot fingerprint" and fail closed — never
 // substitute a zero fingerprint, which would falsely compare equal to another
-// unhashable config and read as converged (finding: marshal error collapses to a
-// zero fingerprint).
+// unhashable config and read as converged.
 func configFingerprint(cfg *ports.BridgeConfig) ([sha256.Size]byte, error) {
 	var out [sha256.Size]byte
 	if cfg == nil {

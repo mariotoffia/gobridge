@@ -229,7 +229,7 @@ func Register(reg *ports.Registry) error {
 ----
 
 The interface contract is asserted at compile time in the same
-package (`adapters/aws/transport/sqs/config_plugin.go:13`):
+package (`adapters/aws/transport/sqs/config_plugin.go`):
 
 [source,go]
 ----
@@ -317,17 +317,17 @@ of `make lint` and enforces three rules:
   `Config`, `Options`, `Settings`, `Extra`, or `Raw` MUST NOT be typed
   as `map[string]any`, `map[string]interface{}`, `json.RawMessage`,
   `*structpb.Struct`, or unbounded `[]byte`. See
-  `scripts/cfgshape/analyzer.go:64-74`.
+  `scripts/cfgshape/analyzer.go`.
 . *Adapter shape.* Every plugin adapter package (one that calls
   `*ports.Registry.Register` or exports a type satisfying
   `ports.PluginConfig`) MUST do BOTH: contain a `register.go` calling
   `*ports.Registry.Register`, AND export at least one type
   satisfying `ports.PluginConfig`. Half-baked plugins fail this rule.
-  See `scripts/cfgshape/analyzer.go:13-21`.
+  See `scripts/cfgshape/analyzer.go`.
 . *Validate body.* Every method named `Validate` on a type satisfying
   `ports.PluginConfig` MUST have a non-empty body and at least one
   `*_test.go` file in the same package directory that references
-  `Validate` textually. See `scripts/cfgshape/analyzer.go:22-30`.
+  `Validate` textually. See `scripts/cfgshape/analyzer.go`.
 
 In addition, `scripts/lint-arch-mapping-test.sh` (invoked by
 `make lint-arch-mapping-test`, itself a dependency of `make lint`)
@@ -348,7 +348,7 @@ mechanically.
 * Empty `Validate() error { return nil }` on a non-empty `Config`
   type — non-empty means at least one user-settable field. Use a
   no-op `Validate` only on intentionally empty configs (see
-  `adapters/native/store/config.go:30`, `MemoryConfig`).
+  `adapters/native/store/config.go`, `MemoryConfig`).
 * Half-baked plugins: a package that calls
   `*ports.Registry.Register` but exports no `PluginConfig`
   type, or a package that exports a `PluginConfig` type but never

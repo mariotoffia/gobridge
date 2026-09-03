@@ -20,7 +20,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// SQS message-attribute limits enforced on egress (Finding 11). SQS
+// SQS message-attribute limits enforced on egress. SQS
 // rejects an entire SendMessage / SendMessageBatch entry that violates
 // any of these, so the adapter caps deterministically instead of letting
 // a single oversized envelope fail every send.
@@ -37,14 +37,14 @@ const (
 	// Used as a conservative ceiling so a pathological header set cannot
 	// build a request SQS would reject for size. Queues configured with a
 	// larger MaximumMessageSize can raise it via WithMaxMessageBytes so an
-	// oversized body does not silently drop all attributes (Finding 4).
+	// oversized body does not silently drop all attributes.
 	sqsMaxMessageBytes = 262144
 
 	// sqsSubjectAttributeName is the reserved SQS message-attribute name
 	// carrying the envelope Subject. buildAttributes writes it from
 	// env.Subject(); headersToAttributes skips any same-named header so the
 	// reserved slot and a stray "Subject" header cannot double-charge the
-	// attribute budget (Finding 7).
+	// attribute budget.
 	sqsSubjectAttributeName = "Subject"
 )
 
@@ -63,7 +63,7 @@ func (s *Sender) sendOne(ctx context.Context, env *messaging.Envelope) error {
 		}
 		// Route through the auth grace so a transient static-key rotation /
 		// IAM-propagation window classifies temporary (retryable) instead of
-		// permanent (Finding: c8-auth-permanent). classify ALSO reports a
+		// permanent. classify ALSO reports a
 		// permanent authorization failure to the reactive-recovery hook
 		// so a hard key revocation forces an immediate re-resolve.
 		return s.classify(err)
@@ -110,7 +110,7 @@ func (s *Sender) sendBatchChunk(
 
 	if err != nil {
 		// A whole-batch auth failure gets the same bounded grace as a
-		// single send (Finding: c8-auth-permanent) and reports a permanent
+		// single send, and reports a permanent
 		// authorization failure to the reactive-recovery hook.
 		e := s.classify(err)
 		for j := range results {
@@ -148,7 +148,7 @@ func (s *Sender) sendBatchChunk(
 		// SenderFault verdict, so a per-entry retryable target outage (KMS
 		// grant still propagating, KMS/request throttling, a transient
 		// InternalError) stays retryable instead of becoming a terminal reject
-		// that costs the source its retry (Chunk 13). A Code outside
+		// that costs the source its retry. A Code outside
 		// that set falls back to the SenderFault verdict: a request the caller
 		// malformed is rejected, anything else is treated as transient.
 		base, matched := classifyBatchEntryCode(derefStr(f.Code))
@@ -219,7 +219,7 @@ func (s *Sender) buildBatchEntry(idx int, env *messaging.Envelope) sqstypes.Send
 
 // buildAttributes converts envelope headers to SQS message attributes,
 // reserving a slot for the Subject attribute when present so the total
-// can never exceed sqsMaxMessageAttributes (Finding 11). Headers dropped
+// can never exceed sqsMaxMessageAttributes. Headers dropped
 // by the count/size caps are surfaced via a debug log and the
 // SQSDroppedAttributes counter so the loss is observable.
 func (s *Sender) buildAttributes(env *messaging.Envelope) map[string]sqstypes.MessageAttributeValue {
@@ -231,8 +231,8 @@ func (s *Sender) buildAttributes(env *messaging.Envelope) map[string]sqstypes.Me
 	budget := sqsMaxMessageAttributes
 	hasSubject := env.Subject() != ""
 	// Seed the size budget with the body AND — when a Subject attribute is
-	// reserved below — the Subject's own bytes, BEFORE attribute selection
-	// (Finding 4). The Subject is appended AFTER the budget loop, so a body
+	// reserved below — the Subject's own bytes, BEFORE attribute selection.
+	// The Subject is appended AFTER the budget loop, so a body
 	// just under the ceiling could otherwise be pushed over the real broker
 	// limit by the Subject bytes that were never charged.
 	seedBytes := len(env.Payload())
@@ -373,7 +373,7 @@ func headersToAttributes(headers map[string]any, maxAttrs int, seedBytes int, ma
 		// as a plain header by SQS->SQS ingress) must NOT also compete for a
 		// budget slot: it would double-charge the 10-attribute limit and the
 		// reserved write would overwrite it, dropping a real application
-		// header on a relay carrying >=10 headers (Finding 7).
+		// header on a relay carrying >=10 headers.
 		if k == sqsSubjectAttributeName {
 			continue
 		}
@@ -448,7 +448,7 @@ func headersToAttributes(headers map[string]any, maxAttrs int, seedBytes int, ma
 // subjectAttributeSize is the byte size the reserved "Subject" attribute
 // contributes to the SQS message-size budget: attribute name + "String"
 // data type + subject value, mirroring the name-inclusive accounting
-// headersToAttributes applies to every other candidate (Finding 4).
+// headersToAttributes applies to every other candidate.
 func subjectAttributeSize(subject string) int {
 	return len(sqsSubjectAttributeName) + len("String") + len(subject)
 }
@@ -594,8 +594,8 @@ func (s *Sender) ensureClient(ctx context.Context) error {
 			client = s.cfg.Client
 		} else if s.cfg.InitialCredentials != nil {
 			// A resolved `credentials_uri` builds the initial client with
-			// static material instead of the ambient SDK chain (Finding 3).
-			// Temporary (STS) material is rejected here (Finding 6).
+			// static material instead of the ambient SDK chain.
+			// Temporary (STS) material is rejected here.
 			c, err := rebuildSQSClient(initCtx, s.cfg.Region, s.cfg.Endpoint, s.cfg.Profile, s.cfg.InitialCredentials)
 			if err != nil {
 				return err

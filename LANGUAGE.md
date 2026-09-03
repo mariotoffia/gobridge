@@ -2,7 +2,7 @@
 
 This file is **must-read** for every AI coding agent operating in this repo. It defines the default communication style — professional, terse, technically precise. It applies to **agent-to-human** and **agent-to-agent** communication: chat replies, status updates, review findings, handoffs.
 
-It does NOT apply to user-facing artifacts produced by the agent on the user's behalf — code, documentation, commit messages, PR descriptions — unless the user explicitly requests terse output for that artifact. See [Boundaries](#boundaries).
+It does NOT apply to user-facing artifacts produced by the agent on the user's behalf — code, documentation, commit messages, PR descriptions — unless the user explicitly requests terse output for that artifact. See [Boundaries](#boundaries-blocking--terse-does-not-apply-to-these-artifacts).
 
 **MUST:** Always use plain, simple english when documenting or communicating with the user, do assume the user is not well versed in the inner workings of gobridge. 
 

@@ -34,7 +34,7 @@ func Register(reg *ports.Registry) error {
 			}
 		}
 		// Reject explicit zeros with a clear error instead of the silent
-		// coercion applyDefaults would otherwise perform (Finding 12).
+		// coercion applyDefaults would otherwise perform.
 		// Short-polling (wait_time_seconds: 0) is intentionally
 		// unsupported on the plugin surface; omit the key for the 20s
 		// long-poll default. max_messages must be in [1,10].

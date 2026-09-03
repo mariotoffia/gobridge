@@ -48,7 +48,7 @@ func RunClusterRolloutStoreTests(t *testing.T, newStore func() ports.ClusterRoll
 	t.Run("MutateUnknownGenerationNotFound", func(t *testing.T) { rolloutMutateUnknownGen(t, newStore()) })
 	t.Run("ConcurrentProposeSingleWinner", func(t *testing.T) { rolloutConcurrentPropose(t, newStore()) })
 
-	// Confirm window (design §8.1): a provisional commit, per-member convergence,
+	// Confirm window (ADR 0014): a provisional commit, per-member convergence,
 	// and a fenced Confirm/Revert. Base-protocol invariants above still hold; these
 	// exercise the windowed additions on top.
 	t.Run("ProvisionalCommitIsNotTerminal", func(t *testing.T) { rolloutProvisionalCommit(t, newStore()) })
@@ -65,7 +65,7 @@ func RunClusterRolloutStoreTests(t *testing.T, newStore func() ports.ClusterRoll
 	t.Run("ConfirmIdempotent", func(t *testing.T) { rolloutConfirmIdempotent(t, newStore()) })
 	t.Run("ConcurrentConfirmRevertAtomic", func(t *testing.T) { rolloutConcurrentConfirmRevert(t, newStore()) })
 
-	// Durable last-committed config artifact (design Phase-4 residual): the bytes
+	// Durable last-committed config artifact: the bytes
 	// a (re)joining member boots on and a member that missed a commit reconciles
 	// to, independent of the active rollout row.
 	t.Run("CommittedConfigEmptyNotFound", func(t *testing.T) { committedConfigEmpty(t, newStore()) })
@@ -505,10 +505,10 @@ func rolloutMutateUnknownGen(t *testing.T, store ports.ClusterRolloutStore) {
 	}
 }
 
-// ── confirm-window subtests (design §8.1) ──────────────────────────────────
+// ── confirm-window subtests (ADR 0014) ──────────────────────────────────
 
 // windowProposal is a proposal carrying a confirm window, so a Commit is
-// provisional (design §8.1).
+// provisional (ADR 0014).
 func windowProposal(window time.Duration, members ...string) persistence.RolloutProposal {
 	p := rolloutProposal(members...)
 	p.ConfirmWindow = window
@@ -560,7 +560,7 @@ func rolloutProvisionalCommit(t *testing.T, store ports.ClusterRolloutStore) {
 }
 
 // rolloutProvisionalBlocksPropose proves the "new proposals refused while a
-// confirm window is pending" rule (design §8.1) falls out: a provisional
+// confirm window is pending" rule (ADR 0014) falls out: a provisional
 // commit is non-terminal, so Propose still conflicts.
 func rolloutProvisionalBlocksPropose(t *testing.T, store ports.ClusterRolloutStore) {
 	provisionalCommit(t, store, "node-a")

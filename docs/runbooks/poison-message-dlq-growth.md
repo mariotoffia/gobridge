@@ -17,7 +17,7 @@ the entry's `LastError` before you act.
 ## Diagnosis
 
 1. Read the DLQ summary and page the entries
-   ([http-api.md#admin-api-endpoints](../http-api.md#admin-api-endpoints)):
+   ([http-api.md#admin-api-endpoints](../http-api-admin.md)):
 
    ```bash
    curl -s -H "X-API-Key: ${ADMIN_KEY}" \
@@ -106,7 +106,7 @@ the entry's `LastError` before you act.
 - **Confirmed unrecoverable entries**: delete by ID (max 1000) or by filter
   (an empty filter requires `confirm_delete_all`). Purge the entire DLQ only with
   `confirm_purge_all: true`
-  ([http-api.md#admin-api-endpoints](../http-api.md#admin-api-endpoints)).
+  ([http-api.md#admin-api-endpoints](../http-api-admin.md)).
 - **`DLQWriteFailures` rising**: the DLQ store is unhealthy or the instance holds
   no lease. Check store health (`SQLiteStoreUnhealthy` on SQLite deployments) and
   lease ownership before assuming the messages are safe.
@@ -118,7 +118,7 @@ the entry's `LastError` before you act.
 - **Hot-looping poison on AMQP 0-9-1**: `AMQP091DelayedRetryUnhonored` means the
   broker has no delayed-redelivery primitive, so a poison message requeues
   immediately. Add an `x-delivery-limit` / dead-letter-exchange guard at the
-  broker ([troubleshooting.md#adapter--runtime-diagnostic-metrics](../troubleshooting.md#adapter--runtime-diagnostic-metrics)).
+  broker ([troubleshooting.md#adapter--runtime-diagnostic-metrics](../adapter-diagnostic-metrics.md)).
 
 ## Related runbooks
 

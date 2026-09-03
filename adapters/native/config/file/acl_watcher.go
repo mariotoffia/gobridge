@@ -58,7 +58,7 @@ type Watcher struct {
 	// readFile reads the watched file's bytes. It is a seam (default os.ReadFile)
 	// so reloadIfChanged reads the file EXACTLY ONCE and derives both the change
 	// hash and the parsed config from the SAME bytes — the read-once invariant a
-	// test can pin down (Finding 1). Hashing one read and parsing another let a
+	// test can pin down. Hashing one read and parsing another let a
 	// truncated mid-write read be parsed and applied while lastHash recorded the
 	// final content's hash, silently wedging a partial config.
 	readFile func(string) ([]byte, error)
@@ -73,7 +73,7 @@ type Watcher struct {
 	stopCh   chan struct{}
 	// doneCh is closed by the watch loop when it fully exits. Stop waits on it
 	// so a Stop-then-Watch cycle cannot leave the old loop alive alongside a new
-	// one, both mutating lastHash (Finding 8) — mirrors Manager.Stop.
+	// one, both mutating lastHash — mirrors Manager.Stop.
 	doneCh      chan struct{}
 	started     chan struct{}
 	startedOnce sync.Once
@@ -314,7 +314,7 @@ func (w *Watcher) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error)
 }
 
 // Stop stops the watcher and blocks until the watch loop has fully exited, so a
-// Stop-then-Watch cycle never runs two loops that share lastHash (Finding 8).
+// Stop-then-Watch cycle never runs two loops that share lastHash.
 func (w *Watcher) Stop() {
 	w.mu.Lock()
 	if !w.running {
@@ -524,7 +524,7 @@ func (w *Watcher) pollLoop(ctx context.Context, ch chan *ports.BridgeConfig, sto
 // "seen".
 //
 // The file is read EXACTLY ONCE per attempt: the change hash and the parse both
-// derive from the same byte slice (Finding 1). Hashing one read and parsing
+// derive from the same byte slice. Hashing one read and parsing
 // another let a truncating editor / slow copy be caught mid-write — parse
 // succeeds on a truncated-but-valid prefix while lastHash records the FINAL
 // content's hash, so the resync gate sees "no change" and the bridge silently
@@ -585,7 +585,7 @@ func (w *Watcher) reloadIfChanged(ch chan *ports.BridgeConfig) (pending bool) {
 // emitParsed parses the supplied file bytes and enqueues the result with
 // latest-wins coalescing. It reports whether a config was delivered;
 // parse failures are logged and return false. It parses the SAME bytes
-// reloadIfChanged hashed, never a fresh disk read (Finding 1).
+// reloadIfChanged hashed, never a fresh disk read.
 func (w *Watcher) emitParsed(data []byte, ch chan *ports.BridgeConfig) bool {
 	format := w.format
 	if format == parser.FormatAuto || format == "" {

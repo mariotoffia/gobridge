@@ -193,11 +193,11 @@ type App struct {
 	wedged atomic.Bool
 
 	// rootCtx is the App-lifetime context (== watchCtx) set in Start and cancelled
-	// by Stop. The post-swap convergence watch (RECONFIG-1) derives from it so it
+	// by Stop. The post-swap convergence watch derives from it so it
 	// lives across reloads and stops with the App. nil before Start completes.
 	rootCtx context.Context
 
-	// Post-swap convergence state (RECONFIG-1). A committed swap only proves the
+	// Post-swap convergence state. A committed swap only proves the
 	// new runtime BUILT and Start returned; MQTT dials/reconciles in the
 	// background, so a valid-but-broker-rejected config can be acknowledged as
 	// applied while the transport never reaches broker truth. The convergence watch

@@ -43,7 +43,7 @@ type PortMapping struct {
 // pair). Deriving ALB / target-group / health-check ports from the
 // `http:` block would aim them at ports NOTHING listens on the moment
 // an operator sets e.g. http.admin_addr — breaking health checks and
-// failing deploys (c15-cdk-ports). Read the port only from bootstrap
+// failing deploys. Read the port only from bootstrap
 // so the CDK and the runtime agree by construction.
 //
 // Rules:

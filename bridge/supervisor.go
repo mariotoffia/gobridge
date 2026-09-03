@@ -141,7 +141,7 @@ type Supervisor struct {
 	// wedged is set when a swap AND its recovery both failed, leaving no
 	// active runtime (s.rt == nil). It is a terminal state: the process is
 	// alive but routes nothing, so the composition-root backstop must treat
-	// it as terminal and exit non-zero (Finding 7).
+	// it as terminal and exit non-zero.
 	wedged bool
 	// swapping is true for the whole duration of apply(): a reconfiguration is
 	// in progress. During a swap the old runtime is being stopped and a new one
@@ -151,7 +151,7 @@ type Supervisor struct {
 	swapping bool
 	// degraded records a non-terminal config-machinery problem while the
 	// current runtime keeps serving: live reconfiguration is no longer
-	// available (the config change stream closed unexpectedly — Finding 1),
+	// available (the config change stream closed unexpectedly),
 	// or a committed reload never converged on the broker within its
 	// activation budget (applied-but-not-converged, — set and
 	// cleared by the post-swap convergence watch). degradedReason
@@ -265,14 +265,14 @@ func WithSwapDeadline(d time.Duration) SupervisorOption {
 
 // WithDefaultPerRecordDrainTimeout was removed: it had zero effect and no
 // callers (the scaled drain formula is configured per-session via the
-// blueprint, not on the supervisor). See Finding 9.
+// blueprint, not on the supervisor).
 
-// WithDefaultMaxDrainTimeout was removed for the same reason (Finding 9).
+// WithDefaultMaxDrainTimeout was removed for the same reason.
 
 // WithSupervisorMetrics injects the metrics exporter forwarded to every
 // Builder (and thus every Runtime) the supervisor creates. Without it, a
-// config-driven deployment runs the Noop exporter and emits no metrics
-// (Finding 15). Nil is ignored.
+// config-driven deployment runs the Noop exporter and emits no metrics.
+// Nil is ignored.
 func WithSupervisorMetrics(m ports.MetricsExporter) SupervisorOption {
 	return func(s *Supervisor) {
 		if m != nil {
@@ -282,7 +282,7 @@ func WithSupervisorMetrics(m ports.MetricsExporter) SupervisorOption {
 }
 
 // WithSupervisorTracer injects the distributed tracer forwarded to every
-// Builder/Runtime the supervisor creates (Finding 15). Nil is ignored.
+// Builder/Runtime the supervisor creates. Nil is ignored.
 func WithSupervisorTracer(t ports.Tracer) SupervisorOption {
 	return func(s *Supervisor) {
 		if t != nil {
@@ -292,7 +292,7 @@ func WithSupervisorTracer(t ports.Tracer) SupervisorOption {
 }
 
 // WithSupervisorAuditLogger injects the audit logger forwarded to every
-// Builder/Runtime the supervisor creates (Finding 15). Nil is ignored.
+// Builder/Runtime the supervisor creates. Nil is ignored.
 func WithSupervisorAuditLogger(a ports.AuditLogger) SupervisorOption {
 	return func(s *Supervisor) {
 		if a != nil {
@@ -344,10 +344,10 @@ func WithAllowDestructiveReload(allow bool) SupervisorOption {
 // artifact that lets a (re)joining member boot on the committed config after an
 // abort and a member that missed a commit reconcile to it. Coverage is the
 // bridge/ unit tests, the integration cluster-rollout suite over real DynamoDB,
-// and the long-running multi-process UC-CR proofs (design §10 / Phase 5).
+// and the long-running multi-process UC-CR proofs (ADR 0013 / Phase 5).
 //
 // It is opt-in. The Supervisor is one RolloutHost; the shipped file-based
-// bootstrap.App is the other (design Phase 6), both driving the same barrier
+// bootstrap.App is the other, both driving the same barrier
 // through a bridge.ClusterRolloutDriver. A deployment that does not wire it keeps
 // the ADR 0012 whole-cohort replacement procedure.
 //
@@ -476,13 +476,13 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 	if err != nil {
 		return fmt.Errorf("supervisor: initial config freeze: %w", err)
 	}
-	// Coordinated-rollout startup gate (design §6): this node must be in its own
+	// Coordinated-rollout startup gate (ADR 0013): this node must be in its own
 	// cohort roster, and — the joiner rule — must not boot onto a config the
 	// barrier has not committed. The operator's change is durably in the config
 	// source BEFORE the barrier decides, so an aborted or still-undecided candidate
 	// would otherwise start this node on a config no other member runs. With the
 	// committed-config artifact wired, this SUBSTITUTES the durable committed config
-	// for such a boot config rather than refusing (design Phase-4 residual); without
+	// for such a boot config rather than refusing; without
 	// it, the conservative refusal stands. Runs before anything is built.
 	appliedInitial, err = s.resolveCoordinatedBoot(ctx, appliedInitial)
 	if err != nil {
@@ -566,7 +566,7 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 				// (ctx still live). This is a watcher failure or an upstream
 				// close — NOT a reason to tear down a healthy runtime. Closing
 				// here used to drain+stop the whole bridge and exit 0, turning
-				// inotify exhaustion into a silent total outage (Finding 1).
+				// inotify exhaustion into a silent total outage.
 				// Keep the current runtime serving, mark degraded so operators
 				// can observe that live reconfiguration is gone, and block until
 				// ctx is actually cancelled.
@@ -643,7 +643,7 @@ func (s *Supervisor) Degraded() (bool, string) {
 }
 
 // Terminal reports whether the supervisor is in an unrecoverable state that
-// warrants a process restart. It covers two cases (Finding 7):
+// warrants a process restart. It covers two cases:
 //
 //   - a wedged supervisor: a swap AND its recovery both failed, so there is
 //     no active runtime (s.rt == nil) and the process routes nothing;
@@ -798,7 +798,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 
 // applyBarrierCommitted applies a config the coordinated cluster rollout barrier
 // has ALREADY committed cluster-wide, so it bypasses the clustered-reload guard
-// (design §6 applier). The bypass is safe for exactly this caller: the barrier
+// (ADR 0013 applier). The bypass is safe for exactly this caller: the barrier
 // only reaches Committed after every member of the frozen epoch acked a
 // validated, built candidate, which is a strictly stronger check than the guard
 // — the guard's job is to stop an UNCOORDINATED per-process reload, and this one
@@ -1001,7 +1001,7 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 	// identity (changed type, or changed path/table) would strand the OLD
 	// store's pending/claimed backlog — the new runtime opens the new location
 	// while unprocessed durable rows sit in the old one, silently missed until
-	// manual recovery (supervisor.go:681, Chunk 10). Detect it before touching
+	// manual recovery (supervisor.go:681). Detect it before touching
 	// either runtime.
 	identErr := storeIdentityChanged(oldCfg, frozenCfg)
 
@@ -1219,7 +1219,7 @@ func (s *Supervisor) applyOverlap(
 		}
 		// The new runtime built its sessions/receivers/stores but never
 		// started; abandoning it here leaks every connection set forever.
-		// Stop it (idempotent, bounded) before recovering (Finding 2 /).
+		// Stop it (idempotent, bounded) before recovering.
 		s.stopAbandoned(ctx, newRt, newCfg)
 		s.recoverOldOrWedge(ctx, oldCfg)
 		return nil, fmt.Errorf("start: %w", err)
@@ -1230,7 +1230,7 @@ func (s *Supervisor) applyOverlap(
 
 // stopAbandoned stops a built-but-abandoned runtime with a bounded, detached
 // context so its prep-opened sessions, receivers, and store handles are
-// released instead of leaked (Finding 2 / contract). Stop is idempotent
+// released instead of leaked. Stop is idempotent
 // and safe on a never-started runtime.
 func (s *Supervisor) stopAbandoned(ctx context.Context, rt *runtime.Runtime, cfg *ports.BridgeConfig) {
 	if rt == nil {
@@ -1261,8 +1261,8 @@ func (s *Supervisor) wedgeAfterFailedStop(stopErr error) {
 // recoverOldOrWedge rebuilds and restarts the previous config after a failed
 // swap. On success the old runtime resumes; on failure the supervisor enters
 // the wedged terminal state (s.rt == nil) so the composition-root backstop can
-// restart the process (Finding 7). Any runtime it builds but cannot start is
-// stopped rather than leaked (Finding 2).
+// restart the process. Any runtime it builds but cannot start is
+// stopped rather than leaked.
 func (s *Supervisor) recoverOldOrWedge(ctx context.Context, oldCfg *ports.BridgeConfig) {
 	// Bound the recovery build by the swap deadline. If the swap failed because a
 	// broker is partitioned, rebuilding the OLD config hits the same broker and
@@ -1354,7 +1354,7 @@ func (s *Supervisor) applyPrepareCommit(
 		}
 		// complete() failed after prepare() opened stores; its own defers
 		// close the sessions it created, and complete now also releases the
-		// prep-opened stores on failure (Finding 2). Recover the old config.
+		// prep-opened stores on failure. Recover the old config.
 		s.recoverOldOrWedge(ctx, oldCfg)
 		return nil, fmt.Errorf("complete: %w", err)
 	}
@@ -1404,7 +1404,7 @@ func (s *Supervisor) newBuilder(cfg *ports.BridgeConfig) *Builder {
 	// Forward the rotation-capable credential stores so CredentialRefresher
 	// actually binds watchers under hot-reload. Previously these were stored
 	// on the supervisor but never forwarded, so rotation silently did nothing
-	// for supervisor-built runtimes (Finding 3).
+	// for supervisor-built runtimes.
 	if s.pushCredStore != nil {
 		opts = append(opts, WithPushCredentialStore(s.pushCredStore))
 	}
@@ -1412,7 +1412,7 @@ func (s *Supervisor) newBuilder(cfg *ports.BridgeConfig) *Builder {
 		opts = append(opts, WithPolledCredentialStore(s.pollCredStore, s.pollCredConfig))
 	}
 	// Forward observability so config-driven deployments are not stuck on Noop
-	// everything (Finding 15).
+	// everything.
 	if s.metrics != nil {
 		opts = append(opts, WithMetrics(s.metrics))
 	}
@@ -1630,7 +1630,7 @@ type roleStorageIdentifiedConfig interface {
 // EXISTING durable store (lease/outbox/DLQ present in BOTH configs) to a
 // different backing identity — a changed Type, or a changed path/table.
 // Swapping such a store live strands the old store's durable backlog
-// (supervisor.go:681, Chunk 10). It returns nil when nothing durable changes.
+// (supervisor.go:681). It returns nil when nothing durable changes.
 //
 // Adding a store where none existed (nil -> non-nil) or removing one entirely
 // (non-nil -> nil) is deliberately NOT flagged here: an add has no prior backlog
@@ -2208,7 +2208,7 @@ func (s *Supervisor) stopCurrent(ctx context.Context) error {
 
 func (s *Supervisor) drainTimeoutFrom(cfg *ports.BridgeConfig) time.Duration {
 	// The blueprint wins only when it explicitly sets drain_timeout; otherwise
-	// the supervisor's configured default applies (Finding 9). Previously
+	// the supervisor's configured default applies. Previously
 	// DrainTimeoutDuration() always returned 30s for an unset field, so
 	// WithDefaultDrainTimeout could never take effect.
 	if cfg != nil && cfg.Bridge.DrainTimeout != "" {

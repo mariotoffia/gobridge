@@ -180,8 +180,8 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, sessio
 	// "match every topic" (matchesAnyFilter, topic_match.go), so a no-topic
 	// receiver on a shared session would receive every publish, participate
 	// in ACK splitting, and defeat orphan cleanup — flooding the route with
-	// unintended traffic. Reject it here at the config-driven factory seam
-	// (c4-notopic-matchall); the direct NewReceiver constructor keeps the
+	// unintended traffic. Reject it here at the config-driven factory seam;
+	// the direct NewReceiver constructor keeps the
 	// match-all default for tests/diagnostic taps.
 	if len(filters) == 0 {
 		return nil, shared.ErrInvalidConfig.WithMessage(

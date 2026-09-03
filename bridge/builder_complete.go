@@ -37,7 +37,7 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 	// If the build fails after the runtime takes ownership of the prep-opened
 	// stores, the discarded runtime is never Started and therefore never
 	// Stopped, so its lease/outbox/DLQ handles (e.g. SQLite files) would leak on
-	// every failed swap (Finding 2). Release them here, mirroring runtime.Stop's
+	// every failed swap. Release them here, mirroring runtime.Stop's
 	// io.Closer teardown. Sessions are handled by the defer above; the durable
 	// store handles are the piece an abandoned, never-started runtime would
 	// otherwise never close. This is independent of the supervisor calling
@@ -103,7 +103,7 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 	// CredentialAware. Gated on the effective push store so builds without
 	// one skip this entirely, preserving legacy behavior. effectivePushStore
 	// resolves an explicitly-registered push store, or lazily wraps a polled
-	// pull store with the fully-resolved logger (Finding 13).
+	// pull store with the fully-resolved logger.
 	pushStore := b.effectivePushStore()
 	if pushStore != nil && (len(sessionURIs)+len(receiverURIs)+len(senderURIs)) > 0 {
 		var refresherOpts []RefresherOption
@@ -117,8 +117,8 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 		// a decoupled push store. The coherent lazy-wrapper path already refreshes
 		// this same resolver's cache on the detecting poll, so invalidating there
 		// would delete a just-cached fresh entry and blind stale-serve for a
-		// poll interval (see pullCacheNeedsRotationInvalidation / adversarial
-		// Finding 1). Detect the capability structurally to avoid importing runtime.
+		// poll interval (see pullCacheNeedsRotationInvalidation). Detect the
+		// capability structurally to avoid importing runtime.
 		if b.pullCacheNeedsRotationInvalidation() {
 			if inv, ok := b.credStore.(interface{ InvalidateCache(uri string) }); ok {
 				refresherOpts = append(refresherOpts, WithRotationCallback(inv.InvalidateCache))
@@ -163,7 +163,7 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 	// torn down and cannot resume. ValidateRoutes is idempotent and
 	// side-effect-free; Start runs the same checks internally as a backstop. On
 	// failure retErr is set, so the defers above release the sessions and store
-	// handles this half-built runtime opened (Finding 2).
+	// handles this half-built runtime opened.
 	if err := rt.ValidateRoutes(); err != nil {
 		return nil, fmt.Errorf("bridge: route validation: %w", err)
 	}
@@ -347,7 +347,7 @@ func (b *Builder) wireRoutes(
 		// its primary session. If that session resolves to nil because it is
 		// declared on a stateless transport, the runtime creates no drainer for
 		// the partition: the source is ACKed after the outbox persist but the
-		// records are never drained — silent message loss (Finding 4). Reject
+		// records are never drained — silent message loss. Reject
 		// it at build time.
 		if routeDef.Session != nil && routeSession == nil &&
 			routing.DeliveryMode(routeDef.DeliveryMode) == routing.DeliverySharedOutbox {
@@ -735,7 +735,7 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context, managedStore ports.
 	// route's primary session, a binding, a receiver, or a sender. An
 	// unreferenced session gets no session manager and is never handed to the
 	// runtime, so it would open a connection/lease that Stop never closes —
-	// a leak on every hot-reload (Finding 6). Skip them with a warning.
+	// a leak on every hot-reload. Skip them with a warning.
 	referenced := referencedSessionIDs(b.cfg)
 
 	// Same detached bounded teardown as the failure path in complete(): a
@@ -784,7 +784,7 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context, managedStore ports.
 
 // referencedSessionIDs returns the set of session IDs referenced by any route
 // primary session, binding, receiver, or sender. Used to avoid constructing
-// (and leaking) unreferenced SessionDefs (Finding 6).
+// (and leaking) unreferenced SessionDefs.
 func referencedSessionIDs(cfg *ports.BridgeConfig) map[string]bool {
 	ref := make(map[string]bool, len(cfg.Sessions))
 	for i := range cfg.Routes {
@@ -850,7 +850,7 @@ func (b *Builder) buildReceiversWithURIs(ctx context.Context, sessions map[strin
 				// declared but resolved to a nil session because its transport
 				// is stateless (NewSession returns nil). The old code reported
 				// both as "references unknown session", which misled operators
-				// debugging a stateless-transport session (Finding 10).
+				// debugging a stateless-transport session.
 				if sd := findSession(b.cfg, rd.SessionID); sd != nil {
 					return nil, nil, fmt.Errorf("bridge: receiver %q references session %q whose "+
 						"transport %q is stateless (it creates no session object); a receiver cannot "+
@@ -904,7 +904,7 @@ func (b *Builder) buildSendersWithURIs(ctx context.Context, sessions map[string]
 			sess = sessions[sd.SessionID]
 			if sess == nil {
 				// See buildReceiversWithURIs: distinguish undeclared from
-				// declared-but-stateless (Finding 10).
+				// declared-but-stateless.
 				if decl := findSession(b.cfg, sd.SessionID); decl != nil {
 					return nil, nil, fmt.Errorf("bridge: sender %q references session %q whose "+
 						"transport %q is stateless (it creates no session object); a sender cannot "+

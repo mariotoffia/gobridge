@@ -33,27 +33,27 @@ The seeder on the control task is the only read-write writer of EFS. Design in
 
 - **AdoptValid is the worker default.** `ModeWorker` runs the seeder in
   `MODE=AdoptValid`
-  (`constructs/internal/gobridgebase/base.go:37`, default at
+  (`constructs/internal/gobridgebase/base.go`, default at
   `defaultSeederMode:519`). Worker startup gates on the current EFS config being
   present and parseable, but tolerates hash drift from the synth-time asset
-  (`base.go:37-42`, `:194-200`), so Admin-API hot reconfiguration and worker
+  (`base.go`, `:194-200`), so Admin-API hot reconfiguration and worker
   self-healing coexist.
 
 - **Workers never write EFS.** A worker mounts EFS read-only at the ECS volume
   layer — the main-container mount sets `ReadOnly` whenever the construct runs
-  in `ModeWorker` (`gobridgebase/base.go:445`). The read-only worker modes
+  in `ModeWorker` (`gobridgebase/base.go`). The read-only worker modes
   (`AdoptValid` / `AbortDeploy`) stage under `/tmp` and only read
   `dirname(EFS_TARGET_PATH)`; the worker task role is granted no
-  `ClientWrite` EFS action (`base.go:377-383`).
+  `ClientWrite` EFS action (`base.go`).
 
 - **The seeder is the sole RW writer.** Only the seeder mounts EFS RW
-  (`base.go:383`, `ReadOnly: false`). The control service is pinned to
+  (`base.go`, `ReadOnly: false`). The control service is pinned to
   `DesiredCount = 1` with `MinHealthyPercent=0 / MaxHealthyPercent=100`, so the
   previous control task fully drains before the next starts — no two RW writers
-  touch EFS at once during a rolling deploy (`cluster.go:175-181`).
+  touch EFS at once during a rolling deploy (`cluster.go`).
 
 - **AbortDeploy is opt-in strict lock-step.** Set `WorkerSeederMode =
-  "AbortDeploy"` (`base.go:194-200`, `cluster.go:137-145`) for deployments that
+  "AbortDeploy"` (`base.go`, `cluster.go`) for deployments that
   require every worker to run the exact synth-time asset — a worker then refuses
   to start on any drift.
 

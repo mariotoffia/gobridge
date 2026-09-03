@@ -133,8 +133,8 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 
 	// Best-effort startup check that the source queue has a native redrive
 	// policy (maxReceiveCount -> DLQ) so a malformed message the receiver
-	// cannot convert eventually reaches a DLQ instead of hot-looping forever
-	// (Chunk 13). Permission-gated: a GetQueueAttributes denial degrades
+	// cannot convert eventually reaches a DLQ instead of hot-looping forever.
+	// Permission-gated: a GetQueueAttributes denial degrades
 	// to a log, never a start failure. It DOES fail startup for one loss-
 	// critical case: a poison_max_receives backstop that would preempt an
 	// EXISTING native redrive policy (destructive delete before the DLQ
@@ -154,7 +154,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 	// shared route runner. Detected from the resolved URL's `.fifo`
 	// suffix so a QueueName-only config is covered after resolution.
 	//
-	// The effective value is kept in a local (Finding 10): mutating
+	// The effective value is kept in a local: mutating
 	// r.cfg.MaxMessages would race a second (mis)use of Run against the
 	// shared config and permanently pin a re-pointed queue to 1.
 	maxMessages := r.cfg.MaxMessages
@@ -196,7 +196,7 @@ func (r *Receiver) pollLoop(
 			return ctx.Err()
 		}
 
-		// Snapshot the client ONCE per batch (Finding: c8-settle-client).
+		// Snapshot the client ONCE per batch.
 		// The SAME client must serve the receive AND every resulting
 		// delivery's Ack/Retry/auto-extend: if ApplyCredentials swaps a
 		// rotated client between the receive and settlement, the deletes /
@@ -214,7 +214,7 @@ func (r *Receiver) pollLoop(
 			r.metrics.Counter(MetricSQSPollErrors, 1,
 				shared.Tag{Key: TagKeyQueueURL, Value: queueURL})
 
-			// Classify the receive error (Finding: c8-terminal-recv). A
+			// Classify the receive error. A
 			// terminal/permanent fault — queue deleted, IAM revoked past the
 			// auth grace, invalid URL — cannot self-heal by retrying, so
 			// tight-retrying it here behind an already-closed readiness
@@ -340,7 +340,7 @@ func (b *pollBackoff) next() time.Duration {
 
 	// Clamp the jittered delay to the configured ceiling: jitter is applied
 	// AFTER b.current was capped, so a +25% jitter would otherwise return up
-	// to 1.25*PollBackoffMax (Finding 11). Downward jitter is preserved so
+	// to 1.25*PollBackoffMax. Downward jitter is preserved so
 	// the backoff still de-synchronises competing pollers below the cap.
 	if delay > b.max {
 		delay = b.max

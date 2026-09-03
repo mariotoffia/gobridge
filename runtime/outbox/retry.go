@@ -36,7 +36,7 @@ var errReleaseFailed = errors.New("outbox: record release failed after transient
 
 // errBatchDeadlineDeferred signals processRecord aborted a send because the
 // batch deadline (workCtx/batchCtx) fired mid-flight. The record was NOT
-// delivered and has been released back to pending (finding 9): it must be
+// delivered and has been released back to pending: it must be
 // counted as DEFERRED, never as a success, and drives the transient backoff
 // floor so the next cycle does not immediately re-hammer an overloaded batch.
 //
@@ -71,7 +71,7 @@ func (d *Drainer) completeCtx(parent context.Context) (context.Context, context.
 }
 
 // completeBudget mirrors completeCtx's bounded Complete/Release window so the
-// batch timeout can reserve margin for it on top of each send (finding 10).
+// batch timeout can reserve margin for it on top of each send.
 func (d *Drainer) completeBudget() time.Duration {
 	timeout := d.policy.SendTimeout
 	if timeout <= 0 || timeout > 5*time.Second {
@@ -80,7 +80,7 @@ func (d *Drainer) completeBudget() time.Duration {
 	return timeout
 }
 
-// emitDLQ counts a durable DLQ write from the drain path (finding 15). Without
+// emitDLQ counts a durable DLQ write from the drain path. Without
 // it, drainer-side poison/expiry/permanent DLQ writes were invisible to the
 // conservation law even though the ingress route path emits the same counter.
 func (d *Drainer) emitDLQ(category string) {
@@ -236,7 +236,7 @@ func (d *Drainer) replayBudgetExhausted(rec *persistence.OutboxRecord) bool {
 }
 
 // releaseOne best-effort returns a single claimed record to pending using the
-// optional OutboxReleaser capability (finding 9). Stores without the capability
+// optional OutboxReleaser capability. Stores without the capability
 // keep the legacy leave-claimed behavior and recover via version/stale reclaim.
 func (d *Drainer) releaseOne(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) {
 	releaser, ok := d.outboxStore.(ports.OutboxReleaser)
@@ -476,7 +476,7 @@ func (d *Drainer) handleExpired(ctx context.Context, rec *persistence.OutboxReco
 		// rejected by validateTerminalFailureSink at Start; the HasStore guard
 		// mirrors the permanent/poison branches here and dispatch.go for defense
 		// in depth, so we never emit a phantom DLQ metric for a Route whose
-		// dlq.Route would silently no-op. Count the loss (finding 15) so the
+		// dlq.Route would silently no-op. Count the loss so the
 		// conservation law can attribute it.
 		d.metrics.Counter(shared.MetricMessagesExpired, 1, routeTag)
 	}

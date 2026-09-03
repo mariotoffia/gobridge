@@ -23,7 +23,7 @@ bin-packing. You get:
 
 These are per-task Fargate sizes (**1024 CPU units = 1 vCPU**). The authoritative
 throughput-to-resource tiers and `max_in_flight` guidance live in the
-[Deployment Guide — CPU and Memory Sizing](../deployment-guide.md#cpu-and-memory-sizing);
+[Deployment Guide — CPU and Memory Sizing](../deployment-scaling.md#cpu-and-memory-sizing);
 the table below maps those tiers to valid Fargate task sizes and Spot
 suitability. Load-test with your actual message shapes and processor chains
 before finalizing.

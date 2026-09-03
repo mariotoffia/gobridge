@@ -16,10 +16,10 @@ walks a working bridge end to end. Then skim the
 |---|---|
 | [Scenario 1: MQTT-to-MQTT](scenarios/01-mqtt-to-mqtt.md) | A complete working bridge, start to finish |
 | [Configuration Overview](configuration-overview.md) | How configuration is layered, sourced and reloaded |
-| [Deployment Guide](deployment-guide.md) | Running GoBridge for real |
+| [Deployment Guide](deployment-guide.md) · [Scaling](deployment-scaling.md) | Running GoBridge for real, and sizing it |
 | [Health Checks and Graceful Shutdown](health-and-shutdown.md) | Probes, shutdown sequence and budgets, exit codes |
 | [Container and Orchestrator Deployment](container-deployment.md) | Image pinning, probe wiring, building your own image |
-| [Troubleshooting](troubleshooting.md) | Symptoms, causes and fixes |
+| [Troubleshooting](troubleshooting.md) · [Diagnostic metrics](adapter-diagnostic-metrics.md) | Symptoms, causes and fixes; what each adapter counter means when it climbs |
 
 ## Configuration
 
@@ -30,14 +30,15 @@ walks a working bridge end to end. Then skim the
 | [Routes and Runtime Reference](routes-and-runtime-reference.md) | Route shape and runtime behaviour |
 | [Programmatic API](programmatic-api.md) | Delivery hooks, the builder, runtime lifecycle |
 | [Transport Configuration](transport-configuration.md) | Options common to every transport |
-| [Processors and Stores](processors-and-stores.md) | Filter, transform, circuit breaker, tenant; store backends |
+| [Processors and Stores](processors-and-stores.md) | Filter, transform, circuit breaker, tenant |
+| [Store Backends](store-backends.md) | Memory, SQLite and DynamoDB for each store role, and the pairing rules |
 | [Config Stores](config-stores.md) | Where configuration is read from and written to |
 
 ## Transports
 
 | Transport | Everyday description |
 |---|---|
-| [MQTT](transports/mqtt.md) | The lightweight protocol devices and sensors use — [options](transports/mqtt-options.md) · [behaviour](transports/mqtt-behavior.md) · [settlement recovery](transports/mqtt-settlement-recovery.md) |
+| [MQTT](transports/mqtt.md) | The lightweight protocol devices and sensors use — [options](transports/mqtt-options.md) · [behaviour](transports/mqtt-behavior.md) · [ingress headers](transports/mqtt-ingress-headers.md) · [durable sessions](transports/mqtt-durable-sessions.md) · [settlement recovery](transports/mqtt-settlement-recovery.md) |
 | [AWS SQS](transports/sqs.md) | Amazon's managed queue |
 | [Azure Service Bus](transports/servicebus.md) | Microsoft's managed queue and topics |
 | [RabbitMQ / AMQP 0-9-1](transports/amqp091.md) | The widely-used in-house message broker |
@@ -50,7 +51,7 @@ walks a working bridge end to end. Then skim the
 |---|---|
 | [Credentials and HTTP API](credentials-and-http-api.md) | Credential URIs, admin and monitor APIs |
 | [Credential Rotation](credentials-rotation.md) | Rotating secrets without downtime |
-| [HTTP API](http-api.md) · [Examples](http-api-examples.md) | Administering a running bridge |
+| [HTTP API](http-api.md) · [Admin endpoints](http-api-admin.md) · [Examples](http-api-examples.md) | Administering a running bridge |
 | [Monitor API Endpoints](http-api-monitor.md) | Health, liveness, readiness, topology and deep health |
 
 ## Clustering
@@ -63,7 +64,7 @@ walks a working bridge end to end. Then skim the
 
 ## Scenarios
 
-Thirty progressive walkthroughs, from a single MQTT topic to cross-protocol
+Progressive walkthroughs, from a single MQTT topic to cross-protocol
 bridging. See the [scenarios index](scenarios/) — a few starting points:
 
 - [MQTT to MQTT](scenarios/01-mqtt-to-mqtt.md) — the basics
@@ -77,19 +78,21 @@ bridging. See the [scenarios index](scenarios/) — a few starting points:
 
 | Area | Pages |
 |---|---|
-| [Runbooks](runbooks/) | 18 incident procedures — broker outages, rollbacks, rotation failures, migrations |
+| [Runbooks](runbooks/) | Incident procedures — broker outages, rollbacks, rotation failures, migrations |
 | [AWS deployment](aws-deployment/) | Running on ECS/EFS with DynamoDB |
 | [Timing audit](timing-audit.md) | How timing correctness is enforced |
 | [Release notes](release-notes.md) | Per-version notes |
 
 ## Design decisions
 
-[Architecture decision records](adr/) — 15 records covering the choices behind
-the delivery model, clustering, storage and configuration.
+[Architecture decision records](adr/) — the choices behind the delivery model,
+clustering, storage and configuration.
 
 ---
 
 Design and contributor documentation (architecture, domain model, glossary,
-plugin authoring, testing rules) lives in the repository root and is not
-published here. See the
+plugin authoring, testing rules) is written for people changing GoBridge rather
+than running it. Each of those documents is a hub in the repository root; where
+one grew past what fits in a single sitting, its detail pages live under
+[internals/](internals/) and the hub's contents table routes to them. See the
 [repository on GitHub](https://github.com/mariotoffia/gobridge).

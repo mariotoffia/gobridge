@@ -20,8 +20,8 @@ const (
 	// metadata endpoint before giving up. ECS task metadata is frequently not
 	// populated in the first moments of a task's life (the agent wires up
 	// networking asynchronously), so a single GET races task startup and
-	// silently disables cluster forwarding for the whole process lifetime
-	// (finding 10). A small bounded retry with backoff closes that race without
+	// silently disables cluster forwarding for the whole process lifetime.
+	// A small bounded retry with backoff closes that race without
 	// blocking startup indefinitely.
 	defaultMaxAttempts = 5
 

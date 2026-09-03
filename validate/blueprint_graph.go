@@ -429,8 +429,8 @@ func collectIDs(ve *ports.BlueprintValidationError, section string, n int, fn fu
 // validateRoutePolicyBuildFields validates the route-policy fields that
 // bridge/convert.go (toRoutePolicyE) parses at BUILD time — replay_budget and
 // the retry backoff block — so a bad value fails validation instead of passing
-// the config transaction and durable write only to fail at apply/restart
-// (finding: validation misses fields parsed later at build). The checks mirror
+// the config transaction and durable write only to fail at apply/restart.
+// The checks mirror
 // the builder exactly: replay_budget must be a non-negative duration, the
 // backoff intervals must be parseable durations, and backoff.jitter must be in
 // [0,1]. send_timeout and depth_cache_ttl are validated inline at the call site.

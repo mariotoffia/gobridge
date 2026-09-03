@@ -221,7 +221,7 @@ func invokeProcessor(
 	// or shutdown grace. An abandoned processor that ignores cancellation and
 	// keeps writing headers is thereby confined to a clone no other frame
 	// touches, so a sibling frame writing concurrently can never trigger a fatal
-	// concurrent map write (finding 2, closed structurally rather than by
+	// concurrent map write (closed structurally rather than by
 	// contract). Cost is one clone per frame per message; routes carry few
 	// processors and the dispatch path already clones per message.
 	frameEnv := env.Clone()
@@ -284,7 +284,7 @@ func invokeProcessor(
 		// abandoned. It keeps writing ONLY frameEnv (this frame's private clone),
 		// which is not merged on this path and which no other frame touches, so
 		// an abandoned writer can never race a sibling frame's header write
-		// (finding 2, closed structurally by the per-frame clone above).
+		// (closed structurally by the per-frame clone above).
 		// outstanding stays > 0 so the caller also refuses the top-level merge.
 		// Contract for third-party processors is unchanged but no longer
 		// load-bearing for memory safety: honour cancellation, and do not mutate

@@ -41,7 +41,7 @@ func transactCancellationCodes(err error) ([]string, bool) {
 // (ConditionalCheckFailed), or a concurrent write on the same item
 // (TransactionConflict). Any OTHER reason — ProvisionedThroughputExceeded,
 // ThrottlingError, ValidationError, ... — is a real fault that must surface,
-// never be swallowed as a silent skip (c13-txn-throttle).
+// never be swallowed as a silent skip.
 const (
 	ccReasonNone            = "None"
 	ccReasonCondCheckFailed = "ConditionalCheckFailed"
@@ -139,8 +139,7 @@ func mapError(err error) error {
 	// the ConditionalCheckFailed/TransactionConflict lost-race codes before
 	// wrapping. What remains carries a real fault reason (throttle, throughput,
 	// validation), which must be classified honestly so the drainer backs off
-	// or stops retrying instead of silently skipping the record
-	// (c13-txn-throttle).
+	// or stops retrying instead of silently skipping the record.
 	if codes, ok := transactCancellationCodes(err); ok {
 		if mapped := classifyCancellationCodes(codes, err); mapped != nil {
 			return mapped

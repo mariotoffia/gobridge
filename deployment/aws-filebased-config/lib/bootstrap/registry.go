@@ -41,10 +41,10 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 		// production store (runtime.CredentialResolver) exposes
 		// ResolveUncached, so every poll bypasses its TTL cache.
 		//
-		// The poll config is now driven by BootstrapConfig (Finding 2) instead
+		// The poll config is now driven by BootstrapConfig instead
 		// of a zero-value: EmitOnStart defaults true so a rotation that landed
 		// in the build->watch window is surfaced on the first tick rather than
-		// silently baselined (Finding 1); PollInterval is operator-tunable to
+		// silently baselined; PollInterval is operator-tunable to
 		// shrink hard-rotation auth-failure downtime; Jitter defaults to ~10%
 		// of the interval so a fleet does not stampede the credential backend
 		// on the same tick (LOW-severity finding).
@@ -84,8 +84,8 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 	// factories (nil keeps each adapter's internal Noop fallback) so their
 	// self-instrumented metrics actually emit on this config-driven path —
 	// previously both factories were constructed logger-only, leaving every
-	// SQS and MQTT adapter metric dead (Finding 8; the paho factory carried
-	// the same dead-metrics wiring bug). Mirrors the HTTP factory wiring
+	// SQS and MQTT adapter metric dead (the paho factory carried the same
+	// dead-metrics wiring bug). Mirrors the HTTP factory wiring
 	// below.
 	mqttFactory := paho.NewFactory(a.logger, a.metricsExporter)
 	sqsFactory := sqsadapter.NewFactory(a.logger, a.metricsExporter)

@@ -74,8 +74,7 @@ type Session struct {
 	starting    bool // true while a Start() attempt is in flight
 	// startDone is closed when the in-flight Start attempt finishes
 	// (success or failure) so concurrent Start callers can wait for the
-	// outcome instead of returning a false success (finding: concurrent
-	// Start returned nil while the winner was still connecting).
+	// outcome instead of returning a false success.
 	// Replaced with a fresh channel each time a Start attempt begins.
 	startDone chan struct{}
 	// connectionGeneration identifies one ConnectionManager construction. Start

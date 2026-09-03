@@ -78,7 +78,7 @@ func NewInstrumentedOutboxStore(inner ports.OutboxStore, metrics ports.MetricsEx
 }
 
 // NewInstrumentedOutboxStoreCapabilityPreserving decorates inner with metrics
-// instrumentation while preserving its OPTIONAL capabilities (finding 14).
+// instrumentation while preserving its OPTIONAL capabilities.
 //
 // OutboxStore carries two optional capabilities — ports.OutboxReleaser (fast
 // fencing-safe release of a transiently-failed claim) and io.Closer
@@ -208,8 +208,8 @@ func (s *InstrumentedOutboxStore) QueryPending(ctx context.Context, partitionKey
 }
 
 // CountPending forwards the OPTIONAL ports.OutboxDepthReporter capability of the
-// wrapped store (finding-14 family: an instrumentation wrapper must not strip
-// optional interfaces). The base *InstrumentedOutboxStore ALWAYS satisfies
+// wrapped store — an instrumentation wrapper must not strip an optional
+// interface. The base *InstrumentedOutboxStore ALWAYS satisfies
 // ports.OutboxDepthReporter so the drainer's capability probe succeeds in
 // production (where it holds the wrapper, not the raw store); when the inner
 // store cannot count, CountPending returns the EXPORTED sentinel

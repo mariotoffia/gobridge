@@ -15,7 +15,7 @@ import (
 // the observe/vote/adopt drive itself.
 
 // evaluateProposal runs the node's pre-build applier gate for an observed
-// rollout (design §6). It verifies the candidate against the recorded digest
+// rollout (ADR 0013). It verifies the candidate against the recorded digest
 // FIRST, then classifies the delta (§8), returning an empty string when
 // the node may build and Ack or a non-empty Nack reason otherwise. The build
 // (and the Ack carrying its build digest) is the caller's job, performed only
@@ -79,7 +79,7 @@ func (g *nodeRolloutGate) record(gen uint64) {
 // with this digest; every applier recomputes it over the candidate its own
 // config source delivered and compares.
 //
-// Determinism across members (design §11 Phase 4 "UNPROVEN") holds because the
+// Determinism across members (ADR 0013) holds because the
 // digest input, configCanonicalBytes, is a pure function of the config document:
 // it JSON-encodes shared.RevealSecrets(cfg), and a shared.Secret is a literal
 // value carried in the config bytes — GoBridge performs NO per-node

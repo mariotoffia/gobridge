@@ -50,7 +50,7 @@ mistaking a broker outage for a bridge fault and restarting healthy tasks.
    `LeaseExpiries`.
 
 4. If reconnects loop without recovering, check for `MQTTSessionTakeover`
-   ([troubleshooting.md#adapter--runtime-diagnostic-metrics](../troubleshooting.md#adapter--runtime-diagnostic-metrics)):
+   ([troubleshooting.md#adapter--runtime-diagnostic-metrics](../adapter-diagnostic-metrics.md)):
    two instances sharing one `client_id` kick each other off in a loop.
 
 5. Check whether the outage cost you the durable session. `MQTTSessionResumeLost`

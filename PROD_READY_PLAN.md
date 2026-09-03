@@ -698,21 +698,22 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 - **Residual for Chunk 21:** `ARCHITECTURE.md` is still over the 500-line threshold; its "Failover Window equals `LeaseTTL`" trade-off paragraph is DOC-7 (Chunk 18) and was not touched.
 - **Suggested commit title:** `correct public runtime contracts`
 
-### Chunk 21: Reference structure and generated drift checks
+### Chunk 21: Reference structure and generated drift checks — LANDED
 
 - **Issues:** DOC-8, DOC-15, NEW-LOW-7, NEW-LOW-8, LOW-26.
 - **Goal:** Make references structurally testable, keep each Markdown file within 500 lines, and enforce the no-planning-identifier rule in source.
 - **Dependencies:** Chunks 10 and 20.
 - **Files/packages:** deployment guide, MQTT options pages, configuration and route references, docs index/template, CI documentation checker.
-- **Tests:** link, anchor, table-shape, field-presence, line-count, and generated-reference checks.
-- [ ] Add failing documentation checks for broken anchors, source-line links, SQLite retention table shape, replay budget/jitter rows, counts, and file length.
-- [ ] Run `go test -race -count=1 ./scripts/doccheck -run 'Test.*(Link|Table|Field|LineCount)'`; expect current structure failures.
-- [ ] Repair links and tables, remove hand-maintained counts, split oversized pages with relative links, and fence template literals.
-- [ ] Add a lint (forbidigo rule or script under `make lint`) that rejects `Chunk N`, `RECONFIG-n`, `Phase-n`, `Finding N`, `c13-…` style tokens in non-test Go source; rewrite the 29 `Chunk N`, 13 `RECONFIG-n`, and related comments as plain-English rules.
-- [ ] Re-run the exact failing command above; expect pass.
-- [ ] Run `make lint` to catch formatting and repository checks.
-- [ ] Add the checker to pull-request CI with actionable file/line output.
-- [ ] Accept when links resolve, field tables contain tested keys, no governed Markdown file exceeds 500 lines, and no count needs manual maintenance.
+- **Tests:** link, anchor, table-shape, field-presence, line-count, and generated-reference checks. As in Chunks 19 and 20, `scripts/doccheck` was NOT created — a fourth mechanism for reading files would contradict two landed chunks. Structure checks that derive from no single package live in `tests/docsexamples` (`markdown_corpus_test.go` + `markdown_links_test.go` + `markdown_governance_test.go`, with `markdown_scanner_test.go` pinning the scanner's own blind spots and `markdown_scanner_bench_test.go` measuring what the gate costs); field-presence checks live beside their source of truth (`ports/route_policy_reference_doc_test.go` for `ports.PolicyDef`/`BackoffDef`, `adapters/mqtt/transport/paho/session_options_reference_doc_test.go` for `paho.SessionOptions`/`SenderOptions`, including nested `will.*`/`tls.*` keys).
+- [x] Add failing documentation checks for broken anchors, source-line links, SQLite retention table shape, replay budget/jitter rows, counts, and file length.
+- [x] Run the checks; expect current structure failures. Nine broken links/anchors, 111 Go source-LINE citations, 3 hand-maintained counts, 1 detached table row, 18 pages past the threshold, and `assert_stable_client_identity` / `replay_budget` undocumented.
+- [x] Repair links and tables, remove hand-maintained counts, split oversized pages with relative links, and fence template literals. Fifteen topic pages carry the split content; the four canonical root documents became hubs with a contents table, their detail under `docs/internals/`. `TestGovernedMarkdown_EveryPageIsReachable` pins that no split page loses its only inbound link.
+- [x] Add a lint that rejects `Chunk N`, `RECONFIG-n`, `Phase-n`, `Finding N`, `c13-…` style tokens in non-test Go source; rewrite the affected comments as plain-English rules. `scripts/lint-planning-refs.sh --self-test` runs in `make lint`; it is a gate with no annotation escape hatch, and its self-test proves both directions (eight planning shapes flagged, seven durable references and a `_test.go` file allowed). 388 sites were rewritten. `design §N` became `ADR 0013` / `ADR 0014` — the accepted decisions those sections record — rather than a longer path, and `batch N` is deliberately outside the pattern because a batch is a real thing this bridge sends.
+- [x] Re-run the exact failing commands above; expect pass. Every assertion mutation-checked.
+- [x] Run `make lint` to catch formatting and repository checks.
+- [x] Add the checker to pull-request CI with actionable file/line output. `make lint` and `make test` already run on every pull request; a dedicated fast step reports a documentation regression in seconds rather than after the full suite.
+- [x] Accept when links resolve, field tables contain tested keys, no governed Markdown file exceeds 500 lines, and no count needs manual maintenance. **Met.**
+- **Residual for a later chunk:** the planning-reference gate scopes to non-test Go source, as the chunk specified; `_test.go` files still carry planning identifiers. `docs/troubleshooting.md` reached the threshold partly by dropping five decorative horizontal rules between headed sections.
 - **Suggested commit title:** `add tested markdown references`
 
 ### Chunk 22: Published image, MQTT examples, and Kubernetes profile
