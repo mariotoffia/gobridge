@@ -116,6 +116,14 @@ stores:
     type: dynamodb
     options:
       table_name: gobridge-dlq
+  # An exclusive session with subscriptions owes the broker an exact record of
+  # the filters it installed (ADR 0003). The builder refuses to start without
+  # this store, and the session refuses to connect until its baseline row has
+  # been seeded — see the walkthrough below.
+  managed_subscriptions:
+    type: dynamodb
+    options:
+      table_name: gobridge-managed-subscriptions
 
 receivers:
   - id: telemetry-in
@@ -232,6 +240,24 @@ because it would strand messages as described above.)
 On the session, `exclusive` means that only one instance in the cluster may own this session at a time. Ownership is determined by a lease stored in `stores.lease`. The instance that acquires the lease becomes the active consumer. All other instances remain in standby, periodically checking whether the lease has expired.
 
 This mode requires `stores.lease` to be configured. The builder validates this at startup and returns an error if the lease store is missing.
+
+### `stores.managed_subscriptions` and its baseline
+
+An exclusive (or persistent) MQTT session with desired subscriptions keeps the
+exact filter history it installed on the broker in this store, so a later
+configuration can UNSUBSCRIBE precisely what an earlier one subscribed
+([ADR 0003](../adr/0003-mqtt-persistent-session-hygiene.md),
+[MQTT durable session state](../transports/mqtt-durable-sessions.md)). The
+builder rejects the configuration without it.
+
+The store alone is not enough: the session loads its history **before** it
+opens the broker connection, and a missing row is "history unknown", not "no
+history", so the session will not start until the row exists. Seed it once per
+durable session with an attestation of what the broker already holds — on the
+AWS profile from `ManagedSubscriptionBaselines`
+([data tables](../../deployment/aws-filebased-config/README.md#data-tables)),
+elsewhere as the [durable sessions page](../transports/mqtt-durable-sessions.md#managed-subscription-history)
+lists. An empty attestation is only for a `client_id` that is genuinely new.
 
 ### `$share/bridge-group/telemetry/#` topic prefix
 

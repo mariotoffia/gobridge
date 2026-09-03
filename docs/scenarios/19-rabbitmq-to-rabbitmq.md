@@ -48,6 +48,13 @@ sessions:
         broker_url: "amqp://guest:guest@localhost:5672/"
         heartbeat: "10s"
 
+stores:
+  # Where a message the route gives up on is kept.
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
+
 receivers:
   - id: order-in
     transport: amqp091
@@ -73,10 +80,14 @@ senders:
       sender:
         exchange: "analytics"
         routing_key: "order"
+        mandatory: true   # an unroutable publish is returned, not silently discarded
 
 bindings:
   - id: to-analytics
     sender_id: analytics-out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # connect, declare, consume. A session nobody manages never subscribes.
+    session_id: rabbit-conn
     address: order
 
 routes:

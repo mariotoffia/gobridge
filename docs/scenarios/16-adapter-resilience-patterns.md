@@ -84,7 +84,17 @@ senders:
 bindings:
   - id: to-mqtt
     sender_id: mqtt-out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # a session nobody manages never connects, and every publish fails.
+    session_id: mqtt-session
     address: devices/commands
+
+stores:
+  # Where a message the route gives up on is kept.
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
 
 routes:
   - id: resilient-route

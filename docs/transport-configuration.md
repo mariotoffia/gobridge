@@ -175,8 +175,8 @@ type TransportFactory interface {
 
 ## Multi-Transport Example
 
-HTTP webhook ingress fanned out to an SQS archive, MQTT device commands, and an
-SSE dashboard -- three transports on one bridge:
+HTTP webhook ingress dispatched by subject to an SQS archive, MQTT device
+commands, or an SSE dashboard -- three transports on one bridge:
 
 ```yaml
 bridge:
@@ -218,14 +218,32 @@ bindings:
     address: "event-archive"
   - id: to-commands
     sender_id: mqtt-commands
+    session_id: mqtt-primary   # a session is connected only while a route manages it
     address: "devices/commands"
   - id: to-dashboard
     sender_id: sse-dashboard
     address: "dashboard-events"
+stores:
+  dlq:
+    type: sqlite
+    options: { path: /var/lib/gobridge/dlq.db }
 routes:
-  - id: webhook-fanout
+  # direct_hold delivers one destination per message; the resolver picks it
+  # from the subject. Durable fan-out to several addresses is shared_outbox
+  # territory (Scenario 5).
+  - id: webhook-dispatch
     receiver_id: webhook-in
+    delivery_mode: direct_hold
+    dispatch_mode: single
     bindings: ["to-archive", "to-commands", "to-dashboard"]
+    resolver:
+      type: rules
+      default_binding: to-archive
+      rules:
+        - binding_id: to-commands
+          match: [{ field: subject, operator: prefix, value: "command/" }]
+        - binding_id: to-dashboard
+          match: [{ field: subject, operator: prefix, value: "dashboard/" }]
     policy: { max_in_flight: 100 }
 ```
 

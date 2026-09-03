@@ -8,6 +8,37 @@ operator must do about it. Entries link to an ADR where one records the decision
 Behavior changes from the production-readiness work. Review before upgrading —
 several are breaking at the wire or observable in operations.
 
+### Deployment
+
+- **A Kubernetes profile ships and is tested.** `deployment/kubernetes/` runs
+  the reference binary (MQTT transport, memory/SQLite stores, `file://`
+  credentials) as a StatefulSet. The published image `ghcr.io/mariotoffia/gobridge`
+  remains the AWS file-based profile: pushed by digest with every stable
+  `cmd/gobridge/vX.Y.Z` release, with `latest` promoted from that digest only
+  for the highest stable release — deploy from the digest in the release's
+  `gobridge-image-digest.txt`, never from the tag.
+- **A durable MQTT session's baseline can be seeded without the AWS profile.**
+  `gobridge -config bridge.yaml -seed-managed-subscriptions <session-id>`
+  (an empty baseline) or `<session-id>=<filter>,<filter>` (the exact existing
+  filters) writes the row the session loads before it connects; the Kubernetes
+  profile runs it from an init container. Idempotent.
+- **Copied examples build.** Every complete configuration in `docs/` passes the
+  real builder. The published MQTT examples changed shape accordingly: a
+  `direct_hold` route needs a persistent session (`clean_start: false`, QoS 1)
+  with `stores.managed_subscriptions`, the ingress session is named on the
+  route's binding (`session_id`) so the bridge manages it, and a single replica
+  sets `policy.allow_unfenced: true`.
+
+### Runtime
+
+- **A binding's `session_id` manages the session under `direct_hold` too.**
+  Previously only a shared-outbox route's binding session got a manager, so a
+  `direct_hold` MQTT route configured the way the builder recommends never
+  connected its session while `/ready` answered 200. Fixed, and such a session
+  now also waits for in-flight deliveries to settle before it recycles a
+  broker connection, as a route-primary session always did; no configuration
+  change is needed.
+
 ### Routing
 
 - **Filtered messages now default to `drop`, not the DLQ.** Silent

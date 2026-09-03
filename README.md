@@ -31,27 +31,36 @@ Full documentation: **<https://mariotoffia.github.io/gobridge/>**
 
 ### Production (container image / composition root)
 
-The shipped **production** binary is the file-based composition root
-`deployment/aws-filebased-config/lib/cmd/gobridge-filebased`, which **will be
-published** as the container image **`ghcr.io/mariotoffia/gobridge`** once the
-first `cmd/gobridge/vX.Y.Z` command release is cut — the release workflow pushes
-the image **by digest** and records the verified digest in
-`gobridge-image-digest.txt` (see **[RELEASE.md](RELEASE.md)**). It registers the MQTT, AWS
-SQS and HTTP transports plus native (memory/SQLite) and DynamoDB stores, and is
-the binary the AWS ECS/EFS deployment profile runs. Start here for any real
-deployment: see the **[Deployment Guide](docs/deployment-guide.md)** and the
-**[AWS file-based profile](deployment/aws-filebased-config/README.md)**. For
-transports it does not bundle (Azure Service Bus, AMQP), build a custom
-composition root the same way — the demo binary below shows the two wiring
-sites.
+The shipped **production** image is **`ghcr.io/mariotoffia/gobridge`**, the
+AWS file-based composition root
+`deployment/aws-filebased-config/lib/cmd/gobridge-filebased`. Every stable
+`cmd/gobridge/vX.Y.Z` release pushes it **by digest** and attaches the verified
+digest to that release as `gobridge-image-digest.txt`; the one mutable tag,
+`latest`, is promoted from that same scanned digest only when the release is
+the highest stable one. Deploy from the digest, never from `latest` — see
+[Pin Images by Digest](docs/container-deployment.md#pin-images-by-digest) and
+**[RELEASE.md](RELEASE.md#image-publication)**. The image registers the MQTT,
+AWS SQS and HTTP transports plus native (memory/SQLite) and DynamoDB stores,
+resolves its secrets through SSM, and is the binary the AWS ECS/EFS profile
+runs: see the **[Deployment Guide](docs/deployment-guide.md)** and the
+**[AWS file-based profile](deployment/aws-filebased-config/README.md)**.
 
-### Local / demo
+**Kubernetes and other non-AWS platforms** run the maintained
+**[Kubernetes profile](deployment/kubernetes/README.md)**: a Dockerfile and one
+manifest around the reference binary below (MQTT transport, memory/SQLite
+stores, `file://` credentials, HTTP API keys from a Secret), tested end to end
+through probes, traffic, reload, SIGTERM and restart. For transports neither
+profile bundles (Azure Service Bus, AMQP), build a custom composition root the
+same way — the reference binary shows the two wiring sites.
 
-`cmd/gobridge` is a **DEMO / reference** binary — it links **only** MQTT +
-native (memory/SQLite) stores and is **not** for production (a config using any
-other transport/store is rejected at startup). It forwards a single MQTT topic
-to another, walked through end to end (YAML config + Go bootstrap + variations)
-in **[Scenario 1: MQTT-to-MQTT Bridge](docs/scenarios/01-mqtt-to-mqtt.md)**.
+### Reference binary
+
+`cmd/gobridge` is the **reference composition root**: it links MQTT + native
+(memory/SQLite) stores + `file://` credentials and nothing else, so a config
+naming any other transport or store is rejected at startup. It forwards a
+single MQTT topic to another, walked through end to end (YAML config + Go
+bootstrap + variations) in
+**[Scenario 1: MQTT-to-MQTT Bridge](docs/scenarios/01-mqtt-to-mqtt.md)**.
 
 For richer setups, see the [scenarios index](docs/scenarios/) (durable outbox, clustered exclusive sessions, multi-tenant routing, custom processors, …) or jump straight to the [Configuration Overview](docs/configuration-overview.md).
 

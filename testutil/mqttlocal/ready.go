@@ -34,16 +34,19 @@ const (
 )
 
 // waitBrokerReady blocks until the broker at 127.0.0.1:port completes a real
-// publish/deliver roundtrip, or timeout elapses.
-func waitBrokerReady(port int, timeout time.Duration) error {
+// publish/deliver roundtrip, or timeout elapses. An authenticated fixture must
+// pass its credentials: on a broker with anonymous access disabled the probe
+// is the first thing that would be refused, and the refusal would read as
+// "broker never came up".
+func waitBrokerReady(port int, timeout time.Duration, username, password string) error {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	return dockerexec.WaitProbe("Mosquitto MQTT roundtrip at "+addr, timeout,
-		readyProbeInterval, func() error { return mqttRoundtrip(addr) })
+		readyProbeInterval, func() error { return mqttRoundtrip(addr, username, password) })
 }
 
 // mqttRoundtrip performs one connect/subscribe/publish/deliver cycle. Every
 // step must succeed for the broker to count as ready.
-func mqttRoundtrip(addr string) error {
+func mqttRoundtrip(addr, username, password string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), readyAttemptTimeout)
 	defer cancel()
 
@@ -78,11 +81,18 @@ func mqttRoundtrip(addr string) error {
 	})
 	defer func() { _ = conn.Close() }()
 
-	if _, err := client.Connect(ctx, &paho.Connect{
+	connect := &paho.Connect{
 		ClientID:   fmt.Sprintf("gobridge-ready-%d", id),
 		CleanStart: true,
 		KeepAlive:  60,
-	}); err != nil {
+	}
+	if username != "" {
+		connect.Username = username
+		connect.UsernameFlag = true
+		connect.Password = []byte(password)
+		connect.PasswordFlag = true
+	}
+	if _, err := client.Connect(ctx, connect); err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
 	defer func() { _ = client.Disconnect(&paho.Disconnect{ReasonCode: 0}) }()

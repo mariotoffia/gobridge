@@ -267,6 +267,7 @@ func TestUC55_FIFOOrdering(t *testing.T) {
 
 	msgs := collector.getMessages()
 	require.GreaterOrEqual(t, len(msgs), msgCount)
+	t.Logf("UC55: %d messages across 5 FIFO groups", msgCount)
 
 	type seqMsg struct {
 		Seq int `json:"seq"`

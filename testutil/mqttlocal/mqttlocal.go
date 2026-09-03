@@ -36,6 +36,16 @@
 //
 // Call [Configure] before any call to [BrokerURL]. Once the container
 // is started, configuration changes are ignored.
+//
+// # Authenticated and certificate-validating brokers
+//
+// [WithAuth], [WithTLS] and [WithMutualTLS] turn the fixture into a broker that
+// refuses: anonymous access disabled, a CA-signed server certificate, and an
+// optional client-certificate requirement. Those belong on a
+// [BrokerInstance] rather than on the shared container, because the extra
+// endpoints ([BrokerInstance.TLSURL], [BrokerInstance.WebSocketURL],
+// [BrokerInstance.SecureWebSocketURL]) and the generated
+// [BrokerInstance.Material] are per-instance. See secure.go.
 package mqttlocal
 
 import (
@@ -43,7 +53,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"os/exec"
 	"sync"
 	"testing"
 	"time"
@@ -73,6 +82,14 @@ type config struct {
 	extraConfig      string
 	memory           string // e.g. "256m", "512m" — passed to --memory
 	cpus             string // e.g. "0.5", "1.0" — passed to --cpus
+
+	// Secure-fixture options (see secure.go). username disables anonymous
+	// access; tls adds a certificate-serving listener; mutualTLS additionally
+	// requires a client certificate that fixture's CA signed.
+	username  string
+	password  string
+	tls       bool
+	mutualTLS bool
 }
 
 var (
@@ -203,7 +220,7 @@ func BrokerURL(t testing.TB) string {
 			fromEnv = true
 			wsURL = os.Getenv("MQTT_WS_URL")
 			if port, err := portFromURL(ep); err == nil {
-				initErr = waitBrokerReady(port, 10*time.Second)
+				initErr = waitBrokerReady(port, 10*time.Second, cfg.username, cfg.password)
 			}
 		} else {
 			brokerURL, wsURL, containerName, cleanupFn, initErr = startContainer(cfg)
@@ -324,7 +341,7 @@ func WaitUntilReady(t testing.TB) {
 	if err != nil {
 		t.Fatalf("mqttlocal: %v", err)
 	}
-	if err := waitBrokerReady(port, 30*time.Second); err != nil {
+	if err := waitBrokerReady(port, 30*time.Second, cfg.username, cfg.password); err != nil {
 		t.Fatalf("mqttlocal: %v", err)
 	}
 }
@@ -346,124 +363,3 @@ func portFromURL(rawURL string) (int, error) {
 	}
 	return port, nil
 }
-
-// ---------------------------------------------------------------------------
-// Container lifecycle
-// ---------------------------------------------------------------------------
-
-func startContainer(c config) (mqttURL, wsURLOut, cName string, cleanup func(), err error) {
-	if _, err := exec.LookPath("docker"); err != nil {
-		return "", "", "", nil, fmt.Errorf("docker not found: %w", err)
-	}
-
-	if c.cleanOrphans {
-		dockerexec.RemoveOrphans(containerPrefix)
-	}
-
-	mqttPort, err := dockerexec.FreePort()
-	if err != nil {
-		return "", "", "", nil, fmt.Errorf("find free MQTT port: %w", err)
-	}
-
-	var wsPort int
-	if c.webSocket {
-		wsPort, err = dockerexec.FreePort()
-		if err != nil {
-			return "", "", "", nil, fmt.Errorf("find free WebSocket port: %w", err)
-		}
-	}
-
-	confContent := buildConfig(c, wsPort > 0)
-
-	confFile, err := os.CreateTemp("", "mqttlocal-*.conf")
-	if err != nil {
-		return "", "", "", nil, fmt.Errorf("create temp config: %w", err)
-	}
-	if _, err := confFile.WriteString(confContent); err != nil {
-		_ = confFile.Close()
-		_ = os.Remove(confFile.Name())
-		return "", "", "", nil, fmt.Errorf("write config: %w", err)
-	}
-	_ = confFile.Close()
-	confPath := confFile.Name()
-
-	// os.CreateTemp makes the file 0600, owned by the user running the tests.
-	// A bind mount preserves that uid and mode on Linux, so a container running
-	// as a non-root user cannot read it. Nothing secret here.
-	if err := os.Chmod(confPath, 0o644); err != nil {
-		_ = os.Remove(confPath)
-		return "", "", "", nil, fmt.Errorf("chmod config readable by container uid: %w", err)
-	}
-
-	name := fmt.Sprintf("gobridge-mqtt-%d", mqttPort)
-
-	// Reclaim the name and wait until docker has forgotten it, so the run
-	// below cannot collide with a still-terminating container.
-	_ = dockerexec.DrainRemove(name, dockerexec.RemoveTimeout)
-
-	if err := dockerexec.EnsureImage(c.image); err != nil {
-		_ = os.Remove(confPath)
-		return "", "", "", nil, err
-	}
-
-	args := []string{
-		"run", "-d",
-		"--name", name,
-		"-p", fmt.Sprintf("127.0.0.1:%d:1883", mqttPort),
-		"-v", confPath + ":/mosquitto/config/mosquitto.conf:ro",
-	}
-
-	if c.webSocket && wsPort > 0 {
-		args = append(args, "-p", fmt.Sprintf("127.0.0.1:%d:9001", wsPort))
-	}
-	if c.memory != "" {
-		args = append(args, "--memory", c.memory)
-	}
-	if c.cpus != "" {
-		args = append(args, "--cpus", c.cpus)
-	}
-
-	args = append(args, c.image)
-
-	out, err := dockerexec.Run(dockerexec.RunTimeout, args...)
-	if err != nil {
-		_ = os.Remove(confPath)
-		return "", "", "", nil, fmt.Errorf("docker run: %w\n%s", err, out)
-	}
-
-	cleanup = func() {
-		// Drain so Mosquitto flushes persistence on SIGTERM, and so the
-		// published port is released before the next fixture claims one.
-		_ = dockerexec.DrainRemove(name, dockerexec.RemoveTimeout)
-		_ = os.Remove(confPath)
-	}
-
-	if err := dockerexec.WaitHealthy(name, 15*time.Second); err != nil {
-		dockerexec.LogFailure(name)
-		cleanup()
-		return "", "", "", nil, fmt.Errorf("mosquitto container failed: %w", err)
-	}
-
-	// Gate on protocol truth, not on the port. Accepting TCP does NOT imply
-	// Mosquitto is operational: with Docker's userland proxy the host port is
-	// bound at container creation, so a dial succeeds while the broker is
-	// still loading config or restoring persistence — or has already exited.
-	// waitBrokerReady requires a real publish/deliver roundtrip, so returning
-	// from startContainer means the broker moves messages.
-	if err := waitBrokerReady(mqttPort, 30*time.Second); err != nil {
-		dockerexec.LogFailure(name)
-		cleanup()
-		return "", "", "", nil, fmt.Errorf("mosquitto not ready: %w", err)
-	}
-
-	mqttURL = fmt.Sprintf("tcp://127.0.0.1:%d", mqttPort)
-	if c.webSocket && wsPort > 0 {
-		wsURLOut = fmt.Sprintf("ws://127.0.0.1:%d", wsPort)
-	}
-
-	return mqttURL, wsURLOut, name, cleanup, nil
-}
-
-// buildConfig is in helpers.go; container lifecycle gates (WaitHealthy,
-// WaitTCP, StabilizeTCP, RemoveOrphans, LogFailure, FreePort) come from
-// testutil/dockerexec.

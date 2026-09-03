@@ -66,6 +66,7 @@ Two states deserve calling out because they look healthy from the outside:
 
 ```yaml
 bridge:
+  id: my-bridge
   # Process shutdown budget on SIGTERM. In the shipped gobridge-filebased image
   # the watcher join, rollout stop, HTTP shutdown, runtime drain, store close
   # and telemetry flush all run inside it.

@@ -396,6 +396,12 @@ bridge:
   max_drain_timeout: "20s"
   log_level: info
 
+stores:
+  dlq:
+    type: dynamodb
+    options:
+      table_name: gobridge-dlq
+
 sessions:
   - id: mqtt-session
     transport: mqtt
@@ -419,6 +425,9 @@ senders:
 bindings:
   - id: mqtt-binding
     sender_id: mqtt-sender
+    # Naming the session on the binding is what makes the bridge manage it:
+    # a session nobody manages never connects, and every publish fails.
+    session_id: mqtt-session
     address: "devices/{{.Header.device_id}}/commands"
 
 routes:

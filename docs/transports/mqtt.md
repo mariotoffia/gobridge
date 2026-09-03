@@ -294,18 +294,33 @@ Managed subscription history and the durable-identity migration path are on thei
 
 ## YAML Example
 
+A complete persistent-session configuration. The session subscribes, so it
+keeps its exact broker filters in `stores.managed_subscriptions`; seed that
+baseline once before the first start ([durable sessions](mqtt-durable-sessions.md)).
+
 ```yaml
+bridge:
+  id: mqtt-reference
+
+stores:
+  managed_subscriptions:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/managed-subscriptions.db
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
+
 sessions:
   - id: mqtt-session-1
     transport: mqtt
     session_mode: persistent
     options:
       session:
-        # Credentials are sent in the MQTT CONNECT packet in CLEARTEXT, so a
-        # TLS scheme is required whenever username/password are set. autopaho
-        # selects TLS from the URL SCHEME (ssl://, mqtts://, tls://, wss://),
-        # NOT from tls.enable — a tcp:// URL stays cleartext even with
-        # tls.enable=true, and the adapter refuses to ship credentials over it
+        # username/password travel in CLEARTEXT inside CONNECT, so the URL
+        # SCHEME must be TLS (ssl://, mqtts://, tls://, wss://); tls.enable
+        # alone does not select TLS, and credentials over tcp:// are refused
         # unless allow_plaintext_credentials=true.
         broker_url: "ssl://broker.example.com:8883"
         client_id: "bridge-node-01"
@@ -320,17 +335,12 @@ sessions:
         ingress_memory_budget_bytes: 268435456
         username: "bridge"
         password: "secret"
-        will:
-          topic: "bridge/status/node-01"
-          payload: "offline"
-          qos: 1
-          retain: true
+        will: { topic: "bridge/status/node-01", payload: "offline", qos: 1, retain: true }
         tls:
           enable: true
           ca_cert_file: "/etc/certs/ca.pem"
           cert_file: "/etc/certs/client.pem"
           key_file: "/etc/certs/client-key.pem"
-          insecure_skip_verify: false
 
 receivers:
   - id: sensor-receiver
@@ -353,10 +363,22 @@ senders:
         retain: false
         timeout: "30s"
         throttle_retry_after: "500ms"
+
+bindings:
+  - id: to-commands
+    sender_id: command-sender
+    session_id: mqtt-session-1   # a session is managed (connected, subscribed) only through a route
+    address: "devices/commands"
+
+routes:
+  - id: sensors-to-commands
+    receiver_id: sensor-receiver
+    delivery_mode: direct_hold
+    dispatch_mode: single
+    bindings: [to-commands]
+    policy:
+      allow_unfenced: true   # one replica consumes this subscription (Scenario 8 fences it)
 ```
-
-
----
 
 ## Egress wire limits
 

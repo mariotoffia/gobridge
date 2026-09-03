@@ -88,6 +88,15 @@ controlled maintenance migration: stop ingress, exact-UNSUBSCRIBE every old
 filter, verify broker backlog/drain, seed an explicit empty baseline, then start.
 Never seed empty merely to bypass startup when subscriptions may still exist.
 
+Three composition roots seed the same row: the AWS profile from
+`ManagedSubscriptionBaselines` at deploy time, the reference binary (and the
+[Kubernetes profile](../../deployment/kubernetes/README.md)'s init container)
+from `gobridge -config bridge.yaml -seed-managed-subscriptions <session-id>`
+(an empty baseline) or `-seed-managed-subscriptions '<session-id>=<filter>,<filter>'`
+(the exact existing filters), and any custom root from
+`Builder.SeedManagedSubscriptionBaselines`. All three are idempotent: an
+established baseline is kept and listed filters are added to it.
+
 Ordinary live removal/rename/identity change of a persistent/exclusive session is
 refused even with `WithAllowDestructiveReload`, because managed filters may
 remain. Externally drain, exact-unsubscribe, seed/cut over the new identity, and

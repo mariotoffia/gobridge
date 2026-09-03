@@ -70,8 +70,28 @@ long-running test without the tag is a CI accident.
 
 - Locally: `make test-long-running` (uncached, 10 800 s timeout, requires
   Docker, writes `reports/test-long-running.log`).
-- CI: **never**. Nothing carrying the `longrunning` tag runs in the cloud —
-  not on a PR, not on a schedule, not in a release gate. That includes the two
+- The release subset: `make test-release-gate` runs only the proofs a release is
+  gated on, selected by exact test name, and then the finite-cgroup proof. The
+  names live in `RELEASE_LONGRUNNING_TESTS` in the Makefile and are pinned
+  against the suite by `tests/docsexamples`, because `go test -run` treats a
+  pattern that matches nothing as success — a renamed proof would otherwise drop
+  out of the gate while the run still reported green.
+- The published soak: `make test-soak` sets `GOBRIDGE_SOAK_DURATION=60m`. The
+  ordinary suite runs the same test at a 5-minute smoke profile so it stays
+  usable; the hour is the interval a slow goroutine, timer, connection or memory
+  leak needs to become visible. Budget over an hour and let it finish.
+- Mutation fuzzing: `make fuzz` mutates each target in `FUZZ_TARGETS` for
+  `FUZZTIME` (default 5m). Fuzz targets are NOT longrunning-tagged — their seed
+  corpora run in `make test` on every pull request — so the CI workflow also
+  carries a `workflow_dispatch` fuzz job. A crasher lands in the package's
+  `testdata/fuzz` directory; commit it, and it becomes a seed.
+- CI: **compiled, never run**. Nothing carrying the `longrunning` tag runs in
+  the cloud — not on a PR, not on a schedule, not in a release gate. It IS
+  compiled on every pull request (`go vet -tags=longrunning ./...` in the CI
+  test job and again in `make lint`), because the module has no default-tag
+  packages: every ordinary module walk lists nothing for it and skips it, so a
+  refactor could break every production proof in it while the branch stayed
+  green. `tests/docsexamples` pins that the lint target still does this. That includes the two
   bounded single-test proofs, which are developer-machine runs like the rest:
   Both bounded proofs are part of that single target, not separate ones:
   - `TestUC3SeparateProcessFailover` runs two real bridge processes against a

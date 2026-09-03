@@ -72,6 +72,13 @@ bindings:
     sender_id: sqs-out
     address: platform-events
 
+stores:
+  # Where a message the route gives up on is kept.
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
+
 routes:
   - id: tenant-route
     receiver_id: asb-in

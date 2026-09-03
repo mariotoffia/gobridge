@@ -78,16 +78,41 @@ bridge:
 sessions:
   - id: mqtt
     transport: mqtt
+    # direct_hold relies on the broker redelivering what a crashed process never
+    # acknowledged; only a persistent (or exclusive) session does that.
+    session_mode: persistent
     options:
       session:
         broker_url: tcp://broker.internal:1883
         client_id: cohort-ingress
+        # Three members share one broker: each needs its own client id, and a
+        # plain filter would deliver every event to every member. The hostname
+        # suffix keys the id per member (the members are named, stable hosts,
+        # which the assertion vouches for); the shared subscription splits the
+        # stream across the cohort.
+        client_id_suffix: hostname
+        assert_stable_client_identity: true
+        clean_start: false
+        session_expiry_interval: 3600
+
+stores:
+  # A persistent session keeps an exact record of the filters it installed on
+  # the broker (ADR 0003); a cohort keeps it in DynamoDB, seeded per member.
+  managed_subscriptions:
+    type: dynamodb
+    options:
+      table_name: gobridge-managed-subscriptions
+  dlq:
+    type: dynamodb
+    options:
+      table_name: gobridge-dlq
 
 receivers:
   - id: in
     session_id: mqtt
     topics:
-      - topic: "events/#"
+      - topic: "$share/cohort/events/#"
+        qos: 1
 
 senders:
   - id: out
@@ -99,12 +124,19 @@ senders:
 bindings:
   - id: fwd
     sender_id: out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # connect, subscribe, reconcile. A session nobody manages never subscribes.
+    session_id: mqtt
     address: processed/events
 
 routes:
   - id: process
     receiver_id: in
     bindings: [fwd]
+    policy:
+      # The shared subscription splits the stream across members; no single
+      # owner fences it, and that is the intended scale-out.
+      allow_unfenced: true
 ```
 
 **Prerequisites (deployment-level, not shown above).** Coordinated mode also

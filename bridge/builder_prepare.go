@@ -338,6 +338,7 @@ func hasExclusiveSessions(cfg *ports.BridgeConfig) bool {
 
 func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error) {
 	res := &storeResult{}
+	var err error
 
 	// Any failure AFTER a store was opened (a later store's factory error, the
 	// nil-store guard, or the clustered-distribution rejection below) must not
@@ -387,24 +388,9 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 		res.outboxDist = isDistributedFactory(sf)
 		res.outboxDurable = isCrashDurableFactory(sf)
 	}
-	if sc := b.cfg.Stores.ManagedSubscriptions; sc != nil {
-		sf, ok := b.storeFactories[sc.Type]
-		if !ok {
-			return nil, fmt.Errorf("bridge: no store factory registered for managed_subscriptions type %q", sc.Type)
-		}
-		mf, ok := sf.(ports.ManagedSubscriptionStoreFactory)
-		if !ok {
-			return nil, fmt.Errorf("bridge: store factory %q does not support managed subscriptions", sc.Type)
-		}
-		store, err := mf.NewManagedSubscriptionStore(ctx, sc.Config)
-		if err != nil {
-			return nil, fmt.Errorf("bridge: create managed subscription store: %w", err)
-		}
-		if store == nil {
-			return nil, fmt.Errorf("bridge: store factory %q returned nil managed subscription store without error", sc.Type)
-		}
-		res.managedSubscriptions = store
-		res.managedSubscriptionsDist = isDistributedFactory(sf)
+	res.managedSubscriptions, res.managedSubscriptionsDist, err = b.newManagedSubscriptionStore(ctx)
+	if err != nil {
+		return nil, err
 	}
 	if requiresManagedSubscriptionStore(b.cfg) && res.managedSubscriptions == nil {
 		return nil, fmt.Errorf("bridge: persistent/exclusive MQTT sessions with desired subscriptions require stores.managed_subscriptions")
@@ -509,6 +495,34 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 	}
 
 	return res, nil
+}
+
+// newManagedSubscriptionStore opens the configured stores.managed_subscriptions
+// store, reporting whether its factory is distributed. A blueprint without one
+// yields (nil, false, nil); whether that is acceptable is the caller's rule.
+// Shared by buildStores and SeedManagedSubscriptionBaselines so both open the
+// store through the same factory checks.
+func (b *Builder) newManagedSubscriptionStore(ctx context.Context) (ports.ManagedSubscriptionStore, bool, error) { //nolint:ireturn // the role port is what every caller consumes
+	sc := b.cfg.Stores.ManagedSubscriptions
+	if sc == nil {
+		return nil, false, nil
+	}
+	sf, ok := b.storeFactories[sc.Type]
+	if !ok {
+		return nil, false, fmt.Errorf("bridge: no store factory registered for managed_subscriptions type %q", sc.Type)
+	}
+	mf, ok := sf.(ports.ManagedSubscriptionStoreFactory)
+	if !ok {
+		return nil, false, fmt.Errorf("bridge: store factory %q does not support managed subscriptions", sc.Type)
+	}
+	store, err := mf.NewManagedSubscriptionStore(ctx, sc.Config)
+	if err != nil {
+		return nil, false, fmt.Errorf("bridge: create managed subscription store: %w", err)
+	}
+	if store == nil {
+		return nil, false, fmt.Errorf("bridge: store factory %q returned nil managed subscription store without error", sc.Type)
+	}
+	return store, isDistributedFactory(sf), nil
 }
 
 // resolveClusterEndpoints returns the endpoints that identify this instance

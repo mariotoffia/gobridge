@@ -396,7 +396,20 @@ Docker, a build tag, or an AWS sandbox, so none of them runs in `make test`.
 - `tests/longrunning/nodeprocess_harness_test.go` — `nodeProcess`, the one
   separate-OS-process bridge launcher (re-exec + stdout token barriers +
   real SIGKILL). Any new multi-process scenario uses it.
-- `testutil/tlsgen` — pure-crypto TLS material generator. No Docker.
+- `testutil/tlsgen` — pure-crypto TLS material generator. No Docker. `SignedBy`
+  issues a leaf from a generated CA, which is what a mutual-TLS proof needs:
+  three identities one authority vouches for, not three self-signed leaves.
+- `testutil/netfault` — bounded TCP fault-injection proxy between a client and
+  its broker: partition (`Cut`), half-open connection (`Blackhole`),
+  `SetLatency`, or an endpoint that serves no new connections while its live
+  ones keep working (`RefuseNew`). `Heal` reverses any of them; `Accepted()`
+  lets a test assert a real reconnect instead of inferring one. Per-segment
+  packet loss is deliberately not modelled — the package doc says why.
+- `mqttlocal.NewBrokerInstance` secure options — `WithAuth`, `WithTLS`,
+  `WithMutualTLS`, `WithWebSocket`: a Mosquitto that actually refuses, with
+  `ws`/`wss` listeners and a `Material()` CA plus client pair to validate and
+  present. Required for any claim about an authenticated or
+  certificate-validating path.
 - `domain/clock/clocktest` — fake clock. Only blessed way to drive
   time forward.
 - `ports/storetest` — conformance suites for `LeaseStore`,
@@ -427,10 +440,28 @@ make test-local-deploy
 # Long-running suite (build tag `longrunning`, Docker required, hours).
 make test-long-running
 
+# The subset a release is gated on, named test by test, plus the finite-cgroup
+# proof. Developer machine, never CI.
+make test-release-gate
+
+# The published 60-minute soak profile. `make test-long-running` runs the same
+# test at its 5-minute smoke profile.
+make test-soak
+
+# Mutation fuzzing: every target for FUZZTIME each (default 5m). The seed
+# corpora already run in `make test`; this one mutates.
+make fuzz FUZZTIME=5m
+
 # CI gates
 make check       # build + lint + unit
 make check-all   # build + lint + integration
 ```
+
+The three targets above `make check` are developer-machine runs and take from
+minutes to over an hour. Give them the time — a soak cut short is not a soak.
+Nothing carrying the `longrunning` tag runs in the cloud; `make lint` and the
+pull-request CI only COMPILE that module (`go vet -tags=longrunning`), which is
+what stops a refactor from silently deleting a production proof.
 
 Every test target passes `-count=1`, writes its report under `reports/`, and
 returns the failing `go test` status after report generation.

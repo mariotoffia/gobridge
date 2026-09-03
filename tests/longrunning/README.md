@@ -80,7 +80,7 @@ tests/longrunning/
 
 | Test | Description | Volume | Key Assertion |
 |------|-------------|--------|---------------|
-| UC1 | Clustered SQS->MQTT->SQS (5 bridges) | 5,000 | Each output queue gets 5,000. No dupes. |
+| UC1 | Clustered SQS->MQTT->SQS (5 bridges) | 1,000 | Each output queue gets 1,000. No dupes. |
 | UC7 | SQS FIFO ordering through MQTT | 3,000 | 3,000 in SQS-OUT. Soft per-group ordering. |
 | UC8 | Multi-protocol fan-out (2 MQTT + 1 SQS) | 2,000 | All 3 targets get 2,000. |
 | UC9 | MQTT QoS 2 stress | 5,000 | 5,000 unique. Zero duplicates. |
@@ -102,6 +102,22 @@ tests/longrunning/
 
 ---
 
+### The release gate
+
+`make test-release-gate` runs only the proofs a release is gated on, named test
+by test in `RELEASE_LONGRUNNING_TESTS`, plus the finite-cgroup memory proof.
+Two of them exist for that gate specifically:
+
+| Test | What it gates | Exercised |
+|------|---------------|-----------|
+| `TestUC3PublishedProfileFailover` | The failover objective on the lease profile operators deploy (`session.HAConfig`, 45 s TTL), not on compressed timing | Real SIGKILL of the owner OS process; ceiling 90 s to `ServiceLevelFull`; fencing version must strictly advance |
+| `TestGAP_ReleaseVolumeConservation` | Message conservation and duplicate accounting at a volume derived from the receive window rather than a round number | Receive window (192) x 25 refills = 4,800 messages, with a broker restart mid-stream |
+
+Delivery is at-least-once, so the conservation proof REPORTS duplicates rather
+than forbidding them: a proof that forbade them would assert a guarantee this
+bridge does not make, and one that ignored them would hide a redelivery storm
+behind a green tick.
+
 ## C. Message Size & Shape (UC17-UC21)
 
 | Test | Description | Volume | Key Assertion |
@@ -119,7 +135,7 @@ tests/longrunning/
 | Test | Description | Volume | Key Assertion |
 |------|-------------|--------|---------------|
 | UC2 | MQTT content-routed fan-out to 3 SQS | 3,000 | 1,000 per factory queue. |
-| UC22 | 10-rule MatchRule routing | 5,000 | 500 per rule, all accounted. |
+| UC22 | 10-rule MatchRule routing | 1,000 | 100 per rule, all accounted. |
 | UC23 | Subject prefix routing (3 prefixes) | 3,000 | Correct routing per prefix. |
 | UC24 | Dynamic address templates ({tenant}/{region}) | 3,000 | 1,000 per combo delivered correctly. |
 | UC25 | Filter processor (90% drop) | 10,000 | 1,000 passed + 9,000 DLQ = 10,000. |
@@ -192,7 +208,7 @@ Tests use per-test `mqttlocal.BrokerInstance` containers with custom configs.
 | UC52 | Visibility timeout expiry (no auto-extend) | 50 | unique >= 50, total > 50 (duplicates). |
 | UC53 | Auto-extend under sustained load | 200 | unique >= 200, fewer duplicates than UC52. |
 | UC54 | FIFO deduplication window | 500+500 | Collector = exactly 500. |
-| UC55 | FIFO ordering preservation (5 groups) | 1,000 | Per-group monotonically increasing. |
+| UC55 | FIFO ordering preservation (5 groups) | 200 | Per-group monotonically increasing. |
 | UC56 | Batch mixed success/failure | 1,000 | 800 delivered + 200 DLQ = 1,000. |
 
 ---
@@ -206,7 +222,7 @@ Tests use per-test `mqttlocal.BrokerInstance` containers with custom configs.
 | UC59 | Partition hotspot (single partition) | 5,000 | All delivered. Throughput logged. |
 | UC60 | Outbox + broker down (AckAfterOutboxPersist) | 2,000 | SQS-IN empty. Collector = 2,000 after restart. |
 | UC61 | MaxReplayAttempts with intermittent failures | 500 | All delivered (sender fails first 3, succeeds 4th). |
-| UC62 | Lease renewal under high load | 10,000 | All delivered. DLQ empty. |
+| UC62 | Lease renewal under high load | 5,000 | All delivered. DLQ empty. |
 
 ---
 
@@ -219,7 +235,7 @@ Tests use per-test `mqttlocal.BrokerInstance` containers with custom configs.
 | UC65 | Throughput ceiling (4 batches) | 6,500 | All delivered. Max msgs/sec logged. |
 | UC66 | Multi-tenant isolation (10 tenants) | 5,000 | Tenants 1-9 < 30s each. Tenant 0 < 120s. |
 | UC67 | Concurrent Reconcile during flow | 3,000 | >= 3,000 unique. No races. |
-| UC68 | 5-minute soak (100 msgs/sec) | ~30,000 | >= 95% delivered. Heap < 2×. Goroutines stable. |
+| UC68 | Soak (100 msgs/sec; 5 min default, 60 min via `make test-soak`) | ~30,000 short / ~360,000 published | >= 95% delivered. Heap < 2×. Goroutines stable. |
 
 ---
 

@@ -1,10 +1,10 @@
 # Scenario 4: Fan-Out with Filtering
 
-Route IoT sensor data from a single MQTT subscription to multiple SQS queues based on message content.
+Route IoT sensor data from a single MQTT subscription to several destinations based on message content.
 
 ## Use Case
 
-You have sensor devices publishing JSON telemetry to `sensors/#` on an MQTT broker. Temperature readings must go to an SQS queue `temperature-events` for alerting, and humidity readings must go to a separate SQS queue `humidity-events` for analytics. The bridge inspects each message and fans it out to the correct destination.
+You have sensor devices publishing JSON telemetry to `sensors/#` on an MQTT broker. Temperature readings must go to `events/temperature` for alerting, and humidity readings must go to a separate topic `events/humidity` for analytics. The bridge inspects each message and fans it out to the correct destination.
 
 ## Architecture
 
@@ -21,9 +21,9 @@ flowchart LR
         Route[Route\nsensor-route\ndispatch: fan_out]
     end
 
-    subgraph AWS
-        Q1["SQS Queue\ntemperature-events"]
-        Q2["SQS Queue\nhumidity-events"]
+    subgraph MQTT Broker (egress)
+        Q1["events/temperature"]
+        Q2["events/humidity"]
     end
 
     T -->|subscribe| R
@@ -49,6 +49,11 @@ sessions:
         broker_url: tcp://mqtt.example.com:1883
         client_id: sensor-fanout-01
         keep_alive: 30
+        # The builder sizes ingress memory from max_payload_bytes,
+        # receive_maximum and the route's max_in_flight before it opens
+        # anything; 200 in flight at the default 256 KiB payload cap needs
+        # ~305 MiB, above the 256 MiB default budget. State the budget.
+        ingress_memory_budget_bytes: 335544320   # 320 MiB
 
 receivers:
   - id: sensor-in
@@ -57,39 +62,57 @@ receivers:
       - topic: "sensors/#"
         qos: 1
 
-senders:
-  - id: sqs-temp
-    transport: sqs
+stores:
+  # Fan-out is a shared-outbox feature: the route persists one record per
+  # binding and drains each on its own. This scenario is about filtering, so
+  # the stores are in memory and each acknowledges what a restart loses;
+  # Scenario 5 shows the durable pairing.
+  lease:
+    type: memory
     options:
-      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/temperature-events
-      region: us-west-1
-      batch_size: 10
+      acknowledge_single_replica: true
+  outbox:
+    type: memory
+    options:
+      acknowledge_volatile: true
+  dlq:
+    type: memory
+    options:
+      acknowledge_volatile: true
 
-  - id: sqs-humid
-    transport: sqs
+senders:
+  # One sender, two destinations: a shared-outbox route drains through the
+  # sender its session block names, and every binding is an address on it.
+  - id: mqtt-out
+    session_id: mqtt-conn
     options:
-      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/humidity-events
-      region: us-west-1
-      batch_size: 10
+      sender:
+        qos: 1
 
 bindings:
   - id: to-temperature
-    sender_id: sqs-temp
-    address: temperature-events
+    sender_id: mqtt-out
+    address: events/temperature
 
   - id: to-humidity
-    sender_id: sqs-humid
-    address: humidity-events
+    sender_id: mqtt-out
+    address: events/humidity
 
 routes:
   - id: sensor-route
     receiver_id: sensor-in
-    delivery_mode: direct_hold
+    delivery_mode: shared_outbox
     dispatch_mode: fan_out
     bindings: [to-temperature, to-humidity]
     processors: [temp-filter, humidity-filter]
     policy:
+      ack_after: outbox_persist
       max_in_flight: 200
+    # The session block is what makes the bridge manage the MQTT session
+    # (connect, subscribe, reconcile) and gives the outbox its drainer.
+    session:
+      session_id: mqtt-conn
+      sender_id: mqtt-out
 ```
 
 ## Processor Registration (Go)
@@ -107,7 +130,6 @@ import (
     cfgparser "github.com/mariotoffia/gobridge/config/parser"
     "github.com/mariotoffia/gobridge/ports"
     "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-    "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
     "github.com/mariotoffia/gobridge/processors/filter"
 )
 
@@ -118,7 +140,6 @@ func main() {
     // decoder. ParseFile requires a non-nil registry.
     reg := ports.NewRegistry()
     _ = paho.Register(reg)
-    _ = sqs.Register(reg)
 
     cfg, _ := cfgparser.ParseFile("bridge.yaml", cfgparser.FormatAuto, reg)
 
@@ -142,7 +163,6 @@ func main() {
 
     rt, _ := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
         RegisterTransportFactory("mqtt", paho.NewFactory(logger)).
-        RegisterTransportFactory("sqs", sqs.NewFactory(logger)).
         RegisterProcessor("temp-filter", tempFilter).
         RegisterProcessor("humidity-filter", humidFilter).
         Build(context.Background())
@@ -359,33 +379,34 @@ Messages with temperature above 50 get the `x-bridge.route-override` header set 
 
 ### Fan-Out to Three or More Destinations
 
-Add a third binding for an archival queue:
+Add a third binding -- another address on the same sender -- for an archive
+topic:
 
 ```yaml
-senders:
-  - id: sqs-archive
-    transport: sqs
-    options:
-      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/sensor-archive
-      region: us-west-1
-
 bindings:
   - id: to-temperature
-    sender_id: sqs-temp
-    address: temperature-events
+    sender_id: mqtt-out
+    address: events/temperature
   - id: to-humidity
-    sender_id: sqs-humid
-    address: humidity-events
+    sender_id: mqtt-out
+    address: events/humidity
   - id: to-archive
-    sender_id: sqs-archive
-    address: sensor-archive
+    sender_id: mqtt-out
+    address: events/archive
 
 routes:
   - id: sensor-route
     receiver_id: sensor-in
+    delivery_mode: shared_outbox
     dispatch_mode: fan_out
     bindings: [to-temperature, to-humidity, to-archive]
     processors: [temp-filter, humidity-filter, archive-pass]
+    session:
+      session_id: mqtt-conn
+      sender_id: mqtt-out
 ```
+
+A destination on a different sender (an SQS queue, say) is a route of its own:
+a shared-outbox route has one drainer, wired with its session sender.
 
 The `archive-pass` processor would be a no-op or use `ActionPass` with no conditions, ensuring all messages reach the archive regardless of type.

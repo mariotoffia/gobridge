@@ -379,6 +379,34 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		}
 	}
 
+	// Every registered session sender gets a manager, whatever delivery mode
+	// the routes that reach it use. The shared-outbox wiring above creates one
+	// because it needs a drainer; a direct_hold route that names the session on
+	// a binding needs one just as much — a plan-driven session (MQTT, AMQP
+	// 0-9-1) connects and subscribes only when a manager reconciles its plan,
+	// and the builder admits that binding precisely as the way to get one. A
+	// session sender left without a manager is a session that never connects,
+	// a receiver that never subscribes, and a bridge that reports ready while
+	// transporting nothing. Such a session is also the INGRESS of every route
+	// whose receiver rides on it, so it joins ingressSessions below and gets
+	// the same settlement barrier a route-primary session gets before it
+	// recycles a broker connection.
+	for sid, sse := range rt.sessionSenders {
+		if _, exists := rt.sessionMgrs[sid]; !exists {
+			mgr := session.NewWithMetrics(sse.config, sse.session, rt.leaseStore, rt.leaseOwnerID, rt.logger, m, rt.clk)
+			mgr.SetAudit(rt.audit)
+			mgr.SetEndpoints(rt.clusterEndpoints)
+			rt.sessionMgrs[sid] = mgr
+		}
+		for _, entry := range rt.entries {
+			if entry.sessCfg != nil || entry.session != sse.session {
+				continue
+			}
+			ingressSessions[sid] = sse.session
+			ingressRoutes[sid] = append(ingressRoutes[sid], entry.config.ID)
+		}
+	}
+
 	for sid, sess := range ingressSessions {
 		configurer, ok := sess.(ports.IngressQuiescenceConfigurer)
 		if !ok {

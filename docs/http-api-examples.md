@@ -41,17 +41,23 @@ senders:
 bindings:
   - id: to-mqtt
     sender_id: mqtt-out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # a session nobody manages never connects, and every publish fails.
+    session_id: mqtt-tls
     address: events/out
 
-  - id: to-sqs
-    sender_id: sqs-out
-    address: events
+stores:
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
 
 routes:
   - id: forward-http
     receiver_id: http-in
-    dispatch_mode: all
-    bindings: [to-mqtt, to-sqs]
+    delivery_mode: direct_hold
+    dispatch_mode: single
+    bindings: [to-mqtt]
 
 http:
   admin_addr: ":8080"

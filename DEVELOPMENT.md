@@ -237,9 +237,10 @@ The repo is a multi-module `go.work` workspace. The rules below keep it consumab
 
 ## Base image digests
 
-The root `Dockerfile` pins both base images to a **top-level multi-platform OCI
-index digest** (the index, not a per-architecture manifest), so a rebuild pulls
-the exact reviewed bytes:
+The root `Dockerfile` and the Kubernetes profile's `deployment/kubernetes/Dockerfile`
+pin both base images to a **top-level multi-platform OCI index digest** (the
+index, not a per-architecture manifest), so a rebuild pulls the exact reviewed
+bytes. Refresh both files together:
 
 | Stage | Image | Pinned index digest |
 |-------|-------|---------------------|

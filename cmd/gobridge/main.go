@@ -1,23 +1,22 @@
-// Command gobridge is a DEMONSTRATION / REFERENCE binary for the GoBridge
-// runtime — it is NOT the production binary and must not be shipped as one.
-// It deliberately links a MINIMAL adapter set — the MQTT (paho) transport plus
-// the native in-memory and SQLite stores — so it builds with no cloud SDK
-// dependencies and runs out of the box for local development and the
-// documented scenarios.
+// Command gobridge is the REFERENCE composition root for the GoBridge runtime
+// and the binary the Kubernetes profile (deployment/kubernetes) packages. It
+// deliberately links a small adapter set — the MQTT (paho) transport, the
+// native in-memory and SQLite stores and the file:// credential store — so it
+// builds with no cloud SDK dependencies and runs out of the box for the
+// documented scenarios and for any deployment that needs exactly that set.
 //
 // Because only MQTT + native stores are registered, a config that references
 // any other transport or store (SQS, Azure Service Bus, AMQP, DynamoDB, …) is
-// REJECTED at startup or on reload: this binary is not a general "shipped
-// bridge". A production deployment links only the transports and stores it
-// actually uses and registers them at the two sites this binary already
-// demonstrates: the config-decoder registry (reg.Register) and the supervisor
-// factories (sup.RegisterTransport / sup.RegisterStoreFactory).
+// REJECTED at startup or on reload. A deployment that needs more links the
+// transports and stores it actually uses and registers them at the two sites
+// this binary already demonstrates: the config-decoder registry (reg.Register)
+// and the supervisor factories (sup.RegisterTransport /
+// sup.RegisterStoreFactory).
 //
-// The PRODUCTION binary/image is the file-based composition root
-// deployment/aws-filebased-config/lib/cmd/gobridge-filebased (published as
-// ghcr.io/mariotoffia/gobridge), or a custom composition root you build the
-// same way. See the AWS wiring guidance inline in run(), and the
-// deployment/aws-filebased-config profile for a complete production example.
+// The AWS image ghcr.io/mariotoffia/gobridge is the other shipped composition
+// root, deployment/aws-filebased-config/lib/cmd/gobridge-filebased: MQTT, SQS
+// and HTTP transports, DynamoDB stores, secrets from SSM. See the AWS wiring
+// guidance inline in run() and the deployment/aws-filebased-config profile.
 package main
 
 import (
@@ -61,12 +60,11 @@ func run() int {
 		out := flag.CommandLine.Output()
 		// Usage is written to the flag output (stderr); a failed write there is
 		// not actionable, so the error is deliberately discarded.
-		_, _ = fmt.Fprintf(out, `gobridge — DEMO / REFERENCE binary (NOT for production).
-Links a minimal adapter set only: MQTT transport + native memory/SQLite stores.
+		_, _ = fmt.Fprintf(out, `gobridge — reference composition root (the Kubernetes profile's binary).
+Links the MQTT transport, native memory/SQLite stores and file:// credentials.
 A config referencing any other transport/store (SQS, Azure, AMQP, DynamoDB, …)
-is REJECTED at startup/reload. For production use the composition root
-deployment/aws-filebased-config/lib/cmd/gobridge-filebased (image
-ghcr.io/mariotoffia/gobridge), or build your own.
+is REJECTED at startup/reload; the AWS image ghcr.io/mariotoffia/gobridge
+(deployment/aws-filebased-config) bundles those, or build your own root.
 
 Usage of %s:
 `, os.Args[0])
@@ -79,17 +77,19 @@ Usage of %s:
 	startEmpty := flag.Bool("start-empty", true,
 		"start with an empty configuration when -config does not exist; "+
 			"set false to refuse to boot a bridge that would carry no routes")
+	var seedBaselines repeatableFlag
+	flag.Var(&seedBaselines, "seed-managed-subscriptions",
+		"seed the managed-subscription baseline of a persistent/exclusive MQTT session and exit: "+
+			"`session-id` attests a NEW broker identity with no subscriptions, "+
+			"`session-id=filter,filter` records the exact filters the existing broker session holds; repeatable")
 	flag.Parse()
 
 	logger := newLogger(*logLevel)
 
-	// Loud, unmissable demo-only banner: this reference binary registers only
-	// MQTT + native stores and is NOT the production build. The production
-	// binary/image is deployment/aws-filebased-config/lib/cmd/gobridge-filebased
-	// (ghcr.io/mariotoffia/gobridge). Emitting it at WARN keeps it visible even
-	// at the default log level so nobody ships the demo by mistake.
-	logger.Warn("cmd/gobridge is a DEMO/REFERENCE binary (MQTT transport + native memory/SQLite stores only) — NOT for production; " +
-		"use deployment/aws-filebased-config/lib/cmd/gobridge-filebased (image ghcr.io/mariotoffia/gobridge) or a custom composition root")
+	// State the adapter set once at startup, so a config that names a transport
+	// this root does not link fails with the reason already in the log.
+	logger.Info("gobridge reference composition root: MQTT transport, native memory/SQLite stores, file:// credentials; " +
+		"other transports and stores need the AWS image (ghcr.io/mariotoffia/gobridge) or a custom composition root")
 
 	// Build the per-process plugin registry by registering each
 	// adapter we link in. Adding a new transport/store means a new
@@ -115,6 +115,23 @@ Usage of %s:
 	// (unreadable, bad parse) stays fatal, and -start-empty=false refuses the
 	// fallback outright for a deployment that must never carry zero routes.
 	loader := configLoader(fileSource, *configPath, *startEmpty, logger)
+
+	// One-shot seed: the baseline is written through the same registry, loader
+	// and store factories the bridge below would use, then the process exits
+	// so an init container or an operator's shell gets a plain 0/1.
+	if len(seedBaselines) > 0 {
+		baselines, err := parseManagedSubscriptionBaselines(seedBaselines)
+		if err != nil {
+			logger.Error("invalid -seed-managed-subscriptions value", "error", err)
+			return 2
+		}
+		if err := seedManagedSubscriptions(context.Background(), loader, baselines, logger); err != nil {
+			logger.Error("failed to seed managed subscription baselines", "path", *configPath, "error", err)
+			return 1
+		}
+		return 0
+	}
+
 	baseCfg, err := loader.Load(context.Background())
 	if err != nil {
 		logger.Error("failed to load config", "path", *configPath, "error", err)
@@ -317,11 +334,14 @@ Usage of %s:
 		// deep health can report a later reload that changed it as
 		// restart-required instead of leaving the change silently inert.
 		bootHTTP := *cfg.HTTP
+		// Keys may arrive through the environment (a mounted Secret) so the
+		// config file never has to carry them; see httpAPIKeys.
+		adminKey, monitorKey := httpAPIKeys(cfg.HTTP, os.LookupEnv)
 		apiCfg := httpapi.Config{
 			AdminAddr:     cfg.HTTP.AdminAddr,
 			MonitorAddr:   cfg.HTTP.MonitorAddr,
-			AdminAPIKey:   cfg.HTTP.AdminAPIKey,
-			MonitorAPIKey: cfg.HTTP.MonitorAPIKey,
+			AdminAPIKey:   adminKey,
+			MonitorAPIKey: monitorKey,
 			CORSOrigins:   cfg.HTTP.CORSOrigins,
 			TLSCertFile:   cfg.HTTP.TLSCertFile,
 			TLSKeyFile:    cfg.HTTP.TLSKeyFile,

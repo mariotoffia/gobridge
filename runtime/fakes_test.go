@@ -228,6 +228,14 @@ func (s *FakeSession) SetIngressQuiescenceWaiter(waiter func(context.Context) er
 	s.mu.Unlock()
 }
 
+// HasIngressQuiescenceWaiter reports whether the runtime installed the
+// settlement barrier a stateful session consults before recycling a connection.
+func (s *FakeSession) HasIngressQuiescenceWaiter() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.IngressQuiescenceWaiter != nil
+}
+
 func (s *FakeSession) WaitIngressQuiescent(ctx context.Context) error {
 	s.mu.Lock()
 	waiter := s.IngressQuiescenceWaiter
@@ -274,6 +282,13 @@ func (s *FakeSession) PushEvent(ev ports.SessionEvent) {
 
 // IsClosed reports whether Close has been called, under the fake's lock so
 // callers can assert from any goroutine without racing Close.
+// ReconciledPlans returns a copy of every plan Reconcile received.
+func (s *FakeSession) ReconciledPlans() []connectivity.SessionPlan {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]connectivity.SessionPlan(nil), s.Plans...)
+}
+
 func (s *FakeSession) IsClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

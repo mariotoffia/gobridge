@@ -10,6 +10,119 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Added — secure-broker evidence, injected network faults, and a release gate that names its proofs
+
+- **An authenticated, certificate-validating broker fixture.**
+  `testutil/mqttlocal` grew `WithAuth`, `WithTLS` and `WithMutualTLS`: a
+  Mosquitto with anonymous access disabled, a CA-signed server certificate and
+  an optional client-certificate requirement, plus `ws`/`wss` listeners. The
+  Mosquitto password entry is rendered in Go (PBKDF2-SHA512), so a secure
+  fixture still costs one container. Every deployment reaches its broker over
+  one of these paths and none of them had real-broker evidence: direct TLS,
+  mutual TLS, a refused certificate, a wrong password surfacing as
+  `ErrNotAuthorized`, live credential rotation, and authenticated `ws`/`wss`
+  traffic are now proved against a broker that actually refuses. Each proof
+  carries its negative — the connection that must fail — because a permissive
+  broker would make the positives green on its own.
+- **`testutil/netfault`, a bounded TCP fault-injection proxy.** Reconnect and
+  settlement behaviour under partial network failure was inferred rather than
+  tested; stopping a container is one failure mode, and the mildest. The proxy
+  drives a partition, a half-open connection that stays writable and delivers
+  nothing, injected latency, and an endpoint that serves no new connections
+  while its live ones keep working. Each MQTT proof requires recovery inside
+  the bound the session's own reconnect policy declares. Per-segment packet
+  loss is deliberately not modelled, and the package says why.
+- **Multi-URL failover, Last Will and server limits, proved.** A session now
+  demonstrably leaves an endpoint that stops carrying sessions for a healthy
+  one; a configured Last Will fires on ungraceful death and is suppressed by a
+  graceful DISCONNECT; a broker inflight quota far below the bridge's own
+  loses nothing; and an oversized publish fails rather than vanishing.
+- **[MQTT broker support](docs/transports/mqtt-broker-support.md)** states what
+  is proved and against what — Mosquitto 2.0.22, MQTT v5, pinned by digest —
+  and, explicitly, what is not: other broker products, AWS IoT Core, broker-side
+  high availability, MQTT v3.1.1. Every claim names the test that fails if it
+  regresses, and `tests/docsexamples` pins those names against the source.
+- **A release gate that cannot silently select nothing.** `make
+  test-release-gate` runs the long-running proofs a release rests on, named
+  test by test; `make test-soak` runs the published 60-minute soak profile
+  (the ordinary suite runs the same test at a 5-minute smoke profile); `make
+  fuzz` mutates every fuzz target. `go test -run` treats a pattern that matches
+  nothing as success, so each name is pinned against the suite from the default
+  build. Two proofs were added for that gate: the failover objective on the
+  lease profile operators actually deploy, and message conservation at a volume
+  derived from the receive window with duplicates reported rather than
+  forbidden.
+- **The long-running module is compiled on every pull request.** It has no
+  default-tag packages, so every module walk skipped it and a refactor could
+  break every production proof in it while the branch stayed green. `make lint`
+  and CI now vet it under its own tag. Nothing carrying the tag runs in the
+  cloud; that is unchanged and deliberate.
+- **Two fuzz targets covering the durable wire form.** `FuzzEnvelopeHeaderRoundTrip`
+  and `FuzzEnvelopeRehydrationRejectsCorruptRecords` in `domain/messaging`, and
+  `FuzzIngressPublishProperties` in the MQTT adapter, which mutates Correlation
+  Data, content type and User Properties against the reserved-namespace,
+  identity-stability and header-bound rules.
+
+### Fixed — an envelope ID that is not valid UTF-8 no longer loses its identity in the store
+
+- Found by the new envelope fuzz target within seconds. Every durable record —
+  DLQ entry, outbox row — is keyed by the envelope ID and written through
+  `Envelope.MarshalJSON`, and `encoding/json` replaces a byte sequence that is
+  not valid UTF-8 with U+FFFD. An ID that was not valid UTF-8 therefore came
+  back from the store as a DIFFERENT identity than the one that went in, so a
+  redrive injected a message the replay ledger could not match to the original
+  and the accounting that makes at-least-once delivery countable broke
+  silently. Construction now refuses such an ID (`ErrInvalidEnvelopeID`, which
+  adapters already classify as terminal) rather than corrupting it at the store
+  boundary. Transports that carry binary identity were already normalising —
+  the MQTT adapter base64-encodes binary Correlation Data before using it as an
+  identity — so this codifies an invariant the adapters honoured and the domain
+  did not enforce.
+
+### Changed — long-running message counts now match what the suite reports
+
+- Four use cases advertised a volume they did not exercise (UC1 said 5,000 and
+  sent 1,000; UC22 said 500 per rule and sent 100; UC55 said 1,000 and sent 200;
+  UC62 said 10,000 and had been reduced to 5,000). The counts and their
+  descriptions now agree, and a check in `tests/docsexamples` requires the
+  number a test really sends to appear in the row a reviewer reads.
+
+### Added — a Kubernetes profile, and examples that build
+
+- `deployment/kubernetes/` is the maintained non-AWS profile: a Dockerfile for
+  the reference binary (`cmd/gobridge`) and one manifest — ConfigMap-mounted
+  config, the admin key from a Secret through `GOBRIDGE_ADMIN_API_KEY`, a
+  persistent volume for the SQLite state, an init container that seeds the
+  durable MQTT session's baseline, and liveness/readiness probes. Its whole
+  lifecycle — probes, secret path, traffic, ConfigMap reload, SIGTERM drain
+  within the manifest's grace, restart on the same state — runs under Docker in
+  `tests/integration` (`TestKubernetesProfile`).
+- `cmd/gobridge` gained `-seed-managed-subscriptions <session-id>[=filter,...]`
+  and `bridge.Builder.SeedManagedSubscriptionBaselines`: the baseline a
+  persistent or exclusive MQTT session needs before it will start, seeded the
+  same way the AWS profile seeds it at deploy time. Its HTTP API keys may come
+  from `GOBRIDGE_ADMIN_API_KEY` / `GOBRIDGE_MONITOR_API_KEY`, so a mounted
+  config never carries a secret.
+- Every complete configuration example in the documentation is now built by
+  the real `bridge.Builder` (`tests/docsexamples`), not only strict-decoded.
+  That gate found twenty-odd examples the builder rejects — MQTT sessions no
+  route managed, ephemeral `direct_hold` sources, missing DLQ and managed
+  subscription stores, fan-out shapes the runtime does not implement — and each
+  is corrected. Published image references must pin by digest and no page may
+  describe the image as unpublished.
+
+### Fixed — a session named on a binding is now managed under every delivery mode
+
+- The runtime created a session manager for a session registered through a
+  binding `session_id` only inside the shared-outbox wiring. A `direct_hold`
+  route that named its MQTT (or AMQP 0-9-1) session that way — the very shape
+  the builder recommends — got a session that never connected, a receiver that
+  never subscribed, and a readiness probe that answered ready. Every registered
+  session sender now gets a manager, and — because that session is the ingress
+  of the routes riding on it — the same settlement barrier a route-primary
+  session consults before recycling a broker connection, so a reconnect waits
+  for deliveries the route already accepted.
+
 ### Added — documentation structure is now tested
 
 - Published Markdown is checked the way code is. Every relative link resolves,

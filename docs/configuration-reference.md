@@ -228,7 +228,10 @@ String Set; grant `GetItem`, `UpdateItem`, and `DescribeTable` (the standard
 read/write-data grant is a permitted superset). The identity is an opaque,
 secret-safe durable-session fingerprint. A missing baseline or any store outage
 fails startup before the MQTT broker connection is opened; seed an explicit
-empty baseline for a genuinely new durable session.
+empty baseline for a genuinely new durable session — `ManagedSubscriptionBaselines`
+on the AWS profile, `-seed-managed-subscriptions <session-id>` on the reference
+binary, or `Builder.SeedManagedSubscriptionBaselines` in a custom composition
+root (see [durable sessions](transports/mqtt-durable-sessions.md#managed-subscription-history)).
 
 **DLQ read ordering** is oldest-first (`failed_at ASC`) across all backends, so
 operators triage the earliest failures first.
@@ -374,7 +377,7 @@ Bindings connect routes to senders with a specific address.
 |-------|------|----------|---------|-------------|
 | `id` | string | **yes** | -- | Unique binding identifier |
 | `sender_id` | string | **yes** | -- | Reference to a sender |
-| `session_id` | string | no | -- | Optional session override |
+| `session_id` | string | no | -- | The session this binding runs on, and the session the route thereby **manages** (connect, subscribe, reconcile). An MQTT or AMQP 0-9-1 session that no route manages -- through a binding `session_id` or a route `session` block -- never connects or subscribes, so an ingress session must be named here or in the route's `session` block. |
 | `address` | string | **yes** | -- | Destination address -- supports `{header}` templates |
 | `options` | map | no | -- | Per-binding options -- **parsed but not consumed at runtime** (`DestinationBinding.Config` is never read); leave bindings bare and configure the transport on the sender. |
 

@@ -33,3 +33,6 @@ coverage*
 # Local Docker files (not needed inside the build)
 .dockerignore
 Dockerfile
+
+# Secondary checkouts (git worktree) — a whole second tree the image never needs
+.worktrees

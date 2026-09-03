@@ -6,18 +6,22 @@ wherever you run GoBridge; the concrete artifact differs by how you build it. Fo
 cloud-specific guidance, see [What's Next](#whats-next).
 
 > **The shipped container image is the AWS file-based deployment profile, not a
-> platform-neutral image.** The image (published by digest at the first command
-> release — see [Pin Images by Digest](container-deployment.md#pin-images-by-digest)) runs
+> platform-neutral image.** `ghcr.io/mariotoffia/gobridge` (published by digest
+> with every stable command release, `latest` guarded — see
+> [Pin Images by Digest](container-deployment.md#pin-images-by-digest)) runs
 > `deployment/aws-filebased-config` and is bound to AWS. It **requires** SSM to
 > resolve secrets — `admin_api_key_param` is mandatory
 > (`deployment/aws-filebased-config/lib/model/bootstrap.go`), the SSM
 > resolver runs at startup (`deployment/aws-filebased-config/lib/bootstrap/secrets.go`),
 > and it builds a DynamoDB client unconditionally
-> (`deployment/aws-filebased-config/lib/bootstrap/app.go`). To run on a
-> non-AWS platform — plain Kubernetes, bare metal, another cloud — build your own
-> composition-root binary using `cmd/gobridge/main.go` as the template and
-> register the transports, stores, and secret sources you need. The GoBridge core
-> and library are portable; the stock image is AWS-bound.
+> (`deployment/aws-filebased-config/lib/bootstrap/app.go`). On Kubernetes and
+> other non-AWS platforms run the maintained
+> [Kubernetes profile](../deployment/kubernetes/README.md), which packages the
+> reference binary (MQTT transport, memory/SQLite stores, `file://`
+> credentials, API keys from a Secret) and is tested end to end. For transports
+> neither bundles, build your own composition-root binary from
+> `cmd/gobridge/main.go`. The GoBridge core and library are portable; the stock
+> image is AWS-bound.
 
 ## Reference Binary and Composition Root
 
@@ -50,6 +54,7 @@ The reference binary takes these flags:
 | `-log-level` | `info` | Log level; an unrecognised value is rejected |
 | `-credentials-dir` | `credentials` | Base directory backing `file://` credential URIs |
 | `-start-empty` | `true` | Start with an empty configuration when `-config` does not exist. Set `false` to refuse to boot a bridge that would carry no routes -- a mistyped path or an unmounted volume then fails the process instead of quietly transporting nothing. |
+| `-seed-managed-subscriptions` | -- | Seed the managed-subscription baseline of a persistent/exclusive MQTT session and exit (repeatable). `session-id` attests a new broker identity with no subscriptions; `session-id=filter,filter` records the exact filters the existing broker session holds. Idempotent -- see [durable sessions](transports/mqtt-durable-sessions.md#managed-subscription-history). |
 
 Starting empty is a real, supported state, but a limited one: the empty
 configuration defines no `http` block, and this composition root binds its HTTP

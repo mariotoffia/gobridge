@@ -34,24 +34,24 @@ image is restarted by the orchestrator rather than left wedged
 
 ### Pin images by digest
 
-For reproducible builds, pin images by digest (`name@sha256:...`) rather than a
-floating tag such as `:latest`. This applies to the base and runtime images in
-the `Dockerfile` (`FROM ...@sha256:...`) and to the GoBridge image referenced in
-ECS task definitions or Kubernetes pod specs. A moving tag makes a rebuild
-non-reproducible and can pull an unexpected image on the next deploy. Resolve a
-tag to its digest once, then reference the digest:
+Deploy by digest (`ghcr.io/mariotoffia/gobridge@sha256:...`), never by tag.
+Every stable `cmd/gobridge/vX.Y.Z` release pushes the image by digest and
+attaches that digest to the release as `gobridge-image-digest.txt` — that asset
+is the authoritative version-to-image association, because no `vX.Y.Z`
+container tag exists. The one mutable tag, `latest`, is promoted from the
+released digest only when the release is the highest stable one; it is a
+convenience for `docker pull`, and a task definition or pod spec that names it
+can change under you on the next deploy. The same rule applies to the base
+images in the `Dockerfile` (`FROM ...@sha256:...`). To confirm what `latest`
+currently resolves to before you compare it against the asset:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/mariotoffia/gobridge:v0.2.0 \
+docker buildx imagetools inspect ghcr.io/mariotoffia/gobridge:latest \
   --format '{{json .Manifest.Digest}}'
 ```
 
-No image tags are published yet: the release workflow pushes the image **by
-digest only** (never `ghcr.io/...:vX.Y.Z`) after the first `cmd/gobridge/vX.Y.Z`
-command release is cut, recording the verified digest in
-`gobridge-image-digest.txt`. The `v0.1.0` / `v0.2.0` tags above are illustrative
-placeholders — until the first release, take the authoritative digest straight
-from that release asset rather than resolving a tag ([RELEASE.md](../../RELEASE.md)).
+Rolling back is redeploying the previous release's digest
+([RELEASE.md](../../RELEASE.md#image-publication)).
 
 ## SQLite store durability
 

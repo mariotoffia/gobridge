@@ -342,7 +342,8 @@ func main() {
     gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Bridge"), &gobridgesingle.SingleProps{
         Vpc:              vpc,
         Cluster:          cluster,
-        Image:            awsecs.ContainerImage_FromRegistry(jsii.String("ghcr.io/mariotoffia/gobridge:latest"), nil),
+        // Pin the digest from the release's gobridge-image-digest.txt asset.
+        Image:            awsecs.ContainerImage_FromRegistry(jsii.String("ghcr.io/mariotoffia/gobridge@sha256:<digest>"), nil),
         Bootstrap:        infra.BootstrapConfig{ /* admin/monitor addrs, etc. */ },
         BridgeConfig:     gobridgecdk.BridgeYamlAsset("config/bridge.yaml"),
         QueueRegistry:    queues,
@@ -544,8 +545,10 @@ Both base images are pinned by top-level multi-platform OCI index digest
 [DEVELOPMENT.md](../../DEVELOPMENT.md) (Base image digests). A source rebuild is
 reproducible only to the extent the pinned bases, the locked module `go.sum`, and
 the Go toolchain are fixed — nothing here claims bit-for-bit reproducibility
-beyond those. Published to `ghcr.io/mariotoffia/gobridge:<tag>` by the release
-workflow on core `v*` tags.
+beyond those. Published **by digest** to `ghcr.io/mariotoffia/gobridge` by the
+release workflow on stable `cmd/gobridge/vX.Y.Z` tags; the digest is the
+`gobridge-image-digest.txt` asset of that release and the only version-to-image
+association ([RELEASE.md](../../RELEASE.md#image-publication)).
 
 ## Integration Tests
 

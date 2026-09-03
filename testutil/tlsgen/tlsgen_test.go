@@ -151,3 +151,54 @@ func parseKey(t *testing.T, keyPEM string) any {
 		return nil
 	}
 }
+
+// A broker fixture that proves mutual TLS needs three distinct identities the
+// same authority vouches for: the CA, the server certificate the client
+// validates, and a client certificate the broker validates. Self-signed leaves
+// cannot express that — every one of them is its own authority, so a test using
+// them proves only that the material parses.
+func TestGenerate_LeafSignedByCAChainsToIt(t *testing.T) {
+	ca, err := tlsgen.Generate(tlsgen.Options{CommonName: "gobridge-test-ca", IsCA: true})
+	require.NoError(t, err)
+
+	leaf, err := tlsgen.Generate(tlsgen.Options{
+		CommonName:  "broker.local",
+		DNSNames:    []string{"broker.local", "localhost"},
+		IPAddresses: []string{"127.0.0.1"},
+		SignedBy:    ca,
+	})
+	require.NoError(t, err)
+
+	pool := x509.NewCertPool()
+	require.True(t, pool.AppendCertsFromPEM([]byte(ca.CertPEM)))
+
+	cert := parseCert(t, leaf.CertPEM)
+	_, err = cert.Verify(x509.VerifyOptions{Roots: pool, DNSName: "broker.local"})
+	require.NoError(t, err, "a leaf signed by the CA must verify against it")
+
+	assert.False(t, cert.IsCA, "a leaf must not be a certificate authority")
+	assert.Equal(t, ca.CertPEM, leaf.CAPEM,
+		"the leaf must carry its issuer so a caller has the trust anchor")
+}
+
+// A leaf signed by one authority must not verify against another. Without this
+// the mutual-TLS negative case — a client certificate the broker's CA never
+// signed — would prove nothing.
+func TestGenerate_LeafDoesNotChainToAForeignCA(t *testing.T) {
+	ca := tlsgen.MustGenerate(tlsgen.Options{CommonName: "trusted-ca", IsCA: true})
+	foreign := tlsgen.MustGenerate(tlsgen.Options{CommonName: "foreign-ca", IsCA: true})
+
+	leaf := tlsgen.MustGenerate(tlsgen.Options{
+		CommonName: "client", DNSNames: []string{"client"}, SignedBy: foreign,
+	})
+
+	pool := x509.NewCertPool()
+	require.True(t, pool.AppendCertsFromPEM([]byte(ca.CertPEM)))
+
+	_, err := parseCert(t, leaf.CertPEM).Verify(x509.VerifyOptions{
+		Roots:     pool,
+		DNSName:   "client",
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	})
+	require.Error(t, err, "a foreign-signed leaf must not verify against the trusted CA")
+}

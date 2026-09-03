@@ -225,6 +225,16 @@ senders:
 bindings:
   - id: to-sse
     sender_id: sse-out
+    address: events
+
+stores:
+  # The default policy dead-letters permanent failures; the quickstart keeps
+  # them in memory and acknowledges that a restart loses them. Scenario 7
+  # shows a durable DLQ.
+  dlq:
+    type: memory
+    options:
+      acknowledge_volatile: true
 
 routes:
   - id: forward

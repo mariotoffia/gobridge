@@ -153,9 +153,9 @@ func main() {
             Vpc:     vpc,
             Cluster: cluster,
             Image: awsecs.ContainerImage_FromRegistry(
-                // Pin a released tag (or, better, a digest) — see the
-                // "Pin images by digest" note in the deployment guide.
-                jsii.String("ghcr.io/mariotoffia/gobridge:v0.2.0"), nil),
+                // Pin the digest from the release's gobridge-image-digest.txt
+                // asset — see "Pin Images by Digest" in the deployment guide.
+                jsii.String("ghcr.io/mariotoffia/gobridge@sha256:<digest>"), nil),
             Bootstrap: infra.BootstrapConfig{
                 // NodeRole is forced per service by the facade — do not set it.
                 AdminAddr:        ":8080",
@@ -218,6 +218,15 @@ senders:
 bindings:
   - id: to-ingest
     sender_id: ingest
+    address: orders-out
+
+stores:
+  # A clustered deployment needs a distributed DLQ for the failures the
+  # default policy dead-letters.
+  dlq:
+    type: dynamodb
+    options:
+      table_name: gobridge-dlq
 
 routes:
   - id: forward
@@ -345,10 +354,29 @@ bridge:
 sessions:
   - id: mqtt-conn
     transport: mqtt
+    # direct_hold relies on the broker redelivering what a crashed process never
+    # acknowledged; only a persistent (or exclusive) session does that.
+    session_mode: persistent
     options:
       session:
         broker_url: tls://mqtt.example.com:8883
-        client_id: gobridge-worker   # give each worker task a unique id
+        client_id: gobridge-worker
+        client_id_suffix: hostname   # each worker task connects under its own id
+        assert_stable_client_identity: true
+        clean_start: false
+        session_expiry_interval: 3600
+
+stores:
+  # A persistent session keeps an exact record of the filters it installed on
+  # the broker (ADR 0003); a cluster keeps it in DynamoDB, seeded per worker.
+  managed_subscriptions:
+    type: dynamodb
+    options:
+      table_name: gobridge-managed-subscriptions
+  dlq:
+    type: dynamodb
+    options:
+      table_name: gobridge-dlq
 
 receivers:
   - id: mqtt-in
@@ -371,12 +399,23 @@ senders:
 bindings:
   - id: to-api
     sender_id: sse-out
+    address: events
+  - id: to-api-from-mqtt
+    sender_id: sse-out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # connect, subscribe, reconcile. A session nobody manages never subscribes.
+    session_id: mqtt-conn
+    address: events
 
 routes:
   - id: mqtt-forward
     receiver_id: mqtt-in
     delivery_mode: direct_hold
-    bindings: [to-api]
+    bindings: [to-api-from-mqtt]
+    policy:
+      # The shared subscription splits the stream across workers; no single
+      # owner fences it, and that is the intended scale-out.
+      allow_unfenced: true
   - id: sqs-forward
     receiver_id: sqs-in
     delivery_mode: direct_hold

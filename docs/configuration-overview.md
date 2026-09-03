@@ -182,10 +182,29 @@ bridge:
 sessions:
   - id: mqtt-conn
     transport: mqtt
+    # direct_hold relies on the broker redelivering what a crashed process never
+    # acknowledged; only a persistent (or exclusive) session does that.
+    session_mode: persistent
     options:
       session:
         client_id: bridge-01
+        clean_start: false
+        session_expiry_interval: 3600
         broker_urls: ["tcp://localhost:1883"]
+
+stores:
+  # A persistent session keeps an exact record of the filters it installed on
+  # the broker (ADR 0003); seed the baseline once, before the first start:
+  #   gobridge -config bridge.yaml -seed-managed-subscriptions mqtt-conn
+  managed_subscriptions:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/managed-subscriptions.db
+  # Where a message the route gives up on is kept.
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
 
 receivers:
   - id: sensor-in
@@ -205,6 +224,9 @@ senders:
 bindings:
   - id: to-archive
     sender_id: sensor-out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # connect, subscribe, reconcile. A session nobody manages never subscribes.
+    session_id: mqtt-conn
     address: archive/sensors
 
 routes:
@@ -213,6 +235,10 @@ routes:
     delivery_mode: direct_hold
     dispatch_mode: single
     bindings: [to-archive]
+    policy:
+      # Exactly one replica consumes this subscription; a second copy of this
+      # process would double-deliver. See Scenario 8 for fenced ownership.
+      allow_unfenced: true
 ```
 
 ### 2. Programmatic (Go Builder API)
@@ -247,16 +273,36 @@ bridge:
 sessions:
   - id: mqtt
     transport: mqtt
+    # direct_hold relies on the broker redelivering what a crashed process never
+    # acknowledged; only a persistent (or exclusive) session does that.
+    session_mode: persistent
     options:
       session:
         client_id: minimal-bridge
+        clean_start: false
+        session_expiry_interval: 3600
         broker_urls: ["tcp://localhost:1883"]
+
+stores:
+  # A persistent session keeps an exact record of the filters it installed on
+  # the broker (ADR 0003); seed the baseline once, before the first start:
+  #   gobridge -config bridge.yaml -seed-managed-subscriptions mqtt
+  managed_subscriptions:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/managed-subscriptions.db
+  # Where a message the route gives up on is kept.
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
 
 receivers:
   - id: in
     session_id: mqtt
     topics:
       - topic: "source/#"
+        qos: 1
 
 senders:
   - id: out
@@ -268,12 +314,19 @@ senders:
 bindings:
   - id: fwd
     sender_id: out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # connect, subscribe, reconcile. A session nobody manages never subscribes.
+    session_id: mqtt
     address: destination/all
 
 routes:
   - id: route
     receiver_id: in
     bindings: [fwd]
+    policy:
+      # Exactly one replica consumes this subscription; a second copy of this
+      # process would double-deliver. See Scenario 8 for fenced ownership.
+      allow_unfenced: true
 ```
 
 ## Go Bootstrap Pattern

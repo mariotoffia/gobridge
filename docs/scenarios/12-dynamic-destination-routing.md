@@ -86,7 +86,18 @@ senders:
 bindings:
   - id: to-factory-topic
     sender_id: mqtt-out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # a session nobody manages never connects, and every publish fails.
+    session_id: mqtt-conn
     address: "factory/{factory_id}/events"
+
+stores:
+  # The default policy dead-letters permanent failures and expired messages;
+  # a route that says so needs a store to write them to.
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/dlq.db
 
 routes:
   - id: dispatch
@@ -137,10 +148,27 @@ bridge:
 sessions:
   - id: mqtt-conn
     transport: mqtt
+    # direct_hold relies on the broker redelivering what a crashed process never
+    # acknowledged; only a persistent (or exclusive) session does that.
+    session_mode: persistent
     options:
       session:
         broker_url: tcp://localhost:1883
         client_id: topic-router-01
+
+stores:
+  # A persistent session keeps an exact record of the filters it installed on
+  # the broker (ADR 0003); seed the baseline once, before the first start:
+  #   gobridge -config bridge.yaml -seed-managed-subscriptions mqtt-conn
+  managed_subscriptions:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/managed-subscriptions.db
+  # Where a message the route gives up on is kept.
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
 
 receivers:
   - id: mqtt-in
@@ -159,6 +187,9 @@ senders:
 bindings:
   - id: to-region-topic
     sender_id: mqtt-out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # connect, subscribe, reconcile. A session nobody manages never subscribes.
+    session_id: mqtt-conn
     address: "processed/{region}/{event_type}"
 
 routes:
@@ -167,6 +198,10 @@ routes:
     delivery_mode: direct_hold
     dispatch_mode: single
     bindings: [to-region-topic]
+    policy:
+      # Exactly one replica consumes this subscription; a second copy of this
+      # process would double-deliver. See Scenario 8 for fenced ownership.
+      allow_unfenced: true
 ```
 
 A message on `events/temperature` with headers `region: "eu-west"`, `event_type: "temperature"` is published to `processed/eu-west/temperature`.

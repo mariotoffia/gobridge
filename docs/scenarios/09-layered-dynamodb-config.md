@@ -38,8 +38,9 @@ Both sources can emit change notifications. The file watcher uses fsnotify or SH
 
 ## Base YAML Config (Shared Defaults)
 
-This file lives in the repository and defines the structural skeleton -- sessions, receivers, senders, bindings, routes, and development-safe store backends.
+This file lives in the repository and defines the structural skeleton -- sessions, receivers, senders, bindings, routes, and development-safe store backends. It deliberately carries no broker URL -- the overlay below supplies it -- so on its own it is not a configuration a bridge can be built from.
 
+<!-- docs-example: skip -->
 ```yaml
 # base.yaml -- checked into git
 bridge:

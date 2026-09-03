@@ -37,15 +37,13 @@ flowchart LR
         Route[Route\nsensor-ingest\ndelivery: shared_outbox]
         OB[(Outbox Store\none record per destination)]
         DR[Outbox Drainer]
-        S1[Sender\nsqs-events]
-        S2[Sender\nsqs-audit]
-        S3[Sender\nhttp-analytics]
+        S[Sender\nmqtt-out]
     end
 
     subgraph Destinations
-        Q1["SQS\nsensor-events"]
-        Q2["SQS\nsensor-audit"]
-        H["SSE subscribers\nno buffer of their own"]
+        Q1["events/sensors"]
+        Q2["audit/sensors"]
+        Q3["analytics/sensors"]
     end
 
     T -->|subscribe| R
@@ -53,9 +51,9 @@ flowchart LR
     Route -->|2. persist 3 records| OB
     OB -->|3. ACK source| R
     DR -->|4. claim| OB
-    DR --> S1 --> Q1
-    DR --> S2 --> Q2
-    DR --> S3 --> H
+    DR --> S --> Q1
+    S --> Q2
+    S --> Q3
     DR -->|5. complete each\nindependently| OB
 
     style Route fill:#f96,stroke:#333
@@ -64,9 +62,12 @@ flowchart LR
 ```
 
 One message in, three destinations out. The outbox holds a record per
-destination, so each is completed on its own — and the HTTP endpoint, which
-cannot hold a request open while the bridge waits and has no queue of its own,
-is retried without replaying the two that already accepted.
+destination, so each is completed on its own: a destination that has to be
+retried does not replay the two that already accepted. The three destinations
+are three addresses of **one** sender -- a shared-outbox route drains through
+the sender named in its `session` block, so fan-out under the outbox is to
+several addresses of that sender (here three topics on the same broker).
+Destinations on different senders each need a route of their own.
 
 ## Direct Hold vs Shared Outbox
 
@@ -138,6 +139,10 @@ stores:
     type: dynamodb
     options:
       table_name: gobridge-leases
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/dlq.db
 
 receivers:
   - id: mqtt-in
@@ -147,39 +152,26 @@ receivers:
         qos: 1
 
 senders:
-  - id: sqs-events
-    transport: sqs
+  # One sender, three destinations. A shared-outbox route has one drainer,
+  # wired with the sender its session block names; every binding is an
+  # address on that sender. A destination on a different sender needs a route
+  # of its own.
+  - id: mqtt-out
+    session_id: mqtt-conn
     options:
-      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/sensor-events
-      region: us-west-1
-      batch_size: 10
-  - id: sqs-audit
-    transport: sqs
-    options:
-      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/sensor-audit
-      region: us-west-1
-      batch_size: 10
-  # The destination that cannot buffer for itself. It is the reason this route
-  # keeps its own record of what has been accepted: an SSE stream with nobody
-  # attached has nowhere to hold the message, and replaying it would also replay
-  # the two queues above.
-  - id: http-analytics
-    transport: http
-    options:
-      mode: sse
-      path: /analytics/v1/sensors
-      heartbeat_interval: 30s
+      sender:
+        qos: 1
 
 bindings:
   - id: to-events
-    sender_id: sqs-events
-    address: sensor-events
+    sender_id: mqtt-out
+    address: events/sensors
   - id: to-audit
-    sender_id: sqs-audit
-    address: sensor-audit
+    sender_id: mqtt-out
+    address: audit/sensors
   - id: to-analytics
-    sender_id: http-analytics
-    address: /analytics/v1/sensors
+    sender_id: mqtt-out
+    address: analytics/sensors
 
 routes:
   - id: sensor-ingest
@@ -197,7 +189,7 @@ routes:
       on_permanent_failure: dlq
     session:
       session_id: mqtt-conn
-      sender_id: sqs-events
+      sender_id: mqtt-out
       drain_interval: 1s
       drain_batch_size: 50
 ```

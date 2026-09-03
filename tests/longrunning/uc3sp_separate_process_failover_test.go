@@ -17,17 +17,20 @@ import (
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	// Aliased: this file already has a local `session` for the MQTT session.
+	sessioncfg "github.com/mariotoffia/gobridge/runtime/session"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TEST-2: Separate-OS-process exclusive failover
+// Separate-OS-process exclusive failover
 //
-// Closes the TEST-2 gap: the existing failover suites (uc3, e2e_failover) run
-// all "instances" as in-process *goruntime.Runtime objects and simulate a
+// The other failover suites (uc3, e2e_failover) run all "instances" as
+// in-process *goruntime.Runtime objects and simulate a
 // crash by cooperatively cancelling a context + suppressing the graceful lease
 // Release (uc3CrashableLeaseStore). That proves takeover LOGIC but not process
 // isolation, real broker-session boundaries, or a genuine SIGKILL.
@@ -76,6 +79,16 @@ const (
 	// regression toward the unbounded default (~336s) profile.
 	uc3spFailoverSLO = 25 * time.Second
 
+	// uc3spPublishedSLO is the ceiling for the PUBLISHED lease profile
+	// (session.HAConfig: 45s LeaseTTL, 10s renew). A SIGKILLed owner leaves no
+	// release behind, so the successor must wait out the whole TTL before its
+	// conditional Acquire can win, then poll, connect and satisfy its
+	// subscriptions. The ceiling is therefore the TTL plus the acquisition and
+	// activation work that follows it — not a tuned observation. Compressed
+	// timing (uc3spFailoverSLO above) proves the MECHANISM; this proves the
+	// profile an operator actually deploys.
+	uc3spPublishedSLO = routing.HALeaseTTL + 45*time.Second
+
 	uc3spNodeEnv        = "GOBRIDGE_UC3SP_NODE"
 	uc3spBrokerEnv      = "GOBRIDGE_UC3SP_BROKER"
 	uc3spQueueEnv       = "GOBRIDGE_UC3SP_QUEUE"
@@ -84,13 +97,58 @@ const (
 	uc3spSessionEnv     = "GOBRIDGE_UC3SP_SESSION"
 	uc3spTopicEnv       = "GOBRIDGE_UC3SP_TOPIC"
 	uc3spInstanceEnv    = "GOBRIDGE_UC3SP_INSTANCE"
+	uc3spProfileEnv     = "GOBRIDGE_UC3SP_PROFILE"
+
+	// uc3spPublishedProfile selects session.HAConfig in the child node. Any
+	// other value keeps the compressed timing the mechanism proof uses.
+	uc3spPublishedProfile = "published"
 )
+
+// failoverProfile is the lease timing a separate-process failover run drives.
+type failoverProfile struct {
+	// name appears in the reported samples so two runs are distinguishable.
+	name string
+	// env is what the child node reads to pick its session.Config.
+	env string
+	// slo is the failure-detection to ServiceLevelFull ceiling this profile is
+	// gated on.
+	slo time.Duration
+}
 
 // TestUC3SeparateProcessFailover validates exclusive active/standby failover
 // across a REAL SIGKILL of a REAL owner OS process, asserting the successor
 // reaches ServiceLevelFull with an advanced fencing version within
-// uc3FailoverSLO and that no message is lost across the transition.
+// uc3spFailoverSLO and that no message is lost across the transition. It runs
+// on COMPRESSED lease timing, which proves the mechanism;
+// TestUC3PublishedProfileFailover proves the profile operators deploy.
 func TestUC3SeparateProcessFailover(t *testing.T) {
+	runSeparateProcessFailover(t, failoverProfile{
+		name: "separate-process-warm",
+		env:  "compressed",
+		slo:  uc3spFailoverSLO,
+	})
+}
+
+// TestUC3PublishedProfileFailover runs the SAME two-process SIGKILL failover on
+// the lease profile the project publishes for high-availability clusters
+// (session.HAConfig), rather than on the compressed timing the mechanism proof
+// uses. It is the release gate for the failover claim: a compressed-timing pass
+// says the takeover logic is correct, and says nothing about whether the
+// profile an operator deploys meets its objective.
+//
+// It asserts the same four facts at the published cadence: the successor
+// reaches ServiceLevelFull, its fencing version strictly advances, the whole
+// transition lands inside the declared ceiling, and every message is delivered
+// across it.
+func TestUC3PublishedProfileFailover(t *testing.T) {
+	runSeparateProcessFailover(t, failoverProfile{
+		name: "separate-process-published",
+		env:  uc3spPublishedProfile,
+		slo:  uc3spPublishedSLO,
+	})
+}
+
+func runSeparateProcessFailover(t *testing.T, profile failoverProfile) {
 	infra := withFreshInfra(t)
 
 	ddbClient := ddblocal.Client(t)
@@ -120,6 +178,7 @@ func TestUC3SeparateProcessFailover(t *testing.T) {
 			uc3spSessionEnv:     sessionID,
 			uc3spTopicEnv:       uc3spTopic,
 			uc3spInstanceEnv:    instanceID,
+			uc3spProfileEnv:     profile.env,
 			"DYNAMODB_ENDPOINT": infra.DDBEndpoint,
 			"FLOCI_ENDPOINT":    infra.SQSEndpoint,
 		}
@@ -165,7 +224,7 @@ func TestUC3SeparateProcessFailover(t *testing.T) {
 	// The standby's own DeepHealth-derived NODE_FULL token is the ServiceLevelFull
 	// barrier; a generous await bound lets a REGRESSION past the SLO still return
 	// a real duration for a clean SLO assertion rather than a bare timeout.
-	successorTok := standbyNode.awaitToken(t, "NODE_FULL", 3*uc3spFailoverSLO)
+	successorTok := standbyNode.awaitToken(t, "NODE_FULL", 3*profile.slo)
 	warmDuration := clock.System.Since(warmDetectedAt)
 	successorInst := strings.TrimPrefix(successorTok, "NODE_FULL:")
 
@@ -175,11 +234,11 @@ func TestUC3SeparateProcessFailover(t *testing.T) {
 		"fencing version must strictly advance on failover: initial=%d successor=%d",
 		initialLease.Version, successorLease.Version)
 
-	reportUC3FailoverSamples(t, "separate-process-warm", []time.Duration{warmDuration})
-	require.LessOrEqualf(t, warmDuration, uc3spFailoverSLO,
-		"separate-process failover to ServiceLevelFull took %s, exceeding the %s objective "+
+	reportUC3FailoverSamples(t, profile.name, []time.Duration{warmDuration})
+	require.LessOrEqualf(t, warmDuration, profile.slo,
+		"%s failover to ServiceLevelFull took %s, exceeding the %s objective "+
 			"(regression toward the unbounded default profile?)",
-		warmDuration, uc3spFailoverSLO)
+		profile.name, warmDuration, profile.slo)
 
 	// At-least-once across the failover: every message eventually arrives.
 	lrWaitFor(t, 150*time.Second, fmt.Sprintf("%d messages received", uc3spMsgCount),
@@ -243,6 +302,14 @@ func TestUC3SeparateProcessFailoverNode(t *testing.T) {
 	session := newMQTTSessionWithBroker(t, broker, instanceID, connectivity.SessionExclusive, 64, 5)
 	sender := setupMQTTSender(t, session)
 	sessionConfig := lrSessionConfig(sessionID)
+	if os.Getenv(uc3spProfileEnv) == uc3spPublishedProfile {
+		// The published high-availability preset, with the objective the parent
+		// gates on declared on the config so the runtime's own budget preflight
+		// has to accept it too. A profile whose declared timing the runtime
+		// refuses is not a profile anyone can deploy.
+		sessionConfig = sessioncfg.HAConfig(sessionID, true)
+		sessionConfig.FailoverSLO = uc3spPublishedSLO
+	}
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID(instanceID),

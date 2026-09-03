@@ -9,6 +9,11 @@ on:
   pull_request:
     branches: [main, master]
   workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: 'Per-target fuzzing duration for the fuzz job (e.g. 5m, 30m)'
+        required: false
+        default: '5m'
   # Nightly schedule paused on request. Re-enable by uncommenting; GitHub only
   # honours `schedule:` from the default branch, so this must be changed on
   # main to take effect. The full suite still runs on every push and PR, and
@@ -50,6 +55,14 @@ jobs:
       - name: Check published documentation structure
         run: go -C tests/docsexamples test -count=1 -run 'TestGovernedMarkdown_|TestMarkdownScanner_' ./...
 
+      # The long-running suite is invisible to every default-tag walk, so a
+      # refactor can delete a production proof and leave the branch green.
+      # Vetting it under its own tag type-checks every file in seconds. It is
+      # only ever COMPILED here: nothing carrying the longrunning tag runs in
+      # the cloud (see docs/internals/testing-slow-suites.md).
+      - name: Compile and vet the long-running suite
+        run: go -C tests/longrunning vet -tags=longrunning ./...
+
       - name: Run uncached module tests
         run: make test
 
@@ -84,6 +97,37 @@ jobs:
         with:
           name: integration-test-reports
           path: reports/
+          if-no-files-found: ignore
+
+  # Mutation fuzzing, on demand. The seed corpora run on every pull request as
+  # ordinary unit tests; this job mutates, which is what finds the input nobody
+  # thought of. It is workflow_dispatch-only rather than scheduled because the
+  # nightly cron is paused for this repository — add it to the `schedule:` block
+  # above to run it nightly. Crashers are uploaded so they can be committed as
+  # seeds. `make fuzz` is the same gate on a developer machine.
+  fuzz:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25'
+
+      - name: Mutate every fuzz target
+        run: make fuzz FUZZTIME=${{ inputs.fuzztime || '5m' }}
+
+      - name: Upload fuzz report and any crashers
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-reports
+          path: |
+            reports/fuzz.log
+            **/testdata/fuzz/**
           if-no-files-found: ignore
 
   lint:

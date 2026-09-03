@@ -3,7 +3,7 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test test-integration test-local-deploy test-long-running lint lint-fix check check-all clean tidy sync help
+.PHONY: all build test test-integration test-local-deploy test-long-running test-release-gate test-soak fuzz lint lint-fix check check-all clean tidy sync help
 .PHONY: install vulncheck update update-major outdated
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
@@ -296,6 +296,100 @@ test-local-deploy: audit-timings audit-test-timings docker-build ## Deploy the A
 		fi; \
 		exit $$rc'
 
+# The proofs a release rests on, named exactly. `go test -run` treats a pattern
+# that matches nothing as success, so a renamed test would quietly drop its
+# proof from the gate while the run still reported green — every name here is
+# pinned against the suite by tests/docsexamples, which runs on every pull
+# request. One entry per behaviour the release claims: process death,
+# separate-process failover, the published lease profile, no-loss under a
+# rolling restart, message conservation at the declared release volume,
+# broker kill/restart, and broker-path isolation under a flapping broker.
+# TestMQTTIngressMemory is deliberately absent: it asserts nothing without a
+# real cgroup bound, so scripts/test-mqtt-ingress-memory.sh runs it instead.
+RELEASE_LONGRUNNING_TESTS := \
+	TestTask14_ProcessKillBoundaries \
+	TestUC3SeparateProcessFailover \
+	TestUC3PublishedProfileFailover \
+	TestUC12_RollingRestart_NoMessageLoss \
+	TestGAP_ReleaseVolumeConservation \
+	TestUC42_BrokerKillRestart_SharedOutbox \
+	TestUC49_SharedOutboxVsDirectHold_BrokerFlapping
+
+# Anchored alternation: ^(A|B|C)$ so a prefix cannot pull in a neighbour.
+RELEASE_LONGRUNNING_RUN = ^($(shell echo $(RELEASE_LONGRUNNING_TESTS) | tr ' ' '|'))$$
+
+test-release-gate: audit-timings audit-test-timings ## Run only the long-running proofs a release is gated on (Docker; developer machine)
+	@mkdir -p reports
+	@echo "Running the release long-running subset..."
+	@echo "Report will be saved to: reports/test-release-gate.log"
+	@bash -c 'set -o pipefail; start=$$(date +%s); \
+		AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+		GOBRIDGE_MQTT_MEMORY=256m GOBRIDGE_MQTT_CPUS=2.0 \
+		GOBRIDGE_AWS_EMULATOR_MEMORY=2g GOBRIDGE_AWS_EMULATOR_CPUS=2.0 \
+		GOBRIDGE_DDB_MEMORY=1g GOBRIDGE_DDB_CPUS=2.0 \
+		go -C tests/longrunning test -count=1 -race -timeout 10800s -v -tags=longrunning \
+			-run "$(RELEASE_LONGRUNNING_RUN)" ./... 2>&1 | tee reports/test-release-gate.log; \
+		rc=$$?; \
+		echo ""; \
+		echo "selected: $(RELEASE_LONGRUNNING_TESTS)"; \
+		echo "ran:      $$(grep -cE "^--- (PASS|FAIL): " reports/test-release-gate.log || true)"; \
+		echo "duration: $$(( $$(date +%s) - start ))s"; \
+		echo "report:   reports/test-release-gate.log"; \
+		if [ $$rc -ne 0 ]; then echo ""; echo "FAILED tests:"; \
+			grep -E "^--- FAIL:" reports/test-release-gate.log || true; fi; \
+		exit $$rc'
+	# The cgroup proof is the release gate's other half: run through the suite
+	# it detects no memory bound and skips itself, so the harness re-runs it
+	# inside a container with an enforced limit.
+	@scripts/test-mqtt-ingress-memory.sh
+
+# The published soak profile. `make test-long-running` runs the same test at its
+# short profile so the suite stays usable; this target runs it for the full
+# declared hour, which is what a slow goroutine, timer, connection or memory
+# leak needs to become visible. Give it the time — it is a developer-machine
+# run, never a CI one.
+test-soak: audit-timings audit-test-timings ## Run the 60-minute soak profile (Docker; developer machine, ~70 min)
+	@mkdir -p reports
+	@echo "Running the 60-minute soak profile (this takes over an hour)..."
+	@bash -c 'set -o pipefail; start=$$(date +%s); \
+		AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+		GOBRIDGE_SOAK_DURATION=60m \
+		go -C tests/longrunning test -count=1 -race -timeout 10800s -v -tags=longrunning \
+			-run "^TestUC68_Soak$$" ./... 2>&1 | tee reports/test-soak.log; \
+		rc=$$?; \
+		echo ""; \
+		echo "duration: $$(( $$(date +%s) - start ))s"; \
+		echo "report:   reports/test-soak.log"; \
+		exit $$rc'
+
+# Time-bounded fuzzing. Seed corpora already run on every pull request as
+# ordinary unit tests; this target mutates. Each target gets FUZZTIME (default
+# 5m) of its own, so the whole run costs targets x FUZZTIME. Crashers land in
+# the package's testdata/fuzz directory — commit them, they become seeds.
+FUZZTIME ?= 5m
+
+# One `<package directory>:<target>` entry per fuzz target. `go test -fuzz` can
+# mutate only one target in one package per run, so each entry is its own run.
+# tests/docsexamples pins every name here against the source: a renamed target
+# would otherwise leave this list selecting nothing and still exit 0.
+FUZZ_TARGETS := \
+	runtime:FuzzRenderAddress \
+	domain/messaging:FuzzEnvelopeHeaderRoundTrip \
+	adapters/mqtt/transport/paho:FuzzValidateMQTTTopic \
+	adapters/mqtt/transport/paho:FuzzIngressPublishProperties
+
+fuzz: ## Mutate every fuzz target for FUZZTIME each (default 5m; developer machine)
+	@mkdir -p reports
+	@echo "Fuzzing each target for $(FUZZTIME)..."
+	@bash -c 'set -o pipefail; rc=0; : > reports/fuzz.log; \
+		for entry in $(FUZZ_TARGETS); do \
+			dir=$${entry%%:*}; target=$${entry##*:}; \
+			echo "--- $$dir $$target ---" | tee -a reports/fuzz.log; \
+			(go -C "$$dir" test -run "^$$target$$" -fuzz "^$$target$$" \
+				-fuzztime=$(FUZZTIME) . 2>&1) | tee -a $(PWD)/reports/fuzz.log || rc=$$?; \
+		done; \
+		echo ""; echo "report: reports/fuzz.log"; exit $$rc'
+
 test-long-running: audit-timings audit-test-timings ## Run long-running stress tests (requires Docker, -tags=longrunning)
 	@mkdir -p reports
 	@echo "Running long-running stress tests..."
@@ -370,6 +464,17 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 		echo "--- Vetting $$dir ---" | tee -a reports/go-vet.log; \
 		(cd "$$dir" && GOWORK="$$gowork" go vet ./... 2>&1) | tee -a $(PWD)/reports/go-vet.log; \
 	done'
+	# The long-running suite carries a build tag nothing above supplies, so the
+	# module walk lists no packages for it and skips it entirely. Vetting it
+	# under its own tag type-checks every file, so a refactor that breaks a
+	# production proof fails the branch instead of surfacing hours later on a
+	# developer machine. Compiling it is all that happens here — running it is
+	# `make test-long-running`, a developer-machine target, never a CI one.
+	@echo "=== go vet (tests/longrunning, tagged) ==="
+	@bash -c 'set -o pipefail; echo "--- Vetting ./tests/longrunning (-tags=longrunning) ---" \
+		| tee -a reports/go-vet.log; \
+		go -C tests/longrunning vet -tags=longrunning ./... 2>&1 \
+		| tee -a $(PWD)/reports/go-vet.log'
 	@echo "=== golangci-lint ==="
 	@bash -c 'major=$$(golangci-lint version 2>/dev/null | sed -nE "s/.*version v?([0-9]+).*/\1/p" | head -1); \
 	if [ "$$major" != "2" ]; then \
