@@ -55,6 +55,14 @@ func waitForEverySlot(
 		return true, nil
 	})
 	if err != nil {
+		// No member at all is a different failure from one member missing, and it
+		// is the one whose cause is never in this process: every task is down or
+		// crash-looping, and only the containers' own logs say why.
+		if len(found) == 0 {
+			t.Fatalf("no member of the roster %v answered at all, so every task is down or "+
+				"crash-looping — read the deployed containers' own logs (GOBRIDGE_INT_KEEP=1 keeps "+
+				"them) rather than looking for a protocol fault here", roster)
+		}
 		t.Fatalf("the running cohort never settled on exactly the roster %v with a fresh observation "+
 			"from each: last observed %v", roster, keysOf(found))
 	}
@@ -229,4 +237,61 @@ func waitSlotAtGeneration(
 		t.Fatalf("slot %s did not come back on generation %d", memberID, generation)
 	}
 	return observed
+}
+
+// rolloutOutcome is what a windowed rollout settled on, and who voted for it.
+type rolloutOutcome struct {
+	Generation uint64
+	State      string
+	Acked      []string
+}
+
+// waitCohortSettled polls until every listed member agrees on the SAME terminal
+// outcome for the SAME rollout past after, and returns it.
+//
+// Unlike waitCohortRejected it admits every terminal state, because a windowed
+// rollout has three of them and which one it reaches is the assertion rather than
+// the precondition: confirmed means the cohort kept the change, reverted means it
+// accepted it and took it back, aborted means it never accepted it at all.
+// Agreement is still required — a cohort where one member confirmed and another
+// reverted is the split the barrier exists to rule out.
+func waitCohortSettled(
+	t *testing.T,
+	ctx context.Context,
+	probe cohortProbe,
+	adminKey string,
+	roster []string,
+	after uint64,
+	timeout time.Duration,
+) rolloutOutcome {
+	t.Helper()
+	var settled rolloutOutcome
+	var last map[string]slotHealth
+	err := pollUntil(ctx, 2*time.Second, timeout, func() (bool, error) {
+		last, _ = observeSlots(ctx, probe, adminKey)
+		var agreed rolloutOutcome
+		for _, id := range roster {
+			health, ok := last[id]
+			if !ok || !health.fresh() || health.ConfirmPending || health.Generation <= after {
+				return false, nil
+			}
+			if !rolloutIsSettled(health.State) && health.State != rolloutStateConfirmed {
+				return false, nil
+			}
+			if agreed.Generation == 0 {
+				agreed = rolloutOutcome{Generation: health.Generation, State: health.State, Acked: health.Acked}
+				continue
+			}
+			if health.Generation != agreed.Generation || health.State != agreed.State {
+				return false, nil // members still disagree about the outcome
+			}
+		}
+		settled = agreed
+		return true, nil
+	})
+	if err != nil {
+		t.Fatalf("the cohort never agreed on a terminal outcome for a rollout past generation %d: %+v",
+			after, last)
+	}
+	return settled
 }

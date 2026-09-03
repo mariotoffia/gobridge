@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"slices"
 	"sync"
 	"time"
 
@@ -60,6 +61,24 @@ type rolloutObserver struct {
 	artifactGen    uint64
 	terminalGen    uint64
 	terminalReason string
+	// proposalRefusal is why this member's own barrier last refused to carry a
+	// delta its config source delivered — the one reason a member goes silent
+	// that nothing in the shared row can show. Cleared when a proposal succeeds
+	// and when this member is seen to have voted.
+	proposalRefusal string
+}
+
+// noteProposal records the outcome of this member's attempt to propose or join a
+// rollout for a delta its own config source delivered. A refusal is the reason
+// this member will not vote, so it is published beside the row it is silent on.
+func (o *rolloutObserver) noteProposal(err error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if err == nil {
+		o.proposalRefusal = ""
+		return
+	}
+	o.proposalRefusal = err.Error()
 }
 
 // newRolloutObserver builds the observer for one drive.
@@ -111,6 +130,12 @@ func (o *rolloutObserver) observe(r persistence.Rollout, memberID string, staged
 	o.mu.Lock()
 	o.observedAt = o.now()
 	o.lastErr = ""
+	if _, voted := r.Acks()[memberID]; voted {
+		o.proposalRefusal = ""
+	}
+	if _, voted := r.Nacks()[memberID]; voted {
+		o.proposalRefusal = ""
+	}
 	o.snap = RolloutStatus{
 		MemberID:       memberID,
 		Generation:     r.Generation(),
@@ -124,6 +149,7 @@ func (o *rolloutObserver) observe(r persistence.Rollout, memberID string, staged
 		Reason:         r.Reason(),
 		Staged:         staged,
 		Applied:        applied,
+		NotVoting:      notVotingReason(r, memberID, staged, o.proposalRefusal),
 	}
 	o.diverged = rolloutDiverged(r, applied)
 	// Count a terminal outcome exactly once per generation. Done under the same
@@ -346,4 +372,37 @@ func (o *rolloutObserver) publishLevels() {
 		return
 	}
 	o.metrics.Gauge(shared.MetricClusterRolloutObservationAge, o.now().Sub(since).Seconds())
+}
+
+// notVotingReason says why memberID has not voted on r, in the words an operator
+// needs to act, and "" once it has voted or has nothing standing in its way.
+//
+// The three causes are three different jobs. A member outside the frozen epoch
+// is a roster or an identity that does not match the deployment. A member whose
+// barrier refused the delta is a change the cohort cannot agree on and needs
+// re-proposing, usually because this member and the proposer do not read the same
+// document. A member that never staged the candidate is a lagging config source,
+// which the deadline already bounds and which usually needs nothing at all.
+func notVotingReason(r persistence.Rollout, memberID string, staged bool, refusal string) string {
+	if r.IsTerminal() {
+		return ""
+	}
+	if _, voted := r.Acks()[memberID]; voted {
+		return ""
+	}
+	if _, voted := r.Nacks()[memberID]; voted {
+		return ""
+	}
+	if !slices.Contains(r.MembershipEpoch(), memberID) {
+		return "this member is not in the rollout's frozen membership epoch, so its vote could never " +
+			"be counted; reconcile bridge.cluster.members against this member's identity"
+	}
+	if refusal != "" {
+		return "this member's barrier refused to carry the delta its own config source delivered: " + refusal
+	}
+	if !staged {
+		return "this member's own config source has not delivered the candidate config yet, so it has " +
+			"nothing to vote on"
+	}
+	return ""
 }

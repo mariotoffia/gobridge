@@ -209,15 +209,14 @@ func (h supervisorRolloutHost) ApplyCommitted(ctx context.Context, cfg *ports.Br
 func (h supervisorRolloutHost) MarkDegraded(reason string) { h.s.markDegraded(reason) }
 
 // Converged reports whether the Supervisor's active runtime has reached the
-// post-swap readiness level the convergence watch uses. It is the same
-// signal watchPostSwapConvergence samples, read on demand for the confirm window.
-func (h supervisorRolloutHost) Converged(ctx context.Context) bool {
+// post-swap readiness level, and whether that answer rests on a session it
+// actually observed (ports.RolloutConvergence).
+func (h supervisorRolloutHost) Converged(ctx context.Context) (bool, bool) {
 	rt := h.s.Runtime()
 	if rt == nil {
-		return false
+		return false, false
 	}
-	converged, _ := runtimeConverged(ctx, rt)
-	return converged
+	return ports.RolloutConvergence(rt.DeepHealth(ctx))
 }
 
 func (h supervisorRolloutHost) RolloutLogger() *slog.Logger { return h.s.logger }

@@ -56,6 +56,16 @@ type RolloutStatus struct {
 	// config source must deliver before it can vote. A false here on a
 	// long-staging rollout identifies this member as the one holding it up.
 	Staged bool
+	// NotVoting says WHY this member has not voted on the observed rollout, and
+	// is empty once it has (or when it has nothing standing in its way).
+	//
+	// Staged alone reports only that the candidate is missing, which is the
+	// benign case — a lagging watcher the deadline already bounds. The case an
+	// operator cannot diagnose without this is the member whose config source DID
+	// deliver the change and whose barrier then refused to join the rollout
+	// carrying it. Without a reason here, the whole cohort reports "waiting for
+	// acks" and the only account of the refusal is a line in one member's log.
+	NotVoting string
 	// Applied reports whether this member is actually RUNNING the generation's
 	// config — answered by comparing its running config against the digest the
 	// cohort agreed on, so it holds after a restart, after a catch-up from the

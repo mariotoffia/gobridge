@@ -90,6 +90,7 @@ locally, the measured reason.
 |---|---|---|
 | Data plane | SQS↔SQS round trip, batch of ten without duplicates | `TestLocal_SQSDataPlane` |
 | Data plane | MQTT→SQS and SQS→MQTT with `Subject` preserved and the binding's `Address` honoured | `TestLocal_MQTTSubjectAndAddressMapping` |
+| Delivery mode | an MQTT ingress on a durable session runs `direct_hold` — no outbox, no lease, no partition | **not covered locally** — the route needs a durable MQTT session, which owes the broker a managed-subscription store (ADR 0003), and neither store this profile offers can be stood up in a local single-task topology (see *Not yet stood up*) |
 | Deployment shape | outputs well-formed, health-check path parity, task role assumable and scoped | `TestLocal_DeploymentShape` |
 | Deployment shape | destroy leaves nothing | `TestLocal_DestroyLeavesNothing` |
 | Deployment shape | control-written config visible to a worker (the shared-storage proof) | `TestLocal_ClusterSharedConfigAndScaling` |
@@ -98,7 +99,8 @@ locally, the measured reason.
 | Resilience | dead-letter entry and redrive | `TestLocal_DeadLetterAndAlarms` |
 | Rollout | propose, commit, converge, member restart, rollback | `TestLocal_StaticSlotCohort` |
 | Rollout | a change one member cannot answer for is applied by nobody | `TestLocal_StaticSlotCohort` |
-| Rollout | the confirm window: a change every member accepts and none can run takes the cohort back | **not covered locally** — convergence is decided by session readiness, and neither lever that could withhold it is reachable: a session's transport options are not part of the admin config overlay's wire form, and a subscription change was acked only by the member that proposed it, so the barrier aborted at the vote |
+| Rollout | a subscription change is agreed by the WHOLE cohort, not only by the member that proposed it | `TestLocal_StaticSlotCohort` |
+| Rollout | the confirm window: a change every member accepts and none can run takes the cohort back | **not covered — a product defect, not an emulation gap.** The phase exists and drives the change (a subscription asking for a QoS the broker caps below it); the cohort CONFIRMS it instead of reverting, because every member's ingress session is deferred-connect and lease-held and a deferred-connect session without the lease is excluded from the readiness fold, so convergence is recorded before any member has spoken to the broker. The phase records that and skips; its revert assertion starts running the day the convergence signal stops being vacuous |
 | Observability | runtime metrics reach CloudWatch and the alarm's own query crosses its threshold on them | `TestLocal_DeadLetterAndAlarms` |
 | Observability | an alarm driven into ALARM reaches its subscription | **not covered locally** — `TestLocal_DeadLetterAndAlarms` proves the topic's subscription carries messages, then skips: `SetAlarmState` does not run the alarm's actions on this emulator |
 
@@ -114,6 +116,7 @@ Each of these was measured, not assumed.
 | **IAM is not evaluated.** A call the assumed task role has no grant for still succeeds. | The granted half is executed as the task role. For the denied half, the policy CloudFormation attached to the deployed role is read back and every SQS grant in it must name this deployment's own queues. | That AWS refuses the non-granted call. |
 | **CloudFormation cannot update an `AWS::ECS::Service`.** It reports the service it created as not found, then cannot roll back. | The idempotent-redeploy test skips with that reason rather than reporting a deployment defect that does not exist. | Whether re-deploying the same template is a no-op. Synth and the credentialed suite own it. |
 | **EFS has no NFS data plane** and CloudFormation drops task-definition volumes. | The harness rewrites each EFS volume to a host bind mount before deploy, and re-registers each deployed task definition with the volumes and mount points the assembly declared. | That the declared task definition reaches ECS intact. |
+| **The config mount's ownership is not reproducible.** The shipped EFS access point creates it `755` owned by the container user; the harness bind-mounts a host directory `0777`, because a bind mount is not uid-mapped on every Docker host and the container must be able to write the seeded document whatever uid it runs as. A SQLite store refuses a group- or other-writable parent, so it refuses the local mount — measured, not assumed: a deployed task names it (`managed subscription SQLite parent component "gobridge" is writable by group or other`). | Nothing. The profile also refuses a SQLite path outside the mount at synth (`path %q is outside the EFS mount`), correctly — a store on the container's own filesystem is lost on every task replacement — so there is nowhere else to put it. | Every SQLite store on a deployed task. See *Not yet stood up*. |
 | **Container `dependsOn` is not modelled.** | Nothing. A member may start before its seeder has written the shared document, exit, and be replaced until it is there. | The seeder gate. No claim rests on it. |
 | **Container stdout does not reach the `awslogs` driver.** | Log assertions read the container's own logs. | Nothing material. |
 | **A destroyed stack can leave its log group behind**, and the profile names log groups from the construct id rather than the stack — so a later deployment of the same facade collides with a stack that no longer exists. | The harness removes the profile's log groups before each deploy. | Nothing: the collision itself is a real property of the profile (two deployments of the same facade in one account and region collide), which is why the suite deploys one topology at a time. |
@@ -124,16 +127,25 @@ Each of these was measured, not assumed.
 Three shapes an operator can choose today that no deployed run has exercised.
 They are open work, not gaps in the emulator — each is buildable here.
 
-- [ ] **SQLite stores on a deployed task.** Every run above uses in-memory
-      stores or DynamoDB. What a deployment adds over a unit test is the
-      filesystem: the SQLite stores refuse a parent directory that is not owned
-      by the process user with mode `0700`, which is a property of the image and
-      the mount rather than of the store.
-- [ ] **Config held in DynamoDB.** A base file plus a DynamoDB overlay is a
-      documented pattern ([configuration overview](../configuration-overview.md),
-      [config stores](../config-stores.md)), but the `aws-filebased-config`
-      profile wires a single `file` layer with no overlay, so it is reachable
-      only through the programmatic API today.
+- [ ] **SQLite stores on a deployed task.** Attempted, and the reason it cannot
+      be closed locally is now measured twice rather than assumed. The profile
+      refuses a SQLite store path outside the config mount at synth — correctly,
+      because a store on the container's own filesystem is lost on every task
+      replacement — and the store then refuses the mount itself, because the
+      harness bind-mounts a host directory `0777` where the EFS access point
+      creates `755` owned by the container user, and a bind mount is not
+      uid-mapped on every Docker host. Closing it needs the harness to reproduce
+      the access point's ownership portably, which is its own piece of work; the
+      credentialed suite can stand it up today.
+- [x] **Config held in DynamoDB.** Decided rather than built: this profile does
+      **not** expose an overlay layer, and both pages now say so ([configuration
+      overview](../configuration-overview.md#overlays-and-the-admin-config-api-do-not-compose),
+      [config stores](../config-stores.md#dynamodb-loader)). Its admin config
+      transaction API reads and writes the base document, so an overlay changing
+      underneath it makes the running config and the document the API commits to
+      two different things — and for a coordinated cohort, two writers of the
+      candidate identity a rollout has to agree on. The layered pattern stays a
+      programmatic-API one.
 - [ ] **Lambda either side of the bridge.** Probe P3 has never been run. It also
       needs `testutil/SPEC.md` extended before a test can be written: packaging a
       function for the emulator, asserting its event source mapping, and what a

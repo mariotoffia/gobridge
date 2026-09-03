@@ -53,7 +53,7 @@ func TestRuntime_PanicRecovery_MarksUnhealthy(t *testing.T) {
 	cfg := goruntime.RouteConfig{
 		ID:                 "panic-route",
 		Policy:             routing.RoutePolicy{}.WithDefaults(),
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 
 	if err := rt.AddRoute(cfg, panicReceiver, sender, nil, nil); err != nil {
@@ -118,7 +118,7 @@ func TestRuntime_PanicRecovery_DoesNotCrash(t *testing.T) {
 	cfg := goruntime.RouteConfig{
 		ID:                 "no-crash-route",
 		Policy:             routing.RoutePolicy{}.WithDefaults(),
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 
 	_ = rt.AddRoute(cfg, panicReceiver, NewFakeSender(), nil, nil)
@@ -155,7 +155,7 @@ func TestRuntime_FatalComponentError_IsTerminal(t *testing.T) {
 	cfg := goruntime.RouteConfig{
 		ID:                 "fatal-route",
 		Policy:             routing.RoutePolicy{}.WithDefaults(),
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	if err := rt.AddRoute(cfg, recv, NewFakeSender(), nil, nil); err != nil {
 		t.Fatalf("AddRoute failed: %v", err)

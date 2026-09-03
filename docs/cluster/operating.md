@@ -1,12 +1,17 @@
 # Operating a coordinated cohort
 
 This is the day-to-day guide to changing the config of a cohort running in
-**coordinated** mode (setups 3 and 4 in the [configuration guide](README.md)) —
+**coordinated** mode (setups 4 and 5 in the [configuration guide](README.md)) —
 in plain language, no downtime, no manual steps.
 
-If your change is **replacement-required**, or your cohort is **not** in
-coordinated mode, changing config is a manual stop-and-restart instead — see the
+If your change is **replacement-required**, it is a manual stop-and-restart
+whatever mode you run — see the
 [whole-cohort replacement procedure](../runbooks/cluster-config-rollout.md).
+
+If your cohort runs `cluster.rollout: independent` (setup 3), none of this
+applies: there is no barrier, no vote and no rollout to watch. You write the
+change and each process applies it itself; you watch the processes, not a
+protocol.
 
 ---
 
@@ -112,9 +117,27 @@ in a coordinated cohort:
 
 | Class | Examples | How it is applied |
 |---|---|---|
-| **live-safe** | routing/binding changes, processor tuning, log level, non-identity session options, adding/removing a non-durable route | Coordinated barrier (no downtime) |
-| **replacement-required** | changing a durable session identity (client id, subscription); changing a lease / outbox / DLQ **store target**; changing `deployment_mode` | Whole-cohort replacement |
+| **live-safe** | routing/binding changes, processor tuning, log level, non-identity session options, adding/removing a non-durable route, **changing a receiver's subscription list** | Coordinated barrier (no downtime) |
+| **replacement-required** | changing a durable session **identity** (the client id the broker keys the session on); changing a lease / outbox / DLQ / managed-subscription **store target**; changing `deployment_mode` | Whole-cohort replacement |
 | **replacement-required (cohort shape)** | changing `bridge.cluster.members` (the roster), `bridge.cluster.endpoints`, or `bridge.cluster.rollout` itself | Whole-cohort replacement |
+
+**A subscription change is live-safe, and that is what the managed-subscription
+store is for.** A durable MQTT session keeps an exact record of the filters it
+installed, so a reconcile converges both an added and a removed topic against
+that history ([ADR 0003](../adr/0003-mqtt-persistent-session-hygiene.md)) — the
+session's *identity* is what cannot move, not its subscription set. A member that
+cannot build the change says so with a **nack** and the rollout aborts at the
+vote; it does not sit until the deadline. The one class that does: a durable MQTT
+session with subscriptions and no `stores.managed_subscriptions` cannot be built
+at all, so every member nacks it and the cohort learns immediately.
+
+Adding a subscription is also the change most likely to *commit and not
+converge*: the broker decides whether it grants the filter, and at the QoS asked
+for. That is what the [confirm
+window](../adr/0014-confirm-window-provisional-commit.md) exists for — set
+`bridge.cluster.confirm_window` and a change no member can run takes the whole
+cohort back to the last confirmed generation instead of latching a degraded
+alarm.
 
 The last row is the one operators most often miss: a coordinated cohort **cannot
 roll a change to its own roster, endpoint map, or rollout mode through the

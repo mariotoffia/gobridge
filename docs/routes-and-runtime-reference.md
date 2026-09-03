@@ -22,6 +22,24 @@ Routes define the message flow from a receiver through processors to bindings.
 | `session` | object | no | -- | Route session management (for exclusive sessions) |
 
 **Delivery modes:**
+
+`direct_hold` settles the source only once the destination has accepted, so its
+precondition is that the source **redelivers a message it was never told to
+settle** -- that is what makes the crash window between the send and the settle
+recoverable. Sources that provide it: SQS, Azure Service Bus in PeekLock, AMQP
+0-9-1, AMQP 1.0, and MQTT on a route whose session survives the process and whose
+subscriptions are QoS 1 or 2 (see
+[capabilities](transport-configuration.md#capabilities)). An HTTP ingress is
+admitted on the other argument -- the caller is still holding the request, so
+nothing has been settled and the retry is theirs. A route the runtime turns down
+is named at config load with the precondition it failed.
+
+An MQTT route that meets it needs no outbox, no lease and no outbox partition; it
+holds the broker delivery instead of copying it into a store. Reaching for
+`shared_outbox` there adds a second durable hop in series for the same crash
+window, and moves the durable copy out of the broker into a store the operator
+now has to run.
+
 - **`direct_hold`** -- Source held open until egress completes. No inter-instance fencing; destinations must handle duplicates idempotently in clustered mode. When a `resolver` is configured, multiple bindings are allowed -- the resolver selects one per message. **Rejected at config load for a clustered exclusive route whose ingress is the HTTP transport:** a request forwarded to an owner that has just stepped down can be sent by the old owner while the new owner handles a retry (forwarded HTTP requests skip the ownership re-check, and `direct_hold` carries no fencing token at the sender boundary), a bounded duplicate-send window across failover. Use `shared_outbox` for that class. Non-clustered or non-HTTP-exclusive `direct_hold` routes are unaffected.
 - **`shared_outbox`** -- Source acknowledged after persisting to outbox. Outbox drainer delivers asynchronously. Requires `stores.outbox`.
 

@@ -4,7 +4,7 @@
 
 **Transport name:** `mqtt`
 **Factory:** `paho.NewFactory(logger)`
-**Capabilities:** `stateful_session`, `exclusive_identity`, `dedicated_ingress_session`, `shared_consumer`, `plan_driven_subscriptions`
+**Capabilities:** `stateful_session`, `exclusive_identity`, `dedicated_ingress_session`, `shared_consumer`, `plan_driven_subscriptions`, and `source_redelivery` **per route** -- see below.
 
 MQTT requires a session. Each session permits at most one logical ingress
 receiver. Multiple senders may still share that session and its TCP connection.
@@ -22,6 +22,33 @@ subscribes only when the session manager reconciles the session plan. The bridge
 builder therefore fails the build if an MQTT receiver is bound to a session that
 never gets a manager (it would otherwise be silently inert, subscribing to
 nothing).
+
+## Source redelivery, and what it admits
+
+MQTT does not declare `source_redelivery` transport-wide, because whether the
+broker still holds a delivery this process never acknowledged is not a property
+of MQTT. The adapter connects with manual acknowledgement and withholds the
+PUBACK until the runtime settles the delivery, so what remains is whether the
+broker kept anything to send again. Two things decide it, and both are per route:
+
+- **The session must survive the process.** `session_mode: persistent` with
+  `clean_start: false`, or `session_mode: exclusive` (which always resumes). An
+  ephemeral session, or a persistent one that clean-starts, hands a restarted
+  process a fresh broker session and everything the old one held is gone.
+- **Every subscription the route runs with must be QoS 1 or 2.** QoS 0 is
+  at-most-once: the broker sends once and keeps nothing.
+
+When both hold, the route may use `direct_hold` and needs **no outbox, no lease
+and no outbox partition** -- it holds the broker delivery rather than copying it
+into a store. When either fails, `direct_hold` is refused at config load with a
+message naming which one, because they have different fixes. A durable session
+with subscriptions separately owes the broker an exact record of the filters it
+installed, so it still needs `stores.managed_subscriptions`
+([ADR 0003](../adr/0003-mqtt-persistent-session-hygiene.md)) whatever its
+delivery mode.
+
+The [guarantee matrix](mqtt-behavior.md#source-to-destination-guarantee-matrix)
+sets out what each combination loses or duplicates.
 
 ## Dedicated ingress sessions
 

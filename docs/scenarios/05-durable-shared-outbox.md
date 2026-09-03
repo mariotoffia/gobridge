@@ -45,7 +45,7 @@ flowchart LR
     subgraph Destinations
         Q1["SQS\nsensor-events"]
         Q2["SQS\nsensor-audit"]
-        H["HTTP endpoint\nno buffer of its own"]
+        H["SSE subscribers\nno buffer of their own"]
     end
 
     T -->|subscribe| R
@@ -160,13 +160,15 @@ senders:
       region: us-west-1
       batch_size: 10
   # The destination that cannot buffer for itself. It is the reason this route
-  # keeps its own record of what has been accepted: an endpoint that is down
-  # has nowhere to hold the message, and replaying it would also replay the two
-  # queues above.
+  # keeps its own record of what has been accepted: an SSE stream with nobody
+  # attached has nowhere to hold the message, and replaying it would also replay
+  # the two queues above.
   - id: http-analytics
     transport: http
     options:
-      url: https://analytics.internal/v1/sensors
+      mode: sse
+      path: /analytics/v1/sensors
+      heartbeat_interval: 30s
 
 bindings:
   - id: to-events
@@ -177,7 +179,7 @@ bindings:
     address: sensor-audit
   - id: to-analytics
     sender_id: http-analytics
-    address: https://analytics.internal/v1/sensors
+    address: /analytics/v1/sensors
 
 routes:
   - id: sensor-ingest

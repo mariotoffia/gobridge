@@ -32,7 +32,7 @@ func helperQuiescentRoute(id string, release <-chan struct{}) (goruntime.RouteCo
 			OnPermanentFailure: routing.FailureDrop,
 			OnExpired:          routing.ExpiredDrop,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	sender := NewFakeSender()
 	if release != nil {

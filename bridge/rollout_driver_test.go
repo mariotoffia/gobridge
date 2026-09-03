@@ -29,6 +29,9 @@ type fakeRolloutHost struct {
 	applied     []*ports.BridgeConfig
 	unbuildable map[int]string // config version -> nack reason
 	unconverged map[int]bool   // config version -> never reaches convergence (confirm window)
+	// unprovable models the member whose every session is a dormant
+	// lease-deferred one: ready, and over nothing observed.
+	unprovable bool
 	// refuse models a swap that FAILED and restored the previous config: applying
 	// the keyed version is a no-op for that many attempts (-1 = forever). It is how
 	// a test reproduces a member that cannot reach a generation — including the
@@ -113,10 +116,12 @@ func (h *fakeRolloutHost) allow(version int) {
 
 // Converged reports the running config as converged unless the test marked its
 // version unconverged (the confirm-window failure a UC-CR9-style test injects).
-func (h *fakeRolloutHost) Converged(context.Context) bool {
+// It reports the answer as PROVABLE: this host has no dormant lease-deferred
+// session, so its readiness rests on something it observed.
+func (h *fakeRolloutHost) Converged(context.Context) (bool, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.cfg != nil && !h.unconverged[h.cfg.Version]
+	return h.cfg != nil && !h.unconverged[h.cfg.Version], !h.unprovable
 }
 
 var _ ports.RolloutHost = (*fakeRolloutHost)(nil)

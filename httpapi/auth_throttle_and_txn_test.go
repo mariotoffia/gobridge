@@ -374,7 +374,7 @@ func newAuditedRedriveServer(t *testing.T) (*http.ServeMux, *memorydlq.Store, *r
 	cfg := runtime.RouteConfig{
 		ID:                 "test-route",
 		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	require.NoError(t, rt.AddRoute(cfg, recv, sender, nil, nil))
 	require.NoError(t, rt.Start(context.Background()))
@@ -558,7 +558,7 @@ func newRedriveServerWithMetrics(t *testing.T, metrics ports.MetricsExporter) (*
 	cfg := runtime.RouteConfig{
 		ID:                 "test-route",
 		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	require.NoError(t, rt.AddRoute(cfg, recv, sender, nil, nil))
 	require.NoError(t, rt.Start(context.Background()))

@@ -68,8 +68,9 @@ func decideRollout(r persistence.Rollout, membership []string, now time.Time) (r
 		// confirmation must land strictly within the window.
 		if now.After(r.ConfirmDeadline()) {
 			return rolloutActionRevert, fmt.Sprintf(
-				"confirm window expired with %d/%d members converged",
-				len(r.Converged()), len(r.MembershipEpoch()))
+				"confirm window expired with %d/%d members converged; not converged: %s",
+				len(r.Converged()), len(r.MembershipEpoch()),
+				silentMembers(r.MembershipEpoch(), r.Converged()))
 		}
 		if r.CanConfirm() {
 			return rolloutActionConfirm, ""
@@ -97,8 +98,15 @@ func decideRollout(r persistence.Rollout, membership []string, now time.Time) (r
 	// an incomplete rollout that outran its deadline aborts; survivors keep
 	// the old committed config and a crashed member rejoins on it.
 	if now.After(r.Deadline()) {
+		// Name the members that never answered. The count alone is the abort
+		// message an operator cannot act on: it says the cohort is short of votes
+		// and nothing about WHICH member to go and look at, which is the only
+		// question left once the rollout is already lost.
 		return rolloutActionAbort, fmt.Sprintf(
-			"rollout deadline exceeded with %d/%d acks", len(r.Acks()), len(r.MembershipEpoch()))
+			"rollout deadline exceeded with %d/%d acks; never voted: %s (read the coordinated "+
+				"rollout block in each named member's deep health for why)",
+			len(r.Acks()), len(r.MembershipEpoch()),
+			silentMembers(r.MembershipEpoch(), r.Acks()))
 	}
 	return rolloutActionWait, ""
 }
@@ -298,6 +306,27 @@ func coordinatorStep(
 		// window) and already terminal; only the latter stops the loop.
 		return r.IsTerminal(), nil
 	}
+}
+
+// silentMembers renders the epoch members that are absent from answered as one
+// deterministic, operator-facing list, or "none" when every member answered.
+//
+// It is what turns a bare count into an address. A rollout that ran out of acks
+// or out of convergence has already failed; the only thing the reason still has
+// to deliver is which member to go and look at, and a member that never answered
+// leaves no other trace in the shared row.
+func silentMembers[V any](epoch []string, answered map[string]V) string {
+	missing := make([]string, 0, len(epoch))
+	for _, member := range epoch {
+		if _, ok := answered[member]; !ok {
+			missing = append(missing, member)
+		}
+	}
+	if len(missing) == 0 {
+		return "none"
+	}
+	slices.Sort(missing)
+	return strings.Join(missing, ", ")
 }
 
 // aggregateNacks renders the nack set (member→reason) into one deterministic,

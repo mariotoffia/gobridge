@@ -185,6 +185,7 @@ func TestDirectHoldSharedConsumerRejected(t *testing.T) {
 			DeliveryMode: routing.DeliveryDirectHold,
 		},
 		SourceCapabilities: []ports.Capability{
+			ports.CapSourceRedelivery,
 			ports.CapVisibilityExtension,
 			ports.CapSharedConsumer,
 		},
@@ -215,6 +216,7 @@ func TestDirectHoldAllowUnfenced(t *testing.T) {
 			AllowUnfenced: true,
 		},
 		SourceCapabilities: []ports.Capability{
+			ports.CapSourceRedelivery,
 			ports.CapVisibilityExtension,
 			ports.CapSharedConsumer,
 		},
@@ -311,7 +313,7 @@ func TestStaleFencingTokenDoesNotKillRuntime(t *testing.T) {
 	cfgB := goruntime.RouteConfig{
 		ID:                 "route-f6b",
 		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	_ = rt.AddRoute(cfgB, receiverB, senderB, nil, nil)
 
@@ -360,7 +362,7 @@ func TestCriticalErrorStillKillsRuntime(t *testing.T) {
 	cfg := goruntime.RouteConfig{
 		ID:                 "crit-route",
 		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 
 	_ = rt.AddRoute(cfg, receiver, sender, nil, nil)

@@ -45,7 +45,7 @@ func dropRouteRedriveSetup(t *testing.T, sendErr error) (*http.ServeMux, *memory
 			OnPermanentFailure: routing.FailureDrop,
 			MaxReplayAttempts:  3,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	require.NoError(t, rt.AddRoute(cfg, recv, &refusingSender{err: sendErr}, nil, nil))
 	require.NoError(t, rt.Start(context.Background()))
@@ -114,7 +114,7 @@ func TestHandleDLQRedrive_ReDLQdRedrive_KeepsEntry(t *testing.T) {
 			OnPermanentFailure: routing.FailureDLQ,
 			MaxReplayAttempts:  3,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	require.NoError(t, rt.AddRoute(cfg, recv, &refusingSender{err: shared.ErrInvalidPayload}, nil, nil))
 	require.NoError(t, rt.Start(context.Background()))

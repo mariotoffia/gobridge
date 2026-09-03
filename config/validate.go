@@ -75,6 +75,11 @@ const rolloutModeCoordinated = "coordinated"
 // rolloutModeRefuse is the explicit spelling of the default.
 const rolloutModeRefuse = "refuse"
 
+// rolloutModeIndependent lets every member apply a live-safe change on its own,
+// the way a standalone bridge does — no barrier, no vote, no shared store. It
+// needs no roster, because nothing counts acknowledgements.
+const rolloutModeIndependent = "independent"
+
 // validateClusterRollout admits a coordinated-rollout deployment only when its
 // barrier can actually function. Each rule below rejects a shape that would fail
 // LATER — at the first live reload, or worse, silently:
@@ -115,12 +120,29 @@ func validateClusterRollout(ve *ValidationError, cfg *ports.BridgeConfig) {
 				"refuse/standalone paths have no rollout barrier to confirm (design §8.1)", rolloutModeCoordinated)
 		}
 		return
+	case rolloutModeIndependent:
+		// Every member applies the change itself, so there is no barrier, no
+		// roster to count acknowledgements against and nothing to confirm. The
+		// only rule is the one shared with the modes above: a confirm window here
+		// would promise a rollback nothing can perform.
+		if c.ConfirmWindow != "" {
+			ve.Addf("bridge.cluster.confirm_window: only valid when bridge.cluster.rollout is %q; %q "+
+				"applies a change on each member independently, so there is no cohort-wide commit to "+
+				"confirm and nothing that could revert one", rolloutModeCoordinated, rolloutModeIndependent)
+		}
+		if !deploymentIsClustered(cfg) {
+			ve.Addf("bridge.cluster.rollout: %q requires a clustered deployment "+
+				"(bridge.deployment_mode: clustered); a standalone bridge already applies a live-safe "+
+				"change directly and has no cohort the setting could describe", rolloutModeIndependent)
+		}
+		return
 	case rolloutModeCoordinated:
 	default:
 		ve.Addf("bridge.cluster.rollout: %q is not a valid value; use %q (the default: refuse every "+
-			"live reload of a clustered deployment, ADR 0012) or %q (coordinated rollout barrier). An "+
+			"live reload of a clustered deployment, ADR 0012), %q (every member applies a live-safe "+
+			"change on its own, as a standalone bridge does) or %q (coordinated rollout barrier). An "+
 			"unrecognised value must not be silently treated as %q",
-			c.Rollout, rolloutModeRefuse, rolloutModeCoordinated, rolloutModeRefuse)
+			c.Rollout, rolloutModeRefuse, rolloutModeIndependent, rolloutModeCoordinated, rolloutModeRefuse)
 		return
 	}
 	if !deploymentIsClustered(cfg) {

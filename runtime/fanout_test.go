@@ -215,7 +215,7 @@ func TestFanOut_RegisterSessionSenderWhileRunning(t *testing.T) {
 	sender := NewFakeSender()
 	cfg := goruntime.RouteConfig{
 		ID:                 "r1",
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	_ = rt.AddRoute(cfg, receiver, sender, nil, nil)
 	_ = rt.Start(context.Background())

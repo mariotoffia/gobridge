@@ -292,6 +292,22 @@ func sortedSet(ids []string) []string {
 // alongside the frozen candidate so the commit-time SwapEvent can echo it back
 // (see stagedCandidate.source).
 func (d *ClusterRolloutDriver) Propose(ctx context.Context, oldCfg, newCfg, sourceCfg *ports.BridgeConfig) error {
+	err := d.propose(ctx, oldCfg, newCfg, sourceCfg)
+	// A refusal is the one reason a member goes silent that the shared rollout row
+	// cannot show: this member's config source DID deliver the change, and its own
+	// barrier would not carry it. Publish it where the operator reads the barrier,
+	// so a cohort waiting on acks names the member and the reason rather than only
+	// the count.
+	d.mu.RLock()
+	obs := d.obs
+	d.mu.RUnlock()
+	if obs != nil {
+		obs.noteProposal(err)
+	}
+	return err
+}
+
+func (d *ClusterRolloutDriver) propose(ctx context.Context, oldCfg, newCfg, sourceCfg *ports.BridgeConfig) error {
 	b := d.barrier
 	members := rolloutMembers(oldCfg)
 	if len(members) == 0 {

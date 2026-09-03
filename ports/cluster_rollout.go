@@ -205,7 +205,15 @@ type RolloutHost interface {
 	// converged-against-the-real-broker. The drive calls it after a provisional swap
 	// to decide whether to record this member's Converge. Best-effort and
 	// non-blocking; false when no runtime is active.
-	Converged(ctx context.Context) bool
+	//
+	// provable reports whether that answer rests on anything OBSERVED, and it is
+	// what stops the window confirming a config nobody has tried. The readiness
+	// fold skips a session that defers its connect until this instance wins a
+	// lease and has not won it, so immediately after a swap every member of a
+	// lease-based cohort — including the one about to take the lease — folds to
+	// "ready" over an empty set. See ports.RolloutConvergence, which both hosts
+	// compute this with.
+	Converged(ctx context.Context) (ready, provable bool)
 
 	// RolloutLogger returns the host's logger, or nil.
 	RolloutLogger() *slog.Logger

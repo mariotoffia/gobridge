@@ -698,7 +698,7 @@ func injectRuntime(t *testing.T) (*runtime.Runtime, *stubSender) {
 			OnPermanentFailure: routing.FailureDrop,
 			OnExpired:          routing.ExpiredDrop,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	err := rt.AddRoute(cfg, recv, sender, nil, nil)
 	require.NoError(t, err)

@@ -94,6 +94,7 @@ func rolloutHealth(r bridge.RolloutStatus) *httpapi.ClusterRolloutHealth {
 		Converged:       r.Converged,
 		Reason:          r.Reason,
 		CandidateStaged: r.Staged,
+		NotVoting:       r.NotVoting,
 		Applied:         r.Applied,
 
 		ObservedAt:         r.ObservedAt,

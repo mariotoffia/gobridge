@@ -169,6 +169,15 @@ Pass this to the watcher with `WithWatchConfig(baseCfg.ConfigWatch)`.
 
 Stores the full `BridgeConfig` as a single DynamoDB item with version-based change detection. Useful for centralized configuration management in AWS environments.
 
+> **A DynamoDB layer is a base, not an overlay on a file.** Wire it as the config
+> source a bridge assembles itself from programmatically. It is deliberately not
+> reachable as an overlay under the shipped `aws-filebased-config` deployment
+> profile, which runs a single `file` layer: that profile's admin config
+> transaction API reads and writes the base document, so an overlay changing
+> underneath it would make the running config and the document the API commits to
+> two different things — see [Overlays and the admin config API do not
+> compose](configuration-overview.md#overlays-and-the-admin-config-api-do-not-compose).
+
 ### API
 
 ```go

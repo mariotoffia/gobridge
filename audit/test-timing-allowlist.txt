@@ -54,7 +54,7 @@
 ./runtime/route_runner_concurrent_test.go:200:		time.Sleep(200 * time.Millisecond) // OTHER: simulated processing duration
 ./runtime/route_runner_concurrent_test.go:271:			time.Sleep(50 * time.Millisecond) // OTHER: simulated processing duration
 ./runtime/route_runner_concurrent_test.go:49:		time.Sleep(50 * time.Millisecond) // OTHER: simulated processing duration
-./runtime/runtime_resilience_test.go:330:	time.Sleep(200 * time.Millisecond) // NEGATIVE: verify stale fencing token does not kill runtime
+./runtime/runtime_resilience_test.go:332:	time.Sleep(200 * time.Millisecond) // NEGATIVE: verify stale fencing token does not kill runtime
 ./tests/integration/e2e_failover_test.go:299:	time.Sleep(300 * time.Millisecond) // NEGATIVE: verify session does not start before lease is acquired
 ./tests/integration/e2e_helpers_test.go:115:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
 ./tests/integration/e2e_routing_test.go:152:	time.Sleep(2 * time.Second) // NEGATIVE: verify unmatched clients received nothing

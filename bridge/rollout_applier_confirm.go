@@ -89,8 +89,26 @@ func (a *rolloutApplier) recordConvergence(ctx context.Context, r persistence.Ro
 		a.convergeSent = true
 		return nil
 	}
-	if !a.host.Converged(ctx) {
+	ready, provable := a.host.Converged(ctx)
+	if !ready {
 		return nil // not yet ready; a later poll retries
+	}
+	if !provable && len(r.Converged()) == 0 {
+		// Ready, but over nothing: every session this member has defers its
+		// connect until it wins a lease and it has not won one, so it has not
+		// spoken to a broker since the swap. Immediately after a provisional swap
+		// that is EVERY member of a lease-based cohort, including the one about to
+		// take the lease — and if they all record convergence here the coordinator
+		// confirms a config none of them has tried, which is the one outcome the
+		// window exists to prevent.
+		//
+		// So a member with nothing to prove waits for a member that has something
+		// to prove to go first. Once any peer has recorded convergence for this
+		// generation the cohort has its demonstration, and a genuine standby —
+		// which can never produce one itself — may agree. If no member ever
+		// produces one, nobody converges, the window expires and the cohort goes
+		// back, which is the correct answer for a change nothing could verify.
+		return nil
 	}
 	if err := a.ops().run(ctx, rolloutOpVote, func(callCtx context.Context) error {
 		return a.store.Converge(callCtx, r.Generation(), a.memberID)

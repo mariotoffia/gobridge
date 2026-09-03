@@ -300,60 +300,8 @@ func (b *Builder) wireRoutes(
 
 		var routeSession ports.Session
 		var routeSender ports.Sender
-		var caps []ports.Capability
-		var sourceVisTimeout time.Duration
-		var sourceAutoExtend bool
-		var sourceTransport string
 
-		recvDef := findReceiver(b.cfg, routeDef.ReceiverID)
-		if recvDef != nil {
-			transport := recvDef.Transport
-			if transport == "" {
-				if sd := findSession(b.cfg, recvDef.SessionID); sd != nil {
-					transport = sd.Transport
-				}
-			}
-			// Record the resolved source transport identity so the runtime can
-			// strip foreign redelivery-count headers on ingress. Prefer the
-			// receiver config's canonical Kind() (e.g. "aws.sqs") over the
-			// operator-chosen registry name: a count-bearing transport registered
-			// under a custom name would otherwise have its OWN redelivery-count
-			// header stripped as foreign, silently disabling the replay cap. Falls
-			// back to the registry name when the receiver carries no typed plugin
-			// config (count-less transports, which strip all count headers anyway).
-			sourceTransport = transport
-			if recvDef.Config != nil {
-				if k := recvDef.Config.Kind(); k != "" {
-					sourceTransport = k
-				}
-			}
-			if tf, ok := b.transports[transport]; ok {
-				caps = tf.Capabilities()
-				if vtp, ok := tf.(ports.VisibilityTimeoutProvider); ok {
-					sourceVisTimeout = vtp.VisibilityTimeout()
-				}
-				// A per-route receiver config (SQS visibility_timeout, ASB
-				// lock_duration) overrides the transport-wide Factory
-				// constant, so the validator checks SendTimeout against the
-				// window the route actually runs with (Finding 2 /). Its
-				// auto-extend flag lets the validator skip that check when
-				// the window is renewed in the background.
-				if vc, ok := recvDef.Config.(ports.VisibilityTimeoutConfig); ok {
-					sourceVisTimeout = vc.EffectiveVisibilityTimeout()
-					sourceAutoExtend = vc.AutoExtendEnabled()
-				}
-				// A per-route receiver config may also narrow the source
-				// capabilities below the transport-wide Factory constant when
-				// the receiver's MODE implements a smaller set (e.g. ASB
-				// ReceiveAndDelete cannot redeliver, so it drops
-				// CapVisibilityExtension/CapSourceRedelivery). The validator's
-				// silent-drop check then sees the honest per-route set instead
-				// of the transport-wide constant.
-				if cc, ok := recvDef.Config.(ports.CapabilityConfig); ok {
-					caps = cc.Capabilities()
-				}
-			}
-		}
+		source := b.sourceRouteFacts(findReceiver(b.cfg, routeDef.ReceiverID))
 
 		if routeDef.Session != nil {
 			sid := routeDef.Session.SessionID
@@ -424,10 +372,11 @@ func (b *Builder) wireRoutes(
 			Policy:                  policy,
 			Bindings:                bindings,
 			Processors:              procs,
-			SourceCapabilities:      caps,
-			SourceVisibilityTimeout: sourceVisTimeout,
-			SourceAutoExtend:        sourceAutoExtend,
-			SourceTransport:         sourceTransport,
+			SourceCapabilities:      source.Capabilities,
+			SourceVisibilityTimeout: source.VisibilityTimeout,
+			SourceAutoExtend:        source.AutoExtend,
+			SourceTransport:         source.Transport,
+			SourceRedeliveryRefusal: source.RedeliveryRefusal,
 		}
 
 		// Build content-based resolver from config if present.

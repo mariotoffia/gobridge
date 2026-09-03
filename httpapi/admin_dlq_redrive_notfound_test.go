@@ -37,7 +37,7 @@ func redriveBoundSetup(t *testing.T) (*http.ServeMux, *memorydlq.Store, *stubSen
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliveryDirectHold,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 		// The route's ONLY current binding. A redrive recorded against any
 		// other binding ID must not be delivered here.
 		Bindings: []routing.DestinationBinding{{ID: "b1", Address: "addr-b1"}},

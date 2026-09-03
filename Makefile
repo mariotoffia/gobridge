@@ -272,12 +272,15 @@ test-local-deploy: audit-timings audit-test-timings docker-build ## Deploy the A
 	@echo "Installing the local CDK CLI into $(LOCAL_DEPLOY_TOOLS) ..."
 	@cd $(LOCAL_DEPLOY_TOOLS) && npm install --silent --no-fund --no-audit --no-save aws-cdk aws-cdk-local >/dev/null
 	@echo "Running the local deployment proof..."
+	# The binary timeout has to exceed the sum of every test's OWN budget, or a
+	# slow-but-correct run dies here instead of inside the phase that was slow —
+	# and the panic then names the whole binary rather than the wait that hung.
 	@echo "Report will be saved to: reports/test-local-deploy.log"
 	@bash -c 'set -o pipefail; start=$$(date +%s); \
 		PATH="$(CURDIR)/$(LOCAL_DEPLOY_TOOLS)/node_modules/.bin:$$PATH" \
 		GOBRIDGE_INT_LOCAL=1 GOBRIDGE_LOCAL_IMAGE=$(IMAGE_LOCAL_TAG) \
 		JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 \
-		go -C deployment/aws-filebased-config/cdk test -count=1 -timeout=90m -v \
+		go -C deployment/aws-filebased-config/cdk test -count=1 -timeout=180m -v \
 			-tags=integration_local ./integration/... 2>&1 | tee reports/test-local-deploy.log; \
 		rc=$$?; \
 		echo ""; \

@@ -68,6 +68,15 @@ type RouteConfig struct {
 	// disables the strip. Populated by the builder from the resolved receiver
 	// transport; optional for programmatic callers.
 	SourceTransport string
+
+	// SourceRedeliveryRefusal is the source transport's own account of why this
+	// route's source will NOT redeliver an unsettled message, and empty when it
+	// will (or when the transport has no opinion). It exists so the direct_hold
+	// refusal can name which precondition failed — a QoS 0 subscription and a
+	// session the broker discards are the same verdict with different fixes, and
+	// only the transport knows which one it is. Populated by the builder from
+	// ports.SourceRedeliveryConfig; optional for programmatic callers.
+	SourceRedeliveryRefusal string
 }
 
 // CheckRandSource probes crypto/rand once and returns a permanent

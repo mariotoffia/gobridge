@@ -48,7 +48,7 @@ func newDirectHoldRedriveRuntime(t *testing.T, sender *FakeSender) *goruntime.Ru
 		Bindings: []routing.DestinationBinding{
 			{ID: "binding-a", Address: "devices/a/state"},
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	if err := rt.AddRoute(cfg, NewFakeReceiver(), sender, nil, nil); err != nil {
 		t.Fatalf("AddRoute: %v", err)
@@ -166,7 +166,7 @@ func TestInjectRedrive_StripsSourceRedeliveryCount(t *testing.T) {
 		Bindings: []routing.DestinationBinding{
 			{ID: "binding-a", Address: "devices/a/state"},
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	if err := rt.AddRoute(cfg, NewFakeReceiver(), sender, nil, nil); err != nil {
 		t.Fatalf("AddRoute: %v", err)

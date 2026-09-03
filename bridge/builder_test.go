@@ -78,7 +78,7 @@ func (f *fakeTransportFactory) NewSender(_ context.Context, _ ports.SenderSpec, 
 	return &fakeSender{}, nil
 }
 func (f *fakeTransportFactory) Capabilities() []ports.Capability {
-	return []ports.Capability{ports.CapVisibilityExtension}
+	return []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery}
 }
 func (f *fakeTransportFactory) AddressValidator() ports.AddressValidator { return nil }
 

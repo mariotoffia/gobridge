@@ -132,15 +132,29 @@ type ClusterConfig struct {
 	// derived from bridge.instance_id, which is empty in a shared-config cohort
 	// so that every task derives a unique metric identity at runtime.
 	//
-	// Required (non-empty) when Rollout is "coordinated"; ignored otherwise.
+	// Required (non-empty) when Rollout is "coordinated"; ignored otherwise —
+	// including under "independent", which counts no acknowledgements and so has
+	// nothing to count them against.
 	Members []string `yaml:"members,omitempty" json:"members,omitempty"`
 	// Rollout selects the live-config-change strategy for this clustered
-	// deployment. Empty (default) keeps the legacy refuse-live-reconfig
-	// behavior (ADR 0012): a clustered node rejects any live config delta and
-	// requires whole-cohort replacement. "coordinated" opts into the
-	// coordinated rollout barrier (design cluster-config-rollout-protocol.md),
-	// which admits live-safe deltas across the cohort under a lease-elected
-	// coordinator, and additionally requires a non-empty Members roster.
+	// deployment. Three values, in order of how much they cost to run:
+	//
+	//   - "" or "refuse" (default): a clustered node rejects any live config
+	//     delta and requires whole-cohort replacement (ADR 0012). Nothing to
+	//     provision; every change costs a stop-and-redeploy.
+	//   - "independent": every member applies a live-safe delta on its own, the
+	//     way a standalone bridge does. No barrier, no vote, no shared store, no
+	//     roster. The cost is a brief window in which one member is running the
+	//     new config and another is still on the old one; taking that cost is the
+	//     operator's decision, which is why it is a value rather than a default.
+	//     A delta that cannot be applied live on ANY node — a durable session's
+	//     identity, a store's target — is still refused, with the same reason a
+	//     standalone bridge gives.
+	//   - "coordinated": the rollout barrier (design
+	//     cluster-config-rollout-protocol.md). Every member builds the candidate
+	//     first and nobody swaps until all of them have, so a member that cannot
+	//     run the change stops it reaching any of them. Requires a shared rollout
+	//     store, a lease-elected coordinator and a non-empty Members roster.
 	Rollout string `yaml:"rollout,omitempty" json:"rollout,omitempty"`
 	// ConfirmWindow opts a coordinated rollout into the NETCONF/NSO confirm window
 	// (design §8.1): a Go duration string (e.g. "90s"). Empty or "0s" (the default)

@@ -123,6 +123,7 @@ func rolloutHealth(r bridge.RolloutStatus, baseline *rolloutBaseline) *httpapi.C
 		Converged:       r.Converged,
 		Reason:          r.Reason,
 		CandidateStaged: r.Staged,
+		NotVoting:       r.NotVoting,
 		Applied:         r.Applied,
 
 		ObservedAt:         r.ObservedAt,

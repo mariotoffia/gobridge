@@ -44,7 +44,7 @@ func TestRouteLocator_Locate_NonExclusive(t *testing.T) {
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID:                 "non-exclusive-route",
 		Policy:             routing.RoutePolicy{}.WithDefaults(),
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}, receiver, sender, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +275,7 @@ func TestRouteLocator_NilWhenNoLeaseStore(t *testing.T) {
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID:                 "route-1",
 		Policy:             routing.RoutePolicy{}.WithDefaults(),
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}, receiver, sender, nil, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -91,6 +91,11 @@ type slotHealth struct {
 	Reason string   `json:"reason"`
 	Acked  []string `json:"acked"`
 	Nacked []string `json:"nacked"`
+	// NotVoting is this member's own account of why it has not voted. It is the
+	// only place the cause lives for the member that goes silent: the shared row
+	// records that a vote is missing and can say nothing about why, so a failed
+	// phase that printed only the row would name the count and nothing else.
+	NotVoting string `json:"not_voting"`
 }
 
 // fresh reports whether this observation may be believed at all.
@@ -286,6 +291,10 @@ const (
 	rolloutStateAborted  = "aborted"
 	rolloutStateReverted = "reverted"
 )
+
+// rolloutStateConfirmed is the third terminal state a WINDOWED rollout can reach:
+// the cohort kept the change because every member reported it had converged.
+const rolloutStateConfirmed = "confirmed"
 
 func keysOf(m map[string]slotHealth) []string {
 	out := make([]string, 0, len(m))

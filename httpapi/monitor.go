@@ -342,6 +342,13 @@ type ClusterRolloutHealth struct {
 	// config from its own config source. False on a long-staging rollout
 	// identifies this member as the one holding the cohort up.
 	CandidateStaged bool `json:"candidate_staged"`
+	// NotVoting says WHY this member has not voted on the observed rollout, and
+	// is absent once it has. candidate_staged reports only that the candidate is
+	// missing, which is the benign, deadline-bounded case; this is what names the
+	// other one — a member whose config source DID deliver the change and whose
+	// own barrier refused to carry it, which nothing in the shared rollout row
+	// can show.
+	NotVoting string `json:"not_voting,omitempty"`
 	// Applied reports whether this member is actually RUNNING the generation.
 	// Meaningful once State is "committed", where it is the signal that
 	// separates a healthy cohort from a split one: the rollout row reads

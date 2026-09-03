@@ -355,7 +355,7 @@ func TestDeliveryHook_Builder_RegisterPropagates(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliveryDirectHold,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	receiver := NewFakeReceiver()
 

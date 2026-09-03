@@ -285,10 +285,51 @@ func mergeReceiverDef(base, overlay ports.ReceiverDef) ports.ReceiverDef {
 		out.SessionID = overlay.SessionID
 	}
 	if len(overlay.Topics) > 0 {
-		out.Topics = overlay.Topics
+		out.Topics = mergeTopics(base.Topics, overlay.Topics, base.Transport, overlay.Transport)
 	}
 	cfg, raw := carriedPluginConfig(base.Config, overlay.Config, base.Raw(), overlay.Raw(), base.Transport, overlay.Transport)
 	out.SetDecoded(cfg, raw)
+	return out
+}
+
+// mergeTopics resolves an overlay subscription list against the base one.
+//
+// The overlay list is authoritative about WHICH topics the receiver subscribes
+// to — that is how an operator removes one — but a subscription that survives
+// the change keeps the typed options it already had. Those options exist only in
+// the typed Config, which the wire form drops (json:"-"), so an overlay that
+// merely repeats a topic in order to add a sibling carries none of them; taking
+// the overlay entry verbatim would write a document with the survivor's options
+// erased, which is permanent. Matching is by topic, the only identity a
+// subscription has.
+//
+// A genuinely new topic keeps whatever the overlay gave it, which for the admin
+// API is nothing — the parse of the committed document supplies its defaults.
+func mergeTopics(base, overlay []ports.SubscriptionDef, baseKind, overlayKind string) []ports.SubscriptionDef {
+	carried := make(map[string]ports.SubscriptionDef, len(base))
+	for _, sub := range base {
+		carried[sub.Topic] = sub
+	}
+	out := make([]ports.SubscriptionDef, 0, len(overlay))
+	for _, sub := range overlay {
+		prior, survives := carried[sub.Topic]
+		if !survives {
+			out = append(out, sub)
+			continue
+		}
+		merged := sub
+		if merged.QoS == 0 {
+			// The wire form omits a zero QoS, so an overlay cannot distinguish
+			// "leave it alone" from "set it to 0" — and every other scalar in this
+			// merge reads an absent value as "leave it alone". A survivor that
+			// silently dropped to at-most-once delivery because the operator
+			// repeated its topic to add a sibling is the worse of the two readings.
+			merged.QoS = prior.QoS
+		}
+		cfg, raw := carriedPluginConfig(prior.Config, sub.Config, prior.Raw(), sub.Raw(), baseKind, overlayKind)
+		merged.SetDecoded(cfg, raw)
+		out = append(out, merged)
+	}
 	return out
 }
 

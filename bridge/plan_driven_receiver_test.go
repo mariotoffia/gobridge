@@ -86,10 +86,11 @@ func TestBuilder_PlanDrivenReceiverWithoutSessionManager_ADVP4FU1(t *testing.T) 
 	t.Run("self-establishing source (amqp10-like) builds fine", func(t *testing.T) {
 		selfEstablishing := &capTransportFactory{caps: []ports.Capability{
 			ports.CapStatefulSession, // deliberately NO CapPlanDrivenSubscriptions
-			// direct_hold requires the source to support visibility extension;
-			// amqp10 sources hold the message for the delivery window, so this
-			// is realistic and keeps ValidateRoutes (Finding 5) focused on the
+			// direct_hold requires the source to redeliver a message it was never
+			// told to settle; amqp10 releases an unsettled delivery back to the
+			// broker, so this is realistic and keeps ValidateRoutes focused on the
 			// behaviour under test rather than an unrelated mode error.
+			ports.CapSourceRedelivery,
 			ports.CapVisibilityExtension,
 		}}
 		rt, err := NewBuilder(makeCfg("amqp10")).

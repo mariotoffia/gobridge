@@ -46,7 +46,7 @@ func redriveSetup(t *testing.T) (*http.ServeMux, *memorydlq.Store, *stubSender) 
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliveryDirectHold,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	err := rt.AddRoute(cfg, recv, sender, nil, nil)
 	require.NoError(t, err)

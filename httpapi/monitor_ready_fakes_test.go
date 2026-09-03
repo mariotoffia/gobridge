@@ -52,7 +52,7 @@ func newBridgingRuntime(t *testing.T, instanceID string) *runtime.Runtime {
 			OnPermanentFailure: routing.FailureDrop,
 			OnExpired:          routing.ExpiredDrop,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}, recv, discardSender{}, nil, nil))
 
 	require.NoError(t, rt.Start(context.Background()))

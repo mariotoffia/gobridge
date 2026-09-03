@@ -132,6 +132,7 @@ flowchart TD
 - `config_watch`: overlay replaces base entirely if non-nil.
 - `stores`: overlay replaces per-role (lease, outbox, dlq individually).
 - `sessions`, `receivers`, `senders`, `bindings`: **merge by ID, field-level** -- new IDs are appended and a matching ID is merged field-by-field on top of the base entry. The base entry's typed plugin options (broker URLs, credentials) are **carried forward** unless the overlay changes the transport discriminator, so a partial patch (e.g. only `session_mode`) does not erase the plugin options the wire format drops (`json:"-"`).
+- `receivers[].topics`: the overlay's list decides **which** topics the receiver subscribes to -- a topic it omits is unsubscribed -- but a topic that survives keeps the base entry's typed options and, when the overlay states no `qos`, its base `qos`. The wire form omits a zero `qos`, so an overlay cannot distinguish "leave it alone" from "set it to 0"; it is read as leave-it-alone, because a subscription that silently dropped to at-most-once because the operator repeated its topic to add a sibling is the worse of the two readings. **To lower a topic to `qos: 0`, edit the document rather than patching it.**
 - `routes`: **merge by ID, wholesale** -- a matching route is replaced entirely (routes carry no plugin options, so nothing can be lost); new IDs are appended.
 - `http`: **merged field-level** (not wholesale) -- non-empty overlay scalars win, and the `admin_api_key` / `monitor_api_key` secrets are preserved when the overlay omits them or echoes back the `[REDACTED]` marker, so a partial patch cannot lock the operator out.
 
@@ -143,6 +144,27 @@ mgr := config.NewManager(
 )
 cfg, err := mgr.Load(ctx)
 ```
+
+### Overlays and the admin config API do not compose
+
+An overlay layer is a **programmatic-API** pattern. It is reachable through
+`config.NewManager` as above, and it is deliberately **not** wired by the shipped
+`aws-filebased-config` deployment profile, which runs a single `file` layer.
+
+The reason is that the admin config transaction API writes one document. Its
+store is the **base** document: it loads that document, merges the operator's
+overlay into it, CASes on its version, and saves it back. With a config-source
+overlay layer underneath, the effective config the runtime runs is base + overlay
+while the admin API reads and writes the base alone — so a commit flattens the
+overlay's values into the base, the next overlay poll re-applies them on top, and
+nothing owns the result. A coordinated cohort has the same problem one level up:
+the candidate identity a rollout agrees on is the digest of the **effective**
+config, and two layers changing independently means two writers of that identity
+and no single point at which a change is proposed.
+
+So: use overlays where the config is assembled programmatically and changed in
+one place, and use the admin config API where operators change a running bridge.
+Do not run both against one bridge.
 
 ## Two Configuration Paths
 

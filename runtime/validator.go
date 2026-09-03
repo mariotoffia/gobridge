@@ -205,9 +205,23 @@ func validateDirectHold(ve *ValidationError, prefix string, entry *routeEntry, p
 		ve.add(prefix + "direct_hold invalid: target session requires lease handoff")
 	}
 
-	if !hasCapability(entry.config.SourceCapabilities, ports.CapVisibilityExtension) &&
+	// direct_hold settles the source only after the destination has accepted it,
+	// so what it needs from the source is that leaving a message unsettled is
+	// RECOVERABLE: the source redelivers it. A visibility window is one way to
+	// provide that and not the requirement — asking for the window instead
+	// refused every source that redelivers without one (an MQTT QoS 1
+	// subscription on a session the broker keeps), forcing those routes through an
+	// outbox, a lease and a store for a crash window that is identical either way.
+	// The HTTP branch stands apart because its "source" is a caller holding an
+	// open request: nothing is settled until the response, so the caller retries.
+	if !hasCapability(entry.config.SourceCapabilities, ports.CapSourceRedelivery) &&
 		!hasCapability(entry.config.SourceCapabilities, ports.CapHTTPEndpoint) {
-		ve.add(prefix + "direct_hold invalid: source does not support visibility extension")
+		reason := prefix + "direct_hold invalid: the source does not redeliver an unsettled message, " +
+			"so a crash between the send and the settle loses it"
+		if entry.config.SourceRedeliveryRefusal != "" {
+			reason += ": " + entry.config.SourceRedeliveryRefusal
+		}
+		ve.add(reason)
 	}
 
 	// Multiple bindings are allowed when a resolver is configured for

@@ -39,10 +39,19 @@ climb only as far as you need.
 |---|---|---|---|
 | **1. Standalone** | nothing (the default) | One process. Live config reloads apply immediately. | No high availability — if it dies, the bridge is down. |
 | **2. Clustered (default)** | `deployment_mode: clustered` | Several processes share the load and cover for each other. | **Every** config change needs a full stop-and-restart of all processes (downtime). |
-| **3. Coordinated** | `cluster.rollout: coordinated` + a roster + the DynamoDB config source | Safe config changes roll out across all processes with **no downtime**. | Needs the DynamoDB coordinated config store and a fixed list of members. |
-| **4. Confirm window** | add `cluster.confirm_window: 90s` | A change that applies but **can't actually reach its broker** is rolled back automatically, on all processes. | A failed change disconnects twice (apply, then undo). Off by default. |
+| **3. Independent** | `cluster.rollout: independent` | Safe config changes apply with **no downtime** and **nothing extra to run** — each process picks the change up and applies it itself, exactly as a standalone bridge does. | For a few seconds one process can be running the new config while another is still on the old one. A process that cannot run the change is a broken process to replace, not a veto. |
+| **4. Coordinated** | `cluster.rollout: coordinated` + a roster + the DynamoDB config source | Safe config changes roll out across all processes with **no downtime**, and a process that cannot build the change stops it reaching any of them. | Needs the DynamoDB coordinated config store and a fixed list of members. |
+| **5. Confirm window** | add `cluster.confirm_window: 90s` | A change that applies but **can't actually reach its broker** is rolled back automatically, on all processes. | A failed change disconnects twice (apply, then undo). Off by default. |
 
-Setups 2–4 all require a clustered deployment. Setups 3 and 4 build on setup 2.
+Setups 2–5 all require a clustered deployment. Setups 3, 4 and 5 build on setup 2;
+4 and 5 build on each other, 3 stands alone.
+
+**Choosing between 3 and 4.** Setup 3 is what most deployments want and is the
+cheaper thing to operate: nothing to provision, nothing to elect, nothing that can
+get stuck. Take setup 4 when a config that one process cannot build must not reach
+any of them — for example when the processes do not run identical images, or when
+a half-applied change would be worse than no change at all. Both refuse the same
+set of changes that cannot be applied live at all, and both name the reason.
 
 **On cost:** moving up the ladder barely changes your AWS bill — coordination is
 a control-plane mechanism (one small DynamoDB table, polled every few seconds),
@@ -89,7 +98,44 @@ here — you do not need anything below.
 
 ---
 
-## Setup 3 — Coordinated rollout (no-downtime changes)
+## Setup 3 — Independent (no downtime, nothing extra to run)
+
+If you want to change config without the outage and without running a
+coordination protocol, say so:
+
+<!-- docs-example: skip -->
+```yaml
+bridge:
+  deployment_mode: clustered
+  cluster:
+    rollout: independent
+```
+
+Now a safe change applies the way it does on a standalone bridge: whatever writes
+the config — the admin HTTP API, or an edit to the shared document — validates it
+once, and each process then picks it up and applies it itself. There is no shared
+store to provision, no coordinator to elect, no roster to keep in step, and
+nothing that can get stuck waiting for a process that is not answering.
+
+**What you are accepting.** The processes do not switch at the same instant. For a
+few seconds one can be running the new config while another is still on the old
+one — the same window a rolling Kubernetes ConfigMap update has. If a change would
+be harmful half-applied, use setup 4 instead.
+
+**A process that cannot run the change does not stop the others.** It fails to
+apply, keeps serving its previous config, and reports the failure on its health
+endpoint (`config_watch.degraded` with the reason). It is a process to replace,
+not a veto over the cohort. Watch for it the way you watch for any unhealthy
+process.
+
+**What is still refused.** A change that cannot be applied live on *any* single
+process — a durable session's identity, a store's target — is refused here too,
+with the same message a standalone bridge gives, and still needs the whole-cohort
+replacement from setup 2.
+
+---
+
+## Setup 4 — Coordinated rollout (no-downtime, nobody swaps alone)
 
 If you change config often and want to avoid the outage, turn on **coordinated
 mode**. A safe change is now *decided* atomically: it is proposed to a shared
@@ -196,7 +242,7 @@ See [which changes are live-safe](operating.md#which-changes-roll-live-and-which
 
 ---
 
-## Setup 4 — Confirm window (auto-revert on failure)
+## Setup 5 — Confirm window (auto-revert on failure)
 
 Coordinated mode commits a change once every process has **built** it — proved
 it is valid and can be prepared. But "valid" is not the same as "actually

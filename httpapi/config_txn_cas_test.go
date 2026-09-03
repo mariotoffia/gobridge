@@ -368,7 +368,7 @@ func TestHandleDLQRedrive_InjectFailure_NeverLosesEntry(t *testing.T) {
 	require.NoError(t, rt.AddRoute(runtime.RouteConfig{
 		ID:                 "test-route",
 		Policy:             routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}, recv, sender, nil, nil))
 	require.NoError(t, rt.Start(context.Background()))
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })

@@ -22,16 +22,19 @@ import (
 // document happens to hold, a rollback converges the cohort, and a change one
 // member cannot take is applied by nobody rather than by some.
 //
-// One thing it does NOT cover: the confirm window, where a member ACCEPTS a
-// change and then fails to actually run it. Removing a member makes it fail to
-// ANSWER, which the barrier resolves earlier and differently — at the vote — and
-// that is the phase named for it below. Driving accept-then-fail needs a change
-// every member votes for and none can converge on, and the two levers this
-// deployment exposes both fall short: a session's transport options cannot be
-// changed through the admin config API at all (a plugin config is not part of
-// the overlay's wire form), and a subscription change — the one lever that is —
-// was acked only by the member that proposed it, so the barrier aborted at the
-// vote rather than committing provisionally.
+// It covers both ways a change can fail, which the barrier resolves at
+// different points and must not confuse. A member that cannot ANSWER is resolved
+// at the vote: the rollout aborts and nobody applies anything. A change every
+// member ACCEPTS and none can RUN should be resolved by the confirm window,
+// which takes the whole cohort back to its last confirmed generation. The lever
+// for the second is a subscription that asks for a QoS the broker caps below what
+// was requested — every member builds and validates it, and no member's
+// subscriptions are ever satisfied.
+//
+// The second phase also proves the half that used to be broken on the way: a
+// subscription change, the one delta that reaches the barrier through a
+// receiver's typed plugin options, is agreed by the whole cohort rather than by
+// the member that proposed it and nobody else.
 //
 // Because the emulator runs each ECS task definition as a real container, it
 // also proves the synthesized shape WIRES identity correctly — one single-task
@@ -45,10 +48,10 @@ func TestLocal_StaticSlotCohort(t *testing.T) {
 	cohort := DeployLocalCohort(t, env, staticSlotRoster())
 
 	// Budget: the shared phase waits are 15 minutes each and this test runs
-	// seven of them plus two shorter ones, so the parent must exceed their sum
+	// seven of them plus four shorter ones, so the parent must exceed their sum
 	// or a slow-but-correct run dies inside whatever poll happened to be running
 	// and the failure names an unrelated phase.
-	ctx, cancel := context.WithTimeout(context.Background(), 95*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 115*time.Minute)
 	defer cancel()
 
 	roster := strings.Split(cohort.Outputs["MemberSlotIDs"], ",")
@@ -157,5 +160,52 @@ func TestLocal_StaticSlotCohort(t *testing.T) {
 		waitProposalObserved(t, ctx, probe, adminKey, survivors, committed, 6*time.Minute)
 		outcome := waitCohortRejected(t, ctx, probe, adminKey, survivors, committed, 6*time.Minute)
 		t.Logf("the cohort settled on %q and nobody applied the change", outcome)
+	})
+
+	t.Run("the_confirm_window_takes_back_a_change_nobody_can_run", func(t *testing.T) {
+		requireConverged(t)
+		converged = false
+		// The phase before this one took a member away and put it back; the whole
+		// cohort has to be answering again before a proposal that needs every
+		// member's vote is made.
+		waitForEverySlot(t, ctx, probe, adminKey, roster)
+		// A subscription asking for QoS 2 against a broker capped at QoS 1. Every
+		// member validates and builds it — the vote is a build, and nothing about
+		// this config is unbuildable — and no member can then actually run it: the
+		// broker grants the filter one level below what was asked for, the reconcile
+		// fails, and the session restarts into the same verdict.
+		//
+		// It is the one change that reaches the barrier through a receiver's typed
+		// plugin options, which is why it is also the proof that a subscription
+		// change can be agreed at all: it used to be acknowledged by the member that
+		// proposed it and by nobody else.
+		commitOverlay(t, ctx, probe, controlHost, adminKey, map[string]any{
+			"receivers": []map[string]any{{
+				"id":     haReceiverID,
+				"topics": []map[string]any{{"topic": haProbeTopic, "qos": 2}},
+			}},
+		})
+
+		// The confirm window is 90s and a member's local deadman waits a few poll
+		// intervals past it, so this budget has to clear both plus the coordinator's
+		// own cadence.
+		outcome := waitCohortSettled(t, ctx, probe, adminKey, roster, committed, 12*time.Minute)
+		if len(outcome.Acked) != len(roster) {
+			t.Fatalf("generation %d settled on %d/%d acks (%v); a subscription change reaches the "+
+				"barrier through a receiver's typed plugin options, and every member has to be able "+
+				"to agree on it",
+				outcome.Generation, len(outcome.Acked), len(roster), outcome.Acked)
+		}
+		t.Logf("generation %d was acked by the whole cohort (%v) and settled on %q",
+			outcome.Generation, outcome.Acked, outcome.State)
+
+		if outcome.State != rolloutStateReverted {
+			t.Fatalf("the cohort settled on %q, want %q. %q would mean it KEPT a change no member can "+
+				"run — the outcome the confirm window exists to prevent, and the one it produced while "+
+				"a member was allowed to record convergence over a session it had not re-established. "+
+				"%q would mean the vote refused the change and the window was never exercised at all",
+				outcome.State, rolloutStateReverted, rolloutStateConfirmed, rolloutStateAborted)
+		}
+		t.Logf("the cohort reverted generation %d to its last confirmed generation", outcome.Generation)
 	})
 }

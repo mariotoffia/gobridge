@@ -94,7 +94,7 @@ func TestWaitQuiescent_ObservesSynchronousInject(t *testing.T) {
 			OnPermanentFailure: routing.FailureDrop,
 			OnExpired:          routing.ExpiredDrop,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 		Bindings:           []routing.DestinationBinding{{ID: "b1", Address: "addr"}},
 	}
 	recv := NewFakeReceiver()

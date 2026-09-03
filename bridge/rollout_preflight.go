@@ -28,6 +28,38 @@ const (
 // — including the empty default — keeps the legacy refuse-live-reconfig path.
 const rolloutModeCoordinated = "coordinated"
 
+// rolloutModeIndependent is the cluster.rollout value that lets every member
+// apply a live-safe change on its own, the way a standalone bridge does — no
+// barrier, no vote, no shared store, no coordinator.
+//
+// It exists because the two original modes are the two extremes. The default
+// refuses a clustered live reload outright (ADR 0012), so any change at all costs
+// a whole-cohort stop and redeploy. The coordinated barrier is the other end: it
+// is safe against a member that cannot build the change, and it needs a shared
+// rollout store, a lease-elected coordinator and a frozen roster to run at all.
+//
+// This is the middle, and what it trades is explicit: the change is validated
+// where it is written, and each member then applies it independently, so for a
+// few seconds one member can be running the new config while another is still on
+// the old one. An operator who can live with that window — most can, and it is
+// what a rolling ConfigMap update does — should not have to run a coordination
+// protocol to get a log level changed. A member that cannot build the change is a
+// broken member to be replaced, not a veto over the cohort.
+//
+// What it does NOT relax: a delta that cannot be applied live on ANY node —
+// a durable session's identity, a store's target — is still refused, with the
+// same reason a standalone bridge gives.
+const rolloutModeIndependent = "independent"
+
+// independentRollout reports whether cfg opts a clustered deployment into
+// per-member application (cluster.rollout: independent).
+func independentRollout(cfg *ports.BridgeConfig) bool {
+	if !ports.IsClusteredDeployment(cfg) {
+		return false
+	}
+	return cfg.Bridge.Cluster != nil && cfg.Bridge.Cluster.Rollout == rolloutModeIndependent
+}
+
 // coordinatedRollout reports whether cfg opts into coordinated cluster rollout:
 // the deployment must be clustered AND cluster.rollout must be "coordinated".
 // It is the single gate the guard-lift consults, so the coordinated path stays
@@ -72,6 +104,16 @@ const (
 // one is refused with its class reason (pointing at the whole-cohort procedure).
 func classifyClusterReload(oldCfg, newCfg *ports.BridgeConfig) (clusterReloadDisposition, string) {
 	if !ports.IsClusteredDeployment(oldCfg) && !ports.IsClusteredDeployment(newCfg) {
+		return clusterReloadProceed, ""
+	}
+	// Per-member application: classify the delta exactly as the coordinated path
+	// does, then apply it here instead of proposing it. Both sides must agree on
+	// the mode — cluster.rollout is part of the cohort's own definition, so a
+	// change to it is a whole-cohort replacement either way.
+	if independentRollout(oldCfg) && independentRollout(newCfg) {
+		if class, reason := classifyRolloutDelta(oldCfg, newCfg); class == rolloutReplacementRequired {
+			return clusterReloadRefuse, reason
+		}
 		return clusterReloadProceed, ""
 	}
 	// Both sides must be coordinated-clustered; entering, leaving, or a

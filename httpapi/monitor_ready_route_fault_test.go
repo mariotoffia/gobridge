@@ -61,7 +61,7 @@ func TestLegacyReadyBlindToRouteFault(t *testing.T) {
 			OnPermanentFailure: routing.FailureDrop,
 			OnExpired:          routing.ExpiredDrop,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}, recv, &stubSender{}, nil, nil)
 	require.NoError(t, err)
 
@@ -212,7 +212,7 @@ func TestRegression_LegacyReadyGreenForStandaloneNonExclusiveBridge(t *testing.T
 			OnPermanentFailure: routing.FailureDrop,
 			OnExpired:          routing.ExpiredDrop,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}, recv, &stubSender{}, sess, &session.Config{SessionID: "s-standalone"}) // non-exclusive (default)
 	require.NoError(t, err)
 

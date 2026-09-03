@@ -84,8 +84,42 @@ func TestValidator_DirectHold_RejectsExclusiveSession(t *testing.T) {
 	}
 }
 
-// TestValidator_DirectHold_RejectsMissingVisibilityExtension verifies direct_hold requires visibility extension on the source.
-func TestValidator_DirectHold_RejectsMissingVisibilityExtension(t *testing.T) {
+// TestValidator_DirectHold_RejectsASourceThatCannotRedeliver pins the mode's real
+// precondition. direct_hold settles the source only after the destination has
+// accepted, so what it needs is a source that hands the message back when the
+// process dies mid-flight. A window it can extend is one way to get that and not
+// the requirement — a source that offers the window and never redelivers leaves
+// the crash gap the mode exists to close.
+func TestValidator_DirectHold_RejectsASourceThatCannotRedeliver(t *testing.T) {
+	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
+	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+	cfg.SourceCapabilities = []ports.Capability{ports.CapVisibilityExtension}
+	cfg.SourceRedeliveryRefusal = "subscription \"sensors/#\" is QoS 0"
+
+	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rt.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected validation error for a source that cannot redeliver")
+	}
+	if !strings.Contains(err.Error(), "direct_hold invalid: the source does not redeliver an unsettled message") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "is QoS 0") {
+		t.Fatalf("the refusal must carry the transport's own reason so an operator knows which "+
+			"precondition failed: %v", err)
+	}
+}
+
+// TestValidator_DirectHold_AcceptsARedeliveringSourceWithNoWindow is the other
+// direction, and the one that was refused before: a source with no visibility
+// window at all is admissible when it redelivers what it was never told to
+// settle. MQTT on a durable session is exactly that, and forcing it through an
+// outbox added a store, a lease and a failure domain for a crash window that is
+// identical either way.
+func TestValidator_DirectHold_AcceptsARedeliveringSourceWithNoWindow(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
 	cfg.SourceCapabilities = []ports.Capability{ports.CapSourceRedelivery}
@@ -94,13 +128,12 @@ func TestValidator_DirectHold_RejectsMissingVisibilityExtension(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := rt.Start(context.Background())
-	if err == nil {
-		t.Fatal("expected validation error for missing visibility extension")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("expected no validation error for a redelivering source, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "direct_hold invalid: source does not support visibility extension") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	_ = rt.Stop(context.Background())
 }
 
 // TestValidator_DirectHold_RejectsMultipleBindings verifies more than one binding is rejected for direct_hold.
@@ -149,8 +182,8 @@ func TestValidator_DirectHold_CollectsMultipleErrors(t *testing.T) {
 	if !strings.Contains(errMsg, "lease handoff") {
 		t.Error("missing lease handoff error")
 	}
-	if !strings.Contains(errMsg, "visibility extension") {
-		t.Error("missing visibility extension error")
+	if !strings.Contains(errMsg, "does not redeliver an unsettled message") {
+		t.Error("missing source-redelivery error")
 	}
 }
 
@@ -307,7 +340,7 @@ func TestValidator_DirectHold_DefaultDeliveryMode(t *testing.T) {
 	cfg := runtime.RouteConfig{
 		ID:                 "default-mode",
 		Policy:             routing.RoutePolicy{},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 
 	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), nil, nil); err != nil {
@@ -332,7 +365,7 @@ func TestValidator_MultipleRouteErrors(t *testing.T) {
 			DeliveryMode: routing.DeliveryDirectHold,
 			DispatchMode: routing.DispatchFanOut,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	cfg2 := runtime.RouteConfig{
 		ID: "bad-route-2",
@@ -596,7 +629,9 @@ func TestValidator_SharedOutbox_FanOutAtLimit(t *testing.T) {
 }
 
 // TestValidator_DirectHold_HTTPSourceAccepted verifies that HTTP sources
-// (CapHTTPEndpoint) are accepted in direct_hold without CapVisibilityExtension.
+// (CapHTTPEndpoint) are accepted in direct_hold without CapSourceRedelivery: the
+// caller is still holding the request, so nothing has been settled and the retry
+// is theirs to make.
 func TestValidator_DirectHold_HTTPSourceAccepted(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()

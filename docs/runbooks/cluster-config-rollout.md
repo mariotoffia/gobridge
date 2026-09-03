@@ -112,8 +112,19 @@ If a **coordinated** rollout will not resolve (deep health
 `config_watch.rollout.state` stuck at `proposed` / `staging`):
 
 - Deep health names the member the cohort is waiting on (the roster minus who has
-  acked) — most often one whose own config source has not yet delivered the
-  change. Confirm that member actually received the new config.
+  acked), and the abort reason repeats it: `rollout deadline exceeded with 1/3
+  acks; never voted: gobridge-ha-worker-1, gobridge-ha-worker-2`.
+- Then read `config_watch.rollout.not_voting` **on each named member**. That is
+  the only place the cause lives — a member that never voted leaves no trace in
+  the shared row — and it distinguishes the three cases, which need different
+  actions:
+
+  | `not_voting` says | What happened | What to do |
+  |---|---|---|
+  | its own config source has not delivered the candidate | the benign case: that member's watcher is lagging | wait; the deadline bounds it. If it never arrives, check that member's config source. |
+  | its barrier refused to carry the delta | that member read a **different document** from the proposer's, so it computes a different candidate identity and cannot join the rollout | reconcile the config sources; the reason names both digests. |
+  | it is not in the frozen membership epoch | the roster and the member's identity disagree | fix `bridge.cluster.members` or the member's id, then re-post. |
+
 - A rollout that cannot gather every acknowledgement **aborts on its own at its
   deadline**; the running config keeps serving. Fix the config and re-post it, or
   roll the config source back to the last committed document.

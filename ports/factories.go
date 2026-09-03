@@ -170,6 +170,30 @@ type CapabilityConfig interface {
 	Capabilities() []Capability
 }
 
+// SourceRedeliveryConfig is an optional interface a receiver's typed PluginConfig
+// may satisfy when whether the SOURCE redelivers an unsettled message is a
+// property of the ROUTE rather than of the transport.
+//
+// CapabilityConfig cannot answer it, because the receiver's own options block
+// does not carry the facts: for MQTT the answer depends on the SESSION the
+// receiver binds to (a broker session that survives the process is what holds an
+// unacknowledged delivery) and on the QoS of the subscriptions the route runs
+// with (at-most-once delivery is never repeated). Both are supplied here.
+//
+// It is what admits an MQTT route to direct_hold. That mode settles the source
+// only after the destination has accepted, so its precondition is "the source can
+// be left unsettled and will redeliver" — which a QoS 1 subscription on a session
+// the broker keeps does provide, and which nothing about visibility windows can
+// express.
+type SourceRedeliveryConfig interface {
+	// SourceRedeliversUnsettled reports whether a delivery this receiver hands the
+	// bridge is redelivered when the process dies before settling it. The string is
+	// the operator-facing reason it is not, and is meaningful only when the answer
+	// is false: it has to name WHICH precondition failed, because the two have
+	// different fixes.
+	SourceRedeliversUnsettled(session SessionSpec, subscriptions []connectivity.SubscriptionPlan) (bool, string)
+}
+
 // IngressMemoryConfig is an optional typed PluginConfig capability for a
 // stateful ingress transport whose byte bound depends on route concurrency.
 // The bridge invokes it once per ingress session during pure preflight, after

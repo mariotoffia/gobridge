@@ -63,7 +63,7 @@ func TestDeepHealth_TotalDeliveryFailureKeepsRouteReady_ProductionContract(t *te
 			Plans: []routing.DispatchPlan{{BindingID: "binding-1", Address: "devices/1/state"}},
 		},
 		Bindings:           []routing.DestinationBinding{{ID: "binding-1"}},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	require.NoError(t, rt.AddRoute(cfg, receiver, sender, nil, nil))
 

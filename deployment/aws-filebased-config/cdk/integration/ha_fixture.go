@@ -34,7 +34,13 @@ import (
 )
 
 const (
-	haLeaseID           = "mqtt-ha"
+	haLeaseID = "mqtt-ha"
+	// haReceiverID and haProbeTopic name the one ingress the HA fixture wires.
+	// A proof that changes the subscription list has to address it by the same
+	// names the fixture deploys it under, so they are constants rather than two
+	// string literals that can drift apart.
+	haReceiverID        = "mqtt-in"
+	haProbeTopic        = "gobridge/ha/probe"
 	haFailoverObjective = 120 * time.Second
 )
 
@@ -170,8 +176,8 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox, slots *ha.Mem
 	session := ports.SessionDef{ID: haLeaseID, Transport: "mqtt", SessionMode: "exclusive"}
 	session.SetDecoded(mqttConfig, nil)
 	receiver := ports.ReceiverDef{
-		ID: "mqtt-in", Transport: "mqtt", SessionID: haLeaseID,
-		Topics: []ports.SubscriptionDef{{Topic: "gobridge/ha/probe", QoS: 1}},
+		ID: haReceiverID, Transport: "mqtt", SessionID: haLeaseID,
+		Topics: []ports.SubscriptionDef{{Topic: haProbeTopic, QoS: 1}},
 	}
 	receiver.SetDecoded(&paho.Config{}, nil)
 	sender := ports.SenderDef{ID: "sqs-out", Transport: "sqs"}
@@ -202,7 +208,7 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox, slots *ha.Mem
 		Senders:   []ports.SenderDef{sender},
 		Bindings:  []ports.BindingDef{binding},
 		Routes: []ports.RouteDef{{
-			ID: "mqtt-ha-route", ReceiverID: "mqtt-in", DeliveryMode: "shared_outbox",
+			ID: "mqtt-ha-route", ReceiverID: haReceiverID, DeliveryMode: "shared_outbox",
 			Bindings: []string{"sqs-out-binding"},
 			// This profile provisions no DLQ table, so the route must say what it
 			// does with a failure rather than name a store that is not there:

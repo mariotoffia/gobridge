@@ -496,6 +496,8 @@ func (m *configTxnManager) commitDurable(ctx context.Context, txnID string) (*po
 		return nil, 0, nil, nil, fmt.Errorf("config write failed: %w", err)
 	}
 
+	merged = m.projectionOf(ctx, merged)
+
 	// The durable write and version transition are complete, so the transaction
 	// is logically done regardless of the apply outcome. Clear it (and stop the
 	// TTL timer) NOW, before releasing the lock, so a long apply neither blocks

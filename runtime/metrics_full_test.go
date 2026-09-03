@@ -35,7 +35,7 @@ func TestMetrics_FullPipeline_DirectHold(t *testing.T) {
 			DispatchMode: routing.DispatchSingle,
 		},
 		Bindings:           []routing.DestinationBinding{{ID: "b1"}},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 
 	err := rt.AddRoute(cfg, receiver, sender, sess, &session.Config{

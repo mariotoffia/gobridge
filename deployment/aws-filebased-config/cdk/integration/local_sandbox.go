@@ -198,6 +198,13 @@ func localSandbox(t *testing.T) SandboxEnv {
 	state.dynamoEndpoint = ddblocal.Endpoint(t)
 	attachToNetwork(t, state.network, ddblocal.ContainerName(t), localDynamoHost)
 
+	// Cap the broker at QoS 1. It is what gives the suite a config change every
+	// member can ACCEPT and none can RUN: a subscription that asks for QoS 2 is
+	// built and validated by every member, and then granted at QoS 1 by the
+	// broker, so no member ever reports its subscriptions satisfied and the
+	// confirm window takes the whole cohort back. Nothing else here asks for
+	// QoS 2, so the cap is invisible to every other topology.
+	mqttlocal.Configure(mqttlocal.WithExtraConfig("max_qos 1\n"))
 	state.brokerURL = mqttlocal.BrokerURL(t)
 	attachToNetwork(t, state.network, mqttlocal.ContainerName(t), localBrokerHost)
 

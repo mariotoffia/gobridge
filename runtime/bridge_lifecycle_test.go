@@ -45,13 +45,14 @@ func helperMinimalRoute(id string) (goruntime.RouteConfig, *FakeReceiver, *FakeS
 			OnPermanentFailure: routing.FailureDrop,
 			OnExpired:          routing.ExpiredDrop,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	return cfg, NewFakeReceiver(), NewFakeSender()
 }
 
 // helperInvalidRoute creates a route that will fail validation.
-// A DirectHold route without CapVisibilityExtension fails validation.
+// A DirectHold route whose source cannot redeliver an unsettled message fails
+// validation.
 func helperInvalidRoute(id string) (goruntime.RouteConfig, *FakeReceiver, *FakeSender) {
 	cfg := goruntime.RouteConfig{
 		ID: id,
@@ -68,14 +69,14 @@ func helperInvalidRoute(id string) (goruntime.RouteConfig, *FakeReceiver, *FakeS
 // proceed without deadlocking.
 //
 // Scenario:
-// 1. Add an invalid route (missing CapVisibilityExtension for DirectHold)
+// 1. Add an invalid route (a DirectHold source that cannot redeliver)
 // 2. First Start() fails with validation error
 // 3. Fix the route configuration
 // 4. Second Start() succeeds -- proves mutex was released on error path
 func TestRuntime_StartAfterFailedStart(t *testing.T) {
 	rt := goruntime.New(goruntime.WithInstanceID("bug1-t1"))
 
-	// Add an invalid route: DirectHold without visibility extension cap.
+	// Add an invalid route: DirectHold on a source that never redelivers.
 	invalidCfg, receiver, sender := helperInvalidRoute("invalid-route")
 	err := rt.AddRoute(invalidCfg, receiver, sender, nil, nil)
 	require.NoError(t, err, "AddRoute should accept any config before Start")

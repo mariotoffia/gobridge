@@ -162,3 +162,56 @@ func TestValidateClusterRollout_EndpointsAreNotARoster(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bridge.cluster.members")
 }
+
+// independentRolloutConfig is a clustered blueprint whose members each apply a
+// live-safe change on their own — no barrier, and therefore no roster.
+func independentRolloutConfig() *ports.BridgeConfig {
+	cfg := coordinatedRolloutConfig()
+	cfg.Bridge.Cluster.Rollout = "independent"
+	cfg.Bridge.Cluster.Members = nil
+	cfg.Bridge.Cluster.ConfirmWindow = ""
+	return cfg
+}
+
+// TestValidate_IndependentRolloutNeedsNoRoster pins the difference that matters
+// to an operator choosing it: the roster exists to count acknowledgements, and
+// this mode counts none, so it must not be demanded.
+func TestValidate_IndependentRolloutNeedsNoRoster(t *testing.T) {
+	require.NoError(t, Validate(independentRolloutConfig()))
+}
+
+// TestValidate_IndependentRolloutRejectsAConfirmWindow keeps the promise honest:
+// a confirm window says "revert the whole cohort if it does not converge", and
+// there is no cohort-wide commit here that could be reverted.
+func TestValidate_IndependentRolloutRejectsAConfirmWindow(t *testing.T) {
+	cfg := independentRolloutConfig()
+	cfg.Bridge.Cluster.ConfirmWindow = "90s"
+
+	err := Validate(cfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "confirm_window")
+}
+
+// TestValidate_IndependentRolloutRequiresACluster rejects the setting where it
+// describes nothing.
+func TestValidate_IndependentRolloutRequiresACluster(t *testing.T) {
+	cfg := independentRolloutConfig()
+	cfg.Bridge.DeploymentMode = "standalone"
+
+	err := Validate(cfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "requires a clustered deployment")
+}
+
+// TestValidate_UnknownRolloutModeNamesEveryValidOne keeps a typo from silently
+// meaning "refuse every change".
+func TestValidate_UnknownRolloutModeNamesEveryValidOne(t *testing.T) {
+	cfg := independentRolloutConfig()
+	cfg.Bridge.Cluster.Rollout = "independant"
+
+	err := Validate(cfg)
+	require.Error(t, err)
+	for _, mode := range []string{"refuse", "independent", "coordinated"} {
+		require.Contains(t, err.Error(), mode)
+	}
+}

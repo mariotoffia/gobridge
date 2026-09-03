@@ -98,9 +98,19 @@ uses these to validate routes and enable transport-specific features.
 | `shared_consumer` | Yes | -- | -- | -- | -- | -- | Broker load-balances one subscription across a consumer group (`$share`) |
 | `plan_driven_subscriptions` | Yes | -- | -- | Yes | -- | -- | Subscribes only when the session manager reconciles the plan |
 | `visibility_extension` | -- | Yes | Yes | -- | -- | -- | Auto-renew message lock / visibility |
-| `source_redelivery` | -- | Yes | -- | Yes | Yes | -- | Broker redelivers unacknowledged messages |
+| `source_redelivery` | Per route² | Yes | Yes | Yes | Yes | -- | Broker redelivers unacknowledged messages |
 | `delayed_send` | -- | Yes | -- | -- | -- | -- | Native delayed delivery (SQS `delay_seconds`) |
 | `http_endpoint` | -- | -- | -- | -- | -- | Yes | Exposes HTTP endpoints |
+
+² MQTT declares `source_redelivery` per ROUTE rather than transport-wide,
+because whether the broker still holds an unacknowledged delivery after this
+process dies is a per-route choice: the session must be `persistent` or
+`exclusive` with `clean_start: false` (so the broker keeps it for this client
+id), and every subscription the route runs with must be QoS 1 or 2. A route that
+misses either is refused `direct_hold` with a message naming which one, because
+the two have different fixes. This is what admits an MQTT→SQS bridge to
+`direct_hold` and lets it run with no outbox, no lease and no outbox partition;
+see [delivery modes](routes-and-runtime-reference.md#delivery-modes).
 
 ¹ AMQP 0-9-1 advertises `exclusive_identity` only **after** it has built an
 exclusive consumer -- the capability latches on first exclusive use. The
