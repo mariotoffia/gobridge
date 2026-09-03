@@ -37,8 +37,8 @@ func TestSourceRedeliversUnsettled_DurableSessionAtLeastOnce(t *testing.T) {
 	receiver := paho.DefaultConfig()
 
 	for name, session := range map[string]ports.SessionSpec{
-		"a persistent session that resumes": redeliverySession(connectivity.SessionPersistent, false, 3600),
-		"an exclusive session":              redeliverySession(connectivity.SessionExclusive, false, 3600),
+		"a persistent session that resumes":              redeliverySession(connectivity.SessionPersistent, false, 3600),
+		"an exclusive session":                           redeliverySession(connectivity.SessionExclusive, false, 3600),
 		"an exclusive session whose expiry is defaulted": redeliverySession(connectivity.SessionExclusive, false, 0),
 	} {
 		t.Run(name, func(t *testing.T) {

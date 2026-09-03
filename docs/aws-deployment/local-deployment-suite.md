@@ -90,7 +90,7 @@ locally, the measured reason.
 |---|---|---|
 | Data plane | SQS↔SQS round trip, batch of ten without duplicates | `TestLocal_SQSDataPlane` |
 | Data plane | MQTT→SQS and SQS→MQTT with `Subject` preserved and the binding's `Address` honoured | `TestLocal_MQTTSubjectAndAddressMapping` |
-| Delivery mode | an MQTT ingress on a durable session runs `direct_hold` — no outbox, no lease, no partition | **not covered locally** — the route needs a durable MQTT session, which owes the broker a managed-subscription store (ADR 0003), and neither store this profile offers can be stood up in a local single-task topology (see *Not yet stood up*) |
+| Delivery mode | an MQTT ingress on a durable session runs `direct_hold` — no outbox, no lease, no partition | **not covered locally** — the deployed task reports the mode correctly, but no message crosses the route: a plan-driven ingress session has no manager a `direct_hold` route can give it (see *Not yet stood up*) |
 | Deployment shape | outputs well-formed, health-check path parity, task role assumable and scoped | `TestLocal_DeploymentShape` |
 | Deployment shape | destroy leaves nothing | `TestLocal_DestroyLeavesNothing` |
 | Deployment shape | control-written config visible to a worker (the shared-storage proof) | `TestLocal_ClusterSharedConfigAndScaling` |
@@ -100,7 +100,7 @@ locally, the measured reason.
 | Rollout | propose, commit, converge, member restart, rollback | `TestLocal_StaticSlotCohort` |
 | Rollout | a change one member cannot answer for is applied by nobody | `TestLocal_StaticSlotCohort` |
 | Rollout | a subscription change is agreed by the WHOLE cohort, not only by the member that proposed it | `TestLocal_StaticSlotCohort` |
-| Rollout | the confirm window: a change every member accepts and none can run takes the cohort back | **not covered — a product defect, not an emulation gap.** The phase exists and drives the change (a subscription asking for a QoS the broker caps below it); the cohort CONFIRMS it instead of reverting, because every member's ingress session is deferred-connect and lease-held and a deferred-connect session without the lease is excluded from the readiness fold, so convergence is recorded before any member has spoken to the broker. The phase records that and skips; its revert assertion starts running the day the convergence signal stops being vacuous |
+| Rollout | the confirm window: a change every member accepts and none can run takes the cohort back | `TestLocal_StaticSlotCohort` — the lever is a subscription asking for a QoS the broker caps below it: every member builds and acks it, no member's subscriptions are ever satisfied, and the cohort reverts to its last confirmed generation |
 | Observability | runtime metrics reach CloudWatch and the alarm's own query crosses its threshold on them | `TestLocal_DeadLetterAndAlarms` |
 | Observability | an alarm driven into ALARM reaches its subscription | **not covered locally** — `TestLocal_DeadLetterAndAlarms` proves the topic's subscription carries messages, then skips: `SetAlarmState` does not run the alarm's actions on this emulator |
 
@@ -116,7 +116,7 @@ Each of these was measured, not assumed.
 | **IAM is not evaluated.** A call the assumed task role has no grant for still succeeds. | The granted half is executed as the task role. For the denied half, the policy CloudFormation attached to the deployed role is read back and every SQS grant in it must name this deployment's own queues. | That AWS refuses the non-granted call. |
 | **CloudFormation cannot update an `AWS::ECS::Service`.** It reports the service it created as not found, then cannot roll back. | The idempotent-redeploy test skips with that reason rather than reporting a deployment defect that does not exist. | Whether re-deploying the same template is a no-op. Synth and the credentialed suite own it. |
 | **EFS has no NFS data plane** and CloudFormation drops task-definition volumes. | The harness rewrites each EFS volume to a host bind mount before deploy, and re-registers each deployed task definition with the volumes and mount points the assembly declared. | That the declared task definition reaches ECS intact. |
-| **The config mount's ownership is not reproducible.** The shipped EFS access point creates it `755` owned by the container user; the harness bind-mounts a host directory `0777`, because a bind mount is not uid-mapped on every Docker host and the container must be able to write the seeded document whatever uid it runs as. A SQLite store refuses a group- or other-writable parent, so it refuses the local mount — measured, not assumed: a deployed task names it (`managed subscription SQLite parent component "gobridge" is writable by group or other`). | Nothing. The profile also refuses a SQLite path outside the mount at synth (`path %q is outside the EFS mount`), correctly — a store on the container's own filesystem is lost on every task replacement — so there is nowhere else to put it. | Every SQLite store on a deployed task. See *Not yet stood up*. |
+| **~~The config mount's ownership is not reproducible.~~ Closed.** The harness used to bind-mount a host directory `0777`, which a SQLite store correctly refuses — it will not put a database under a parent it does not own, or one that is group- or other-writable. That was an accident of convenience, not a limit: the shipped EFS access point creates the mount `755` owned by the container user, and the harness now does the same. | Each stack's config directory is chowned and chmodded to match the access point from a throwaway root container, which covers both a uid-mapping Docker host and a plain Linux one, and handed back before cleanup removes it. | Nothing. |
 | **Container `dependsOn` is not modelled.** | Nothing. A member may start before its seeder has written the shared document, exit, and be replaced until it is there. | The seeder gate. No claim rests on it. |
 | **Container stdout does not reach the `awslogs` driver.** | Log assertions read the container's own logs. | Nothing material. |
 | **A destroyed stack can leave its log group behind**, and the profile names log groups from the construct id rather than the stack — so a later deployment of the same facade collides with a stack that no longer exists. | The harness removes the profile's log groups before each deploy. | Nothing: the collision itself is a real property of the profile (two deployments of the same facade in one account and region collide), which is why the suite deploys one topology at a time. |
@@ -127,16 +127,15 @@ Each of these was measured, not assumed.
 Three shapes an operator can choose today that no deployed run has exercised.
 They are open work, not gaps in the emulator — each is buildable here.
 
-- [ ] **SQLite stores on a deployed task.** Attempted, and the reason it cannot
-      be closed locally is now measured twice rather than assumed. The profile
-      refuses a SQLite store path outside the config mount at synth — correctly,
-      because a store on the container's own filesystem is lost on every task
-      replacement — and the store then refuses the mount itself, because the
-      harness bind-mounts a host directory `0777` where the EFS access point
-      creates `755` owned by the container user, and a bind mount is not
-      uid-mapped on every Docker host. Closing it needs the harness to reproduce
-      the access point's ownership portably, which is its own piece of work; the
-      credentialed suite can stand it up today.
+- [ ] **SQLite stores on a deployed task.** The mount is no longer the obstacle:
+      the harness now gives each stack's config directory the ownership and mode
+      the EFS access point creates, and a deployed task's SQLite store accepts it.
+      What blocks it now is the topology that would carry one. The only local
+      single-task shape that needs a SQLite store is an MQTT ingress on a durable
+      session, and a plan-driven ingress session has no manager a `direct_hold`
+      route can give it — the deployed task reports the right delivery mode and
+      then carries nothing. Closing this and the `direct_hold` row is one piece of
+      work, not two.
 - [x] **Config held in DynamoDB.** Decided rather than built: this profile does
       **not** expose an overlay layer, and both pages now say so ([configuration
       overview](../configuration-overview.md#overlays-and-the-admin-config-api-do-not-compose),
@@ -151,6 +150,10 @@ They are open work, not gaps in the emulator — each is buildable here.
       function for the emulator, asserting its event source mapping, and what a
       closed producer→bridge→consumer loop asserts on are all questions the ECS
       topologies never raised.
+
+Both open rows have owners rather than being open-ended: the SQLite row and the
+`direct_hold` delivery-mode row above are the same defect and are one piece of
+work, and the Lambda row owns its own probe.
 
 ## Where the code lives
 

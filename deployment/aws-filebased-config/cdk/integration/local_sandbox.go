@@ -289,6 +289,13 @@ func localShutdown() {
 		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rmi", "-f", state.seederLocal)
 	}
 	if state.runDir != "" && strings.Contains(state.runDir, localRunPrefix) {
+		// The per-stack config directories were handed to the container user to
+		// match the deployed EFS mount; hand them back before deleting, or on a
+		// host where that chown was real the removal fails and the next run
+		// inherits them.
+		if state.configDir != "" {
+			releaseDeployedMountOwnership(state.configDir)
+		}
 		_ = os.RemoveAll(state.runDir)
 	}
 	localState = nil
@@ -332,6 +339,57 @@ func localRunDirectories(t *testing.T, state *localBackend) {
 	}
 }
 
+// mountOwnerUID and mountOwnerGID are the uid:gid the deployed containers run as,
+// and therefore the ownership the shipped EFS access point creates the config
+// mount with. See matchDeployedMountOwnership.
+const (
+	mountOwnerUID = 65532
+	mountOwnerGID = 65532
+	// mountOwnerImage only has to provide a shell with chown and chmod, and it is
+	// already pulled by this suite for the CloudFormation responder. Its own
+	// entrypoint is socat, so every use below overrides it.
+	mountOwnerImage = "alpine/socat:1.8.0.3"
+)
+
+// matchDeployedMountOwnership gives a stack's config directory the ownership and
+// mode the shipped EFS access point creates, rather than the blanket 0777 a host
+// directory is easiest to create with.
+//
+// It matters because a SQLite store refuses a parent directory that is group- or
+// other-writable, or that the process user does not own — a real security check,
+// not a quirk. The access point creates the mount `755` owned by the container
+// user, which satisfies it; a 0777 host directory does not, so a deployed task
+// carrying a SQLite store could never start against this harness while every
+// other topology passed. Matching AWS here is the whole point: a rig that is more
+// permissive than production hides exactly the failures it exists to find.
+//
+// It is done from a container rather than from the test process because the two
+// see the mount differently. On a uid-mapping Docker host the chown is a no-op
+// against the host inode and the container is shown the file as its own user
+// anyway; on a plain Linux host the chown is real and is the only thing that
+// makes the container the owner. Doing it from inside covers both without the
+// harness having to know which it is on.
+func matchDeployedMountOwnership(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := dockerexec.Run(dockerexec.RunTimeout, "run", "--rm", "--entrypoint", "sh",
+		"-v", dir+":/mnt/gobridge", "--user", "0:0", mountOwnerImage,
+		"-c", fmt.Sprintf("chown -R %d:%d /mnt/gobridge && chmod 0755 /mnt/gobridge",
+			mountOwnerUID, mountOwnerGID)); err != nil {
+		t.Fatalf("give %s the ownership the deployed EFS mount has: %v", dir, err)
+	}
+}
+
+// releaseDeployedMountOwnership hands a stack's config directory back to whoever
+// has to delete it. On a uid-mapping host nothing changed and this is inert; on a
+// plain Linux host the directory is now owned by the container user, and the test
+// process — which is not root and not that user — could not otherwise remove what
+// the deployment wrote into it.
+func releaseDeployedMountOwnership(dir string) {
+	_, _ = dockerexec.Run(dockerexec.RunTimeout, "run", "--rm", "--entrypoint", "sh",
+		"-v", dir+":/mnt/gobridge", "--user", "0:0", mountOwnerImage,
+		"-c", "chmod -R 0777 /mnt/gobridge")
+}
+
 // stackConfigDir creates and returns the shared config directory one stack's
 // tasks bind to.
 //
@@ -350,6 +408,7 @@ func stackConfigDir(t *testing.T, state *localBackend, stackName string) string 
 	if err := os.Chmod(dir, 0o777); err != nil {
 		t.Fatalf("open the shared config directory of %s: %v", stackName, err)
 	}
+	matchDeployedMountOwnership(t, dir)
 	return dir
 }
 
