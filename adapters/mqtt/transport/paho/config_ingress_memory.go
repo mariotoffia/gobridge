@@ -47,19 +47,28 @@ const (
 	// Envelope header-map buckets, outbox/queue item state, and allocator
 	// page/size-class rounding observed by the finite-cgroup proof.
 	retainedPacketFixedBytes uint64 = 32 << 10
-	// minEncodedUserPropertyBytes is the smallest legal encoded MQTT v5 User
-	// Property: the one-byte identifier plus two empty length-prefixed UTF-8
-	// strings.
-	minEncodedUserPropertyBytes uint64 = 5
-	// maxWireUserProperties is the largest number of User Properties a packet
-	// the broker may forward can carry. The CONNECT advertises only a
-	// whole-packet Maximum Packet Size, so a compliant broker forwards a packet
-	// that fills the entire metadata allowance with minimum-size properties —
-	// tens of thousands of them, not the maxIngressUserProperties the router
-	// retains. Paho materialises every one of them (wire packet and callback
-	// copy) before the callback can ack-and-drop the violation, so the ONE
-	// decode in flight per connection must be budgeted for this count.
-	maxWireUserProperties = mqttPacketOverheadAllowance / minEncodedUserPropertyBytes
+	// maxDecodedUserProperties is the most User Properties the SDK ever decodes
+	// from one inbound PUBLISH. The CONNECT advertises only a whole-packet
+	// Maximum Packet Size, so a compliant broker forwards a packet whose
+	// metadata section is nothing but five-byte User Properties — tens of
+	// thousands of them at the default payload size — and the SDK would
+	// materialise every one of them twice before the publish callback could
+	// refuse the packet. The predecode guard therefore cuts the list on the
+	// raw bytes to one entry above the retained cap
+	// (truncatePublishUserProperties): enough for the callback to see the
+	// violation and ack-and-drop, one more than the retained slot budgets.
+	// The bound holds for EVERY decoded packet — the one being decoded, the
+	// ones the SDK queues ahead of the callback, and the ones the router
+	// retains — so no slot has to budget the wire worst case.
+	maxDecodedUserProperties = maxIngressUserProperties + 1
+	// sdkDecodeWireMultiple is how many wire-sized allocations one SDK decode
+	// can make: the read buffer it fills from the guard (one), the doubled
+	// replacement that buffer grows into when the packet ends within one read
+	// chunk of the buffer's capacity (two), and the topic, property and
+	// payload copies the decoder takes out of it (one more, at most the wire
+	// size again). The first buffer is garbage once the second exists, but it
+	// stays heap until the collector runs, so the slot budgets all four.
+	sdkDecodeWireMultiple uint64 = 4
 )
 
 // wirePacketSizeFor returns the MQTT v5 Maximum Packet Size advertised to the
@@ -92,21 +101,21 @@ func decodedPacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
 	return uint32(decoded), nil
 }
 
-// transientDecodedPacketSizeFor returns the heap Paho can hold for the ONE
-// decoded packet in flight while it consumes a wire packet, INCLUDING a packet
-// the router will immediately ack-and-drop. It differs from
-// decodedPacketSizeFor by the property budget: a broker may forward a packet
-// whose metadata section is entirely minimum-size User Properties, so the
-// decode transiently materialises maxWireUserProperties of them, far above the
-// retained cap. Only this one slot pays for that amplification — an over-cap
-// packet never reaches a retained slot.
+// transientDecodedPacketSizeFor returns the heap Paho can hold while it
+// consumes ONE wire packet, INCLUDING a packet the router will immediately
+// ack-and-drop. It differs from decodedPacketSizeFor in two ways: the SDK's
+// read buffer and its copies count sdkDecodeWireMultiple times over, and the
+// property budget is maxDecodedUserProperties — the one entry above the cap
+// the guard lets through — because the guard, not the decoder, bounds the
+// count. The zero-payload packet at the advertised maximum is pinned against
+// this budget by measurement in config_ingress_memory_test.go.
 func transientDecodedPacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
 	wire, err := wirePacketSizeFor(maxPayloadBytes)
 	if err != nil {
 		return 0, err
 	}
-	decoded := uint64(wire) +
-		maxWireUserProperties*retainedUserPropertyBytes +
+	decoded := sdkDecodeWireMultiple*uint64(wire) +
+		maxDecodedUserProperties*retainedUserPropertyBytes +
 		retainedPacketFixedBytes
 	if decoded > math.MaxUint32 {
 		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: transient decoded packet memory exceeds uint32")

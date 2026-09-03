@@ -440,10 +440,11 @@ long-running test without the tag is a CI accident.
   - `TestUC3SeparateProcessFailover` runs two real bridge processes against a
     real broker and DynamoDB, kills the lease owner, and asserts the standby
     recovers. It is picked up by the suite like any other test.
-  - `TestMQTTIngressMemory` is re-run by `make test-long-running` inside a
-    container with an enforced 512 MiB cgroup. It cannot assert anything
-    without a real memory bound — run through the ordinary suite it detects no
-    limit and skips itself — so the harness is the test, not a convenience.
+  - `TestMQTTIngressMemory` and `TestMQTTIngressMemoryPropertyFlood` are
+    re-run by `make test-long-running` inside a container with an enforced
+    512 MiB cgroup. They cannot assert anything without a real memory bound —
+    run through the ordinary suite they detect no limit and skip themselves —
+    so the harness is the test, not a convenience.
     `GOBRIDGE_REQUIRE_MEMORY_LIMIT=1` makes an absent limit fail instead of
     skip; Darwin retains the explicit skip.
 

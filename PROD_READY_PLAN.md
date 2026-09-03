@@ -104,7 +104,7 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 | 1 | done | HIGH-9 (residual open, rechecked in 17), HIGH-10 |
 | 2 | done | MEDIUM-7, MEDIUM-9, MEDIUM-10, MEDIUM-11, LOW-6, NEW-LOW-4 |
 | 3 | done | HIGH-1, HIGH-8, NEW-HIGH-1, NEW-HIGH-2, LOW-17 |
-| 4 | done | NEW-HIGH-3, MEDIUM-1 (residual open), MEDIUM-13, MEDIUM-14, NEW-MEDIUM-4, LOW-10 |
+| 4 | done | NEW-HIGH-3, MEDIUM-1, MEDIUM-13, MEDIUM-14, NEW-MEDIUM-4, LOW-10 |
 | 5 | done | BLOCKER-3, NEW-MEDIUM-7, LOW-27 |
 | 6 | done | NEW-HIGH-4, HIGH-18, HIGH-19, MEDIUM-8, NEW-MEDIUM-8, MEDIUM-22, LOW-16, LOW-24, LOW-25 |
 | 7 | done | HIGH-13, MEDIUM-16, MEDIUM-17 |
@@ -199,8 +199,8 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 - [x] Run `make test-integration` for real broker limit and certificate validation.
 - [x] Add rejection metrics and update MQTT memory, proxy, field-limit, and expiry contracts.
 - [x] Accept when no over-limit packet reaches the wire, no field truncates, proxy TLS verifies the broker, and admitted memory covers legal metadata.
-- **Landed:** `b781f741`. **Residual (MEDIUM-1, still open in this chunk):**
-- [ ] Budget the transient decode for the whole advertised packet (`max_payload_bytes + 128 KiB`, so ≈78,600 minimum properties at defaults) instead of `128 KiB / 5`, or reject property count pre-decode in `ingress_conn.go`; add a failing `config_ingress_memory` test for a zero-payload packet at the advertised maximum and a finite-cgroup long-running proof with maximum-count tiny properties.
+- **Landed:** `b781f741`. **Residual (MEDIUM-1, closed 2026-09-03):**
+- [x] Budget the transient decode for the whole advertised packet (`max_payload_bytes + 128 KiB`, so ≈78,600 minimum properties at defaults) instead of `128 KiB / 5`, or reject property count pre-decode in `ingress_conn.go`; add a failing `config_ingress_memory` test for a zero-payload packet at the advertised maximum and a finite-cgroup long-running proof with maximum-count tiny properties. *(Closed by rejecting the count pre-decode: the guard truncates the User Property list to 129 on the raw bytes before the SDK decodes it (`ingress_conn_truncate.go`, `MQTTIngressUserPropertiesTruncated`), because the measured SDK cost is ≈1.3 KiB per five-byte property — ≈107 MB for one packet at the default advertised maximum — which no budget can honestly absorb. The crossing slot now budgets the SDK's measured decode buffers instead. Pinned by `TestIngressMemory_ZeroPayloadPacketAtAdvertisedMaximum_DecodesWithinCrossingSlot`, `ingress_conn_truncate_test.go`, and the finite-cgroup proof `TestMQTTIngressMemoryPropertyFlood` run by `scripts/test-mqtt-ingress-memory.sh`; the proof fails at 112 MB per packet and a 43 MB cgroup rise with truncation disabled, and passes at 185 KB per packet with it.)*
 - **Suggested commit title:** `enforce mqtt wire and memory limits`
 
 ### Chunk 5: Lease-fenced outbox expiry and store call deadlines

@@ -175,6 +175,21 @@ const (
 	// advertised Maximum Packet Size) still fail the session closed.
 	MetricMQTTIngressPoisonDropped = "MQTTIngressPoisonDropped"
 
+	// MetricMQTTIngressUserPropertiesTruncated counts inbound PUBLISH packets
+	// whose User Property list the predecode guard cut to one entry above the
+	// retained cap before the SDK decoded the packet. The CONNECT advertises
+	// only a whole-packet Maximum Packet Size, so a compliant broker forwards
+	// a packet whose metadata section is nothing but tens of thousands of
+	// five-byte User Properties; the SDK would materialise every one of them
+	// twice before the publish callback could refuse the packet, turning a
+	// 128 KiB metadata section into megabytes of decode. The guard removes
+	// the excess on the raw bytes instead, the callback still sees one more
+	// property than the cap and acks-and-drops the packet
+	// (MetricMQTTIngressPoisonDropped), and this counter records that the
+	// property count the callback logged was bounded by the guard rather than
+	// the count the publisher sent. Tagged session_id.
+	MetricMQTTIngressUserPropertiesTruncated = "MQTTIngressUserPropertiesTruncated"
+
 	// MetricMQTTReceiverEmitRejected counts inbound deliveries the route
 	// pipeline REFUSED at emit — a shutting-down or wedged route runner. It is
 	// tagged with the session and an outcome:

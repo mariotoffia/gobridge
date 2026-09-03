@@ -48,6 +48,15 @@ alert on any non-zero value and follow
 packets and totals above the advertised Maximum Packet Size — producible only by
 a broken broker — still fail the session closed at the raw pre-decode guard.
 
+The same guard bounds the one cap whose decode cost the wire does not bound. A
+PUBLISH carrying more than 129 User Properties has its list cut to 129 on the
+raw bytes before the SDK decodes it: the callback still sees a violation and
+acks-and-drops the packet, but the decode never costs more than the retained
+slot budgets, instead of the roughly 1.3 KiB per property the SDK would spend
+on tens of thousands of five-byte properties. Every such packet is counted on
+`MQTTIngressUserPropertiesTruncated`, and the count the publisher actually sent
+is logged at Debug — the callback's Error log can only ever show 129.
+
 ### Bounded recovery from an unsettled delivery
 
 A delivery the runtime received but never settled — a refused emit, a failed

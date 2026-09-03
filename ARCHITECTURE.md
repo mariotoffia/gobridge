@@ -357,13 +357,17 @@ Stateful transport connection lifecycle management for protocols that maintain l
 The MQTT adapter composes an adapter-owned predecode ingress guard at the final
 `net.Conn` boundary after TLS/WebSocket decryption and before
 `paho.NewClient`. The guard buffers at most one advertised-maximum wire packet,
-validates Remaining Length before allocation, and checks raw PUBLISH variable
-header, properties, metadata, and payload limits before the SDK can materialize
-decoded objects. Writes, deadlines, close operations, addresses, partial reads,
-and non-PUBLISH bytes retain `net.Conn` behavior. A typed secret-safe violation
-is latched by the existing terminal session transition before the connection
+validates Remaining Length before allocation, checks raw PUBLISH structure
+before the SDK can materialize decoded objects, and truncates a User Property
+list beyond one entry above the retained cap on the raw bytes, so a legal packet
+cannot make the SDK decode tens of thousands of properties before the publish
+callback refuses it. Writes, deadlines, close operations, addresses, partial
+reads, and non-PUBLISH bytes retain `net.Conn` behavior. A typed secret-safe
+violation — malformed structure, or a packet above the advertised maximum — is
+latched by the existing terminal session transition before the connection
 fails, so autopaho's `OnConnectionDown` observes terminal state and does not
-start a reconnect storm.
+start a reconnect storm. The local caps a compliant broker cannot enforce are
+left to the publish callback, which acks-and-drops the packet.
 
 ### Route
 

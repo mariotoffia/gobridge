@@ -180,6 +180,27 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ### Fixed
 
+- **An MQTT publisher can no longer make the bridge decode tens of thousands of
+  User Properties per packet.** The CONNECT advertises only a whole-packet
+  Maximum Packet Size, so a compliant broker forwards a zero-payload packet at
+  that limit whose metadata is nothing but five-byte User Properties — about
+  78,600 of them at the default `max_payload_bytes`. The publish callback refused
+  such a packet, but only after the SDK had decoded every property, and the SDK
+  spends roughly 1.3 KiB per property doing so: around 100 MiB of allocation
+  for one packet, against a memory model that budgeted 1.7 MiB for it. The
+  predecode ingress guard now cuts the User Property list to 129 entries — one
+  above the retained cap — on the raw bytes, before the SDK sees the packet.
+  The callback still acks-and-drops it (`MQTTIngressPoisonDropped`), the decode
+  costs no more than an ordinary packet, and each truncated packet is counted on
+  the new `MQTTIngressUserPropertiesTruncated` metric with the wire count logged
+  at Debug. The ingress memory model's crossing slot now budgets the SDK's real
+  decode buffers (four wire-sized allocations plus the 129 properties) instead
+  of a property count the guard no longer lets through, which lowers the
+  default-profile bound from 265,797,600 to 265,185,360 bytes; no configuration
+  that validated before fails now. The finite-cgroup proof
+  `TestMQTTIngressMemoryPropertyFlood` drives a flood of such packets through a
+  real broker under a 512 MiB limit.
+
 - **A cluster rollout member that cannot apply the committed generation no longer
   stays behind the cohort forever.** After three failed swap attempts the member
   gave up permanently: it recorded the generation as applied in its own gate,

@@ -26,7 +26,7 @@ backpressure.
 | `clean_start` | bool | `false` | MQTT 5 clean-start flag; consulted only for Persistent/Exclusive sessions. **`clean_start: true` on a Persistent session wipes the broker-side session (subscriptions AND queued offline QoS 1/2) on every process restart** — the backlog the mode exists to retain is discarded each time. Honoured as configured, with a construction-time warning; on Exclusive it is overridden to `false` (takeover loop). |
 | `session_expiry_interval` | int | `0` | MQTT 5 session expiry in seconds. For Persistent/Exclusive sessions a `0` is replaced at session creation (`NewSession`) with `86400` (24h) — a literal `0` would give zero offline retention. Ephemeral always uses `0`. |
 | `receive_maximum` | int | `0` → **192** (`DefaultReceiveMaximum`) | MQTT 5 Receive Maximum: max in-flight QoS 1/2 messages the broker may send before PUBACKs. `0` is normalized because it is illegal on the wire. The same effective value sizes one reservation shared by the serialized dispatch queue and startup/migration pending entries; those stores cannot each retain a full independent window. An explicitly configured non-zero value receives full window validation during parse and is rejected when unsafe. An omitted value stays unmaterialized during parse so a deployment profile may derive a lower safe value; generic bridge preflight later applies 192 and performs the same full validation. |
-| `max_payload_bytes` | int | `0` → **262144** (`DefaultMaxPayloadBytes`) | Maximum inbound application body, in bytes. CONNECT advertises a separate wire Maximum Packet Size of this body limit plus a 128 KiB MQTT v5 metadata allowance. After TLS/WebSocket decoding but before Paho packet decoding, an adapter-owned connection guard frames one bounded wire packet, validates Remaining Length before allocation, and rejects an oversized body, a property block over 128 KiB, more than 128 structurally parsed User Properties, or topic-plus-properties metadata over 128 KiB. The decoded callback repeats the retained-representation checks as defense in depth. A violation terminally recycles the session before SDK acknowledgement tracking or adapter queues can retain the packet. Values too large to retain the metadata allowance below the MQTT 256 MiB − 1 packet ceiling are rejected, never clamped. This does not limit outbound publishes. |
+| `max_payload_bytes` | int | `0` → **262144** (`DefaultMaxPayloadBytes`) | Maximum inbound application body, in bytes. CONNECT advertises a separate wire Maximum Packet Size of this body limit plus a 128 KiB MQTT v5 metadata allowance. After TLS/WebSocket decoding but before Paho packet decoding, an adapter-owned connection guard frames one bounded wire packet, validates Remaining Length before allocation, rejects malformed PUBLISH structure and any packet above the advertised total, and truncates a User Property list longer than 129 entries to 129 on the raw bytes so the SDK never decodes more (`MQTTIngressUserPropertiesTruncated`). The decoded callback then enforces the local caps the broker cannot see — an oversized body, more than 128 User Properties, or topic-plus-properties metadata over 128 KiB — by acking and dropping the packet (`MQTTIngressPoisonDropped`), never by failing the session. Values too large to retain the metadata allowance below the MQTT 256 MiB − 1 packet ceiling are rejected, never clamped. This does not limit outbound publishes. |
 | `ingress_memory_budget_bytes` | int | `0` → **268435456** (`DefaultIngressMemoryBudgetBytes`) | Per-session conservative MQTT ingress budget (256 MiB). The bridge validates the full packet/window equation below using the route's effective `max_in_flight` before opening stores or transports. Validation includes ReceiverDef-backed sessions with no consuming route and referenced Persistent/Exclusive sessions that can resume stale backlog. Exact boundary is accepted; one byte over budget and every arithmetic overflow are rejected as invalid config. |
 | `unmatched_grace` | duration | `30s` | Grace window after **each** connect during which an incoming publish matching no registered receiver filter is buffered (un-acked) awaiting handler registration. It is also the post-recycle no-replay verification window for managed-filter removal; a pinned matching replay or a shorter reconciliation deadline fails migration closed and preserves history. After the window a still-unmatched publish is split by whether a wanted subscription still covers its topic. A topic the session still wants whose handler registered late is **retained un-acked** and redelivered once the handler registers (`MQTTRouterCoveredRetained`) — never acked-dropped, so a late-registering live route cannot lose a QoS 1/2 message; only a covered QoS 0 publish the bounded buffer cannot hold is dropped best-effort (`MQTTRouterCoveredDropped`). An orphan topic no configured route covers (a leftover broker-side subscription on a resumed `clean_start=false` session) is acked, dropped, and UNSUBSCRIBEd (deduped, one warn per topic) to converge (`MQTTRouterUnmatchedDropped`, benign cleanup). `0` → `DefaultUnmatchedGrace` (30s). |
 | `no_local` | bool | `false` | Opt-in MQTT 5 **No-Local**. When `true`, every **ordinary** subscription is issued with the No-Local flag so the broker does not deliver a message back to the same session that published it — breaking the same-broker MQTT→MQTT self-delivery loop where a session that both subscribes and publishes on overlapping filters would otherwise receive and re-forward its own publishes (unbounded self-amplification). Default `false` preserves the least-surprising MQTT contract (a session receives its own publishes), so existing single-session round-trip topologies are unaffected. A shared subscription (`$share/…`) **never** sets No-Local even when this is `true`: MQTT 5 §3.8.3.1 makes No-Local on a shared subscription a Protocol Error the broker rejects with a DISCONNECT. Cross-bridge delivery is unaffected — No-Local is per-connection and distinct bridges use distinct `client_id`s. See [ADR 0010](../adr/0010-mqtt-loop-prevention-contract.md). |
@@ -102,18 +102,25 @@ representations and a 32 KiB fixed allowance for SDK structures, accepted
 Envelope header-map buckets, outbox/queue state, and allocator page/size-class
 rounding. The 25% factor covers remaining Go object and slice bookkeeping.
 
-The two decoded terms use **different property budgets**, and the difference is
-load-bearing. `decodedPacketSize` — the per-slot **retained** cost — budgets 128
-User Properties, because a packet exceeding that cap is acked-and-dropped by the
+The two decoded terms differ, and the difference is load-bearing.
+`decodedPacketSize` — the per-slot **retained** cost — budgets 128 User
+Properties, because a packet exceeding that cap is acked-and-dropped by the
 publish callback before anything retains it. `transientDecodedPacketSize` — used
-only by `crossing` — budgets the **wire** worst case of 26,214 properties. The
-CONNECT advertises only a whole-packet Maximum Packet Size, so a compliant
-broker may forward a packet whose 128 KiB metadata section is filled entirely
-with five-byte (empty key, empty value) User Properties. Paho materialises every
-one of them, twice, before the callback can refuse the packet. Budgeting that
-worst case per retained slot would multiply the bound by three orders of
-magnitude; budgeting it once, for the single decode in flight, is both correct
-and affordable.
+only by `crossing` — budgets what ONE SDK decode can hold: four wire-sized
+allocations (the SDK's read buffer, the doubled replacement it grows into when
+the packet ends within one read chunk of the buffer's capacity, and the topic,
+property and payload copies it takes out of that buffer) plus 129 User
+Properties. The CONNECT advertises only a whole-packet Maximum Packet Size, so a
+compliant broker may forward a packet whose metadata section is nothing but
+five-byte (empty key, empty value) User Properties — about 78,600 of them in a
+zero-payload packet at the default limit. The SDK spends roughly 1.3 KiB of
+allocation decoding each one, around 100 MiB for that single packet, before the
+callback could refuse it. No budget can honestly absorb that, so the predecode
+guard removes the excess on the raw bytes instead: the decoder never sees more
+than 129 User Properties, the callback still refuses the packet, and every such
+packet is counted on `MQTTIngressUserPropertiesTruncated`. Because the guard
+bounds every packet before decoding, the bound holds for the packets the SDK
+queues ahead of the callback as well as for the one in flight.
 
 The single `crossing` term is the formula's `+1` ownership slot. It covers one
 complete raw packet buffered by the predecode connection guard plus Paho's
@@ -136,10 +143,10 @@ stores or transports; generic composition therefore applies default 192 and
 rejects a window that the default 256 MiB budget cannot hold.
 
 The defaults (256 KiB payload, Receive Maximum 192, route `max_in_flight` 100)
-produce a 265,797,600-byte bound, below the 256 MiB default budget. Raising
+produce a 265,185,360-byte bound, below the 256 MiB default budget. Raising
 payload size, Receive Maximum, or route concurrency may require a larger budget.
 Do not tune only the message count. A budget smaller than one `crossing` slot
-(about 3 MiB at the default payload size) is rejected outright: the session
+(about 2.4 MiB at the default payload size) is rejected outright: the session
 could not decode a single legal packet.
 
 The AWS file-based profile reserves 25% of the effective Fargate task memory,

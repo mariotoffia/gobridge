@@ -98,24 +98,26 @@ func TestApplyConnectLimits(t *testing.T) {
 }
 
 // TestMaxPacketSizeFor covers the pure derivation the helper delegates to. The
-// property term uses the WIRE worst case, not the router's retained cap: the
-// crossing slot holds the one decode in flight, which a compliant broker can
-// fill with minimum-size User Properties well past the retained cap.
+// crossing slot holds the guard's raw wire packet plus the one decode in
+// flight: the SDK's wire-sized buffers and copies (sdkDecodeWireMultiple of
+// them) and one User Property above the retained cap, which is all the guard
+// lets the decoder see.
 func TestMaxPacketSizeFor(t *testing.T) {
 	got, err := maxPacketSizeFor(0)
 	require.NoError(t, err)
 	require.Equal(t,
-		uint32(2*mqttPacketOverheadAllowance+
-			maxWireUserProperties*retainedUserPropertyBytes+
+		uint32((1+sdkDecodeWireMultiple)*mqttPacketOverheadAllowance+
+			maxDecodedUserProperties*retainedUserPropertyBytes+
 			retainedPacketFixedBytes),
 		got,
-		"crossing packet size includes one raw wire buffer, one worst-case decoded representation, and structural heap allowance")
+		"crossing packet size includes one raw wire buffer, the SDK decode buffers, one truncated decoded representation, and structural heap allowance")
 	got, err = maxPacketSizeFor(256 << 10)
 	require.NoError(t, err)
 	require.Equal(t,
-		2*uint32(256<<10)+uint32(2*mqttPacketOverheadAllowance+
-			maxWireUserProperties*retainedUserPropertyBytes+
-			retainedPacketFixedBytes),
+		uint32(1+sdkDecodeWireMultiple)*uint32(256<<10)+
+			uint32((1+sdkDecodeWireMultiple)*mqttPacketOverheadAllowance+
+				maxDecodedUserProperties*retainedUserPropertyBytes+
+				retainedPacketFixedBytes),
 		got)
 	_, err = maxPacketSizeFor(math.MaxUint32)
 	require.Error(t, err, "overflow past the MQTT ceiling is rejected, never clamped or wrapped")

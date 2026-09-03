@@ -17,6 +17,9 @@ import (
 	"github.com/eclipse/paho.golang/packets"
 	"github.com/gorilla/websocket"
 	"golang.org/x/net/proxy"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/logging"
 )
 
 // attemptGuardedConnection establishes the decrypted MQTT byte stream and
@@ -33,9 +36,19 @@ func (s *Session) attemptGuardedConnection(
 		return nil, err
 	}
 
-	maximumPacketSize, err := wirePacketSizeFor(s.opts.MaxPayloadBytes)
+	guarded, err := s.guardIngress(raw)
 	if err != nil {
 		_ = raw.Close()
+		return nil, err
+	}
+	return packets.NewThreadSafeConn(guarded), nil
+}
+
+// guardIngress wraps one decrypted broker byte stream in the predecode ingress
+// guard bound to this session's limits and reporting hooks.
+func (s *Session) guardIngress(raw net.Conn) (*mqttIngressConn, error) {
+	maximumPacketSize, err := wirePacketSizeFor(s.opts.MaxPayloadBytes)
+	if err != nil {
 		return nil, err
 	}
 	guarded := newMQTTIngressConn(
@@ -43,7 +56,27 @@ func (s *Session) attemptGuardedConnection(
 		maximumPacketSize,
 		s.rejectPredecodeIngress,
 	)
-	return packets.NewThreadSafeConn(guarded), nil
+	guarded.onTruncate = s.notePredecodeTruncation
+	return guarded, nil
+}
+
+// notePredecodeTruncation records one inbound PUBLISH whose User Property list
+// the guard cut to one entry above the retained cap before decoding. The
+// callback that acks-and-drops the packet only ever sees the bounded count, so
+// this is the one place the count the publisher actually sent is visible: the
+// metric marks the packet, the Debug log carries the number. Debug, not Error,
+// because the callback already logs the violation once per class and the
+// packet rate is publisher-controlled.
+func (s *Session) notePredecodeTruncation(count int) {
+	s.metrics.Counter(MetricMQTTIngressUserPropertiesTruncated, 1,
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
+	if s.logger != nil {
+		logging.Debug(s.logger, "mqtt: truncated inbound User Properties before decoding; the callback will ack-and-drop the packet",
+			"client_id", s.opts.ClientID,
+			"wire_user_properties", count,
+			"decoded_user_properties", maxDecodedUserProperties,
+		)
+	}
 }
 
 func dialMQTTConnection(

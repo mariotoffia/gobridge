@@ -85,7 +85,12 @@
 //     session terminal forever. Only violations a compliant
 //     broker can never forward (malformed packets, total size above the
 //     advertised maximum) fail the session closed, at the raw pre-decode
-//     guard (ingress_conn.go).
+//     guard (ingress_conn.go). The same guard bounds the one cap whose
+//     decode cost the wire does not: a User Property list longer than one
+//     entry above the cap is cut to that length on the raw bytes
+//     (MetricMQTTIngressUserPropertiesTruncated) before the SDK decodes
+//     it, so a legal packet cannot cost tens of thousands of decoded
+//     properties before the callback refuses it.
 //
 //   - Per-receiver topic filtering: each Receiver registers the MQTT topic
 //     filters of its subscriptions (wildcards + and # supported); a

@@ -22,10 +22,8 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
-	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
-	"github.com/mariotoffia/gobridge/ports"
 	runtimeroute "github.com/mariotoffia/gobridge/runtime/route"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
@@ -352,13 +350,25 @@ func startPublisherHelper(
 	return helper, nil
 }
 
+// Publish sends count copies of the worst ACCEPTED message at qos.
 func (p *publisherHelper) Publish(qos, count int) error {
+	return p.command(fmt.Sprintf("%d %d", qos, count))
+}
+
+// PublishTinyProperties sends count copies of the worst FORWARDABLE packet at
+// qos: no payload, and as many five-byte User Properties as the source's
+// advertised Maximum Packet Size holds.
+func (p *publisherHelper) PublishTinyProperties(qos, count int) error {
+	return p.command(fmt.Sprintf("%d %d %s", qos, count, publisherTinyPropertiesMode))
+}
+
+func (p *publisherHelper) command(line string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stopped {
 		return fmt.Errorf("publisher helper is stopped")
 	}
-	if _, err := fmt.Fprintf(p.stdin, "%d %d\n", qos, count); err != nil {
+	if _, err := fmt.Fprintln(p.stdin, line); err != nil {
 		return fmt.Errorf("command publisher helper: %w", err)
 	}
 	if !p.output.Scan() || p.output.Text() != "DONE" {
@@ -398,77 +408,6 @@ func dialPublisherControl(ctx context.Context, address string) (net.Conn, error)
 		case <-ticker.C:
 		}
 	}
-}
-
-func TestMQTTIngressMemoryPublisherProcess(t *testing.T) {
-	if os.Getenv("GOBRIDGE_MQTT_MEMORY_PUBLISHER_HELPER") != "1" {
-		t.Skip("subprocess-only MQTT ingress memory publisher")
-	}
-	payloadBytes, err := strconv.Atoi(os.Getenv("GOBRIDGE_MQTT_MEMORY_PAYLOAD_BYTES"))
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-	t.Cleanup(cancel)
-	session := paho.NewSession(paho.SessionOptions{
-		BrokerURLs:     []string{os.Getenv("GOBRIDGE_MQTT_MEMORY_BROKER_URL")},
-		ClientID:       mqttlocal.UniqueClientID("ingress-memory-publisher"),
-		KeepAlive:      30,
-		ConnectTimeout: 15 * time.Second,
-		CleanStart:     true,
-	}, connectivity.SessionEphemeral, nil)
-	t.Cleanup(func() { _ = session.Close(context.Background()) })
-	require.NoError(t, session.Start(ctx))
-
-	headers := make(map[string]any, 127)
-	value := strings.Repeat("v", 256)
-	for i := range 125 {
-		key := fmt.Sprintf("proof-%03d", i)
-		headers[key] = value
-	}
-	// Two legal MQTT UTF-8 values drive encoded metadata close to the accepted
-	// 128 KiB ceiling while 125 safe headers plus the generated message ID drive
-	// the User Property count to its exact cap of 128. The large values are
-	// intentionally dropped by Envelope header hygiene after admission, but
-	// remain retained in Paho's unsettled wire packets during the measurement.
-	headers["proof-filler-a"] = strings.Repeat("a", 46_000)
-	headers["proof-filler-b"] = strings.Repeat("b", 46_000)
-	message := ports.OutboundMessage{
-		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
-			Payload: make([]byte, payloadBytes),
-			Headers: headers,
-		}),
-		Address: os.Getenv("GOBRIDGE_MQTT_MEMORY_TOPIC"),
-	}
-	input := io.Reader(os.Stdin)
-	output := io.Writer(os.Stdout)
-	var listener net.Listener
-	if address := os.Getenv("GOBRIDGE_MQTT_MEMORY_PUBLISHER_LISTEN"); address != "" {
-		listener, err = net.Listen("tcp", address)
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = listener.Close() })
-		conn, acceptErr := listener.Accept()
-		require.NoError(t, acceptErr)
-		t.Cleanup(func() { _ = conn.Close() })
-		input = conn
-		output = conn
-	} else {
-		fmt.Fprintln(output, "READY")
-	}
-	scanner := bufio.NewScanner(input)
-	for scanner.Scan() {
-		var qos, count int
-		_, err := fmt.Sscanf(scanner.Text(), "%d %d", &qos, &count)
-		require.NoError(t, err)
-		sender := paho.NewSender(session, paho.SenderOptions{
-			QoS:     byte(qos),
-			Timeout: 30 * time.Second,
-		})
-		for range count {
-			require.NoError(t, sender.Send(ctx, message))
-		}
-		fmt.Fprintln(output, "DONE")
-	}
-	require.NoError(t, scanner.Err())
 }
 
 func reliableProcessMemoryLimitBytes() (uint64, string, error) {
