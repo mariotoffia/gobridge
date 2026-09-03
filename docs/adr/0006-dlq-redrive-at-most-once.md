@@ -1,6 +1,6 @@
 # 0006 — DLQ redrive at-most-once
 
-Status: accepted
+Status: superseded by [0015](0015-dlq-redrive-inject-then-delete.md) — the shipped redrive injects first and deletes after a confirmed inject (at-least-once); the claim-by-delete design below is no longer what the code does
 Date: 2026-07-03
 Deciders: GoBridge core
 

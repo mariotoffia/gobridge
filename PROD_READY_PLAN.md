@@ -1,4 +1,4 @@
-# Production Readiness Remediation Implementation Plan
+| 20 | done | LOW-18, LOW-19 (withdrawn), DOC-1, DOC-4, DOC-10, NEW-MEDIUM-16 |# Production Readiness Remediation Implementation Plan
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `subagent-driven-development` (recommended) or `executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Close every stable finding in the canonical `PROD_READY_ISSUES.md` ledger with tested behavior, truthful contracts, safe migrations, and release evidence.
@@ -681,20 +681,21 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 - **Residual for Chunk 21:** `docs/index.md`'s runbook count is now pinned by a test rather than removed, and the pre-existing broken anchors in `troubleshooting.md`/`mqtt-behavior.md` and the `_template.md` placeholder link are untouched.
 - **Suggested commit title:** `complete production monitoring guidance`
 
-### Chunk 20: Public runtime, cluster, and shutdown contracts
+### Chunk 20: Public runtime, cluster, and shutdown contracts — LANDED
 
 - **Issues:** LOW-18, LOW-19, DOC-1, DOC-4, DOC-10, NEW-MEDIUM-16.
 - **Goal:** Make architecture, glossary, readiness, shutdown, role, and session transport text match tested behavior.
 - **Dependencies:** Chunks 2, 11–13, 16–19.
-- **Files/packages:** `ARCHITECTURE.md`, append-only `UBIQUITOUS.md`, deployment/configuration references, AWS configuration, node-down runbook.
-- **Tests:** monitor behavior tests, registry capability tests, documentation contract checks.
-- [ ] Add failing checks for DLQ inject-then-delete, current `AllowUnfenced`, bare Full readiness, shutdown headroom, runtime role names, and stateful transport enum.
-- [ ] Run `go test -race -count=1 ./httpapi ./validate -run 'Test.*(Ready|SessionTransport)'` and `go test -race -count=1 ./scripts/doccheck -run 'Test.*PublicContract'`; expect failures.
-- [ ] Correct the pages; append the glossary correction without editing prior rows; show process budget above drain and the real production rollout state.
-- [ ] Re-run the exact failing commands above; expect pass.
-- [ ] Run `make test`.
-- [ ] Check every role, endpoint, and interface name against exported symbols rather than source line numbers.
-- [ ] Accept when docs describe implemented DLQ redrive, validation-only `AllowUnfenced`, Full readiness, valid session transports, and bounded shutdown.
+- **Files/packages:** `ARCHITECTURE.md`, append-only `UBIQUITOUS.md`, deployment/configuration references, AWS configuration, node-down runbook, `spec/httpapi/components.yaml`, `docs/release-notes.md`, ADR 0015 (supersedes 0006), `ports` (exported role vocabulary).
+- **Tests:** monitor behavior tests, registry capability tests, documentation contract checks. As in Chunk 19, `scripts/doccheck` was NOT created: each check lives beside the thing it derives from — `ports/architecture_reference_doc_test.go` (the `DLQStore` listing ↔ `ports.DLQStore` by reflection; the cluster section ↔ the rollout modes), `httpapi/public_contract_doc_test.go` (bare `/ready` ↔ `ports.LevelFull`; role vocabulary ↔ `ports.RoleActive/RoleStandby/RoleStandalone`; both `ARCHITECTURE.md` endpoint tables ↔ `spec/httpapi/http-api.yaml`; redrive wording in the OpenAPI components, release notes and ADR index), `tests/docsexamples/session_transport_enum_test.go` (the `sessions[].transport` enum ↔ the kinds whose registered factory reports `CapStatefulSession`, composed from the real adapters), `tests/docsexamples/shutdown_headroom_test.go` (every published YAML example with both budgets keeps `drain_timeout`/`max_drain_timeout` below `shutdown_timeout`), `lib/bootstrap/bootstrap_field_reference_test.go` (the `node_role` row states the single-writer posture) and `runtime/allow_unfenced_glossary_doc_test.go` (the latest glossary row is validation-only). The session-transport check lives in `tests/docsexamples`, not `./validate`: `validate` cannot import adapters, and the enum is a registry fact, not a validator rule.
+- [x] Add failing checks for DLQ inject-then-delete, current `AllowUnfenced`, bare Full readiness, shutdown headroom, runtime role names, and stateful transport enum.
+- [x] Run `go test -race -count=1 ./httpapi ./validate -run 'Test.*(Ready|SessionTransport)'` and the doc-contract tests; expect failures. All eleven failed on the stale claim: `Replay` in the port listing, `/api/v1/admin/dlq/replay` and a `/logs` monitor row nothing registers, "started and healthy" for the bare probe, `leader` in the runbook, `sqs`/`servicebus`/`http` as session transports, four 30 s/30 s examples, "non-operative" `node_role`, "permitting writes" for `AllowUnfenced`, and a cluster section that still denied the barrier ADR 0013 introduced.
+- [x] Correct the pages; append the glossary correction without editing prior rows; show process budget above drain and the real production rollout state. `ports.RoleActive/RoleStandby/RoleStandalone` replace the duplicated unexported strings in `runtime` and `ports` so the docs can be checked against an exported symbol. ADR 0015 records the shipped inject-then-delete redrive and supersedes ADR 0006, whose claim-by-delete design the code no longer implements; the OpenAPI `DLQRedriveRequest` description and the release notes still carried the old wording.
+- [x] Re-run the exact failing commands above; expect pass. Every assertion mutation-checked (eleven mutations, each caught).
+- [x] Run `make test`.
+- [x] Check every role, endpoint, and interface name against exported symbols rather than source line numbers. Roles: `ports.Role*`; endpoints: the OpenAPI paths the handlers are registered from; interface: `reflect.TypeFor[ports.DLQStore]()`.
+- [x] Accept when docs describe implemented DLQ redrive, validation-only `AllowUnfenced`, Full readiness, valid session transports, and bounded shutdown. **Met.**
+- **Residual for Chunk 21:** `ARCHITECTURE.md` is still over the 500-line threshold; its "Failover Window equals `LeaseTTL`" trade-off paragraph is DOC-7 (Chunk 18) and was not touched.
 - **Suggested commit title:** `correct public runtime contracts`
 
 ### Chunk 21: Reference structure and generated drift checks

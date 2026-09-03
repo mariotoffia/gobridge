@@ -52,7 +52,7 @@ out-of-band from typed struct fields — never from the wire.
 
 - External messages can never steer routing. A spoofed `x-bridge.*` header is
   discarded at ingress regardless of source.
-- The binding-scoped DLQ redrive (ADR 0006) works because the binding travels on
+- The binding-scoped DLQ redrive (ADR 0006, retained by ADR 0015) works because the binding travels on
   a typed field through `InjectToBinding`, immune to the strip.
 - Any future trusted in-process signal must follow the same rule: carry it on a
   typed struct field or interface, re-applied after the ingress strip. Adding a

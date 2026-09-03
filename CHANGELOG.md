@@ -66,6 +66,20 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ### Added
 
+- **`ports.RoleActive`, `ports.RoleStandby`, `ports.RoleStandalone`.** The role
+  the bare `/api/v1/monitor/ready` body and `DeepHealth.Role` report is now an
+  exported vocabulary instead of two private copies of the same strings in
+  `runtime` and `ports`, so documentation can be checked against it. The wire
+  values are unchanged.
+
+- **ADR 0015 — DLQ redrive inject-then-delete.** Records the redrive the code
+  has shipped since the inject-before-delete change: fresh envelope ID with a
+  causation link, dedup / generated-identity / redelivery-count headers
+  stripped, binding-confined, entry deleted only after a confirmed inject,
+  at-least-once. ADR 0006 (claim-by-delete, at-most-once) is marked superseded;
+  the OpenAPI `DLQRedriveRequest` description and the release notes still
+  described it and now describe the shipped behavior.
+
 - **A stuck-MQTT-settlement runbook.**
   [`docs/runbooks/stuck-mqtt-settlement.md`](docs/runbooks/stuck-mqtt-settlement.md)
   starts from the symptom that has no error code: a connected session, green
@@ -175,6 +189,21 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   own page, split out of the MQTT behaviour reference.
 
 ### Changed
+
+- **Public runtime contracts corrected and derived-checked.** `ARCHITECTURE.md`
+  lists the real `DLQReader` / `DLQAdmin` / `DLQStore` port (no `Replay`), both
+  admin and monitor endpoint tables now match `spec/httpapi/http-api.yaml`
+  (the `/dlq/replay` and `/logs` rows named endpoints nothing registers), and
+  its cluster section describes the `refuse` / `independent` / `coordinated`
+  rollout ladder instead of denying that a barrier exists. The bare `/ready`
+  probe is documented as requiring the `full` level, with a `standby` answering
+  503 on it by design; the node-down runbook says `active`, not `leader`.
+  `sessions[].transport` lists the stateful kinds (`mqtt`, `amqp091`,
+  `amqp10`) rather than `sqs`/`servicebus`/`http`. Every shutdown example shows
+  a 45 s process budget above a 20–30 s drain, and the health page explains why
+  the `30s`/`30s` defaults leave no headroom. `node_role` is documented as the
+  config-transaction single-writer selector it is. Each correction has a test
+  beside its source of truth.
 
 - **`docs/aws-deployment/monitoring.md` is split into three pages, and its metric
   catalogue and alarm inventory are now derived from source.** The page claimed

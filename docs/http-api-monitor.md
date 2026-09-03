@@ -27,9 +27,11 @@ where `status` is one of `ok`, `unhealthy`, `not_running`, or `unavailable`
 
 The `ready` endpoint accepts an optional **`?level=`** query parameter that sets
 how strict the gate is, least to most strict: `live`, `running`, `connected`,
-`subscribed`, `full`. Without it, the legacy contract applies -- HTTP 200
-`{"status":"ready","role":...}` once the runtime is started and healthy, HTTP 503
-`{"error":"not ready"}` otherwise. With it, the response is
+`subscribed`, `full`. Without it, the bare probe requires the `full` readiness level -- HTTP 200
+`{"status":"ready","role":...}` once every session is subscribed and every route
+can dispatch, HTTP 503 `{"error":"not ready"}` otherwise. A `standby` instance is
+capped at `subscribed` by design, so the bare probe answers 503 for it; use
+`?level=connected` or `?level=subscribed` where a standby must count as healthy. With it, the response is
 `{"status":..., "role":..., "level":..., "requested":...}` and returns HTTP 503
 when the achieved `level` is below the `requested` one; an unknown level returns
 HTTP 400. `role` is the failover role from lease ownership: `active`, `standby`,

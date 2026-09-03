@@ -164,12 +164,21 @@ func ParseReadinessLevel(s string) (ReadinessLevel, bool) {
 	}
 }
 
-// readinessRoleStandby is the DeepHealth.Role value for an instance that has
-// exclusive sessions configured but holds no lease — ready-but-not-primary.
-// It mirrors the runtime's role vocabulary (runtime.roleStandby) as it appears
-// on the read-side wire; kept here so ReadinessLevelFromDeepHealth stays a pure
-// function of the snapshot without importing the runtime.
-const readinessRoleStandby = "standby"
+// Role values reported by Runtime.Role, the bare /ready probe and
+// DeepHealth.Role. They classify an instance by EXCLUSIVE-session lease
+// ownership only: a non-exclusive session never acquires a lease and takes no
+// part in failover, so it never makes an instance look like a standby.
+const (
+	// RoleActive: at least one exclusive session holds a lease — this instance
+	// is the primary dispatcher for its exclusive routes.
+	RoleActive = "active"
+	// RoleStandby: exclusive sessions are configured but none currently holds a
+	// lease — ready but not serving as primary. Readiness is capped at
+	// LevelSubscribed so a failover router never treats it as a dispatch target.
+	RoleStandby = "standby"
+	// RoleStandalone: no exclusive sessions configured — no failover role.
+	RoleStandalone = "standalone"
+)
 
 // ReadinessLevelFromDeepHealth derives the achieved ReadinessLevel from a
 // SINGLE DeepHealth snapshot, so a caller that already holds one (e.g. the
@@ -198,7 +207,7 @@ func ReadinessLevelFromDeepHealth(dh DeepHealth) ReadinessLevel {
 		return LevelRunning
 	}
 	level := readinessLevelFromSessions(dh)
-	if dh.Role == readinessRoleStandby && level > LevelSubscribed {
+	if dh.Role == RoleStandby && level > LevelSubscribed {
 		return LevelSubscribed
 	}
 	return level

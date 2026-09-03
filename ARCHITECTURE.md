@@ -701,16 +701,30 @@ Two OPTIONAL capabilities widen the port without breaking implementations that s
 
 ### DLQStore
 
-Dead-letter queue management for failed or rejected messages. `Write` is idempotent -- writing the same entry twice must not create a duplicate. Entry identity is DERIVED from the message and the delivery leg — `sha256(envelope ID, route, binding, source)` — not generated per write, so the same terminal event recorded twice (a DLQ write that landed followed by a failed source settle) collapses onto one row instead of accumulating duplicates. The store refuses the repeat; the router reports that refusal as durable success and counts `DLQDuplicateSuppressed`.
+Dead-letter queue management for failed or rejected messages. The port is split into a read half and an administration half so that driving read adapters (the runtime read port, the monitor endpoints) cannot delete or purge; a store adapter implements both and thereby satisfies `DLQStore`.
 
 ```go
-type DLQStore interface {
-    Write(ctx context.Context, entry routing.DLQEntry) error
+type DLQReader interface {
+    Get(ctx context.Context, id string) (routing.DLQEntry, error)
     List(ctx context.Context, filter routing.DLQFilter) ([]routing.DLQEntry, error)
-    Replay(ctx context.Context, entryIDs []string) error
+}
+
+type DLQAdmin interface {
+    Write(ctx context.Context, entry routing.DLQEntry) error
+    Delete(ctx context.Context, ids []string) (int, error)
+    DeleteByFilter(ctx context.Context, filter routing.DLQFilter) (int, error)
     Purge(ctx context.Context, before time.Time) (int, error)
 }
+
+type DLQStore interface {
+    DLQReader
+    DLQAdmin
+}
 ```
+
+A nil return from `Write` means the entry is crash-durable (see the crash-durable success boundary in `ports/stores.go`). `Write` is duplicate-safe: entry identity is DERIVED from the message and the delivery leg — `sha256(envelope ID, route, binding, source)` — not generated per write, so the same terminal event recorded twice (a DLQ write that landed followed by a failed source settle) collapses onto one row instead of accumulating duplicates. The store refuses the repeat; the router reports that refusal as durable success and counts `DLQDuplicateSuppressed`. `List` returns entries oldest-first (ascending `FailedAt`, entry ID as the tiebreaker) on every backend. The OPTIONAL `DLQDepthReporter` capability backs the `DLQDepth` gauge.
+
+**Redrive is an admin-API sequence, not a store method.** `POST /api/v1/admin/dlq/redrive` runs `Get`, then `Runtime.InjectRedrive`, then `Delete` — in that order. The runtime re-issues the message under a FRESH envelope ID with a causation link to the original, strips the transport dedup key, the generated-identity marker and the source redelivery counter (each of which would let an idempotent transport swallow the replay or the replay ledger sink it), and confines the replay to the one binding that failed. The entry is deleted only after the inject is confirmed, so a failed or refused inject leaves the message and its evidence intact, and a crash between a confirmed inject and the delete re-drives the entry on the next attempt: redrive is **at-least-once** (ADR 0015, which supersedes the claim-by-delete design of ADR 0006).
 
 ### Implementations
 
@@ -729,8 +743,8 @@ Root type: `config.BridgeConfig` (YAML or JSON). The configuration model lives i
 ```yaml
 bridge:
   id: my-bridge
-  shutdown_timeout: 30s
-  drain_timeout: 30s
+  shutdown_timeout: 45s   # process shutdown budget on SIGTERM
+  drain_timeout: 30s      # runtime drain ceiling, kept below it
   log_level: info
 
 stores:
@@ -928,19 +942,30 @@ Two HTTP servers expose operational and management interfaces.
 
 ### Admin Server (default `:8080`)
 
-Requires API key authentication via `X-API-Key` header or `Bearer` token.
+All endpoints require authentication. Both tables below are checked against `spec/httpapi/http-api.yaml`.
 
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/v1/admin/bridge` | Instance info |
-| `POST` | `/api/v1/admin/bridge/start` | Start the bridge |
+| `POST` | `/api/v1/admin/bridge/start` | Start the bridge (always a fresh runtime) |
 | `POST` | `/api/v1/admin/bridge/stop` | Stop the bridge |
 | `GET` | `/api/v1/admin/routes` | List configured routes |
 | `POST` | `/api/v1/admin/routes/{routeID}/inject` | Inject a message into a route |
-| `GET` | `/api/v1/admin/dlq` | List DLQ entries |
-| `GET` | `/api/v1/admin/dlq/messages` | Retrieve DLQ messages |
-| `POST` | `/api/v1/admin/dlq/replay` | Replay DLQ entries |
-| `POST` | `/api/v1/admin/dlq/purge` | Purge DLQ entries |
+| `GET` | `/api/v1/admin/dlq` | DLQ summary |
+| `GET` | `/api/v1/admin/dlq/messages` | Paginated DLQ entries |
+| `GET` | `/api/v1/admin/dlq/messages/{id}` | One DLQ entry with its payload |
+| `POST` | `/api/v1/admin/dlq/redrive` | Redrive DLQ entries by ID (inject, then delete; 207 on partial failure) |
+| `POST` | `/api/v1/admin/dlq/delete` | Delete DLQ entries by ID |
+| `POST` | `/api/v1/admin/dlq/delete-by-filter` | Delete DLQ entries by filter |
+| `POST` | `/api/v1/admin/dlq/purge` | Purge the entire DLQ |
+| `GET` | `/api/v1/admin/config` | Read the current configuration document |
+| `POST` | `/api/v1/admin/config/transactions` | Open a config transaction |
+| `GET` | `/api/v1/admin/config/transactions/{txnID}` | Read a config transaction |
+| `PATCH` | `/api/v1/admin/config/transactions/{txnID}` | Stage a change on a transaction |
+| `POST` | `/api/v1/admin/config/transactions/{txnID}/commit` | Commit a transaction |
+| `DELETE` | `/api/v1/admin/config/transactions/{txnID}` | Roll back a transaction |
+
+The config-transaction endpoints are registered only when the composition root wires a config transaction manager; see [docs/http-api.md](docs/http-api.md#config-transactions).
 
 ### Monitor Server (default `:8081`)
 
@@ -948,12 +973,12 @@ Health endpoints are unauthenticated. Topology and operational endpoints require
 
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
-| `GET` | `/health` | No | Health check |
-| `GET` | `/live` | No | Liveness probe |
-| `GET` | `/ready` | No | Readiness probe |
-| `GET` | `/topology` | Yes | Bridge topology graph |
-| `GET` | `/routes` | Yes | Route status and metrics |
-| `GET` | `/logs` | Yes | Recent log entries |
+| `GET` | `/api/v1/monitor/health` | No | Coarse health |
+| `GET` | `/api/v1/monitor/live` | No | Liveness probe (503 once terminal) |
+| `GET` | `/api/v1/monitor/ready` | No | Readiness probe; the bare form requires `full`, `?level=` selects the gate |
+| `GET` | `/api/v1/monitor/topology` | Yes | Bridge topology graph |
+| `GET` | `/api/v1/monitor/routes` | Yes | Route status and metrics |
+| `GET` | `/api/v1/monitor/deephealth` | Yes | Sessions, routes, service level, role and rollout state |
 
 ### CORS
 
@@ -1253,26 +1278,30 @@ graph TB
 
 All instances run all routes identically. The `LeaseStore` determines which instance's `OutboxDrainer` actively drains and sends. The active instance holds the lease; standby instances persist to the outbox but do not drain until they acquire the lease.
 
-### Cluster Reconfiguration Requires Whole-Cohort Replacement
+### Cluster Reconfiguration: Rollout Modes
 
-Reload mechanics are per-process: there is no cluster-wide config-version
-barrier, all-member readiness gate, or coordinated rollback. Allowing each
-member to swap independently would therefore create a split-version cohort.
+A live config change on a clustered deployment is governed by
+`bridge.cluster.rollout`. The default is the safe one; each step up trades
+operational cost for zero-downtime changes. Every mode refuses the same set of
+changes that cannot be applied live at all (store identity, deployment shape,
+exclusive-session identity) and names the reason; those still need the
+whole-cohort replacement in
+[docs/runbooks/cluster-config-rollout.md](docs/runbooks/cluster-config-rollout.md).
 
-GoBridge prevents that state by rejecting every non-no-op live reload **of or
-into** a clustered deployment, fail-closed. Both the `Supervisor` and the AWS
-file-based composition root reject before building or stopping anything; the
-current runtime and running `config_version` remain unchanged. A byte-identical
-watcher re-emit is still accepted as a no-op.
+| `rollout` | Behaviour | Where it is wired |
+|---|---|---|
+| `refuse` (the default when unset) | A clustered node rejects every non-no-op live reload, fail-closed; the running runtime and `config_version` are unchanged. Changes are rolled by whole-cohort replacement with ingress quiesced (ADR 0012). | Every composition root. |
+| `independent` | Every member applies a live-safe delta on its own, with no barrier and no vote, exactly as a standalone bridge does. For a bounded window one member runs the new generation while another is still on the old one; a member that cannot build the change is a broken member to replace, not a veto. | Every composition root. |
+| `coordinated` | The rollout barrier of ADR 0013: propose, per-member vote, store-atomic commit, per-member apply with bounded retry, and a convergence window published in deep health and the `ClusterRollout*` metrics. Requires a fixed `members` roster and a rollout store. Adding `confirm_window` makes every commit provisional and reverts the whole cohort if convergence never lands (ADR 0014). | The shipped AWS profile wires the rollout store only in its static member-slot shape (`GoBridgeDynamoDBHA` with `MemberSlots`), where each member runs as its own single-task ECS service with a restart-stable `member_id`. The autoscaled worker shape rejects `coordinated` at synth time because interchangeable tasks cannot carry a stable identity. |
 
-Clustered changes use an externally coordinated whole-cohort replacement:
-stage and validate the exact config for every member, quiesce ingress, drain and
-stop all members, commit the config, start all members, then re-enable ingress
-only after every member reports the target `config_version` and passes the
-Full/readiness barrier. Failure rolls back the entire cohort while ingress
-remains quiesced. `WithAllowDestructiveReload` cannot bypass this rule because
-discarding local backlog is not cluster consensus. See
-`docs/runbooks/cluster-config-rollout.md` and ADR 0012.
+The barrier is atomic BEFORE the commit and per-member AFTER it: applying is
+local work that can fail on one member and succeed on another, so a mixed cohort
+during the convergence window is a bounded, alarmed state rather than a
+violation (ADR 0013, "What the barrier guarantees, precisely").
+`WithAllowDestructiveReload` cannot bypass any of this: discarding local backlog
+is not cluster consensus. The plain-language guide is
+[docs/cluster/README.md](docs/cluster/README.md); the protocol lives under
+[docs/cluster/spec/](docs/cluster/spec/).
 
 ### Instance Identity
 
@@ -1358,7 +1387,7 @@ The HTTP readiness probe (`/api/v1/monitor/ready`) returns a `role` field indica
 | `active` | At least one exclusive session holds the lease; drainers are active |
 | `standby` | Exclusive sessions configured but no lease held; waiting to take over |
 
-All roles return HTTP 200 (the instance is healthy and ready to serve). Load balancers should use the role to make routing decisions when appropriate.
+The bare probe (no `?level=`) requires the `full` readiness level, and a `standby` instance is capped at `subscribed` by design — it holds no lease and dispatches nothing — so the bare probe answers HTTP 503 for a standby. Use `?level=connected` or `?level=subscribed` for a standby-tolerant probe and the bare probe (or `?level=full`) as the pre-traffic gate. `/api/v1/monitor/deephealth` reports the same `role`. The vocabulary is exported as `ports.RoleActive`, `ports.RoleStandby` and `ports.RoleStandalone`.
 
 ### Design Trade-offs
 

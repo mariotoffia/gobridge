@@ -176,3 +176,28 @@ func TestBootstrapFieldReference_PublishedJSONExamplesLoad(t *testing.T) {
 			"shape changed, so this check stopped checking anything", page)
 	}
 }
+
+// node_role is NOT inert at runtime: the bootstrap App derives the admin
+// config-transaction single-writer posture from it (configSingleWriter), so a
+// worker's durable commit fails closed while a control node's is permitted. A
+// row that calls the field "reserved" or "non-operative" hides the one runtime
+// decision it makes, and an operator who sets `worker` on the node they post
+// config changes to gets HTTP 500 with no page explaining why.
+func TestBootstrapFieldReference_NodeRoleRowStatesTheSingleWriterPosture(t *testing.T) {
+	body, err := os.ReadFile(bootstrapFieldReferenceDoc)
+	require.NoError(t, err, "the bootstrap field reference page must exist")
+
+	var row string
+	for line := range strings.SplitSeq(string(body), "\n") {
+		if strings.HasPrefix(line, "| `node_role` |") {
+			row = line
+			break
+		}
+	}
+	require.NotEmpty(t, row, "no `node_role` row in %s", bootstrapFieldReferenceDoc)
+	require.Contains(t, row, "single-writer",
+		"the node_role row must name the config single-writer posture it selects")
+	for _, stale := range []string{"non-operative", "Reserved for future", "inert"} {
+		require.NotContains(t, row, stale, "the node_role row still calls the field %q", stale)
+	}
+}

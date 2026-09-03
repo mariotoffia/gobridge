@@ -24,10 +24,14 @@ may need a process restart to complete takeover.
    means this instance is serving.
 
 2. Confirm who holds the lease. `GET /api/v1/monitor/deephealth` (authenticated)
-   reports the instance `role` (`leader` once it holds a lease, otherwise
-   `standby`) and a per-session `has_lease` flag
-   ([http-api.md](../http-api.md)). The surviving instance should show
-   `role: leader` with `has_lease: true` on the exclusive session.
+   reports the instance `role` -- `active` once an exclusive session holds a
+   lease, `standby` while exclusive sessions are configured but none holds one,
+   `standalone` when no exclusive session is configured at all -- and a
+   per-session `has_lease` flag
+   ([http-api-monitor.md](../http-api-monitor.md)). The surviving instance
+   should show `role: active` with `has_lease: true` on the exclusive session.
+   The bare `/ready` probe answers 503 for a `standby` (it is capped below
+   `full`), so a standby that reads not-ready is expected, not broken.
    `GET /api/v1/monitor/topology` does **not** expose lease ownership — its
    `running: true` is reported by a standby too. Cross-check the lease metrics
    under `GoBridge/Runtime`

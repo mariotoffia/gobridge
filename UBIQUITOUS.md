@@ -95,6 +95,7 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **ProcessorTimeout** | Per-processor execution deadline. Exceeding it returns `ErrProcessorTimeout` (transient); panicking returns `ErrProcessorPanic` (permanent). |
 | **AllowUnfenced** | Route-level escape hatch permitting writes without a fencing token. Off by default. |
 | **AllowRetryDrop** | Route-level flag permitting silent drop instead of DLQ on retry exhaustion. Off by default. |
+| **AllowUnfenced** (correction) | Route-level `allow_unfenced` flag read ONLY by the start-time validator. A `direct_hold` route over a shared-consumer source (`CapSharedConsumer`) is otherwise rejected with "shared consumer source requires fencing (use shared_outbox)"; this flag waives that rule. It is a validation escape and nothing more: no store receives a token because of it, no write path reads it, and it mints no fencing. Off by default. Supersedes the earlier row above, which described a fencing model the runtime never had. |
 
 ## Connectivity (`domain/connectivity`)
 
@@ -203,6 +204,7 @@ Driving-adapter names for the admin/monitor HTTP servers. See [docs/http-api.md]
 |---|---|
 | **Named admin key** | An admin API key registered under a name in `httpapi.Config.AdminAPIKeys` (or rotated via `AdminAPIKeysProvider`). Possession of the key is the identity: on a successful match the key's name becomes the audit `Actor` — a stable, non-spoofable principal — while the network address (leftmost `X-Forwarded-For` else `RemoteAddr`) demotes to `Detail["client_addr"]`, which stays display-only and spoofable unless a trusted proxy normalises XFF. The legacy single `AdminAPIKey` folds in under the name `admin`; an explicit `admin` entry in the map overrides it. |
 | **`committed_applying`** | httpapi config-transaction commit outcome (HTTP 202 Accepted) returned when the durable write succeeded and the runtime ACCEPTED the config but the apply is still in-flight and unconfirmed (the commit returned `ports.ErrApplyInFlight`). A distinct non-5xx status so an operator or automation does not read a 500 as "my change failed" and fire a compensating revert against a runtime that is already converging. Emitted both as the audit outcome and as the JSON `status` field alongside the committed `version`. |
+| **Role** | The lease-ownership classification an instance reports in the bare `/api/v1/monitor/ready` body and in `DeepHealth.Role`: `active` (`ports.RoleActive`, at least one exclusive session holds a lease), `standby` (`ports.RoleStandby`, exclusive sessions configured but none held -- readiness capped at `subscribed`, so the bare probe answers 503) or `standalone` (`ports.RoleStandalone`, no exclusive session configured). Classified by EXCLUSIVE sessions only; a non-exclusive session never makes an instance look like a standby. There is no `leader` role. |
 
 ## Transport adapters (`adapters/*/transport`)
 

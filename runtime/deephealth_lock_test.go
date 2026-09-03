@@ -77,7 +77,7 @@ func TestDeepHealth_BlockingSessionHealthDoesNotHoldLock(t *testing.T) {
 	go func() { roleDone <- rt.Role() }()
 	select {
 	case role := <-roleDone:
-		assert.Equal(t, roleStandalone, role)
+		assert.Equal(t, ports.RoleStandalone, role)
 	case <-time.After(1 * time.Second):
 		t.Fatal("Role() blocked while Session.Health was in flight — rt.mu held across a plugin call")
 	}

@@ -60,7 +60,7 @@ or as a file path via `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`.
 | `bridge_id` | `string` | Yes | -- | Unique identifier for this bridge instance. Used as the `bridge.id` in the default logical config when no bridge config file exists yet. |
 | `config_file_path` | `string` | Yes | -- | Absolute path to the bridge config YAML as seen inside the container (the EFS mount point), e.g. `/var/lib/gobridge/bridge.yaml`. |
 | `admin_api_key_param` | `string` | Yes | -- | SSM parameter name or `pms://` URI for the admin API key. Resolved at startup and on every config reload. The value is a single key or a JSON map of named keys — see [Admin key parameter value](#admin-key-parameter-value). |
-| `node_role` | `string` | No | `"control"` | Role of this node: `"control"` or `"worker"`. **Reserved / non-operative at runtime** -- every node starts the transport, admin, and monitor servers regardless of this value. Validated for shape and consumed only at deploy time by the CDK single/cluster facades (per-service role + synth validation). Reserved for future multi-node coordination. |
+| `node_role` | `string` | No | `"control"` | Role of this node: `"control"` or `"worker"`. Every node starts the transport, admin and monitor servers regardless of the value; what it selects at runtime is the admin config-transaction **single-writer** posture. A `control` node asserts it is the sole durable config writer and may commit config transactions; a `worker` node mounts EFS read-only in `GoBridgeCluster` and is refused (HTTP 500) on a durable commit -- see [Admin Config Transactions and the Single-Writer Posture](../deployment-guide.md#admin-config-transactions-and-the-single-writer-posture). At deploy time the CDK single/cluster facades stamp it per service and validate it at synth. Unrelated to the runtime failover role (`active` / `standby` / `standalone`) the monitor probes report. |
 | `topology` | `string` | No | `"single"` | Deployment topology: `"single"` (one replica), `"filesystem_replicated"` (N replicas sharing EFS), or `"dynamodb_coordinated_ha"` (the active/warm-standby profile stamped by `GoBridgeDynamoDBHA`). The HA value additionally requires the four `dynamodb_ha_*` identities below. |
 | `member_id` | `string` | No | `""` | This node's STABLE identity in a coordinated cluster rollout cohort. Required whenever the logical config sets `bridge.cluster.rollout: coordinated`, and it MUST appear verbatim in that config's `bridge.cluster.members`: the barrier freezes the roster as its membership epoch and counts acknowledgements against it, so an absent or drifting id aborts every rollout. Unlike `instance_id` it MUST survive a restart -- it is the cohort identity a restarted task rejoins under. Stamped per slot by `GoBridgeDynamoDBHA` when `MemberSlots` is set; empty for every non-coordinated deployment, including the autoscaled worker shape, whose interchangeable tasks have no such identity. |
 | `dynamodb_ha_lease_table_name` | `string` | No | `""` | Deployment-owned expectation: the physical DynamoDB table backing `stores.lease`. Stamped only by `GoBridgeDynamoDBHA`; the runtime refuses to boot a logical config whose lease table differs, so a tampered or stale EFS document cannot bypass synth-time admission. Required when `topology` is `"dynamodb_coordinated_ha"`. |
@@ -121,7 +121,7 @@ Validation fails if:
 - `config_file_path` is empty.
 - `admin_api_key_param` is empty.
 - `node_role` is not `"control"` or `"worker"` (after normalization).
-- `topology` is not `"single"` or `"filesystem_replicated"` (after normalization).
+- `topology` is not `"single"`, `"filesystem_replicated"` or `"dynamodb_coordinated_ha"` (after normalization).
 - `metrics_exporter` is set to anything other than `""`, `"noop"`, or `"cloudwatch"`.
 - `ssm_endpoint` is set but `dev_mode` is `false`.
 - `container_memory_bytes` is zero after normalization, or
@@ -529,11 +529,14 @@ version: 1
 bridge:
   id: orders-bridge-prod
   deployment_mode: standalone
-  shutdown_timeout: "30s"
+  # Process shutdown budget on SIGTERM; in this image the runtime drain
+  # (drain_timeout) runs inside it, so keep this above the drain budgets below.
+  shutdown_timeout: "45s"
+  drain_timeout: "30s"
   # Outbox drain batch ceiling (distinct from drain_timeout, which bounds
   # Runtime.Stop): min(batchCount * per_record_drain_timeout, max_drain_timeout).
   per_record_drain_timeout: "3s"
-  max_drain_timeout: "30s"
+  max_drain_timeout: "20s"
   log_level: info
 
 sessions:

@@ -92,10 +92,11 @@ use the `clustered` deployment mode with DynamoDB-backed stores instead.
 bridge:
   id: my-bridge
   deployment_mode: standalone   # or "clustered"
-  shutdown_timeout: 30s
+  shutdown_timeout: 45s   # process shutdown budget
+  drain_timeout: 30s      # runtime drain ceiling, keep below shutdown_timeout
   # Outbox drain batch ceiling.
   per_record_drain_timeout: 3s
-  max_drain_timeout: 30s
+  max_drain_timeout: 20s
 ```
 
 ## Configuration Delivery

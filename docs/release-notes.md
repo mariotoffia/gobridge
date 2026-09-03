@@ -45,12 +45,16 @@ several are breaking at the wire or observable in operations.
   (`httpapi/admin_dlq.go:211-262`). Clients paginating on `total` must switch to
   `has_more`.
 
-- **DLQ redrive is at-most-once and binding-scoped.** Redrive claims each entry
-  by deleting it before injecting, so retries and concurrent admin instances
-  never double-deliver; a crash in the delete→inject window loses the entry
-  rather than duplicating it. A fan-out route redrives only the binding that
-  failed, not the healthy N-1. A redrive returns HTTP 207 when any entry fails —
-  inspect the per-entry body. See [ADR 0006](adr/0006-dlq-redrive-at-most-once.md).
+- **DLQ redrive is at-least-once and binding-scoped.** Redrive injects each
+  entry first — under a fresh envelope ID with a causation link to the
+  original — and deletes it only after the inject is confirmed, so a failed or
+  refused inject never loses the message or its evidence; a crash between a
+  confirmed inject and the delete re-drives the entry on the next attempt (a
+  bounded duplicate, never a loss). A fan-out route redrives only the binding
+  that failed, not the healthy N-1. A redrive returns HTTP 207 when any entry
+  fails — inspect the per-entry body. See
+  [ADR 0015](adr/0015-dlq-redrive-inject-then-delete.md), which supersedes
+  ADR 0006.
 
 ### HTTP / SSE
 

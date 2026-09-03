@@ -427,13 +427,14 @@ schemas:
     required: [ids]
     description: >
       Request body for redriving specific DLQ messages. Each entry is
-      claimed by deleting it from the DLQ FIRST, then re-injected into its
-      original route — confined to the single binding that failed, so
-      redriving one leg of a fan-out route does not duplicate deliveries to
-      the healthy bindings. Claim-before-inject gives at-most-once semantics:
-      if the process crashes between the delete and the inject the entry is
-      dropped rather than delivered twice (a best-effort restore closes most
-      of that window). Duplicate IDs are deduplicated automatically.
+      re-injected into its original route FIRST — under a fresh envelope ID
+      with a causation link to the original, confined to the single binding
+      that failed so the healthy bindings of a fan-out route see nothing —
+      and deleted from the DLQ only after the inject is confirmed. A failed
+      or refused inject leaves the entry and its evidence intact. The
+      guarantee is at-least-once: a crash between a confirmed inject and the
+      delete re-drives the entry on the next attempt rather than losing it.
+      Duplicate IDs are deduplicated automatically.
     properties:
       ids:
         type: array

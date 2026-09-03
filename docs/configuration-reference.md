@@ -94,7 +94,7 @@ classDiagram
 | `id` | string | **yes** | -- | Unique bridge identifier |
 | `instance_id` | string | no | auto-generated | Instance identifier (useful in clustered mode) |
 | `deployment_mode` | string | no | `standalone` | `standalone` or `clustered` |
-| `shutdown_timeout` | duration | no | `30s` | Grace period for clean shutdown |
+| `shutdown_timeout` | duration | no | `30s` | The process shutdown budget on SIGTERM. In the shipped `gobridge-filebased` image it is the ONE budget the config-watcher join, rollout-drive stop, HTTP shutdown, runtime drain, store close and telemetry flush all run inside, so `drain_timeout` must stay below it (the `30s`/`30s` defaults leave no headroom; 45--60 s is the production shape). `cmd/gobridge` bounds its supervisor wait and, separately, its HTTP stop by it. See [Health Checks and Graceful Shutdown](health-and-shutdown.md#shutdown-timeouts). Keep the orchestrator's stop grace above this value. |
 | `drain_timeout` | duration | no | `30s` | How long the supervisor lets a runtime drain when it STOPS one (shutdown, or a reconfiguration swap). It is the ceiling on `Runtime.Stop`, not a per-batch outbox budget. |
 | `per_record_drain_timeout` | duration | no | `3s` | Per-record budget in the outbox drain batch ceiling `min(batchCount * per_record_drain_timeout, max_drain_timeout)`. The ceiling may only RAISE a batch budget already floored at one full send, so it can never cut a send short. |
 | `max_drain_timeout` | duration | no | `10s` | Upper bound of that batch ceiling. Must be >= `per_record_drain_timeout`. |
@@ -292,12 +292,12 @@ stores:
 
 ## `sessions` -- Transport Sessions
 
-Sessions represent stateful transport connections (e.g. an MQTT connection). Stateless transports (SQS, Azure SB) do not use sessions.
+Sessions represent stateful transport connections (an MQTT connection, an AMQP connection). Only a transport whose factory reports the `stateful_session` capability creates one; the stateless transports (`sqs`, `servicebus`, `http`) return no session, and the builder rejects a receiver or sender that names a `session_id` on one of them.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `id` | string | **yes** | -- | Unique session identifier |
-| `transport` | string | **yes** | -- | Transport name: `mqtt`, `sqs`, `servicebus`, `http` |
+| `transport` | string | **yes** | -- | A stateful transport kind: `mqtt` (alias `mqtt.paho`), `amqp091` (alias `amqp.amqp091`) or `amqp10` (alias `amqp.amqp10`). A stateless kind cannot be named here. |
 | `session_mode` | string | no | `ephemeral` | `ephemeral`, `persistent`, `exclusive` |
 | `options` | map | no | -- | Transport-specific options (see [Transport Reference](transport-configuration.md)) |
 

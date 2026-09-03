@@ -17,7 +17,7 @@ All health endpoints live on the monitor server (default `:8081`) and are
 |----------|---------|---------|-----------|
 | `GET /api/v1/monitor/health` | Coarse health | 200 `{"status":"ok"}` | 503 `{"status":"unhealthy"}` |
 | `GET /api/v1/monitor/live` | Liveness probe | 200 `{"status":"alive"}` | 503 `{"status":"terminal"}` once terminal |
-| `GET /api/v1/monitor/ready` | Readiness probe | 200 `{"status":"ready"}` | 503 `{"error":"not ready"}` |
+| `GET /api/v1/monitor/ready` | Readiness probe | 200 `{"status":"ready","role":...}` at the `full` level (bare form) or at the `?level=` asked for | 503 `{"error":"not ready"}` (bare form) or the structured `{status, role, level, requested}` form |
 
 The `health` endpoint is coarse: HTTP 200 `{"status":"ok"}` when the runtime is
 running and no critical background component has failed, and HTTP 503 otherwise
@@ -30,11 +30,20 @@ connectivity with `/deephealth` or `/ready?level=connected` (see below). The
 recoverable (including before the runtime is wired **and after a deliberate admin
 stop**), and 503 `{"status":"terminal"}` only once the runtime has entered a
 terminal, unrecoverable state — so an orchestrator restarts the task instead of
-leaving it wedged. The bare `ready` endpoint returns 200 once the runtime is
-started and healthy **and carrying at least one route or session**; it does
-**not** guarantee transport sessions are connected or subscriptions
-acknowledged. Gate production traffic with the `?level=` parameter described
-under "Readiness levels" below.
+leaving it wedged. The bare `ready` endpoint (no `?level=`) requires the `full` readiness level: the
+runtime is started and healthy, every session is connected and has had its
+subscriptions acknowledged, every route can dispatch, and the instance carries
+at least one route or session. An isolated route or session fault caps the
+achieved level below `full`, so the bare probe sheds traffic instead of
+advertising a false green. A `standby` instance (exclusive sessions configured,
+no lease held) is capped at `subscribed` by design and therefore answers 503 on
+the bare probe; use `?level=connected` or `?level=subscribed` where a standby
+must count as healthy. The levels, least to most strict, are `live`, `running`,
+`connected`, `subscribed` and `full`; an unknown level answers 400. Probe
+mapping: Kubernetes liveness on `/live`, Kubernetes readiness on
+`/ready?level=connected` (tolerates a broker hiccup), pre-traffic gate on the
+bare probe or `/ready?level=full`. The `role` in the body is `active`,
+`standby` or `standalone` (lease ownership over exclusive sessions).
 
 Two states deserve calling out because they look healthy from the outside:
 
@@ -57,13 +66,19 @@ Two states deserve calling out because they look healthy from the outside:
 
 ```yaml
 bridge:
-  shutdown_timeout: 30s
-  # Scaled drain formula (preferred in production). The per-batch
-  # ceiling is min(batchCount * per_record_drain_timeout,
-  # max_drain_timeout). It only ever RAISES a batch budget that is
-  # already floored at one full send.
+  # Process shutdown budget on SIGTERM. In the shipped gobridge-filebased image
+  # the watcher join, rollout stop, HTTP shutdown, runtime drain, store close
+  # and telemetry flush all run inside it.
+  shutdown_timeout: 45s
+  # Ceiling on the runtime drain (Runtime.Stop). Keep it well below
+  # shutdown_timeout so the phases after the drain still get time before the
+  # orchestrator's SIGKILL.
+  drain_timeout: 30s
+  # Scaled outbox drain-batch formula (preferred in production). The per-batch
+  # ceiling is min(batchCount * per_record_drain_timeout, max_drain_timeout).
+  # It only ever RAISES a batch budget that is already floored at one full send.
   per_record_drain_timeout: 3s
-  max_drain_timeout: 30s
+  max_drain_timeout: 20s
 ```
 
 | Field | Default | Description |
@@ -118,9 +133,26 @@ log line from covering a drain that actually failed.
 
 The in-flight settle (step 3) is bounded by `drain_timeout`; the subsequent
 cancel and close phases (steps 4--5) run detached from the caller context under
-their own bounded close timeouts. The process then has `shutdown_timeout` to
-finish HTTP cleanup. Set `drain_timeout` shorter than `shutdown_timeout` to
-leave headroom. When the drain budget expires before
+their own bounded close timeouts. How the two budgets relate differs between
+the shipped binaries:
+
+- **`gobridge-filebased`** (the shipped image) spends `shutdown_timeout` as the
+  ONE process budget: the config-watcher join, the rollout-drive stop, the HTTP
+  servers, the runtime drain (bounded by `drain_timeout` INSIDE that budget),
+  store close and the metrics flush all consume the same deadline in sequence.
+  The headroom left after the drain is therefore `shutdown_timeout -
+  drain_timeout`; with both at their `30s` defaults it is zero, and the process
+  is still closing stores and flushing metrics when the platform's SIGKILL
+  lands.
+- **`cmd/gobridge`** runs the drain on a detached `drain_timeout` timer while it
+  waits up to `shutdown_timeout` for the supervisor, then stops the HTTP servers
+  under a FRESH `shutdown_timeout`. Nothing is starved, but the worst-case wall
+  time is close to `2 x shutdown_timeout`.
+
+Use 45--60 s for `shutdown_timeout` and 20--30 s for `drain_timeout`, and set
+the orchestrator's stop grace (ECS `stopTimeout`, Kubernetes
+`terminationGracePeriodSeconds`) above `shutdown_timeout` -- above twice it for
+`cmd/gobridge`. When the drain budget expires before
 in-flight work settles, durable outbox records stay persisted and at-least-once
 sources are redelivered by the broker on restart -- remaining work is not silently
 dropped.
