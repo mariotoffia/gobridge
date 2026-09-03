@@ -346,3 +346,41 @@ func BenchmarkRolloutObserverObserve(b *testing.B) {
 		obs.observe(r, "node-a", true, false)
 	}
 }
+
+// BenchmarkClassifyClusterReload measures the apply-path guard's whole decision:
+// the classification every clustered reload runs before anything is built, and
+// that a member also runs at boot when its config differs from the committed one.
+//
+// It is a third control-plane cost worth pinning for the reason above the file:
+// the classifier walks the store, session and cohort-shape predicates over the
+// full config, so it grows with config size, and it sits in front of the build
+// rather than beside it. The two sub-benchmarks are the two outcomes — a
+// live-safe delta, which walks every predicate before returning, and a roster
+// change, which is the cohort-shape refusal.
+func BenchmarkClassifyClusterReload(b *testing.B) {
+	for _, routes := range []int{1, 10, 100} {
+		oldCfg := benchConfig(routes)
+
+		liveSafe := benchConfig(routes)
+		liveSafe.Version = oldCfg.Version + 1
+		b.Run("livesafe/routes"+itoa(routes), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if disposition, _ := classifyClusterReload(oldCfg, liveSafe); disposition != clusterReloadCoordinated {
+					b.Fatalf("expected the barrier route, got %v", disposition)
+				}
+			}
+		})
+
+		rosterChange := benchConfig(routes)
+		rosterChange.Bridge.Cluster.Members = []string{"node-a", "node-b", "node-c"}
+		b.Run("rosterchange/routes"+itoa(routes), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if disposition, _ := classifyClusterReload(oldCfg, rosterChange); disposition != clusterReloadRefuse {
+					b.Fatalf("expected the cohort-shape refusal, got %v", disposition)
+				}
+			}
+		})
+	}
+}

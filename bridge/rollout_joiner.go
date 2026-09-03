@@ -96,8 +96,12 @@ func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Cont
 	committedCfg, err := d.barrier.decode(committed.ConfigBytes)
 	if err != nil {
 		return nil, fmt.Errorf("bridge: cluster.rollout: the durable last-committed config artifact "+
-			"(generation=%d config_version=%d) could not be decoded, so this node cannot recover the "+
-			"config the cohort is running; refusing to start: %w", committed.Generation, committed.ConfigVersion, err)
+			"(generation=%d config_version=%d) could not be decoded (%w), so this node cannot recover "+
+			"the config the cohort is running; refusing to start. The record itself is unusable, so no "+
+			"config change repairs it: the cohort's next commit rewrites it, and a cohort that is "+
+			"entirely down needs it removed by hand first — see "+
+			"docs/runbooks/cluster-config-rollout.md",
+			committed.Generation, committed.ConfigVersion, err)
 	}
 	// Integrity: the reconstructed committed config must match the digest the
 	// artifact records, mirroring reconcileMissedCommit. A

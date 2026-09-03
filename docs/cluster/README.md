@@ -133,6 +133,21 @@ process — a durable session's identity, a store's target — is refused here t
 with the same message a standalone bridge gives, and still needs the whole-cohort
 replacement from setup 2.
 
+**The cohort's own shape is still fixed.** `bridge.cluster.members`,
+`bridge.cluster.endpoints` and `bridge.cluster.rollout` describe the deployment,
+not what the cohort runs, so they are refused live in this mode as well. That is
+worth spelling out, because independent mode counts no acknowledgements and the
+roster looks unused — but the deployment reads it. The shipped AWS HA deployment
+records the shape it admitted, including the roster, and every process re-checks
+that record each time it boots; it also starts one process per roster entry, so
+the roster and the running processes have to name each other. A process that
+accepted a live roster edit there would apply it happily and then refuse to start
+the next time it restarted. Add or remove a process by redeploying the cohort,
+the way setup 2 describes.
+
+Reordering the roster, or repeating an id in it, names the same cohort and is not
+a change.
+
 ---
 
 ## Setup 4 — Coordinated rollout (no-downtime, nobody swaps alone)

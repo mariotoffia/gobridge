@@ -48,7 +48,10 @@ const rolloutModeCoordinated = "coordinated"
 //
 // What it does NOT relax: a delta that cannot be applied live on ANY node —
 // a durable session's identity, a store's target — is still refused, with the
-// same reason a standalone bridge gives.
+// same reason a standalone bridge gives. Nor does it relax the cohort's own shape
+// (see clusterShapeChanged): the roster and the endpoint map describe the
+// deployment rather than what the cohort runs, so they change by redeploying even
+// where no barrier reads them.
 const rolloutModeIndependent = "independent"
 
 // independentRollout reports whether cfg opts a clustered deployment into
@@ -206,7 +209,15 @@ func classifyRolloutDelta(oldCfg, newCfg *ports.BridgeConfig) (rolloutDeltaClass
 //     freeze the epoch from the OLD roster, commit under the OLD roster's acks,
 //     and leave the cohort running a config that declares a DIFFERENT roster: a
 //     member the delta adds never acked anything, and a member it removes keeps
-//     holding leases while no future rollout may include it.
+//     holding leases while no future rollout may include it. The rule holds for a
+//     cohort that runs NO barrier too, and for the same reason it is listed here:
+//     the roster is part of the deployment's own shape rather than of what the
+//     cohort runs. It is folded into DeploymentProfileFingerprint, which a
+//     deployment stamps and its members re-check at boot, and a topology that
+//     provisions one process per roster entry (the shipped AWS HA one does)
+//     requires the two to name each other. A member that took a live roster edit
+//     would pass the reload there and then fail its own admission check on the
+//     next restart.
 //   - bridge.cluster.endpoints is this instance's advertised capability map; the
 //     HTTP forwarder resolves remote exclusive requests through it, so changing
 //     it under live traffic retargets in-flight forwards mid-rollout.
@@ -228,9 +239,11 @@ func clusterShapeChanged(oldCfg, newCfg *ports.BridgeConfig) string {
 	// Compare the roster as the SET it is: a reorder or a repeated id names the
 	// same cohort, so only a real membership change is replacement-required.
 	if !slices.Equal(sortedSet(oldMembers), sortedSet(newMembers)) {
-		return fmt.Sprintf("bridge.cluster.members changed (%d -> %d members); the roster IS the "+
-			"membership epoch the rollout barrier freezes, so a change to it cannot be carried by "+
-			"the barrier itself", len(sortedSet(oldMembers)), len(sortedSet(newMembers)))
+		return fmt.Sprintf("bridge.cluster.members changed (%d -> %d members); the roster is part of "+
+			"the deployment's own shape rather than of what the cohort runs — it is the membership "+
+			"epoch a rollout barrier freezes, and it is the shape a deployment provisions members "+
+			"against — so it changes by redeploying the cohort, not by reloading it",
+			len(sortedSet(oldMembers)), len(sortedSet(newMembers)))
 	}
 	if !maps.Equal(oldEndpoints, newEndpoints) {
 		// Endpoint ADDRESSES are not secret, but they are deployment detail; the

@@ -89,9 +89,54 @@ func TestClassifyClusterReload_ModeMustAgreeOnBothSides(t *testing.T) {
 
 // TestIndependentRollout_WiresNoBarrier is the operational consequence an
 // operator most needs: choosing this mode means the deployment provisions no
-// rollout store, no coordinator lease and no roster, because nothing consults
-// them.
+// rollout store and no coordinator lease, and nothing counts acknowledgements
+// against the roster. (The roster itself may still be declared — a deployment
+// that provisions one task per entry needs it — and it is still fixed for the
+// life of the cohort; see TestClassifyClusterReload_IndependentRefusesRosterChange.)
 func TestIndependentRollout_WiresNoBarrier(t *testing.T) {
 	require.False(t, IsCoordinatedRollout(independentClusterConfig("info")),
 		"an independent cohort must not wire the coordinated rollout barrier")
+}
+
+// TestClassifyClusterReload_IndependentRefusesRosterChange pins the cohort-shape
+// rule for the mode that has no barrier.
+//
+// `independent` runs no vote, so the roster counts no acknowledgements and it is
+// tempting to read the refusal as leftover strictness from the coordinated path.
+// It is not. bridge.cluster.members is part of the deployment's own shape, not of
+// what the cohort runs: it is folded into DeploymentProfileFingerprint, which the
+// shipped AWS HA deployment stamps and every member re-checks at boot, and that
+// topology also requires the roster to name exactly the task slots it provisions.
+// A member there that accepted a live roster edit would pass the reload and then
+// fail its own admission check on the next restart — the reload would have bought
+// a cohort that cannot boot.
+func TestClassifyClusterReload_IndependentRefusesRosterChange(t *testing.T) {
+	before := independentClusterConfig("info")
+	before.Bridge.Cluster.Members = []string{"a", "b"}
+	after := independentClusterConfig("info")
+	after.Bridge.Cluster.Members = []string{"a", "b", "c"}
+
+	disposition, reason := classifyClusterReload(before, after)
+
+	require.Equal(t, clusterReloadRefuse, disposition,
+		"a roster change is a deployment-shape change in every rollout mode")
+	require.Contains(t, reason, "bridge.cluster.members")
+	require.Contains(t, reason, "deployment",
+		"the reason must hold for a cohort that runs no barrier, so it must name the "+
+			"deployment shape rather than only the barrier that freezes it")
+}
+
+// TestClassifyClusterReload_IndependentRosterReorderIsLiveSafe keeps the refusal
+// honest: the roster is compared as the SET it is, so respelling it is not a
+// deployment change and must not cost a whole-cohort replacement.
+func TestClassifyClusterReload_IndependentRosterReorderIsLiveSafe(t *testing.T) {
+	before := independentClusterConfig("info")
+	before.Bridge.Cluster.Members = []string{"a", "b", "c"}
+	after := independentClusterConfig("debug")
+	after.Bridge.Cluster.Members = []string{"c", "a", "b", "a"}
+
+	disposition, reason := classifyClusterReload(before, after)
+
+	require.Equal(t, clusterReloadProceed, disposition,
+		"same cohort, different spelling (reason=%q)", reason)
 }

@@ -386,6 +386,12 @@ func TestResolveBoot_WholeCohortReplacementBootsOnNewConfig(t *testing.T) {
 // TestResolveBoot_FailsClosedWhenCommittedUndecodable proves the fail-closed
 // posture: if the committed artifact cannot be reconstructed, the member refuses
 // to start rather than guess a config and risk splitting the cohort.
+//
+// The refusal must also carry the operator somewhere. It is the one rollout
+// failure whose repair is not "fix the config": the record itself is unusable, so
+// the operator has to know that a commit rewrites it and that a fully-down cohort
+// clears it by hand. The runbook holds both, and this message is where an
+// operator meets the problem.
 func TestResolveBoot_FailsClosedWhenCommittedUndecodable(t *testing.T) {
 	store := memoryrollout.NewStore()
 	codec := newConfigCodecFake()
@@ -401,6 +407,8 @@ func TestResolveBoot_FailsClosedWhenCommittedUndecodable(t *testing.T) {
 	s := codecJoinerSupervisor(store, codec)
 	_, err := s.resolveCoordinatedBoot(context.Background(), candidate)
 	require.Error(t, err, "an undecodable committed artifact must fail the boot closed")
+	require.Contains(t, err.Error(), "docs/runbooks/cluster-config-rollout.md",
+		"the refusal must point at the repair, as every other rollout refusal does")
 }
 
 // TestResolveBoot_NilCodecKeepsFailClosedRefusal proves backward compatibility:

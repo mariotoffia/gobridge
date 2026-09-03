@@ -144,7 +144,10 @@ bridge:
     # The cohort ROSTER — the membership epoch the rollout barrier freezes and
     # counts acknowledgements against. Required and non-empty when rollout is
     # "coordinated"; identical on every member; no duplicates. This is a peer
-    # list, unlike `endpoints` above.
+    # list, unlike `endpoints` above. It is fixed for the life of the cohort in
+    # EVERY rollout mode, including "independent": add or remove a member by
+    # redeploying the cohort, not by reloading it. Reordering it, or repeating an
+    # id, names the same cohort and is not a change.
     members: [instance-01, instance-02]
     # Optional. A positive confirm window makes every commit provisional: each
     # member applies, and unless the whole cohort converges before the window

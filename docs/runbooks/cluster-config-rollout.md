@@ -132,6 +132,66 @@ If a **coordinated** rollout will not resolve (deep health
   boots on the last committed config — see
   [Operating a coordinated cohort](../cluster/operating.md#when-a-change-doesnt-go-through).
 
+## After upgrading: a member will not start because the committed config cannot be decoded
+
+**Only affects a coordinated cohort that has been running a GoBridge release up
+to and including v0.3.6.** It cannot happen to a cohort first deployed on a later
+release, and it never affects setups 1-3.
+
+Those releases wrote the durable committed-config artifact with every duration
+field (`5s`, `1m`) stored as a bare number, which the config parser deliberately
+refuses to read back. A member only decodes the artifact when it restarts on a
+config that is **not** the committed one, so the record can sit unread for a long
+time and then stop a restart:
+
+```text
+bridge: cluster.rollout: the durable last-committed config artifact
+(generation=N config_version=M) could not be decoded (...), so this node cannot
+recover the config the cohort is running; refusing to start.
+```
+
+**The upgrade normally repairs itself, in this order.**
+
+1. Check that the config source holds the document the cohort last **committed**
+   — not a change you have written but not rolled out, and not one an earlier
+   rollout aborted. A member restarting on the committed document never reads the
+   record at all, so this is what keeps the upgrade from meeting the problem.
+2. Upgrade the members one at a time, so the cohort keeps running throughout.
+3. Roll out any one config change afterwards. Every commit rewrites the record,
+   so the first change on the new image replaces it for good.
+
+**If the cohort is entirely down and a member reports the error above**, the
+record has to be removed by hand before the cohort can start. It is one item in
+the rollout coordination table, under a fixed key.
+
+> **Removing it is permanent, and it is the only thing in that table you may
+> remove.** Do it only with every member of the cohort stopped, and delete only
+> the key shown below. The table also holds the in-flight rollout row, which the
+> cohort repairs on its own; deleting anything else loses state no member can
+> rebuild.
+
+The table name is the one your deployment's bootstrap document carries in
+`dynamodb_ha_rollout_table_name`; the shipped AWS deployment derives it as
+`<bridge.id>-rollouts`, and a deployment that sets no name uses
+`gobridge-rollouts`. The partition key attribute is `PK`:
+
+```bash
+aws dynamodb delete-item \
+  --table-name "<your rollout table>" \
+  --key '{"PK": {"S": "ROLLOUT#committed"}}'
+```
+
+Then start the cohort from the config document your deployment stamped, exactly
+as [the procedure](#procedure) describes.
+
+**What you give up by deleting it, and for how long.** Until a member re-seeds it
+at startup, the cohort has no recovery point, so a member restarting behaves as it
+did before the artifact existed: it still refuses to start on a config the barrier
+aborted or has not yet decided, but it cannot be moved back onto the committed one
+either. The first member to boot on the document the deployment stamped
+re-establishes generation zero (see below), and the first committed change after
+that restores the normal recovery point.
+
 ## The generation-zero baseline
 
 A coordinated cohort recovers a restarting member to the config the cohort last

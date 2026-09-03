@@ -178,6 +178,26 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   dropped; every inbound link and anchor was repointed. Bookmarks to
   `overview.md` itself still resolve.
 
+### Upgrading
+
+- **Coordinated cohorts running v0.3.6 or earlier: the durable committed-config
+  artifact written by those releases cannot be read back.** Its JSON stored every
+  duration (`5s`, `1m`) as a bare number, which the config parser refuses. A
+  member only decodes that record when it restarts on a config other than the
+  committed one, so a cohort can carry a bad record for a long time and then hit
+  it during an unrelated restart, with `the durable last-committed config
+  artifact ... could not be decoded ... refusing to start`.
+
+  The repair is forward-only and needs no action in the normal case: every
+  commit rewrites the record, so upgrade the cohort one member at a time — with
+  its config source holding the document the cohort last committed — and the
+  first config change you roll out afterwards clears it. A cohort that is
+  entirely down when it is discovered needs the record deleted by hand first —
+  see [Cluster config rollout](docs/runbooks/cluster-config-rollout.md#after-upgrading-a-member-will-not-start-because-the-committed-config-cannot-be-decoded).
+
+  A cohort first deployed on this release is unaffected, as are standalone,
+  refuse-mode and independent-mode deployments.
+
 ### Fixed
 
 - **An MQTT publisher can no longer make the bridge decode tens of thousands of
