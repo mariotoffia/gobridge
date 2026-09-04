@@ -224,12 +224,19 @@ type RouteSessionDef struct {
 	// outside lease, broker-connect, and reconcile calls. Empty means zero.
 	StartupAllowance string `yaml:"startup_allowance,omitempty" json:"startup_allowance,omitempty"`
 
-	// BrokerHealthStepDown, when set (a positive duration string, e.g. "90s"),
-	// makes an ACTIVE exclusive owner step down after its broker path stays
-	// non-converged (disconnected / not re-subscribed) that long, so a healthy
-	// standby can take over a node-local broker outage the lease machinery alone
-	// cannot detect (CLUSTER-2). Empty/zero disables it (broker-path failover is
-	// opt-in). It extends the worst-case failover budget by up to this value.
+	// BrokerHealthStepDown is the broker-path failover decision, and it is
+	// TRI-state:
+	//
+	//	""     the decision was not made. Refused when FailoverSLO is declared.
+	//	"off"  broker-path failover is deliberately disabled; a declared
+	//	       FailoverSLO then covers owner death alone.
+	//	"90s"  an ACTIVE exclusive owner whose broker path stays non-converged
+	//	       (disconnected / not re-subscribed) that long releases the lease so
+	//	       a healthy standby can take over a node-local broker outage the
+	//	       lease machinery alone cannot detect (CLUSTER-2).
+	//
+	// Enabled, it carries a failover budget of its own that a declared
+	// FailoverSLO must also admit.
 	BrokerHealthStepDown string `yaml:"broker_health_step_down,omitempty" json:"broker_health_step_down,omitempty"`
 
 	DrainInterval       string            `yaml:"drain_interval,omitempty" json:"drain_interval,omitempty"`

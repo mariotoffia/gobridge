@@ -228,13 +228,16 @@ func toSessionConfigE(rs *ports.RouteSessionDef, clustered bool) (*session.Confi
 		}
 		sc.StartupAllowance = d
 	}
-	if rs.BrokerHealthStepDown != "" {
-		d, err := time.ParseDuration(rs.BrokerHealthStepDown)
-		if err != nil || d <= 0 {
-			return nil, fmt.Errorf("invalid broker_health_step_down %q: must be a positive duration", rs.BrokerHealthStepDown)
-		}
-		sc.BrokerHealthStepDown = d
+	// broker_health_step_down is TRI-state: empty leaves the broker-path decision
+	// unmade, "off" is an explicit decision not to fail over on it, and a
+	// positive duration enables it. Config.Validate requires one of the two
+	// explicit answers whenever failover_slo is declared.
+	brokerPath, err := routing.ParseBrokerPathPolicy(rs.BrokerHealthStepDown)
+	if err != nil {
+		return nil, err
 	}
+	sc.BrokerHealthStepDown = brokerPath.StepDown
+	sc.BrokerPathFailoverDeclared = brokerPath.Declared
 
 	ds, err := toDrainStrategyE(rs)
 	if err != nil {

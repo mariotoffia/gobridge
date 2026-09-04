@@ -7,3 +7,5 @@ TDD. Unit, integration and benchmark tests per AGENTS.md, in <package>_test
 packages, reusing testutils and existing harnesses rather than
 new harnesses. Then run an adversarial review of the implementation
 and fix until bug free.
+
+Use skills: superpowers for design, implementation, tdd, test, debugging

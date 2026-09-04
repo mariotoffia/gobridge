@@ -70,6 +70,23 @@ may need a process restart to complete takeover.
    cross-host wall-clock subtraction. A cold process still pays its real startup
    delay and starts observation at zero when no prior observer confirmed time.
 
+   Both shipped lease profiles evaluated at their defaults — the 360s standalone
+   one and the 45s clustered one — are in
+   [Failover budget](../failover-budget.md#the-two-derived-lease-profiles).
+   Read the profile the incident's deployment actually runs: they differ by more
+   than 3x.
+
+   **The owner is up, renewing, and nothing flows.** That is not this failure
+   mode. A member that alone lost its path to the broker keeps renewing, so the
+   lease never moves and no alarm above fires. Check
+   `routes[].session.broker_health_step_down`: `off` (or, on a config predating
+   the required decision, absent) means the deployment chose to ride it out and
+   the only recovery is repairing that member's broker path or stopping the
+   process. A positive value means the owner releases the lease after that long
+   non-converged, and `BrokerHealthStepDown` counts it — a non-zero rate on one
+   member is the signal. Its budget is separate from the one above; see
+   [Failover budget](../failover-budget.md#two-failure-modes-two-formulas).
+
 4. **Advisory 502/503 on exclusive routes? Read `RouteOwnerUnknown`.** The route
    locator decides who owns an exclusive route by comparing **its own** wall
    clock with the owner-written `expires_at`. That decision is advisory only —

@@ -114,6 +114,7 @@ routes:
       renew_call_timeout: 1s
       failover_slo: 120s
       startup_allowance: 30s
+      broker_health_step_down: 30s
       drain_interval: 500ms
       drain_batch_size: 10
 `
@@ -501,6 +502,13 @@ func TestGoBridgeDynamoDBHA_RejectsInvalidHAProfiles(t *testing.T) {
 		},
 		"wrong lease store": func(s string) string {
 			return strings.Replace(s, "type: dynamodb", "type: memory", 1)
+		},
+		"undeclared broker-path policy": func(s string) string {
+			return strings.Replace(s, `      broker_health_step_down: 30s
+`, "", 1)
+		},
+		"broker-path step-down over the objective": func(s string) string {
+			return strings.Replace(s, "broker_health_step_down: 30s", "broker_health_step_down: 90s", 1)
 		},
 	}
 	for name, mutate := range cases {

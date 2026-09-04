@@ -184,63 +184,46 @@ until a portable lease store (e.g. Postgres or Redis) is added. Single-node
 exclusive sessions have no such coupling. See
 [store configuration](../configuration-reference.md#stores----backing-store-configuration).
 
-**Failover timing.** A clustered exclusive route that leaves lease timing
-unset uses the 45s HA lease cadence, but that cadence is not an end-to-end SLO.
-The worst-case failover budget is:
-
-```
-budget = lease TTL
-       + acquire-poll boundaries
-       + lease-store observation call budget
-       + transport post-takeover activation
-       + startup_allowance
-```
-
-where the MQTT **post-takeover activation** term alone is
-`2×connect_timeout + 4×reconcile_timeout + 2×unmatched_grace`
-= **240s with the shipped defaults** (30s each). With the auto-selected
-clustered HA profile (lease TTL 45s, 5s acquire poll, 3s renew-call timeout)
-the default worst case is therefore **≈336s**, and with standalone lease
-defaults (360s TTL, whose longer TTL also inflates the lease-store
-observation call budget) the computed worst case is **≈1097s (~18 minutes)**. A ~50s worst case is
-reachable with explicit tuning — e.g. `lease_ttl: 15s`, `connect_timeout: 3s`,
-`reconcile_timeout: 2s`, `unmatched_grace: 2s` — the controlling keys are
-`lease_ttl`, `acquire_poll_interval`, `renew_call_timeout`, `max_renew_fails`,
-`startup_allowance`, plus the MQTT `connect_timeout`, `reconcile_timeout`, and
-`unmatched_grace`.
+**Failover timing.** A clustered exclusive route that leaves lease timing unset
+uses the 45s HA lease cadence, but that cadence is not an end-to-end SLO. The
+MQTT **post-takeover activation** term alone is
+`2×connect_timeout + 4×reconcile_timeout + 2×unmatched_grace` = **240s with the
+shipped defaults** (30s each), which is what makes the enforced bound several
+times the lease TTL on both shipped profiles. Both formulas and both profiles
+evaluated at their defaults are in [Failover budget](../failover-budget.md); a
+~50s worst case is reachable with explicit tuning — e.g. `lease_ttl: 15s`,
+`connect_timeout: 3s`, `reconcile_timeout: 2s`, `unmatched_grace: 2s`.
 
 Every build **logs this computed budget** for each exclusive session that
 declares no `failover_slo` (look for `worst-case failover budget` at startup).
-Declare `routes[].session.failover_slo` to turn the disclosure into a
-contract: the build then **fails** when lease TTL, jittered acquire polling,
-renew-call timeout, the complete conservative Paho post-takeover activation
-bound, and startup allowance cannot meet the target. Validation is necessary but warm
-and cold failure-detection-to-`ServiceLevelFull` measurements are required before
-publishing any latency claim. The activation bound includes initial connect,
-managed cleanup/replay, recycle/reconnect, final reconciliation, and grace
-windows exactly once. The practical bound additionally includes pod-restart
-latency when the lease-losing instance must recycle (the single-use session
-restart policy below); budget it via `startup_allowance`. See
+Declare `routes[].session.failover_slo` to turn the disclosure into a contract:
+the build then **fails** when the configuration cannot meet the target. The
+practical bound additionally includes pod-restart latency when the lease-losing
+instance must recycle (the single-use session restart policy below); budget it
+via `startup_allowance`. See
 [Scenario 8 — Failover SLO Validation](../scenarios/08-clustered-exclusive-sessions.md#failover-slo-validation).
 
-**Broker-path failover (node-local outage).** The failover budget above covers
-lease/owner/process loss. It does **not** cover the case where the active
-exclusive owner **alone** loses its network path or authorization to the broker
-while the lease store stays reachable: renewals keep succeeding, so the owner
-holds the lease and Paho reconnects forever, and a healthy standby (blocked in
+### Broker-path failover (node-local outage)
+
+The owner-death budget does **not** cover the case where the active exclusive
+owner **alone** loses its network path or authorization to the broker while the
+lease store stays reachable: renewals keep succeeding, so the owner holds the
+lease and Paho reconnects forever, and a healthy standby (blocked in
 acquire-before-connect) can never take over — cluster availability stays down
-indefinitely (finding CLUSTER-2). Broker-path failover is therefore **opt-in**:
-set `routes[].session.broker_health_step_down` to a positive duration and an
-active owner whose broker path stays **non-converged** (disconnected, or
-connected but not re-subscribed) that long voluntarily steps down — releasing the
-lease so a standby seizes it — and emits `BrokerHealthStepDown`. Leave it unset
-(the default) when the broker is fronted by a single HA endpoint reachable from
-every node, because a *globally* unreachable broker would otherwise churn the
-lease between nodes that all fail to connect. When set, it **extends the
-worst-case failover budget by up to `broker_health_step_down`**, so keep it
-comfortably above normal reconnect+reconcile time and account for it against any
-declared `failover_slo`. Alert on `BrokerHealthStepDown` — a non-zero rate means
-a node is losing its broker path.
+indefinitely. `routes[].session.broker_health_step_down` decides it, and a
+declared `failover_slo` **requires** an answer. A positive duration makes an
+owner whose broker path stays **non-converged** (disconnected, or connected but
+not re-subscribed) that long release the lease and emit `BrokerHealthStepDown`;
+`off` records that this deployment accepts an unbounded node-local broker
+outage, which is the right answer when one HA endpoint fronts the broker for
+every node — a *globally* unreachable broker would otherwise churn the lease
+between nodes that all fail to connect, and each step-down costs a process
+restart — the step-down is terminal for that process by design, so it cannot
+re-seize the partition it has just proved it cannot serve, and it rejoins as a
+standby. When enabled it carries a
+[budget of its own](../failover-budget.md#two-failure-modes-two-formulas) that
+the declared objective must also admit. Alert on `BrokerHealthStepDown` — a
+non-zero rate means a node is losing its broker path.
 
 **Restart policy is a deployment requirement.** The Paho session is
 single-use: once `Close` runs (on lease loss / step-down) it does not reconnect

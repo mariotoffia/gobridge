@@ -166,7 +166,7 @@ dimensioned alarm on an adapter series.
 | `MessagesDropped` (CDK bundle) | `Sum > 0` over 5 minutes, critical | The CDK bundle does not provision it; `DefaultAlarms()` does. On a CDK deployment this is the single silent-loss signal you are missing. |
 | `MessagesExpired` | `Sum > 0` sustained over 3 periods, warning | TTL loss is normal in small amounts on some routes; the threshold is deployment-specific. |
 | `RouteOwnerUnknown` | `Sum > 0` sustained, warning, split by `reason` | The reason tag separates fleet clock skew (`lease_expired` against a healthy owner) from a dead lease store (`store_unavailable`, `store_breaker_open`). Without it, unexplained 502/503 responses have no cause. |
-| `BrokerHealthStepDown` | `Sum > 0`, warning | Only emitted when `broker_health_step_down` is configured, so a default alarm would be permanently blank. |
+| `BrokerHealthStepDown` | `Sum > 0`, warning | Only emitted when `broker_health_step_down` is a positive duration (`off` disables the failover), so a default alarm would be permanently blank. |
 | `DLQWriteHold` | `Maximum` approaching the router's write budget (10.5 s in the shipped wiring), high | A sustained hold means the DLQ store, not the route, is stalling intake. The right threshold depends on the configured budget. |
 | `OutboxStranded` | `Sum > 0`, high | Records left with no drainer after a forced destructive reload. Rare, and always operator-triggered. |
 | `ConfigDegraded` | `Maximum >= 1` sustained, high | The bridge is running blind on its last good config, or a reload applied but never converged. Read `/deephealth` for which. |

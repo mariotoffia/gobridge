@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -96,8 +97,24 @@ func (m *Manager) renewLoop(
 				m.log(ctx, slog.LevelWarn,
 					"broker path non-converged beyond broker_health_step_down; stepping down so a standby can take over",
 					"threshold", m.brokerHealthStepDown)
+				stepErr := stepDownForLoss()
+				if stepErr == nil {
+					// Impossible: every stepDownForLoss path returns non-nil.
+					// Fail closed on the lease-loss shape rather than let a nil
+					// fall through to the re-acquire this branch exists to stop.
+					stepErr = errLeaseLostAfterRenewal
+				}
+				if !errors.Is(stepErr, errLeaseLostAfterRenewal) {
+					// A source Close that ignored its context hands NOTHING over:
+					// the lease is deliberately kept until natural expiry so no
+					// standby can overlap a still-subscribed session. It is
+					// already terminal, and it is NOT counted — the metric means
+					// "an owner released its lease so a standby could take over",
+					// which is what an operator alerts on.
+					return stepErr
+				}
 				m.metrics.Counter(shared.MetricBrokerHealthStepDown, 1, leaseTag)
-				return stepDownForLoss()
+				return fmt.Errorf("%w: %w", errBrokerPathStepDown, stepErr)
 			}
 
 			m.mu.Lock()

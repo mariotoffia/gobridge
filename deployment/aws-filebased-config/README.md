@@ -64,10 +64,16 @@ The shared config must pass these synth-time checks:
 - a lease-managed route using `delivery_mode: shared_outbox` and
   `policy.ack_after: outbox_persist`;
 - explicit `failover_slo` and `startup_allowance` on every coordinated route;
-- one common `failover_slo` for the profile alarm threshold.
+- one common `failover_slo` for the profile alarm threshold;
+- an explicit `broker_health_step_down` on every coordinated route -- a positive
+  duration, or `off` to record that this deployment accepts an unbounded
+  node-local broker outage. A declared objective that leaves the decision unmade
+  would silently exclude that failure mode.
 
-The facade runs the Task 9 builder admission path at synth time with a nil SDK
-client, so validation performs no AWS calls. The exact checked budget is:
+The facade runs the builder admission path at synth time with a nil SDK client,
+so validation performs no AWS calls. It admits the objective against BOTH
+failure modes -- owner death and, when `broker_health_step_down` is enabled, the
+node-local broker path. The owner-death budget is:
 
 ```text
 lease_ttl
@@ -77,6 +83,9 @@ lease_ttl
 + startup_allowance
 <= failover_slo
 ```
+
+The broker-path budget, and both shipped lease profiles evaluated at their
+defaults, are in [Failover budget](../../docs/failover-budget.md).
 
 The profile forces bootstrap topology `dynamodb_coordinated_ha`, enables the
 CloudWatch exporter, stamps the admitted canonical config fingerprint plus exact

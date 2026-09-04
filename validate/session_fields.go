@@ -3,6 +3,7 @@ package validate
 import (
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -22,11 +23,6 @@ func validateSessionDurationFields(ve *ports.BlueprintValidationError, prefix st
 		{"lease_ttl", sess.LeaseTTL},
 		{"renew_interval", sess.RenewInterval},
 		{"step_down_grace", sess.StepDownGrace},
-		// broker_health_step_down is consumed at build time and was rejected
-		// only there, so an invalid value passed the config transaction and
-		// failed at apply — after the durable write, on the rollback/divergence
-		// path. The builder requires a POSITIVE duration; so does this.
-		{"broker_health_step_down", sess.BrokerHealthStepDown},
 	} {
 		if f.val == "" {
 			continue
@@ -41,6 +37,7 @@ func validateSessionDurationFields(ve *ports.BlueprintValidationError, prefix st
 	if sess.MaxRenewFails < 0 {
 		ve.Addf("%s: session.max_renew_fails: must be non-negative, got %d", prefix, sess.MaxRenewFails)
 	}
+	validateSessionBrokerPathPolicy(ve, prefix, sess)
 
 	// Build-time-consumed session duration fields (bridge/convert.go
 	// toSessionConfigE / toDrainStrategyE) that were previously parsed ONLY at
@@ -111,5 +108,29 @@ func validateRouteDrainStrategy(ve *ports.BlueprintValidationError, prefix strin
 
 	default:
 		ve.Addf("%s: invalid type %q, must be one of: fixed_poll, adaptive_backoff", field, ds.Type)
+	}
+}
+
+// validateSessionBrokerPathPolicy judges the broker-path failover decision
+// before the durable write, through the same domain rule the builder and the
+// session manager use. broker_health_step_down is TRI-state — empty leaves the
+// decision unmade, routing.BrokerPathFailoverOff is an explicit decision not to
+// fail over on a node-local broker outage, and a positive duration enables it —
+// so it cannot go through the plain duration loop above.
+func validateSessionBrokerPathPolicy(ve *ports.BlueprintValidationError, prefix string, sess *ports.RouteSessionDef) {
+	policy, err := routing.ParseBrokerPathPolicy(sess.BrokerHealthStepDown)
+	if err != nil {
+		ve.Addf("%s: session.%v", prefix, err)
+		return
+	}
+	slo, sloErr := time.ParseDuration(sess.FailoverSLO)
+	if sess.FailoverSLO == "" || sloErr != nil {
+		// An unparseable failover_slo is already reported by the config layer;
+		// judging the policy against a value the operator never wrote would only
+		// add a confusing second error.
+		return
+	}
+	if err := routing.ValidateBrokerPathPolicy(prefix+": session", slo, policy); err != nil {
+		ve.Addf("%v", err)
 	}
 }

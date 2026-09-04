@@ -159,7 +159,8 @@ For routes targeting exclusive sessions. Manages lease acquisition and outbox dr
 | `connect_after_lease` | bool | no | `true` | Defer the source transport connect until this instance wins the lease. Omitted resolves to `true` -- the safe default for the exclusive single-owner session a route source always is, since it stops a booting standby from resuming a broker-persisted subscription and consuming without the lease. Set `false` to opt out. |
 | `renew_call_timeout` | duration | no | derived | Bounds a single lease-renew store call, so a hung backend cannot stretch step-down and takeover unboundedly. Folded into the failover-safety invariant below. Empty derives `min(renew_interval/2, 5s)` (floor 1s). |
 | `acquire_poll_interval` | duration | no | derived | How often a standby retries acquiring the lease while another instance owns it. Empty derives `min(renew_interval, lease_ttl/4, 5s)`. Rejected below the `250ms` cadence floor. Declared SLO validation budgets two independent `max(1ms, ceil(1.25 × interval))` boundaries for positive jitter. |
-| `failover_slo` | duration | no | undeclared | Optional failure-detection-to-`ServiceLevelFull` objective. Must be positive when present. If timing capability or any budget term is unknown, startup fails closed. |
+| `broker_health_step_down` | duration or `off` | cond. | undeclared | How long an active owner may stay non-converged on its broker path (disconnected, or connected but not re-subscribed) before it releases the lease so a healthy standby takes over. `off` is the explicit decision not to fail over on a node-local broker outage. **Required when `failover_slo` is declared** -- omitted, the objective would silently exclude that failure mode. See [Failover budget](failover-budget.md#the-broker-path-decision). |
+| `failover_slo` | duration | no | undeclared | Optional failure-detection-to-`ServiceLevelFull` objective, admitted against **both** failure modes. Must be positive when present. If timing capability or any budget term is unknown, startup fails closed. |
 | `startup_allowance` | duration | no | `0s` | Explicit nonnegative process-start allowance added to a declared failover budget. Maximum `10m`. |
 
 When `renew_interval` is set explicitly, cross-field validation requires
@@ -198,33 +199,19 @@ floor is the cadence below which the lease store, not the timing model, decides
 ownership.
 
 **Declared failover budget.** When `failover_slo` is present, preflight requires
-`lease_ttl + 2 × max(1ms, ceil(1.25 × acquire_poll_interval)) +
-(1 + ceil(lease_ttl / min_jittered_poll)) × renew_call_timeout + complete
-post-takeover transport activation + startup_allowance <= failover_slo` using
-checked duration arithmetic. The exact boundary passes. Validation runs before
-stores and transports are opened. It is necessary admission control, not evidence
-of an achieved SLO; publish claims only after warm and cold measurements in the
-target deployment. The transport activation capability is one aggregate bound;
-connect, cleanup/replay, recycle/reconnect, grace, and final reconcile phases are
-not added separately. `session.HAConfig` is a lease-renewal cadence, not an
-end-to-end preset.
+that BOTH failure modes fit it -- owner death, anchored on `lease_ttl`, and a
+node-local broker-path outage, anchored on `broker_health_step_down` -- using
+checked duration arithmetic, before stores and transports are opened. The exact
+boundary passes. Shared session IDs are first-wins at runtime, so preflight
+canonicalizes every route/binding manager input per session and rejects any
+divergence, which makes route order irrelevant.
 
-Shared session IDs are first-wins at runtime, so preflight canonicalizes every
-route/binding manager input per session and rejects any divergence in lease
-cadence, SLO, startup, or transport activation before resources are opened. This
-makes route order irrelevant.
+A session that declares NO `failover_slo` still gets its computed budget logged
+at every build, so the number is on record before an incident.
 
-The first poll establishes the post-response monotonic baseline. A later poll
-quantizes threshold crossing and immediately attempts takeover, so both jittered
-poll boundaries are budgeted. Call latency after each successful observation CAS is excluded from persisted
-elapsed, and the manager waits only after each Acquire call. The budget therefore
-counts the baseline call plus every possible observation round at
-`min_jittered_poll = max(1ms, poll - (poll/2)/2)`: call count is
-`1 + ceil(lease_ttl / min_jittered_poll)`. Each complete Acquire shares one
-`renew_call_timeout` across its internal Dynamo operations. A successful CAS
-winner proceeds to takeover in that same threshold attempt; a losing observer
-retries without double-counting. Backend
-failure or unresolved contention belongs to measured error-budget evidence.
+Both formulas, both shipped lease profiles evaluated at their defaults, and what
+to measure before making a latency claim: [Failover budget](failover-budget.md).
+`session.HAConfig` is a lease-renewal cadence, not an end-to-end preset.
 
 ### `routes[].session.drain_strategy` -- Drain Polling Strategy
 

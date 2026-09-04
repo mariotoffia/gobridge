@@ -104,16 +104,18 @@ func (s *leaseLossStore) wasReleased(v uint64) bool {
 // realistically. The events channel is reopened on Start after a Close so the
 // renew loop does not observe a permanently closed channel across terms.
 type countingSession struct {
-	mu           sync.Mutex
-	starts       int
-	closes       int
-	connected    bool
-	closed       bool
-	events       chan ports.SessionEvent
-	startedCh    chan int
-	reconciledCh chan int
-	eventsReadCh chan struct{}
-	closedCh     chan int
+	mu            sync.Mutex
+	starts        int
+	closes        int
+	connected     bool
+	closed        bool
+	events        chan ports.SessionEvent
+	reconcileGate chan struct{}
+	closeGate     chan struct{}
+	startedCh     chan int
+	reconciledCh  chan int
+	eventsReadCh  chan struct{}
+	closedCh      chan int
 }
 
 func newCountingSession() *countingSession {
@@ -144,15 +146,35 @@ func (s *countingSession) Start(context.Context) error {
 	return nil
 }
 
-func (s *countingSession) Reconcile(context.Context, connectivity.SessionPlan) error {
+func (s *countingSession) Reconcile(ctx context.Context, _ connectivity.SessionPlan) error {
 	s.mu.Lock()
 	n := s.starts
+	gate := s.reconcileGate
 	s.mu.Unlock()
 	select {
 	case s.reconciledCh <- n:
 	default:
 	}
+	// A test that needs a term to sit IN activation while the renew loop runs
+	// installs a gate; the zero value (nil) never blocks.
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return nil
+}
+
+// gateReconcile parks every subsequent Reconcile until the returned channel is
+// closed, so a test can hold a term inside post-acquire activation.
+func (s *countingSession) gateReconcile() chan struct{} {
+	gate := make(chan struct{})
+	s.mu.Lock()
+	s.reconcileGate = gate
+	s.mu.Unlock()
+	return gate
 }
 
 func (s *countingSession) Health(context.Context) ports.SessionHealth {
@@ -176,7 +198,24 @@ func (s *countingSession) Events() <-chan ports.SessionEvent {
 	return events
 }
 
+// gateClose parks every subsequent Close until the returned channel is closed,
+// modelling a transport whose Close IGNORES ctx so only the manager's own
+// bounded ceiling can unblock it.
+func (s *countingSession) gateClose() chan struct{} {
+	gate := make(chan struct{})
+	s.mu.Lock()
+	s.closeGate = gate
+	s.mu.Unlock()
+	return gate
+}
+
 func (s *countingSession) Close(context.Context) error {
+	s.mu.Lock()
+	gate := s.closeGate
+	s.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
 	s.mu.Lock()
 	s.closes++
 	s.connected = false
@@ -197,6 +236,20 @@ func (s *countingSession) startCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.starts
+}
+
+// disconnect drops the broker path WITHOUT closing the session, the way a
+// transport reports a connection lost while its instance stays usable.
+func (s *countingSession) disconnect() {
+	s.mu.Lock()
+	s.connected = false
+	s.mu.Unlock()
+}
+
+func (s *countingSession) closeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closes
 }
 
 // TestSessionManager_LeaseLoss_StopsAndRestartsSession is the regression test

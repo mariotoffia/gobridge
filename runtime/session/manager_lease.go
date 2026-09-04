@@ -24,6 +24,21 @@ var errLeaseLostAfterRenewal = errors.New("lease lost after renewal failures")
 // loss) so superviseSession restarts the one session in isolation (finding
 // L14).
 var errSessionEventsClosed = errors.New("session events channel closed unexpectedly")
+
+// errBrokerPathStepDown marks a step-down taken because THIS owner's broker path
+// stayed non-converged past broker_health_step_down. It wraps
+// errLeaseLostAfterRenewal because the lease genuinely transferred — the
+// lease-loss observability is correct — but afterRenewLoopExit must NOT let the
+// caller re-acquire on it.
+//
+// A stepping-down owner re-enters the acquire loop with no delay, while every
+// standby is asleep for up to a full jittered acquire poll, so it wins the CAS
+// on the row it has just released and takes back a partition it has PROVED it
+// cannot serve. The standby then waits out this owner's whole failed activation
+// before it gets another chance. Escalating instead hands the partition over
+// once: the lease is already released, and the orchestrator restarts this
+// process so it rejoins as a standby with a fresh session.
+var errBrokerPathStepDown = errors.New("stepped down because the broker path stayed non-converged")
 var errStepDownCloseFailed = errors.New("source session close failed during lease step-down")
 
 // activationLeaseLoss records that the existing renewal loop detected lease
@@ -154,6 +169,14 @@ func (m *Manager) withCallTimeout(ctx context.Context) (context.Context, context
 		return context.WithCancel(ctx)
 	}
 	return context.WithTimeout(ctx, m.renewCallTimeout)
+}
+
+// BoundedReleaseTimeout is the teardown/release margin a step-down runs its
+// bounded source close and its lease Release under. Exported so composition
+// preflight can budget the same value the manager uses instead of re-deriving
+// it.
+func BoundedReleaseTimeout(stepDownGrace time.Duration) time.Duration {
+	return boundedReleaseTimeout(stepDownGrace)
 }
 
 // boundedReleaseTimeout is the shared teardown/release margin used by both

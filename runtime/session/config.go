@@ -115,6 +115,14 @@ type Config struct {
 	// failover budget by up to this value, so keep it comfortably above the normal
 	// reconnect+reconcile time and validate it against the failover SLO.
 	BrokerHealthStepDown time.Duration
+
+	// BrokerPathFailoverDeclared records that an operator STATED the broker-path
+	// decision rather than inheriting the disabled default. A positive
+	// BrokerHealthStepDown says it on its own; this flag is what carries the
+	// explicit opt-out (routing.BrokerPathFailoverOff on the wire). Validate
+	// requires one of the two whenever FailoverSLO is declared, so a stated
+	// objective can never quietly exclude the node-local broker outage.
+	BrokerPathFailoverDeclared bool
 }
 
 // DefaultConfig returns a Config with recommended defaults.
@@ -221,14 +229,11 @@ func (c Config) EffectiveLeaseTTL() time.Duration {
 // reserved teardown margin. Production composition roots install a conservative
 // transport bound and renew throughout activation instead of using this window.
 func (c Config) PostAcquireActivationBudget() (budget, teardownMargin time.Duration) {
-	defaults := DefaultConfig(c.SessionID, c.Exclusive)
-	ttl := c.EffectiveLeaseTTL()
-	stepDownGrace := c.StepDownGrace
-	if stepDownGrace <= 0 {
-		stepDownGrace = defaults.StepDownGrace
-	}
-	teardownMargin = boundedReleaseTimeout(stepDownGrace)
-	return ttl - teardownMargin, teardownMargin
+	// Through EffectiveStepDownTiming, so this cannot judge the window by a grace
+	// the manager will not run: it applies the default substitution AND the
+	// below-TTL clamp, where this once applied only the substitution.
+	_, teardownMargin = c.EffectiveStepDownTiming()
+	return c.EffectiveLeaseTTL() - teardownMargin, teardownMargin
 }
 
 // Validate reports whether the lease timings are internally consistent. It is
@@ -291,8 +296,23 @@ func (c Config) Validate() error {
 		if err := c.validateLeaseCadence(); err != nil {
 			return err
 		}
+		if err := routing.ValidateBrokerPathPolicy(
+			fmt.Sprintf("session %q", c.SessionID), c.FailoverSLO, c.BrokerPathPolicy(),
+		); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// BrokerPathPolicy projects the two broker-path knobs onto the domain decision,
+// so every boundary that asks "was this stated, and does it fail over?" asks the
+// same question of the same type.
+func (c Config) BrokerPathPolicy() routing.BrokerPathPolicy {
+	return routing.BrokerPathPolicy{
+		StepDown: c.BrokerHealthStepDown,
+		Declared: c.BrokerHealthStepDown > 0 || c.BrokerPathFailoverDeclared,
+	}
 }
 
 // validateLeaseCadence rejects a configuration whose RESOLVED cadence — the one

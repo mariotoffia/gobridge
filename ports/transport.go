@@ -399,6 +399,14 @@ func (h SessionHealth) HasTopic(topic string) bool {
 
 // Session owns network identity and remote state for stateful transports.
 // Stateless transports do not require a Session.
+//
+// Events must emit SessionConnected on EVERY connect edge, not only the first.
+// A lease-managed exclusive session uses that edge to decide it has recovered
+// from a broker-path outage; a transport that reconnects silently leaves an
+// owner that is in fact healthy counted as still down, and a configured
+// broker_health_step_down then surrenders its lease and restarts the process.
+// The channel may drop its OLDEST unread event under a storm — the runtime
+// tolerates that — but it may not skip an edge.
 type Session interface {
 	Start(ctx context.Context) error
 	Reconcile(ctx context.Context, plan connectivity.SessionPlan) error

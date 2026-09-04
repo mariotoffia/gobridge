@@ -71,6 +71,18 @@ type Manager struct {
 	token         persistence.LeaseToken
 	hasLease      bool
 	connectedOnce atomic.Bool
+	// serving records that this term has reached the point where it is DUE to be
+	// serving — a completed post-acquire activation, or a SessionConnected event
+	// followed by a successful reconcile. It gates the broker-health outage
+	// clock, because a broker path that is down before then is activation, not an
+	// OUTAGE, and is bounded separately by the activation timeout.
+	//
+	// It is deliberately NOT connectedOnce, which counts reconnects: a transport
+	// event channel drops its oldest entry under a storm, so an owner that
+	// genuinely converged may never see its own SessionConnected event, and
+	// gating the outage clock on that event left broker-path failover silently
+	// disarmed for the rest of the term.
+	serving atomic.Bool
 	// leaseDeadline is the local, fail-closed expiry of the lease we hold: the
 	// pre-call timestamp of the last SUCCESSFUL Acquire/Renew plus LeaseTTL.
 	// Once passed, the renew loop steps down UNCONDITIONALLY — even if a
@@ -84,15 +96,19 @@ type Manager struct {
 	// down once now-notConvergedSince exceeds brokerHealthStepDown (CLUSTER-2).
 	// Guarded by mu.
 	//
-	// It is cleared ONLY by markConverged (a SessionConnected + successful reconcile
-	// event), NOT on lease renew/acquire — renewals deliberately keep succeeding
-	// during a broker outage, so clearing on renew would defeat the whole feature.
-	// This relies on a fresh Manager per lease term: every shipped exclusive
-	// transport is single-use, so a lease loss/step-down escalates to a pod restart
-	// (new Manager, zero timestamp) rather than an in-loop re-acquire. A future
-	// MULTI-use exclusive transport that re-acquires without a new process MUST
-	// reset notConvergedSince at the start of the new term (before the first renew
-	// tick) or it could step down spuriously on a stale timestamp.
+	// It is cleared by markConverged (a completed post-acquire activation against a
+	// connected source, or a SessionConnected event followed by a successful
+	// reconcile) and by beginBrokerPathTerm at the start of each term — NOT on
+	// lease renew/acquire, because renewals deliberately keep succeeding during a
+	// broker outage and clearing on renew would defeat the whole feature.
+	//
+	// The per-term reset matters because a term can end while the clock is armed
+	// for a reason OTHER than this threshold — a definitive fencing loss during a
+	// broker blip, say — and the caller then re-acquires in place. Without the
+	// reset that next term's first renew tick, which fires while it is still
+	// connecting, would find itself due on the previous term's timestamp and step
+	// down at once. (A term ended BY this threshold does not re-acquire at all: it
+	// is terminal for the process, see errBrokerPathStepDown.)
 	notConvergedSince time.Time
 
 	leaseEvents     chan LeaseStateEvent

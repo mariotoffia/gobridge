@@ -195,9 +195,17 @@ func (m *Manager) afterRenewLoopExit(ctx context.Context, token persistence.Leas
 	}
 	m.emitLeaseAudit(ctx, "lease.lost", "failure", token, err)
 	m.pushLeaseEvent(LeaseStateLost, token, err)
-	m.log(ctx, slog.LevelWarn, "lease lost, will re-acquire", "error", err)
 	m.mu.Lock()
 	m.hasLease = false
 	m.mu.Unlock()
+	if errors.Is(err, errBrokerPathStepDown) {
+		// The lease transferred (signals above are correct), but this process
+		// must not compete for it again: see errBrokerPathStepDown.
+		m.log(ctx, slog.LevelWarn,
+			"lease released on broker-path step-down; escalating so this process restarts and rejoins as a standby",
+			"error", err)
+		return fmt.Errorf("%w: %w", ErrSessionUnrecoverable, err)
+	}
+	m.log(ctx, slog.LevelWarn, "lease lost, will re-acquire", "error", err)
 	return nil
 }

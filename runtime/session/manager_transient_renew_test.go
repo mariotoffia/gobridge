@@ -23,11 +23,15 @@ import (
 type transientRenewStore struct {
 	mu          sync.Mutex
 	version     uint64
+	acquires    int32
 	renews      int32
 	releases    int32
 	failRenewAt int32
-	onRenew     chan struct{}
-	onCurrent   chan struct{}
+	// failDefinitiveOnce makes the NEXT Renew report a definitive lease loss,
+	// which is how a test ends one term and re-acquires into the next.
+	failDefinitiveOnce atomic.Bool
+	onRenew            chan struct{}
+	onCurrent          chan struct{}
 
 	curOwner   string
 	curExpires time.Time
@@ -43,11 +47,14 @@ func (s *transientRenewStore) setCurrent(owner string, expires time.Time, err er
 }
 
 func (s *transientRenewStore) Acquire(_ context.Context, _ string, ownerID string, _ time.Duration, _ map[string]string) (persistence.LeaseToken, error) {
+	atomic.AddInt32(&s.acquires, 1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.version++
 	return persistence.LeaseToken{Version: s.version, Owner: ownerID}, nil
 }
+
+func (s *transientRenewStore) acquireCount() int32 { return atomic.LoadInt32(&s.acquires) }
 
 func (s *transientRenewStore) Renew(_ context.Context, _ string, token persistence.LeaseToken, _ time.Duration, _ map[string]string) (persistence.LeaseToken, error) {
 	n := atomic.AddInt32(&s.renews, 1)
@@ -56,6 +63,11 @@ func (s *transientRenewStore) Renew(_ context.Context, _ string, token persisten
 		case s.onRenew <- struct{}{}:
 		default:
 		}
+	}
+	if s.failDefinitiveOnce.Swap(false) {
+		// A DEFINITIVE loss: the lease is provably no longer ours, so the owner
+		// steps down at once and the caller re-acquires in place.
+		return persistence.LeaseToken{}, shared.ErrStaleFencingToken
 	}
 	if n == atomic.LoadInt32(&s.failRenewAt) {
 		// Transient store error (NOT a definitive lease loss): timeout/throttle.

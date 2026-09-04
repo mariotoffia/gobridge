@@ -3,7 +3,7 @@
 
 **Goal:** Close every stable finding in the canonical `PROD_READY_ISSUES.md` ledger with tested behavior, truthful contracts, safe migrations, and release evidence.
 
-**Plan status:** Chunks 1–16, 24 and 25 landed and are checked off below with their residuals; chunks 1–4 are the commits `cf86968f`, `84939bf5`, `f0c9685c`, `b781f741`. Chunk 17 is landed and closed; its deployment residual moved to Chunk 26 (an executed multi-member rollout proof on a local deployment, specified against local AWS emulation in `testutil/SPEC.md`). Chunk 27 (retiring the per-service emulator wrappers) has no dependencies and was scheduled BEFORE Chunk 26 — like Chunks 24 and 25, its number is identity, not execution order. Chunk 28 followed Chunk 26 with the rest of the deployment e2e matrix. **Chunks 29, 30 and 31 are landed.** 29 proved the confirm window on a deployed cohort and fixed three defects on the way (a committed config the document could not reproduce, a durable committed artifact that could not be decoded, and a convergence signal that rested on nothing); 30 closed the DynamoDB-overlay question by decision and handed its other two rows on; 31 changed the `direct_hold` gate to ask about source redelivery and proved it at every layer a unit run reaches. Their residuals are enqueued rather than carried: **Chunk 32** owns the plan-driven ingress session that blocks both the `direct_hold` deployed proof and the SQLite deployed store, **Chunk 33** owns the Lambda topology and its unrun probe, and **Chunk 34** owns the two small rollout leftovers. A third cluster rollout mode, `cluster.rollout: independent`, was added alongside them at the operator's request: the admin API validates and writes, and every member applies the change itself with no barrier and no vote. The default is unchanged. Chunk 18 is the next one open. The ledger re-verification at HEAD `b781f741` added 22 findings (HIGH-14…20, MEDIUM-18…25, LOW-20…26), withdrew LOW-7 and LOW-19, and downgraded MEDIUM-12 and BLOCKER-2; the coverage matrix and two new chunks (24, 25) absorb them. Chunks 24 and 25 are placed at the end of Phase 1 by dependency but carry P0 defects — schedule them immediately after Chunk 5.
+**Plan status:** Chunks 1–16, 24 and 25 landed and are checked off below with their residuals; chunks 1–4 are the commits `cf86968f`, `84939bf5`, `f0c9685c`, `b781f741`. Chunk 17 is landed and closed; its deployment residual moved to Chunk 26 (an executed multi-member rollout proof on a local deployment, specified against local AWS emulation in `testutil/SPEC.md`). Chunk 27 (retiring the per-service emulator wrappers) has no dependencies and was scheduled BEFORE Chunk 26 — like Chunks 24 and 25, its number is identity, not execution order. Chunk 28 followed Chunk 26 with the rest of the deployment e2e matrix. **Chunks 29, 30 and 31 are landed.** 29 proved the confirm window on a deployed cohort and fixed three defects on the way (a committed config the document could not reproduce, a durable committed artifact that could not be decoded, and a convergence signal that rested on nothing); 30 closed the DynamoDB-overlay question by decision and handed its other two rows on; 31 changed the `direct_hold` gate to ask about source redelivery and proved it at every layer a unit run reaches. Their residuals are enqueued rather than carried: **Chunk 32** owns the plan-driven ingress session that blocks both the `direct_hold` deployed proof and the SQLite deployed store, **Chunk 33** owns the Lambda topology and its unrun probe, and **Chunk 34** owns the two small rollout leftovers. A third cluster rollout mode, `cluster.rollout: independent`, was added alongside them at the operator's request: the admin API validates and writes, and every member applies the change itself with no barrier and no vote. The default is unchanged. **Chunk 18 was dropped from this document in `85c8c763` while its work was still open; the 2026-09-04 scan restored it below, after Chunk 34, and it is now landed.** The open chunks are 32 and 33. The ledger re-verification at HEAD `b781f741` added 22 findings (HIGH-14…20, MEDIUM-18…25, LOW-20…26), withdrew LOW-7 and LOW-19, and downgraded MEDIUM-12 and BLOCKER-2; the coverage matrix and two new chunks (24, 25) absorb them. Chunks 24 and 25 are placed at the end of Phase 1 by dependency but carry P0 defects — schedule them immediately after Chunk 5.
 
 **Architecture:** Keep domain and port contracts inward-facing. Change shared contracts and persistence formats before adapters, then wire composition roots, deployment, observability, and documentation. Coordinated rollout stays disabled in the shipped autoscaled high-availability facade until the static-member implementation and its deployment proof pass.
 
@@ -18,7 +18,7 @@ Each chunk is a reviewable implementation boundary. Run commands from the reposi
 ## Scope and non-goals
 
 **In scope**
-- All 132 stable IDs in the canonical production-readiness ledger (110 original + 22 added 2026-08-18). Withdrawn IDs (LOW-7, LOW-19) stay mapped for matrix totality but require no work.
+- Every stable ID in the canonical production-readiness ledger: 110 original + 22 added 2026-08-18 + the IDs added 2026-09-01…03 while executing Chunks 11 and 26–31 (NEW-BLOCKER-1…4, NEW-HIGH-6, NEW-HIGH-21, NEW-MEDIUM-26, NEW-MEDIUM-27, NEW-LOW-10…12, NEW-TEST-2, NEW-TEST-3). The 2026-09-04 scan counted 146 `### <ID>:` headings; the matrix below maps all of them. Withdrawn IDs (LOW-7, LOW-19) stay mapped for matrix totality but require no work.
 - Port, schema, adapter, runtime, composition-root, deployment, test, alarm, runbook, and reference changes needed to close those IDs.
 - Backward reads of existing SQLite and DynamoDB outbox data during ordering-key migration.
 - Whole-cohort deployment rules while store or identity contracts change.
@@ -111,24 +111,30 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 | 8 | done | HIGH-11, HIGH-12, HIGH-14, MEDIUM-15, MEDIUM-18, MEDIUM-19, LOW-1, NEW-HIGH-5, NEW-LOW-1 |
 | 9 | done | NEW-MEDIUM-1, NEW-MEDIUM-2, NEW-MEDIUM-3, NEW-MEDIUM-5, NEW-MEDIUM-6, NEW-LOW-9 |
 | 10 | done | LOW-3, LOW-4, NEW-MEDIUM-12, NEW-MEDIUM-13, NEW-MEDIUM-14, NEW-MEDIUM-15, NEW-LOW-6 |
-| 11 | done | HIGH-6, HIGH-15, HIGH-20, MEDIUM-3, MEDIUM-4, MEDIUM-6, MEDIUM-23, MEDIUM-25 (premise corrected; see the ledger), LOW-15, LOW-20, NEW-MEDIUM-9, NEW-TEST-1 |
+| 11 | done | HIGH-6, HIGH-15, HIGH-20, MEDIUM-3, MEDIUM-4, MEDIUM-6, MEDIUM-23, MEDIUM-25 (premise corrected; see the ledger), LOW-15, LOW-20, NEW-MEDIUM-9, NEW-TEST-1, NEW-HIGH-6 (found and closed while implementing this chunk) |
 | 12 | done | LOW-7 (withdrawn), LOW-13, LOW-14, NEW-MEDIUM-10, NEW-MEDIUM-11, NEW-LOW-5 |
 | 13 | done | LOW-5, LOW-11, LOW-12, MEDIUM-20, NEW-LOW-2, NEW-LOW-3 |
 | 14 | done | HIGH-2, HIGH-7, LOW-2 |
 | 15 | done | BLOCKER-2, MEDIUM-2, MEDIUM-12 (downgraded; hardening) |
 | 16 | done | HIGH-5, MEDIUM-5, LOW-8, LOW-9, DOC-5 |
 | 17 | done | BLOCKER-1 (deployment residual open, executed in 26), DOC-12 |
-| 18 | waiting | HIGH-3, HIGH-4, TEST-3, DOC-7, DOC-14 |
-| 19 | waiting | DOC-3, DOC-6, DOC-13 |
-| 20 | waiting | LOW-18, LOW-19 (withdrawn), DOC-1, DOC-4, DOC-10, NEW-MEDIUM-16 |
-| 21 | waiting | DOC-8, DOC-15, NEW-LOW-7, NEW-LOW-8, LOW-26 |
+| 18 | done | HIGH-3, HIGH-4, TEST-3 (closed by Chunk 23's release gate), DOC-7, DOC-14 |
+| 19 | done | DOC-3, DOC-6, DOC-13 |
+| 20 | done | LOW-18, LOW-19 (withdrawn), DOC-1, DOC-4, DOC-10, NEW-MEDIUM-16 |
+| 21 | done | DOC-8, DOC-15, NEW-LOW-7, NEW-LOW-8, LOW-26 |
 | 22 | done | DOC-2, DOC-9, DOC-11 |
-| 23 | waiting | TEST-1, TEST-2, TEST-4, TEST-5, TEST-6, TEST-7, TEST-8, TEST-9, TEST-10, TEST-11, TEST-12 |
+| 23 | done | TEST-1, TEST-2, TEST-4, TEST-5, TEST-6, TEST-7, TEST-8, TEST-9, TEST-10, TEST-11, TEST-12 |
 | 24 | done | HIGH-16, MEDIUM-21, LOW-22, LOW-23 |
 | 25 | done | HIGH-17, MEDIUM-24, LOW-21 |
-| 26 | done | none — closes the BLOCKER-1 deployment residual whose primary mapping stays with Chunk 17, so the mapping count is unchanged |
-| 27 | waiting | none — test infrastructure; adds no issue mapping. Runs BEFORE 26. |
-| 28 | waiting | none — deployment coverage breadth; adds no issue mapping |
+| 26 | done | NEW-BLOCKER-1, NEW-BLOCKER-2, NEW-TEST-2 — and the deployment residual of Chunk 17's blocker, whose primary mapping stays there |
+| 27 | done | none — test infrastructure; adds no issue mapping. Ran BEFORE 26. |
+| 28 | done | NEW-BLOCKER-3 (fixed), NEW-LOW-10 (recorded, still open), NEW-LOW-11 (recorded while executing the matrix, still open; no other chunk names it) |
+| 29 | done | NEW-TEST-3, NEW-MEDIUM-26, NEW-HIGH-21, NEW-BLOCKER-4 (its release-note residual closed in Chunk 34) |
+| 30 | done | none — deployment coverage decided or handed on; adds no issue mapping |
+| 31 | done | NEW-MEDIUM-27 |
+| 32 | **open** | NEW-LOW-12 |
+| 33 | **open** | none — deployment coverage breadth; adds no issue mapping |
+| 34 | done | none — the release-note residual of Chunk 29's artifact fix and the roster rule of the `independent` rollout mode; adds no issue mapping |
 
 ## Phase 0: Stop unsafe claims and freeze accepted contracts
 
@@ -662,6 +668,31 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 - **Suggested commit title:** `clear the rollout residuals`
 
 
+### Chunk 18: Failure-mode-specific failover admission and proof — LANDED
+
+- **Issues:** HIGH-3, HIGH-4, DOC-7, DOC-14. TEST-3 was mapped here and is closed: Chunk 23 built the published-profile proof (`TestUC3PublishedProfileFailover`, 45.8–46.1 s against a 90 s ceiling).
+- **Goal:** Make broker-path policy explicit, compute truthful budgets, and publish both derived lease profiles with their full failover formulas.
+- **Dependencies:** Chunks 13 and 17 (both landed).
+- **Files/packages:** `runtime/session/config.go`, manager files, `bridge/failover_budget.go`, HA CDK validation, long-running failover tests, route and cluster references.
+- **Tests:** failover budget unit tests, broker-path-isolation long-running test.
+- **This section was deleted from the plan in `85c8c763` with none of its work done; the matrix still carried it as waiting and the status paragraph still called it the next one open.** What the 2026-09-04 scan measured, so the restored items start from facts rather than the 2026-08-18 trace:
+  - HIGH-3 is open in code: `bridge/failover_budget.go` reads `StepDownGrace` and `ConnectAfterLease` from the session config and never reads `BrokerHealthStepDown`, so a declared `failover_slo` still admits a broker-health step-down longer than the objective.
+  - HIGH-4 is open in code and in proof: `session.HAConfig` still leaves `BrokerHealthStepDown` at zero (disabled), and `tests/longrunning/` has no test that isolates ONE member's broker path while the store stays healthy — the broker tests there (`TestUC42`…`TestUC49`, `TestGAP_BrokerHardCrash_SharedOutbox`, `TestGAP_BrokerDisconnect_KeepAliveDetection`) take the broker down for every member.
+  - DOC-7's original target is gone rather than fixed: `ARCHITECTURE.md` was rewritten to 290 lines and no longer states any failover figure. The full admission formula now lives in `docs/routes-and-runtime-reference.md` §Declared failover budget, but no page evaluates it at the shipped defaults, so an operator still cannot read the enforced bound for either profile.
+  - DOC-14 is open: `docs/routes-and-runtime-reference.md` shows only the 360 s standalone `lease_ttl` default; the 45 s clustered profile (`session.HAConfig`) appears only as a passing mention in `docs/runbooks/node-down-failover.md`.
+- [x] Add failing divergent-policy, impossible broker-path SLO, activation-edge and isolated-broker-path tests.
+- [x] Run `go test -race -count=1 ./bridge ./runtime/session -run 'Test.*Failover'`; expect missing delay/release terms.
+- [x] Add owner-death and broker-path formulas, explicit HA policy admission, and activation-state arming independent of event delivery.
+- [x] Run unit tests and `make test-integration`; expect pass.
+- [x] Run `make test-long-running` for process death, broker-path isolation, fencing advance, Full readiness, and message conservation.
+- [x] Replace TTL-only figures with both derived profiles, full formulas evaluated at the defaults, measured endpoint, and sample requirements.
+- [x] Prove the published profile end to end — done by Chunk 23 (`TestUC3PublishedProfileFailover`).
+- **Accept when** every claimed failure mode passes admission and measured SLO; disabled broker-path failover is an explicit deployment decision, not a default assumption. **Met.**
+- **Landed.** `broker_health_step_down` is TRI-state — absent, `off`, or a positive duration (`routing.ParseBrokerPathPolicy` / `BrokerPathFailoverOff`) — and a declared `failover_slo` REFUSES the absent state at all three boundaries that share the one domain rule: the blueprint validator (before the config transaction's durable write), the builder, and `session.Config.Validate`. So a disabled broker path is now a written decision, never an inherited default. Admission evaluates two failure-specific formulas and admits the objective against both; the disclosure log for an undeclared objective states where the second one stands (`broker_path_failover=undeclared|off|<duration>`, with its budget when on). The arming defect is closed at its root: the outage clock was gated on a delivered `SessionConnected` event, which the paho session evicts under an event storm, so a converged owner could stay permanently disarmed — it now arms from a completed post-acquire activation whose session reports Connected (`everConverged`, split from the reconnect counter `connectedOnce`). The adversarial review then found three defects the chunk's own tests had not: (1) a stepping-down owner re-entered the acquire loop with no delay and won the CAS on the row it had just released, against a standby asleep for up to a full poll — taking back a partition it had proved it could not serve, and costing the standby a whole failed activation; a broker-path step-down is now terminal for that process, which is also what makes the published formula true; (2) the outage clock survived into the next lease term of the same manager, so a term ended by a fencing loss while the clock was armed stepped down on its first renew tick — `beginBrokerPathTerm` resets it at the one funnel every term passes through, closing the hazard `Manager.notConvergedSince` had only documented; (3) a subscription-free exclusive EGRESS session has a `Reconcile` that issues no broker call at all, so activation alone proved nothing about connectivity — the gate is now `serving` ("this term reached the point where it is DUE to serve"), and an activation that completes against a disconnected source starts the outage clock at that instant rather than waiting for a convergence that may never come. Three budget under-counts were corrected with it (the second store call a detection round makes once a renew streak has reached `max_renew_fails`, the straddling standby Acquire that loses its observation CAS and pays another poll, and a zero `step_down_grace` the manager substitutes its default for), and `checkedDurationSum` now rejects a negative term rather than shrinking a budget into passing. `docs/failover-budget.md` publishes both formulas, both derived lease profiles evaluated at the shipped defaults (standalone 360s TTL → 1097.5s owner-death, `broker_health_step_down` + 382.5s broker-path; clustered HA 45s TTL → 336.5s and + 290s), the measured endpoint and its sample requirements — DERIVED-checked by `tests/docsexamples/failover_profile_doc_test.go`, which builds the shipped profiles and compares every published figure against what the bridge itself discloses. `tests/longrunning/broker_path_isolation_test.go` is the end-to-end proof the suite lacked: two members reach ONE broker through a `netfault` proxy each, the owner's proxy is cut while DynamoDB stays healthy, and the test asserts the isolated owner keeps renewing, `BrokerHealthStepDown` is emitted, the healthy standby takes over at `ServiceLevelFull` with exactly ONE fencing increment, and no message is lost — measured 8.5 s against a 25 s ceiling and a 30 s lease TTL, so the takeover proves a voluntary release rather than an expiry. Mutation-checked: with `broker_health_step_down` at its historical zero the standby never takes over.
+- **Residual (none blocking):** a lease `Release` the store REFUSES degrades the broker-path timeline to the owner-death path, and the transport's own detection latency (an MQTT keepalive) runs before the threshold clock starts. Both are stated in `docs/failover-budget.md` and left to measured error-budget evidence, on the same footing as the owner-death formula's treatment of backend failure. The escalation's blast radius is process-wide — every route in the pod restarts with it — which is decided, not overlooked: every shipped exclusive transport is single-use, so a step-down close already poisoned the next `Start` and forced the same restart one round trip later. It is written on the page beside the threshold guidance, because the cost of a false positive is that restart. A third review round confirmed the classification, the `Health`-based arming, the marker hand-off and the step-down resolver sound, and added three small fixes: `BrokerHealthStepDown` is counted only when the hand-off actually completed (a wedged close keeps the lease and now counts nothing), the impossible nil step-down outcome fails closed instead of falling through to a re-acquire, and `ports.Session` states the connect-edge contract the recovery side depends on — the outage clock is cleared ONLY by a delivered `SessionConnected` plus a successful reconcile, so a transport that reconnects silently would let a healthy owner surrender its lease.
+- **Suggested commit title:** `prove failure mode failover budgets`
+
+
 ## Phase 4: Operator contracts and release evidence
 
 ### Chunk 19: Monitoring, ingress, and stuck-settlement guidance — LANDED
@@ -763,7 +794,7 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 
 ## Final production acceptance phase
 
-- [ ] Re-extract unique stable issue IDs from `PROD_READY_ISSUES.md` and the matrix. Require 132 ledger IDs, 132 primary mappings, no missing IDs, and no duplicate primary mapping (withdrawn IDs count as mapped).
+- [ ] Re-extract unique stable issue IDs from `PROD_READY_ISSUES.md` (every `### <ID>:` heading) and from the matrix. Require the two counts to be equal (146 at the 2026-09-04 scan), no missing IDs, and no duplicate primary mapping (withdrawn IDs count as mapped).
 - [ ] Prove every BLOCKER and HIGH regression at its real composition boundary, including stale expiry, hostile identity, ordering migration, shutdown, rollout, broker-path failover, the reconnect-window ack race, SIGTERM drain in both shipped binaries, cancellation never settling terminally, session-failure lease handoff, DynamoDB claim ordering/partial claims, and no stopped runtime published as current.
 - [ ] Prove the two-member static-slot deployment through propose, vote, commit, apply, convergence, restart, failed apply, revert, and bounded SIGTERM.
 - [ ] Prove message conservation and alarms for duplicate risk, suppression, drop, expiry, DLQ, reconnect, and stranded claims.
@@ -778,3 +809,21 @@ make test
 - [ ] Confirm coordinated rollout remains disabled for autoscaled workers and is enabled only for the proved static-slot profile.
 - [ ] Accept production readiness only when every behavioral exit criterion above is green and public claims match the tested profile.
 - **Suggested commit title:** `complete production readiness remediation`
+
+### Acceptance run 2026-09-04 at `b7f51cd2` — NOT ACCEPTED
+
+Every item above was attempted or measured; the boxes stay open because three chunks are open. What each item returned:
+
+| Item | Verdict | Evidence |
+|---|---|---|
+| ID re-extraction | **green after repair** | 146 `### <ID>:` headings in the ledger, 146 unique IDs in the matrix, no missing, no duplicate primary. Before the repair the matrix mapped 133 and left 13 unmapped (NEW-BLOCKER-1…4, NEW-HIGH-6, NEW-HIGH-21, NEW-MEDIUM-26, NEW-MEDIUM-27, NEW-LOW-10…12, NEW-TEST-2, NEW-TEST-3); rows 18–21, 23, 27 and 28 said *waiting* for landed chunks; rows 29–34 did not exist. |
+| BLOCKER/HIGH regressions | **red** | HIGH-3 and HIGH-4 are open in code (Chunk 18, restored above). Every other BLOCKER and HIGH is closed in the ledger with a pinning test. |
+| Two-member static-slot deployment | **green as last run** | `TestLocal_StaticSlotCohort` and the Chunk 29 confirm-window phase, last executed 2026-09-03 through `make test-local-deploy`; not re-run today. |
+| Conservation and alarms | **green as last run** | `make test-release-gate` 2026-09-04 08:13 green (7 proofs, 300 s); `TestLocal_DeadLetterAndAlarms` in the local deployment suite. |
+| `make test-integration` | **green, one commit stale** | `reports/test-integration.log` 2026-09-04 01:38 green including `lib/bootstrap` (13.7 s, both formerly flaky tests pass). `b7f51cd2` (08:22) touched only `tests/integration/kubernetes_profile_test.go` under that suite. |
+| `make test-long-running` | **not green at HEAD** | The full run in `reports/test-long-running.log` (00:12) failed `TestTask14_ProcessKillBoundaries`, `TestGAP_BrokerHardCrash_SharedOutbox` and `TestGAP_BrokerDisconnect_KeepAliveDetection` on a collector whose `count()` returned zero — a test defect fixed in `b7f51cd2`. All three pass in isolation at HEAD (26 s, 25 s, 17 s). The full suite has not been re-run since the fix. `make test-soak` (`reports/test-soak.log`, 23:34) failed its heap assertion because the collector retained 360k envelopes; the same commit switched it to a counting collector, and the hour-long profile has not been re-run either. |
+| `make lint` / `make test` | **green at HEAD** | Both run 2026-09-04 08:27–08:33: lint exit 0, 93 packages ok. |
+| Reports review | **done** | No pre-existing failure other than the two stale long-running logs above, both explained by the fixed collector. |
+| Coordinated rollout disabled for autoscaled workers | **green** | `TestGoBridgeDynamoDBHA_RejectsCoordinatedRolloutOnInterchangeableWorkers`, `TestApp_ClusterReload_InterchangeableWorkerRefusesCoordinatedBoot`, `TestGoBridgeDynamoDBHA_AutoscaledProfileProvisionsNoRolloutInfrastructure`; static slots opt in explicitly through `MemberSlots`. |
+| Accept | **no** | Blocked by Chunk 18 (HIGH-3, HIGH-4, DOC-7, DOC-14), Chunk 32 (NEW-LOW-12 and the two *Not yet stood up* rows it closes), Chunk 33 (Lambda topology), the open NEW-LOW-10 and NEW-LOW-11, and a full `make test-long-running` plus `make test-soak` green run at or after `b7f51cd2`. |
+

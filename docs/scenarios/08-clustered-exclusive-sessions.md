@@ -174,6 +174,10 @@ routes:
       # Budget = 300s + 2*6.25s + 81*5s + 240s + 10s = 967.5s.
       failover_slo: 980s
       startup_allowance: 10s
+      # Declaring an objective forces the broker-path decision. This deployment
+      # reaches one HA broker endpoint from every node, so it rides out a
+      # node-local broker outage rather than churning the lease.
+      broker_health_step_down: off
       drain_batch_size: 10
       drain_strategy:
         type: adaptive_backoff

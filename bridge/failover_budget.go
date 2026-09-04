@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/session"
@@ -21,6 +22,8 @@ type failoverManagerInputs struct {
 	renewCallTimeout       time.Duration
 	stepDownGrace          time.Duration
 	connectAfterLease      bool
+	brokerHealthStepDown   time.Duration
+	brokerPathDeclared     bool
 	failoverSLO            time.Duration
 	startupAllowance       time.Duration
 	postAcquireActivation  time.Duration
@@ -61,7 +64,7 @@ func (b *Builder) validateFailoverBudgets() error {
 		for _, candidate := range group[1:] {
 			if candidate.inputs != canonical.inputs {
 				return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
-					"bridge: session %q has divergent session-manager configuration between %s and %s; shared sessions require identical HA, failover SLO, and transport activation inputs",
+					"bridge: session %q has divergent session-manager configuration between %s and %s; shared sessions require identical HA, failover SLO, broker-path policy (broker_health_step_down), and transport activation inputs",
 					sessionID, canonical.source, candidate.source,
 				))
 			}
@@ -82,16 +85,48 @@ func (b *Builder) validateFailoverBudgets() error {
 		if !canonical.inputs.transportTimingKnown || canonical.inputs.postTakeoverActivation <= 0 {
 			return failoverBudgetError(canonical.source, sessionID, "complete post-takeover activation duration is unknown")
 		}
-		ttl, acquirePoll, renewCallTimeout := canonical.config.EffectiveFailoverLeaseTiming()
-		budget, budgetErr := checkedFailoverBudget(ttl, acquirePoll, renewCallTimeout,
-			canonical.inputs.postTakeoverActivation, canonical.config.StartupAllowance)
-		if budgetErr != nil {
-			return fmt.Errorf("bridge: %s: session %q: %w", canonical.source, sessionID, budgetErr)
+		if err := admitFailoverBudgets(canonical, sessionID); err != nil {
+			return err
 		}
-		if budget > canonical.config.FailoverSLO {
+	}
+	return nil
+}
+
+// admitFailoverBudgets checks the declared objective against EVERY failure mode
+// the deployment claims to cover, not just owner death. A node-local broker
+// outage keeps renewals succeeding, so its timeline is anchored on
+// broker_health_step_down rather than on lease TTL and is bounded by a formula
+// of its own; admitting only the owner-death budget let a configuration declare
+// failover_slo: 60s while a broker-path step-down alone took 90s.
+func admitFailoverBudgets(canonical failoverManagerCandidate, sessionID string) error {
+	ttl, acquirePoll, renewCallTimeout := canonical.config.EffectiveFailoverLeaseTiming()
+	ownerDeath, err := checkedFailoverBudget(ttl, acquirePoll, renewCallTimeout,
+		canonical.inputs.postTakeoverActivation, canonical.config.StartupAllowance)
+	if err != nil {
+		return fmt.Errorf("bridge: %s: session %q: %w", canonical.source, sessionID, err)
+	}
+	budgets := []struct {
+		mode  string
+		value time.Duration
+	}{{"owner-death", ownerDeath}}
+
+	if canonical.config.BrokerHealthStepDown > 0 {
+		brokerPath, bpErr := checkedBrokerPathFailoverBudget(
+			brokerPathBudgetFor(canonical.config, canonical.inputs.postTakeoverActivation))
+		if bpErr != nil {
+			return fmt.Errorf("bridge: %s: session %q: %w", canonical.source, sessionID, bpErr)
+		}
+		budgets = append(budgets, struct {
+			mode  string
+			value time.Duration
+		}{"broker-path", brokerPath})
+	}
+
+	for _, b := range budgets {
+		if b.value > canonical.config.FailoverSLO {
 			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
-				"bridge: %s: session %q: failover budget=%s exceeds declared failover_slo=%s",
-				canonical.source, sessionID, budget, canonical.config.FailoverSLO,
+				"bridge: %s: session %q: %s failover budget=%s exceeds declared failover_slo=%s",
+				canonical.source, sessionID, b.mode, b.value, canonical.config.FailoverSLO,
 			))
 		}
 	}
@@ -165,7 +200,9 @@ func (b *Builder) failoverManagerCandidate(source, sessionID string, sc session.
 			renewJitter: sc.RenewJitter, maxRenewFails: sc.MaxRenewFails,
 			acquirePoll: sc.AcquirePollInterval, renewCallTimeout: sc.RenewCallTimeout,
 			stepDownGrace: sc.StepDownGrace, connectAfterLease: sc.ConnectAfterLease,
-			failoverSLO: sc.FailoverSLO, startupAllowance: sc.StartupAllowance,
+			brokerHealthStepDown: sc.BrokerHealthStepDown,
+			brokerPathDeclared:   sc.BrokerPathFailoverDeclared,
+			failoverSLO:          sc.FailoverSLO, startupAllowance: sc.StartupAllowance,
 			postAcquireActivation:  sc.PostAcquireActivationTimeout,
 			postTakeoverActivation: activation, transportTimingKnown: timingKnown,
 			transportKind: transportKind, mode: mode,
@@ -203,19 +240,45 @@ func (b *Builder) logFailoverBudgetDisclosure(canonical failoverManagerCandidate
 		)
 		return
 	}
-	b.logger.Info("bridge: worst-case failover budget for exclusive session (no failover_slo declared — "+
-		"NOT enforced). This is how long a standby may need to fully take over after the active owner "+
-		"dies: lease TTL + acquire-poll boundaries + lease-store call budget + transport post-takeover "+
-		"activation + startup allowance. Tune lease_ttl/acquire_poll_interval and the transport "+
-		"connect/reconcile/grace timeouts to shrink it, and declare failover_slo to make the build FAIL "+
-		"when the configuration cannot meet the target",
+	attrs := []any{
 		"session_id", sessionID,
 		"source", canonical.source,
 		"failover_budget", budget.String(),
 		"lease_ttl", ttl.String(),
 		"post_takeover_activation", canonical.inputs.postTakeoverActivation.String(),
 		"startup_allowance", canonical.config.StartupAllowance.String(),
+	}
+	attrs = append(attrs, brokerPathDisclosureAttrs(canonical)...)
+	b.logger.Info("bridge: worst-case failover budget for exclusive session (no failover_slo declared — "+
+		"NOT enforced). This is how long a standby may need to fully take over after the active owner "+
+		"dies: lease TTL + acquire-poll boundaries + lease-store call budget + transport post-takeover "+
+		"activation + startup allowance. It does NOT cover a node-local broker outage: see "+
+		"broker_path_failover. Tune lease_ttl/acquire_poll_interval and the transport "+
+		"connect/reconcile/grace timeouts to shrink it, and declare failover_slo to make the build FAIL "+
+		"when the configuration cannot meet the target",
+		attrs...,
 	)
+}
+
+// brokerPathDisclosureAttrs states where the SECOND failure mode stands, so a
+// disclosure can never be read as covering it. An owner that alone loses its
+// broker path keeps renewing, so nothing in the owner-death budget above bounds
+// it — undeclared means it is simply not covered.
+func brokerPathDisclosureAttrs(canonical failoverManagerCandidate) []any {
+	switch {
+	case canonical.config.BrokerHealthStepDown > 0:
+		attrs := []any{"broker_path_failover", canonical.config.BrokerHealthStepDown.String()}
+		budget, err := checkedBrokerPathFailoverBudget(
+			brokerPathBudgetFor(canonical.config, canonical.inputs.postTakeoverActivation))
+		if err != nil {
+			return append(attrs, "broker_path_failover_budget", "unknown", "error", err)
+		}
+		return append(attrs, "broker_path_failover_budget", budget.String())
+	case canonical.config.BrokerPathFailoverDeclared:
+		return []any{"broker_path_failover", routing.BrokerPathFailoverOff}
+	default:
+		return []any{"broker_path_failover", "undeclared"}
+	}
 }
 
 func failoverBudgetError(source, sessionID, detail string) error {
@@ -262,9 +325,22 @@ func checkedFailoverBudget(leaseTTL, acquirePoll, renewCallTimeout, postTakeover
 	if err != nil {
 		return 0, err
 	}
-	parts := []time.Duration{leaseTTL, pollBoundaries, acquireCallBudget, postTakeoverActivation, startupAllowance}
+	return checkedDurationSum(leaseTTL, pollBoundaries, acquireCallBudget, postTakeoverActivation, startupAllowance)
+}
+
+// checkedDurationSum adds budget terms and fails closed on overflow rather than
+// wrapping into a small (and therefore admitted) total.
+//
+// Negative terms are rejected outright rather than added. The overflow guard
+// below is only sound while the running total is non-negative, so one negative
+// term would both defeat it and — far worse — shrink a budget into passing a
+// declared objective it does not meet.
+func checkedDurationSum(parts ...time.Duration) (time.Duration, error) {
 	var total time.Duration
 	for _, part := range parts {
+		if part < 0 {
+			return 0, shared.ErrInvalidConfig.WithMessage("bridge: failover budget term is negative")
+		}
 		if part > time.Duration(math.MaxInt64)-total {
 			return 0, shared.ErrInvalidConfig.WithMessage("bridge: failover budget overflows time.Duration")
 		}

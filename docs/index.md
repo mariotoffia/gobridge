@@ -28,6 +28,7 @@ walks a working bridge end to end. Then skim the
 | [Configuration Overview](configuration-overview.md) | Lifecycle, sources, layering, dynamic reconfiguration |
 | [Configuration Reference](configuration-reference.md) | Field-by-field `BridgeConfig` reference |
 | [Routes and Runtime Reference](routes-and-runtime-reference.md) | Route shape and runtime behaviour |
+| [Failover Budget](failover-budget.md) | What exclusive-session failover costs, and what admission checks |
 | [Programmatic API](programmatic-api.md) | Delivery hooks, the builder, runtime lifecycle |
 | [Transport Configuration](transport-configuration.md) | Options common to every transport |
 | [Processors and Stores](processors-and-stores.md) | Filter, transform, circuit breaker, tenant |

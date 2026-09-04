@@ -87,6 +87,10 @@ func (m *Manager) runRenewingActivation(
 	token persistence.LeaseToken,
 	fn func(context.Context) error,
 ) leaseTermResult {
+	// Every lease term funnels through here, so this is where per-term
+	// broker-path state is reset — before the renewal loop can read it.
+	m.beginBrokerPathTerm()
+
 	activationCtx, cancelActivation := context.WithCancel(ctx)
 	defer cancelActivation()
 	renewCtx, cancelRenew := context.WithCancel(ctx)
@@ -102,6 +106,9 @@ func (m *Manager) runRenewingActivation(
 
 	deadlineExceeded, completed, activationErr := m.runPostAcquireActivation(activationCtx, fn)
 	if activationErr == nil {
+		// Arm BEFORE events start flowing, so no disconnect can be handled
+		// against an un-armed broker-health clock.
+		m.markActivated(ctx)
 		close(activationReady)
 		renewErr := <-renewDone
 		if lossResult := m.finishActivationLeaseLoss(ctx, renewErr, completed); lossResult != nil {
@@ -142,7 +149,13 @@ func (m *Manager) finishActivationLeaseLoss(ctx context.Context, renewErr error,
 	if !activationCompleted || !loss.closeCompleted {
 		return fmt.Errorf("%w: lease lost during post-acquire activation before source work quiesced", ErrSessionUnrecoverable)
 	}
-	return m.finishStepDown(ctx, loss.token, true)
+	stepErr := m.finishStepDown(ctx, loss.token, true)
+	if errors.Is(renewErr, errBrokerPathStepDown) {
+		// finishStepDown returns the bare lease-loss sentinel, which would drop
+		// the marker that stops this process re-seizing the lease it released.
+		return fmt.Errorf("%w: %w", errBrokerPathStepDown, stepErr)
+	}
+	return stepErr
 }
 
 // failPostAcquireActivation removes local authorization, disconnects and

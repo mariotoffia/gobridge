@@ -90,19 +90,64 @@ func (m *Manager) handleSessionEvent(ctx context.Context, ev ports.SessionEvent)
 // markConverged records that the broker path is healthy (connected and
 // re-subscribed), clearing the CLUSTER-2 broker-health step-down clock.
 func (m *Manager) markConverged() {
+	m.serving.Store(true)
+	m.mu.Lock()
+	m.notConvergedSince = time.Time{}
+	m.mu.Unlock()
+}
+
+// markActivated records that a post-acquire activation completed, so from this
+// instant the owner is EXPECTED to be serving and the broker-health outage clock
+// is live for the rest of the term.
+//
+// It does not wait for a SessionConnected event. The transport's event channel
+// drops its oldest entry under a storm, so an arming that waits for that event
+// can miss it permanently and leave this owner renewing through an unbounded
+// node-local broker outage no standby can take over.
+//
+// It does not wait for convergence either. A lease-bearing session with NO
+// subscriptions — an exclusive egress session — has a Reconcile that issues no
+// broker call at all and returns nil against a disconnected transport, so
+// "the activation callback returned" proves nothing about connectivity. Waiting
+// for a convergence that may never come would leave exactly that owner holding
+// the partition forever. So the health of the source decides only WHICH state
+// the term starts in: connected is converged, disconnected starts the outage
+// clock here, at the moment serving was due.
+func (m *Manager) markActivated(ctx context.Context) {
+	if m.session.Health(ctx).Connected {
+		m.markConverged()
+		return
+	}
+	m.serving.Store(true)
+	m.markNonConverged()
+}
+
+// beginBrokerPathTerm clears the per-term broker-path state at the START of a
+// lease term, before its renewal loop runs.
+//
+// The outage clock describes ONE term's session. A term that inherited an armed
+// timestamp from the previous one would find itself due on its very first renew
+// tick — which fires while it is still connecting and reconciling — and step
+// down on evidence about a session that no longer exists; the two loops would
+// then trade the lease forever without either serving. The serving gate is
+// per-term for the same reason: this term has not reached its activation yet, so
+// a broker path that is down before then is activation, not an outage, and is
+// bounded by the activation timeout instead.
+func (m *Manager) beginBrokerPathTerm() {
+	m.serving.Store(false)
 	m.mu.Lock()
 	m.notConvergedSince = time.Time{}
 	m.mu.Unlock()
 }
 
 // markNonConverged starts the CLUSTER-2 broker-health step-down clock on the
-// FIRST non-converged event after convergence, but only once this owner has been
-// converged at least once (connectedOnce) — pre-first-connect activation is not a
-// broker-path OUTAGE and is bounded separately by the activation timeout. It is
-// idempotent: a run of disconnect/reconnecting/error events keeps the earliest
-// timestamp so the elapsed non-converged time is measured from the outage start.
+// FIRST non-converged event after this term was due to be serving — before then
+// (m.serving false) a broker path that is down is activation, not an OUTAGE, and
+// is bounded separately by the activation timeout. It is idempotent: a run of
+// disconnect/reconnecting/error events keeps the earliest timestamp so the
+// elapsed non-converged time is measured from the outage start.
 func (m *Manager) markNonConverged() {
-	if m.brokerHealthStepDown <= 0 || !m.connectedOnce.Load() {
+	if m.brokerHealthStepDown <= 0 || !m.serving.Load() {
 		return
 	}
 	m.mu.Lock()

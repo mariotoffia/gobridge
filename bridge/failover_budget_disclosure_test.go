@@ -62,3 +62,43 @@ func TestBuilderPlan_UndeclaredFailoverSLOUnknownTimingDisclosesUnknown(t *testi
 		t.Fatalf("expected unknown-budget disclosure, got: %s", buf.String())
 	}
 }
+
+// A disclosure that names only the owner-death budget invites the same wrong
+// assumption the disclosure exists to prevent — that the number covers every
+// way this session can fail over. It must say where broker-path failover
+// stands, and give its budget when it is on.
+func TestBuilderPlan_DisclosureNamesTheBrokerPathDecision(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		stepDown   string
+		wantInLog  string
+		wantBudget string
+	}{
+		{name: "undeclared", stepDown: "", wantInLog: "broker_path_failover=undeclared"},
+		{name: "explicitly off", stepDown: "off", wantInLog: "broker_path_failover=off"},
+		{name: "enabled", stepDown: "7s", wantInLog: "broker_path_failover=7s", wantBudget: "broker_path_failover_budget=34s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, nil))
+			cfg := failoverBudgetBlueprint("", failoverTimingPluginConfig{
+				timing: ports.TransportFailoverTiming{PostTakeoverActivation: 5 * time.Second},
+			})
+			cfg.Routes[0].Session.BrokerHealthStepDown = tc.stepDown
+
+			plan, err := NewBuilder(cfg, WithLogger(logger)).Plan(t.Context())
+			if err != nil {
+				t.Fatalf("undeclared SLO must not fail the build: %v", err)
+			}
+			plan.Close()
+
+			logged := buf.String()
+			if !strings.Contains(logged, tc.wantInLog) {
+				t.Fatalf("disclosure must state the broker-path decision (%s), got: %s", tc.wantInLog, logged)
+			}
+			if tc.wantBudget != "" && !strings.Contains(logged, tc.wantBudget) {
+				t.Fatalf("disclosure must carry the broker-path budget (%s), got: %s", tc.wantBudget, logged)
+			}
+		})
+	}
+}

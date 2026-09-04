@@ -76,3 +76,24 @@ func (c Config) EffectiveFailoverLeaseTiming() (ttl, acquirePoll, renewCallTimeo
 	t := c.resolveLeaseTiming()
 	return t.LeaseTTL, t.AcquirePollInterval, t.RenewCallTimeout
 }
+
+// EffectiveStepDownTiming resolves the two bounds a VOLUNTARY step-down runs
+// under, exactly as Manager construction resolves them: the settlement grace
+// the owner holds the lease for after closing its source, and the ceiling that
+// bounds both the source close and the lease release around it. A budget that
+// re-derived either would judge a configuration by values the manager does not
+// run.
+func (c Config) EffectiveStepDownTiming() (grace, releaseBound time.Duration) {
+	grace = c.StepDownGrace
+	if grace <= 0 {
+		// Zero means "unset, take the default" — never "no grace". The manager
+		// substitutes it and really does hold the lease that long, so a budget
+		// that read the raw zero would under-count the hand-off by the whole
+		// default grace.
+		grace = DefaultConfig(c.SessionID, c.Exclusive).StepDownGrace
+	}
+	if ttl := c.EffectiveLeaseTTL(); grace >= ttl {
+		grace = ttl / 2
+	}
+	return grace, boundedReleaseTimeout(grace)
+}
