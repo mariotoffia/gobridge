@@ -2,6 +2,8 @@ github.com/Masterminds/semver/v3 v3.5.0 h1:kQceYJfbupGfZOKZQg0kou0DgAKhzDg2NZPAw
 github.com/Masterminds/semver/v3 v3.5.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lprf4nC11bSS5beM=
 github.com/aws/aws-cdk-go/awscdk/v2 v2.264.0 h1:PkPCYtlVK4MbgIFgsRwW+PFxgii6PKqsel5lEoOju1U=
 github.com/aws/aws-cdk-go/awscdk/v2 v2.264.0/go.mod h1:ZFSi9sbBukhtJExKN2txRWVdggLMwSMjHTO0DQRPjaw=
+github.com/aws/aws-lambda-go v1.54.0 h1:EGYpdyRGF88xszqlGcBewz811mJeRS+maNlLZXFheII=
+github.com/aws/aws-lambda-go v1.54.0/go.mod h1:dpMpZgvWx5vuQJfBt0zqBha60q7Dd7RfgJv23DymV8A=
 github.com/aws/aws-sdk-go-v2 v1.45.1 h1:iIoG3NaLhV6UZpPXyPXlDj2I9oS8tV/nMcMnITCC6Ks=
 github.com/aws/aws-sdk-go-v2 v1.45.1/go.mod h1:bttEH6JqnUL8LepvDVfdrds/fZ5bCIxzpe3abyUrhDU=
 github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.20 h1:GPRlPwz40I2B2VrBEASOA3Bi77NyeqejNLkifosX0rs=
@@ -38,6 +40,8 @@ github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.12.13 h1:nAm
 github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.12.13/go.mod h1:wZqx4Cfe2bX1QRclO6kCX1ZX1fJf2qLmJ22bjbwm2iY=
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.1 h1:RmmWQPREQdk9U+PfqeHW3MqZaBaNK7TpV9W3RY+b+7g=
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.1/go.mod h1:0A3W4F+68ZnNk5XcNL/e9HFMwnP8RlEicFfy6eOEDyw=
+github.com/aws/aws-sdk-go-v2/service/lambda v1.106.0 h1:6XlUwcy8dID09A4y3PUilZDPEGZQo7wJFChPN2zhrHc=
+github.com/aws/aws-sdk-go-v2/service/lambda v1.106.0/go.mod h1:xFO5LMHsvX9T3B9lLauhTYYyYSCoCn46gxiqpVfK+Sw=
 github.com/aws/aws-sdk-go-v2/service/signin v1.5.5 h1:0VTFBfOgPJrUSpGMgzoi8qLcXF5dbmiBuxpo14eBWUw=
 github.com/aws/aws-sdk-go-v2/service/signin v1.5.5/go.mod h1:sNZYlBxoohYMBYl47BO/bFtAM6I8HSsPa1qwwPPRGoQ=
 github.com/aws/aws-sdk-go-v2/service/sns v1.45.0 h1:6CE6OJphrV+SW+s4sUGuZXWbhBhrGGd5vf6C6zk4ZGA=

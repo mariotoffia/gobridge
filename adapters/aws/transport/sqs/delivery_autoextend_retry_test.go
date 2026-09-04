@@ -15,6 +15,18 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
+// autoExtendTicksHandled counts the auto-extend ticks the loop has carried all
+// the way through, either outcome.
+//
+// It is a synchronisation point, not an assertion. Both branches emit their
+// counter AFTER reading the clock for the window check, so a test that has seen
+// tick i counted knows the loop is no longer reading the instant it is about to
+// change — which a wait on the mock call cannot know, because the call is made
+// before that read.
+func autoExtendTicksHandled(rec *ports.RecordingExporter) int {
+	return len(rec.FindEntries(MetricSQSAutoExtends)) + len(rec.FindEntries(MetricSQSAutoExtendFailures))
+}
+
 // TestAutoExtendRetriesTransientThenSucceedsS15 verifies the auto-extend loop
 // survives one transient ChangeMessageVisibility error and continues after a
 // successful extend (consecutive failure counter resets).
@@ -34,7 +46,15 @@ func TestAutoExtendRetriesTransientThenSucceedsS15(t *testing.T) {
 	ctx := context.Background()
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e1", Payload: []byte("x"), CreatedAt: time.Now()})
 	fake := clocktest.New()
-	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-1", 2, true, nil, nil, nil, fake)
+	// rec is the ORDERING BARRIER between the Advance calls, not a metrics
+	// assertion — the same one the deadline-lapse test below relies on, and
+	// for the same reason: the CMV call is recorded BEFORE the loop reads
+	// clk.Now() for its window check, so advancing on the call alone can move
+	// the clock to t=2s under an iteration that fired at t=1s. At this
+	// visibility the deadline sits exactly one tick ahead, so the loop would
+	// read a lapsed window and cancel processing on its first failure.
+	rec := &ports.RecordingExporter{}
+	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-1", 2, true, nil, nil, rec, fake)
 	defer func() { d.stopAutoExtend(); d.cleanupContext() }()
 
 	// The budget is wall-clock while the tick itself is fake-clock: Advance
@@ -47,14 +67,14 @@ func TestAutoExtendRetriesTransientThenSucceedsS15(t *testing.T) {
 
 	// SYNC: advance to trigger first tick (will fail with "transient").
 	fake.Advance(1 * time.Second)
-	wait.Until(t, 2*time.Second, "first tick", func() bool {
-		return callCount.Load() >= 1
+	wait.Until(t, 2*time.Second, "first tick fully handled", func() bool {
+		return autoExtendTicksHandled(rec) >= 1
 	})
 
 	// SYNC: advance to trigger second tick (will succeed).
 	fake.Advance(1 * time.Second)
-	wait.Until(t, 2*time.Second, "second tick", func() bool {
-		return callCount.Load() >= 2
+	wait.Until(t, 2*time.Second, "second tick fully handled", func() bool {
+		return autoExtendTicksHandled(rec) >= 2
 	})
 
 	mock.mu.Lock()
@@ -68,6 +88,11 @@ func TestAutoExtendRetriesTransientThenSucceedsS15(t *testing.T) {
 // TestAutoExtendInterleavedFailSuccessS15 verifies that the consecutive failure
 // counter resets after each success, allowing the loop to survive more total
 // failures than autoExtendMaxFailures as long as they are non-consecutive.
+//
+// It drives twice the ceiling in failures, which is what makes the reset the
+// subject. A loop that never reset the counter would still handle the first few
+// ticks — its third NON-consecutive failure is where it would give up — so a
+// shorter run cannot tell the two apart.
 func TestAutoExtendInterleavedFailSuccessS15(t *testing.T) {
 	t.Parallel()
 
@@ -84,24 +109,34 @@ func TestAutoExtendInterleavedFailSuccessS15(t *testing.T) {
 	ctx := context.Background()
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "e3", Payload: []byte("z"), CreatedAt: time.Now()})
 	fake := clocktest.New()
-	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-3", 2, true, nil, nil, nil, fake)
+	// rec is the ORDERING BARRIER between iterations. See the note on the
+	// transient-retry test above: waiting on the CMV call alone lets the next
+	// Advance move the clock under an iteration that has not yet read it, and
+	// at this visibility one tick of overshoot is the whole window — the loop
+	// then cancels processing on its first failure and never ticks again.
+	rec := &ports.RecordingExporter{}
+	d := newDelivery(ctx, env, mock, "https://test-queue", "receipt-3", 2, true, nil, nil, rec, fake)
 	defer func() { d.stopAutoExtend(); d.cleanupContext() }()
 
 	wait.Until(t, 2*time.Second, "ticker registered", func() bool {
 		return fake.TickerCount() >= 1
 	})
 
-	// SYNC: advance multiple ticks to get > autoExtendMaxFailures total calls.
-	for i := 1; i <= autoExtendMaxFailures+2; i++ {
+	// SYNC: advance far enough that a loop without the reset would have hit the
+	// ceiling and returned, so its missing ticks fail the wait below.
+	const ticks = autoExtendMaxFailures*2 + 2
+	for i := 1; i <= ticks; i++ {
 		fake.Advance(1 * time.Second)
-		wait.Until(t, 2*time.Second, "tick fired", func() bool {
-			return callCount.Load() >= int32(i)
+		wait.Until(t, 2*time.Second, "tick handled (a loop that never reset its failure counter gives up here)", func() bool {
+			return autoExtendTicksHandled(rec) >= i
 		})
 	}
 
 	total := callCount.Load()
-	if total <= int32(autoExtendMaxFailures) {
-		t.Fatalf("expected more than %d total calls (interleaved), got %d", autoExtendMaxFailures, total)
+	if total < int32(ticks) {
+		t.Fatalf("the loop handled %d of %d interleaved ticks: it gave up while its failures were "+
+			"still non-consecutive, so the success reset of the consecutive-failure counter is gone",
+			total, ticks)
 	}
 }
 

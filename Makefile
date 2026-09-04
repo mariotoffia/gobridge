@@ -209,7 +209,7 @@ test: audit-timings audit-test-timings ## Run unit tests (no Docker, integration
 	# change made while working either path can break the other. Nothing else in
 	# any gate compiles this tag, and an edit that only breaks it would otherwise
 	# reach a branch green.
-	@cd deployment/aws-filebased-config/cdk && go vet -tags=integration_local ./integration
+	@cd deployment/aws-filebased-config/cdk && go vet -tags=integration_local ./integration/...
 	@echo "Running unit tests across all modules..."
 	@echo "Report will be saved to: reports/test-unit.log"
 	@bash -c 'set -o pipefail; { rc=0; for modfile in $$(find . -name go.mod -not -path "./.worktrees/*" -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \

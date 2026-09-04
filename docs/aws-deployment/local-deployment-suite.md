@@ -82,7 +82,7 @@ locally, the measured reason.
 | D2 | Single task, MQTT↔SQS; the MQTT ingress on a durable session holding the source, with its SQLite managed-subscription store on the mount | `TestLocal_MQTTSubjectAndAddressMapping` |
 | D3 | Control task read-write + worker tasks read-only | `TestLocal_ClusterSharedConfigAndScaling` |
 | D4 | DynamoDB HA, static member slots and leases | `TestLocal_StaticSlotCohort` |
-| D5 | Go producer/consumer Lambdas either side of the bridge | **not covered locally** — the probe that would qualify it (a `provided.al2023` function actually invoked through an SQS event source mapping) has not been run, so the topology stays on the credentialed suite |
+| D5 | Go producer/consumer Lambdas either side of the bridge | `TestLocal_LambdaProducerAndConsumer` |
 | D6 | Alarms and SNS | `TestLocal_DeadLetterAndAlarms` — the alarms are deployed, their queries replayed against real volume, and the topic's subscription proved; only the alarm→action step is not observable here (see *Emulation gaps*) |
 | D7 | Load balancer attachment | synth only — see *Emulation gaps* |
 | D8 | Config rollout over a static-slot cohort | `TestLocal_StaticSlotCohort` |
@@ -94,6 +94,8 @@ locally, the measured reason.
 | Data plane | SQS↔SQS round trip, batch of ten without duplicates | `TestLocal_SQSDataPlane` |
 | Data plane | MQTT→SQS and SQS→MQTT with `Subject` preserved and the binding's `Address` honoured | `TestLocal_MQTTSubjectAndAddressMapping` |
 | Delivery mode | an MQTT ingress on a durable session runs `direct_hold` — no outbox, no lease, no outbox partition — and its SQLite managed-subscription store lives on the deployed mount | `TestLocal_MQTTSubjectAndAddressMapping` — the deployed task reports the mode and a lease-less, connected ingress session, messages cross the route, and the store file is on the mount |
+| Data plane | a Go producer Lambda, the bridge and a Go consumer Lambda carry messages end to end | `TestLocal_LambdaProducerAndConsumer` — the producer is invoked directly, the consumer is never invoked and runs only from its event source mapping, and the results queue it writes is outside the bridge's queue registry so nothing else in the stack can reach it |
+| Deployment shape | a `provided.al2023` Go function deploys from a CDK file asset and is driven by an `AWS::Lambda::EventSourceMapping` | `TestLocal_LambdaProducerAndConsumer` — the mapping is asserted to read the bridge's outbound queue and be `Enabled`, and the producer's deployed environment is asserted to name the bridge's INBOUND queue, which is what makes a message on the results queue proof that it crossed the bridge rather than skipped it |
 | Deployment shape | outputs well-formed, health-check path parity, task role assumable and scoped | `TestLocal_DeploymentShape` |
 | Deployment shape | destroy leaves nothing | `TestLocal_DestroyLeavesNothing` |
 | Deployment shape | control-written config visible to a worker (the shared-storage proof) | `TestLocal_ClusterSharedConfigAndScaling` |
@@ -129,7 +131,7 @@ Each of these was measured, not assumed.
 ## Not yet stood up
 
 Three shapes an operator can choose today that no deployed run had exercised.
-Two are closed; the third is open work, not a gap in the emulator.
+All three are closed.
 
 - [x] **SQLite stores on a deployed task.** Stood up by
       `TestLocal_MQTTSubjectAndAddressMapping`: the MQTT ingress session is
@@ -155,30 +157,65 @@ Two are closed; the third is open work, not a gap in the emulator.
       two different things — and for a coordinated cohort, two writers of the
       candidate identity a rollout has to agree on. The layered pattern stays a
       programmatic-API one.
-- [ ] **Lambda either side of the bridge.** The one shape that has never been
-      stood up anywhere but a credentialed account. Three questions the ECS
-      topologies never raised have to be answered before a test can be written:
-      how a Go function's code is packaged so the emulator accepts it, how its
-      event source mapping is asserted, and what a closed
-      producer→bridge→consumer loop asserts on. The probe that qualifies the row
-      is one measurement — a `provided.al2023` function actually invoked through
-      an SQS event source mapping, with the emulator's hostname resolving from
-      inside the launched container. The emulator is not pinned — the helper
-      pulls `floci/floci:latest` before every run — so the answer belongs to the
-      image the run was on, and a later break is news about the emulator rather
-      than about the topology.
+- [x] **Lambda either side of the bridge.** Stood up by
+      `TestLocal_LambdaProducerAndConsumer`: a Go producer function is invoked
+      directly and puts its payload on the bridge's inbound queue, the deployed
+      bridge carries it to its outbound queue, and a Go consumer function the
+      test never invokes — driven only by an event source mapping on that
+      queue — puts what it received on a results queue nothing else in the
+      stack can write. The three questions the ECS topologies never raised are
+      answered by measurement rather than by the emulator's documentation.
 
-      What the emulator's own documentation already claims, unverified here:
-      `CreateEventSourceMapping` against a queue ARN drives its poller, which
-      builds the standard `Records[]` event, invokes the function, deletes on
-      success and returns the batch with visibility reset on failure, honouring
-      `BatchSize`, `ReportBatchItemFailures` and FIFO attributes — but storing
-      `ScalingConfig` without enforcing it, so no assertion may rest on
-      concurrency. In the other direction a launched function container has
-      `AWS_ENDPOINT_URL` and credentials injected, so a plain SDK `SendMessage`
-      inside the function reaches the emulator with nothing plumbed by us. Treat
-      all of it as a starting point, not evidence: every other row of this page
-      is admitted on a measurement, and this one is not measured yet.
+      **How the code is packaged.** One statically linked binary
+      (`CGO_ENABLED=0`) named `bootstrap`, mode `0755`, at the root of the
+      asset directory, on the `provided.al2023` runtime with `bootstrap` as the
+      handler. CDK stages that directory as an S3 file asset — the same
+      mechanism the deploy already uses for CDK's own custom-resource handlers
+      — and CloudFormation creates `AWS::Lambda::Function` from it. Both ends
+      run the same binary and differ only by environment, so CDK publishes one
+      asset for the pair. The architecture is read from the **Docker daemon**,
+      not from the test process: the function runs in a container the emulator
+      launches, and a binary built for the wrong one is answered by an `exec
+      format error` from inside a container nobody is watching.
+
+      **How the mapping is asserted.** Structurally and behaviourally, because
+      neither alone is enough. `ListEventSourceMappings` must return exactly
+      one mapping for the consumer, reading the bridge's outbound queue and
+      `Enabled`, and none at all for the producer — and the consumer is never
+      invoked by the test, so the mapping is the only thing that can run it.
+      Nothing rests on concurrency: the emulator stores `ScalingConfig` without
+      enforcing it, so the mapping is declared with a batch size of one and
+      every assertion is about what arrived rather than about how the poller
+      grouped it.
+
+      **What the closed loop asserts on.** The identity of the messages,
+      end to end, by TID, with no duplicates — plus the two facts that make
+      that mean something. A producer writing straight to the outbound queue
+      would fill the results queue just the same, so the producer's DEPLOYED
+      environment is asserted to name the bridge's inbound queue while the
+      consumer's mapping is asserted to read its outbound one. Mutation-checked
+      both ways: with the mapping disabled nothing reaches the results queue,
+      and with the producer pointed at the outbound queue the loop assertion
+      still passes and only the producer-target assertion catches it.
+
+      **What the run measured about the emulator.** A `provided.al2023` Go
+      binary is accepted both through `CreateFunction` with an inline zip and
+      through CloudFormation with S3-hosted code, reaching `Active` without a
+      wait. The poller deletes on success — after an invocation the source
+      queue reports zero visible and zero in flight, and a further 20-second
+      drain returns nothing. A synchronous `Invoke` returns the function's
+      result with no `FunctionError`. And the emulator's hostname resolves from
+      inside a launched container: `GetQueueUrl` by name followed by
+      `SendMessage` succeeds against `AWS_ENDPOINT_URL` alone, both when the
+      emulator injects it and when the deployment sets it. That last point is
+      why nothing hands a function a queue URL — every URL the emulator returns
+      names its gateway host, which a container on the deployment network does
+      not necessarily reach under that name, so both functions resolve their
+      target by name exactly as the deployed bridge's own transports do.
+
+      The emulator is not pinned — the helper pulls `floci/floci:latest` before
+      every run — so these answers belong to the image the run was on, and a
+      later break is news about the emulator rather than about the topology.
 
 ## Where the code lives
 
@@ -186,6 +223,9 @@ Two are closed; the third is open work, not a gap in the emulator.
   tests. One harness serves both backends: `integration_aws` deploys to a
   credentialed sandbox, `integration_local` deploys the same stack through
   `cdklocal`, and the local backend is one branch in each shared function.
+- `deployment/aws-filebased-config/cdk/integration/lambdafn/` — the Go function
+  both ends of the Lambda topology run. One binary; the deployment's environment
+  decides which end an instance is and which queue it forwards to.
 - `testutil/flocilocal` — the emulator container helper, and why DynamoDB and
   the brokers are deliberately not served from it.
 

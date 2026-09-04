@@ -53,6 +53,33 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   mode, the lease-less session, the messages crossing and the store file on the
   mount. That also stands up the matrix's SQLite-on-a-deployed-task row.
 
+### Added — Lambda either side of the bridge, on the local deployment suite
+
+- **`TestLocal_LambdaProducerAndConsumer` closes the last topology of the local
+  deployment matrix.** A Go producer function is invoked directly and puts its
+  payload on the bridge's inbound queue, the deployed bridge carries it to its
+  outbound queue, and a Go consumer function the test never invokes — driven
+  only by an event source mapping on that queue — puts what it received on a
+  results queue outside the bridge's own queue registry. The shape had never
+  been stood up anywhere but a credentialed account, and it needed three
+  answers before a test could be written: how a Go function's code is packaged
+  so the emulator accepts it, how its event source mapping is asserted, and
+  what a closed producer→bridge→consumer loop asserts on. All three are now
+  measured and written down in
+  [the local deployment suite](docs/aws-deployment/local-deployment-suite.md#not-yet-stood-up).
+- **Packaging is stock CDK, not an emulator workaround.** One statically linked
+  binary named `bootstrap` at the root of an asset directory, on the
+  `provided.al2023` runtime, staged as an S3 file asset — the same mechanism
+  the deploy already uses for CDK's own custom-resource handlers. The
+  architecture comes from the Docker daemon rather than the test process,
+  because the function runs in a container the emulator launches and a binary
+  built for the wrong one fails with an unreadable `exec format error`.
+- **Neither function is handed a queue URL.** Every URL the emulator returns
+  names its gateway host, which a launched container does not necessarily reach
+  under that name, so both resolve their target by name through the endpoint
+  the SDK chain already gives them — the rule the deployed bridge's own
+  transports follow.
+
 ### Added — a durable session's baseline, seeded by the task that owns the mount
 
 - **`managed_subscription_baselines` in the bootstrap document, stamped from
