@@ -431,9 +431,7 @@ func newMQTTCollectorWithBroker(
 	go func() {
 		defer c.wg.Done()
 		err := recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
-			c.mu.Lock()
-			c.messages = append(c.messages, del.Envelope())
-			c.mu.Unlock()
+			c.record(del.Envelope())
 			return del.Ack(ctx)
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {
@@ -607,9 +605,7 @@ func newPersistentCollectorWithBroker(
 	go func() {
 		defer c.wg.Done()
 		err := recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
-			c.mu.Lock()
-			c.messages = append(c.messages, del.Envelope())
-			c.mu.Unlock()
+			c.record(del.Envelope())
 			return del.Ack(ctx)
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {

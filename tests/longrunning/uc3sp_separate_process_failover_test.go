@@ -241,15 +241,29 @@ func runSeparateProcessFailover(t *testing.T, profile failoverProfile) {
 		profile.name, warmDuration, profile.slo)
 
 	// At-least-once across the failover: every message eventually arrives.
-	lrWaitFor(t, 150*time.Second, fmt.Sprintf("%d messages received", uc3spMsgCount),
-		func() bool { return collector.count() >= uc3spMsgCount })
-	msgs := collector.getMessages()
-	uniqueIDs := make(map[string]struct{}, len(msgs))
-	for _, m := range msgs {
-		uniqueIDs[string(m.Payload())] = struct{}{}
+	//
+	// The wait counts DISTINCT payloads, which is what the assertion below
+	// checks. Waiting on the raw delivery count instead would return as soon as
+	// uc3spMsgCount deliveries had landed — and a failover produces duplicates,
+	// so some of those deliveries are repeats of a payload already seen while
+	// another has not arrived yet. That is a correct at-least-once outcome the
+	// test would then read as a lost message.
+	distinctPayloads := func() int {
+		unique := make(map[string]struct{}, uc3spMsgCount)
+		for _, m := range collector.getMessages() {
+			unique[string(m.Payload())] = struct{}{}
+		}
+		return len(unique)
 	}
-	require.GreaterOrEqualf(t, len(uniqueIDs), uc3spMsgCount,
-		"expected all %d distinct payloads delivered at-least-once, got %d unique", uc3spMsgCount, len(uniqueIDs))
+	lrWaitFor(t, 150*time.Second, fmt.Sprintf("%d distinct payloads received", uc3spMsgCount),
+		func() bool { return distinctPayloads() >= uc3spMsgCount })
+
+	delivered := len(collector.getMessages())
+	unique := distinctPayloads()
+	t.Logf("%s: %d published, %d unique delivered, %d total deliveries (%d duplicates across the failover)",
+		profile.name, uc3spMsgCount, unique, delivered, delivered-unique)
+	require.GreaterOrEqualf(t, unique, uc3spMsgCount,
+		"expected all %d distinct payloads delivered at-least-once, got %d unique", uc3spMsgCount, unique)
 }
 
 // requireLeaseOwner polls the authoritative DynamoDB lease row until the owner

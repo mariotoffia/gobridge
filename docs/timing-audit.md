@@ -28,6 +28,15 @@ irreducible set of `time.Sleep` calls in tests, each annotated with
 its classification comment (e.g. `// ESSENTIAL: protocol cadence`,
 `// OTHER: real-time component of clocktest.Fake`).
 
+An entry matches on the FILE and the CODE, not on the line number it
+carries. The line numbers are provenance, not part of the key: an
+allowed sleep that moves down its file because something above it was
+edited is the same allowed sleep, and requiring a renumber there
+failed the audit on files nobody had touched. Changing the sleep
+itself, or moving it to another file, still needs a new entry — the
+exemption is for that call, not for a path.
+`scripts/audit-timing-filter.awk` implements the match.
+
 **Enforcement**: `make audit-timings` and `make audit-test-timings`
 run on every `make test` / `make check` / `make test-integration` and
 fail the build on new unauthorized entries. See the header comments

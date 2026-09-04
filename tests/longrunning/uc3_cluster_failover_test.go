@@ -237,7 +237,13 @@ func TestUC3ClusterFailover(t *testing.T) {
 	require.LessOrEqualf(t, coldDuration, uc3FailoverSLO,
 		"cold failover to ServiceLevelFull took %s, exceeding the %s objective", coldDuration, uc3FailoverSLO)
 
-	lrWaitFor(t, 90*time.Second, "2000 messages received", func() bool { return collector.count() >= uc3MsgCount })
+	// Wait on the quantity the assertion below checks. Waiting on the raw
+	// delivery count would return as soon as N deliveries had landed, and a
+	// redelivery makes one of those a repeat of a message already seen while
+	// another has not arrived — a correct at-least-once outcome the assertion
+	// would then read as a lost message.
+	lrWaitFor(t, 90*time.Second, "2000 distinct messages received",
+		func() bool { return countUnique(collector) >= uc3MsgCount })
 	msgs := collector.getMessages()
 	require.GreaterOrEqual(t, len(msgs), uc3MsgCount)
 	uniqueIDs := make(map[string]int, len(msgs))

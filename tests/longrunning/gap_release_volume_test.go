@@ -16,7 +16,6 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
-	sessioncfg "github.com/mariotoffia/gobridge/runtime/session"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
 
@@ -36,13 +35,10 @@ import (
 // cycle of fill, drain and acknowledge — including across a broker restart in
 // the middle of the stream.
 //
-// It runs on the PUBLISHED lease profile (session.HAConfig), not on the
-// compressed timing the failover proofs use. That is not a convenience: the
-// compressed profile bounds a lease-renew call at one second, which sustained
-// outbox write load against the store makes it miss, so the owner steps down
-// mid-stream and cancels every delivery in flight. Conservation under load has
-// to be measured on a profile tuned for load, which is also the profile that
-// ships.
+// It runs on the load-surviving lease profile rather than the compressed timing
+// the failover proofs use — see lrLoadSurvivingSessionConfig for why compressed
+// timing cannot carry sustained store load. That profile is also the one a
+// deployment under this load would actually run.
 //
 // It asserts two different things, and the second is what makes the first
 // meaningful:
@@ -105,7 +101,7 @@ func TestGAP_ReleaseVolumeConservation(t *testing.T) {
 		connectivity.SessionExclusive, 65535, 5)
 	sender := setupMQTTSender(t, bridgeSession)
 	receiver := newSQSReceiver(t, sqsInURL)
-	sessionConfig := sessioncfg.HAConfig(sessionID, true)
+	sessionConfig := lrLoadSurvivingSessionConfig(sessionID)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("release-volume-bridge"),

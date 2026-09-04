@@ -123,8 +123,13 @@ func TestRES005_AutoExtendFailureDuplicates(t *testing.T) {
 	gobridgesync(t, 10*time.Second, rt)
 
 	sendBulkToSQS(t, sqsClient, sqsInURL, msgCount, nil)
-	lrWaitFor(t, 100*time.Second, fmt.Sprintf("collector >= %d", msgCount),
-		func() bool { return collector.count() >= msgCount })
+	// Wait on the quantity the assertion below checks. Waiting on the raw
+	// delivery count would return as soon as N deliveries had landed, and a
+	// redelivery makes one of those a repeat of a message already seen while
+	// another has not arrived — a correct at-least-once outcome the assertion
+	// would then read as a lost message.
+	lrWaitFor(t, 100*time.Second, fmt.Sprintf("unique >= %d", msgCount),
+		func() bool { return countUnique(collector) >= msgCount })
 
 	// Deterministic replacement for the old "sleep 15s and hope no more arrive":
 	// wait until the arrival count STOPS changing, then assert exactly-once.

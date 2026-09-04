@@ -69,8 +69,13 @@ func TestUC33_MaxInFlight1_Serial(t *testing.T) {
 
 	sendBulkToSQS(t, inClient, inQueueURL, msgCount, nil)
 
-	lrWaitFor(t, pollTimeout, fmt.Sprintf("collector >= %d", msgCount), func() bool {
-		return collector.count() >= msgCount
+	// Wait on the quantity the assertion below checks. Waiting on the raw
+	// delivery count would return as soon as N deliveries had landed, and a
+	// redelivery makes one of those a repeat of a message already seen while
+	// another has not arrived — a correct at-least-once outcome the assertion
+	// would then read as a lost message.
+	lrWaitFor(t, pollTimeout, fmt.Sprintf("unique >= %d", msgCount), func() bool {
+		return countUnique(collector) >= msgCount
 	})
 
 	gotMax := tracker.maxConcurrency()

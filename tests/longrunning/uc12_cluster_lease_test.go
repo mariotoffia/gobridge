@@ -28,6 +28,23 @@ type clusterInst struct {
 // TestUC12_RollingRestart_NoMessageLoss validates that rolling restarts
 // of 3 cluster instances do not lose messages. Instances are stopped and
 // replaced sequentially while 3,000 messages flow through SQS -> MQTT.
+// The rolling restart's gates wait for PROGRESS, not for a wall clock. What
+// UC12 proves is that no message is lost while instances are replaced; how fast
+// the pipeline runs is asserted by the throughput tests, not here. A stalled
+// pipeline still fails, and says how far it got.
+//
+// The stall window is DERIVED, not picked: it has to outlast the source's
+// redelivery cycle. If a visibility extension fails, the message is invisible
+// until lrSourceVisibilityTimeout elapses and SQS hands it back — that
+// redelivery IS the recovery. A window equal to the visibility timeout gives up
+// at the exact moment recovery is due, which is how a first attempt at this
+// reported "stalled at 3/1000" on a pipeline that was about to resume. Three
+// cycles leaves room for a second blip inside the first recovery.
+const (
+	uc12StallWindow = 3 * lrSourceVisibilityTimeout
+	uc12Ceiling     = 6 * time.Minute
+)
+
 func TestUC12_RollingRestart_NoMessageLoss(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
@@ -56,7 +73,12 @@ func TestUC12_RollingRestart_NoMessageLoss(t *testing.T) {
 	mkInst := func(label string) *clusterInst {
 		sid := mqttlocal.UniqueClientID(fmt.Sprintf("uc12-%s", label))
 		sess := newMQTTSession(t, sid, connectivity.SessionExclusive)
-		sc := lrSessionConfig(sessionID)
+		// Three instances competing while 3,000 messages drain through a shared
+		// outbox is sustained store load; the compressed profile's one-second
+		// renew-call bound does not survive it. The rolling restart here is
+		// GRACEFUL — each stop releases its lease — so nothing waits out a TTL
+		// and the longer profile costs this proof nothing.
+		sc := lrLoadSurvivingSessionConfig(sessionID)
 		rt := goruntime.New(
 			goruntime.WithInstanceID(fmt.Sprintf("uc12-%s", label)),
 			goruntime.WithLeaseStore(leaseStore),
@@ -81,15 +103,24 @@ func TestUC12_RollingRestart_NoMessageLoss(t *testing.T) {
 
 	sendBulkToSQS(t, sqsInClient, sqsInURL, msgCount, nil)
 
-	lrWaitFor(t, 60*time.Second, "~1000 received", func() bool { return collector.count() >= 1000 })
+	lrWaitForProgress(t, "before replacing A", collector.count, 1000,
+		uc12StallWindow, uc12Ceiling)
 	stop(a)
 	a = mkInst("A-prime")
 
-	lrWaitFor(t, 60*time.Second, "~2000 received", func() bool { return collector.count() >= 2000 })
+	lrWaitForProgress(t, "before replacing B", collector.count, 2000,
+		uc12StallWindow, uc12Ceiling)
 	stop(b)
 	b = mkInst("B-prime")
 
-	lrWaitFor(t, 90*time.Second, "all messages", func() bool { return collector.count() >= msgCount })
+	// Wait on the quantity the assertion below checks. Waiting on the raw
+	// delivery count would return as soon as N deliveries had landed, and a
+	// redelivery makes one of those a repeat of a message already seen while
+	// another has not arrived — a correct at-least-once outcome the assertion
+	// would then read as a lost message.
+	lrWaitForProgress(t, "all distinct messages",
+		func() int { return countUnique(collector) }, msgCount,
+		uc12StallWindow, uc12Ceiling)
 	msgs := collector.getMessages()
 	require.GreaterOrEqual(t, len(msgs), msgCount)
 	uniq := make(map[string]bool, len(msgs))
@@ -162,7 +193,13 @@ func TestUC13_SplitBrain_Recovery(t *testing.T) {
 	t.Logf("UC13: %d msgs, simulating A crash", collector.count())
 	cancelA() // Simulate crash -- no graceful Stop.
 
-	lrWaitFor(t, 120*time.Second, "all messages", func() bool { return collector.count() >= msgCount })
+	// Wait on the quantity the assertion below checks. Waiting on the raw
+	// delivery count would return as soon as N deliveries had landed, and a
+	// redelivery makes one of those a repeat of a message already seen while
+	// another has not arrived — a correct at-least-once outcome the assertion
+	// would then read as a lost message.
+	lrWaitFor(t, 120*time.Second, "all distinct messages",
+		func() bool { return countUnique(collector) >= msgCount })
 	msgs := collector.getMessages()
 	uniq := make(map[string]bool, len(msgs))
 	for _, m := range msgs {

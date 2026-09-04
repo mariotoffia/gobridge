@@ -21,6 +21,7 @@ import (
 	dboutbox "github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox"
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
@@ -149,12 +150,21 @@ func isInfo() bool { return testLogLevel() <= slog.LevelInfo }
 // SQS helpers
 // ---------------------------------------------------------------------------
 
+// lrSourceVisibilityTimeout is the visibility timeout every source queue in
+// this suite is created with. It is not just a queue setting: it is the
+// RECOVERY INTERVAL. When a visibility extension fails — the store blinked, the
+// emulator stopped answering — the message stays invisible until this elapses
+// and SQS redelivers it. Any test that waits for progress must therefore
+// tolerate a gap at least this long, or it gives up exactly when the recovery
+// it is testing would have happened.
+const lrSourceVisibilityTimeout = 30 * time.Second
+
 func setupSQSQueue(t *testing.T, prefix string) (string, *awssqs.Client) {
 	t.Helper()
 	client := newSQSClient(t)
 	name := uniqueQueueName(prefix)
 	queueURL := createSQSQueueWithAttrs(t, client, name, map[string]string{
-		"VisibilityTimeout": "30",
+		"VisibilityTimeout": fmt.Sprintf("%d", int(lrSourceVisibilityTimeout.Seconds())),
 	})
 	return queueURL, client
 }
@@ -225,12 +235,58 @@ func setupMQTTSender(t *testing.T, sess *paho.Session) *paho.Sender {
 type mqttCollector struct {
 	mu       sync.Mutex
 	messages []*messaging.Envelope
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	// received counts every delivery, including those a counting collector
+	// does not retain, so len(messages) is not the count.
+	received int
+	// countOnly drops the envelope after counting it. The zero value RETAINS,
+	// deliberately: a collector built by a struct literal somewhere else in the
+	// suite must keep the behaviour it had before this field existed.
+	countOnly bool
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 }
 
+// record accounts for one delivery and returns the running total. It is the
+// ONLY writer of received and messages: a handler that appended directly would
+// leave count() reading zero forever while getMessages() filled up, which is
+// exactly the drift this method exists to prevent.
+func (c *mqttCollector) record(env *messaging.Envelope) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.received++
+	if !c.countOnly {
+		c.messages = append(c.messages, env)
+	}
+	return c.received
+}
+
+// newMQTTCollector collects and RETAINS every delivered envelope, so a test can
+// assert on their contents through getMessages.
+//
+// Do not use it in a test that only counts deliveries and runs for a long time:
+// retaining hundreds of thousands of envelopes is hundreds of megabytes of the
+// TEST's own heap, which a leak detector then reads as the bridge leaking. Use
+// newCountingMQTTCollector there.
 func newMQTTCollector(
 	t *testing.T, topic string, clientIDPrefix string,
+) *mqttCollector {
+	t.Helper()
+	return newCollector(t, topic, clientIDPrefix, false)
+}
+
+// newCountingMQTTCollector counts deliveries without retaining them. It is what
+// a soak or volume test needs: the same subscription and settlement path, and a
+// heap that stays flat so a real leak in the bridge is visible against it.
+// getMessages returns nothing for a counting collector.
+func newCountingMQTTCollector(
+	t *testing.T, topic string, clientIDPrefix string,
+) *mqttCollector {
+	t.Helper()
+	return newCollector(t, topic, clientIDPrefix, true)
+}
+
+func newCollector(
+	t *testing.T, topic string, clientIDPrefix string, countOnly bool,
 ) *mqttCollector {
 	t.Helper()
 	url := mqttlocal.BrokerURL(t)
@@ -252,15 +308,12 @@ func newMQTTCollector(
 	recv := paho.NewReceiver("collector-"+clientID, sess)
 	recvCtx, recvCancel := context.WithCancel(ctx)
 
-	c := &mqttCollector{cancel: recvCancel}
+	c := &mqttCollector{cancel: recvCancel, countOnly: countOnly}
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
 		err := recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
-			c.mu.Lock()
-			c.messages = append(c.messages, del.Envelope())
-			n := len(c.messages)
-			c.mu.Unlock()
+			n := c.record(del.Envelope())
 			if n <= 5 || n%500 == 0 {
 				t.Logf("collector: received msg #%d id=%s", n, del.Envelope().ID())
 			}
@@ -288,7 +341,7 @@ func newMQTTCollector(
 func (c *mqttCollector) count() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return len(c.messages)
+	return c.received
 }
 
 func (c *mqttCollector) getMessages() []*messaging.Envelope {
@@ -369,6 +422,27 @@ func lrSessionConfig(sessionID string) session.Config {
 	return cfg
 }
 
+// lrLoadSurvivingSessionConfig is the lease profile for a test that puts the
+// STORE under sustained load — thousands of messages through a shared outbox,
+// or several instances competing at once.
+//
+// lrSessionConfig above compresses lease timing to make failover fast to
+// observe, and that compression bounds a single renew call at one second. Under
+// sustained outbox write load the store misses that bound; three consecutive
+// misses step the owner down and cancel every delivery in flight, so the test
+// fails for a reason that has nothing to do with what it is proving. The
+// published high-availability preset tolerates it (3 s per renew call, 45 s
+// TTL) and is what a deployment under that load would actually run.
+//
+// It costs nothing where handover is GRACEFUL: a released lease is acquired at
+// once, without waiting out the TTL. Use lrSessionConfig where the point IS the
+// wait — an ungraceful death with no release behind it.
+func lrLoadSurvivingSessionConfig(sessionID string) session.Config {
+	cfg := session.HAConfig(sessionID, true)
+	cfg.DrainStrategy = persistence.NewFixedPoll(200 * time.Millisecond)
+	return cfg
+}
+
 func lrThroughputSessionConfig(sessionID string) session.Config {
 	// Throughput tests isolate sustained delivery from compressed failover timing.
 	cfg := session.DefaultConfig(sessionID, true)
@@ -385,6 +459,45 @@ func lrWaitFor(
 ) {
 	t.Helper()
 	wait.Until(t, timeout, desc, fn)
+}
+
+// lrWaitForProgress waits until counter reaches want, and gives up only when
+// the count STOPS MOVING for stallWindow — not when a wall clock runs out.
+//
+// Use it for a progress gate: "wait until enough has flowed, then kill an
+// instance". A wall-clock deadline there is an undeclared throughput
+// assertion. On a slow machine it fails a test whose actual claim (no message
+// lost across a restart) is still perfectly provable, just later. Throughput is
+// asserted by the tests written for it — UC63, UC65, UC80, UC81 — not by a
+// barrier that only meant "get going before I continue".
+//
+// A stalled pipeline still fails, and fails FASTER and more usefully than the
+// wall clock did: the message says how far it got and that nothing moved for
+// stallWindow, instead of "condition not met in 60s" whether the count was
+// climbing steadily or frozen at zero.
+//
+// ceiling bounds a pipeline that creeps forever without ever stalling, so a
+// pathological run cannot hold the suite open indefinitely.
+func lrWaitForProgress(
+	t *testing.T, desc string, counter func() int, want int,
+	stallWindow, ceiling time.Duration,
+) {
+	t.Helper()
+	started := clock.System.Now()
+	for {
+		got := counter()
+		if got >= want {
+			return
+		}
+		if elapsed := clock.System.Since(started); elapsed > ceiling {
+			t.Fatalf("%s: reached %d/%d in %s; still progressing but past the %s ceiling",
+				desc, got, want, elapsed.Round(time.Second), ceiling)
+		}
+		if !wait.Poll(stallWindow, func() bool { return counter() > got }) {
+			t.Fatalf("%s: stalled at %d/%d — nothing delivered for %s",
+				desc, got, want, stallWindow)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

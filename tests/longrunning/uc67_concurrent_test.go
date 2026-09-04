@@ -79,7 +79,11 @@ func TestUC68_Soak(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	collector := newMQTTCollector(t, outTopic, "uc68-col")
+	// Counting, not retaining: an hour at 100 msgs/sec is ~360,000 envelopes,
+	// and a collector holding them all is hundreds of megabytes of the TEST's
+	// heap — which the leak assertion below would read as the bridge leaking.
+	// This test only ever counts.
+	collector := newCountingMQTTCollector(t, outTopic, "uc68-col")
 
 	sessID := mqttlocal.UniqueClientID("uc68-sess")
 	sess := setupMQTTSession(t, sessID, connectivity.SessionExclusive)
@@ -171,8 +175,10 @@ injectLoop:
 	if initialFloor < 50<<20 {
 		initialFloor = 50 << 20 // floor at 50MB to avoid false positives when initial heap is tiny
 	}
-	require.Less(t, heap.finalHeap(), 2*initialFloor,
-		"Final heap must be <= 2x initial (floored at 50MB)")
+	require.Lessf(t, heap.finalHeap(), 2*initialFloor,
+		"final heap %dMB must be <= 2x initial (floored at 50MB) after %d messages; "+
+			"the collector retains nothing, so this heap is the bridge's",
+		heap.finalHeap()/(1<<20), injected)
 
 	goroutineDiff := endGoroutines - startGoroutines
 	require.Less(t, goroutineDiff, 50,

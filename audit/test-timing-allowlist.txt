@@ -69,8 +69,8 @@
 ./tests/longrunning/gap_processor_lifecycle_test.go:183:		time.Sleep(1 * time.Second) // OTHER: pacing — allow probe to complete before next injection
 ./tests/longrunning/longrunning_helpers_test.go:633:// replacing the brittle time.Sleep(200ms) pattern after Reconcile.
 ./tests/longrunning/longrunning_perf_helpers_test.go:152:		time.Sleep(50 * time.Millisecond) // OTHER: let finalizers run between GC cycles
-./tests/longrunning/longrunning_test.go:469:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
-./tests/longrunning/uc12_cluster_lease_test.go:242:		time.Sleep(2 * time.Second) // SYNC: wait between role samples to verify lease stability
+./tests/longrunning/longrunning_test.go:522:			time.Sleep(200 * time.Millisecond) // OTHER: backoff on transient SQS error
+./tests/longrunning/uc12_cluster_lease_test.go:247:		time.Sleep(2 * time.Second) // SYNC: wait between role samples to verify lease stability
 ./tests/longrunning/uc27_failure_recovery_b_test.go:79:	time.Sleep(2 * time.Second) // NEGATIVE: verify no poison messages leaked to MQTT
 ./tests/longrunning/uc27_failure_recovery_test.go:307:	time.Sleep(2 * time.Second) // NEGATIVE: verify expired messages did not reach MQTT
 ./tests/longrunning/uc33_backpressure_test.go:384:			time.Sleep(time.Duration(gapSeconds) * time.Second) // OTHER: idle gap between bursts

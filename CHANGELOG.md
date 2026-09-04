@@ -79,6 +79,71 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   identity — so this codifies an invariant the adapters honoured and the domain
   did not enforce.
 
+### Changed — long-running progress gates wait for progress, not for a clock
+
+- A gate that says "wait until 1,000 have flowed, then kill an instance" was
+  written as a wall-clock deadline, which makes it an undeclared throughput
+  assertion inside a test whose claim is that no message is lost across a
+  restart. `lrWaitForProgress` gives up when the count STOPS MOVING instead. A
+  slow machine now takes longer and still proves the same thing; a genuinely
+  wedged pipeline fails sooner, and says how far it got rather than "condition
+  not met".
+- Its stall window is derived, not chosen: it has to outlast the source's
+  redelivery cycle. When a visibility extension fails, the message is invisible
+  until the queue's visibility timeout elapses and SQS hands it back — that
+  redelivery IS the recovery. A window equal to the visibility timeout gives up
+  at the exact moment recovery is due, which is what a first attempt did.
+
+### Fixed — a fuzz target that measured the machine, not the code
+
+- `FuzzRenderAddress` raced each call against a 100 ms wall clock in a
+  goroutine. Fuzzing saturates every core by design, so on a loaded host that
+  budget measures scheduler latency rather than `RenderAddress`: the first
+  mutation run under `make fuzz` "failed" and wrote a crasher into the corpus,
+  where it would have stayed forever. The same input renders in **4
+  microseconds**. The wall-clock race is gone — a genuine hang is what the
+  fuzzing engine itself detects — and the input's shape is kept as an explicit
+  seed, which was the part worth having.
+
+### Fixed — the long-running collector counted and retained in different places
+
+- `mqttCollector.count()` read `len(messages)` while three of the four
+  constructors appended to `messages` through their own handler. Adding a
+  counting mode to one of them broke the other three silently: `count()`
+  returned zero forever, and every test waiting on it timed out with no output.
+  There is now one writer (`record`), and the zero value RETAINS — so a
+  collector built by a struct literal anywhere in the suite keeps the behaviour
+  it had before the field existed.
+
+### Fixed — six long-running proofs waited on the wrong quantity
+
+- `TestUC12_RollingRestart_NoMessageLoss`, `TestUC13_SplitBrain_Recovery`,
+  `TestUC3ClusterFailover`, `TestUC33_MaxInFlight1_Serial`,
+  `TestUC42_BrokerKillRestart_SharedOutbox` and
+  `TestRES005_AutoExtendFailureDuplicates` each waited for N raw deliveries and
+  then asserted on N DISTINCT messages. Every one of them deliberately induces
+  a failover, a restart or a redelivery, so the wait could return with a repeat
+  among those N and a message still in flight — a correct at-least-once outcome
+  read as a lost message. Each now waits on the quantity it asserts. Four
+  sibling tests already did; intermediate progress barriers still count raw
+  deliveries, which is correct for what they gate.
+
+### Fixed — two long-running proofs that only held on an idle machine
+
+- Running the release subset as a subset — sequentially, on a machine already
+  warm — surfaced two test defects that an isolated run never reaches.
+  `TestUC12_RollingRestart_NoMessageLoss` drove three competing instances and
+  3,000 messages through a shared outbox on a lease profile that bounds a
+  renew call at one second; a busy store misses that, three misses step the
+  owner down, and every in-flight delivery is cancelled. Its rolling restart is
+  graceful, so nothing waited out a TTL and the compressed profile bought it
+  nothing: it now uses `lrLoadSurvivingSessionConfig`. And the separate-process
+  failover assertion WAITED on the raw delivery count while ASSERTING on the
+  distinct-payload count, so a failover's duplicates could satisfy the wait
+  with a payload still in flight — a correct at-least-once outcome read as a
+  lost message. It now waits on the quantity it asserts, and reports its
+  duplicate count.
+
 ### Changed — long-running message counts now match what the suite reports
 
 - Four use cases advertised a volume they did not exercise (UC1 said 5,000 and

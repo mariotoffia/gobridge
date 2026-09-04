@@ -464,9 +464,7 @@ func TestUC51_PersistentSessionRecovery(t *testing.T) {
 	go func() {
 		defer collector.wg.Done()
 		err := colRecv.Run(colCtx, func(ctx context.Context, del ports.Delivery) error {
-			collector.mu.Lock()
-			collector.messages = append(collector.messages, del.Envelope())
-			collector.mu.Unlock()
+			collector.record(del.Envelope())
 			return del.Ack(ctx)
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {

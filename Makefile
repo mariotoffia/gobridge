@@ -678,7 +678,7 @@ audit-test-timings: ## Check for new time.Sleep or Gosched spin-polling in test 
 		'time\.Sleep\(' testutil ports/storetest tests/testutil \
 		deployment/aws-filebased-config/cdk/integration ; } \
 		| sort \
-		| grep -v -F -f audit/test-timing-allowlist.txt); \
+		| awk -f scripts/audit-timing-filter.awk); \
 	if [ -n "$$VIOLATIONS" ]; then \
 		echo "$$VIOLATIONS"; \
 		COUNT=$$(echo "$$VIOLATIONS" | wc -l | tr -d ' '); \
@@ -686,6 +686,8 @@ audit-test-timings: ## Check for new time.Sleep or Gosched spin-polling in test 
 		echo "$$COUNT new time.Sleep call(s) in tests."; \
 		echo "Remove the sleep, or (with justification) add the line to"; \
 		echo "audit/test-timing-allowlist.txt — annotate with // CLASS: reason."; \
+		echo "(Entries match on file and code, not line number, so an edit"; \
+		echo " above an allowed sleep does not need the entry renumbered.)"; \
 		exit 1; \
 	else \
 		echo "No new test timing violations."; \

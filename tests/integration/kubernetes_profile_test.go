@@ -79,7 +79,9 @@ func TestKubernetesProfile_ProbesFlowReloadSigtermRestart(t *testing.T) {
 	if out, err := dockerexec.Run(dockerexec.RunTimeout, "network", "connect", "--alias", kubernetesBrokerAlias, network, brokerContainer); err != nil {
 		t.Fatalf("attach broker to %s: %v\n%s", network, err, out)
 	}
-	t.Cleanup(func() { _, _ = dockerexec.Run(dockerexec.RemoveTimeout, "network", "disconnect", network, brokerContainer) })
+	t.Cleanup(func() {
+		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "network", "disconnect", network, brokerContainer)
+	})
 
 	// --- the image, from the profile's Dockerfile
 	image := runID + ":test"

@@ -131,9 +131,14 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 	// Wait for all messages to arrive after recovery.
 	// EnvelopeFromPublish now sets Envelope.ID from mqtt.message-id,
 	// correlation-id, or a deterministic hash so countUnique works.
+	// Wait on the quantity the assertion below checks. Waiting on the raw
+	// delivery count would return as soon as N deliveries had landed, and a
+	// redelivery makes one of those a repeat of a message already seen while
+	// another has not arrived — a correct at-least-once outcome the assertion
+	// would then read as a lost message.
 	lrWaitFor(t, 180*time.Second,
-		fmt.Sprintf("collector >= %d after restart", msgCount),
-		func() bool { return collector.count() >= msgCount })
+		fmt.Sprintf("unique >= %d after restart", msgCount),
+		func() bool { return countUnique(collector) >= msgCount })
 
 	unique := countUnique(collector)
 	t.Logf("UC42: collector=%d, unique=%d, dlq=%d", collector.count(), unique, dlq.count())
