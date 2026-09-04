@@ -50,11 +50,11 @@ func TestLocal_DeploymentShape(t *testing.T) {
 			t.Error("output ControlServiceName is absent, so nothing can address the deployed service")
 		}
 		// The two URL outputs must be absolute, must address the load balancer
-		// this stack deployed, and must carry the paths the API is served on.
-		// The SCHEME is deliberately not asserted: the attachment publishes
-		// https unconditionally while the listener protocol is the operator's
-		// choice, so a plaintext listener is advertised as https. That mismatch
-		// is a defect in the attachment, not something a proof should pin.
+		// this stack deployed, must carry the paths the API is served on, and
+		// must name the scheme their listener actually speaks. This fixture
+		// attaches a plaintext HTTP:80 listener and declares it, so an https
+		// URL here would hand a consumer a connection failure rather than a
+		// 404.
 		for name, wantPath := range map[string]string{
 			"AdminURL":   "/api/v1/",
 			"HealthzURL": "/api/v1/monitor/health",
@@ -71,6 +71,10 @@ func TestLocal_DeploymentShape(t *testing.T) {
 			if !strings.Contains(parsed.Host, "elb.") {
 				t.Errorf("output %s addresses %q, which is not the load balancer this stack deployed",
 					name, parsed.Host)
+			}
+			if parsed.Scheme != "http" {
+				t.Errorf("output %s is published as %q, but this stack's listener is plaintext HTTP",
+					name, parsed.Scheme)
 			}
 		}
 	})

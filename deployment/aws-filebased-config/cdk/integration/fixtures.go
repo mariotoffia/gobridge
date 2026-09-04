@@ -128,10 +128,11 @@ func newSingleFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	})
 
 	att := gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Attach"), &gobridgealbattachment.AttachmentProps{
-		Single:       single,
-		Listener:     listener,
-		Vpc:          vpc,
-		BridgeConfig: gobridgecdk.BridgeYamlInline(cfg),
+		Single:         single,
+		Listener:       listener,
+		ListenerScheme: "http",
+		Vpc:            vpc,
+		BridgeConfig:   gobridgecdk.BridgeYamlInline(cfg),
 	}).WithCfnOutputs("")
 
 	return integrationFixture{
@@ -205,10 +206,11 @@ func newClusterFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	})
 
 	att := gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Attach"), &gobridgealbattachment.AttachmentProps{
-		Cluster:      cluster,
-		Listener:     listener,
-		Vpc:          vpc,
-		BridgeConfig: gobridgecdk.BridgeYamlInline(cfg),
+		Cluster:        cluster,
+		Listener:       listener,
+		ListenerScheme: "http",
+		Vpc:            vpc,
+		BridgeConfig:   gobridgecdk.BridgeYamlInline(cfg),
 	}).WithCfnOutputs("")
 
 	// Also surface the worker service name as a CFN output so the

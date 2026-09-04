@@ -88,16 +88,13 @@ func DeployLocal(t *testing.T, env SandboxEnv, scenario string, build func(awscd
 	}
 }
 
-// clearProfileLogGroups removes the log groups this profile names deterministically.
+// clearProfileLogGroups removes the log groups this profile named on earlier runs.
 //
-// The facade derives its log-group names from the construct id, not from the
-// stack, so two deployments of the same facade in one account and region collide
-// on them — the second one's CREATE fails with "already exists". That is a real
-// property of the profile, not an emulation gap, and it is why this suite
-// deploys one topology at a time. What IS an emulation gap is that a destroyed
-// stack can leave its log group behind, so a later deployment collides with a
-// stack that no longer exists; this clears that before each deploy rather than
-// letting one broken destroy cascade into every test after it.
+// The names are scoped to the stack that owns them, so two live deployments no
+// longer collide. What a destroyed stack CAN leave behind is its log group, and
+// every run of this suite deploys under a fresh stack name — so leftovers only
+// accumulate in the emulator. This clears them before each deploy rather than
+// letting one broken destroy grow the emulator's state run after run.
 func clearProfileLogGroups(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -253,6 +253,10 @@ func localALBAttachment(
 		DefaultAction: elbv2.ListenerAction_FixedResponse(jsii.Number(404), nil),
 	})
 	props.Listener = listener
+	// The fixture's listener is plaintext HTTP:80, so the published
+	// URLs have to say http — the construct cannot read the protocol
+	// off an imported listener.
+	props.ListenerScheme = "http"
 	props.Vpc = vpc
 	_ = env
 	return gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Attach"), props).

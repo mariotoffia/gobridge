@@ -12,9 +12,13 @@
 //   - the seeder init container (see internal/seeder), wired with
 //     EXPECTED_HASH and MODE env vars so worker tasks gate startup
 //     on config drift while control tasks materialise the file;
-//   - one CloudWatch log group per container with a stable
-//     "/gobridge/<construct-id>/<container-name>" prefix and
-//     RemovalPolicy.RETAIN by default;
+//   - one CloudWatch log group per container named
+//     "/gobridge/<stack-name>/<construct-id>/<container-name>" with
+//     RemovalPolicy.RETAIN by default. The stack name is part of it
+//     because log-group names are unique per account and region,
+//     and a facade always builds its base under a fixed construct
+//     id — two deployments of the same shape would otherwise want
+//     one name and the second stack could not create;
 //   - port mappings derived from the parsed [BridgeConfig] and
 //     [BootstrapConfig] — never hard-coded;
 //   - task and execution IAM roles plus per-adapter grants applied

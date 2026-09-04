@@ -252,6 +252,12 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 
 	c := constructs.NewConstruct(scope, id)
 	scopeID := jsiiDeref(id)
+	// Log-group names are account-and-region wide, so they are scoped to the
+	// stack that owns them. A facade always builds its base under a fixed
+	// construct id, so without the stack a staging bridge deployed beside a
+	// production one in the same account wants the same log group and the
+	// second stack fails at CREATE.
+	stackName := jsiiDeref(awscdk.Stack_Of(c).StackName())
 
 	mat, err := props.Source.Materialize()
 	if err != nil {
@@ -340,12 +346,12 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 		logRemoval = props.LogRemovalPolicy
 	}
 	mainLG := awslogs.NewLogGroup(c, jsii.String("MainLogs"), &awslogs.LogGroupProps{
-		LogGroupName:  jsii.String(logGroupPrefix(scopeID, ContainerNameMain)),
+		LogGroupName:  jsii.String(logGroupPrefix(stackName, scopeID, ContainerNameMain)),
 		Retention:     logRetention,
 		RemovalPolicy: logRemoval,
 	})
 	seederLG := awslogs.NewLogGroup(c, jsii.String("SeederLogs"), &awslogs.LogGroupProps{
-		LogGroupName:  jsii.String(logGroupPrefix(scopeID, containerNameSeeder)),
+		LogGroupName:  jsii.String(logGroupPrefix(stackName, scopeID, containerNameSeeder)),
 		Retention:     logRetention,
 		RemovalPolicy: logRemoval,
 	})
@@ -545,11 +551,14 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func logGroupPrefix(scopeID, container string) string {
+func logGroupPrefix(stackName, scopeID, container string) string {
 	if scopeID == "" {
 		scopeID = "gobridge"
 	}
-	return "/gobridge/" + scopeID + "/" + container
+	if stackName == "" {
+		return "/gobridge/" + scopeID + "/" + container
+	}
+	return "/gobridge/" + stackName + "/" + scopeID + "/" + container
 }
 
 func joinPath(dir, name string) string {

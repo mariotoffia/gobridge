@@ -193,6 +193,18 @@ type AttachmentProps struct {
 	// derived rules to. Required.
 	Listener elbv2.IApplicationListener
 
+	// ListenerScheme is the URL scheme AdminURL and HealthzURL are
+	// published with. Empty means "https". Only "http" and "https"
+	// are accepted.
+	//
+	// The caller has to say this, because Listener is an imported
+	// resource: an IApplicationListener may be a cross-stack ARN, so
+	// the construct cannot read the protocol it was created with. A
+	// listener that terminates TLS keeps the default; a plaintext
+	// HTTP listener must set "http", or the published URL names a
+	// scheme nothing serves.
+	ListenerScheme string
+
 	// Vpc is the VPC the target groups are created in. Required —
 	// both ApplicationTargetGroup constructors need it explicitly
 	// for IP target type validation at synth time.
@@ -384,11 +396,12 @@ func NewGoBridgeALBAttachment(scope constructs.Construct, id *string, props *Att
 	}
 
 	dns := loadBalancerOf(props.Listener).LoadBalancerDnsName()
+	scheme := listenerScheme(props) + "://"
 	adminURL := awscdk.Fn_Join(jsii.String(""), &[]*string{
-		jsii.String("https://"), dns, jsii.String("/api/v1/"),
+		jsii.String(scheme), dns, jsii.String("/api/v1/"),
 	})
 	healthzURL := awscdk.Fn_Join(jsii.String(""), &[]*string{
-		jsii.String("https://"), dns, jsii.String(MonitorHealthPath),
+		jsii.String(scheme), dns, jsii.String(MonitorHealthPath),
 	})
 
 	clusterArn, efsID := resolveImplARNs(props)
@@ -464,14 +477,14 @@ func (a *GoBridgeALBAttachment) BasePriority() int { return a.base }
 func (a *GoBridgeALBAttachment) PublicDnsName() *string { return a.dnsName }
 
 // AdminURL returns the deploy-time URL where the admin API is
-// reachable: `https://<albdns>/api/v1/`. HTTPS is hard-coded per
-// design — consumers that terminate HTTP-only must front the
-// ALB themselves.
+// reachable: `<scheme>://<albdns>/api/v1/`. The scheme is
+// AttachmentProps.ListenerScheme, which defaults to https.
 func (a *GoBridgeALBAttachment) AdminURL() *string { return a.adminURL }
 
 // HealthzURL returns the deploy-time URL of the monitor health probe:
-// `https://<albdns>/api/v1/monitor/health`, routed to the monitor
-// target group.
+// `<scheme>://<albdns>/api/v1/monitor/health`, routed to the monitor
+// target group. The scheme is AttachmentProps.ListenerScheme, which
+// defaults to https.
 func (a *GoBridgeALBAttachment) HealthzURL() *string { return a.healthzURL }
 
 // WithCfnOutputs emits two same-stack CloudFormation outputs:
@@ -867,4 +880,17 @@ func validateProps(p *AttachmentProps) {
 	if p.BasePriority < 0 {
 		panic("GoBridgeALBAttachment: BasePriority must be >= 1")
 	}
+	switch p.ListenerScheme {
+	case "", "http", "https":
+	default:
+		panic("GoBridgeALBAttachment: ListenerScheme must be \"http\", \"https\", or empty for the https default")
+	}
+}
+
+// listenerScheme resolves the scheme the published URLs carry.
+func listenerScheme(p *AttachmentProps) string {
+	if p.ListenerScheme == "" {
+		return "https"
+	}
+	return p.ListenerScheme
 }

@@ -278,7 +278,7 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox, slots *ha.Mem
 		DefaultAction: elbv2.ListenerAction_FixedResponse(jsii.Number(404), nil),
 	})
 	attachment := gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("HAAttachment"), &gobridgealbattachment.AttachmentProps{
-		DynamoDBHA: bridge, Listener: listener, Vpc: vpc, BridgeConfig: src,
+		DynamoDBHA: bridge, Listener: listener, ListenerScheme: "http", Vpc: vpc, BridgeConfig: src,
 	}).WithCfnOutputs("")
 	topic := awssns.NewTopic(stack, jsii.String("HAAlarmTopic"), nil)
 	gobridgealarms.NewGoBridgeAlarms(stack, jsii.String("HAAlarms"), &gobridgealarms.AlarmsProps{

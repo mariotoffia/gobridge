@@ -128,7 +128,7 @@ The **Primary issue IDs** column is the single authoritative mapping. Issue refe
 | 25 | done | HIGH-17, MEDIUM-24, LOW-21 |
 | 26 | done | NEW-BLOCKER-1, NEW-BLOCKER-2, NEW-TEST-2 — and the deployment residual of Chunk 17's blocker, whose primary mapping stays there |
 | 27 | done | none — test infrastructure; adds no issue mapping. Ran BEFORE 26. |
-| 28 | done | NEW-BLOCKER-3 (fixed), NEW-LOW-10 (recorded, still open), NEW-LOW-11 (recorded while executing the matrix, still open; no other chunk names it) |
+| 28 | done | NEW-BLOCKER-3 (fixed), NEW-LOW-10 (recorded here, fixed in the acceptance phase), NEW-LOW-11 (recorded while executing the matrix, fixed in the acceptance phase; no other chunk names it) |
 | 29 | done | NEW-TEST-3, NEW-MEDIUM-26, NEW-HIGH-21, NEW-BLOCKER-4 (its release-note residual closed in Chunk 34) |
 | 30 | done | none — deployment coverage decided or handed on; adds no issue mapping |
 | 31 | done | NEW-MEDIUM-27 |

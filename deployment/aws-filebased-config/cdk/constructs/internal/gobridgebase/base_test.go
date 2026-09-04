@@ -245,7 +245,7 @@ func TestNew_LogGroup_PrefixAndDefaultRetainPolicy(t *testing.T) {
 		entry := (*raw)
 		props := entry["Properties"].(map[string]any)
 		name := props["LogGroupName"].(string)
-		if !strings.HasPrefix(name, "/gobridge/Bridge/") {
+		if !strings.HasPrefix(name, "/gobridge/TestStack/Bridge/") {
 			t.Fatalf("log group name does not match prefix scheme: %s", name)
 		}
 		if strings.HasSuffix(name, "/gobridge") {
