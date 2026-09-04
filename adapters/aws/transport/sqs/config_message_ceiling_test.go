@@ -9,15 +9,16 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestSenderFactory_MaxMessageBytes_ReachesEffectiveCeiling is the regression
-// for Finding 4's config-driven gap. WithMaxMessageBytes is a Go-only
-// functional option with ZERO non-test call sites, so the production path
-// SenderFactory.NewSender -> toSenderConfig -> NewSender never lifted the
-// ceiling: maxMessageBytes was always the hardcoded 256 KiB default. An
-// operator who raises a queue's MaximumMessageSize via YAML (max_message_bytes)
-// must reach the sender's effective ceiling; an absent/0 value must keep the
-// 256 KiB default and must NOT zero the ceiling (which would drop ALL egress
-// attributes, including the rank-0 idempotency-key / traceparent headers).
+// TestSenderFactory_MaxMessageBytes_ReachesEffectiveCeiling pins the
+// config-driven ceiling. WithMaxMessageBytes is a Go-only functional option
+// with ZERO non-test call sites, so the production path
+// SenderFactory.NewSender -> toSenderConfig -> NewSender once ignored it
+// entirely and maxMessageBytes was always the hardcoded default. An operator
+// whose queue's MaximumMessageSize differs from the service default must reach
+// the sender's effective ceiling from YAML (max_message_bytes); an absent/0
+// value must keep the default and must NOT zero the ceiling (which would drop
+// ALL egress attributes, including the rank-0 idempotency-key / traceparent
+// headers).
 //
 // The test drives the real factory wiring end to end and reads the sender's
 // effective ceiling (s.maxMessageBytes, same-package access) — the exact value
@@ -40,16 +41,16 @@ func TestSenderFactory_MaxMessageBytes_ReachesEffectiveCeiling(t *testing.T) {
 
 	t.Run("explicit YAML value reaches the effective ceiling", func(t *testing.T) {
 		t.Parallel()
-		const raised = 1_048_576 // 1 MiB — a queue with a raised MaximumMessageSize
+		const lowered = 262_144 // 256 KiB — a queue provisioned below the 1 MiB default
 		s := build(t, Config{
 			QueueURL:        "https://sqs.us-west-1.amazonaws.com/123/test",
-			MaxMessageBytes: raised,
+			MaxMessageBytes: lowered,
 		})
-		require.Equal(t, raised, s.maxMessageBytes,
-			"max_message_bytes from config must reach the sender's effective ceiling (Finding 4)")
+		require.Equal(t, lowered, s.maxMessageBytes,
+			"max_message_bytes from config must reach the sender's effective ceiling")
 	})
 
-	t.Run("absent/0 keeps the 256 KiB default and never zeroes the ceiling", func(t *testing.T) {
+	t.Run("absent/0 keeps the 1 MiB default and never zeroes the ceiling", func(t *testing.T) {
 		t.Parallel()
 		s := build(t, Config{
 			QueueURL: "https://sqs.us-west-1.amazonaws.com/123/test",
@@ -57,7 +58,7 @@ func TestSenderFactory_MaxMessageBytes_ReachesEffectiveCeiling(t *testing.T) {
 		})
 		require.Equal(t, sqsMaxMessageBytes, s.maxMessageBytes,
 			"absent/0 max_message_bytes must keep the default ceiling, not zero it")
-		require.Equal(t, 262144, s.maxMessageBytes,
-			"the default ceiling is 256 KiB (262144)")
+		require.Equal(t, 1048576, s.maxMessageBytes,
+			"the default ceiling is the service's own default MaximumMessageSize, 1 MiB (1048576)")
 	})
 }

@@ -32,13 +32,20 @@ const (
 	// sqsMaxAttributeNameLen is the maximum length of an attribute name.
 	sqsMaxAttributeNameLen = 256
 
-	// sqsMaxMessageBytes is the DEFAULT maximum SQS message size (256 KiB),
+	// sqsMaxMessageBytes is the DEFAULT maximum SQS message size (1 MiB),
 	// shared between the body and every attribute name, type and value.
-	// Used as a conservative ceiling so a pathological header set cannot
-	// build a request SQS would reject for size. Queues configured with a
-	// larger MaximumMessageSize can raise it via WithMaxMessageBytes so an
-	// oversized body does not silently drop all attributes.
-	sqsMaxMessageBytes = 262144
+	// Used as a ceiling so a pathological header set cannot build a request
+	// SQS would reject for size.
+	//
+	// It tracks the service default: SQS raised the maximum payload from
+	// 256 KiB to 1 MiB, and MaximumMessageSize on a queue created since then
+	// defaults to 1,048,576. A queue whose MaximumMessageSize is provisioned
+	// BELOW that — an older queue, or one deliberately capped — lowers the
+	// ceiling via WithMaxMessageBytes, which is now the direction the knob
+	// usually moves. Set too high, attributes are kept on a body the queue
+	// then rejects outright; set too low, a large body silently drops all
+	// attributes that would in fact have fit.
+	sqsMaxMessageBytes = 1048576
 
 	// sqsSubjectAttributeName is the reserved SQS message-attribute name
 	// carrying the envelope Subject. buildAttributes writes it from

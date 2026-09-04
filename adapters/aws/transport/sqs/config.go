@@ -160,12 +160,13 @@ type SenderConfig struct {
 
 	// MaxMessageBytes overrides the SQS message-size ceiling (body plus
 	// attributes) the sender enforces when selecting egress attributes.
-	// Zero keeps the 262144 (256 KiB) default; raise it only to match a
-	// queue whose MaximumMessageSize has been provisioned above 256 KiB,
-	// otherwise a large body silently drops ALL attributes — including the
-	// rank-0 idempotency-key / traceparent headers. The factory
-	// projects it from the plugin Config and applies it via
-	// WithMaxMessageBytes.
+	// Zero keeps the 1048576 (1 MiB) default, which is the service's own
+	// default MaximumMessageSize; set it to match a queue provisioned below
+	// that, otherwise attributes are kept on a body the queue rejects
+	// outright. Set it too low instead and a large body silently drops ALL
+	// attributes — including the rank-0 idempotency-key / traceparent
+	// headers. The factory projects it from the plugin Config and applies it
+	// via WithMaxMessageBytes.
 	MaxMessageBytes int
 
 	// Client allows injecting a pre-built SQS client (for tests).

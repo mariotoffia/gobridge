@@ -107,7 +107,7 @@ Either `queue_url` or `queue_name` must be provided.
 | `timeout` | duration | `30s` | Per-call send timeout |
 | `message_group_id` | string | -- | Default FIFO message group ID |
 | `fifo` | bool | `false` | Opt into per-envelope FIFO groups via the `x-bridge.ordering-key` header |
-| `max_message_bytes` | int | 262144 | Message-size ceiling in bytes (body + attributes). Raise to match a queue whose `MaximumMessageSize` is provisioned above 256 KiB; `0` keeps the 256 KiB default. |
+| `max_message_bytes` | int | 1048576 | Message-size ceiling in bytes (body + attributes). `0` keeps the 1 MiB default, which is the service's own default `MaximumMessageSize`; set it to match a queue provisioned below that. |
 | `credentials_uri` | string | -- | URI resolved by the bridge credential store at build time |
 
 Either `queue_url` or `queue_name` must be provided.
@@ -178,11 +178,12 @@ priority** under [Resilience Behavior](#resilience-behavior). These terms are
 defined in the [Ubiquitous Language](../../UBIQUITOUS.md).
 
 The `x-bridge.idempotency-key` attribute is subject to SQS's message-attribute
-count and 256 KiB size caps on egress. It holds rank-0 priority (dropped last),
+count and message-size caps on egress. It holds rank-0 priority (dropped last),
 but a near-maximum-size payload can still evict it — counted on the
-dropped-attributes metric. That 256 KiB ceiling is the `max_message_bytes`
-default; raising it to match a queue whose `MaximumMessageSize` is provisioned
-higher keeps a large body from evicting these best-effort attributes. The
+dropped-attributes metric. That ceiling is the `max_message_bytes` default,
+1 MiB, which tracks the service's own default `MaximumMessageSize`; a queue
+provisioned below it needs the key set to match, or attributes are kept on a
+body the queue then rejects outright. The
 native FIFO fields are not charged against the attribute budget and always
 survive, so idempotency propagation is best-effort under cap pressure while
 deduplication and ordering are not.
@@ -255,7 +256,7 @@ so neither can be injected through an attribute.
   from the broker's `SentTimestamp` (exposed as the `sqs.SentTimestamp` header)
   when present, so TTL/expiry policies measure the message's true age including
   queue time, instead of restarting the clock at each hop.
-- **Egress attribute priority.** SQS caps a message at 10 attributes and 256 KiB
+- **Egress attribute priority.** SQS caps a message at 10 attributes and 1 MiB
   (body + attributes). When headers exceed the cap they are dropped
   deterministically by rank: rank 0 essential propagation
   (`traceparent`/`tracestate` and `x-bridge.idempotency-key`) first, rank 1

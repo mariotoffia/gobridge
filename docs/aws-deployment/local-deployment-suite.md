@@ -123,7 +123,6 @@ Each of these was measured, not assumed.
 | **Container `dependsOn` is not modelled.** | Nothing. A member may start before its seeder has written the shared document, exit, and be replaced until it is there. | The seeder gate. No claim rests on it. |
 | **Container stdout does not reach the `awslogs` driver.** | Log assertions read the container's own logs. | Nothing material. |
 | **A destroyed stack can leave its log group behind**, and the profile names log groups from the construct id rather than the stack — so a later deployment of the same facade collides with a stack that no longer exists. | The harness removes the profile's log groups before each deploy. | Nothing: the collision itself is a real property of the profile (two deployments of the same facade in one account and region collide), which is why the suite deploys one topology at a time. |
-| **SQS accepts a message up to 1 MB here**, where real SQS rejects anything over 256 KiB. | The ceiling is a unit test against the real limit (`adapters/aws/transport/sqs`), not a deployed one. | Nothing — but no local run may assert the rejection, because it will not happen. |
 | **SSM `SecureString` parameters are stored in clear.** | Nothing needs doing: no assertion anywhere reads stored ciphertext, and the credential adapter writes `SecureString` and reads back with decryption, which its own unit tests pin. A future assertion that means to prove encryption at rest cannot live here. | Encryption at rest, which is KMS's. |
 | **FIFO deduplication has no time window.** | A test that means to exercise dedup enqueues originals and duplicates before any consumer starts. | Amazon's five-minute window. |
 
@@ -163,8 +162,11 @@ Two are closed; the third is open work, not a gap in the emulator.
       event source mapping is asserted, and what a closed
       producer→bridge→consumer loop asserts on. The probe that qualifies the row
       is one measurement — a `provided.al2023` function actually invoked through
-      an SQS event source mapping on the pinned image, with the emulator's
-      hostname resolving from inside the launched container.
+      an SQS event source mapping, with the emulator's hostname resolving from
+      inside the launched container. The emulator is not pinned — the helper
+      pulls `floci/floci:latest` before every run — so the answer belongs to the
+      image the run was on, and a later break is news about the emulator rather
+      than about the topology.
 
       What the emulator's own documentation already claims, unverified here:
       `CreateEventSourceMapping` against a queue ARN drives its poller, which

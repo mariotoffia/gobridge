@@ -10,6 +10,24 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Changed — the SQS egress size ceiling follows the service's 1 MiB default
+
+- **`max_message_bytes` now defaults to 1 MiB (1048576), not 256 KiB.** Amazon
+  SQS raised its maximum message payload to 1 MiB and `MaximumMessageSize` on a
+  queue defaults to 1,048,576. The sender's ceiling — the budget it charges
+  across the body and every attribute name, type and value when selecting egress
+  attributes — was still the old 256 KiB, so a body between 256 KiB and 1 MiB
+  dropped **all** message attributes, including the rank-0
+  `x-bridge.idempotency-key` and `traceparent`, on a message the queue would
+  have accepted whole.
+- **The knob's usual direction is inverted, and one shape needs it set.** A queue
+  whose `MaximumMessageSize` is provisioned *below* 1 MiB — an older queue, or
+  one deliberately capped — must now set `max_message_bytes` to match. Left at
+  the default, a body just under that queue's own limit keeps its attributes and
+  the queue rejects the send outright, where before the attributes were dropped
+  and the send succeeded. The value has always been settable from YAML; only its
+  default moved.
+
 ### Fixed — a plan-driven ingress session that only its receiver names now runs
 
 - **The receiver's own binding manages its session.** An MQTT or AMQP 0-9-1

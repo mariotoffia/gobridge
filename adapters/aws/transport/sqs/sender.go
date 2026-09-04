@@ -57,8 +57,9 @@ type Sender struct {
 
 	// maxMessageBytes is the SQS message-size ceiling (body + attributes)
 	// enforced when selecting egress attributes. Defaults to
-	// sqsMaxMessageBytes (256 KiB); override with WithMaxMessageBytes for
-	// queues whose MaximumMessageSize has been raised.
+	// sqsMaxMessageBytes (1 MiB, the service default); override with
+	// WithMaxMessageBytes for a queue whose MaximumMessageSize is
+	// provisioned below it.
 	maxMessageBytes int
 }
 
@@ -68,7 +69,7 @@ type SenderOption func(*Sender)
 
 // WithMaxMessageBytes overrides the SQS message-size ceiling (body plus
 // attributes) the sender enforces when selecting message attributes. Use it
-// for queues whose MaximumMessageSize has been raised above the 256 KiB
+// for a queue whose MaximumMessageSize differs from the 1 MiB
 // default so a large body does not silently drop ALL attributes — including
 // the rank-0 idempotency-key / traceparent propagation headers.
 // Non-positive values are ignored so the default ceiling is retained.

@@ -76,11 +76,12 @@ type Config struct {
 	// MaxMessageBytes surfaces the sender's message-size ceiling (body +
 	// attributes) to config-driven (YAML) deployments — mirroring the
 	// PollBackoff* knobs that likewise had no plugin surface. 0/omitted keeps
-	// the 262144 (256 KiB) default; raise it only to match a queue whose
-	// MaximumMessageSize has been provisioned above 256 KiB. Without this an
-	// operator who raises a queue's limit via YAML cannot lift the ceiling, so
-	// a body over 256 KiB silently drops ALL egress attributes — including the
-	// rank-0 x-bridge.idempotency-key / traceparent headers.
+	// the 1048576 (1 MiB) default, which is the service's own default
+	// MaximumMessageSize; set it to match a queue provisioned below that.
+	// Without this an operator whose queue differs from the default cannot
+	// move the ceiling from YAML, and a body over it silently drops ALL egress
+	// attributes — including the rank-0 x-bridge.idempotency-key / traceparent
+	// headers.
 	MaxMessageBytes int `mapstructure:"max_message_bytes" yaml:"max_message_bytes,omitempty" json:"max_message_bytes,omitempty"`
 
 	// resolvedCreds holds the static credential material resolved from

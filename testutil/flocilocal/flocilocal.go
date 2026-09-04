@@ -55,9 +55,14 @@ import (
 
 const containerPrefix = "gobridge-flocilocal-"
 
-// defaultImage is pinned by digest, like the other container helpers: a
-// floating :latest means CI can break on a day nobody changed anything.
-const defaultImage = "floci/floci:2.0.1@sha256:4e451c39c7bb88e3cd4f87e8fc0c25d5b47695a51185d521e2241fa00486e8eb"
+// defaultImage deliberately tracks the moving :latest tag, unlike every other
+// container helper here, which pins a digest. The emulator ships often and the
+// suite is meant to meet the behaviour it will actually meet, not a snapshot of
+// it. The accepted cost is that a run can break on a day nobody changed
+// anything; when that happens the break is real news about the emulator, and
+// the first diagnostic is which image the machine is on
+// (`docker image inspect floci/floci:latest`).
+const defaultImage = "floci/floci:latest"
 
 // gatewayPort is the single port every emulated AWS API is served on.
 const gatewayPort = 4566
@@ -290,6 +295,28 @@ func newAWSConfig(ep string) aws.Config {
 
 // --- container lifecycle ---
 
+// pullLatestImage refreshes the emulator image before a run instead of trusting
+// whatever copy the machine already has.
+//
+// dockerexec.EnsureImage is the wrong primitive for this helper: it returns
+// early whenever any local copy of the reference exists, which for a moving tag
+// would freeze the suite at whatever :latest was the first time that machine
+// pulled it — unpinned AND stale, the worst of both. The digest-pinned helpers
+// are right to use it; this one is not.
+//
+// A failed pull is only fatal when nothing local can serve instead, so a
+// developer with no network still runs against the image they have.
+func pullLatestImage() error {
+	out, err := dockerexec.Run(dockerexec.PullTimeout, "pull", defaultImage)
+	if err == nil {
+		return nil
+	}
+	if _, inspectErr := dockerexec.Run(dockerexec.InspectTimeout, "image", "inspect", defaultImage); inspectErr != nil {
+		return fmt.Errorf("pull %s: %w\n%s", defaultImage, err, out)
+	}
+	return nil
+}
+
 func startContainer() (string, string, func(), error) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return "", "", nil, fmt.Errorf("docker not found: %w", err)
@@ -332,7 +359,7 @@ func startContainer() (string, string, func(), error) {
 	}
 	args = append(args, defaultImage)
 
-	if err := dockerexec.EnsureImage(defaultImage); err != nil {
+	if err := pullLatestImage(); err != nil {
 		return "", "", nil, err
 	}
 
