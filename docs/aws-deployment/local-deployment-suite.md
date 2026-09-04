@@ -23,8 +23,11 @@ CDK CLI wrapper into `.tools/local-deploy/`, and writes the full log to
 
 The split is the SDK's own: `AWS_ENDPOINT_URL_DYNAMODB` outranks
 `AWS_ENDPOINT_URL`, so the container runs the identical binary through the
-identical code path. All containers join one per-run Docker network so a
-deployed task resolves the emulator, DynamoDB Local and the broker by name.
+identical code path. It is permanent rather than provisional — the reason for it
+is that conditional-write semantics have to come from the reference
+implementation, which no amount of good behaviour from a general emulator
+supplies. All containers join one per-run Docker network so a deployed task
+resolves the emulator, DynamoDB Local and the broker by name.
 
 ## Driving a run
 
@@ -120,6 +123,8 @@ Each of these was measured, not assumed.
 | **Container `dependsOn` is not modelled.** | Nothing. A member may start before its seeder has written the shared document, exit, and be replaced until it is there. | The seeder gate. No claim rests on it. |
 | **Container stdout does not reach the `awslogs` driver.** | Log assertions read the container's own logs. | Nothing material. |
 | **A destroyed stack can leave its log group behind**, and the profile names log groups from the construct id rather than the stack — so a later deployment of the same facade collides with a stack that no longer exists. | The harness removes the profile's log groups before each deploy. | Nothing: the collision itself is a real property of the profile (two deployments of the same facade in one account and region collide), which is why the suite deploys one topology at a time. |
+| **SQS accepts a message up to 1 MB here**, where real SQS rejects anything over 256 KiB. | The ceiling is a unit test against the real limit (`adapters/aws/transport/sqs`), not a deployed one. | Nothing — but no local run may assert the rejection, because it will not happen. |
+| **SSM `SecureString` parameters are stored in clear.** | Nothing needs doing: no assertion anywhere reads stored ciphertext, and the credential adapter writes `SecureString` and reads back with decryption, which its own unit tests pin. A future assertion that means to prove encryption at rest cannot live here. | Encryption at rest, which is KMS's. |
 | **FIFO deduplication has no time window.** | A test that means to exercise dedup enqueues originals and duplicates before any consumer starts. | Amazon's five-minute window. |
 
 ## Not yet stood up
@@ -151,13 +156,27 @@ Two are closed; the third is open work, not a gap in the emulator.
       two different things — and for a coordinated cohort, two writers of the
       candidate identity a rollout has to agree on. The layered pattern stays a
       programmatic-API one.
-- [ ] **Lambda either side of the bridge.** Probe P3 has never been run. It also
-      needs `testutil/SPEC.md` extended before a test can be written: packaging a
-      function for the emulator, asserting its event source mapping, and what a
-      closed producer→bridge→consumer loop asserts on are all questions the ECS
-      topologies never raised.
+- [ ] **Lambda either side of the bridge.** The one shape that has never been
+      stood up anywhere but a credentialed account. Three questions the ECS
+      topologies never raised have to be answered before a test can be written:
+      how a Go function's code is packaged so the emulator accepts it, how its
+      event source mapping is asserted, and what a closed
+      producer→bridge→consumer loop asserts on. The probe that qualifies the row
+      is one measurement — a `provided.al2023` function actually invoked through
+      an SQS event source mapping on the pinned image, with the emulator's
+      hostname resolving from inside the launched container.
 
-The Lambda row owns its own probe.
+      What the emulator's own documentation already claims, unverified here:
+      `CreateEventSourceMapping` against a queue ARN drives its poller, which
+      builds the standard `Records[]` event, invokes the function, deletes on
+      success and returns the batch with visibility reset on failure, honouring
+      `BatchSize`, `ReportBatchItemFailures` and FIFO attributes — but storing
+      `ScalingConfig` without enforcing it, so no assertion may rest on
+      concurrency. In the other direction a launched function container has
+      `AWS_ENDPOINT_URL` and credentials injected, so a plain SDK `SendMessage`
+      inside the function reaches the emulator with nothing plumbed by us. Treat
+      all of it as a starting point, not evidence: every other row of this page
+      is admitted on a measurement, and this one is not measured yet.
 
 ## Where the code lives
 
@@ -165,5 +184,9 @@ The Lambda row owns its own probe.
   tests. One harness serves both backends: `integration_aws` deploys to a
   credentialed sandbox, `integration_local` deploys the same stack through
   `cdklocal`, and the local backend is one branch in each shared function.
-- `testutil/SPEC.md` — the design the harness implements, and the probe answers
-  the emulation decisions rest on.
+- `testutil/flocilocal` — the emulator container helper, and why DynamoDB and
+  the brokers are deliberately not served from it.
+
+The measured answers behind each emulation decision are this page's *Emulation
+gaps* table and the harness's own comments; the design documents that produced
+them were scratch and have been deleted.
