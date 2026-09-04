@@ -40,9 +40,12 @@ Open, and owned by Chunk 29 rather than by this file:
       written — how a function's code is packaged for the emulator, how its
       event source mapping is asserted, and what a closed
       producer→bridge→consumer loop asserts on. Owned by Chunk 30.
-- [ ] SQLite stores on a deployed task, and a config layer held in DynamoDB.
-      Neither shape was in this specification's scope and neither has ever been
-      deployed. Owned by Chunk 30.
+- [x] SQLite stores on a deployed task, and a config layer held in DynamoDB.
+      Neither shape was in this specification's scope. The SQLite store is stood
+      up by the MQTT topology (a persistent ingress session's managed-subscription
+      store on the deployed mount); the DynamoDB config layer was decided against
+      rather than built. Both are recorded in
+      `docs/aws-deployment/local-deployment-suite.md` §Not yet stood up.
 
 ---
 

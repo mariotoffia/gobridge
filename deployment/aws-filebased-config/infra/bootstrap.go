@@ -126,6 +126,19 @@ type BootstrapConfig struct {
 	// bridge.cluster.rollout: coordinated.
 	DynamoDBHARolloutTableName string `json:"dynamodb_ha_rollout_table_name,omitempty"`
 
+	// ManagedSubscriptionBaselines attests, per persistent or exclusive MQTT
+	// session, the exact filters the session's broker identity already holds;
+	// an empty list attests an identity that is new and holds none. A durable
+	// session does not start until its baseline exists (a missing baseline is
+	// "history unknown", not "no history"; ADR 0003), and on the file-based
+	// profile the only process that can write stores.managed_subscriptions on
+	// the config mount is the task itself, so the runtime seeds every entry at
+	// boot, before it builds the bridge. Seeding is idempotent: an established
+	// baseline is kept and the listed filters are added to it. The single-task
+	// facade stamps it from its ManagedSubscriptionBaselines prop; the DynamoDB
+	// HA facade seeds its own table at deploy time and leaves this empty.
+	ManagedSubscriptionBaselines map[string][]string `json:"managed_subscription_baselines,omitempty"`
+
 	ConfigFilePath string `json:"config_file_path"`
 	PollInterval   string `json:"poll_interval,omitempty"`
 
@@ -375,6 +388,16 @@ func (c BootstrapConfig) Validate() error {
 	case "", MetricsExporterNoop, MetricsExporterCloudWatch:
 	default:
 		return fmt.Errorf("infra: unsupported metrics_exporter %q (want \"\", %q, or %q)", c.MetricsExporter, MetricsExporterNoop, MetricsExporterCloudWatch)
+	}
+	for sessionID, filters := range c.ManagedSubscriptionBaselines {
+		if sessionID == "" {
+			return fmt.Errorf("infra: managed_subscription_baselines names an empty session id")
+		}
+		for _, filter := range filters {
+			if filter == "" {
+				return fmt.Errorf("infra: managed_subscription_baselines for session %q contains an empty filter", sessionID)
+			}
+		}
 	}
 	return nil
 }

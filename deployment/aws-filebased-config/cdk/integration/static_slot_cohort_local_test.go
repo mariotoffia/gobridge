@@ -179,6 +179,13 @@ func TestLocal_StaticSlotCohort(t *testing.T) {
 		// plugin options, which is why it is also the proof that a subscription
 		// change can be agreed at all: it used to be acknowledged by the member that
 		// proposed it and by nobody else.
+		// Baseline on where the cohort IS, not on the last generation it
+		// COMMITTED. The phase before this one aborted a proposal, which leaves a
+		// settled generation in the shared row that no member applied; a wait
+		// keyed to the committed generation is satisfied by that one the instant
+		// it is asked, and reports its acknowledgements as if they were this
+		// phase's.
+		proposed := currentCohortGeneration(t, ctx, probe, adminKey, roster)
 		commitOverlay(t, ctx, probe, controlHost, adminKey, map[string]any{
 			"receivers": []map[string]any{{
 				"id":     haReceiverID,
@@ -189,7 +196,7 @@ func TestLocal_StaticSlotCohort(t *testing.T) {
 		// The confirm window is 90s and a member's local deadman waits a few poll
 		// intervals past it, so this budget has to clear both plus the coordinator's
 		// own cadence.
-		outcome := waitCohortSettled(t, ctx, probe, adminKey, roster, committed, 12*time.Minute)
+		outcome := waitCohortSettled(t, ctx, probe, adminKey, roster, proposed, 12*time.Minute)
 		if len(outcome.Acked) != len(roster) {
 			t.Fatalf("generation %d settled on %d/%d acks (%v); a subscription change reaches the "+
 				"barrier through a receiver's typed plugin options, and every member has to be able "+

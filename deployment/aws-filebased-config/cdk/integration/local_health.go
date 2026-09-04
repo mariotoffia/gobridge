@@ -29,8 +29,22 @@ type deployedHealth struct {
 	// will ever become ready, so a proof that accepted "not ready" without
 	// reading this would wait out its whole budget on a member that had already
 	// failed.
-	Empty       bool   `json:"empty"`
-	Role        string `json:"role"`
+	Empty bool   `json:"empty"`
+	Role  string `json:"role"`
+	// Sessions and Routes are the member's own account of what it runs: which
+	// sessions are connected and which of them hold a lease, and which delivery
+	// mode each route is on. A shape proof reads these rather than inferring the
+	// deployed configuration from the document it seeded.
+	Sessions []struct {
+		SessionID string `json:"session_id"`
+		Connected bool   `json:"connected"`
+		HasLease  bool   `json:"has_lease"`
+	} `json:"sessions"`
+	Routes []struct {
+		ID           string `json:"id"`
+		DeliveryMode string `json:"delivery_mode"`
+		Ready        bool   `json:"ready"`
+	} `json:"routes"`
 	ConfigWatch struct {
 		Degraded       bool   `json:"degraded"`
 		Reason         string `json:"reason,omitempty"`

@@ -57,6 +57,7 @@ The constructors are `NewGoBridgeSingle(scope, id, *SingleProps)`,
 | `BridgeConfig` | `source.Source` | *required* | Sealed config from `gobridgecdk.BridgeYamlAsset`/`BridgeYamlInline`. |
 | `QueueRegistry` | `*registry.QueueRegistry` | conditionally required | Resolves SQS queue names in the config. |
 | `SsmParamRegistry` | `*registry.SsmParamRegistry` | conditionally required | Resolves SSM parameter URIs in the config. |
+| `ManagedSubscriptionBaselines` | `map[string][]string` | required per durable subscribing session | For every persistent or exclusive MQTT session that subscribes, the exact filters its broker identity already holds; an empty list attests a new identity. Validated at synth, stamped into the bootstrap document as `managed_subscription_baselines`, and seeded by the runtime at every boot. See [SQLite stores on the config mount](storage-and-secrets.md#sqlite-stores-on-the-config-mount). |
 | `CPU` | `*float64` | `512` | Fargate CPU units. |
 | `MemoryMiB` | `*float64` | `1024` | Fargate memory (MiB). |
 | `MountPath` | `*string` | `/var/lib/gobridge` | Container EFS mount path. |

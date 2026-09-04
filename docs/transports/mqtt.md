@@ -19,9 +19,12 @@ decoder.
 
 Because MQTT advertises `plan_driven_subscriptions`, every MQTT receiver
 subscribes only when the session manager reconciles the session plan. The bridge
-builder therefore fails the build if an MQTT receiver is bound to a session that
-never gets a manager (it would otherwise be silently inert, subscribing to
-nothing).
+builder therefore gives every MQTT receiver's session a manager: the route's
+`session` block or a binding when one names it, and otherwise the receiver's own
+binding to the session -- an ingress session, run by a plain manager with no
+lease and no outbox partition. A session declared `exclusive` is lease-held by
+definition, so one that only a receiver names is refused at build time, with the
+shapes that work named.
 
 ## Source redelivery, and what it admits
 

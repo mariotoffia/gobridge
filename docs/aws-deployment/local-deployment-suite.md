@@ -76,7 +76,7 @@ locally, the measured reason.
 | # | Topology | Local status |
 |---|---|---|
 | D1 | Single task, SQS in/out, config on shared storage | `TestLocal_SQSDataPlane` |
-| D2 | Single task, MQTT↔SQS | `TestLocal_MQTTSubjectAndAddressMapping` |
+| D2 | Single task, MQTT↔SQS; the MQTT ingress on a durable session holding the source, with its SQLite managed-subscription store on the mount | `TestLocal_MQTTSubjectAndAddressMapping` |
 | D3 | Control task read-write + worker tasks read-only | `TestLocal_ClusterSharedConfigAndScaling` |
 | D4 | DynamoDB HA, static member slots and leases | `TestLocal_StaticSlotCohort` |
 | D5 | Go producer/consumer Lambdas either side of the bridge | **not covered locally** — the probe that would qualify it (a `provided.al2023` function actually invoked through an SQS event source mapping) has not been run, so the topology stays on the credentialed suite |
@@ -90,7 +90,7 @@ locally, the measured reason.
 |---|---|---|
 | Data plane | SQS↔SQS round trip, batch of ten without duplicates | `TestLocal_SQSDataPlane` |
 | Data plane | MQTT→SQS and SQS→MQTT with `Subject` preserved and the binding's `Address` honoured | `TestLocal_MQTTSubjectAndAddressMapping` |
-| Delivery mode | an MQTT ingress on a durable session runs `direct_hold` — no outbox, no lease, no partition | **not covered locally** — the deployed task reports the mode correctly, but no message crosses the route: a plan-driven ingress session has no manager a `direct_hold` route can give it (see *Not yet stood up*) |
+| Delivery mode | an MQTT ingress on a durable session runs `direct_hold` — no outbox, no lease, no outbox partition — and its SQLite managed-subscription store lives on the deployed mount | `TestLocal_MQTTSubjectAndAddressMapping` — the deployed task reports the mode and a lease-less, connected ingress session, messages cross the route, and the store file is on the mount |
 | Deployment shape | outputs well-formed, health-check path parity, task role assumable and scoped | `TestLocal_DeploymentShape` |
 | Deployment shape | destroy leaves nothing | `TestLocal_DestroyLeavesNothing` |
 | Deployment shape | control-written config visible to a worker (the shared-storage proof) | `TestLocal_ClusterSharedConfigAndScaling` |
@@ -124,18 +124,24 @@ Each of these was measured, not assumed.
 
 ## Not yet stood up
 
-Three shapes an operator can choose today that no deployed run has exercised.
-They are open work, not gaps in the emulator — each is buildable here.
+Three shapes an operator can choose today that no deployed run had exercised.
+Two are closed; the third is open work, not a gap in the emulator.
 
-- [ ] **SQLite stores on a deployed task.** The mount is no longer the obstacle:
-      the harness now gives each stack's config directory the ownership and mode
-      the EFS access point creates, and a deployed task's SQLite store accepts it.
-      What blocks it now is the topology that would carry one. The only local
-      single-task shape that needs a SQLite store is an MQTT ingress on a durable
-      session, and a plan-driven ingress session has no manager a `direct_hold`
-      route can give it — the deployed task reports the right delivery mode and
-      then carries nothing. Closing this and the `direct_hold` row is one piece of
-      work, not two.
+- [x] **SQLite stores on a deployed task.** Stood up by
+      `TestLocal_MQTTSubjectAndAddressMapping`: the MQTT ingress session is
+      persistent, its route runs `direct_hold`, and its managed-subscription
+      store is a SQLite file on the deployed config mount. Two things had to
+      land for it. The receiver's own binding to its session now manages a
+      plan-driven ingress session that no route `session` block and no binding
+      names — a plain manager with no lease and no outbox partition — so the
+      route carries messages instead of reporting the right mode over a
+      session nothing reconciled. And the durable session's baseline is seeded
+      by the task itself at boot, from the `managed_subscription_baselines`
+      the `GoBridgeSingle` facade stamps into the bootstrap document, because
+      nothing but the task can write a store on that mount. The store keeps
+      its database in a directory of its own under the mount
+      (`managed-subscriptions/`), which it owns with mode `0700`; the mount
+      itself stays `755`.
 - [x] **Config held in DynamoDB.** Decided rather than built: this profile does
       **not** expose an overlay layer, and both pages now say so ([configuration
       overview](../configuration-overview.md#overlays-and-the-admin-config-api-do-not-compose),
@@ -151,9 +157,7 @@ They are open work, not gaps in the emulator — each is buildable here.
       closed producer→bridge→consumer loop asserts on are all questions the ECS
       topologies never raised.
 
-Both open rows have owners rather than being open-ended: the SQLite row and the
-`direct_hold` delivery-mode row above are the same defect and are one piece of
-work, and the Lambda row owns its own probe.
+The Lambda row owns its own probe.
 
 ## Where the code lives
 

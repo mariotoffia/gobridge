@@ -12,12 +12,12 @@ import (
 )
 
 // A plan-driven transport (MQTT, AMQP 0-9-1) subscribes only when a session
-// manager reconciles the session's plan, and the builder accepts a binding
-// that names the session as the way to get one ("or a binding targeting it").
-// That registration must produce a manager for EVERY delivery mode: a
-// direct_hold route's ingress session that is only ever managed under
-// shared_outbox is a session that never connects, a receiver that never
-// subscribes, and a bridge that reports ready while transporting nothing.
+// manager reconciles the session's plan, and a binding that names the session
+// is one of the ways it gets one. That registration must produce a manager for
+// EVERY delivery mode: a direct_hold route's ingress session that is only ever
+// managed under shared_outbox is a session that never connects, a receiver
+// that never subscribes, and a bridge that reports ready while transporting
+// nothing.
 func TestSessionSender_DirectHoldRouteGetsItsSessionManaged(t *testing.T) {
 	rt := newTestRuntime("bridge-direct-hold-session", nil, nil, nil)
 

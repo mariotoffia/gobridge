@@ -67,6 +67,34 @@ more than enough for even the most complex multi-route configurations.
 
 ---
 
+## SQLite stores on the config mount
+
+A single task has one durable filesystem: the config mount. A SQLite store that
+must survive the task -- `stores.managed_subscriptions` for a persistent or
+exclusive MQTT session -- therefore lives there, and two rules follow from the
+store's own access checks:
+
+- **Give the database a directory of its own under the mount**, for example
+  `/var/lib/gobridge/managed-subscriptions/managed-subscriptions.db`. The store
+  creates that final directory itself and requires it to be owned by the
+  container user with mode `0700`; the mount root the access point creates is
+  `755`, so a database placed directly in it is refused. Every directory above
+  it must be owned by `root` or by the container user, and must not be writable
+  by group or other unless it is root-owned and sticky (`/tmp`-style).
+- **Attest the session's managed-subscription baseline.** A durable session does
+  not start until its baseline exists -- a missing baseline is "history
+  unknown", not "no history" -- and nothing but the task can write this store.
+  Declare `ManagedSubscriptionBaselines` on `GoBridgeSingle` (an empty list for
+  a new broker identity, or the exact filters an existing identity still holds)
+  and the runtime seeds it at every boot, idempotently, before it builds the
+  bridge; the value travels as `managed_subscription_baselines` in the
+  [bootstrap document](configuration.md#field-reference).
+
+Several tasks sharing one SQLite file over EFS cannot serialize their writes,
+which is why this store belongs to the single-task profile; the DynamoDB HA
+profile keeps the same history in its own table and seeds the baseline at
+deploy time instead.
+
 ## SSM Parameter Store for Secrets
 
 GoBridge resolves API keys and credentials from AWS Systems Manager Parameter

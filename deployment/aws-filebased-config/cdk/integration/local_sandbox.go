@@ -379,6 +379,26 @@ func matchDeployedMountOwnership(t *testing.T, dir string) {
 	}
 }
 
+// deployedMountHolds reports whether a file exists at relative under a stack's
+// config directory, as a deployed task sees it. It looks from inside a root
+// container for the same reason matchDeployedMountOwnership acts from one: a
+// store that owns its directory keeps it 0700, so on a plain Linux host the
+// test process — neither root nor the container user — cannot look inside it
+// from the outside.
+func deployedMountHolds(t *testing.T, dir, relative string) bool {
+	t.Helper()
+	// `test -f` exits 1 for a missing file and the container exits 0 for a
+	// present one, so only a NON-1 failure is the harness rather than the
+	// answer. Say which, or a pull failure reads as a bridge that wrote nothing.
+	out, err := dockerexec.Run(dockerexec.RunTimeout, "run", "--rm", "--entrypoint", "sh",
+		"-v", dir+":/mnt/gobridge:ro", "--user", "0:0", mountOwnerImage,
+		"-c", "test -f /mnt/gobridge/"+relative+" || exit 1")
+	if err != nil && !strings.Contains(err.Error(), "exit status 1") {
+		t.Fatalf("cannot look inside the deployed mount %s for %s: %v\n%s", dir, relative, err, out)
+	}
+	return err == nil
+}
+
 // releaseDeployedMountOwnership hands a stack's config directory back to whoever
 // has to delete it. On a uid-mapping host nothing changed and this is inert; on a
 // plain Linux host the directory is now owned by the container user, and the test

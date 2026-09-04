@@ -454,13 +454,15 @@ const (
 	// connectivity.SessionPlan (MQTT/paho, amqp091). For such a transport a
 	// receiver bound to a session that never gets a manager is silently inert:
 	// nothing reconciles its plan, so it subscribes to nothing. The bridge
-	// builder uses this capability to require a session manager for every
-	// plan-driven receiver and to FAIL the build otherwise.
+	// builder uses this capability to give every plan-driven receiver's session
+	// a manager: through the route's session block or a binding when one names
+	// it, and otherwise through the receiver's own binding to the session, as an
+	// ingress session with no lease (see runtime.RegisterIngressSession).
 	//
 	// Self-establishing transports (amqp10, whose receivers attach links on
 	// start independently of the plan) and address-direct transports
 	// (SQS/Service Bus/HTTP, which poll or receive at an address and have no
-	// reconcile plan) do NOT advertise it, so the builder skips the check for
+	// reconcile plan) do NOT advertise it, so the builder wires nothing for
 	// them — a missing manager is not the same defect there.
 	CapPlanDrivenSubscriptions Capability = "plan_driven_subscriptions"
 )

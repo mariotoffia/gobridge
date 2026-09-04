@@ -204,7 +204,8 @@ func newLocalSQSFixture(stack awscdk.Stack, env SandboxEnv, topology string) {
 }
 
 // newLocalSingleService is the one-task deployment every single-node topology
-// stands on.
+// stands on. opts let a topology add what only it needs — a durable session's
+// baseline attestation, say — without every single-task shape carrying it.
 func newLocalSingleService(
 	stack awscdk.Stack,
 	vpc awsec2.IVpc,
@@ -212,15 +213,20 @@ func newLocalSingleService(
 	bridgeID string,
 	src source.Source,
 	queues *registry.QueueRegistry,
+	opts ...func(*gobridgesingle.SingleProps),
 ) *gobridgesingle.GoBridgeSingle {
-	return gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Single"), &gobridgesingle.SingleProps{
+	props := &gobridgesingle.SingleProps{
 		Vpc:           vpc,
 		VpcSubnets:    subnetSelection(env),
 		Image:         awsecs.ContainerImage_FromRegistry(jsii.String(localBridgeImage()), nil),
 		Bootstrap:     localBootstrap(bridgeID),
 		BridgeConfig:  src,
 		QueueRegistry: queues,
-	})
+	}
+	for _, opt := range opts {
+		opt(props)
+	}
+	return gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Single"), props)
 }
 
 // localALBAttachment builds the load balancer the profile puts in front of a

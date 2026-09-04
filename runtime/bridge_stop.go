@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/logging"
-	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
@@ -229,21 +228,7 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 		managed[sid] = true
 		mgrs = append(mgrs, mgr)
 	}
-	type sessRef struct {
-		sid  string
-		sess ports.Session
-	}
-	sessRefs := make([]sessRef, 0, len(rt.entries)+len(rt.sessionSenders))
-	for _, entry := range rt.entries {
-		sid := ""
-		if entry.sessCfg != nil {
-			sid = entry.sessCfg.SessionID
-		}
-		sessRefs = append(sessRefs, sessRef{sid: sid, sess: entry.session})
-	}
-	for sid, sse := range rt.sessionSenders {
-		sessRefs = append(sessRefs, sessRef{sid: sid, sess: sse.session})
-	}
+	unmanagedSessions := rt.unmanagedSessionRefsLocked(managed)
 	metrics := rt.metrics
 	// Role-tagged so a close failure names the store an operator has to go and
 	// look at, rather than an anonymous "close: file is locked".
@@ -265,15 +250,10 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 	}
 	// close every session that no manager owns. A built-but-never-started
 	// runtime has no managers at all, so ALL of its opened sessions land here;
-	// a started runtime reaches here only for unmanaged binding sessions
-	// (session senders never promoted to a drainer). Dedupe by pointer so a
-	// session shared across entries/binding-senders is closed exactly once.
-	closedSessions := make(map[ports.Session]bool)
-	for _, ref := range sessRefs {
-		if ref.sess == nil || managed[ref.sid] || closedSessions[ref.sess] {
-			continue
-		}
-		closedSessions[ref.sess] = true
+	// a started runtime reaches here only for a session nothing managed. The
+	// refs are already deduplicated by pointer, and a session a manager closed
+	// is never in them, so each is closed exactly once.
+	for _, ref := range unmanagedSessions {
 		if err := ref.sess.Close(closeCtx); err != nil {
 			errs = append(errs, fmt.Errorf("runtime: stop: closing unmanaged session %q: %w", ref.sid, err))
 		}

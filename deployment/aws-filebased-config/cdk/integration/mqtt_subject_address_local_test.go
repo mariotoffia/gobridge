@@ -15,13 +15,21 @@ import (
 )
 
 // A deployed MQTT↔SQS bridge, asserted on the two fields that are easiest to
-// conflate and most expensive to get wrong.
+// conflate and most expensive to get wrong, and on the shape its MQTT ingress
+// runs in.
 //
 // Subject is the producer's logical event name and travels WITH the message.
 // Address is the transport destination chosen at egress and belongs to the
 // binding. A bridge that wrote the destination into the subject, or published on
 // the subject instead of the address, would still pass a plain round trip — so
 // both directions assert the pair, not the payload alone.
+//
+// The ingress is a persistent session on a direct_hold route: it holds the
+// broker delivery until the queue has accepted it, with no outbox, no lease and
+// no outbox partition, and the one store it needs — the exact record of the
+// filters it installed on the broker — is a SQLite file on the deployed mount.
+// The route reporting that mode is not the proof; a session nothing reconciles
+// reports it just as well. Messages crossing it is.
 func TestLocal_MQTTSubjectAndAddressMapping(t *testing.T) {
 	env := RequireSandbox(t)
 	const topology = "mqtt"
@@ -35,8 +43,40 @@ func TestLocal_MQTTSubjectAndAddressMapping(t *testing.T) {
 	// deploy did not create surfaces here, naming the resource, instead of eight
 	// minutes later as a member that never became ready.
 	queues := newLocalQueues(t, topology, localSQSInbound, localSQSOutbound)
-	stack.WaitServiceReady(t, ctx, stack.Outputs["ControlServiceName"], 1, 8*time.Minute)
+	hosts := stack.WaitServiceReady(t, ctx, stack.Outputs["ControlServiceName"], 1, 8*time.Minute)
 	broker := newLocalBroker(t)
+
+	t.Run("mqtt_ingress_holds_the_source_on_a_durable_session_with_no_lease", func(t *testing.T) {
+		health, err := stack.DeepHealth(ctx, hosts[0])
+		if err != nil {
+			t.Fatalf("read the deployed member's deep health: %v", err)
+		}
+		var mode string
+		for _, route := range health.Routes {
+			if route.ID == "mqtt-to-sqs" {
+				mode = route.DeliveryMode
+			}
+		}
+		if mode != "direct_hold" {
+			t.Fatalf("route mqtt-to-sqs runs %q, want direct_hold (routes: %+v)", mode, health.Routes)
+		}
+		var connected, leased, seen bool
+		for _, session := range health.Sessions {
+			if session.SessionID == localMQTTIngress {
+				seen, connected, leased = true, session.Connected, session.HasLease
+			}
+		}
+		if !seen || !connected || leased {
+			t.Fatalf("ingress session %s: seen=%v connected=%v lease=%v, want it connected and holding no lease "+
+				"(sessions: %+v)", localMQTTIngress, seen, connected, leased, health.Sessions)
+		}
+		// The durable session's exact filter history lives on the deployed mount,
+		// in the directory the store created for itself.
+		if !deployedMountHolds(t, stack.ConfigDir, localMQTTHistoryDir+"/managed-subscriptions.db") {
+			t.Fatalf("the managed-subscription store is not on the deployed mount at %s/%s",
+				stack.ConfigDir, localMQTTHistoryDir)
+		}
+	})
 
 	t.Run("mqtt_ingress_keeps_the_subject_and_uses_the_bindings_address", func(t *testing.T) {
 		const subject = "sensor.temperature.reading"

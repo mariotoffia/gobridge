@@ -196,7 +196,8 @@ test: audit-timings audit-test-timings ## Run unit tests (no Docker, integration
 	@cd deployment/aws-filebased-config/cdk && go test -count=1 -timeout 120s \
 		./constructs/internal/grants ./constructs/internal/gobridgebase \
 		./constructs/gobridgedynamodbha ./constructs/gobridgealarms \
-		./constructs/gobridgealbattachment ./constructs/internal/singleton \
+		./constructs/gobridgealbattachment ./constructs/gobridgesingle \
+		./constructs/gobridgecluster ./constructs/internal/singleton \
 		./constructs/internal/validation ./registry
 	@cd deployment/aws-filebased-config/cdk && AWS_EC2_METADATA_DISABLED=true \
 		go test -race -count=1 -timeout 120s -tags=integration_aws \

@@ -24,8 +24,10 @@ sender settings under `options.sender`, per-topic declarations under
 
 > **Plan-driven subscriptions.** amqp091 receivers subscribe (queue-declare +
 > bind + consume) *only* when the session manager reconciles the `SessionPlan`.
-> A receiver on an unmanaged session is silently inert, so the builder requires
-> a session manager for amqp091 receivers.
+> A receiver on an unmanaged session would be silently inert, so the builder
+> gives every amqp091 receiver's session a manager: the route's `session` block
+> or a binding when one names it, and otherwise the receiver's own binding to
+> the session (an ingress session with no lease).
 
 ## YAML Example
 

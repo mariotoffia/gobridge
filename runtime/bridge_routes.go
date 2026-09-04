@@ -37,6 +37,10 @@ func (rt *Runtime) RegisterSessionSender(
 	if _, exists := rt.sessionSenders[cfg.SessionID]; exists {
 		return errors.New("duplicate session sender: " + cfg.SessionID)
 	}
+	if _, exists := rt.ingressSessions[cfg.SessionID]; exists {
+		return fmt.Errorf("session sender %q is already registered as an ingress session; a session has one manager",
+			cfg.SessionID)
+	}
 
 	rt.sessionSenders[cfg.SessionID] = &sessionSenderEntry{
 		config:  cfg,
@@ -65,6 +69,12 @@ func (rt *Runtime) AddRoute(
 	for _, e := range rt.entries {
 		if e.config.ID == cfg.ID {
 			return errors.New("duplicate route ID: " + cfg.ID)
+		}
+	}
+	if sessCfg != nil {
+		if _, exists := rt.ingressSessions[sessCfg.SessionID]; exists {
+			return fmt.Errorf("route %q names session %q as its primary session, but it is registered as an "+
+				"ingress session; a session has one manager", cfg.ID, sessCfg.SessionID)
 		}
 	}
 

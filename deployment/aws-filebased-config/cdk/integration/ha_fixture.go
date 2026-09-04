@@ -224,6 +224,15 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox, slots *ha.Mem
 				MaxRenewFails: 3, StepDownGrace: "2s", AcquirePollInterval: "1s",
 				RenewCallTimeout: "1s", FailoverSLO: haFailoverObjective.String(), StartupAllowance: "30s",
 				DrainInterval: "500ms", DrainBatchSize: 10,
+				// A declared objective must state what a node-local broker outage
+				// does, and this cohort records that it accepts one. The reason is
+				// the rollout proof itself: its confirm-window phase deliberately
+				// leaves every member unable to satisfy its subscriptions, which a
+				// positive threshold would read as an outage and answer by ending
+				// the process — taking down the cohort the phase is observing. The
+				// broker-path step-down is proved instead where it can be isolated,
+				// by the long-running broker-path test.
+				BrokerHealthStepDown: "off",
 			},
 		}},
 	}

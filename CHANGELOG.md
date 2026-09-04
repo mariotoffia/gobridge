@@ -10,6 +10,49 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Fixed — a plan-driven ingress session that only its receiver names now runs
+
+- **The receiver's own binding manages its session.** An MQTT or AMQP 0-9-1
+  receiver subscribes only when a session manager reconciles the session plan,
+  and a session got a manager in exactly two ways: a route `session` block (a
+  lease-held session whose outbox partition the route drains) or a binding
+  `session_id` (the partition a binding's records live in). A `direct_hold`
+  route can use neither — it holds no lease and persists no records — so the
+  shape that mode exists for, an MQTT ingress on a durable session holding the
+  broker delivery until the destination accepts it, built, reported the right
+  mode and carried nothing. The builder now registers such a session with the
+  runtime as an **ingress session** (`Runtime.RegisterIngressSession`): a plain
+  manager that starts it, reconciles its plan and follows reconnects, with no
+  lease and no outbox partition. A session has exactly one manager, so the
+  registration refuses an id already held by a route session block or a
+  session sender, and the lease-bearing paths keep precedence. A session
+  declared `exclusive` is lease-held by definition and cannot be managed this
+  way; the refusal for that shape now names both lease-bearing ways out and
+  `persistent` as the lease-less one.
+- **The deployed proof.** The local deployment matrix's MQTT topology runs its
+  ingress on a persistent session on `direct_hold`, with its SQLite
+  managed-subscription store on the deployed config mount, and asserts the
+  mode, the lease-less session, the messages crossing and the store file on the
+  mount. That also stands up the matrix's SQLite-on-a-deployed-task row.
+
+### Added — a durable session's baseline, seeded by the task that owns the mount
+
+- **`managed_subscription_baselines` in the bootstrap document, stamped from
+  `GoBridgeSingle`'s `ManagedSubscriptionBaselines` prop.** A persistent or
+  exclusive MQTT session does not start until its managed-subscription baseline
+  exists, and nothing but the task can write a SQLite store on the config
+  mount. The facade requires the attestation for every such session that
+  subscribes (an empty list for a new broker identity), validates the filters
+  at synth, and the runtime seeds them before it builds the bridge on every
+  apply — not only at boot, because a task routinely boots on the start-empty
+  config and the durable session arrives with the first real one. Seeding is
+  idempotent and additive: an established baseline is kept and the listed
+  filters are added, so a filter the running session later removed is re-added
+  until the attestation is redeployed without it. The store keeps its database
+  in a directory of its own
+  under the mount, which it owns with mode `0700`; see
+  [SQLite stores on the config mount](docs/aws-deployment/storage-and-secrets.md#sqlite-stores-on-the-config-mount).
+
 ### Added — secure-broker evidence, injected network faults, and a release gate that names its proofs
 
 - **An authenticated, certificate-validating broker fixture.**

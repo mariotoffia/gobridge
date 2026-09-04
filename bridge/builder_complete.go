@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"slices"
 	"strings"
 	"time"
 
@@ -301,7 +300,12 @@ func (b *Builder) wireRoutes(
 		var routeSession ports.Session
 		var routeSender ports.Sender
 
-		source := b.sourceRouteFacts(findReceiver(b.cfg, routeDef.ReceiverID))
+		recvDef := findReceiver(b.cfg, routeDef.ReceiverID)
+		source := b.sourceRouteFacts(recvDef)
+		sourceSessionID := ""
+		if recvDef != nil {
+			sourceSessionID = recvDef.SessionID
+		}
 
 		if routeDef.Session != nil {
 			sid := routeDef.Session.SessionID
@@ -377,6 +381,7 @@ func (b *Builder) wireRoutes(
 			SourceAutoExtend:        source.AutoExtend,
 			SourceTransport:         source.Transport,
 			SourceRedeliveryRefusal: source.RedeliveryRefusal,
+			SourceSessionID:         sourceSessionID,
 		}
 
 		// Build content-based resolver from config if present.
@@ -488,13 +493,9 @@ func (b *Builder) wireRoutes(
 
 	// registeredSessions now holds every session the builder wired with a
 	// manager (route-primary Path-1 + session-sender Path-2). A plan-driven
-	// receiver bound to a session absent from this set would never reconcile and
-	// be silently inert — fail the build instead.
-	if err := b.validatePlanDrivenReceiverSessions(registeredSessions); err != nil {
-		return err
-	}
-
-	return nil
+	// receiver bound to a session absent from this set is managed by its own
+	// binding to it: the session becomes an ingress session.
+	return b.wireIngressSessions(rt, sessions, registeredSessions)
 }
 
 // egressDurabilityAdvisory reports whether a route wiring warrants an
@@ -545,56 +546,6 @@ func egressDurabilityAdvisory(mode routing.DeliveryMode, snd ports.Sender) bool 
 	default:
 		return true
 	}
-}
-
-// PLAN-DRIVEN transport (one advertising ports.CapPlanDrivenSubscriptions —
-// mqtt, amqp091) is bound to a session that gets NO session manager. Such a
-// session is never reconciled, so the receiver's subscriptions are never
-// established and it is silently inert (the missing-manager sibling
-// of ADV).
-//
-// managed is the set of sessions wired with a manager during wireRoutes — every
-// route-primary session (Path-1) and every session-sender session (Path-2). A
-// session manager is created ONLY from one of those two wirings (see
-// runtime/bridge_start.go), so a plan-driven receiver whose session is absent
-// from this set can never have its plan reconciled.
-//
-// Self-establishing (amqp10, whose receivers attach links on start independent
-// of the plan) and address-direct (SQS/Service Bus/HTTP) transports do NOT
-// advertise the capability and are skipped: for them a missing manager is not
-// the same silent-loss defect. This is exactly why could not be fixed
-// with a blanket validate-layer guard — it false-positived on amqp10, which the
-// config layer cannot distinguish without adapter knowledge arch-lint forbids.
-func (b *Builder) validatePlanDrivenReceiverSessions(managed map[string]bool) error {
-	// Only a receiver actually referenced by a route is wired and can subscribe;
-	// an unreferenced receiver is inert regardless of its session, so it is not
-	// this defect and is not flagged here.
-	routed := make(map[string]bool, len(b.cfg.Routes))
-	for i := range b.cfg.Routes {
-		routed[b.cfg.Routes[i].ReceiverID] = true
-	}
-	for i := range b.cfg.Receivers {
-		rd := &b.cfg.Receivers[i]
-		if rd.SessionID == "" || managed[rd.SessionID] || !routed[rd.ID] {
-			continue
-		}
-		transport := rd.Transport
-		if transport == "" {
-			if sd := findSession(b.cfg, rd.SessionID); sd != nil {
-				transport = sd.Transport
-			}
-		}
-		tf, ok := b.transports[transport]
-		if !ok || !slices.Contains(tf.Capabilities(), ports.CapPlanDrivenSubscriptions) {
-			continue
-		}
-		return fmt.Errorf("bridge: receiver %q (transport %q) is bound to session %q, which no route "+
-			"manages, so its plan-driven subscriptions would never reconcile and it would be silently "+
-			"inert; give a route a session block naming %q (or a binding targeting it) so the session is "+
-			"managed and its subscriptions are established",
-			rd.ID, transport, rd.SessionID, rd.SessionID)
-	}
-	return nil
 }
 
 // validateSharedOutboxBindingSessions rejects a shared_outbox binding whose

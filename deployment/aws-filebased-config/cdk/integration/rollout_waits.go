@@ -255,6 +255,33 @@ type rolloutOutcome struct {
 // accepted it and took it back, aborted means it never accepted it at all.
 // Agreement is still required — a cohort where one member confirmed and another
 // reverted is the split the barrier exists to rule out.
+// currentCohortGeneration is the highest rollout generation the roster reports
+// right now.
+//
+// A phase that proposes a change baselines its wait on this rather than on the
+// last COMMITTED generation. The two differ whenever a preceding phase left a
+// settled-but-uncommitted generation in the shared row — an ABORTED proposal is
+// exactly that — and every wait here is keyed on "strictly after", so a
+// committed-keyed baseline is satisfied immediately by that stale outcome
+// instead of by the proposal this phase is about to make.
+func currentCohortGeneration(
+	t *testing.T,
+	ctx context.Context,
+	probe cohortProbe,
+	adminKey string,
+	roster []string,
+) uint64 {
+	t.Helper()
+	observed, _ := observeSlots(ctx, probe, adminKey)
+	highest := uint64(0)
+	for _, id := range roster {
+		if health, ok := observed[id]; ok && health.fresh() && health.Generation > highest {
+			highest = health.Generation
+		}
+	}
+	return highest
+}
+
 func waitCohortSettled(
 	t *testing.T,
 	ctx context.Context,

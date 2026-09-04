@@ -14,6 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/bridgecfg"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgealbattachment"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgecluster"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/ports"
@@ -31,17 +32,26 @@ const (
 	localMQTTInboundTopic  = "gobridge/local/in/sensor"
 	localMQTTOutboundTopic = "gobridge/local/out"
 
-	// Two sessions, not one. The ingress session owns the outbox partition its
-	// route drains and is therefore exclusive; the egress session only publishes.
-	// A single shared session would have to carry both roles' session-manager
-	// settings at once, which the runtime refuses — and rightly, because the two
-	// have different failover semantics.
+	// Two sessions, not one. The ingress session is a durable session that the
+	// receiver alone manages: it holds no lease and owns no outbox partition, and
+	// its route holds the broker delivery until the queue has accepted it. The
+	// egress session only publishes, and connects only once a route holds its
+	// lease. A single shared session would have to be both at once, which the
+	// runtime refuses — and rightly, because the two have different failover
+	// semantics.
 	localMQTTIngress  = "mqtt-ingress"
 	localMQTTEgress   = "mqtt-egress"
 	localMQTTReceiver = "mqtt-in"
 	localMQTTSender   = "mqtt-out"
 	localSQSInbound   = "sqs-in"
 	localSQSOutbound  = "sqs-out"
+
+	// localMQTTHistoryPath is where the durable ingress session keeps the exact
+	// filters it installed on the broker. It is on the config mount — the only
+	// durable storage a single task has — in a directory of its own, because
+	// the store owns its final parent (0700) while the mount itself is 0755.
+	localMQTTHistoryDir  = "managed-subscriptions"
+	localMQTTHistoryPath = "/var/lib/gobridge/" + localMQTTHistoryDir + "/managed-subscriptions.db"
 )
 
 // newLocalMQTTFixture is the single-task MQTT↔SQS topology.
@@ -64,11 +74,15 @@ func newLocalMQTTFixture(stack awscdk.Stack, env SandboxEnv, topology string) {
 	cfg, err := bridgecfg.New("gobridge-local-mqtt").
 		WithHTTPAdminAPI(localAdminOptions()).
 		WithMemoryDLQ().
-		// The MQTT route settles through the outbox, so the deployment has to
-		// provide one. It is in process memory because this topology proves a
-		// field mapping on one task; a real MQTT deployment uses a durable store.
+		// The SQS→MQTT route settles through the outbox and its egress session is
+		// lease-held, so the deployment has to provide both. They are in process
+		// memory because this topology proves a field mapping on one task; a real
+		// MQTT deployment uses a durable store. The MQTT→SQS route uses neither.
 		WithMemoryOutbox().
 		WithMemoryLease().
+		// The durable ingress session owes the broker an exact record of the
+		// filters it installed (ADR 0003); it is the only store that route needs.
+		WithSQLiteManagedSubscriptions(localMQTTHistoryPath).
 		WithSQSReceiver(localSQSInbound, queues.Ref(localQueueName(topology, localSQSInbound)),
 			byQueueName(localQueueName(topology, localSQSInbound))).
 		WithSQSSender(localSQSOutbound, queues.Ref(localQueueName(topology, localSQSOutbound)),
@@ -79,10 +93,24 @@ func newLocalMQTTFixture(stack awscdk.Stack, env SandboxEnv, topology string) {
 	if err != nil {
 		panic("integration: build the local MQTT config: " + err.Error())
 	}
+	// The ingress session survives the process: that is what lets the broker
+	// redeliver a delivery the bridge never settled, and so what admits the
+	// route to direct_hold.
+	for i := range cfg.Sessions {
+		if cfg.Sessions[i].ID == localMQTTIngress {
+			cfg.Sessions[i].SessionMode = "persistent"
+		}
+	}
 	addMQTTLegs(cfg, topology)
 
 	src := gobridgecdk.BridgeYamlInline(cfg)
-	single := newLocalSingleService(stack, vpc, env, "gobridge-local-mqtt", src, queues)
+	single := newLocalSingleService(stack, vpc, env, "gobridge-local-mqtt", src, queues,
+		func(props *gobridgesingle.SingleProps) {
+			// The ingress session's broker identity is new — this stack is the
+			// first thing to connect with it — and attesting that is what lets the
+			// durable session start.
+			props.ManagedSubscriptionBaselines = map[string][]string{localMQTTIngress: {}}
+		})
 	localALBAttachment(stack, vpc, env, &gobridgealbattachment.AttachmentProps{
 		Single: single, BridgeConfig: src,
 	})
@@ -111,13 +139,11 @@ func addMQTTLegs(cfg *ports.BridgeConfig, topology string) {
 		Address: localMQTTOutboundTopic,
 	}
 	mqttBinding.SetDecoded(&paho.Config{}, nil)
-	// The binding names the session whose outbox partition its records live in.
-	// Without it they would persist under a partition nothing drains and be lost
-	// silently, which the runtime refuses at startup.
+	// The binding names no session: a direct_hold route persists no records, so
+	// there is no outbox partition for them to live in.
 	sqsBinding := ports.BindingDef{
 		ID: localSQSOutbound + "-binding", SenderID: localSQSOutbound,
-		SessionID: localMQTTIngress,
-		Address:   localQueueName(topology, localSQSOutbound),
+		Address: localQueueName(topology, localSQSOutbound),
 	}
 	sqsBinding.SetDecoded(cfg.Senders[0].Config, nil)
 
@@ -125,20 +151,20 @@ func addMQTTLegs(cfg *ports.BridgeConfig, topology string) {
 	cfg.Senders = append(cfg.Senders, sender)
 	cfg.Bindings = append(cfg.Bindings, sqsBinding, mqttBinding)
 	cfg.Routes = append(cfg.Routes,
-		// An MQTT source has no visibility window to extend, so hold-then-settle
-		// is not available to it at all: the durable path is the outbox, which
-		// persists the record before the source is settled. Fencing is waived
-		// because this topology is one task — the shared-consumer race the fence
-		// exists for cannot happen here.
+		// The ingress holds the broker delivery until the queue has accepted it.
+		// A persistent session on a QoS 1 subscription redelivers a delivery the
+		// bridge never settled, which is the precondition direct_hold rests on,
+		// so the route needs no outbox, no lease and no outbox partition. Nothing
+		// but the receiver names the ingress session: the receiver's own binding
+		// to it is what connects it and reconciles its subscription.
 		ports.RouteDef{
-			ID: "mqtt-to-sqs", ReceiverID: localMQTTReceiver, DeliveryMode: "shared_outbox",
+			ID: "mqtt-to-sqs", ReceiverID: localMQTTReceiver, DeliveryMode: "direct_hold",
 			Bindings: []string{sqsBinding.ID},
 			Policy: ports.PolicyDef{
-				AckAfter: "outbox_persist", MaxInFlight: 10, MaxOutboxDepth: 1000,
-				OnExpired: "dlq", OnPermanentFailure: "dlq",
+				MaxInFlight: 10, OnExpired: "dlq", OnPermanentFailure: "dlq",
 				// One task, one subscriber. The fence exists to stop two consumers
-				// of the same MQTT subscription racing the same outbox partition,
-				// and this topology has no second consumer to race.
+				// of the same MQTT subscription racing the same destination, and
+				// this topology has no second consumer to race.
 				AllowUnfenced: true,
 			},
 		},
@@ -169,6 +195,10 @@ func addMQTTLegs(cfg *ports.BridgeConfig, topology string) {
 				// when the two disagree, which is that check working.
 				RenewCallTimeout: "1s", FailoverSLO: "10m", StartupAllowance: "30s",
 				DrainInterval: "500ms", DrainBatchSize: 10,
+				// A declared objective must say what a node-local broker outage
+				// does. One task has no standby to fail over to, so it is recorded
+				// as accepted rather than left undeclared.
+				BrokerHealthStepDown: "off",
 			},
 		},
 	)

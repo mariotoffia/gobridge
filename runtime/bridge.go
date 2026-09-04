@@ -64,12 +64,15 @@ type Runtime struct {
 	mu             sync.Mutex
 	entries        []*routeEntry
 	sessionSenders map[string]*sessionSenderEntry
-	sessionMgrs    map[string]*session.Manager
-	drainers       []*outbox.Drainer
-	globalSem      chan struct{}
-	running        bool
-	healthy        bool
-	terminal       bool
+	// ingressSessions are the sessions registered for the receivers that
+	// subscribe through them and for nothing else (RegisterIngressSession).
+	ingressSessions map[string]*ingressSessionEntry
+	sessionMgrs     map[string]*session.Manager
+	drainers        []*outbox.Drainer
+	globalSem       chan struct{}
+	running         bool
+	healthy         bool
+	terminal        bool
 	// stopped records a clean, DELIBERATE Stop (an admin pause or a
 	// supervisor swap of the old runtime). Unlike terminal it is NOT an
 	// unrecoverable death: /live stays 200 and the liveness backstop must not
@@ -246,13 +249,14 @@ func WithGlobalMaxInFlight(n int) Option {
 // New creates a new Runtime with the given options.
 func New(opts ...Option) *Runtime {
 	rt := &Runtime{
-		instanceID:     generateID(),
-		sessionSenders: make(map[string]*sessionSenderEntry),
-		sessionMgrs:    make(map[string]*session.Manager),
-		healthy:        true,
-		audit:          ports.NoopAuditLogger{},
-		tracer:         &ports.NoopTracer{},
-		hook:           ports.NoopDeliveryHook{},
+		instanceID:      generateID(),
+		sessionSenders:  make(map[string]*sessionSenderEntry),
+		ingressSessions: make(map[string]*ingressSessionEntry),
+		sessionMgrs:     make(map[string]*session.Manager),
+		healthy:         true,
+		audit:           ports.NoopAuditLogger{},
+		tracer:          &ports.NoopTracer{},
+		hook:            ports.NoopDeliveryHook{},
 	}
 	for _, opt := range opts {
 		opt(rt)

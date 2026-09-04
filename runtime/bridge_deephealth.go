@@ -35,7 +35,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 	instanceID := rt.instanceID
 	role := rt.roleUnlocked()
 
-	sessSnaps := make([]sessionSnap, 0, len(rt.entries)+len(rt.sessionSenders))
+	sessSnaps := make([]sessionSnap, 0, len(rt.entries)+len(rt.sessionSenders)+len(rt.ingressSessions))
 	seen := make(map[string]bool)
 	for _, e := range rt.entries {
 		// Routes whose AddRoute caller passed a nil *session.Config
@@ -65,6 +65,15 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 			_, snap.hasLease = mgr.Token()
 		}
 		sessSnaps = append(sessSnaps, snap)
+	}
+	// An ingress session never defers its connect and never holds a lease, so
+	// it is counted the way a plain single session is.
+	for sid, ise := range rt.ingressSessions {
+		if seen[sid] {
+			continue
+		}
+		seen[sid] = true
+		sessSnaps = append(sessSnaps, sessionSnap{sess: ise.session, sid: sid})
 	}
 
 	routeSnaps := make([]routeSnap, 0, len(rt.entries))

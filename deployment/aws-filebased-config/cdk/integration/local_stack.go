@@ -42,6 +42,11 @@ type LocalStack struct {
 	StackName string
 	AssemblyD string
 	AdminKey  string
+	// ConfigDir is the host directory THIS stack's tasks bind their shared
+	// config volume to. It is captured per stack because the harness rewrites
+	// its "current" one on every deploy, so a proof reading that later would be
+	// reading whichever topology deployed last.
+	ConfigDir string
 
 	clusterARN string
 	ecs        *ecs.Client
@@ -76,6 +81,7 @@ func DeployLocal(t *testing.T, env SandboxEnv, scenario string, build func(awscd
 		StackName:  stackName,
 		AssemblyD:  *app.Outdir(),
 		AdminKey:   localAdminKey,
+		ConfigDir:  localState.currentConfigDir,
 		clusterARN: outputs["ClusterArn"],
 		ecs:        ecs.NewFromConfig(localAWSConfig(t)),
 		backend:    localState,

@@ -161,6 +161,9 @@ func everyShapeStack(t *testing.T) (haStack awscdk.Stack, rollupStack awscdk.Sta
 		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
 		Bootstrap:    haBootstrap(),
 		BridgeConfig: h.source,
+		// The HA document carries a durable subscribing session, which the single
+		// facade does not admit without its baseline attested.
+		ManagedSubscriptionBaselines: map[string][]string{"mqtt-ha": {}},
 	})
 	gobridgealarms.NewGoBridgeAlarms(rollup, jsii.String("Alarms"), &gobridgealarms.AlarmsProps{
 		Single:             single,

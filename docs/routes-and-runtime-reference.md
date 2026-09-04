@@ -38,7 +38,12 @@ An MQTT route that meets it needs no outbox, no lease and no outbox partition; i
 holds the broker delivery instead of copying it into a store. Reaching for
 `shared_outbox` there adds a second durable hop in series for the same crash
 window, and moves the durable copy out of the broker into a store the operator
-now has to run.
+now has to run. The ingress session needs no `session` block and no binding
+naming it either: the receiver's own binding to the session is what connects it
+and reconciles its subscriptions, with no lease and no partition. What a durable
+session still needs is `stores.managed_subscriptions` -- the exact record of the
+filters it installed on the broker -- with its baseline seeded before the first
+start (see [MQTT durable sessions](transports/mqtt-durable-sessions.md#managed-subscription-history)).
 
 - **`direct_hold`** -- Source held open until egress completes. No inter-instance fencing; destinations must handle duplicates idempotently in clustered mode. When a `resolver` is configured, multiple bindings are allowed -- the resolver selects one per message. **Rejected at config load for a clustered exclusive route whose ingress is the HTTP transport:** a request forwarded to an owner that has just stepped down can be sent by the old owner while the new owner handles a retry (forwarded HTTP requests skip the ownership re-check, and `direct_hold` carries no fencing token at the sender boundary), a bounded duplicate-send window across failover. Use `shared_outbox` for that class. Non-clustered or non-HTTP-exclusive `direct_hold` routes are unaffected.
 - **`shared_outbox`** -- Source acknowledged after persisting to outbox. Outbox drainer delivers asynchronously. Requires `stores.outbox`.

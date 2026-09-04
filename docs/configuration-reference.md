@@ -377,7 +377,7 @@ Bindings connect routes to senders with a specific address.
 |-------|------|----------|---------|-------------|
 | `id` | string | **yes** | -- | Unique binding identifier |
 | `sender_id` | string | **yes** | -- | Reference to a sender |
-| `session_id` | string | no | -- | The session this binding runs on, and the session the route thereby **manages** (connect, subscribe, reconcile). An MQTT or AMQP 0-9-1 session that no route manages -- through a binding `session_id` or a route `session` block -- never connects or subscribes, so an ingress session must be named here or in the route's `session` block. |
+| `session_id` | string | no | -- | The session this binding runs on and -- under `shared_outbox` -- the outbox partition its records live in and are drained from; naming a session here also gives it its lease-held manager. An ingress session that only a receiver names needs neither this nor a route `session` block: the receiver's own binding to it connects it and reconciles its subscriptions, with no lease and no partition (the shape a `direct_hold` route holds its source in). A session declared `exclusive` must still be named here or in a route `session` block, because exclusive means lease-held. |
 | `address` | string | **yes** | -- | Destination address -- supports `{header}` templates |
 | `options` | map | no | -- | Per-binding options -- **parsed but not consumed at runtime** (`DestinationBinding.Config` is never read); leave bindings bare and configure the transport on the sender. |
 

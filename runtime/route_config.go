@@ -77,6 +77,15 @@ type RouteConfig struct {
 	// only the transport knows which one it is. Populated by the builder from
 	// ports.SourceRedeliveryConfig; optional for programmatic callers.
 	SourceRedeliveryRefusal string
+
+	// SourceSessionID is the id of the session this route's receiver subscribes
+	// through, when the source is a stateful transport. The runtime installs the
+	// ingress settlement barrier for this route on that session, so a session
+	// managed only for its receivers (RegisterIngressSession) waits for the
+	// deliveries the route accepted to settle before it recycles a broker
+	// connection. Populated by the builder; optional for programmatic callers,
+	// whose route session argument covers the same need by identity.
+	SourceSessionID string
 }
 
 // CheckRandSource probes crypto/rand once and returns a permanent

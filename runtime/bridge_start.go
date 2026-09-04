@@ -87,7 +87,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		rt.logger.Log(ctx, logging.LevelDebug, "runtime starting",
 			"instance_id", rt.instanceID,
 			"route_count", len(rt.entries),
-			"session_count", len(rt.sessionMgrs)+len(rt.sessionSenders),
+			"session_count", len(rt.sessionMgrs)+len(rt.sessionSenders)+len(rt.ingressSessions),
 		)
 	}
 
@@ -204,8 +204,8 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	drainerOwner := make(map[string]string)
 	// Source route settlement barriers are installed on sessions after every
 	// RouteRunner exists and before any background goroutine starts.
-	ingressSessions := make(map[string]ports.Session)
-	ingressRoutes := make(map[string][]string)
+	settlementSessions := make(map[string]ports.Session)
+	settlementRoutes := make(map[string][]string)
 	warnDrainerConfigBleed := func(sid, owner, routeID string) {
 		if owner == routeID || rt.logger == nil {
 			return
@@ -266,8 +266,8 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 		if entry.session != nil && entry.sessCfg != nil {
 			sid := entry.sessCfg.SessionID
-			ingressSessions[sid] = entry.session
-			ingressRoutes[sid] = append(ingressRoutes[sid], entry.config.ID)
+			settlementSessions[sid] = entry.session
+			settlementRoutes[sid] = append(settlementRoutes[sid], entry.config.ID)
 			if _, exists := rt.sessionMgrs[sid]; !exists {
 				mgr := session.NewWithMetrics(*entry.sessCfg, entry.session, rt.leaseStore, rt.leaseOwnerID, rt.logger, m, rt.clk)
 				mgr.SetAudit(rt.audit)
@@ -388,8 +388,8 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	// session sender left without a manager is a session that never connects,
 	// a receiver that never subscribes, and a bridge that reports ready while
 	// transporting nothing. Such a session is also the INGRESS of every route
-	// whose receiver rides on it, so it joins ingressSessions below and gets
-	// the same settlement barrier a route-primary session gets before it
+	// whose receiver rides on it, so it joins settlementSessions below and
+	// gets the same settlement barrier a route-primary session gets before it
 	// recycles a broker connection.
 	for sid, sse := range rt.sessionSenders {
 		if _, exists := rt.sessionMgrs[sid]; !exists {
@@ -399,20 +399,27 @@ func (rt *Runtime) Start(ctx context.Context) error {
 			rt.sessionMgrs[sid] = mgr
 		}
 		for _, entry := range rt.entries {
-			if entry.sessCfg != nil || entry.session != sse.session {
+			ridesOn := entry.config.SourceSessionID == sid ||
+				(entry.sessCfg == nil && entry.session == sse.session)
+			if !ridesOn {
 				continue
 			}
-			ingressSessions[sid] = sse.session
-			ingressRoutes[sid] = append(ingressRoutes[sid], entry.config.ID)
+			settlementSessions[sid] = sse.session
+			settlementRoutes[sid] = append(settlementRoutes[sid], entry.config.ID)
 		}
 	}
 
-	for sid, sess := range ingressSessions {
+	// An ingress session carries only its receivers' subscriptions: it gets a
+	// plain manager (no lease, no drainer) and the settlement barrier for the
+	// routes riding on it.
+	rt.attachIngressSessions(m, settlementSessions, settlementRoutes)
+
+	for sid, sess := range settlementSessions {
 		configurer, ok := sess.(ports.IngressQuiescenceConfigurer)
 		if !ok {
 			continue
 		}
-		routes := append([]string(nil), ingressRoutes[sid]...)
+		routes := append([]string(nil), settlementRoutes[sid]...)
 		configurer.SetIngressQuiescenceWaiter(func(waitCtx context.Context) error {
 			return rt.WaitQuiescent(waitCtx, QuiescenceOptions{
 				Routes: routes,

@@ -116,6 +116,7 @@ Grouped by bounded context (see [DDD.md](DDD.md)).
 | **Managed subscription history** | The durable set of exact filters GoBridge may remove from a persistent/exclusive MQTT broker session. It includes ordinary wildcard filters and the complete `$share/<group>/<filter>` string; it is never inferred from a delivered concrete topic. |
 | **PublisherPlan** | Desired publisher: `Topic`, `QoS`, transport-typed `Config`. |
 | **Reconcile** | The act of bringing a session's actual subscriptions/publishers in line with its `SessionPlan`. |
+| **Ingress session** | A session named by no route `session` block and no binding: only the receivers bound to it name it. The builder registers it with the runtime (`RegisterIngressSession`) under a plain session manager that starts it, reconciles its `SessionPlan` and follows reconnects — no Lease, no outbox partition — which is the shape a `direct_hold` route holds its source in. An `exclusive` session cannot be one: exclusive means lease-held and a receiver cannot hold a lease, so that shape is refused at build time. |
 | **Credential** | Authentication material. One of: `password`, `tls`. |
 | **CredentialSet** | Composite credential container — may carry both a `PasswordCredential` and `TLSMaterial`; accessed via nil-safe accessors `Password()` and `TLS()`; constructed via `NewCredentialSet(password, tls)`. Machine-enforced aggregate root. |
 | **PasswordCredential** | `Username` + `Password`. Redacts in `String`/`GoString`. |

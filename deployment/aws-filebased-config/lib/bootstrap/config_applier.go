@@ -65,7 +65,7 @@ func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfi
 		}
 	}
 
-	plan, err := a.prepareRuntimePlan(ctx, logical)
+	plan, err := a.prepareRuntimePlan(ctx, logical, seedBaselines)
 	if err != nil {
 		return err
 	}
@@ -82,7 +82,14 @@ func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfi
 	}
 }
 
-func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfig) (*runtimePlan, error) {
+// seedBaselines and skipBaselineSeed name what prepareRuntimePlan's last
+// argument decides, so a call site reads as a decision rather than a flag.
+const (
+	seedBaselines    = true
+	skipBaselineSeed = false
+)
+
+func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfig, seed bool) (*runtimePlan, error) {
 	inputs, err := resolveInputs(ctx, a.parameterResolver, a.cfg, a.pluginRegistry, logical)
 	if err != nil {
 		return nil, err
@@ -92,6 +99,21 @@ func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfi
 	}
 
 	registry := a.newFactoryRegistry(inputs.RuntimeConfig)
+	// A durable MQTT session does not start without its managed-subscription
+	// baseline, and on this profile the task is the only thing that can write a
+	// store on the config mount. Seed what the deployment attested BEFORE the
+	// runtime that needs it is built — on every apply, not only at boot: this
+	// process routinely boots on the start-empty config (the seeder writes the
+	// document from another container, with no ordering guarantee) and the
+	// session that needs the baseline arrives with the first real config.
+	// The recovery path skips it: it rebuilds a config that already applied, so
+	// its baselines are already seeded, and a store hiccup there would turn a
+	// recoverable swap failure into a wedged process.
+	if seed {
+		if err := a.seedManagedSubscriptionBaselines(ctx, inputs.RuntimeConfig, registry.builder); err != nil {
+			return nil, err
+		}
+	}
 	mode := registry.detectSwapMode(inputs.RuntimeConfig)
 
 	plan := &runtimePlan{
@@ -235,7 +257,7 @@ func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) 
 		return
 	}
 
-	plan, err := a.prepareRuntimePlan(ctx, logical)
+	plan, err := a.prepareRuntimePlan(ctx, logical, skipBaselineSeed)
 	if err != nil {
 		a.logger.Error("bootstrap: failed to rebuild previous runtime after prepare/commit failure", "error", err)
 		a.enterWedgedState()

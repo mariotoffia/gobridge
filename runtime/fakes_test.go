@@ -209,6 +209,8 @@ type FakeSession struct {
 	mu                      sync.Mutex
 	Started                 bool
 	Closed                  bool
+	startCount              int
+	closeCount              int
 	Plans                   []connectivity.SessionPlan
 	events                  chan ports.SessionEvent
 	closeOnce               sync.Once
@@ -250,7 +252,24 @@ func (s *FakeSession) Start(_ context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Started = true
+	s.startCount++
 	return s.StartErr
+}
+
+// StartCount reports how many times Start was called: every session manager
+// starts the session it runs, so two managers on one session show up here.
+func (s *FakeSession) StartCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startCount
+}
+
+// CloseCount reports how many times Close was called, so a test can tell a
+// session closed by its manager from one the runtime swept a second time.
+func (s *FakeSession) CloseCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closeCount
 }
 
 func (s *FakeSession) Reconcile(_ context.Context, plan connectivity.SessionPlan) error {
@@ -272,6 +291,7 @@ func (s *FakeSession) Close(_ context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Closed = true
+	s.closeCount++
 	s.closeOnce.Do(func() { close(s.events) })
 	return s.CloseErr
 }

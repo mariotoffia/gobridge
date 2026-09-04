@@ -78,6 +78,17 @@ type SingleProps struct {
 	// gobridgecdk.BridgeYamlAsset / BridgeYamlInline. Required.
 	BridgeConfig source.Source
 
+	// ManagedSubscriptionBaselines attests, for every persistent or exclusive
+	// MQTT session that subscribes, the exact topic filters its broker identity
+	// already holds; an empty list attests a NEW identity with none. Such a
+	// session does not start without its baseline, and on this profile the
+	// store may live on the config mount, which only the task can write — so
+	// the facade stamps the attestation into the bootstrap document
+	// (managed_subscription_baselines) and the runtime seeds it at every boot,
+	// idempotently. Required for each such session; never attest empty for an
+	// identity that may still hold subscriptions.
+	ManagedSubscriptionBaselines map[string][]string
+
 	// QueueRegistry resolves SQS queue names referenced by the
 	// parsed bridge config. Conditionally required.
 	QueueRegistry *registry.QueueRegistry
@@ -194,6 +205,12 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 		_ = mat.Close()
 		panic(fmt.Sprintf("GoBridgeSingle: Phase 1 validation failed: %v", err))
 	}
+	baselines, err := managedSubscriptionBaselines(mat.Config, props.ManagedSubscriptionBaselines)
+	if err != nil {
+		_ = mat.Close()
+		panic(fmt.Sprintf("GoBridgeSingle: %v", err))
+	}
+	bootstrap.ManagedSubscriptionBaselines = baselines
 	// Cleanup is best-effort; the base will materialize again from
 	// the same source for the asset upload.
 	_ = mat.Close()
