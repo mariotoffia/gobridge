@@ -768,6 +768,10 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // validates poison handling: repeated send failure exceeds MaxReplayAttempts and the record moves to the DLQ.
+// poisonReplayDLQBound is how long the exhausted-replay path may take to reach
+// the dead-letter queue before the wait is treated as a wedged drainer.
+const poisonReplayDLQBound = 60 * time.Second
+
 func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 	client := ddblocal.Client(t)
 
@@ -846,7 +850,16 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 	waitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
 
 	// Wait for the drainer to exhaust replay attempts and send to DLQ.
-	waitFor(t, 30*time.Second, "DLQ entry", func() bool {
+	//
+	// The bound is derived from the retry schedule this route runs, not picked:
+	// three replay attempts back off 1s, 2s and 4s at the default initial
+	// interval and multiplier, and every attempt adds jitter plus a claim and a
+	// complete round trip to DynamoDB. That lands near 15s on an idle host, so
+	// a 30s bound left no room for store latency at all — it passed alone and
+	// failed inside a loaded suite, reporting a drainer defect that did not
+	// exist. Four times the idle cost absorbs a slow store without letting a
+	// genuinely wedged drainer pass.
+	waitFor(t, poisonReplayDLQBound, "DLQ entry", func() bool {
 		dlq.mu.Lock()
 		defer dlq.mu.Unlock()
 		return len(dlq.entries) >= 1

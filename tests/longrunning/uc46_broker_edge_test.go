@@ -99,7 +99,12 @@ func TestUC46_BrokerMessageSizeLimit(t *testing.T) {
 			Payload: bigPayload,
 			Headers: map[string]any{"producer-id": producerKey},
 		})
-		require.NoError(t, rt.Inject(ctx, "uc46-route", env))
+		// The broker refuses a packet this size, so the route settles the
+		// message terminally into the DLQ and Inject says it was never
+		// delivered. A small message on the same route is delivered and
+		// returns no error, which is what makes the pair meaningful.
+		require.ErrorIs(t, rt.Inject(ctx, "uc46-route", env), ports.ErrInjectNotDelivered,
+			"an oversized message must report that it was not delivered")
 	}
 
 	lrWaitFor(t, 60*time.Second,

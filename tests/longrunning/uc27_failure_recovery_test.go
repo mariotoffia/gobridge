@@ -297,7 +297,14 @@ func TestUC29_MessageTTL_Expiry(t *testing.T) {
 			ExpiresAt: time.Now().Add(-1 * time.Second),
 		})
 		err := rt.Inject(ctx, "uc29-route", env)
-		require.NoError(t, err, "inject message %d", i)
+		// An already-expired message is settled terminally and never
+		// delivered, which is the whole point of this route. Inject reports
+		// that outcome rather than reporting success, because an injected
+		// message is settled through a synthetic acknowledgement that always
+		// succeeds — without the distinction a dropped message would look
+		// delivered.
+		require.ErrorIs(t, err, ports.ErrInjectNotDelivered,
+			"inject message %d: an expired message must report that it was not delivered", i)
 	}
 
 	lrWaitFor(t, pollTimeout, fmt.Sprintf("DLQ >= %d", msgCount), func() bool {

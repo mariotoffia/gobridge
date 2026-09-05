@@ -63,7 +63,12 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 		connectivity.SessionExclusive, 65535, 5)
 	mqttSnd := setupMQTTSender(t, sess)
 	sqsRx := newSQSReceiver(t, sqsInURL)
-	sc := lrSessionConfig(sessionID)
+	// This route puts the STORE under sustained load, and the compressed
+	// lease profile bounds a renew call at one second — a bound the store
+	// misses under that load, which steps the owner down and cancels every
+	// delivery in flight for a reason this test is not about. The published
+	// high-availability preset is what a deployment under this load runs.
+	sc := lrLoadSurvivingSessionConfig(sessionID)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("uc42-bridge"),

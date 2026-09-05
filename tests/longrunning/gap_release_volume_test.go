@@ -4,7 +4,6 @@ package longrunning_test
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -61,6 +60,15 @@ const (
 
 	releaseVolumeTopic   = "release/volume/output"
 	releaseVolumeTimeout = 900 * time.Second
+)
+
+// The stall window outlasts the source's redelivery cycle: when a store call
+// misses its deadline the source hands the message back after its visibility
+// timeout, and that redelivery IS the recovery. Giving up sooner would abandon
+// the stream at the moment it was about to resume.
+const (
+	releaseVolumeStallWindow = 3 * lrSourceVisibilityTimeout
+	releaseVolumeCeiling     = 15 * time.Minute
 )
 
 func TestGAP_ReleaseVolumeConservation(t *testing.T) {
@@ -136,16 +144,26 @@ func TestGAP_ReleaseVolumeConservation(t *testing.T) {
 
 	// Restart the broker with the stream in flight: recovery under sustained
 	// load is the case a small proof cannot reach.
-	lrWaitFor(t, 300*time.Second, fmt.Sprintf("collector >= %d before restart", restartAt),
-		func() bool { return collector.count() >= restartAt })
+	// Wait for the stream to reach the restart point, giving up when it STOPS
+	// advancing rather than when a clock runs out. This proof is about losing
+	// no message across a broker restart; how fast the store lets the stream
+	// build to that point is a throughput question other proofs own, and a
+	// saturated store that is still making progress is not this failure.
+	lrWaitForProgress(t, "deliveries before the broker restart",
+		collector.count, restartAt, releaseVolumeStallWindow, releaseVolumeCeiling)
 	t.Logf("release volume: restarting broker at collector=%d", collector.count())
 	broker.StopGraceful()
 	broker.RestartGraceful()
 	sendProbe(t, sqsInClient, sqsInURL, collector, 60*time.Second)
 	requireMQTTSessionReady(t, rt, sessionID)
 
-	lrWaitFor(t, 600*time.Second, fmt.Sprintf("collector >= %d", volume),
-		func() bool { return countUnique(collector) >= volume })
+	// Wait on the same quantity the conservation assertion checks: a restart
+	// produces duplicates, so waiting on raw deliveries could return with one
+	// payload still missing and another arrived twice — a correct
+	// at-least-once outcome this test would then read as a lost message.
+	lrWaitForProgress(t, "distinct messages after the broker restart",
+		func() int { return countUnique(collector) }, volume,
+		releaseVolumeStallWindow, releaseVolumeCeiling)
 
 	// The outbox is a separate durability question from what the collector saw:
 	// a healthy collector cannot mask records stranded in persistence.

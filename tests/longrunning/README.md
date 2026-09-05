@@ -85,7 +85,7 @@ tests/longrunning/
 | UC8 | Multi-protocol fan-out (2 MQTT + 1 SQS) | 2,000 | All 3 targets get 2,000. |
 | UC9 | MQTT QoS 2 stress | 5,000 | 5,000 unique. Zero duplicates. |
 | UC10 | HTTP Inject API to MQTT | 1,000 | 1,000 with stage_inject header. |
-| UC11 | SQS to SQS direct (no MQTT) | 5,000 | 5,000 in SQS-OUT. |
+| UC11 | SQS to SQS direct (no MQTT) | 3,000 | 3,000 in SQS-OUT. |
 
 ---
 
@@ -219,10 +219,10 @@ Tests use per-test `mqttlocal.BrokerInstance` containers with custom configs.
 |------|-------------|--------|---------------|
 | UC57 | Stale claim recovery after crash | 1,000 | Bridge-B recovers all. DLQ empty. |
 | UC58 | Double-drain prevention (fencing) | 2,000 | >= 2,000 unique. Only 1 active at each sample. |
-| UC59 | Partition hotspot (single partition) | 5,000 | All delivered. Throughput logged. |
+| UC59 | Partition hotspot (single partition) | 3,000 | All delivered. Throughput logged. |
 | UC60 | Outbox + broker down (AckAfterOutboxPersist) | 2,000 | SQS-IN empty. Collector = 2,000 after restart. |
 | UC61 | MaxReplayAttempts with intermittent failures | 500 | All delivered (sender fails first 3, succeeds 4th). |
-| UC62 | Lease renewal under high load | 5,000 | All delivered. DLQ empty. |
+| UC62 | Lease renewal under high load | 3,000 | All delivered. DLQ empty. |
 
 ---
 

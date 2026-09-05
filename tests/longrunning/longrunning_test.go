@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/stretchr/testify/require"
@@ -551,26 +552,59 @@ func sendBulkRangeToSQS(
 			}
 			entries = append(entries, entry)
 		}
-		_, err := client.SendMessageBatch(context.Background(),
+		out, err := client.SendMessageBatch(context.Background(),
 			&awssqs.SendMessageBatchInput{
 				QueueUrl: &queueURL,
 				Entries:  entries,
 			})
 		require.NoError(t, err, "SendMessageBatch offset=%d", start+i)
+		// A batch send reports per-entry failures in Failed and still returns
+		// no error, so a test that only checks err can enqueue far fewer
+		// messages than it believes it did. Every assertion downstream then
+		// measures a queue that was never filled, and reports it as the
+		// bridge losing messages.
+		if len(out.Failed) > 0 {
+			first := out.Failed[0]
+			require.Emptyf(t, out.Failed,
+				"SendMessageBatch offset=%d enqueued only %d of %d entries; first failure %s: %s",
+				start+i, len(out.Successful), len(entries),
+				aws.ToString(first.Code), aws.ToString(first.Message))
+		}
 	}
 }
 
+// pollAllSQS drains queueURL until it has read `expected` bodies.
+//
+// stallWindow bounds how long the queue may stay SILENT, not how long the
+// whole drain may take. A plain deadline here is an undeclared throughput
+// assertion: the pipeline under test has to start up, take its lease and fill
+// its first batch before anything arrives, so a fixed clock can expire during
+// that startup and report a queue that was never given time as messages the
+// bridge lost. What is actually a defect is the queue going quiet while
+// messages are still owed — that is what this gives up on, and it says how far
+// it got. lrPollCeiling still bounds a pipeline that trickles forever.
 func pollAllSQS(
 	t *testing.T,
 	client *awssqs.Client,
 	queueURL string,
 	expected int,
-	timeout time.Duration,
+	stallWindow time.Duration,
 ) []string {
 	t.Helper()
 	var bodies []string
-	deadline := time.Now().Add(timeout)
-	for len(bodies) < expected && time.Now().Before(deadline) {
+	started := time.Now()
+	quietDeadline := time.Now().Add(stallWindow)
+	for len(bodies) < expected {
+		if time.Now().After(quietDeadline) {
+			t.Logf("pollAllSQS(%s): stalled at %d/%d — nothing arrived for %s",
+				queueURL, len(bodies), expected, stallWindow)
+			break
+		}
+		if time.Since(started) > lrPollCeiling {
+			t.Logf("pollAllSQS(%s): reached %d/%d in %s; still arriving but past the %s ceiling",
+				queueURL, len(bodies), expected, time.Since(started).Round(time.Second), lrPollCeiling)
+			break
+		}
 		out, err := client.ReceiveMessage(context.Background(),
 			&awssqs.ReceiveMessageInput{
 				QueueUrl:            &queueURL,
@@ -590,9 +624,16 @@ func pollAllSQS(
 					ReceiptHandle: msg.ReceiptHandle,
 				})
 		}
+		if len(out.Messages) > 0 {
+			quietDeadline = time.Now().Add(stallWindow)
+		}
 	}
 	return bodies
 }
+
+// lrPollCeiling bounds a drain that keeps trickling: a pipeline that never
+// goes quiet but never finishes is still a failure, just not a stall.
+const lrPollCeiling = 10 * time.Minute
 
 func strPtr(s string) *string { return &s }
 
