@@ -2,6 +2,16 @@
 
 Internal architecture of the deployment profile: Go module layering, CDK construct composition, single vs cluster topology, the synth-time validation pipeline ("tier B"), and why peer discovery is EFS-mediated instead of Cloud Map. End-to-end AWS architecture (VPC, ALB) lives in [docs/aws-deployment/overview.md](../../docs/aws-deployment/overview.md), which maps to the topology, storage, image, construct, and IAM (JSON policy) pages beside it. The DDD mapping lives in [../../DDD.md](../../DDD.md) and the local glossary in [UBIQUITOUS.md](./UBIQUITOUS.md).
 
+> Sections and table rows marked **(planned)** describe the target
+> architecture of work in flight; each marker is removed when the behavior it
+> describes lands. Unmarked text describes the code as it is.
+
+The profile supports two **config sources** for the hot-reloadable bridge
+config **(planned)**: `file` (YAML on EFS — today's only source) and
+`dynamodb` (a single CAS-versioned `current` item read by
+`adapters/aws/config/dynamodb`). The bootstrap config selects the source; the
+name "filebased" in the module path predates this generalization.
+
 ## Module Topology
 
 Three Go modules, separately versionable:
@@ -19,6 +29,13 @@ flowchart LR
 ```
 
 **Dependency rule.** `infra/` imports nothing outside the standard library — CDK consumers never pull in the runtime tree, and the runtime never imports CDK. `lib/model/BootstrapConfig` and `infra.BootstrapConfig` are intentional duplicates so each module can stand alone; equivalence is guarded by tests.
+
+**Published modules (planned).** All three modules join the release train
+(`scripts/release/modules.json`) and are tagged `<module-dir>/vX.Y.Z` like
+every published module. Published copies carry no `replace` directives and
+pin real sibling versions, so an external Go CDK app consumes them with plain
+`go get` — no repository checkout. The `deployment/` internal-only rule in
+`RELEASE.md` gains this profile as its explicit exception.
 
 `cdk/` ships six public L2 constructs plus four supporting packages. There is **no L3 wrapper** — consumers compose the L2s directly inside their own `awscdk.Stack`.
 
@@ -77,6 +94,48 @@ flowchart TB
 ```
 
 `GoBridgeEfsConfig` is normally created and owned by the facade; consumers may pass an instance in to override KMS / throughput / removal policy / backup. `GoBridgeALBAttachment` and `GoBridgeAlarms` are independent opt-ins. Cross-stack consumption is via `gobridgecdk.LookupBridge` (returns a `*BridgeRef` exposing the same accessor surface as the producing constructs).
+
+**EFS is conditional (planned).** The facade provisions EFS only when
+something needs a filesystem: the config source is `file`, or the parsed yaml
+declares SQLite store paths. With the `dynamodb` config source and DynamoDB
+stores, `GoBridgeDynamoDBHA` deploys with **no EFS resources at all** — the
+config yaml was that topology's only remaining filesystem use.
+
+## Config sources (planned)
+
+The consumer's `Bootstrap.ConfigSource` field selects where the bridge config
+lives; the facade derives everything else from it.
+
+| | `file` (default) | `dynamodb` |
+|---|---|---|
+| Backing store | YAML on EFS | One `current` item, `PK = "config#"+bridge_id`, monotonic `version` |
+| Provisioned by | `GoBridgeEfsConfig` | Facade-owned DynamoDB table (on-demand, PITR, retained); table name stamped into bootstrap like `ContainerMemoryBytes` |
+| Watch | EFS poll (fsnotify unreliable on NFS) | Strongly consistent poll (default) or DynamoDB Streams (`watch_mode: streams`) |
+| Seeder | Copies the synth-validated asset to EFS | Conditional `PutItem` of the synth-marshalled JSON; same `SeedOnce` / `Overwrite` / `AbortDeploy` drift modes |
+| Admin API writes | `parser.FileStore` guarded by the single-writer rule (control node only) | The loader itself — a `ports.ConditionalConfigStore`, CAS-safe for any writer |
+| IAM | EFS `ClientMount`/`ClientWrite` split | Control `GrantReadWriteData`, workers `GrantReadData`, both `GrantStreamRead` in streams mode |
+| Topology limits | all | `filesystem_replicated` rejected (workers boot from the shared filesystem by definition) |
+
+The profile always runs exactly one `config.Layer` (a base, never an
+overlay): the admin config transaction API and the rollout candidate digest
+both require a single writer identity for the effective config.
+
+## Image source (planned)
+
+`gobridgecdk` exposes a sealed `BridgeImageSource` (same pattern as
+`BridgeConfigSource`), replacing the raw required `Image awsecs.ContainerImage`
+prop:
+
+| Constructor | Behaviour |
+|-------------|-----------|
+| `ImageFromRegistry(ref)` | Digest-pinned registry reference — today's flow. |
+| `ImageFromEcrRepository(repo, tag)` | Consumer-managed ECR. |
+| `ImageFromGoBuild(props)` | `DockerImageAsset` over an embedded two-stage Dockerfile that runs `go install <package>@<version>` against the published lib module — no repository checkout. `BuildTags` selects optional plugin families; left nil, the facade derives them from the parsed yaml (`DeriveBuildTags`). |
+
+The profile binary's base families are aws, mqtt, native stores and http;
+`gobridge_amqp091`, `gobridge_amqp10` and `gobridge_azure` are additive
+compile-time families shared with the `cmd/gobridge` tag convention
+(`PLUGIN.md`).
 
 ## Single vs Cluster
 
@@ -200,6 +259,7 @@ Per-adapter grant functions live one-file-per-kind under `cdk/constructs/interna
 | CloudWatch Logs | `logGroup.GrantWrite(role)`. |
 | EFS | Per role: control `ClientMount`+`ClientWrite`; worker `ClientMount` only. |
 | EFS CMK | Auto-granted when `EfsKmsKey` prop is set. |
+| Config table **(planned)** | Control `GrantReadWriteData`; worker `GrantReadData`; both `GrantStreamRead` when `watch_mode: streams`; seeder RW + asset read. |
 
 Adding a new plugin requires a matching pair of files (`bridgecfg/<kind>.go` and `internal/grants/<kind>.go`) — enforced by the CI check against `*ports.Registry`.
 
@@ -250,7 +310,7 @@ The consumer resolves them with `gobridgecdk.LookupBridge`, which returns a `*Br
 
 ## Runtime Library (`lib/bootstrap`)
 
-`lib/bootstrap.NewApp(cfg, opts...)` loads `BootstrapConfig` from env (`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` or `…_FILE`, max 1 MiB), polls `ConfigFilePath` on EFS, swaps the active `*runtime.Runtime` without restart, resolves `pms://` SSM secrets and starts the admin / monitor / transport HTTP servers. Reload uses `swapModeOverlap` by default; `swapModePrepareCommit` whenever any transport advertises `ports.CapExclusiveIdentity`. Reference cells (`bridgeConfigRef`, `runtimeRef`, `apiKeysRef`, `transportHandlerRef`) decouple HTTP servers from reload mechanics. Profile guard `validateFilesystemProfile` rejects `route.delivery_mode = shared_outbox` and `route.session != nil`.
+`lib/bootstrap.NewApp(cfg, opts...)` loads `BootstrapConfig` from env (`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` or `…_FILE`, max 1 MiB), watches the bootstrap-selected config source, swaps the active `*runtime.Runtime` without restart, resolves `pms://` SSM secrets and starts the admin / monitor / transport HTTP servers. **(planned)** Source selection lives behind one seam — `(*App).newConfigSource` returns the `config.Layer`, the `ports.ConfigStore` for the admin API, and the single-writer posture: `file` polls `ConfigFilePath` on EFS with the control-node-only write guard; `dynamodb` uses the `adapters/aws/config/dynamodb` loader as Loader, Watcher **and** `ports.ConditionalConfigStore`, so CAS replaces the single-writer guard. Start-empty triggers on `shared.ErrNotFound` from any source, not only a missing file. Reload uses `swapModeOverlap` by default; `swapModePrepareCommit` whenever any transport advertises `ports.CapExclusiveIdentity`. Reference cells (`bridgeConfigRef`, `runtimeRef`, `apiKeysRef`, `transportHandlerRef`) decouple HTTP servers from reload mechanics. Profile guard `validateFilesystemProfile` rejects `route.delivery_mode = shared_outbox` and `route.session != nil`.
 
 | Project context | Touched here |
 |-----------------|--------------|
@@ -278,13 +338,17 @@ See [../../DDD.md](../../DDD.md) for the project-level model and [UBIQUITOUS.md]
 | Missing `QueueRegistry` / `SsmParamRegistry` entry | Tier B Phase 2 aggregates via `Annotations.of(scope).addError(...)` — every missing reference reported in one synth, with typed remediation message. |
 | Plaintext credential in yaml | Phase 1 hard error from `ScanForPlaintextSecrets` — no opt-out. |
 | ALB priority collision | Attachment ctor errors when consumer rule already uses `[BasePriority, BasePriority+99]`. |
+| Config table drift at deploy **(planned)** | Seeder drift modes: `SeedOnce` conditional put, `AbortDeploy` exits 10 on hash mismatch, `Overwrite` CAS-bumps `version`. |
+| Concurrent admin writes, `dynamodb` source **(planned)** | `SaveIfVersion` conditional put → `shared.ErrVersionMismatch`; no lost update, no single-writer assumption. |
+| Oversized config item **(planned)** | Adapter pre-checks 390 KiB before `PutItem` — descriptive error instead of an opaque `ValidationException`. |
 
 ## Extension Points
 
 - **Custom credential store**: `WithCredentialStore` on `App`.
 - **Custom SSM resolver**: `WithParameterResolver` (e.g. test fixtures, Vault wrapper).
 - **Custom CDK wiring**: compose `BridgeYamlInline(cfg)` over a hand-built `*ports.BridgeConfig` from `cdk/bridgecfg/`. The facades (`GoBridgeSingle` / `GoBridgeCluster` / `GoBridgeDynamoDBHA`) are the supported integration boundary; **bypassing them by composing `cdk/constructs/internal/gobridgebase` directly is not supported** — the package is internal precisely so the singleton / tier-B / mount-policy invariants stay enforceable.
-- **Custom transport/store**: not exposed via `App` — fork `factoryRegistry` or build a sibling deployment profile.
+- **Custom transport/store**: not exposed via `App` — fork `factoryRegistry` or build a sibling deployment profile. **(planned)** The AMQP 0-9-1, AMQP 1.0 and Azure Service Bus families become compile-time opt-ins via the shared `gobridge_<family>` build tags; truly custom plugins still mean a sibling profile.
+- **Custom image pipeline (planned)**: pass `ImageFromRegistry` / `ImageFromEcrRepository` to keep building the image yourself; `ImageFromGoBuild` is the zero-checkout default path.
 
 ## Related Docs
 
