@@ -270,13 +270,36 @@ passes `nil`).
   (endpoints via standard `OTEL_EXPORTER_OTLP_*` env; constructing does not
   dial).
 
-- [ ] **Step 1:** Failing untagged test `TestBlankRoot_NilObservability`
+- [x] **Step 1:** Failing untagged test `TestBlankRoot_NilObservability`
   (both hooks return nils) → failing tagged test
   `TestOTelFamily_ConstructsExporterAndTracer` (non-nil exporter, tracer,
   close funcs; run with `-tags gobridge_otel`).
-- [ ] **Step 2:** Implement pair + `run()` wiring + example-block deletion.
-- [ ] **Step 3:** Both runs pass; `make lint && make test` green.
-- [ ] **Step 4: Commit** — `feat(gobridge): optional OTel exporters behind gobridge_otel build tag`
+- [x] **Step 2:** Implement pair + `run()` wiring + example-block deletion.
+  The obsolete example block was already absent; no further deletion was needed.
+- [x] **Step 3:** Both runs pass; `make lint && make test` green.
+- [x] **Step 4: Commit** — `feat(gobridge): optional OTel exporters behind gobridge_otel build tag`
+
+Verification completed on 2026-09-06:
+- Required hook tests failed before implementation; short race tests, builds and
+  vet passed untagged, with `gobridge_otel`, and with `gobridge_all`.
+- Binary inspection excluded OTel from the blank root and included both adapters
+  in the tagged builds; version output reports `otel` only when enabled.
+  A workspace-disabled OTel build also passed using both published `v0.3.6` adapters.
+- Shutdown tests cover once-only ordered closes, partial startup, an already
+  stopped supervisor, close errors and an exhausted shutdown budget. A local
+  collector regression confirms runtime Flush then exporter Close on HTTP
+  startup failure, including environment-selected endpoint and headers. Removing
+  supervisor metrics wiring made that regression fail; restoring it passed.
+- `make lint` passed (105s); `make test` passed (257s, 95 package results).
+  Logs: `reports/otel-make-lint.log`, `reports/otel-make-test.log`,
+  `reports/otel-test-*.log`, and `reports/otel-build-*.log`.
+- Code review approved with no findings, including tagged lint and 10 repeated
+  local-collector runs. All changed/new Go files remain below 500 lines.
+- Both OTel modules require published `v0.3.6`; targeted `go get` also raised the
+  root requirement to `v0.3.6` and recorded SDK dependencies. Existing local
+  replaces remain unchanged; none were added. Full `go mod tidy` is blocked by
+  the existing root parser test's missing AWS-store module resolution, so the
+  unrelated module migration was left alone.
 
 ---
 

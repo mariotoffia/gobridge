@@ -47,6 +47,20 @@ func TestBlankRoot_RegistersNoKinds(t *testing.T) {
 	}
 }
 
+// TestBlankRoot_NilObservability verifies the blank root creates no exporters.
+func TestBlankRoot_NilObservability(t *testing.T) {
+	requireBlankBuild(t)
+	metrics, closeMetrics, err := newMetricsExporter(t.Context(), discardLogger())
+	require.NoError(t, err)
+	assert.Nil(t, metrics)
+	assert.Nil(t, closeMetrics)
+
+	tracer, closeTracer, err := newTracer(t.Context(), discardLogger())
+	require.NoError(t, err)
+	assert.Nil(t, tracer)
+	assert.Nil(t, closeTracer)
+}
+
 // TestPluginSummary_NoFamilies verifies a blank root reports an empty list.
 func TestPluginSummary_NoFamilies(t *testing.T) {
 	original := compiledFamilies

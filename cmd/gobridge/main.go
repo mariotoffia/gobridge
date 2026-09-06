@@ -192,7 +192,32 @@ Usage of %s:
 		EmitOnStart:  true,
 	}
 
-	sup := bridge.NewSupervisor(
+	// Own exporters at process scope: hot-reloaded runtimes share them.
+	// Install cleanup before construction so partial startup also unwinds.
+	var closeMetrics, closeTracer func(context.Context) error
+	supDone := make(chan error, 1)
+	supExited := true // Nothing to wait for until Run has been launched.
+	currentConfig := func() *ports.BridgeConfig { return cfg }
+	defer func() {
+		cancel()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), currentShutdownTimeout(currentConfig, cfg))
+		defer shutdownCancel()
+		shutdownSupervisor(shutdownCtx, supExited, supDone, logger, closeMetrics, closeTracer)
+		logger.Info("bridge stopped")
+	}()
+
+	metrics, closeMetrics, err := newMetricsExporter(ctx, logger)
+	if err != nil {
+		logger.Error("failed to create metrics exporter", "error", err)
+		return 1
+	}
+	tracer, closeTracer, err := newTracer(ctx, logger)
+	if err != nil {
+		logger.Error("failed to create tracer", "error", err)
+		return 1
+	}
+
+	supervisorOpts := []bridge.SupervisorOption{
 		bridge.WithSupervisorLogger(logger),
 		// File-change debouncing is done by the reload pipeline (below) so
 		// admin commits can bypass the window and apply in-band; the Supervisor
@@ -200,9 +225,17 @@ Usage of %s:
 		bridge.WithReconfigStrategy(bridge.NewDirectStrategy()),
 		bridge.WithOnSwap(pipeline.onSwap),
 		bridge.WithSupervisorPolledCredentialStore(credResolver, credPollConfig),
-	)
+	}
+	if metrics != nil {
+		supervisorOpts = append(supervisorOpts, bridge.WithSupervisorMetrics(metrics))
+	}
+	if tracer != nil {
+		supervisorOpts = append(supervisorOpts, bridge.WithSupervisorTracer(tracer))
+	}
+	sup := bridge.NewSupervisor(supervisorOpts...)
+	currentConfig = sup.Config
 
-	if err := wireAllFactories(ctx, sup, logger, nil); err != nil {
+	if err := wireAllFactories(ctx, sup, logger, metrics); err != nil {
 		logger.Error("failed to wire plugin factories", "error", err)
 		return 1
 	}
@@ -221,7 +254,6 @@ Usage of %s:
 	windowedFile := bridge.NewWindowedStrategy(10*time.Second, 30*time.Second, nil).Filter(ctx, watchCh)
 	go pipeline.run(ctx, windowedFile)
 
-	supDone := make(chan error, 1)
 	// supStopped is closed by the goroutine below AFTER it has buffered Run's
 	// single result on supDone. It is a close-only broadcast that lets
 	// waitForSupervisorRuntime notice an early Run exit (an initial build/start
@@ -230,6 +262,7 @@ Usage of %s:
 	// awaitSupervisorShutdown). A closed channel is broadcast-safe, so observing
 	// it in the wait and again downstream cannot race or steal the result.
 	supStopped := make(chan struct{})
+	supExited = false
 	go func() {
 		err := sup.Run(ctx, cfg, pipeline.changes())
 		supDone <- err // buffered (cap 1): never blocks; value now readable
@@ -244,14 +277,14 @@ Usage of %s:
 	rt := waitRes.runtime
 	if rt == nil {
 		if waitRes.supEnded {
+			supExited = true
 			// Run returned before publishing a runtime: the SYNCHRONOUS initial
 			// build or non-blocking start failed (e.g. credential resolution or
 			// store construction errored). Broker/session connects run in the
 			// background and never gate publication, so they cannot be the cause.
 			// Surface its actual error, buffered on supDone. Reading supDone
-			// here is race-free: this branch returns immediately, so neither the
-			// primary select nor awaitSupervisorShutdown — the single intended
-			// reader of supDone — is ever reached.
+			// here is race-free: supExited tells the deferred shutdown not to
+			// read the single result again.
 			if err := <-supDone; err != nil && !errors.Is(err, context.Canceled) {
 				logger.Error("supervisor exited before producing a runtime", "error", err)
 			} else {
@@ -325,10 +358,14 @@ Usage of %s:
 		apiCfg.AdminAddr = orDefault(apiCfg.AdminAddr, defaultAdminAddr)
 		apiCfg.MonitorAddr = orDefault(apiCfg.MonitorAddr, defaultMonitorAddr)
 		auditLogger := httpapi.NewSlogAuditLogger(logger)
-		srv := httpapi.New(rt, apiCfg,
+		httpOpts := []httpapi.Option{
 			httpapi.WithServerLogger(logger),
 			httpapi.WithAuditLogger(auditLogger),
-		)
+		}
+		if metrics != nil {
+			httpOpts = append(httpOpts, httpapi.WithMetrics(metrics))
+		}
+		srv := httpapi.New(rt, apiCfg, httpOpts...)
 		if err := srv.Start(ctx); err != nil {
 			logger.Error("failed to start HTTP server", "error", err)
 			return 1
@@ -369,7 +406,6 @@ Usage of %s:
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
 	exitCode := 0
-	supExited := false
 	select {
 	case received := <-sig:
 		logger.Info("shutdown signal received", "signal", received.String())
@@ -395,12 +431,6 @@ Usage of %s:
 		os.Exit(2)
 	}()
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), currentShutdownTimeout(sup.Config, cfg))
-	defer shutdownCancel()
-
-	awaitSupervisorShutdown(supExited, supDone, shutdownCtx.Done(), logger)
-
-	logger.Info("bridge stopped")
 	return exitCode
 }
 

@@ -10,10 +10,33 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
+// shutdownSupervisor waits for runtime teardown before closing the shared
+// exporters. Startup failures use the same path, with nil closers for resources
+// not yet constructed. Every stage shares the remaining shutdown budget.
+func shutdownSupervisor(
+	ctx context.Context,
+	alreadyExited bool,
+	supDone <-chan error,
+	logger *slog.Logger,
+	closeMetrics, closeTracer func(context.Context) error,
+) {
+	awaitSupervisorShutdown(alreadyExited, supDone, ctx.Done(), logger)
+	if closeMetrics != nil {
+		if err := closeMetrics(ctx); err != nil {
+			logger.Error("failed to close metrics exporter", "error", err)
+		}
+	}
+	if closeTracer != nil {
+		if err := closeTracer(ctx); err != nil {
+			logger.Error("failed to close tracer", "error", err)
+		}
+	}
+}
+
 // awaitSupervisorShutdown blocks — bounded by the shutdown deadline (done) —
 // for the supervisor goroutine to report it has unwound after the root context
 // was cancelled. When alreadyExited is true the supervisor already self-exited
-// and its single result was consumed by the primary select in run(); there is
+// and its single result was consumed during startup or the primary select; there is
 // nothing left to wait for, so it returns immediately rather than reading the
 // now-drained supDone a second time. A second read would never complete and the
 // call would block until the full ShutdownTimeout elapsed.
