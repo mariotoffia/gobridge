@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/ports"
@@ -14,6 +16,16 @@ import (
 //
 //nolint:gochecknoglobals // Build-tag metadata is assembled at initialization and then read-only.
 var compiledFamilies []string
+
+func pluginSummary() string {
+	families := slices.Clone(compiledFamilies)
+	slices.Sort(families)
+	return fmt.Sprintf("families=%v", families)
+}
+
+func versionLine() string {
+	return fmt.Sprintf("gobridge %s (%s) %s", orDefault(version, "dev"), orDefault(gitSHA, "dev"), pluginSummary())
+}
 
 func registerAllDecoders(reg *ports.Registry) error {
 	return errors.Join(

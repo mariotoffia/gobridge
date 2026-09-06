@@ -38,6 +38,11 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+// Build metadata is injected via -ldflags "-X main.version=... -X main.gitSHA=...".
+//
+//nolint:gochecknoglobals // Linker stamps require package-level string variables.
+var version, gitSHA string
+
 func main() {
 	os.Exit(run())
 }
@@ -53,15 +58,16 @@ func run() int {
 		// Usage is written to the flag output (stderr); a failed write there is
 		// not actionable, so the error is deliberately discarded.
 		_, _ = fmt.Fprintf(out, `gobridge — reference composition root (the Kubernetes profile's binary).
-Links the MQTT transport, native memory/SQLite stores and file:// credentials.
-A config referencing any other transport/store (SQS, Azure, AMQP, DynamoDB, …)
-is REJECTED at startup/reload; the AWS image ghcr.io/mariotoffia/gobridge
-(deployment/aws-filebased-config) bundles those, or build your own root.
+Compiled plugins: %s
+Select plugin families at build time with -tags gobridge_<family>; see PLUGIN.md.
+Configs naming a transport or store not compiled in are rejected.
+The file config source, file:// credentials and admin/monitor HTTP API remain available.
 
 Usage of %s:
-`, os.Args[0])
+`, pluginSummary(), os.Args[0])
 		flag.PrintDefaults()
 	}
+	showVersion := flag.Bool("version", false, "print version and compiled plugin families, then exit")
 	configPath := flag.String("config", "bridge.yaml", "path to configuration file")
 	logLevel := flag.String("log-level", "info", "log level ("+strings.Join(ports.LogLevelNames(), ", ")+")")
 	credentialsDir := flag.String("credentials-dir", "credentials",
@@ -76,12 +82,15 @@ Usage of %s:
 			"`session-id=filter,filter` records the exact filters the existing broker session holds; repeatable")
 	flag.Parse()
 
-	logger := newLogger(*logLevel)
+	if *showVersion {
+		if _, err := fmt.Fprintln(os.Stdout, versionLine()); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "write version: %v\n", err)
+			return 1
+		}
+		return 0
+	}
 
-	// State the adapter set once at startup, so a config that names a transport
-	// this root does not link fails with the reason already in the log.
-	logger.Info("gobridge reference composition root: MQTT transport, native memory/SQLite stores, file:// credentials; " +
-		"other transports and stores need the AWS image (ghcr.io/mariotoffia/gobridge) or a custom composition root")
+	logger := newLogger(*logLevel)
 
 	// Register only the decoders selected by the compiled plugin families.
 	reg := ports.NewRegistry()
@@ -89,6 +98,7 @@ Usage of %s:
 		logger.Error("failed to register plugin decoders", "error", err)
 		return 1
 	}
+	logStartup(logger, reg)
 
 	fileSource := fileconfig.NewSource(*configPath, reg)
 	// Start-empty: a missing config file is a supported, healthy state — mirror
@@ -392,6 +402,15 @@ Usage of %s:
 
 	logger.Info("bridge stopped")
 	return exitCode
+}
+
+func logStartup(logger *slog.Logger, reg *ports.Registry) {
+	kinds := reg.Kinds()
+	logger.Info(versionLine(), "kinds", kinds)
+	if len(compiledFamilies) == 0 && len(kinds) == 0 {
+		logger.Warn("no transports or stores linked; every routed config will be rejected; " +
+			"rebuild with -tags gobridge_<family>")
+	}
 }
 
 func newLogger(level string) *slog.Logger {

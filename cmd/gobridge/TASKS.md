@@ -225,7 +225,7 @@ path before proceeding.
   by `-version`, usage, and the startup log; `versionLine() string` —
   `gobridge <version> (<gitSHA>) <pluginSummary()>`.
 
-- [ ] **Step 1: Failing tests.** `TestPluginSummary_NoFamilies`
+- [x] **Step 1: Failing tests.** `TestPluginSummary_NoFamilies`
   (`families=[]`), `TestPluginSummary_SortsFamilies`,
   `TestVersionLine_UnstampedIsDev`,
   `TestStartupLog_WarnsWhenNothingLinked` (follow the existing `main_test.go`
@@ -233,10 +233,10 @@ path before proceeding.
   `-tags gobridge_` hint). Run
   `go -C cmd/gobridge test -run 'PluginSummary|VersionLine|StartupLog' -v`
   → FAIL.
-- [ ] **Step 2: Implement**; replace the hardcoded strings at `main.go:63-70`
+- [x] **Step 2: Implement**; replace the hardcoded strings at `main.go:63-70`
   and `main.go:91-92`.
-- [ ] **Step 3: Tests pass; `make lint && make test` green.**
-- [ ] **Step 4: Commit** — `feat(gobridge): binary reports compiled plugin families and decodable kinds`
+- [x] **Step 3: Tests pass; `make lint && make test` green.**
+- [x] **Step 4: Commit** — `feat(gobridge): binary reports compiled plugin families and decodable kinds`
 
 ---
 
