@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"flag"
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +18,36 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
+
+// TestBlankRoot_RejectsMQTTConfig verifies the command fails at decoding an
+// unavailable kind, before creating runtime resources or contacting a broker.
+func TestBlankRoot_RejectsMQTTConfig(t *testing.T) {
+	requireBlankBuild(t)
+	path := filepath.Join(t.TempDir(), "bridge.yaml")
+	if err := os.WriteFile(path, []byte("bridge:\n  id: blank\nstores:\n  dlq:\n    type: mqtt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestBlankRoot_CommandProcess$")
+	cmd.Env = append(os.Environ(), "GOBRIDGE_TEST_CONFIG="+path)
+	out, err := cmd.CombinedOutput()
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+		t.Fatalf("command error = %v, want exit 1; output: %s", err, out)
+	}
+	if !strings.Contains(string(out), `unknown plugin kind \"mqtt\"`) {
+		t.Fatalf("want unknown MQTT kind; output: %s", out)
+	}
+}
+
+// TestBlankRoot_CommandProcess exercises run with isolated flags and stderr.
+func TestBlankRoot_CommandProcess(t *testing.T) {
+	path := os.Getenv("GOBRIDGE_TEST_CONFIG")
+	if path == "" {
+		return
+	}
+	os.Args = []string{os.Args[0], "-config", path, "-start-empty=false"}
+	flag.CommandLine = flag.NewFlagSet("gobridge", flag.ExitOnError)
+	os.Exit(run())
+}
 
 // TestWatchTerminal_ReturnsTrueWhenTerminalObserved proves the backstop keeps
 // polling and reports terminal once the predicate flips — not a one-shot check.

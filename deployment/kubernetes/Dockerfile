@@ -26,6 +26,7 @@ ARG BINARY_MODULE=cmd/gobridge
 # ---- build stage ------------------------------------------------------------
 FROM golang:1.25-bookworm@sha256:ea341baa9bd5ba6784f6d7161ace70544349a6242d54d34a0fbfd2c4d51c9d58 AS build
 ARG BINARY_MODULE
+ARG GO_BUILD_TAGS="gobridge_mqtt,gobridge_native"
 
 WORKDIR /src
 COPY . .
@@ -34,7 +35,7 @@ ENV CGO_ENABLED=0 GOWORK=off GOFLAGS=-mod=mod
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     cd "${BINARY_MODULE}" && \
-    go build -trimpath -ldflags="-s -w" -o /out/gobridge . && \
+    go build -tags "$GO_BUILD_TAGS" -trimpath -ldflags="-s -w" -o /out/gobridge . && \
     mkdir -p /out/state
 
 # ---- runtime stage ----------------------------------------------------------

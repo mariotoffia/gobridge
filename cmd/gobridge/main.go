@@ -1,22 +1,16 @@
-// Command gobridge is the REFERENCE composition root for the GoBridge runtime
-// and the binary the Kubernetes profile (deployment/kubernetes) packages. It
-// deliberately links a small adapter set — the MQTT (paho) transport, the
-// native in-memory and SQLite stores and the file:// credential store — so it
-// builds with no cloud SDK dependencies and runs out of the box for the
-// documented scenarios and for any deployment that needs exactly that set.
+// Command gobridge is the reference composition root for the GoBridge runtime
+// and the binary packaged by deployment/kubernetes. Without build tags it is a
+// blank root: no transports, stores or telemetry exporters are linked. The file
+// config source, file:// credentials and admin/monitor HTTP API remain available.
 //
-// Because only MQTT + native stores are registered, a config that references
-// any other transport or store (SQS, Azure Service Bus, AMQP, DynamoDB, …) is
-// REJECTED at startup or on reload. A deployment that needs more links the
-// transports and stores it actually uses and registers them at the two sites
-// this binary already demonstrates: the config-decoder registry (reg.Register)
-// and the supervisor factories (sup.RegisterTransport /
-// sup.RegisterStoreFactory).
+// Add plugin families with gobridge_mqtt and gobridge_native build tags, or
+// gobridge_all for every available family. The Kubernetes image explicitly
+// selects MQTT and native memory/SQLite stores. Configs naming a transport or
+// store outside the compiled families fail at decoding with an unknown-kind error.
 //
 // The AWS image ghcr.io/mariotoffia/gobridge is the other shipped composition
 // root, deployment/aws-filebased-config/lib/cmd/gobridge-filebased: MQTT, SQS
-// and HTTP transports, DynamoDB stores, secrets from SSM. See the AWS wiring
-// guidance inline in run() and the deployment/aws-filebased-config profile.
+// and HTTP transports, DynamoDB stores, secrets from SSM.
 package main
 
 import (
@@ -39,10 +33,8 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	credentials "github.com/mariotoffia/gobridge/runtime/credentials"
 
-	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	filecreds "github.com/mariotoffia/gobridge/adapters/native/credentials/file"
-	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -91,14 +83,9 @@ Usage of %s:
 	logger.Info("gobridge reference composition root: MQTT transport, native memory/SQLite stores, file:// credentials; " +
 		"other transports and stores need the AWS image (ghcr.io/mariotoffia/gobridge) or a custom composition root")
 
-	// Build the per-process plugin registry by registering each
-	// adapter we link in. Adding a new transport/store means a new
-	// Register call here — the import alone no longer suffices.
+	// Register only the decoders selected by the compiled plugin families.
 	reg := ports.NewRegistry()
-	if err := errors.Join(
-		paho.Register(reg),
-		nativestore.Register(reg),
-	); err != nil {
+	if err := registerAllDecoders(reg); err != nil {
 		logger.Error("failed to register plugin decoders", "error", err)
 		return 1
 	}
@@ -205,62 +192,10 @@ Usage of %s:
 		bridge.WithSupervisorPolledCredentialStore(credResolver, credPollConfig),
 	)
 
-	// Demo adapter set: MQTT transport + native memory/SQLite stores only.
-	// Production builds register their own transports/stores here (and the
-	// matching config decoders above) — see the AWS guidance below.
-	sup.RegisterTransport("mqtt", paho.NewFactory(logger))
-	sup.RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory())
-	sup.RegisterStoreFactory("sqlite", nativestore.NewSQLiteStoreFactory())
-
-	// AWS adapters require an AWS SDK client. Uncomment and configure
-	// when deploying with AWS backing services:
-	//
-	//   import awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	//   import "github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	//   import "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
-	//   import awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
-	//
-	//   awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
-	//   ddbClient := dynamodb.NewFromConfig(awsCfg)
-	//   // sqs.NewFactory(logger, metrics...) — the optional variadic
-	//   // metrics exporter is threaded into every SQS receiver/sender so
-	//   // the adapter's metrics emit; omit it for the Noop fallback.
-	//   sup.RegisterTransport("sqs", sqs.NewFactory(logger))
-	//   sup.RegisterStoreFactory("dynamodb", awsstore.NewDynamoDBStoreFactory(ddbClient))
-
-	// Observability wiring. This demo binary links no telemetry
-	// exporter, so metrics/traces/audit default to the runtime's Noop
-	// implementations. The Supervisor now forwards a MetricsExporter, Tracer,
-	// and AuditLogger into every runtime it builds (including hot-reloads) via
-	// the options below — pass a real exporter here to instrument a config-driven
-	// deployment. The adapters/otel and adapters/aws/metrics packages provide
-	// concrete exporters; they are omitted here to keep the demo dependency-free:
-	//
-	//   import otelmetrics "github.com/mariotoffia/gobridge/adapters/otel/metrics"
-	//   import oteltracing "github.com/mariotoffia/gobridge/adapters/otel/tracing"
-	//
-	//   me, _ := otelmetrics.New(ctx, /* exporter opts */)
-	//   tr, _ := oteltracing.New(ctx, /* exporter opts */)
-	//   // The exporter and tracer are SHARED across every hot-reloaded runtime,
-	//   // so runtime.Stop only Flushes them — it never Closes them. This
-	//   // composition root owns their Close and must call it exactly once at
-	//   // process shutdown, or the exporter's flush goroutine leaks and buffered
-	//   // spans are dropped:
-	//   defer me.Close(context.Background())
-	//   defer tr.Close(context.Background())
-	//   sup := bridge.NewSupervisor(
-	//       // ... existing options ...
-	//       bridge.WithSupervisorMetrics(me),
-	//       bridge.WithSupervisorTracer(tr),
-	//       bridge.WithSupervisorAuditLogger(auditLogger),
-	//   )
-	//   // Pass the SAME exporter into the HTTP server so admin-plane DLQ
-	//   // redrive metrics share the one sink (see httpapi.New below):
-	//   //   httpapi.New(rt, apiCfg, /* ... */, httpapi.WithMetrics(me))
-	//
-	// The runtime then instruments lease/outbox stores and honors the tracer and
-	// audit logger automatically. A production/deploy profile selects the
-	// exporter (env or config) and passes it here.
+	if err := wireAllFactories(ctx, sup, logger, nil); err != nil {
+		logger.Error("failed to wire plugin factories", "error", err)
+		return 1
+	}
 
 	watchCh, err := mgr.Watch(ctx)
 	if err != nil {

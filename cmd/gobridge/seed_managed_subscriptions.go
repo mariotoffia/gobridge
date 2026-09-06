@@ -8,8 +8,6 @@ import (
 
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/ports"
-
-	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
 )
 
 // A persistent or exclusive MQTT session does not start until its
@@ -73,9 +71,10 @@ func seedManagedSubscriptions(ctx context.Context, loader ports.Loader, baseline
 	}
 	// The same store set, under the same names, that run() registers on the
 	// supervisor, so the baseline lands in exactly the store the bridge reads.
-	b := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-		RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).
-		RegisterStoreFactory("sqlite", nativestore.NewSQLiteStoreFactory())
+	b := bridge.NewBuilder(cfg, bridge.WithLogger(logger))
+	if err := seedAllStores(ctx, b); err != nil {
+		return fmt.Errorf("wire seed stores: %w", err)
+	}
 	if err := b.SeedManagedSubscriptionBaselines(ctx, baselines); err != nil {
 		return err
 	}

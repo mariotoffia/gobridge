@@ -1,3 +1,5 @@
+//go:build gobridge_native || gobridge_all
+
 package main
 
 import (
@@ -21,35 +23,6 @@ import (
 // Kubernetes profile runs it from an init container, an operator runs it once
 // by hand. Each value is `session-id` (an empty baseline) or
 // `session-id=filter,filter` (the exact filters the broker session already holds).
-
-func TestParseManagedSubscriptionBaselines_EmptyAndListedFilters(t *testing.T) {
-	got, err := parseManagedSubscriptionBaselines([]string{
-		"mqtt-conn",
-		"legacy=orders/legacy/#,$share/group/orders/#",
-	})
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if v, ok := got["mqtt-conn"]; !ok || len(v) != 0 {
-		t.Fatalf("mqtt-conn = %v, %v; want present and empty", v, ok)
-	}
-	if v := got["legacy"]; len(v) != 2 || v[0] != "orders/legacy/#" || v[1] != "$share/group/orders/#" {
-		t.Fatalf("legacy = %v", v)
-	}
-}
-
-func TestParseManagedSubscriptionBaselines_RejectsMalformedValues(t *testing.T) {
-	for _, bad := range [][]string{
-		{""},
-		{"=a/#"},
-		{"s=a/#,"},
-		{"s", "s"},
-	} {
-		if _, err := parseManagedSubscriptionBaselines(bad); err == nil {
-			t.Errorf("%q: expected an error", bad)
-		}
-	}
-}
 
 // writeSeedConfig writes a persistent MQTT config whose managed-subscription
 // store lives under dir, and returns the config path and the store path.

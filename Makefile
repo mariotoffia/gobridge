@@ -515,7 +515,7 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 	@echo "=== registrychk (CDK builder + grants coverage) ==="
 	@bash -c 'set -o pipefail; $(PWD)/bin/registrychk 2>&1 | tee reports/registrychk.log'
 	@echo "=== pluginsym (registry symmetry) ==="
-	@bash -c 'set -o pipefail; $(PWD)/bin/pluginsym 2>&1 | tee reports/pluginsym.log'
+	@bash -c 'set -o pipefail; $(PWD)/bin/pluginsym -dir cmd/gobridge 2>&1 | tee reports/pluginsym.log'
 	@echo "=== Module graph (advisory) ==="
 	@go mod graph > reports/arch-graph.txt
 	@echo "reports/arch-graph.txt — $$(wc -l < reports/arch-graph.txt | tr -d ' ') edges"

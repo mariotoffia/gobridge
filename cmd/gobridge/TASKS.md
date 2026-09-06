@@ -135,7 +135,7 @@ and the only non-scaffolding fix is the split itself.
   `wireAllFactories(ctx, sup, logger, metrics) error`;
   `seedAllStores(ctx, b) error`; the mqtt and native family functions.
 
-- [ ] **Step 1: Write failing fixture tests.** Fixtures under
+- [x] **Step 1: Write failing fixture tests.** Fixtures under
   `scripts/pluginsym/testdata/`: `family_ok/` (empty main.go +
   `plugins_aws.go` with matching register+wire, passes), `family_seed_ok/`
   (`plugins_aws.go` wiring `"dynamodb"` on both a Supervisor and a Builder,
@@ -148,12 +148,12 @@ and the only non-scaffolding fix is the split itself.
   `TestPerFileSymmetry_<Fixture>`. Run
   `go -C scripts/pluginsym test ./... -run TestPerFileSymmetry -v` — expect
   FAIL (walker not implemented).
-- [ ] **Step 2: Implement the walker.** Replace the single-file parse:
+- [x] **Step 2: Implement the walker.** Replace the single-file parse:
   `os.ReadDir`, skip `_test.go`, parse each file, classify the constraint
   with `go/build/constraint.Parse` on the `//go:build` line (no line →
   unconstrained file). Reuse the existing collectors per file; evaluate
   R1–R5; keep the registrar-invocation mechanism per file.
-- [ ] **Step 3: Fixture tests PASS.** Update
+- [x] **Step 3: Fixture tests PASS.** Update
   `TestBuildRegisteredKinds_LiveAdapters` to walk `../../cmd/gobridge` and
   require `mqtt`/`mqtt.paho` from `plugins_mqtt.go`, `memory`/`sqlite` from
   `plugins_native.go`, and nothing from `main.go` — it FAILS at this point
@@ -161,7 +161,8 @@ and the only non-scaffolding fix is the split itself.
 - [ ] **Step 4: Commit A** — `feat(pluginsym): per-file registration symmetry across build-tagged composition files`
   (`make lint` is expected red on `cmd/gobridge` between A and B; the task
   boundary is what must be green).
-- [ ] **Step 5: Failing blank-root tests.** Untagged
+  Skipped by request: changes stay uncommitted on the existing local branch.
+- [x] **Step 5: Failing blank-root tests.** Untagged
   `TestBlankRoot_RegistersNoKinds`: fresh `ports.NewRegistry()` through
   `registerAllDecoders`, assert `Kinds()` is empty and `compiledFamilies` is
   empty. Tagged `TestMQTTFamily_RegistersDecoders` (kinds `mqtt`,
@@ -171,10 +172,10 @@ and the only non-scaffolding fix is the split itself.
   `seedAllStores` resolves the same store names `wireAllFactories` registers
   on a Supervisor). Run untagged and with `-tags gobridge_mqtt` /
   `-tags gobridge_native` → FAIL (nothing compiles yet).
-- [ ] **Step 6: Implement the split** — the family pairs, `plugins.go`, the
+- [x] **Step 6: Implement the split** — the family pairs, `plugins.go`, the
   `main.go` / seed-file edits, the test-file constraint move, the Dockerfile
   default.
-- [ ] **Step 7: Verify.** All runs pass: untagged, `-tags gobridge_mqtt`,
+- [x] **Step 7: Verify.** All runs pass: untagged, `-tags gobridge_mqtt`,
   `-tags gobridge_native`, `-tags gobridge_all`. Then
   `go -C cmd/gobridge build -o /tmp/g.out . && go version -m /tmp/g.out` →
   no `adapters/mqtt`, no `adapters/native/store`, no sqlite modules; rebuild
@@ -184,6 +185,24 @@ and the only non-scaffolding fix is the split itself.
   passes R1–R5 with `main.go` and the seed file at ∅; read
   `reports/pluginsym.log`; `make test` green.
 - [ ] **Step 8: Commit B** — `feat(gobridge): blank composition root; MQTT and native stores become build-tag families`
+  Skipped by request: changes stay uncommitted on the existing local branch.
+
+Verification completed on 2026-09-06:
+- Fixture and live pluginsym checks passed, including indirect-call rejection.
+- Tests and builds passed untagged, with each of MQTT/native, with both, and
+  with `gobridge_all`; blank-binary module inspection excluded optional adapters
+  and SQLite, while the combined build included them.
+- The actual blank binary rejected YAML `type: mqtt` with the unknown-kind
+  error. Verification binaries and YAML were removed afterwards.
+- `make lint` and `make test` passed; the latter reported 95 passing package
+  results. Logs: `reports/blank-root-make-lint.log`,
+  `reports/blank-root-make-test.log`, and `reports/blank-root-*.log`.
+- Code review approved after fixing indirect-call detection and narrowly
+  scoped metadata lint exceptions. All edited/new Go files are at most 420 lines;
+  `git diff --check` passed.
+- Go test scratch used `reports/`: the release-test fixture embeds its scratch
+  path in a Git ref, so a path containing `.copilot` fails that precondition.
+  No release-test source was changed.
 
 ⛳ **Review checkpoint** (`superpowers:requesting-code-review`): the gate is
 load-bearing for every later task and this commit changes what a plain

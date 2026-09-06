@@ -8,8 +8,8 @@
 // (or vice-versa). The runtime then fails at composition time with
 // an unhelpful error, and CI never noticed.
 //
-// For each adapter the canonical composition root invokes Register
-// for, this tool asserts:
+// For every non-test Go file in the composition package, regardless of
+// active build tags, this tool asserts:
 //
 //   - Every kind that has a registered ConfigDecoder has a
 //     corresponding wired factory in the composition root. Aliases
@@ -18,12 +18,14 @@
 //     is satisfied if at least one alias is wired.
 //   - Every wired factory in the composition root corresponds to a
 //     registered config decoder (no orphan factories).
+//   - Registrations live only in additive family files, never in stubs
+//     or unconstrained files. Each adapter registers in one file only.
 //
 // Usage:
 //
 //	go run ./scripts/pluginsym
 //	go run ./scripts/pluginsym -v
-//	go run ./scripts/pluginsym -main <path/to/main.go>
+//	go run ./scripts/pluginsym -dir <path/to/package>
 package main
 
 import (
@@ -34,16 +36,21 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
 	// Adapter Register functions are invoked through the
 	// adapterRegistrars binding below. WHICH adapters are invoked is
-	// PARSED from the composition root (cmd/gobridge/main.go) at run
+	// PARSED from the composition package (cmd/gobridge) at run
 	// time, so this import set only has to provide the compile-time
 	// binding for every adapter the composition root may register.
+	amqp091 "github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091"
+	amqp10 "github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10"
+	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
+	sqs "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
+	servicebus "github.com/mariotoffia/gobridge/adapters/azure/transport/servicebus"
+	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
 
@@ -58,8 +65,11 @@ import (
 // scripts/registrychk and the supervisor's transport/store maps in
 // cmd/gobridge/main.go.
 var aliasMap = map[string]string{
-	"aws.sqs":   "sqs",
-	"mqtt.paho": "mqtt",
+	"aws.sqs":          "sqs",
+	"mqtt.paho":        "mqtt",
+	"azure.servicebus": "servicebus",
+	"amqp.amqp091":     "amqp091",
+	"amqp.amqp10":      "amqp10",
 }
 
 // wiringMethods is the set of Supervisor/Builder method names whose
@@ -75,45 +85,27 @@ var wiringMethods = map[string]bool{
 
 func main() {
 	var (
-		mainPath = flag.String("main", "", "path to the canonical composition root main.go (default: derived from cwd as cmd/gobridge/main.go)")
-		verbose  = flag.Bool("v", false, "print discovered registered/wired kinds")
+		dir     = flag.String("dir", "cmd/gobridge", "path to the composition package directory")
+		verbose = flag.Bool("v", false, "print per-file registered/wired kinds")
 	)
 	flag.Parse()
 
-	cwd, err := os.Getwd()
+	files, violations, err := analyzeDirectory(*dir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pluginsym: getwd: %v\n", err)
+		fmt.Fprintf(os.Stderr, "pluginsym: %v\n", err)
 		os.Exit(2)
 	}
-	if *mainPath == "" {
-		*mainPath = filepath.Join(cwd, "cmd", "gobridge", "main.go")
-	}
-
-	registered, err := buildRegisteredKinds(*mainPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "pluginsym: build registry: %v\n", err)
-		os.Exit(2)
-	}
-
-	wired, err := parseWiredKinds(*mainPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "pluginsym: parse %s: %v\n", *mainPath, err)
-		os.Exit(2)
-	}
-
 	if *verbose {
-		fmt.Fprintf(os.Stderr, "pluginsym: registered kinds: %v\n", registered)
-		fmt.Fprintf(os.Stderr, "pluginsym: wired kinds:      %v\n", sortedKeys(wired))
+		for _, f := range files {
+			fmt.Fprintf(os.Stderr, "pluginsym: %s: registered=%v wired=%v\n", f.path, f.registered, sortedKeys(f.wired))
+		}
 	}
-
-	missing := checkSymmetry(registered, wired, aliasMap)
-	if len(missing) == 0 {
-		return
+	for _, violation := range violations {
+		fmt.Fprintln(os.Stderr, violation)
 	}
-	for _, m := range missing {
-		fmt.Fprint(os.Stderr, m)
+	if len(violations) != 0 {
+		os.Exit(1)
 	}
-	os.Exit(1)
 }
 
 // adapterRegistrars binds each adapter package import path to its
@@ -123,8 +115,14 @@ func main() {
 // Register call in the composition root whose import path is absent
 // here is a drift error — add the adapter here and to go.mod.
 var adapterRegistrars = map[string]func(*ports.Registry) error{
-	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho": paho.Register,
-	"github.com/mariotoffia/gobridge/adapters/native/store":        nativestore.Register,
+	"github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091":     amqp091.Register,
+	"github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10":      amqp10.Register,
+	"github.com/mariotoffia/gobridge/adapters/aws/store":                  awsstore.Register,
+	"github.com/mariotoffia/gobridge/adapters/aws/transport/sqs":          sqs.Register,
+	"github.com/mariotoffia/gobridge/adapters/azure/transport/servicebus": servicebus.Register,
+	"github.com/mariotoffia/gobridge/adapters/http/transport":             httptransport.Register,
+	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho":        paho.Register,
+	"github.com/mariotoffia/gobridge/adapters/native/store":               nativestore.Register,
 }
 
 // buildRegisteredKinds parses the composition root at mainPath for the
