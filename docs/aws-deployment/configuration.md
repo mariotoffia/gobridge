@@ -58,7 +58,9 @@ or as a file path via `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `bridge_id` | `string` | Yes | -- | Unique identifier for this bridge instance. Used as the `bridge.id` in the default logical config when no bridge config file exists yet. |
-| `config_file_path` | `string` | Yes | -- | Absolute path to the bridge config YAML as seen inside the container (the EFS mount point), e.g. `/var/lib/gobridge/bridge.yaml`. |
+| `config_source` | `string` | No | `"file"` | Bridge config source: `"file"` or `"dynamodb"`. Empty normalizes to `"file"`. DynamoDB is accepted by the bootstrap schema but is not yet wired into the runtime or CDK. The runtime rejects it at startup; keep `"file"` for running deployments. |
+| `config_dynamodb` | `object` | For DynamoDB | -- | DynamoDB config-source settings: `table_name` (required string), `watch_mode` (`"poll"` by default or `"streams"`), and `stream_poll_interval` (optional positive Go duration for the streams `GetRecords` cadence). Must be absent for the file source. |
+| `config_file_path` | `string` | For file | -- | Absolute path to the bridge config YAML as seen inside the container (the EFS mount point), e.g. `/var/lib/gobridge/bridge.yaml`. Required for the file source and must be empty for DynamoDB. |
 | `admin_api_key_param` | `string` | Yes | -- | SSM parameter name or `pms://` URI for the admin API key. Resolved at startup and on every config reload. The value is a single key or a JSON map of named keys — see [Admin key parameter value](#admin-key-parameter-value). |
 | `node_role` | `string` | No | `"control"` | Role of this node: `"control"` or `"worker"`. Every node starts the transport, admin and monitor servers regardless of the value; what it selects at runtime is the admin config-transaction **single-writer** posture. A `control` node asserts it is the sole durable config writer and may commit config transactions; a `worker` node mounts EFS read-only in `GoBridgeCluster` and is refused (HTTP 500) on a durable commit -- see [Admin Config Transactions and the Single-Writer Posture](../deployment-guide.md#admin-config-transactions-and-the-single-writer-posture). At deploy time the CDK single/cluster facades stamp it per service and validate it at synth. Unrelated to the runtime failover role (`active` / `standby` / `standalone`) the monitor probes report. |
 | `topology` | `string` | No | `"single"` | Deployment topology: `"single"` (one replica), `"filesystem_replicated"` (N replicas sharing EFS), or `"dynamodb_coordinated_ha"` (the active/warm-standby profile stamped by `GoBridgeDynamoDBHA`). The HA value additionally requires the four `dynamodb_ha_*` identities below. |
@@ -69,7 +71,7 @@ or as a file path via `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`.
 | `dynamodb_ha_config_fingerprint` | `string` | No | `""` | 64-character SHA-256 hex of the IMMUTABLE deployment profile: `deployment_mode`, the `bridge.cluster` shape, and the identity of every deployment-owned store. It is NOT a hash of the whole document, so every later operator config change still matches it while every deployment-provisioned change moves it. Required (and validated for shape) when `topology` is `"dynamodb_coordinated_ha"`. |
 | `dynamodb_ha_baseline_config_digest` | `string` | No | `""` | 64-character SHA-256 hex artifact digest of the exact config DOCUMENT this deployment admitted. A coordinated member uses it to seed the cohort's generation-zero committed artifact before it serves, so a member restarting before the first rollout recovers to the config the deployment admitted rather than to whatever the mutable config source currently holds. Empty disables baseline seeding. A present-but-malformed value is rejected at startup. |
 | `dynamodb_ha_rollout_table_name` | `string` | No | `""` (adapter default `gobridge-rollouts`) | DynamoDB table backing the coordinated rollout barrier's shared state: the current proposal, the per-member acknowledgements, and the durable last-committed config artifact. Read only when the logical config sets `bridge.cluster.rollout: coordinated`. `GoBridgeDynamoDBHA` provisions the table and stamps its name when `MemberSlots` is set, deriving it as `<bridge.id>-rollouts` from the shared config document. The task role is granted only `dynamodb:GetItem` and `dynamodb:PutItem` on it, so the runtime's best-effort `CreateTable` preflight is denied and logged on every boot -- expected, because the deployment owns the table. |
-| `poll_interval` | `string` | No | `"1s"` | Go duration string for how often the poll watcher checks the bridge config file for changes. |
+| `poll_interval` | `string` | No | `"1s"` (file), `"30s"` (DynamoDB) | Go duration string for how often the poll watcher checks the selected config source for changes. Empty, unparseable, or non-positive values use the source-specific default. |
 | `container_memory_bytes` | `uint64` | No | `1073741824` | Runtime container hard limit used by the MQTT memory profile. CDK overwrites this field from the effective Fargate `MemoryMiB`; do not set it independently in CDK deployments. |
 | `reserved_memory_bytes` | `uint64` | No | `0` | Non-MQTT memory already committed to other runtime components. This reservation plus the profile's 25% MQTT ingress allocation must leave at least 20% of `container_memory_bytes` as headroom. |
 | `admin_addr` | `string` | No | `":8080"` | Listen address for the admin HTTP server. |
@@ -119,7 +121,12 @@ The bootstrap loader calls `Normalized()` to apply defaults and then `Validate()
 Validation fails if:
 
 - `bridge_id` is empty.
-- `config_file_path` is empty.
+- `config_source` is not `"file"` or `"dynamodb"` after normalization.
+- The file source has an empty `config_file_path` or a non-null `config_dynamodb`.
+- The DynamoDB source has no `config_dynamodb.table_name`, has a non-empty
+  `config_file_path`, or uses the `"filesystem_replicated"` topology.
+- `config_dynamodb.watch_mode` is not empty, `"poll"`, or `"streams"`, or a
+  supplied `config_dynamodb.stream_poll_interval` is not a positive Go duration.
 - `admin_api_key_param` is empty.
 - `node_role` is not `"control"` or `"worker"` (after normalization).
 - `topology` is not `"single"`, `"filesystem_replicated"` or `"dynamodb_coordinated_ha"` (after normalization).

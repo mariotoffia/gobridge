@@ -151,17 +151,20 @@ empty→file, `Validate()` matrix from DESIGN.md D2); mirror aliases in
 **Interfaces produced:** exact field/JSON names from DESIGN.md D2 —
 `config_source`, `config_dynamodb.{table_name,watch_mode,stream_poll_interval}`.
 
-- [ ] **Step 1:** Failing table-driven tests in `infra/bootstrap_test.go`:
+- [x] **Step 1:** Failing table-driven tests in `infra/bootstrap_test.go`:
   `TestValidate_ConfigSourceMatrix` covering: empty→file default; file
   without path → error `config_file_path is required`; dynamodb without
   table → error; dynamodb with `config_file_path` set → error; dynamodb +
   `filesystem_replicated` → error; dynamodb + single / ha → ok.
   `TestEffectivePollInterval_DynamoDBDefault` → 30s when source dynamodb and
   unset.
-- [ ] **Step 2:** Implement; run `go -C deployment/aws/infra test ./... -v`.
-- [ ] **Step 3:** Update the doc field table; run
+- [x] **Step 2:** Implement; run `go -C deployment/aws/infra test ./... -v`.
+  Reject DynamoDB at `App.Start` until source wiring is available, rather
+  than letting the file loader start an empty runtime. Covered by
+  `lib/bootstrap/config_test.go`; bootstrap schema validation still accepts it.
+- [x] **Step 3:** Update the doc field table; run
   `go -C deployment/aws/lib test -run FieldReference -v` (must be green).
-- [ ] **Step 4:** `make lint && make test`; commit —
+- [x] **Step 4:** `make lint && make test`; commit —
   `feat(deploy/aws): bootstrap config_source discriminator with dynamodb settings`
 
 ---

@@ -27,11 +27,28 @@ const (
 	TopologyDynamoDBCoordinatedHA Topology = "dynamodb_coordinated_ha"
 )
 
+// Config source selectors for the hot-reloadable bridge config.
+const (
+	ConfigSourceFile     = "file"
+	ConfigSourceDynamoDB = "dynamodb"
+)
+
+// ConfigDynamoDBSettings identifies the config table and change-detection mode.
+type ConfigDynamoDBSettings struct {
+	// TableName is deployment-owned when using the CDK facade.
+	TableName string `json:"table_name"`
+	// WatchMode selects "poll" (the default when empty) or "streams".
+	WatchMode string `json:"watch_mode,omitempty"`
+	// StreamPollInterval is the GetRecords cadence when using streams.
+	StreamPollInterval string `json:"stream_poll_interval,omitempty"`
+}
+
 const (
 	DefaultAdminAddr                   = ":8080"
 	DefaultMonitorAddr                 = ":8081"
 	DefaultTransportHTTPAddr           = ":8082"
 	DefaultPollInterval                = time.Second
+	DefaultDynamoDBPollInterval        = 30 * time.Second
 	DefaultContainerMemoryBytes uint64 = 1 << 30
 )
 
@@ -139,8 +156,10 @@ type BootstrapConfig struct {
 	// HA facade seeds its own table at deploy time and leaves this empty.
 	ManagedSubscriptionBaselines map[string][]string `json:"managed_subscription_baselines,omitempty"`
 
-	ConfigFilePath string `json:"config_file_path"`
-	PollInterval   string `json:"poll_interval,omitempty"`
+	ConfigSource   string                  `json:"config_source,omitempty"`
+	ConfigDynamoDB *ConfigDynamoDBSettings `json:"config_dynamodb,omitempty"`
+	ConfigFilePath string                  `json:"config_file_path"`
+	PollInterval   string                  `json:"poll_interval,omitempty"`
 
 	// ContainerMemoryBytes is the hard memory limit of the runtime container.
 	// CDK always overwrites it from the effective Fargate task memory; the
@@ -239,6 +258,9 @@ func (c BootstrapConfig) Normalized() BootstrapConfig {
 	if out.Topology == "" {
 		out.Topology = TopologySingle
 	}
+	if out.ConfigSource == "" {
+		out.ConfigSource = ConfigSourceFile
+	}
 	if out.AdminAddr == "" {
 		out.AdminAddr = DefaultAdminAddr
 	}
@@ -260,16 +282,19 @@ func (c BootstrapConfig) Normalized() BootstrapConfig {
 	return out
 }
 
-// EffectivePollInterval returns the config file poll interval as a
-// time.Duration, falling back to DefaultPollInterval on parse error
-// or non-positive values.
+// EffectivePollInterval returns the config poll cadence, falling back to the
+// source-specific default when unset, unparseable, or non-positive.
 func (c BootstrapConfig) EffectivePollInterval() time.Duration {
+	fallback := DefaultPollInterval
+	if c.ConfigSource == ConfigSourceDynamoDB {
+		fallback = DefaultDynamoDBPollInterval
+	}
 	if c.PollInterval == "" {
-		return DefaultPollInterval
+		return fallback
 	}
 	d, err := time.ParseDuration(c.PollInterval)
 	if err != nil || d <= 0 {
-		return DefaultPollInterval
+		return fallback
 	}
 	return d
 }
@@ -361,8 +386,37 @@ func (c BootstrapConfig) Validate() error {
 	if c.BridgeID == "" {
 		return fmt.Errorf("infra: bridge_id is required")
 	}
-	if c.ConfigFilePath == "" {
-		return fmt.Errorf("infra: config_file_path is required")
+	switch c.ConfigSource {
+	case "", ConfigSourceFile:
+		if c.ConfigFilePath == "" {
+			return fmt.Errorf("infra: config_file_path is required")
+		}
+		if c.ConfigDynamoDB != nil {
+			return fmt.Errorf("infra: config_dynamodb must be absent when config_source is file")
+		}
+	case ConfigSourceDynamoDB:
+		if c.ConfigDynamoDB == nil || c.ConfigDynamoDB.TableName == "" {
+			return fmt.Errorf("infra: config_dynamodb.table_name is required when config_source is dynamodb")
+		}
+		if c.ConfigFilePath != "" {
+			return fmt.Errorf("infra: config_file_path must be empty when config_source is dynamodb")
+		}
+		if c.Topology == TopologyFilesystemReplicated {
+			return fmt.Errorf("infra: filesystem_replicated requires config_source file")
+		}
+		switch c.ConfigDynamoDB.WatchMode {
+		case "", "poll", "streams":
+		default:
+			return fmt.Errorf("infra: unsupported config_dynamodb.watch_mode %q (want poll or streams)", c.ConfigDynamoDB.WatchMode)
+		}
+		if c.ConfigDynamoDB.StreamPollInterval != "" {
+			d, err := time.ParseDuration(c.ConfigDynamoDB.StreamPollInterval)
+			if err != nil || d <= 0 {
+				return fmt.Errorf("infra: config_dynamodb.stream_poll_interval must be a positive duration")
+			}
+		}
+	default:
+		return fmt.Errorf("infra: unsupported config_source %q (want file or dynamodb)", c.ConfigSource)
 	}
 	if c.AdminAPIKeyParam == "" {
 		return fmt.Errorf("infra: admin_api_key_param is required")

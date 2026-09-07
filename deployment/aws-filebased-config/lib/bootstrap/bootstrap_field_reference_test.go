@@ -111,6 +111,27 @@ func TestBootstrapFieldReference_DocumentsEveryParsedField(t *testing.T) {
 		bootstrapFieldReferenceDoc)
 }
 
+func TestBootstrapFieldReference_ParsesTheDocumentedDynamoDBSettings(t *testing.T) {
+	cfg, err := bootstrap.LoadBootstrapConfigJSON([]byte(`{
+		"bridge_id": "gobridge-prod",
+		"admin_api_key_param": "/gobridge/prod/admin-api-key",
+		"config_source": "dynamodb",
+		"config_dynamodb": {
+			"table_name": "gobridge-config",
+			"watch_mode": "streams",
+			"stream_poll_interval": "250ms"
+		}
+	}`))
+	require.NoError(t, err)
+	require.Equal(t, deployinfra.ConfigSourceDynamoDB, cfg.ConfigSource)
+	require.Empty(t, cfg.ConfigFilePath)
+	require.Equal(t, &deployinfra.ConfigDynamoDBSettings{
+		TableName:          "gobridge-config",
+		WatchMode:          "streams",
+		StreamPollInterval: "250ms",
+	}, cfg.ConfigDynamoDB)
+}
+
 // TestBootstrapFieldReference_ParsesTheDocumentedCoordinatedRolloutFields proves
 // the documented spellings are the LIVE ones: a table row is only worth something
 // if a document written from it reaches the runtime with the values it named.

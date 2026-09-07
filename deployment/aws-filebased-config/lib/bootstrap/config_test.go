@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,6 +11,25 @@ import (
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+func TestApp_RejectsUnsupportedConfigSource(t *testing.T) {
+	cfg := deployinfra.BootstrapConfig{
+		BridgeID:         "bridge-config",
+		AdminAPIKeyParam: "/admin",
+		ConfigSource:     deployinfra.ConfigSourceDynamoDB,
+		ConfigDynamoDB:   &deployinfra.ConfigDynamoDBSettings{TableName: "config"},
+	}.Normalized()
+	require.NoError(t, cfg.Validate(), "the bootstrap schema admits DynamoDB")
+	app := NewApp(cfg, WithParameterResolver(staticParameterResolver{}))
+	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+
+	require.ErrorContains(t, app.Start(t.Context()), `config_source "dynamodb" is not supported by this runtime`)
+	assert.Nil(t, app.CurrentLogicalConfig(), "must not load an empty file-backed config")
+	assert.Nil(t, app.CurrentRuntime())
+	assert.Nil(t, app.manager)
+	assert.Nil(t, app.credentialStore)
+	assert.Nil(t, app.dynamoDBClient)
+}
 
 func TestValidateFilesystemProfile_AdditionalCases(t *testing.T) {
 	replicated := deployinfra.BootstrapConfig{

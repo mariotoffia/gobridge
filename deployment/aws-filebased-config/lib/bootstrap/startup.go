@@ -28,6 +28,9 @@ func (a *App) Start(ctx context.Context) error {
 	if err := a.cfg.Validate(); err != nil {
 		return err
 	}
+	if a.cfg.ConfigSource != deployinfra.ConfigSourceFile {
+		return fmt.Errorf("bootstrap: config_source %q is not supported by this runtime; use file", a.cfg.ConfigSource)
+	}
 
 	if a.parameterResolver == nil {
 		resolver, err := newSSMParameterResolver(ctx, a.cfg)
