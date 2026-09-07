@@ -1,5 +1,5 @@
-// Package dynamodb implements ports.Loader and ports.Reloader using a
-// DynamoDB table as the configuration store.
+// Package dynamodb implements ports.Reloader and ports.ConditionalConfigStore
+// using a DynamoDB table as the configuration store.
 //
 // The full BridgeConfig document is stored as a single DynamoDB item with
 // a JSON blob and a numeric version attribute.
@@ -10,6 +10,14 @@
 //	SK = "current"
 //	data = JSON-encoded BridgeConfig
 //	version = monotonically increasing integer
+//
+// Save reads the current version and conditionally writes the next one.
+// SaveIfVersion guards a caller's previously loaded version without another
+// read; zero creates an absent row or adopts a versionless row. Both update
+// the JSON version and row version together, then update the caller's Version.
+// Conflicts return shared.ErrVersionMismatch without overwriting the document.
+// Load uses the row version as the authoritative CAS counter.
+// Validate and Merge delegate to the config package's shared rules.
 //
 // Change detection (Watch) supports two modes, selectable via
 // WithWatchMode:

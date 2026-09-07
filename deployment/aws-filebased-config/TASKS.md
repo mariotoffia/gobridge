@@ -113,21 +113,24 @@ with current version → success.
 
 ### Task 1.2: Validate/Merge/SaveIfVersion on the DynamoDB loader
 
-**Files:** Modify `adapters/aws/config/dynamodb/loader.go` (three methods +
-the two interface assertions from DESIGN.md D4); Test:
+**Files:** Modify `adapters/aws/config/dynamodb/loader.go` and `acl_params.go`;
+add `store.go` (three methods + interface assertions, keeping loader.go
+within the file-size limit); preserve integer precision in the shared JSON
+marshaller. Test:
 `adapters/aws/config/dynamodb/store_conformance_test.go` (ddblocal-backed,
 Docker-gated like the module's existing tests, calls `configstoretest.Run`).
 
-- [ ] **Step 1:** Failing conformance run:
+- [x] **Step 1:** Failing conformance run:
   `go -C adapters/aws/config/dynamodb test -run Conformance -v` (Docker up)
   → FAIL (methods missing).
-- [ ] **Step 2:** Implement: `Validate` → `config.ValidateWithWarnings`;
+- [x] **Step 2:** Implement: `Validate` → `config.ValidateWithWarnings`;
   `Merge` → `config.DefaultMerge`; `SaveIfVersion` → conditional `PutItem`
-  at `expectedVersion+1` with `version = :expected` condition, condition
-  failure → `shared.ErrVersionMismatch`. Reuse the marshal/size-cap path of
-  `Save`.
-- [ ] **Step 3:** Conformance green; module tests green; `make lint`.
-- [ ] **Step 4:** Commit — `feat(config/dynamodb): loader implements ConfigStore and ConditionalConfigStore`
+  at `expectedVersion+1` with `version = :expected` condition (zero can also
+  create an absent row or adopt a versionless row), condition failure →
+  `shared.ErrVersionMismatch`. Share the marshal/size-cap path with `Save`;
+  keep JSON, row, and caller versions consistent.
+- [x] **Step 3:** Conformance green; module tests green; `make lint`.
+- [x] **Step 4:** Commit — `feat(config/dynamodb): loader implements ConfigStore and ConditionalConfigStore`
 
 ⛳ Review checkpoint.
 

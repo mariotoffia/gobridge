@@ -1,7 +1,9 @@
 package parser_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,6 +13,18 @@ import (
 	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+// TestMarshalBridgeConfigJSONPreservesVersion verifies integer precision through the wire map.
+func TestMarshalBridgeConfigJSONPreservesVersion(t *testing.T) {
+	for _, version := range []int{1, math.MaxInt/2 + 1, math.MaxInt} {
+		cfg := &ports.BridgeConfig{Version: version, Bridge: ports.BridgeSettings{ID: "config-store"}}
+		data, err := parser.MarshalBridgeConfigJSON(cfg)
+		require.NoError(t, err)
+		got, err := parser.Parse(bytes.NewReader(data), parser.FormatJSON, ports.NewRegistry())
+		require.NoError(t, err)
+		assert.Equal(t, cfg, got)
+	}
+}
 
 type fakeBlueprintConfig struct {
 	KindName string `json:"kind" yaml:"kind"`

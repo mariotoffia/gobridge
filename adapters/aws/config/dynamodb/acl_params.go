@@ -3,12 +3,15 @@ package dynamodb
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // Per-call SDK request/response translation for the DynamoDB
@@ -46,10 +49,9 @@ func (s *session) getConfigItem(ctx context.Context, pk string) (rawData string,
 		return "", 0, false, fmt.Errorf("dynamodb config load: missing or invalid %q attribute", attrData)
 	}
 
-	if vAttr, ok := out.Item[attrVersion].(*ddbtypes.AttributeValueMemberN); ok {
-		if v, err := strconv.ParseInt(vAttr.Value, 10, 64); err == nil {
-			version = v
-		}
+	version, err = configItemVersion(out.Item)
+	if err != nil {
+		return "", 0, false, err
 	}
 
 	return dataAttr.Value, version, true, nil
@@ -81,13 +83,21 @@ func (s *session) getCurrentVersion(ctx context.Context, pk string) (int64, erro
 		return 0, nil
 	}
 
-	vAttr, ok := out.Item[attrVersion].(*ddbtypes.AttributeValueMemberN)
-	if !ok {
+	return configItemVersion(out.Item)
+}
+
+func configItemVersion(item map[string]ddbtypes.AttributeValue) (int64, error) {
+	raw, present := item[attrVersion]
+	if !present {
 		return 0, nil
 	}
+	vAttr, ok := raw.(*ddbtypes.AttributeValueMemberN)
+	if !ok {
+		return 0, shared.ErrInvalidConfig.WithMessage("dynamodb config: stored version must be a number")
+	}
 	v, err := strconv.ParseInt(vAttr.Value, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("dynamodb config current version: parse %q: %w", vAttr.Value, err)
+	if err != nil || v < 0 || v > math.MaxInt {
+		return 0, shared.ErrInvalidConfig.WithMessage("dynamodb config: stored version must be a nonnegative integer fitting int")
 	}
 	return v, nil
 }
@@ -96,12 +106,11 @@ func (s *session) getCurrentVersion(ctx context.Context, pk string) (int64, erro
 // payload and version, guarded by a compare-and-set condition:
 // the write succeeds only if
 //
-//   - the row is absent (first write); or
 //   - its stored version equals expectedVersion (normal CAS); or
-//   - the row exists but carries NO version attribute AND expectedVersion is 0
-//     (first CAS that adopts a console/IaC-seeded row).
+//   - the version attribute is absent AND expectedVersion is 0 (first write,
+//     or first CAS that adopts a console/IaC-seeded row).
 //
-// The third clause is essential: a row seeded outside this loader (AWS
+// The second clause is essential: a row seeded outside this loader (AWS
 // console, Terraform, a data import) has PK/SK/data but no version, so the
 // plain "attribute_not_exists(#pk) OR #v = :expected" guard is permanently
 // false for it — every Save would be misclassified as a version conflict and
@@ -119,10 +128,9 @@ func (s *session) putConfigItem(ctx context.Context, pk string, data []byte, ver
 			attrData:    &ddbtypes.AttributeValueMemberS{Value: string(data)},
 			attrVersion: &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(version, 10)},
 		},
-		ConditionExpression: aws.String("attribute_not_exists(#pk) OR #v = :expected OR (attribute_not_exists(#v) AND :expected = :zero)"),
+		ConditionExpression: aws.String("#v = :expected OR (attribute_not_exists(#v) AND :expected = :zero)"),
 		ExpressionAttributeNames: map[string]string{
-			"#pk": attrPK,
-			"#v":  attrVersion,
+			"#v": attrVersion,
 		},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":expected": &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(expectedVersion, 10)},

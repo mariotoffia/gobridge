@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -104,8 +105,13 @@ type codec interface {
 // default (redacting) json.Marshal/yaml.Marshal calls elsewhere are unaffected.
 type jsonCodec struct{}
 
-func (jsonCodec) marshal(v any) ([]byte, error)   { return json.Marshal(shared.RevealSecrets(v)) } //nolint:wrapcheck // wrapped by caller
-func (jsonCodec) unmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }                  //nolint:wrapcheck // wrapped by caller
+func (jsonCodec) marshal(v any) ([]byte, error) { return json.Marshal(shared.RevealSecrets(v)) } //nolint:wrapcheck // wrapped by caller
+func (jsonCodec) unmarshal(b []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	// Wire-map projection must not round integer counters through float64.
+	dec.UseNumber()
+	return dec.Decode(v) //nolint:wrapcheck // wrapped by caller
+}
 
 // normalize rewrites every duration encoding/json wrote as a bare number into the
 // string form the decoder accepts — see blueprint_marshal_duration.go.

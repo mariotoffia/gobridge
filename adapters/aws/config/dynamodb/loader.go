@@ -97,13 +97,8 @@ const (
 	ModeStreams
 )
 
-var (
-	_ ports.Loader   = (*Loader)(nil)
-	_ ports.Reloader = (*Loader)(nil)
-)
-
-// Loader implements ports.Loader and ports.Reloader using a DynamoDB
-// table. The full BridgeConfig is stored as a single JSON item with an
+// Loader implements ports.Reloader and ports.ConditionalConfigStore using a
+// DynamoDB table. The full BridgeConfig is stored as a single JSON item with an
 // accompanying numeric version attribute.
 //
 // All AWS SDK interactions are funnelled through the unexported
@@ -209,6 +204,9 @@ func (l *Loader) pk() string { return "config#" + l.bridgeID }
 
 // Load retrieves the current BridgeConfig from DynamoDB.
 func (l *Loader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	rawData, version, found, err := l.session.getConfigItem(ctx, l.pk())
 	if err != nil {
 		return nil, err
@@ -222,6 +220,9 @@ func (l *Loader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 		return nil, fmt.Errorf("dynamodb config load: parse: %w", err)
 	}
 
+	// The row version is the CAS authority, including for externally seeded
+	// documents whose JSON version is absent or differs from the row.
+	cfg.Version = int(version)
 	if version > 0 {
 		l.mu.Lock()
 		l.lastVersion = version
@@ -496,56 +497,4 @@ func (l *Loader) jitteredBackoff(d time.Duration) time.Duration {
 	return half + time.Duration(rf()*float64(half))
 }
 
-// Save writes a BridgeConfig to DynamoDB using an optimistic
-// compare-and-set so concurrent admin writers cannot silently lose
-// updates. It reads the current committed version with a strongly
-// consistent read, then conditionally writes version+1 guarded on the
-// stored version being unchanged. A concurrent write that advanced the
-// version causes a shared.ErrVersionMismatch, which the caller should
-// resolve by reloading and retrying.
-func (l *Loader) Save(ctx context.Context, cfg *ports.BridgeConfig) error {
-	data, err := parser.MarshalBridgeConfigJSON(cfg)
-	if err != nil {
-		return fmt.Errorf("dynamodb config save: marshal: %w", err)
-	}
-
-	// Pre-check the payload against the per-item ceiling so an oversized config
-	// fails with a clear, actionable error rather than an opaque DynamoDB
-	// ValidationException after a wasted strong read and conditional write.
-	if len(data) > maxConfigItemBytes {
-		return fmt.Errorf("dynamodb config save: serialized config is %d bytes, which exceeds the %d-byte per-item limit (DynamoDB caps a single item at 400 KB); reduce the configuration size", len(data), maxConfigItemBytes)
-	}
-
-	current, err := l.currentVersion(ctx)
-	if err != nil {
-		return err
-	}
-	newVersion := current + 1
-
-	if err := l.session.putConfigItem(ctx, l.pk(), data, newVersion, current); err != nil {
-		if isConditionFailed(err) {
-			return shared.ErrVersionMismatch.
-				WithMessage("dynamodb config save: concurrent update detected; reload and retry").
-				With("expectedVersion", current)
-		}
-		return err
-	}
-
-	l.mu.Lock()
-	l.lastVersion = newVersion
-	l.mu.Unlock()
-
-	return nil
-}
-
-// EnsureTable creates the DynamoDB table if it does not already exist.
-// When the loader runs in ModeStreams the table is provisioned with a
-// KEYS_ONLY stream so self-provisioned deployments actually get the
-// streams-based Watch they configured instead of silently degrading to
-// poll mode. Intended for test setup and local development.
-func (l *Loader) EnsureTable(ctx context.Context) error {
-	if err := l.session.ensureTable(ctx, l.mode == ModeStreams); err != nil {
-		return err
-	}
-	return l.session.waitTableExists(ctx, 30*time.Second)
-}
+var _ ports.Reloader = (*Loader)(nil)
