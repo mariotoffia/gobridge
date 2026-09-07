@@ -4,8 +4,8 @@
 > Durable content is promoted to [ARCHITECTURE.md](./ARCHITECTURE.md),
 > [README.md](./README.md), [UBIQUITOUS.md](./UBIQUITOUS.md), the root docs and
 > `docs/aws-deployment/` before deletion. Nothing in code, tests, or shipped
-> docs may reference this file. The companion binary-side design is
-> `cmd/gobridge/DESIGN.md`.
+> docs may reference this file. The reference binary's implemented composition
+> contract is in [PLUGIN.md](../../PLUGIN.md#binary-composition-build-tags).
 
 ## Scope — the four problems
 
@@ -15,7 +15,8 @@
    `infra.BootstrapConfig` can only describe a file path.
 2. **Binary support is fixed.** The profile binary always links
    aws+mqtt+native+http; nothing else can be added without forking.
-   (Compile-time selection design: `cmd/gobridge/DESIGN.md` — this design
+   (The reference binary's compile-time selection contract is in
+   [PLUGIN.md](../../PLUGIN.md#binary-composition-build-tags); this profile
    reuses its tag convention.)
 3. **The CDK cannot produce the container image.** `Image` is a required
    prop; consumers must clone the repo and `docker build` from the root
@@ -278,7 +279,8 @@ that digest (closing the recorded "seeder default is broken" residual). The
 
 ### D8 — Profile binary gains the optional families
 
-Reuses the tag convention from `cmd/gobridge/DESIGN.md` §1 (same tags, one
+Reuses the tag convention from
+[PLUGIN.md](../../PLUGIN.md#binary-composition-build-tags) (same tags, one
 convention repo-wide). The profile **base** is aws+mqtt+native+http (that is
 what "AWS profile" means); additive: `gobridge_amqp091`, `gobridge_amqp10`,
 `gobridge_azure`. Mechanics: stub pairs in `lib/bootstrap`

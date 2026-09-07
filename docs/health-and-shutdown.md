@@ -115,8 +115,10 @@ The shutdown sequence proceeds as follows:
 5. **Close transports and stores** -- Session managers close (releasing leases),
    then unmanaged sessions, then durable stores, then telemetry -- each under a
    bounded close timeout detached from the caller context.
-6. **Shutdown HTTP** -- After the supervisor finishes, `cmd/gobridge` stops the
-   admin, monitor, and transport HTTP servers, bounded by `shutdown_timeout`.
+6. **Close process-owned resources** -- `cmd/gobridge` closes the shared metrics
+   and tracing exporters after its bounded supervisor wait. Its admin/monitor
+   HTTP stop runs earlier, alongside runtime teardown, under a separate
+   `shutdown_timeout`; transport HTTP listeners belong to runtime teardown.
 7. **Exit** -- The process exits with code 0 on a clean shutdown.
 
 In the file-based deployment the same budget also covers the stages *before* the
@@ -145,10 +147,12 @@ the shipped binaries:
   drain_timeout`; with both at their `30s` defaults it is zero, and the process
   is still closing stores and flushing metrics when the platform's SIGKILL
   lands.
-- **`cmd/gobridge`** runs the drain on a detached `drain_timeout` timer while it
-  waits up to `shutdown_timeout` for the supervisor, then stops the HTTP servers
-  under a FRESH `shutdown_timeout`. Nothing is starved, but the worst-case wall
-  time is close to `2 x shutdown_timeout`.
+- **`cmd/gobridge`** cancels the root context to start teardown, then stops its
+  admin/monitor HTTP servers under `shutdown_timeout`. It subsequently gives
+  the supervisor wait and shared-exporter close calls a FRESH
+  `shutdown_timeout`. Runtime drain uses its own detached `drain_timeout`;
+  supervisor waiting and exporter shutdown share the remaining second budget.
+  The worst-case wall time is close to `2 x shutdown_timeout`.
 
 Use 45--60 s for `shutdown_timeout` and 20--30 s for `drain_timeout`, and set
 the orchestrator's stop grace (ECS `stopTimeout`, Kubernetes

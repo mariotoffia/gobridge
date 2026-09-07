@@ -2,8 +2,9 @@
 
 # GoBridge Kubernetes profile image.
 #
-# Builds the reference composition root (cmd/gobridge: MQTT transport, native
-# memory/SQLite stores, file:// credentials, in-process HTTP API) as a fully
+# Builds the reference composition root (cmd/gobridge) with MQTT and native
+# memory/SQLite stores selected by GO_BUILD_TAGS, plus the always-available
+# file:// credentials and in-process HTTP API, as a fully
 # static, CGO-free executable and ships it on distroless/static as the
 # non-root user. There is no shell, curl or wget in the image: kubelet probes
 # the monitor port over HTTP (deployment/kubernetes/gobridge.yaml).
@@ -14,8 +15,8 @@
 #
 #   docker build -f deployment/kubernetes/Dockerfile -t <registry>/gobridge:<tag> .
 #
-# A custom composition root (one that registers more transports or stores)
-# builds with the same file: point BINARY_MODULE at its module directory.
+# Select other supported plugin families with GO_BUILD_TAGS. For custom wiring
+# outside those families, point BINARY_MODULE at the custom root's module.
 #
 # Base images are pinned to the same multi-platform OCI index digests as the
 # root Dockerfile; refresh them only through the review in DEVELOPMENT.md

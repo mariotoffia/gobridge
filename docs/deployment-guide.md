@@ -18,38 +18,45 @@ cloud-specific guidance, see [What's Next](#whats-next).
 > other non-AWS platforms run the maintained
 > [Kubernetes profile](../deployment/kubernetes/README.md), which packages the
 > reference binary (MQTT transport, memory/SQLite stores, `file://`
-> credentials, API keys from a Secret) and is tested end to end. For transports
-> neither bundles, build your own composition-root binary from
-> `cmd/gobridge/main.go`. The GoBridge core and library are portable; the stock
-> image is AWS-bound.
+> credentials, API keys from a Secret) with explicit
+> `GO_BUILD_TAGS=gobridge_mqtt,gobridge_native` and is tested end to end.
+> Select other reference-binary transports with build tags; no fork is needed
+> for supported families. The GoBridge core and library are portable; the
+> stock image is AWS-bound.
 
 ## Reference Binary and Composition Root
 
-The reference `cmd/gobridge` binary is intentionally minimal. Its composition
-root registers the `mqtt` transport and the native `memory` and `sqlite` store
-factories, and **zero processors** (the `reg.Register` and
-`sup.RegisterStoreFactory` calls in `cmd/gobridge/main.go`). Processor
-plugins (tenant, filter, transform) and most other transports and stores (SQS,
-Azure Service Bus, AMQP, DynamoDB) live in separate Go modules so the core stays
-dependency-light; the HTTP transport ships in the root module but is likewise
-unregistered by the reference binary.
+The reference `cmd/gobridge` binary is a **blank root** without build tags:
+no transport, store or telemetry exporter is linked. File configuration,
+`file://` credentials and the admin/monitor HTTP API remain available.
+A config naming a transport or store that was not compiled in fails with an
+unknown-kind error. To build the Kubernetes profile's MQTT and memory/SQLite
+set locally, run from the repository root:
 
-A config that references a processor, a non-`mqtt` transport, or a `dynamodb`
-store therefore fails against the shipped binary -- the factory is not
-registered. To use those, build your own composition root (`main.go`) that
-registers the plugins you need before starting the supervisor:
+```bash
+make build-gobridge GOBRIDGE_TAGS=gobridge_mqtt,gobridge_native
+./cmd/gobridge/gobridge.out -version
+```
 
-- `sup.RegisterTransport(name, factory)` -- transports (e.g. SQS)
-- `sup.RegisterStoreFactory(name, factory)` -- stores (e.g. DynamoDB)
-- `sup.RegisterProcessor(name, processor)` -- processors (tenant / filter / transform)
+Direct Go builds use
+`go -C cmd/gobridge build -tags gobridge_mqtt,gobridge_native -o gobridge.out .`.
+Use `gobridge_aws` for SQS and DynamoDB, `gobridge_azure` for Service Bus,
+`gobridge_amqp091` or `gobridge_amqp10` for AMQP, `gobridge_http` for the HTTP
+transport, and `gobridge_otel` for OTLP metrics and tracing. Combine tags with
+commas or use `gobridge_all`. The HTTP API itself does not require a family tag.
 
-`cmd/gobridge/main.go` carries commented examples for the AWS transport and store
-factories. See [PLUGIN.md](../PLUGIN.md) for the registration recipe.
+No family registers processors (tenant, filter, transform), selects a different
+config source, or adds a credential backend. Those still require a custom
+composition root and explicit wiring. Supported transport/store families do
+not: their decoder, factory and seed calls live in `plugins_<family>.go`.
+See [PLUGIN.md](../PLUGIN.md#binary-composition-build-tags) for the complete
+family table and extension contract.
 
 The reference binary takes these flags:
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `-version` | `false` | Print version, commit SHA and sorted compiled families, then exit. Unstamped metadata is `dev`; a blank root reports `families=[]`. |
 | `-config` | `bridge.yaml` | Path to the configuration file |
 | `-log-level` | `info` | Log level; an unrecognised value is rejected |
 | `-credentials-dir` | `credentials` | Base directory backing `file://` credential URIs |
@@ -336,7 +343,8 @@ orchestrator integration and building your own image are in
 
 GoBridge provides structured logging, metrics, and distributed tracing through
 pluggable adapters. The runtime instruments message delivery automatically --
-you only need to wire the exporters.
+build `cmd/gobridge` with `gobridge_otel` for OTLP metrics and tracing, or wire
+exporters explicitly in a custom composition root.
 
 ### Structured Logging
 
@@ -375,8 +383,10 @@ Two built-in adapters are available:
 > **The shipped AWS file-based image accepts only `noop` or `cloudwatch` for its
 > `metrics_exporter`** — those are the sole values its bootstrap wires
 > (`deployment/aws-filebased-config/lib/bootstrap/metrics.go`), and any other
-> value is rejected at startup. **OTLP requires a custom composition root** that
-> registers `adapters/otel/metrics`; it is not reachable from the stock image.
+> value is rejected at startup. **For OTLP, build `cmd/gobridge` with
+> `gobridge_otel`** and set `OTEL_EXPORTER_OTLP_ENDPOINT` or the signal-specific
+> metrics/traces endpoint variables. It is not reachable from the stock AWS
+> image; the Kubernetes Dockerfile accepts the tag through `GO_BUILD_TAGS`.
 
 The runtime emits metrics automatically when a `MetricsExporter` is
 registered. Key metrics include `DeliveryE2ELatency`, `MessagesReceived`,

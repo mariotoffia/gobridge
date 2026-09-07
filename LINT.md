@@ -27,7 +27,7 @@ Stages execute in order. The first blocking failure stops the build; advisory st
 | 8 | ACL | `aclcheck` per adapter module | yes | Vendor SDK imports outside `acl_*.go` or `acl/`, **and** export-confinement: SDK-originated types must not appear in exported signatures (type-origin check, not just import location). |
 | 9 | Config shape | `cfgshape` per workspace module | yes | Plugin config decoded as `map[string]any` instead of typed `ports.PluginConfig`. Enforces the non-empty-`Validate()`-body rule only; the Validate test-reference check is intentionally **not** enforced. |
 | 10 | Registry coverage | `registrychk` | yes | AWS-deployable kind missing CDK `With<Kind>*` builder or grants helper. |
-| 11 | Registry symmetry | `pluginsym` | yes | Decoder ↔ wired factory mismatch in `cmd/gobridge/main.go`. |
+| 11 | Registry symmetry | `pluginsym` | yes | Per-file decoder ↔ factory mismatch, duplicate adapter registration, invalid family constraints, or registration in a stub/untagged file under `cmd/gobridge/`. |
 | 12 | Module graph | `go mod graph` → `reports/arch-graph.txt` | no | Workspace module-level edges. Diff across PRs for new vendor deps. |
 | 13 | Duplicate scan | `dupl -threshold 75` → `reports/dupl.log` | no | Repeated logic blocks ≥75 tokens. Prompt for a missing aggregate, value object, or domain service. |
 | 14 | Repeated literals | `goconst -min-occurrences 4 -min-length 5` → `reports/goconst.log` | no | Strings or numbers repeated ≥4 times. Prompt for a missing domain constant. |
@@ -97,7 +97,7 @@ Locate the offending file:line in the named report. Apply the fix.
 | `aggcheck` | `reports/aggcheck.log` | Move the type into `*_aggregate.go` and add `Validate() error`. |
 | `cfgshape` | `reports/cfgshape.log` | Define a typed `ports.PluginConfig`, register the decoder in `register.go`, type-assert at the adapter boundary. |
 | `registrychk` | `reports/registrychk.log` | Add the `With<Kind>*` builder under `deployment/aws-filebased-config/cdk/bridgecfg/` and `cdk/constructs/internal/grants/<kind>.go`. |
-| `pluginsym` | `reports/pluginsym.log` | Wire the missing side (decoder or factory) in `cmd/gobridge/main.go`. |
+| `pluginsym` | `reports/pluginsym.log` | Keep decoder, literal factory and seed wiring in the same tagged family file; fix its constraint or inverse stub per [PLUGIN.md](PLUGIN.md#per-file-registration-symmetry). Untagged files register nothing. |
 | `gofmt` | `reports/gofmt.log` | Run `make lint-fix`. |
 | `go vet` | `reports/go-vet.log` | Fix the reported issue at file:line. |
 | `audit-timings` (in `make test`) | stdout + `audit/timing-allowlist.txt` | Replace `time.Sleep` / `time.After` / `NewTimer` / `NewTicker` / `Tick` with an injected `Clock` and `select { case <-ctx.Done(): case <-clk.After(d): }`. |

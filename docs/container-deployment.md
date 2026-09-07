@@ -119,8 +119,9 @@ without SSM and the expected bootstrap will not work.
 Off AWS, run the maintained **[Kubernetes profile](../deployment/kubernetes/README.md)**
 instead: a Dockerfile that builds the reference binary (`cmd/gobridge` — MQTT
 transport, memory/SQLite stores, `file://` credentials, in-process HTTP API
-with optional TLS) and one manifest that runs it as a StatefulSet with a
-ConfigMap-mounted `bridge.yaml`, the admin key from a Secret, a persistent
+with optional TLS) using explicit
+`GO_BUILD_TAGS=gobridge_mqtt,gobridge_native`, and one manifest that runs it as a
+StatefulSet with a ConfigMap-mounted `bridge.yaml`, the admin key from a Secret, a persistent
 volume for the SQLite state, an init container that seeds the durable MQTT
 session's baseline, and the liveness/readiness probes below. The profile is
 built from source and pushed to your own registry; pin it by digest like any
@@ -128,13 +129,15 @@ other image. It is exercised on every integration run through probes,
 traffic, a ConfigMap reload, SIGTERM drain and restart (`TestKubernetesProfile`
 in `tests/integration`).
 
-For transports the profile does not bundle (SQS, Azure Service Bus, AMQP), build
-your own composition root from `cmd/gobridge/main.go` — register the decoders
-(`Register(reg)`) and the supervisor factories for the adapters you use (see
-[Reference Binary and Composition Root](deployment-guide.md#reference-binary-and-composition-root)
-and [PLUGIN.md](../PLUGIN.md)) — and point the profile's Dockerfile at it. The
-manifest needs no change: the reference binary's flags, ports and probes are
-the ones your root inherits.
+For additional families (SQS/DynamoDB, Azure Service Bus, AMQP, HTTP or OTel),
+override the Docker build argument, for example
+`--build-arg GO_BUILD_TAGS=gobridge_mqtt,gobridge_native,gobridge_http`.
+An override replaces the default list: retain MQTT and native stores to run
+the supplied manifest unchanged. Match the bridge config and any credentials,
+networking and store resources to the selected families. No custom composition
+root is needed for them; see the [family table](../PLUGIN.md#binary-composition-build-tags).
+A plain local `go build` of `cmd/gobridge` is blank, unlike this image's default
+tagged build.
 
 ## Kubernetes ConfigMap Config
 

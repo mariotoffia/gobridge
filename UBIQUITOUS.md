@@ -181,6 +181,9 @@ Layer-2 *supporting subdomain*: the parsed-but-not-yet-built shape of a bridge. 
 | **Driving adapter** | Adapter that calls into the application core (e.g. HTTP API, config loader). |
 | **Driven adapter** | Adapter the core calls out to (e.g. transport, store, credential resolver). |
 | **Composition root** | `cmd/` — the only place that wires adapters into the runtime. |
+| **Plugin family** | An adapter group selected together at compile time in `cmd/gobridge`, such as MQTT, native stores, AWS or OTel. Its tagged file and inverse stub keep the composition calls explicit. See [PLUGIN.md](PLUGIN.md#binary-composition-build-tags). |
+| **Family tag** | An additive Go build tag named `gobridge_<family>` that includes one plugin family. Tags combine freely; `gobridge_all` includes every family. Tags select the linked binary, not runtime configuration or the module graph. |
+| **Blank root** | The untagged `cmd/gobridge` build: file config source, file credential store and admin/monitor HTTP API only, with no transport, store or telemetry exporter linked. Transport/store config kinds are unknown until the corresponding family is compiled in. |
 | **Bridge** | The composition factory in `bridge/` that turns a parsed `BridgeConfig` into a running `Runtime`. |
 | **Runtime** | The use-case engine in `runtime/` that executes routes, drains outboxes, manages leases. |
 | **Plugin config** | Transport- or processor-specific typed configuration carried as `any` through the domain and type-asserted at the adapter boundary. |

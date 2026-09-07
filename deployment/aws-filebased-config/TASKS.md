@@ -19,9 +19,9 @@ release train.
 (+Streams), Docker, ddblocal test harness.
 
 **Spec:** [DESIGN.md](./DESIGN.md) (same directory — read first; D-numbers
-below refer to its Decisions). Binary-side companion:
-`cmd/gobridge/DESIGN.md` + `cmd/gobridge/TASKS.md` (execute its Task 1
-convention work before Chunk 7 here).
+below refer to its Decisions). The reference binary's implemented family-tag
+and registration contract is in
+[PLUGIN.md](../../PLUGIN.md#binary-composition-build-tags).
 
 ## Skill protocol (applies to every task)
 
@@ -343,11 +343,10 @@ clean `release/*` branch; never move a tag.
 
 ## Chunk 7 — Profile binary families (D8)
 
-**Depends on:** the `gobridge_<family>` tag convention from
-`cmd/gobridge/TASKS.md` — its pluginsym rework (Task 1) and at least one
-family (Tasks 3-4) landed, so the tag names and lint posture exist
-repo-wide. (`lib/bootstrap` itself is guarded by `registry_wiring_test.go`,
-not pluginsym.)
+**Depends on:** the implemented `gobridge_<family>` tag convention and
+per-file registration rules in
+[PLUGIN.md](../../PLUGIN.md#binary-composition-build-tags).
+`lib/bootstrap` itself is guarded by `registry_wiring_test.go`, not pluginsym.
 
 ### Task 7.1: Stub pairs in `lib/bootstrap`
 

@@ -338,6 +338,23 @@ not embed `docker run` calls in tests.
 Integration tests are gated by `testing.Short()` + Docker probe, not
 a build tag. A `//go:build integration` line is wrong; remove it.
 
+Plugin-family tags select compiled capabilities, not test cost. A test in
+`cmd/gobridge` that pins a family's behavior must carry
+`//go:build gobridge_<family> || gobridge_all`; blank-root tests stay untagged.
+Tests running in both builds must account for the compiled family set.
+
+| Family tag | Behavior covered |
+|---|---|
+| `gobridge_mqtt` | MQTT |
+| `gobridge_native` | Memory/SQLite stores and native store seeding |
+| `gobridge_aws` | SQS, DynamoDB and AWS store seeding |
+| `gobridge_azure` | Azure Service Bus |
+| `gobridge_amqp091` | AMQP 0-9-1 |
+| `gobridge_amqp10` | AMQP 1.0 |
+| `gobridge_http` | HTTP message transport |
+| `gobridge_otel` | OTel metrics and tracing |
+| `gobridge_all` | All family-constrained tests |
+
 ### 5.3 Container hygiene
 
 - Containers named `gobridge-<package>-<uuid>`. Never use a fixed
@@ -424,41 +441,20 @@ the same shape. Do not inline its logic.
 
 ## 8. Running the suite
 
-```bash
-# Uncached unit tests + timing audits. Must pass on every save.
-make test
+| Command | Scope and requirements |
+|---|---|
+| `make test` | Uncached unit tests + timing audits; must pass on every save. Includes `cmd/gobridge` untagged and with `-tags gobridge_all`. |
+| `make test-integration` | Uncached unit + integration; Docker required, mandatory in CI. Includes `cmd/gobridge` with `gobridge_all` and without `-short`. |
+| `make test-local-deploy` | AWS profile end to end on emulators (`integration_local`); Docker + Node, no AWS account or credentials. Provisions its CDK CLI under `.tools/`. |
+| `make test-long-running` | `longrunning` suite; Docker required, may take hours. |
+| `make test-release-gate` | Named release subset plus the finite-cgroup proof; developer machine, never CI. |
+| `make test-soak` | Published 60-minute soak; `make test-long-running` uses its 5-minute smoke profile. |
+| `make fuzz FUZZTIME=5m` | Mutate every fuzz target for `FUZZTIME` each (default 5m). Seed corpora already run in `make test`. |
+| `make check` | Build + lint + unit tests. |
+| `make check-all` | Build + lint + integration tests; Docker required. |
 
-# Uncached unit + integration. Requires Docker. Mandatory in CI and used by
-# `make check-all`.
-make test-integration
-
-# The AWS deployment profile, deployed against local emulation and driven
-# end to end (build tag `integration_local`, Docker + Node required, no AWS
-# account and no credentials). Provisions its own CDK CLI under `.tools/`.
-make test-local-deploy
-
-# Long-running suite (build tag `longrunning`, Docker required, hours).
-make test-long-running
-
-# The subset a release is gated on, named test by test, plus the finite-cgroup
-# proof. Developer machine, never CI.
-make test-release-gate
-
-# The published 60-minute soak profile. `make test-long-running` runs the same
-# test at its 5-minute smoke profile.
-make test-soak
-
-# Mutation fuzzing: every target for FUZZTIME each (default 5m). The seed
-# corpora already run in `make test`; this one mutates.
-make fuzz FUZZTIME=5m
-
-# CI gates
-make check       # build + lint + unit
-make check-all   # build + lint + integration
-```
-
-The three targets above `make check` are developer-machine runs and take from
-minutes to over an hour. Give them the time — a soak cut short is not a soak.
+Release-gate and soak runs belong on developer machines; fuzzing also runs
+on demand in CI. Give them the time — a soak cut short is not a soak.
 Nothing carrying the `longrunning` tag runs in the cloud; `make lint` and the
 pull-request CI only COMPILE that module (`go vet -tags=longrunning`), which is
 what stops a refactor from silently deleting a production proof.

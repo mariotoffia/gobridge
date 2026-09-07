@@ -2,7 +2,9 @@
 
 The maintained profile for running GoBridge off AWS: a `Dockerfile` that builds
 the reference composition root (`cmd/gobridge`) and one manifest,
-`gobridge.yaml`, that runs it as a StatefulSet. It is exercised end to end on
+`gobridge.yaml`, that runs it as a StatefulSet. The Dockerfile selects
+`gobridge_mqtt,gobridge_native` by default; a plain local Go build is blank.
+It is exercised end to end on
 every integration run — image build, init container, probes, traffic, a
 ConfigMap reload, SIGTERM drain and restart — by `TestKubernetesProfile` in
 `tests/integration` (`make test-integration`).
@@ -21,22 +23,39 @@ ConfigMap reload, SIGTERM drain and restart — by `TestKubernetesProfile` in
 | Clustering | DynamoDB HA facade | single replica per StatefulSet (no distributed lease store in this adapter set) |
 
 The AWS image cannot run here: it resolves its secrets through SSM and builds a
-DynamoDB client unconditionally. For a transport this profile does not bundle
-(SQS, Azure Service Bus, AMQP), build your own composition root from
-`cmd/gobridge/main.go` (register the decoders and the supervisor factories —
-[PLUGIN.md](../../PLUGIN.md)) and build it with the same `Dockerfile`:
-`--build-arg BINARY_MODULE=cmd/mybridge`. The manifest does not change.
+DynamoDB client unconditionally. The Kubernetes column describes the default
+tag set, not the limit of the reference binary. Add supported families with
+`GO_BUILD_TAGS`; see [PLUGIN.md](../../PLUGIN.md#binary-composition-build-tags).
+A custom root is needed only for wiring outside those families, such as
+processors or another config/credential source. The Dockerfile also accepts
+`--build-arg BINARY_MODULE=cmd/mybridge` for such a root.
 
 ## Build and push
 
-From the repository root — the module resolves the rest of GoBridge through
-relative `replace` directives:
+From the repository root. The Dockerfile runs `make dev` on the copied source
+to generate `go.work`, so selected adapters and the core use the same checkout:
 
 ```bash
 docker build -f deployment/kubernetes/Dockerfile -t registry.example.com/gobridge:0.3.6 .
 docker push registry.example.com/gobridge:0.3.6
 docker buildx imagetools inspect registry.example.com/gobridge:0.3.6 --format '{{.Manifest.Digest}}'
 ```
+
+`GO_BUILD_TAGS` defaults to `gobridge_mqtt,gobridge_native`. To add the HTTP
+message transport while retaining the manifest's MQTT and SQLite support:
+
+```bash
+docker build -f deployment/kubernetes/Dockerfile \
+  --build-arg GO_BUILD_TAGS=gobridge_mqtt,gobridge_native,gobridge_http \
+  -t registry.example.com/gobridge:0.3.6 .
+```
+
+The override replaces the entire list; use `gobridge_all` for every family.
+An empty override builds a blank root that cannot run this manifest's routes.
+Update configuration, credentials and external resources when using new
+families; adding a tag does not provision a broker, cloud store or collector.
+For the same default plugin set without Docker, run
+`make build-gobridge GOBRIDGE_TAGS=gobridge_mqtt,gobridge_native`.
 
 Put the printed digest into both `image:` fields of `gobridge.yaml`
 (`registry.example.com/gobridge@sha256:…`). A pod spec that names a tag can

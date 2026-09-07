@@ -106,6 +106,35 @@ make build
 go build ./...
 ```
 
+For the reference command, a plain
+`go -C cmd/gobridge build -o gobridge.out .` is a **blank root by design**:
+no transports, stores or telemetry exporters are linked. Choose its plugin
+families explicitly, from the repository root:
+
+```bash
+make build-gobridge                                      # Blank root
+make build-gobridge GOBRIDGE_TAGS=gobridge_mqtt,gobridge_native
+make build-gobridge GOBRIDGE_TAGS=gobridge_all             # Every family
+./cmd/gobridge/gobridge.out -version
+```
+
+`GOBRIDGE_TAGS` defaults to empty. The target writes
+`cmd/gobridge/gobridge.out`, uses `-trimpath`, and stamps `main.version` from
+`IMAGE_TAG` (default `dev`) and `main.gitSHA` from `GIT_SHA` (default: current
+short commit SHA). Override those Make variables for release metadata.
+An equivalent direct selection is
+`go -C cmd/gobridge build -tags gobridge_mqtt,gobridge_native -o gobridge.out .`;
+without linker stamps, `-version` reports `dev` for both metadata values.
+Only version and commit metadata use `-ldflags -X`; plugins use build tags,
+and deployment settings stay in runtime configuration.
+
+See [PLUGIN.md](PLUGIN.md#binary-composition-build-tags) for the family table.
+`go.mod` keeps the requirements for **all** optional adapters, and
+`go mod tidy` considers tagged files too. Tags let the linker exclude unused
+families; they do not shrink the module graph. The Kubernetes Dockerfile
+separately defaults `GO_BUILD_TAGS` to `gobridge_mqtt,gobridge_native`, so
+building its image without overrides retains MQTT and memory/SQLite stores.
+
 ### Run Unit Tests
 
 ```bash
@@ -114,6 +143,8 @@ make test
 ```
 
 This runs `go test -short -race -timeout 120s ./...`. The `-short` flag causes all Docker-dependent tests to skip automatically.
+`cmd/gobridge` runs both untagged and with `-tags gobridge_all`, covering the
+blank root and every family without needing separate per-family invocations.
 
 ### Run Integration Tests
 
@@ -129,6 +160,8 @@ make test-integration
 ```
 
 `make test-integration` runs `go test -race -timeout 600s -v ./...` with dummy AWS credentials set for the SDK.
+It also runs `cmd/gobridge` with `-tags gobridge_all` and without `-short`,
+so family-tagged integration tests execute rather than being skipped.
 
 ## Environment Variables
 
@@ -296,10 +329,13 @@ registrychk + pluginsym) and writes one log per checker under
 (`audit-timings` for production code, `audit-test-timings` for test
 code).
 
-`.github/workflows/ci.yml` runs two jobs: `test` (`make test`) and
-`lint` (`make lint`). The lint job uploads `reports/` as an artifact
-on every run so architectural and analyzer failures are inspectable
-without re-running locally.
+In `.github/workflows/ci.yml`, the `test` job runs `make test` and builds and
+vets `cmd/gobridge` both untagged and with `-tags gobridge_all`.
+The `lint` job runs `make lint`; `.golangci.yml` selects `gobridge_all` so
+every family implementation is linted, while untagged vet covers the stubs.
+The lint job uploads `reports/` on every run so failures are inspectable
+without re-running locally. The workflow also has release-preparation,
+integration and on-demand fuzz jobs.
 
 ## Adding a New Module
 

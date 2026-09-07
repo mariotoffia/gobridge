@@ -10,6 +10,19 @@ several are breaking at the wire or observable in operations.
 
 ### Deployment
 
+- **Breaking for local builds: `cmd/gobridge` is blank without build tags.**
+  An untagged build links no transports, stores or telemetry exporters and
+  rejects configs naming those kinds. To retain the former MQTT and
+  memory/SQLite set, run
+  `make build-gobridge GOBRIDGE_TAGS=gobridge_mqtt,gobridge_native` or
+  `go -C cmd/gobridge build -tags gobridge_mqtt,gobridge_native -o gobridge.out .`.
+  Use `-version` to inspect the compiled families; see the
+  [family table](../PLUGIN.md#binary-composition-build-tags).
+  **Container defaults are unchanged:** the Kubernetes Dockerfile explicitly
+  defaults `GO_BUILD_TAGS` to those two tags, and the shipped
+  `ghcr.io/mariotoffia/gobridge` image remains the separate AWS file-based
+  profile. `go.mod` still requires all optional adapters; only the linked
+  binary is trimmed.
 - **A Kubernetes profile ships and is tested.** `deployment/kubernetes/` runs
   the reference binary (MQTT transport, memory/SQLite stores, `file://`
   credentials) as a StatefulSet. The published image `ghcr.io/mariotoffia/gobridge`
@@ -187,6 +200,8 @@ several are breaking at the wire or observable in operations.
 
 ## Upgrade checklist
 
+- Add explicit family tags to local `cmd/gobridge` build commands; use
+  `gobridge_mqtt,gobridge_native` to retain the previous plugin set.
 - Set `on_filtered: dlq` (and configure a DLQ store) on any route that must keep
   intentionally-filtered messages in the DLQ — the new default is `drop`.
 - Repoint any DLQ tooling from `total` to `has_more`, and expect oldest-first

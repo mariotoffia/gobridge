@@ -26,6 +26,129 @@ factory, its options, and how it registers:
 Processors, the module conventions, and the typed-config contract below apply to
 every kind.
 
+## Binary composition (build tags)
+
+The reference binary, `cmd/gobridge`, is a **blank root** when built without
+tags: no transport, store or telemetry exporter is linked. The file config
+source, `file://` credential store and admin/monitor HTTP API remain available.
+HTTP listeners still require an `http:` block in the startup config; starting
+with a missing file does not open them. A config naming a transport or store
+outside the compiled families fails with an unknown-kind error.
+
+Select **plugin families** at compile time with additive **family tags**:
+
+| Tag | Links | Registry kinds added |
+|---|---|---|
+| None | File config source and file credential store only | None |
+| `gobridge_mqtt` | Paho MQTT transport | `mqtt`, `mqtt.paho` |
+| `gobridge_native` | Memory and SQLite stores | `memory`, `sqlite` |
+| `gobridge_aws` | SQS transport and DynamoDB stores | `sqs`, `aws.sqs`, `dynamodb` |
+| `gobridge_azure` | Azure Service Bus transport | `servicebus`, `azure.servicebus` |
+| `gobridge_amqp091` | AMQP 0-9-1 transport | `amqp091`, `amqp.amqp091` |
+| `gobridge_amqp10` | AMQP 1.0 transport | `amqp10`, `amqp.amqp10` |
+| `gobridge_http` | HTTP transport (in the root module) | `http` |
+| `gobridge_otel` | OTel metrics and tracing exporters | None |
+| `gobridge_all` | Every family above | Union of their kinds |
+
+Tags compose: `-tags gobridge_mqtt,gobridge_native` selects the Kubernetes
+image's default set; `-tags gobridge_aws,gobridge_otel` selects SQS, DynamoDB
+and OTel without MQTT or SQLite. The admin/monitor API does not need
+`gobridge_http`; that tag selects the message transport. No tag registers
+processors or switches the file config source or credential backend. The
+separate AWS file-based deployment profile owns its own wiring.
+
+`gobridge -version` prints `gobridge <version> (<gitSHA>) families=[...]`,
+with sorted family names and `dev` for unstamped metadata. Usage also lists
+the compiled families; the startup log adds the exact decodable kinds. A blank
+root warns that no transports or stores are linked and names the tag mechanism.
+Build commands and version stamps are in [DEVELOPMENT.md](DEVELOPMENT.md#build).
+
+### Family files and lifecycle
+
+Each family has a pair in `cmd/gobridge`, both in `package main`:
+`plugins_<family>.go` with `//go:build gobridge_<family> || gobridge_all`,
+and `plugins_<family>_stub.go` with
+`//go:build !gobridge_<family> && !gobridge_all`.
+Do not add platform conditions or GOOS/GOARCH filename suffixes.
+The adapters' own `register.go` files stay untagged.
+
+For a transport/store family, replace `Family` below with its Go name:
+
+```go
+func registerFamilyDecoders(reg *ports.Registry) error
+func wireFamilyFactories(ctx context.Context, sup *bridge.Supervisor, logger *slog.Logger, metrics ports.MetricsExporter) error
+func seedFamilyStores(ctx context.Context, b *bridge.Builder) error
+```
+
+Only store-providing families implement `seedFamilyStores`. It supplies the
+same stores to the `-seed-managed-subscriptions` one-shot Builder as the wire
+function supplies to the Supervisor. Keep decoder calls, factory wiring and
+seed wiring together in the tagged file, with string-literal kind names.
+Stubs have the same signatures and return nil without registering anything.
+
+Untagged `plugins.go` explicitly calls each family from `registerAllDecoders`,
+`wireAllFactories` and, for stores, `seedAllStores`; `main.go` and the seed
+entry point call those aggregates. Do not hide registration in maps, loops,
+function values or `init()`. A family's only `init()` is the one-line
+`compiledFamilies = append(compiledFamilies, "<family>")` metadata append.
+The narrow lint exceptions on existing family files cover metadata only.
+
+OTel is the non-registry family. Its pair provides these hooks instead:
+
+```go
+func newMetricsExporter(ctx context.Context, logger *slog.Logger) (ports.MetricsExporter, func(context.Context) error, error)
+func newTracer(ctx context.Context, logger *slog.Logger) (ports.Tracer, func(context.Context) error, error)
+```
+
+The stubs return `(nil, nil, nil)`, leaving the runtime's no-op defaults.
+The tagged hooks construct OTLP exporters using `OTEL_EXPORTER_OTLP_ENDPOINT`
+or the signal-specific `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` and
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` variables. `run()` constructs them before
+the Supervisor and factory wiring, passes the shared metrics exporter to
+factories and the HTTP API, and owns their close functions through shutdown.
+Hot-reloaded runtimes share them; they must not close them. Construction and
+wiring errors fail startup rather than silently disabling a compiled family.
+The AWS family loads the SDK's default AWS configuration and constructs a
+DynamoDB client in both normal wiring and store seeding.
+
+### Per-file registration symmetry
+
+`make lint` runs `pluginsym -dir cmd/gobridge` over every non-test Go file,
+regardless of the host platform or active tags. Its contract is:
+
+1. **Matching kinds:** each file's adapter decoders and wired factory kinds
+   must match after alias collapse. Supervisor and Builder calls count
+   together; repeated wiring of the same kind is counted once.
+2. **One owner:** an adapter import path may register in only one file.
+3. **Empty stubs:** an inverse-tag stub must register and wire nothing.
+4. **Exact constraints:** family and stub constraints must have the exact
+   additive/inverse forms above, with no extra conditions.
+5. **Blank root:** files without family tags must register and wire nothing.
+   The untagged seed entry point is not an exception.
+
+Kind arguments must be string literals; indirect calls are rejected.
+Aliases such as `aws.sqs` and `sqs` count as one canonical kind. Because
+each build includes or excludes a whole file, this per-file rule preserves
+symmetry for every family combination. See [pluginsym](scripts/pluginsym/README.md)
+for alias mappings and diagnostics.
+
+### Adding a family
+
+1. Add the tagged file and inverse stub, with explicit decoder/factory calls,
+   any store-seeding function, and the metadata append.
+2. Add the family calls to the aggregates in `plugins.go`. Keep untagged
+   files free of direct adapter registrations.
+3. Add each decoder adapter to `scripts/pluginsym`'s `adapterRegistrars`;
+   extend `aliasMap` for its aliases and add its module requirements.
+4. Add the required adapter modules to `cmd/gobridge/go.mod` under
+   [RELEASE.md](RELEASE.md)'s versioning policy. Build tags trim the linked
+   binary, not the module graph; published modules must not gain local replaces.
+5. Add family-constrained tests per [TESTS.md](TESTS.md#52-no-build-tags).
+   Keep `gobridge_all` coverage in `.golangci.yml`, both Makefile test targets and
+   `.github/workflows/ci.yml` build/vet passes; retain untagged coverage too.
+6. Update the family table above and deployment examples as needed.
+   Run `make lint` and `make test` before committing.
+
 ## Processors
 
 Processors form an onion-model middleware chain around message delivery.

@@ -256,7 +256,11 @@ test-integration: audit-timings audit-test-timings ## Run all tests including in
 		echo "--- Testing $$dir ---"; \
 		(cd "$$dir" && AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
 			GOWORK="$$gowork" go test -count=1 -p 1 -race -timeout 600s -v ./...) || rc=$$?; \
-	done; exit $$rc; } 2>&1 | tee reports/test-integration.log; \
+	done; \
+	echo "--- Testing ./cmd/gobridge (-tags=gobridge_all) ---"; \
+	AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+		go -C cmd/gobridge test -tags gobridge_all -count=1 -p 1 -race -timeout 600s -v ./... || rc=$$?; \
+	exit $$rc; } 2>&1 | tee reports/test-integration.log; \
 	rc=$$?; \
 	echo ""; \
 	echo "========================================"; \
