@@ -451,8 +451,20 @@ wiring literal `"http"` to
 `deployment/aws-filebased-config/lib/bootstrap/registry.go:106-111`).
 Family `"http"`.
 
-- [ ] Failing tagged test (kind `http`) → implement → pass → lint/test →
+- [x] Failing tagged test (kind `http`) → implement → pass → lint/test →
   commit — `feat(gobridge): optional HTTP transport family behind gobridge_http build tag`
+
+Verification completed on 2026-09-07:
+- Tagged regressions failed before implementation for the missing HTTP kind,
+  family, and factory. They now cover aggregate registration and real sender
+  wiring with and without a metrics exporter, without network clients.
+- Race-enabled command tests and binary builds passed untagged, with
+  `gobridge_http`, and with `gobridge_all`; `-version` reported the exact
+  selected families.
+- `make lint` passed (105s), `make test` passed (264s, 95 passing package
+  results), and all-family vet and golangci-lint passed.
+  Logs: `reports/http-family-*.log`. Temporary binaries and scratch were removed.
+- Code review approved without findings.
 
 ⛳ **Review checkpoint** after Task 7.
 
