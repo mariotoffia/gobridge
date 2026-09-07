@@ -25,7 +25,7 @@ run:
   # Conformance test fixtures live under ports/storetest. They are
   # not production code; treat them like test files (excluded from
   # arch lint via excludeFiles, excluded here too).
-  build-tags: []
+  build-tags: [gobridge_all]
 
 linters:
   default: standard

@@ -8,9 +8,9 @@
 # non-root user. There is no shell, curl or wget in the image: kubelet probes
 # the monitor port over HTTP (deployment/kubernetes/gobridge.yaml).
 #
-# Build from the REPOSITORY ROOT — the module resolves the rest of GoBridge
-# through relative `replace` directives — with GOWORK=off so the build is
-# reproducible from the module's own go.mod/go.sum:
+# Build from the REPOSITORY ROOT. The build regenerates go.work from the
+# copied source so every selected plugin family uses the same checkout as
+# the core, rather than mixing local code with older published adapters:
 #
 #   docker build -f deployment/kubernetes/Dockerfile -t <registry>/gobridge:<tag> .
 #
@@ -31,9 +31,10 @@ ARG GO_BUILD_TAGS="gobridge_mqtt,gobridge_native"
 WORKDIR /src
 COPY . .
 
-ENV CGO_ENABLED=0 GOWORK=off GOFLAGS=-mod=mod
+ENV CGO_ENABLED=0
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
+    make dev && \
     cd "${BINARY_MODULE}" && \
     go build -tags "$GO_BUILD_TAGS" -trimpath -ldflags="-s -w" -o /out/gobridge . && \
     mkdir -p /out/state

@@ -482,17 +482,40 @@ Verification completed on 2026-09-07:
 
 (The Dockerfile change landed in Task 1.)
 
-- [ ] **Step 1:** Makefile target; verify `make build-gobridge` produces a
+- [x] **Step 1:** Makefile target; verify `make build-gobridge` produces a
   blank `cmd/gobridge/gobridge.out` (`-version` → `families=[]`) and
   `make build-gobridge GOBRIDGE_TAGS="gobridge_aws gobridge_otel"` lists AWS +
   OTel modules in `go version -m`.
-- [ ] **Step 2:** golangci + CI edits; `make lint` locally; push branch,
-  confirm CI green on both passes.
-- [ ] **Step 3:** `docker build -f deployment/kubernetes/Dockerfile
+- [x] **Step 2:** golangci + CI edits; `make lint` locally; run both CI
+  build/vet passes locally.
+  Remote follow-up deferred for this local-only task: push the branch and
+  confirm GitHub CI is green on both passes.
+- [x] **Step 3:** `docker build -f deployment/kubernetes/Dockerfile
   -t gobridge-k8s:default .` → `docker run --rm gobridge-k8s:default -version`
   → `families=[mqtt native]`; rebuild with
   `--build-arg GO_BUILD_TAGS=gobridge_all` → all families listed.
-- [ ] **Step 4: Commit** — `build: tag-selectable gobridge binary in make, lint and CI`
+- [x] **Step 4: Commit** — `build: tag-selectable gobridge binary in make, lint and CI`
+
+Verification completed on 2026-09-07:
+- Before implementation, `make build-gobridge` failed because the target did
+  not exist, and `make -n test` contained no all-family pass.
+- The Make target produced a blank binary with `families=[]` and only the
+  skeleton adapter modules. A space-separated AWS + OTel selection produced
+  `families=[aws otel]`, linked both families, and honored version/SHA overrides.
+- The new CI build/vet commands passed locally, untagged and with
+  `gobridge_all`. CI regenerates the workspace so it checks sibling modules
+  from the same checkout.
+- `make lint` passed (186s); `make test` passed (258s, 96 passing package
+  results), including the new uncached, race-enabled all-family pass in
+  `reports/test-unit.log`.
+- The all-family Kubernetes image initially failed with `GOWORK=off`: the
+  published AWS outbox store did not implement the current core's lease-token
+  API. The Dockerfile now runs the existing `make dev` before building, rather
+  than mixing old published adapters with the copied source. Both default
+  and all-family images built and printed their exact expected family lists.
+  No module manifests or release requirements changed.
+- Logs: `reports/build-plumbing-*.log`. No branch, worktree, push, or remote
+  workflow run was created.
 
 ---
 

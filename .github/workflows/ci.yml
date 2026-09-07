@@ -48,6 +48,16 @@ jobs:
         with:
           go-version: '1.25'
 
+      - name: Prepare local module workspace
+        run: make dev
+
+      - name: Build and vet blank and all-family binaries
+        run: |
+          go -C cmd/gobridge build -o gobridge.out ./...
+          go -C cmd/gobridge vet ./...
+          go -C cmd/gobridge build -tags gobridge_all -o gobridge.out ./...
+          go -C cmd/gobridge vet -tags gobridge_all ./...
+
       # Fails fast, and names the exact file:line, when a pull request breaks a
       # link, an anchor, a reference table, or the page-length threshold. The
       # same checks run again inside `make test`; this step exists so a
@@ -148,7 +158,7 @@ jobs:
           go install github.com/jgautheron/goconst/cmd/goconst@v1.10.2
 
       - name: Run all static checks
-        run: make lint
+        run: make dev && make lint
 
       - name: Upload lint reports
         if: always()

@@ -3,7 +3,7 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test test-integration test-local-deploy test-long-running test-release-gate test-soak fuzz lint lint-fix check check-all clean tidy sync help
+.PHONY: all build build-gobridge test test-integration test-local-deploy test-long-running test-release-gate test-soak fuzz lint lint-fix check check-all clean tidy sync help
 .PHONY: install vulncheck update update-major outdated
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
@@ -27,6 +27,8 @@ IMAGE_TAG  ?= dev
 # docker-build and never pushed.
 IMAGE_LOCAL_TAG ?= gobridge-filebased:local
 GIT_SHA    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+
+GOBRIDGE_TAGS ?=
 
 RELEASE_LAYER            ?= -1
 RELEASE_FORMAT           ?= path
@@ -62,6 +64,12 @@ build: ## Build all modules
 	@test -f go.work || $(MAKE) dev
 	@echo "Building all modules..."
 	go build ./...
+
+build-gobridge: ## Build cmd/gobridge/gobridge.out (blank unless GOBRIDGE_TAGS is set)
+	@test -f go.work || $(MAKE) dev
+	go -C cmd/gobridge build -tags "$(GOBRIDGE_TAGS)" -trimpath \
+		-ldflags "-s -w -X main.version=$(IMAGE_TAG) -X main.gitSHA=$(GIT_SHA)" \
+		-o gobridge.out .
 
 .PHONY: dev
 dev: ## Regenerate the Go workspace (go.work) from every on-disk module (local-dev bootstrap)
@@ -217,7 +225,10 @@ test: audit-timings audit-test-timings ## Run unit tests (no Docker, integration
 		gowork=""; if [ "$$dir" = "./scripts/release" ]; then gowork=off; fi; \
 		echo "--- Testing $$dir ---"; \
 		(cd "$$dir" && GOWORK="$$gowork" go test -count=1 -short -race -timeout 120s ./...) || rc=$$?; \
-	done; exit $$rc; } 2>&1 | tee reports/test-unit.log; \
+	done; \
+	echo "--- Testing ./cmd/gobridge (-tags=gobridge_all) ---"; \
+	go -C cmd/gobridge test -tags gobridge_all -count=1 -short -race -timeout 120s ./... || rc=$$?; \
+	exit $$rc; } 2>&1 | tee reports/test-unit.log; \
 	rc=$$?; \
 	echo ""; \
 	echo "========================================"; \
