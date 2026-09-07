@@ -300,8 +300,7 @@ func (e *conditionEval) evaluate(env *messaging.Envelope, ctx *evalContext) (boo
 
 // extractField retrieves the value for the condition's field path.
 // Header lookups go through the typed messaging.Headers accessors
-// (Get / nil-safe by design) rather than direct map indexing — this
-// is the / hot-path migration site.
+// (Get is nil-safe by design) rather than direct map indexing.
 func (e *conditionEval) extractField(env *messaging.Envelope, ctx *evalContext) (any, bool, error) {
 	field := e.cond.Field
 

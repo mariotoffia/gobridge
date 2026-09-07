@@ -29,7 +29,7 @@ var (
 	_ ports.DLQDepthReporter = (*dlqDepthStore)(nil)
 )
 
-// / H-OBS DLQ-1: unlike OutboxDepth (sampled every drain cycle), the DLQ
+// Unlike OutboxDepth (sampled every drain cycle), the DLQ
 // has no loop of its own, so the standing backlog is invisible after traffic
 // stops. The runtime lifecycle must spawn a periodic sampler that emits
 // shared.MetricDLQDepth on rt.clk cadence.

@@ -35,4 +35,4 @@ func BenchmarkRenderAddress_NoPlaceholders(b *testing.B) {
 }
 
 // BenchmarkValidateMQTTTopic was moved alongside ValidateMQTTTopic to
-// adapters/mqtt/transport/paho —.
+// adapters/mqtt/transport/paho.

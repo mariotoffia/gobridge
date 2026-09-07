@@ -12,7 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
-// TestRouteRunner_DeliveryScope_ReleaseSpansSend proves.2: the runtime
+// TestRouteRunner_DeliveryScope_ReleaseSpansSend proves that the runtime
 // installs a ports.DeliveryScope on the delivery context and releases it only
 // once the WHOLE delivery finishes — AFTER the egress send. A processor that
 // registers a release on the scope therefore has its callback fire after the

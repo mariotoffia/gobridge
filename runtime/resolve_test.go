@@ -97,7 +97,7 @@ func TestRenderAddress_RendersToEmpty(t *testing.T) {
 //
 // All ValidateMQTTTopic / TestValidateMQTTTopic_* tests have been moved to
 // adapters/mqtt/transport/paho/topic_validator_test.go. The runtime no
-// longer owns MQTT topic semantics —.
+// longer owns MQTT topic semantics.
 
 // ---------------------------------------------------------------------------
 // BindingResolver + MatchByHeader

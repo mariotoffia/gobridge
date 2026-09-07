@@ -11,7 +11,7 @@ import (
 // ═══════════════════════════════════════════════════════════════════
 // Route & Envelope Edge Case Audit Tests
 //
-// Validates edge cases identified, SEC-004,:
+// Validates edge cases:
 //   - DefaultBackoffPolicy mutability affects WithDefaults
 //   - OutboxPartitionKey("", "") edge case
 //   - RoutePolicy.WithDefaults completeness

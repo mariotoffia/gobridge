@@ -1,21 +1,17 @@
 package runtime
 
-// Tests for BUG-5: Credential cache batch eviction fix.
+// Credential cache batch eviction tests.
 //
 // Validates that setCached() evicts ~10% of oldest entries on overflow
 // instead of just 1, and that expired entries are evicted first.
 //
 // Summary:
-// +------+-----------------------------------------------------+
-// | ID   | Description                                         |
-// +------+-----------------------------------------------------+
-// | | Filling to exactly maxEntries does NOT evict |
-// | | Entry 1001 triggers batch eviction of ~100 entries |
-// | | Eviction removes oldest entries (earliest expiry) |
-// | | Concurrent Resolve overflow -- no race conditions |
-// | | InvalidateCache works correctly after batch eviction|
-// | | Expired entries evicted first before batch eviction |
-// +------+-----------------------------------------------------+
+//   - Filling to exactly maxEntries does not evict.
+//   - Entry 1001 triggers batch eviction of ~100 entries.
+//   - Eviction removes oldest entries (earliest expiry).
+//   - Concurrent Resolve overflow has no race conditions.
+//   - InvalidateCache works correctly after batch eviction.
+//   - Expired entries are evicted first before batch eviction.
 
 import (
 	"context"
