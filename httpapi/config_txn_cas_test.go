@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,7 +20,6 @@ import (
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
@@ -35,83 +33,6 @@ import (
 // ports.ConditionalConfigStore the commit uses SaveIfVersion, which rejects a
 // concurrent advance instead of overwriting it.
 // ─────────────────────────────────────────────────────────────────────────────
-
-// casConfigStore is a ports.ConditionalConfigStore fake. SaveIfVersion performs
-// a genuine compare-and-swap against the currently-stored version; the plain
-// Save is last-writer-wins (no check), modelling a file-backed store. Either
-// write path first applies a queued "concurrent commit" (concurrentCfg) under
-// the store lock the instant before the write — the tightest form of the
-// read-modify-write race: this instance read version N, a peer committed N+1,
-// and now this instance is about to write. A plain Save clobbers the peer's
-// commit; SaveIfVersion must reject it with shared.ErrVersionMismatch.
-type casConfigStore struct {
-	mu            sync.Mutex
-	current       *ports.BridgeConfig
-	concurrentCfg *ports.BridgeConfig // a peer's commit, applied once at the write boundary
-	concurrentAt  int                 // save index at which the peer lands (0 = the first write)
-	saves         []*ports.BridgeConfig
-}
-
-// applyConcurrentLocked simulates a peer cluster instance committing a different
-// config in the tiny window between this instance's version read and its write.
-// It fires at most once, at the configured save index (concurrentAt), so a test
-// can land the peer at the COMMIT write (index 0) or later at the ROLLBACK write
-// (index 1). Must be called with mu held.
-func (s *casConfigStore) applyConcurrentLocked() {
-	if s.concurrentCfg != nil && len(s.saves) == s.concurrentAt {
-		s.current = cloneBridgeConfig(s.concurrentCfg)
-		s.concurrentCfg = nil
-	}
-}
-
-func (s *casConfigStore) Load(_ context.Context) (*ports.BridgeConfig, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.current == nil {
-		return nil, fs.ErrNotExist
-	}
-	clone := *s.current
-	return &clone, nil
-}
-
-func (s *casConfigStore) Save(_ context.Context, cfg *ports.BridgeConfig) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.applyConcurrentLocked() // peer landed first; plain Save has no defence and clobbers it
-	clone := *cfg
-	s.current = &clone
-	s.saves = append(s.saves, &clone)
-	return nil
-}
-
-func (s *casConfigStore) SaveIfVersion(_ context.Context, cfg *ports.BridgeConfig, expected int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.applyConcurrentLocked() // peer landed first...
-	stored := 0
-	if s.current != nil {
-		stored = s.current.Version
-	}
-	if stored != expected {
-		// ...and the CAS refuses to overwrite the peer's newer version.
-		return shared.ErrVersionMismatch
-	}
-	clone := *cfg
-	s.current = &clone
-	s.saves = append(s.saves, &clone)
-	return nil
-}
-
-func (s *casConfigStore) Validate(_ context.Context, _ *ports.BridgeConfig) ([]string, error) {
-	return nil, nil
-}
-
-func (s *casConfigStore) Merge(_ context.Context, _, overlay *ports.BridgeConfig) (*ports.BridgeConfig, error) {
-	clone := *overlay
-	return &clone, nil
-}
-
-var _ ports.ConditionalConfigStore = (*casConfigStore)(nil)
 
 // TestConfigTxnCommit_CAS_RejectsConcurrentVersionBump pins c1-txn-cas: a commit
 // against a ConditionalConfigStore must use SaveIfVersion so a peer commit that

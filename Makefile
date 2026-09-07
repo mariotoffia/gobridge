@@ -691,7 +691,7 @@ audit-test-timings: ## Check for new time.Sleep or Gosched spin-polling in test 
 	@VIOLATIONS=$$({ rg --no-heading -n -g '*_test.go' -g '!testutil/wait/*' \
 		'time\.Sleep\(' . ; \
 		rg --no-heading -n -g '!*_test.go' -g '!testutil/wait/*' -g '!testutil/dockerexec/*' \
-		'time\.Sleep\(' testutil ports/storetest tests/testutil \
+		'time\.Sleep\(' testutil ports/storetest ports/configstoretest tests/testutil \
 		deployment/aws-filebased-config/cdk/integration ; } \
 		| sort \
 		| awk -f scripts/audit-timing-filter.awk); \

@@ -49,6 +49,8 @@ exclude:
   - audit
   - domain/clock/clocktest
   - docs
+  # Shared conformance checks are test infrastructure, not production ports.
+  - ports/configstoretest
   - ports/storetest
   - ports/transporttest
   - reports

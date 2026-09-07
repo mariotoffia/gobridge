@@ -230,6 +230,11 @@ If the suite does not test what you need, extend the suite — do not
 write a one-off in your adapter package. Every implementation gets
 the new check that way.
 
+Config stores use `ports/configstoretest.Run(t, newStore)`. The factory
+returns a fresh, empty `ports.ConfigStore` for each case and registers its
+cleanup on that case's `t`. The suite also checks compare-and-swap writes
+when the store implements `ports.ConditionalConfigStore`.
+
 ### 3.4 Subject vs Address
 
 Assert against `ports.OutboundMessage{Envelope, Address}`. Never

@@ -445,6 +445,7 @@ linters:
   exclusions:
     paths:
       # Conformance test fixtures: not production code.
+      - "ports/configstoretest/.*"
       - "ports/storetest/.*"
       - "ports/transporttest/.*"
 

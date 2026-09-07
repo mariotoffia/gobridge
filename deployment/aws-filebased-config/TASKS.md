@@ -87,7 +87,8 @@ and every doc/test naming the old names.
 
 **Files:** Create `ports/configstoretest/suite.go` (+ `doc.go`); Test:
 `config/parser/store_conformance_test.go` (runs the ConfigStore subset
-against `parser.FileStore`).
+against `parser.FileStore`); update FileStore version assignment and pin
+admin commit/rollback behavior.
 
 **Interfaces produced:**
 ```go
@@ -103,11 +104,12 @@ warnings not errors for valid config; Merge(base, overlay) honors
 CAS: `SaveIfVersion` with stale version → `shared.ErrVersionMismatch`,
 with current version → success.
 
-- [ ] **Step 1:** Write suite + FileStore harness; run
+- [x] **Step 1:** Write suite + FileStore harness; run
   `go test ./ports/configstoretest/... ./config/parser/ -run Conformance -v`
-  → FileStore passes ConfigStore subset (fix suite, not store, if red —
-  the suite pins *existing* behavior).
-- [ ] **Step 2:** Commit — `test: ConfigStore conformance suite; FileStore pinned`
+  → FileStore passes ConfigStore subset. User-approved behavior change:
+  stores assign the persisted version plus one and update the caller's
+  `Version` only after success. Rollback restores content under a new version.
+- [x] **Step 2:** Commit — `feat(config): versioned FileStore saves and ConfigStore conformance suite`
 
 ### Task 1.2: Validate/Merge/SaveIfVersion on the DynamoDB loader
 

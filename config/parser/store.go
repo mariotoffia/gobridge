@@ -2,8 +2,13 @@ package parser
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"math"
 
 	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -33,13 +38,35 @@ func (s *FileStore) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 	return ParseFile(s.Path, FormatAuto, s.Registry)
 }
 
-// Save writes cfg to Path atomically (via temp-file + rename). ctx is
-// honoured for cancellation before the write begins.
+// Save writes cfg atomically with the stored version plus one, then updates
+// cfg.Version. The read and write are not a CAS: callers must enforce a single
+// writer. ctx is honoured before filesystem work begins.
 func (s *FileStore) Save(ctx context.Context, cfg *ports.BridgeConfig) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return WriteFile(s.Path, cfg)
+	if cfg == nil {
+		return shared.ErrInvalidConfig.WithMessage("config save: config must not be nil")
+	}
+	current, err := s.Load(ctx)
+	var version int
+	switch {
+	case err == nil:
+		version = current.Version
+	case errors.Is(err, fs.ErrNotExist):
+	default:
+		return fmt.Errorf("config save: read current version: %w", err)
+	}
+	if version < 0 || version == math.MaxInt {
+		return shared.ErrInvalidConfig.WithMessage("config save: stored version cannot be incremented")
+	}
+	next := *cfg
+	next.Version = version + 1
+	if err := WriteFile(s.Path, &next); err != nil {
+		return err
+	}
+	cfg.Version = next.Version
+	return nil
 }
 
 // Validate runs the in-process validator against cfg.

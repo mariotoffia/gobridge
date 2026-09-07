@@ -159,7 +159,7 @@ func detectFormat(path string) Format {
 // stage-2 walker can route it through the plugin registry.
 
 type stage1Bridge struct {
-	Version     int                   `yaml:"version,omitempty" json:"version,omitempty"`
+	Version     configVersion         `yaml:"version,omitempty" json:"version,omitempty"`
 	Bridge      ports.BridgeSettings  `yaml:"bridge" json:"bridge"`
 	ConfigWatch *ports.ConfigWatchDef `yaml:"config_watch,omitempty" json:"config_watch,omitempty"`
 	Stores      stage1Stores          `yaml:"stores,omitempty" json:"stores,omitempty"`
@@ -169,6 +169,21 @@ type stage1Bridge struct {
 	Bindings    []stage1Binding       `yaml:"bindings,omitempty" json:"bindings,omitempty"`
 	Routes      []ports.RouteDef      `yaml:"routes,omitempty" json:"routes,omitempty"`
 	HTTP        *ports.HTTPConfig     `yaml:"http,omitempty" json:"http,omitempty"`
+}
+
+// YAML otherwise truncates fractional numbers when decoding into an int.
+type configVersion int
+
+func (v *configVersion) UnmarshalYAML(node *yaml.Node) error {
+	if node.Tag != "!!int" {
+		return fmt.Errorf("config: version must be an integer")
+	}
+	var value int
+	if err := node.Decode(&value); err != nil {
+		return fmt.Errorf("config: decode version: %w", err)
+	}
+	*v = configVersion(value)
+	return nil
 }
 
 type stage1Stores struct {
@@ -224,7 +239,7 @@ type stage1Binding struct {
 // *ports.BridgeConfig or the first parse error encountered.
 func (s *stage1Bridge) toBridgeConfig(registry *ports.Registry) (*ports.BridgeConfig, error) {
 	out := &ports.BridgeConfig{
-		Version:     s.Version,
+		Version:     int(s.Version),
 		Bridge:      s.Bridge,
 		ConfigWatch: s.ConfigWatch,
 		Routes:      s.Routes,

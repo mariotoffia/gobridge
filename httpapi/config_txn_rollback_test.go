@@ -37,8 +37,13 @@ func (s *recordingConfigStore) Save(_ context.Context, cfg *ports.BridgeConfig) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	clone := *cfg
+	clone.Version = 1
+	if s.current != nil {
+		clone.Version = s.current.Version + 1
+	}
 	s.current = &clone
 	s.saves = append(s.saves, &clone)
+	cfg.Version = clone.Version
 	return nil
 }
 
@@ -79,19 +84,18 @@ func TestConfigTxnCommit_RestoresPreviousConfigOnApplyFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errConfigRolledBack)
 	assert.ErrorIs(t, err, applyErr)
-	assert.Equal(t, 7, version, "rolled_back must report the restored (previous) version")
+	assert.Equal(t, 9, version, "rolled_back must report the compensating write's version")
 
-	// On-disk config must be the previous good config (version 7), NOT the
-	// rejected bumped version 8.
+	// The previous good content is restored under a fresh version.
 	onDisk, err := store.Load(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 7, onDisk.Version, "disk must be restored to the previous version")
+	assert.Equal(t, 9, onDisk.Version, "the restore must advance the version")
 	assert.Equal(t, "info", onDisk.Bridge.LogLevel)
 
-	// Two writes happened: the rejected version 8 then the version-7 restore.
+	// Two writes happened: the rejected version 8 then the version-9 restore.
 	require.GreaterOrEqual(t, len(store.saves), 2)
 	assert.Equal(t, 8, store.saves[len(store.saves)-2].Version, "rejected version was written durably first")
-	assert.Equal(t, 7, store.saves[len(store.saves)-1].Version, "then rolled back to the previous version")
+	assert.Equal(t, 9, store.saves[len(store.saves)-1].Version, "then restored the previous content")
 }
 
 func cloneBridgeConfig(c *ports.BridgeConfig) *ports.BridgeConfig {

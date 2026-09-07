@@ -61,6 +61,18 @@ directly; the `config` package owns only the orchestration and on-disk write pat
 
 This keeps the contracts free of any `config` dependency.
 
+The admin API consumes `ports.ConfigStore` for load, save, validation, and
+merge. `Save` assigns the current stored version plus one (or 1 for a new
+document), rather than trusting the incoming `BridgeConfig.Version`. A
+successful save updates the caller's `Version`; a failed save leaves it
+unchanged. Restoring earlier content is another commit and advances the
+version too.
+
+`parser.FileStore` implements this contract with atomic file replacement.
+It still requires a single writer: the version read and the replacement are
+not an atomic compare-and-swap. `parser.WriteFile` is the lower-level
+serialization helper and preserves the supplied version.
+
 ---
 
 ## File Source
