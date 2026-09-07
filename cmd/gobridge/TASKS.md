@@ -382,10 +382,22 @@ wiring literals `"servicebus"`, `"azure.servicebus"` to one
 variadic metrics exporter like SQS — thread `metrics` if so); `init()`
 appends `"azure"`.
 
-- [ ] Failing tagged test `TestAzureFamily_RegistersDecoders` (kinds
+- [x] Failing tagged test `TestAzureFamily_RegistersDecoders` (kinds
   `servicebus`, `azure.servicebus`) → implement → tagged + untagged pass →
   `make lint && make test` → commit —
   `feat(gobridge): optional Azure Service Bus family behind gobridge_azure build tag`
+
+Verification completed on 2026-09-07:
+- The tagged regression failed before implementation. Short race tests passed
+  untagged, with `gobridge_azure`, and with `gobridge_all`.
+- Both aliases share one factory. Its constructor accepts only a logger, so no
+  metrics argument or seed function was added.
+- The blank binary excludes Azure dependencies; the tagged binary reports
+  `families=[azure]`. A workspace-disabled Azure build also passed using the
+  published Service Bus `v0.3.6` module. No replaces were added or changed.
+- `make lint` passed (119s), `make test` passed (262s, 95 passing package
+  results), and all-family vet and golangci-lint passed.
+  Logs: `reports/azure-family-*.log`. Temporary binaries were removed.
 
 ---
 

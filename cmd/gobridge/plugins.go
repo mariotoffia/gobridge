@@ -32,6 +32,7 @@ func registerAllDecoders(reg *ports.Registry) error {
 		registerMQTTDecoders(reg),
 		registerNativeDecoders(reg),
 		registerAWSDecoders(reg),
+		registerAzureDecoders(reg),
 	)
 }
 
@@ -40,6 +41,7 @@ func wireAllFactories(ctx context.Context, sup *bridge.Supervisor, logger *slog.
 		wireMQTTFactories(ctx, sup, logger, metrics),
 		wireNativeFactories(ctx, sup, logger, metrics),
 		wireAWSFactories(ctx, sup, logger, metrics),
+		wireAzureFactories(ctx, sup, logger, metrics),
 	)
 }
 

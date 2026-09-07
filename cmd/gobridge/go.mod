@@ -8,6 +8,7 @@ require (
 	github.com/mariotoffia/gobridge v0.3.6
 	github.com/mariotoffia/gobridge/adapters/aws/store v0.3.6
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.3.6
+	github.com/mariotoffia/gobridge/adapters/azure/transport/servicebus v0.3.6
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0
 	github.com/mariotoffia/gobridge/adapters/native/config/file v0.0.0
 	github.com/mariotoffia/gobridge/adapters/native/credentials/file v0.0.0
@@ -20,6 +21,12 @@ require (
 )
 
 require (
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.21.0 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/internal v1.11.2 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus v1.10.0 // indirect
+	github.com/Azure/go-amqp v1.5.1 // indirect
+	github.com/AzureAD/microsoft-authentication-library-for-go v1.7.0 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.43.5 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.35 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.36 // indirect
@@ -44,9 +51,11 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
+	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq v0.3.6 // indirect
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.3.6 // indirect
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions v0.3.6 // indirect
@@ -58,6 +67,7 @@ require (
 	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox v0.0.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
+	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
@@ -70,6 +80,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.42.0 // indirect
 	go.opentelemetry.io/otel/trace v1.42.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
