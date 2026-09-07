@@ -326,23 +326,43 @@ Verification completed on 2026-09-06:
   `wireAWSFactories(ctx context.Context, sup *bridge.Supervisor, logger *slog.Logger, metrics ports.MetricsExporter) error`,
   `seedAWSStores(ctx context.Context, b *bridge.Builder) error`.
 
-- [ ] **Step 1: Failing tagged test.** `TestAWSFamily_RegistersDecoders` —
+- [x] **Step 1: Failing tagged test.** `TestAWSFamily_RegistersDecoders` —
   fresh `ports.NewRegistry()`, call `registerAWSDecoders`, assert `Kinds()`
   contains `sqs`, `aws.sqs`, `dynamodb`; `TestAWSFamily_ReportsFamily`
   asserts `compiledFamilies` contains `"aws"`. Run
   `go -C cmd/gobridge test -tags gobridge_aws -run AWSFamily -v` → FAIL.
-- [ ] **Step 2: Name every family kind in the blank-root test.** Add untagged
+- [x] **Step 2: Name every family kind in the blank-root test.** Add untagged
   `TestBlankRoot_ExcludesEveryFamilyKind` listing every family kind
   (`mqtt`, `memory`, `sqlite`, `sqs`, `dynamodb`, `servicebus`, `amqp091`,
   `amqp10`, `http`) so a future untagged leak names the kind. It must pass
   from the start; it exists to fail loudly later.
-- [ ] **Step 3: Implement** both files + aggregator lines + go.mod.
-- [ ] **Step 4:** Both runs pass. Then
+- [x] **Step 3: Implement** both files + aggregator lines + go.mod.
+- [x] **Step 4:** Both runs pass. Then
   `go -C cmd/gobridge build -o /tmp/g.out . && go version -m /tmp/g.out` →
   no `aws-sdk-go-v2` modules; rebuild with `-tags gobridge_aws` → present.
-- [ ] **Step 5:** `make lint` — pluginsym must pass the new pair (R1–R5; the
+- [x] **Step 5:** `make lint` — pluginsym must pass the new pair (R1–R5; the
   seed literal dedupes against the wire literal).
-- [ ] **Step 6: Commit** — `feat(gobridge): optional AWS plugin family behind gobridge_aws build tag`
+- [x] **Step 6: Commit** — `feat(gobridge): optional AWS plugin family behind gobridge_aws build tag`
+
+Verification completed on 2026-09-07:
+- The tagged decoder test failed before implementation; the explicit blank-root
+  exclusions passed before the AWS family was added.
+- Short race tests passed untagged, with `gobridge_aws`, with `gobridge_all`,
+  and with `gobridge_aws,gobridge_otel`. Local HTTP regressions cover DynamoDB
+  store wiring through both aggregates and SQS metrics through both aliases.
+  Configuration errors propagate through both wiring and seeding.
+- Binary inspection found no AWS SDK modules in the blank root and found them
+  in the AWS build. Version output reports `families=[]` and `families=[aws]`,
+  respectively. Temporary binaries were removed.
+- `make lint` passed (114s), including pluginsym; `make test` passed (260s,
+  95 passing package results). Tagged vet and golangci-lint also passed.
+  Logs: `reports/aws-family-*.log`. All changed/new Go files are below 500 lines.
+- Both AWS adapters require published `v0.3.6`; direct SDK versions match the
+  existing adapters. No replaces were added or changed.
+- An additional workspace-disabled build remains blocked: published
+  `dynamodboutbox v0.3.6` has the older `Expire` signature, while the existing
+  local root replacement requires a lease token. Local workspace builds pass;
+  release-train alignment remains outside this composition change.
 
 ---
 

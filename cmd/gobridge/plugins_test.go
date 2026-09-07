@@ -47,6 +47,21 @@ func TestBlankRoot_RegistersNoKinds(t *testing.T) {
 	}
 }
 
+// TestBlankRoot_ExcludesEveryFamilyKind names any family kind leaked into the blank root.
+func TestBlankRoot_ExcludesEveryFamilyKind(t *testing.T) {
+	requireBlankBuild(t)
+	reg := ports.NewRegistry()
+	require.NoError(t, registerAllDecoders(reg))
+	for _, kind := range []string{
+		"mqtt", "memory", "sqlite", "sqs", "dynamodb",
+		"servicebus", "amqp091", "amqp10", "http",
+	} {
+		t.Run(kind, func(t *testing.T) {
+			assert.NotContains(t, reg.Kinds(), kind)
+		})
+	}
+}
+
 // TestBlankRoot_NilObservability verifies the blank root creates no exporters.
 func TestBlankRoot_NilObservability(t *testing.T) {
 	requireBlankBuild(t)

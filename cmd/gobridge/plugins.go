@@ -31,6 +31,7 @@ func registerAllDecoders(reg *ports.Registry) error {
 	return errors.Join(
 		registerMQTTDecoders(reg),
 		registerNativeDecoders(reg),
+		registerAWSDecoders(reg),
 	)
 }
 
@@ -38,10 +39,14 @@ func wireAllFactories(ctx context.Context, sup *bridge.Supervisor, logger *slog.
 	return errors.Join(
 		wireMQTTFactories(ctx, sup, logger, metrics),
 		wireNativeFactories(ctx, sup, logger, metrics),
+		wireAWSFactories(ctx, sup, logger, metrics),
 	)
 }
 
 // seedAllStores supplies the same stores to the one-shot Builder as the Supervisor.
 func seedAllStores(ctx context.Context, b *bridge.Builder) error {
-	return seedNativeStores(ctx, b)
+	return errors.Join(
+		seedNativeStores(ctx, b),
+		seedAWSStores(ctx, b),
+	)
 }
