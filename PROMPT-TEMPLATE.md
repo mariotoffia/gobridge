@@ -1,5 +1,5 @@
-Implement chunk <Cn> of PROD_READY_PLAN.md.
-Follow that chunk's Goal, Work, Proof, and Exit gate exactly.
+Implement the selected task from the supplied implementation plan.
+Follow its Goal, Work, Proof, and Exit gate exactly.
 
 Read first: AGENTS.md and {ARCHITECTURE,DDD,UBIQUITOUS}.md, the ADRs.
 
