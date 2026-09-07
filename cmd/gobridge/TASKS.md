@@ -416,9 +416,22 @@ Two independent stub pairs, same pattern as Task 5; per-family specifics:
 `"amqp10"`. Shared wire signature; thread `metrics` if the factories accept
 it.
 
-- [ ] Failing tagged tests per family → implement → four combinations pass
+- [x] Failing tagged tests per family → implement → four combinations pass
   (each tag alone, both, none) → `make lint && make test` → commit —
   `feat(gobridge): optional AMQP 0-9-1 and AMQP 1.0 families behind build tags`
+
+Verification completed on 2026-09-07:
+- Both tagged regressions failed before implementation. Short race tests passed
+  untagged, with each AMQP tag alone, with both, and with `gobridge_all`.
+- Each family shares one factory across its two aliases and forwards the metrics
+  exporter. No seed functions or new replaces were added.
+- Binary inspection confirmed each tag links only its own AMQP adapter; the
+  blank binary excludes both adapters and their client libraries. Version output
+  lists the exact selected families. A workspace-disabled build with both AMQP
+  tags passed using the published `v0.3.6` modules.
+- `make lint` passed (108s), `make test` passed (258s, 95 passing package
+  results), and all-family vet and golangci-lint passed.
+  Logs: `reports/amqp-family-*.log`. Temporary binaries were removed.
 
 ---
 

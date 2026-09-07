@@ -33,6 +33,8 @@ func registerAllDecoders(reg *ports.Registry) error {
 		registerNativeDecoders(reg),
 		registerAWSDecoders(reg),
 		registerAzureDecoders(reg),
+		registerAMQP091Decoders(reg),
+		registerAMQP10Decoders(reg),
 	)
 }
 
@@ -42,6 +44,8 @@ func wireAllFactories(ctx context.Context, sup *bridge.Supervisor, logger *slog.
 		wireNativeFactories(ctx, sup, logger, metrics),
 		wireAWSFactories(ctx, sup, logger, metrics),
 		wireAzureFactories(ctx, sup, logger, metrics),
+		wireAMQP091Factories(ctx, sup, logger, metrics),
+		wireAMQP10Factories(ctx, sup, logger, metrics),
 	)
 }
 

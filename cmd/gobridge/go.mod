@@ -6,6 +6,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.36
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.63.2
 	github.com/mariotoffia/gobridge v0.3.6
+	github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091 v0.3.6
+	github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10 v0.3.6
 	github.com/mariotoffia/gobridge/adapters/aws/store v0.3.6
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.3.6
 	github.com/mariotoffia/gobridge/adapters/azure/transport/servicebus v0.3.6
@@ -69,6 +71,7 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
+	github.com/rabbitmq/amqp091-go v1.10.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.42.0 // indirect
