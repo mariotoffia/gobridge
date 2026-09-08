@@ -247,6 +247,7 @@ test: audit-timings audit-test-timings ## Run unit tests (no Docker, integration
 
 
 test-integration: audit-timings audit-test-timings ## Run all tests including integration (requires Docker)
+	@test -f go.work || $(MAKE) dev
 	@mkdir -p reports
 	@echo "Running all tests (unit + integration) across all modules..."
 	@echo "Report will be saved to: reports/test-integration.log"

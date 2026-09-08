@@ -4,6 +4,7 @@ Local CDK template tests use the existing `!race` convention. They synthesize re
 
 | name | description | type | group | status |
 |------|-------------|------|-------|--------|
+| TestIntegrationGate_PreparesLocalWorkspace | verifies fresh-checkout integration runs use local sibling modules | unit | deployment/tooling | pass |
 | TestLocalDeploySelector_RejectsEmptyRuns | verifies unmatched parent and child selectors fail the deployment gate | unit | deployment/tooling | pass |
 | TestSingle_ConfigTable_RetainedOnDemand | verifies durable config table schema | unit | deployment/cdk | pass |
 | TestDynamoDBSeeder_AssetAndStartupGate | verifies validated JSON assets, plugin options, exact integer precision and startup grants | unit | deployment/cdk | pass |
