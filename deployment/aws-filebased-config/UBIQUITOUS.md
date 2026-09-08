@@ -81,7 +81,7 @@ Explicit producer→consumer wiring for resources referenced by name from bridge
 
 | Term | Meaning |
 |---|---|
-| **OnConfigDrift** | Drift-handling policy applied by the seeder init container when comparing the bundled asset against the existing EFS file (canonical SHA-256). Three modes: `SeedOnce` (default — seed iff absent, warn if drifted), `Overwrite` (CDK source of truth, GitOps), `AbortDeploy` (strict — exit 10 on hash mismatch). On the cluster, the worker seeder is fixed to `AbortDeploy`. Configured per-construct via `SeederMode` / `ControlSeederMode` props. |
+| **OnConfigDrift** | Drift-handling policy applied by the seeder init container against the current EFS file or DynamoDB config item. `SeedOnce` (control default) seeds iff absent and warns on drift; `Overwrite` uses the CDK source of truth (DynamoDB writes CAS-bump the row and JSON version); `AbortDeploy` is read-only and exits 10 on mismatch; `AdoptValid` (worker default) adopts valid drift without writes. DynamoDB semantic hashes use actual `data` and ignore only top-level `version`. Configured via `SeederMode` / `ControlSeederMode` and `WorkerSeederMode`; DynamoDB worker modes must remain read-only. |
 
 ### Cross-stack lookup
 

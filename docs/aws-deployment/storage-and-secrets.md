@@ -25,13 +25,21 @@ which is separate from their message-state and rollout tables. Streams mode
 adds a `KEYS_ONLY` stream; the watcher reads the current item after notification.
 See [config-source IAM grants](iam.md#config-source-grants).
 
-**The CDK config table is not seeded from the bundled YAML yet.** YAML still
-supplies synth-time validation, port mappings and adapter grants. DynamoDB
-config deployments omit the file seeder; selecting this source does not migrate
-an EFS config or publish the bundled document. A missing item follows the
-runtime start-empty behavior described in [configuration](configuration.md).
-HA admission can reject that empty config, so do not treat table provisioning
-alone as a ready-to-run HA deployment.
+The init container seeds the config table from synth-validated JSON, preserving
+typed plugin options. Control defaults to `SeedOnce`: a conditional put creates
+an absent item at version 1 and never overwrites existing admin edits. An
+explicit `Overwrite` conditionally writes current version + 1, retrying only CAS
+conflicts up to three attempts. `AbortDeploy` is a read-only drift gate; worker
+default `AdoptValid` accepts a valid current config after admin edits. Missing or
+malformed config fails the read-only gate. The main ECS container waits for
+seeder `SUCCESS`.
+
+Drift compares the actual JSON data, ignoring the version counter, not a cached
+hash attribute. Assets use resolved physical resource names; deploy-time CDK
+tokens are rejected inside the JSON. The config table name is resolved through
+the task environment. This path needs no PyYAML or EFS seeder mount. Switching
+sources does not migrate EFS admin edits; select the initial bundled config
+deliberately. See the [seeder contract](../../deployment/aws-filebased-config/cdk/constructs/internal/seeder/README.md).
 
 EFS is created and mounted only for a file config source or parsed SQLite store
 paths. A DynamoDB config source with DynamoDB data stores has no EFS resources,

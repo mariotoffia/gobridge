@@ -180,14 +180,20 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 	// which is why it is not a hash of the whole document: doing that made every
 	// real change fail admission on every member after the cohort committed it.
 	//
-	// The baseline digest is the full content identity of THIS document, and only
-	// this one. A coordinated member uses it to seed the cohort's generation-zero
+	// The baseline digest identifies THIS deployment content. DynamoDB assigns its
+	// own source version, so only that counter is excluded for a DynamoDB source;
+	// file sources retain the full version-sensitive document identity.
+	// A coordinated member uses it to seed the cohort's generation-zero
 	// committed artifact at boot, so a restart before the first rollout recovers to
-	// the config this deployment admitted rather than to whatever the mutable EFS
-	// document happens to hold.
+	// the config this deployment admitted rather than to whatever the mutable
+	// config source happens to hold.
 	needsEFS := validation.NeedsEFS(mat.Config, bootstrapControl)
 	fingerprint := bridge.DeploymentProfileFingerprint(mat.Config)
-	baseline, err := bridge.ConfigArtifactDigest(mat.Config)
+	digestBaseline := bridge.ConfigArtifactDigest
+	if bootstrapControl.ConfigSource == infra.ConfigSourceDynamoDB {
+		digestBaseline = bridge.DeploymentBaselineContentDigest
+	}
+	baseline, err := digestBaseline(mat.Config)
 	_ = mat.Close()
 	if err != nil {
 		panic(fmt.Sprintf("GoBridgeDynamoDBHA: digest coordinated HA config: %v", err))

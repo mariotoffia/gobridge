@@ -134,10 +134,14 @@ SeedOnce/AdoptValid file cannot bypass synth-time admission:
   member after the cohort had already agreed to it. Changing an existing durable
   session identity or an exclusive route's `session_id` is still refused — by the
   live-reload preflight, which owns that rule.
-- **Baseline config digest** (`dynamodb_ha_baseline_config_digest`) — the full
-  content identity of the exact document this deployment seeded. A coordinated
-  member uses it to establish the cohort's generation-zero committed artifact at
-  startup; see [Cluster config rollout](../runbooks/cluster-config-rollout.md).
+- **Baseline config digest** (`dynamodb_ha_baseline_config_digest`) — the content
+  identity of the document this deployment seeded, including editable content.
+  File sources include the version; DynamoDB sources exclude only the top-level
+  version because the seeder assigns it from the persisted counter, not the YAML.
+  A coordinated member uses this identity to establish the cohort's generation-zero
+  committed artifact at startup. The artifact itself retains the actual source
+  version and full, version-sensitive digest; see
+  [Cluster config rollout](../runbooks/cluster-config-rollout.md).
 
 Static `bridge.cluster.endpoints` are rejected by this profile. The bootstrap
 registers the existing ECS metadata endpoint resolver and each holder writes its

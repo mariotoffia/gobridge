@@ -269,4 +269,5 @@ fi
 
 echo "------------"
 printf 'pass=%d fail=%d\n' "$PASS" "$FAIL"
+python3 "${HERE}/ddb_cases.py" || FAIL=$((FAIL+1))
 [ "$FAIL" = "0" ]

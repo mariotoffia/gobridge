@@ -17,19 +17,14 @@ import (
 
 	cdkconstructs "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 )
 
 // addFileSeeder preserves the file-source asset, startup gate and drift policy.
-// DynamoDB config does not run a file seeder, even when SQLite still needs EFS.
 //
 //nolint:ireturn // CDK containers, log groups and assets are native jsii interfaces.
 func addFileSeeder(c constructs.Construct, props *Props, taskDef awsecs.FargateTaskDefinition,
 	mat *source.Materialized, logProps *awslogs.LogGroupProps, mountPath string,
 ) (awsecs.ContainerDefinition, awslogs.LogGroup, awss3assets.Asset) {
-	if props.Bootstrap.ConfigSource == infra.ConfigSourceDynamoDB {
-		return nil, nil, nil
-	}
 	scopeID := jsiiDeref(c.Node().Id())
 	// Asset upload + EXPECTED_HASH must come from the same bytes
 	// that the parser saw — read the file once.
@@ -63,16 +58,7 @@ func addFileSeeder(c constructs.Construct, props *Props, taskDef awsecs.FargateT
 	seederLG := awslogs.NewLogGroup(c, jsii.String("SeederLogs"), logProps)
 	// Seeder init container.
 	seederMode := defaultSeederMode(props)
-	seederImg := DefaultSeederImage()
-	if props.SeederImage != nil && *props.SeederImage != "" {
-		seederImg = *props.SeederImage
-		// An operator-supplied mirror must still be fully pinned — an
-		// unpinned or placeholder override is the same dead-on-arrival
-		// failure as the default (main container gates on seeder SUCCESS).
-		if err := validateSeederImageRef(seederImg); err != nil {
-			panic(err.Error())
-		}
-	}
+	seederImg := configuredSeederImage(props)
 	seeder := taskDef.AddContainer(jsii.String("Seeder"), &awsecs.ContainerDefinitionOptions{
 		ContainerName: jsii.String(containerNameSeeder),
 		Image:         awsecs.ContainerImage_FromRegistry(jsii.String(seederImg), nil),

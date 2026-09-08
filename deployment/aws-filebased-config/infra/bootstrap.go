@@ -120,12 +120,17 @@ type BootstrapConfig struct {
 	DynamoDBHAManagedSubscriptionsTableName string `json:"dynamodb_ha_managed_subscriptions_table_name,omitempty"`
 	DynamoDBHAConfigFingerprint             string `json:"dynamodb_ha_config_fingerprint,omitempty"`
 
-	// DynamoDBHABaselineConfigDigest is the artifact digest of the exact config
-	// DOCUMENT this deployment admitted and seeded. A coordinated member uses it
+	// DynamoDBHABaselineConfigDigest identifies the config content this deployment
+	// admitted and seeded. A coordinated member uses it
 	// to seed the cohort's generation-zero committed artifact at boot, so a member
 	// restarting before the first rollout has ever committed recovers to the
 	// deployment's own baseline instead of whatever the mutable config source
 	// happens to hold at that moment.
+	//
+	// File sources use the full, version-sensitive ConfigArtifactDigest. DynamoDB
+	// sources use DeploymentBaselineContentDigest, excluding only the top-level
+	// Version because the source assigns that counter independently of the YAML.
+	// The committed artifact still stores the actual source version and full digest.
 	//
 	// It is deliberately NOT the same value as DynamoDBHAConfigFingerprint: the
 	// fingerprint is the IMMUTABLE deployment profile (which every later committed

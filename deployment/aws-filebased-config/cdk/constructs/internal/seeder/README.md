@@ -1,14 +1,18 @@
 # Seeder
 
-Init container that materializes (or drift-checks) `bridge.yaml` on the EFS
-RW mount before the main GoBridge service container starts.
+Init container that seeds or checks the selected bridge config before the main
+GoBridge container starts. ECS gates the main container on seeder `SUCCESS`.
+`seeder.sh` handles YAML on EFS; `seeder-ddb.sh` handles the DynamoDB `current`
+item. The DynamoDB seeder never mounts EFS, even when SQLite stores need it.
 
 The container image is based on the upstream `public.ecr.aws/aws-cli/aws-cli`
 pinned by [image.txt](image.txt), which ships `aws` and `python3` but NOT the
-`PyYAML` the canonicalizer needs — [Dockerfile](Dockerfile) layers that on.
+`PyYAML` the **file** canonicalizer needs — [Dockerfile](Dockerfile) layers that on.
+The DynamoDB path uses Python's standard library only and runs on the pinned
+upstream image without installing packages.
 See [MANIFEST.md](MANIFEST.md) for pin/override semantics.
 
-## Env contract
+## File env contract
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
@@ -18,7 +22,62 @@ See [MANIFEST.md](MANIFEST.md) for pin/override semantics.
 | `EXPECTED_HASH` | yes for `AbortDeploy`, optional otherwise | — | Hex SHA-256 of the canonicalized asset (no `sha256:` prefix). When set in non-Abort modes, mismatch is logged at `warn` but never fails. |
 | `LOG_STREAM_PREFIX` | no | — | Echoed back into every JSON log line as `stream` for grep-ability. |
 
-## Mode behavior
+## DynamoDB env contract
+
+| Variable | Required | Notes |
+|---|---|---|
+| `MODE` | no | `SeedOnce` by default; also `Overwrite`, `AbortDeploy`, `AdoptValid`. |
+| `TABLE` | yes | Runtime physical config table name, resolved through the ECS environment. |
+| `PK` | yes | `config#<bridge_id>`; the sort key is always `current`. |
+| `ITEM_S3_URI` | yes | S3 asset containing the validated bridge config JSON, not an AWS AttributeValue envelope. |
+| `EXPECTED_HASH` | yes | SHA-256 of the exact asset bytes. A mismatch fails closed with exit 30. |
+| `LOG_STREAM_PREFIX` | no | Optional `stream` log field. |
+
+Synth serializes `Materialized.Config` with `parser.MarshalBridgeConfigJSON`,
+preserving every typed plugin's `options` and large integers. The immutable
+asset must contain resolved physical names, not CDK tokens. HA data-table names
+already follow that rule. Config-table and S3 tokens stay in ECS environment
+values, where CloudFormation resolves them.
+
+### DynamoDB modes and write safety
+
+Every read is strongly consistent. Drift hashes are computed from the actual
+`data.S` JSON with sorted keys and exact numbers, ignoring only the top-level
+`version`. A stored hash attribute is never trusted: admin saves replace the
+row and may remove it. JSON formatting and numeric scale do not cause drift.
+
+- **SeedOnce:** seed an absent row with `attribute_not_exists(PK)`. An existing
+  valid config is never overwritten; drift logs `hash_mismatch_kept_existing`.
+  If another control wins the conditional put, read and check its row.
+- **Overwrite:** read the current version, then conditionally put version + 1.
+  Only `ConditionalCheckFailedException` causes another read/put attempt, with
+  at most three attempts. Other DynamoDB/API failures fail immediately.
+- **AbortDeploy:** read-only. Missing current config or semantic drift exits 10.
+- **AdoptValid:** the worker default, also read-only. Valid drift logs
+  `adopted_existing_config` and succeeds, so replacement workers can boot after
+  admin edits. Missing config exits 10; malformed config exits 30.
+
+The row has `PK.S`, `SK.S`, `data.S` and `version.N`. New rows start at version 1;
+the caller's YAML version never resets a stored counter. Each write sets the
+JSON version to the same incremented row version so polling watchers see the
+change. A missing version is legacy zero. Invalid, negative, fractional or
+out-of-range versions fail closed, as does incrementing the maximum signed
+64-bit version. Reads use the row version even when externally seeded JSON
+carries a different version; writes always set both versions together.
+The data limit is 390 KiB; each put also checks the total 400 KiB item
+limit. No config content or raw API error is logged.
+
+The current-config gate checks JSON and the bridge/list/object wire shape; the
+main runtime still performs full typed-plugin and graph validation. This script
+does not duplicate the Go validator. Switching sources does not migrate EFS
+admin edits: choose the seed input deliberately.
+
+IAM roles are **task-wide**, not per container. Control uses the existing config
+table read/write grant; workers retain read-only access. CDK rejects worker
+`SeedOnce`/`Overwrite` modes rather than granting their seeders writes. Both task
+roles receive asset-read and seeder-log grants.
+
+## File mode behavior
 
 - **`SeedOnce`** (default) — if `EFS_TARGET_PATH` is absent, download +
   canonicalize + atomic-mv → exit `0`. If present, compare canonical hashes
@@ -83,6 +142,12 @@ and EFS writes are billed.
 | `50` | Canonicalizer missing — `python3` or `PyYAML` absent (broken image). |
 | `1` | Unanticipated bug or invalid env (caught by `EXIT` trap). |
 
+For DynamoDB, exit 30 also covers invalid JSON/items, mismatched asset hashes,
+version overflow and oversize payloads. Exit 60 reports DynamoDB read/write
+failure or `cas_exhausted`. Exit 50 requires only a missing `python3`, not PyYAML.
+Unexpected Python failures emit `internal` with exit 1. All DynamoDB paths emit
+exactly one terminal JSON line, including API and validation failures.
+
 ## JSON log shape
 
 Every terminal outcome emits exactly one JSON line on `stdout`:
@@ -116,7 +181,8 @@ export EFS_TARGET_PATH=/tmp/efs/bridge.yaml
 ./seeder.sh
 ```
 
-The included [tests/run.sh](tests/run.sh) exercises the critical paths
-(`SeedOnce`, `AbortDeploy`, and all four `AdoptValid` outcomes) without
-Docker, requiring only `bash`, `python3` (with PyYAML), and
-`sha256sum`/`shasum`.
+The included [tests/run.sh](tests/run.sh) runs file/image cases plus
+[DynamoDB cases](tests/ddb_cases.py) using the same AWS CLI fixture, without
+Docker. It requires `bash` and `python3` (PyYAML for file cases only). DynamoDB
+cases check conditional puts, bounded conflicts, exact versions, read-only
+drift modes, malformed items, asset integrity and API failures.

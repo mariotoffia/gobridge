@@ -116,11 +116,15 @@ Control receives `GrantReadWriteData`; workers receive `GrantReadData`. Only
 `watch_mode: streams` enables a `KEYS_ONLY` stream and `GrantStreamRead` for both
 roles. An omitted watch mode is stamped as `poll`.
 
-**DynamoDB config seeding is not implemented yet.** The table is initially empty;
-the YAML still drives synth-time validation and grants, but is not uploaded as
-a DynamoDB config item. The file seeder is omitted for a DynamoDB source, even
-when SQLite paths require an EFS mount. File-source seeding is unchanged.
-Switching sources does not migrate existing configuration.
+The DynamoDB init container downloads a JSON asset serialized from the validated
+YAML with `parser.MarshalBridgeConfigJSON` and checks its SHA-256. It seeds an
+absent `current` item with a conditional put. `Overwrite` uses a three-attempt
+version CAS loop; `AbortDeploy` fails on semantic drift; worker-default
+`AdoptValid` accepts valid admin edits without writes. Drift is computed from
+the actual JSON data, ignoring version, not from a stored hash attribute. The
+main container retains its seeder `SUCCESS` dependency. The DynamoDB seeder
+needs no PyYAML or EFS mount. File-source seeding is unchanged; switching sources
+does not migrate existing configuration. See the [seeder contract](cdk/constructs/internal/seeder/README.md).
 
 Without a filesystem, `EfsConfig()` returns nil, task mounts and NFS ingress are
 omitted, and no EFS or EFS-KMS grants are added. The ALB attachment omits the
@@ -209,7 +213,7 @@ flowchart LR
 
 Both access points share the same root path and the same posix user (uid/gid `1000:1000`); the **RW/RO split is enforced at IAM and at the ECS volume level (`readOnly: true`)**, not by POSIX ownership. The control role and worker role are split for EFS grants only — `ClientMount`+`ClientWrite` for control, `ClientMount` only for workers; SQS, SSM and Logs grants are identical between roles since both task families process messages.
 
-`DesiredCount=1` for the control service is a runtime invariant (single LeaseStore writer semantics) and is **not** exposed as a prop. Workers default to two and may opt in to CPU target-tracking autoscaling via `AutoScalingProps{Min, Max, TargetCPU}`. The seeder init container runs only in the control task; workers boot from EFS and their readiness blocks until the yaml is present.
+`DesiredCount=1` for the control service is a runtime invariant (single LeaseStore writer semantics) and is **not** exposed as a prop. Workers default to two and may opt in to CPU target-tracking autoscaling via `AutoScalingProps{Min, Max, TargetCPU}`. Control seeds EFS; worker init containers check the current YAML read-only, using `AdoptValid` by default.
 
 ### `GoBridgeDynamoDBHA`
 
@@ -279,7 +283,7 @@ Per-adapter grant functions live one-file-per-kind under `cdk/constructs/interna
 | CloudWatch Logs | `logGroup.GrantWrite(role)`. |
 | EFS | Per role: control `ClientMount`+`ClientWrite`; worker `ClientMount` only. |
 | EFS CMK | Auto-granted when `EfsKmsKey` prop is set. |
-| Config table | Control `GrantReadWriteData`; worker `GrantReadData`; both `GrantStreamRead` only when `watch_mode: streams`. Config seeder RW + asset read remain **planned**. |
+| Config table | Control `GrantReadWriteData`; worker `GrantReadData`; both `GrantStreamRead` only when `watch_mode: streams`. Seeders share their task role; workers are never granted config writes. Both roles can read the config asset. |
 
 Adding a new plugin requires a matching pair of files (`bridgecfg/<kind>.go` and `internal/grants/<kind>.go`) — enforced by the CI check against `*ports.Registry`.
 
@@ -358,7 +362,7 @@ See [../../DDD.md](../../DDD.md) for the project-level model and [UBIQUITOUS.md]
 | Missing `QueueRegistry` / `SsmParamRegistry` entry | Tier B Phase 2 aggregates via `Annotations.of(scope).addError(...)` — every missing reference reported in one synth, with typed remediation message. |
 | Plaintext credential in yaml | Phase 1 hard error from `ScanForPlaintextSecrets` — no opt-out. |
 | ALB priority collision | Attachment ctor errors when consumer rule already uses `[BasePriority, BasePriority+99]`. |
-| Config table drift at deploy **(planned)** | Seeder drift modes: `SeedOnce` conditional put, `AbortDeploy` exits 10 on hash mismatch, `Overwrite` CAS-bumps `version`. |
+| Config table drift at deploy | Seeder drift modes: `SeedOnce` conditional put, `AbortDeploy` exits 10 on hash mismatch, `Overwrite` CAS-bumps `version`; worker-default `AdoptValid` accepts valid drift without writes. |
 | Concurrent admin writes, `dynamodb` source | `SaveIfVersion` conditional put → `shared.ErrVersionMismatch`; no lost update, no single-writer assumption. |
 | Oversized config item | Adapter pre-checks 390 KiB before `PutItem` — descriptive error instead of an opaque `ValidationException`. |
 

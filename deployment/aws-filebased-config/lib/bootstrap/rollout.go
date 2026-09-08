@@ -11,6 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbrollout"
 	"github.com/mariotoffia/gobridge/bridge"
 	cfgparser "github.com/mariotoffia/gobridge/config/parser"
+	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -219,7 +220,9 @@ type rolloutBaseline struct {
 // the wrong one would durably poison the baseline. The composition root can,
 // because the deployment stamps the digest of the document it admitted. So the
 // seed happens ONLY when the config this member has just built and installed is
-// that exact document; any other config keeps the conservative joiner rule.
+// that exact content. A DynamoDB source assigns its own version, so recognition
+// ignores only that counter; file sources still require the exact version too.
+// Any other content keeps the conservative joiner rule.
 //
 // A store failure is FATAL — a member that believed it had a baseline but did not
 // would leave the restart window open silently. An ALREADY-ESTABLISHED, different
@@ -230,11 +233,15 @@ func (a *App) seedRolloutBaseline(ctx context.Context, cfg *ports.BridgeConfig) 
 		return nil
 	}
 	digest, err := bridge.ConfigArtifactDigest(cfg)
+	baselineDigest := digest
+	if err == nil && a.cfg.ConfigSource == deployinfra.ConfigSourceDynamoDB {
+		baselineDigest, err = bridge.DeploymentBaselineContentDigest(cfg)
+	}
 	if err != nil {
 		return fmt.Errorf("bootstrap: cannot identify the boot config against the deployment's admitted "+
 			"cluster rollout baseline: %w", err)
 	}
-	if digest != a.cfg.DynamoDBHABaselineConfigDigest {
+	if baselineDigest != a.cfg.DynamoDBHABaselineConfigDigest {
 		// Normal once the cohort has moved on: this member is running a committed
 		// generation, or the deployment baseline was established by a peer. There is
 		// nothing to seed, but there IS a recovery point, so publish the one that
@@ -242,6 +249,8 @@ func (a *App) seedRolloutBaseline(ctx context.Context, cfg *ports.BridgeConfig) 
 		a.recordEstablishedBaseline(ctx, cfg)
 		return nil
 	}
+	// Recognition does not change artifact identity: persist the actual source
+	// version and compare the established artifact against its full digest below.
 	gen, established, err := a.rolloutDriver.SeedBaseline(ctx, cfg)
 	if err != nil {
 		a.auditRollout(ctx, "cluster_rollout_baseline_seed", "failed", map[string]any{

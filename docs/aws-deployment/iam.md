@@ -25,8 +25,11 @@ authority: the deployed worker role remains read-only.
 Only `config_dynamodb.watch_mode: streams` adds `GrantStreamRead` on the enabled
 config stream for both roles (`DescribeStream`, `GetRecords`,
 `GetShardIterator`, plus `ListStreams`). Poll mode adds no stream-read grant.
-No runtime config-table creation grant is added. Config-item seeding permissions
-are not provisioned yet; the existing file seeder remains file-source-only.
+No runtime config-table creation grant is added. The DynamoDB seeder shares the
+task role with the main container: control can conditionally seed or overwrite,
+while worker `AdoptValid`/`AbortDeploy` modes only read. Both task roles receive
+read access to the JSON S3 asset and write access to their seeder log group.
+There is no per-container role and no additional worker write grant.
 
 An EFS-free facade adds no EFS mount/write grants or EFS-CMK grant. SSM, logging
 and adapter permissions continue to be derived as before.

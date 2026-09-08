@@ -23,10 +23,10 @@ import (
 func TestSingle_EFS_Conditional(t *testing.T) {
 	for _, tc := range []struct {
 		name, source, store string
-		wantEFS, wantSeeder bool
+		wantEFS             bool
 	}{
-		{name: "default file", wantEFS: true, wantSeeder: true},
-		{name: "explicit file", source: "file", wantEFS: true, wantSeeder: true},
+		{name: "default file", wantEFS: true},
+		{name: "explicit file", source: "file", wantEFS: true},
 		{name: "DynamoDB without SQLite", source: "dynamodb"},
 		{name: "DynamoDB with SQLite outbox", source: "dynamodb", store: "outbox", wantEFS: true},
 		{name: "DynamoDB with SQLite DLQ", source: "dynamodb", store: "dlq", wantEFS: true},
@@ -78,6 +78,9 @@ func TestSingle_EFS_Conditional(t *testing.T) {
 							container := rawContainer.(map[string]any)
 							if container["Name"] == "seeder" {
 								seeded = true
+								if tc.source == infra.ConfigSourceDynamoDB {
+									assert.Empty(t, container["MountPoints"], "DynamoDB seeding must not use the SQLite EFS mount")
+								}
 							}
 							if container["Name"] != "gobridge" {
 								continue
@@ -87,13 +90,9 @@ func TestSingle_EFS_Conditional(t *testing.T) {
 							} else {
 								assert.Empty(t, container["MountPoints"])
 							}
-							if tc.wantSeeder {
-								assert.Len(t, container["DependsOn"], 1)
-							} else {
-								assert.Empty(t, container["DependsOn"])
-							}
+							assert.Equal(t, []any{map[string]any{"ContainerName": "seeder", "Condition": "SUCCESS"}}, container["DependsOn"])
 						}
-						assert.Equal(t, tc.wantSeeder, seeded, "DynamoDB must not run the file seeder")
+						assert.True(t, seeded, "both config sources must gate startup on the seeder")
 					}
 				})
 			}

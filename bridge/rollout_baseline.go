@@ -31,9 +31,8 @@ import (
 
 // ConfigArtifactDigest returns the canonical content digest of cfg — the exact
 // identity the rollout row records for a candidate and the committed-config
-// artifact records for a commit. A deployment stamps it for the config document
-// it admits, so a booting member can tell that document from one an operator has
-// since written to the config source.
+// artifact records for a commit. It includes Version. File-source deployments
+// also stamp it to recognize the exact document they admitted at startup.
 //
 // It is a pure function of the config document (see candidateConfigDigest), so
 // two members that loaded the same document compute the same value.
@@ -46,6 +45,23 @@ func ConfigArtifactDigest(cfg *ports.BridgeConfig) (string, error) {
 		return "", fmt.Errorf("bridge: the config could not be canonicalised, so it has no artifact digest")
 	}
 	return digest, nil
+}
+
+// DeploymentBaselineContentDigest identifies deployment-admitted content when
+// the config source assigns its own Version, as the DynamoDB seeder does. It
+// normalizes only the top-level Version without modifying cfg; all other content,
+// including editable routes and plugin options, retains its canonical identity.
+//
+// Use it only to recognize a deployment baseline, never to identify rollout
+// candidates or committed artifacts. Those must retain the actual stored Version
+// and the version-sensitive ConfigArtifactDigest.
+func DeploymentBaselineContentDigest(cfg *ports.BridgeConfig) (string, error) {
+	if cfg == nil {
+		return ConfigArtifactDigest(cfg)
+	}
+	content := *cfg
+	content.Version = 0
+	return ConfigArtifactDigest(&content)
 }
 
 // CommittedBaseline reports the cohort's durable committed-config artifact as it

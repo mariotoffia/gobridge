@@ -31,7 +31,7 @@ import (
 //     the operator-supplied [Props.SeederMode] override).
 //   - ModeWorker:  EFS mounted RO at the ECS volume layer, seeder
 //     runs in MODE=AdoptValid (default): worker startup gates on the
-//     current EFS config being present + parseable, but tolerates
+//     current config being present + parseable, but tolerates
 //     hash drift from the synth-time asset so Admin-API hot
 //     reconfiguration and worker self-healing coexist. Override via
 //     [Props.WorkerSeederMode] (e.g. "AbortDeploy" for strict
@@ -193,7 +193,7 @@ type Props struct {
 	SeederMode *string
 
 	// WorkerSeederMode overrides the ModeWorker seeder MODE. Default
-	// "AdoptValid": a worker adopts whatever valid bridge.yaml the control
+	// "AdoptValid": a worker adopts whatever valid bridge config the control
 	// node last wrote (CDK seed OR Admin-API config-txn commit) instead of
 	// aborting on hash drift, so hot reconfiguration and worker self-healing
 	// coexist. Set "AbortDeploy" for strict lock-step (workers refuse to
@@ -230,7 +230,7 @@ type Built struct {
 	SeederContainer awsecs.ContainerDefinition
 	MainLogGroup    awslogs.LogGroup
 	SeederLogGroup  awslogs.LogGroup
-	// ConfigAsset is nil for a DynamoDB source, which has no file seeder.
+	// ConfigAsset holds YAML for file sources or validated JSON for DynamoDB.
 	ConfigAsset   awss3assets.Asset
 	ConfigTable   awsdynamodb.ITable
 	TaskRole      awsiam.IRole
@@ -313,7 +313,7 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 		Retention:     logRetention,
 		RemovalPolicy: logRemoval,
 	})
-	seeder, seederLG, asset := addFileSeeder(c, props, taskDef, mat, &awslogs.LogGroupProps{
+	seeder, seederLG, asset := addConfigSeeder(c, props, taskDef, mat, &awslogs.LogGroupProps{
 		LogGroupName:  jsii.String(logGroupPrefix(stackName, scopeID, containerNameSeeder)),
 		Retention:     logRetention,
 		RemovalPolicy: logRemoval,

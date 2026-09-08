@@ -47,8 +47,10 @@ read access to that table; control receives read/write access. Set
 stream-read grants. The filesystem-replicated Cluster accepts only `file`.
 
 `BridgeConfig` still supplies YAML for synth-time validation, port mappings and
-adapter grants for either runtime source. **DynamoDB config-item seeding is not
-implemented yet**; see [storage and initialization](storage-and-secrets.md#dynamodb-for-configuration).
+adapter grants for either runtime source. For DynamoDB, synth serializes that
+validated config as a JSON asset; the init container seeds or checks the current
+item before the main container can start. See
+[storage and initialization](storage-and-secrets.md#dynamodb-for-configuration).
 
 EFS is needed only for file config or parsed SQLite paths. `EfsConfig()` returns
 nil otherwise, including when an unused `EfsConfig` prop was supplied. Pass that
@@ -144,6 +146,12 @@ live admin edit both leave a valid file that scale-out and crash-replacement
 workers pick up without a redeploy. Set `WorkerSeederMode` to **`AbortDeploy`**
 for strict lock-step deployments where every worker must match the synth-time
 asset exactly (an absent or mismatched file aborts the task).
+
+The DynamoDB source uses the same worker defaults against the `current` config
+item, without an EFS mount. `AdoptValid` permits valid admin edits;
+`AbortDeploy` requires a matching semantic hash, ignoring the version counter.
+Both reject absent or malformed items and both remain read-only. CDK rejects
+worker `SeedOnce` or `Overwrite` rather than adding writes to the task-wide role.
 
 ## Usage Example
 

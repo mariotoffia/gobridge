@@ -19,8 +19,9 @@ import (
 // only run during synth from a checkout, so a runtime.Caller-based
 // lookup is safe and avoids duplicating files.
 type seederAssets struct {
-	script string
-	image  string
+	script         string
+	dynamoDBScript string
+	image          string
 }
 
 var (
@@ -47,9 +48,15 @@ func loadSeederAssets() (seederAssets, error) {
 			seederErr = fmt.Errorf("gobridgebase: read image.txt: %w", err)
 			return
 		}
+		ddbBytes, err := os.ReadFile(filepath.Join(seederDir, "seeder-ddb.sh"))
+		if err != nil {
+			seederErr = fmt.Errorf("gobridgebase: read seeder-ddb.sh: %w", err)
+			return
+		}
 		seederValue = seederAssets{
-			script: string(scriptBytes),
-			image:  strings.TrimSpace(string(imageBytes)),
+			script:         string(scriptBytes),
+			dynamoDBScript: string(ddbBytes),
+			image:          strings.TrimSpace(string(imageBytes)),
 		}
 		if err := validateSeederImageRef(seederValue.image); err != nil {
 			seederErr = err
@@ -113,4 +120,24 @@ func SeederScript() string {
 		panic(err.Error())
 	}
 	return a.script
+}
+
+func dynamoDBSeederScript() string {
+	a, err := loadSeederAssets()
+	if err != nil {
+		panic(err.Error())
+	}
+	return a.dynamoDBScript
+}
+
+func configuredSeederImage(props *Props) string {
+	image := DefaultSeederImage()
+	if props.SeederImage != nil && *props.SeederImage != "" {
+		image = *props.SeederImage
+		// Mirrors must be pinned too: main always gates on seeder SUCCESS.
+		if err := validateSeederImageRef(image); err != nil {
+			panic(err.Error())
+		}
+	}
+	return image
 }

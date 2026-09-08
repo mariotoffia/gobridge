@@ -259,11 +259,11 @@ Modify `gobridgebase` seeder container wiring (env: `MODE`, `TABLE`, `PK`,
 `seeder/tests/` bash suite with ddb fixtures (LocalStack/ddblocal per
 existing `run.sh` harness); Update `seeder/README.md` + `MANIFEST.md`.
 
-- [ ] **Step 1:** Failing bash tests per mode (seed-when-absent; abort exit
+- [x] **Step 1:** Failing bash tests per mode (seed-when-absent; abort exit
   10 on drift; overwrite CAS bump) — `make -C deployment/aws test`.
-- [ ] **Step 2:** Implement script + wiring; template test asserts seeder env
+- [x] **Step 2:** Implement script + wiring; template test asserts seeder env
   + `ContainerDependencyCondition_SUCCESS` retained.
-- [ ] **Step 3:** Suite green; `make lint && make test`; commit —
+- [x] **Step 3:** Suite green; `make lint && make test`; commit —
   `feat(deploy/aws/cdk): seeder seeds the dynamodb config table with drift modes`
 
 ### Task 4.3: Local deployment proof
