@@ -1,13 +1,14 @@
 //go:build integration_aws || integration_local
 // +build integration_aws integration_local
 
-// Package integration hosts the opt-in AWS integration tests for the
+// Package integration hosts the opt-in AWS and local integration tests for the
 // aws-filebased-config CDK profile.
 //
-// All files are guarded by the build tag `integration_aws`; the
-// default `go build ./...` and `go test ./...` never see them.
+// The `integration_aws` and `integration_local` build tags select the AWS and
+// local suites respectively. Default `go build ./...` and `go test ./...`
+// commands exclude both suites.
 //
-// Required env vars (tests t.Skip when any is missing):
+// Required AWS suite env vars (tests t.Skip when any is missing):
 //
 //	GOBRIDGE_INT_AWS_ACCOUNT   AWS account id used for the CDK env
 //	GOBRIDGE_INT_AWS_REGION    AWS region used for the CDK env
