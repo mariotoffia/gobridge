@@ -32,12 +32,6 @@ senders:
         default_topic: events/out
         qos: 1
 
-  - id: sqs-out
-    transport: sqs
-    options:
-      queue_url: https://sqs.us-west-1.amazonaws.com/123456789012/events
-      credentials_uri: pms://prod/aws/sqs-creds
-
 bindings:
   - id: to-mqtt
     sender_id: mqtt-out
@@ -67,11 +61,11 @@ http:
   cors_origins: "https://dashboard.example.com"
 ```
 
-This configuration ingests over HTTP and fans out to an MQTT (TLS) sender and
-an SQS sender, demonstrating:
-- **Credential URI** on the MQTT session (`file://`) and SQS sender (`pms://`)
-  for transport-level authentication. The URI is a top-level `options` key
-  (sibling of the nested `session:` / `sender:` role blocks).
+This configuration ingests over HTTP and forwards to an MQTT (TLS) sender,
+demonstrating:
+- **Credential URI** on the MQTT session (`file://`) for transport-level
+  authentication. The URI is a top-level `options` key, alongside the nested
+  `session:` block.
 - **API key** on the HTTP receiver for endpoint-level protection (minimum 16
   characters).
 - **Separate admin and monitor keys** for management API access control (each
