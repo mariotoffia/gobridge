@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	cfgparser "github.com/mariotoffia/gobridge/config/parser"
+	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -28,8 +29,6 @@ func (a *App) watchLoop(ctx context.Context, watchCh <-chan *ports.BridgeConfig)
 			if !ok {
 				return
 			}
-			a.logicalRef.Set(logicalCfg)
-
 			// Serialize config reloads to prevent concurrent
 			// applyLogicalConfig calls from racing on runtime swap.
 			// applyLogicalIfChanged skips the rebuild when the emitted
@@ -38,8 +37,14 @@ func (a *App) watchLoop(ctx context.Context, watchCh <-chan *ports.BridgeConfig)
 			// applyCommittedConfig already applied in-band — so an admin
 			// commit costs exactly one runtime swap, not two.
 			a.mu.Lock()
+			if a.isStaleSourceConfig(logicalCfg) {
+				// Not an apply result: acknowledging success here could move
+				// the manager's running state to a config we did not apply.
+				a.mu.Unlock()
+				continue
+			}
+			a.logicalRef.Set(logicalCfg)
 			skipped, err := a.applyLogicalIfChanged(ctx, logicalCfg, true)
-			a.mu.Unlock()
 			switch {
 			case errors.Is(err, ports.ErrApplyInFlight):
 				// A coordinated live-safe delta was DEFERRED to the rollout barrier:
@@ -59,6 +64,9 @@ func (a *App) watchLoop(ctx context.Context, watchCh <-chan *ports.BridgeConfig)
 			default:
 				a.manager.NotifyApplyResult(logicalCfg, nil)
 			}
+			// Keep the acknowledgement ordered with the swap: an admin
+			// apply must not overtake it after runtime state is published.
+			a.mu.Unlock()
 		}
 	}
 }
@@ -67,8 +75,8 @@ func (a *App) watchLoop(ctx context.Context, watchCh <-chan *ports.BridgeConfig)
 // running runtime on a config committed through the admin transactions API by
 // driving the same reload path the file watcher uses (applyLogicalConfig),
 // serialized under mu against watchLoop's reloads. httpapi calls it after the
-// durable write, so a returned error is surfaced as committed_not_applied
-// (disk and runtime diverged; the operator reconciles).
+// durable write: a definitive failure triggers a rollback attempt (CAS for
+// DynamoDB), while ErrApplyInFlight preserves the committed config for the barrier.
 //
 // The commit's durable write changes the on-disk content hash, so the poll
 // watcher re-emits the same config on its next tick. applyLogicalIfChanged
@@ -81,11 +89,38 @@ func (a *App) watchLoop(ctx context.Context, watchCh <-chan *ports.BridgeConfig)
 func (a *App) applyCommittedConfig(ctx context.Context, cfg *ports.BridgeConfig) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.isStaleSourceConfig(cfg) {
+		// The durable commit succeeded but a newer source version superseded
+		// it. This is not an apply failure or an in-flight apply: neither
+		// roll back the store nor promise to apply this version later.
+		return nil
+	}
 	a.logicalRef.Set(cfg)
 	if _, err := a.applyLogicalIfChanged(ctx, cfg, false); err != nil {
 		return fmt.Errorf("bootstrap: apply committed config: %w", err)
 	}
 	return nil
+}
+
+// isStaleSourceConfig orders only DynamoDB source intake, whose CAS versions
+// increase even on rollback. File versions are operator-controlled and may go
+// backwards. Caller MUST hold a.mu and check before changing any apply state.
+//
+// Logical state includes newer rejected/deferred configs; applied state can be
+// ahead of it after a barrier commit. Neither may regress on a delayed source
+// update. Equality remains eligible for fingerprint deduplication or retry.
+// Boot resolution, barrier commits and recoverPrevious do not use this guard:
+// their last-good/committed configs are authoritative independently of the
+// source's newest candidate.
+func (a *App) isStaleSourceConfig(cfg *ports.BridgeConfig) bool {
+	if a.cfg.ConfigSource != deployinfra.ConfigSourceDynamoDB || cfg == nil {
+		return false
+	}
+	if logical := a.logicalRef.Get(); logical != nil && cfg.Version < logical.Version {
+		return true
+	}
+	applied := a.appliedRef.Get()
+	return applied != nil && cfg.Version < applied.Version
 }
 
 // applyLogicalIfChanged applies logical unless it is byte-identical (in

@@ -32,8 +32,8 @@ func BenchmarkReceiveMessageInput_Allocation(b *testing.B) {
 			WaitTimeSeconds:       20,
 			VisibilityTimeout:     30,
 			MessageAttributeNames: []string{"All"},
-			AttributeNames: []sqstypes.QueueAttributeName{
-				sqstypes.QueueAttributeNameAll,
+			MessageSystemAttributeNames: []sqstypes.MessageSystemAttributeName{
+				sqstypes.MessageSystemAttributeNameAll,
 			},
 		}
 	}

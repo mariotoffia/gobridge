@@ -1,17 +1,13 @@
 package dynamodb
 
 import (
-	"bytes"
 	"context"
-	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/clock"
-	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -130,7 +126,13 @@ type Loader struct {
 	randFloat func() float64
 
 	mu          sync.Mutex
-	lastVersion int64
+	lastVersion int64 // last ordinary Load/Save observation, not a delivery acknowledgement
+
+	// The first Load (including absence/version zero) seeds the watch baseline.
+	// Later store reads/writes must not acknowledge config for the watcher.
+	watchVersion     int64
+	watchHasBaseline bool
+	watchStarted     bool
 }
 
 // Option configures a Loader.
@@ -202,36 +204,6 @@ func WithClock(c clock.Clock) Option {
 
 func (l *Loader) pk() string { return "config#" + l.bridgeID }
 
-// Load retrieves the current BridgeConfig from DynamoDB.
-func (l *Loader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	rawData, version, found, err := l.session.getConfigItem(ctx, l.pk())
-	if err != nil {
-		return nil, err
-	}
-	if !found {
-		return nil, shared.ErrNotFound.WithMessage("config not found for bridge " + l.bridgeID)
-	}
-
-	cfg, err := parser.Parse(bytes.NewReader([]byte(rawData)), parser.FormatJSON, l.registry)
-	if err != nil {
-		return nil, fmt.Errorf("dynamodb config load: parse: %w", err)
-	}
-
-	// The row version is the CAS authority, including for externally seeded
-	// documents whose JSON version is absent or differs from the row.
-	cfg.Version = int(version)
-	if version > 0 {
-		l.mu.Lock()
-		l.lastVersion = version
-		l.mu.Unlock()
-	}
-
-	return cfg, nil
-}
-
 // Watch observes the configured table for changes and emits updated
 // configurations on the returned channel. The channel is closed when
 // ctx is cancelled. The initial config is NOT emitted; call Load
@@ -249,6 +221,7 @@ func (l *Loader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 // stream is disabled while watching) still degrade to poll mode after
 // streamAcquireFallbackAfter consecutive acquisition failures.
 func (l *Loader) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error) {
+	l.beginWatchCursor()
 	ch := make(chan *ports.BridgeConfig, 1)
 
 	if l.mode == ModeStreams {
@@ -313,9 +286,8 @@ func (l *Loader) pollUntilStreamReachable(ctx context.Context, ch chan *ports.Br
 	pollTicker := l.clk.NewTicker(l.pollInterval)
 	defer pollTicker.Stop()
 
-	l.mu.Lock()
-	ps := pollState{lastSeen: l.lastVersion}
-	l.mu.Unlock()
+	version, _ := l.beginWatchCursor()
+	ps := pollState{lastSeen: version}
 
 	backoff := l.streamPollInterval
 	reprobeC := l.clk.After(backoff)
@@ -364,9 +336,8 @@ func (l *Loader) pollLoop(ctx context.Context, ch chan *ports.BridgeConfig, tick
 	defer close(ch)
 	defer ticker.Stop()
 
-	l.mu.Lock()
-	ps := pollState{lastSeen: l.lastVersion}
-	l.mu.Unlock()
+	version, _ := l.beginWatchCursor()
+	ps := pollState{lastSeen: version}
 
 	for {
 		select {
@@ -412,7 +383,7 @@ func (l *Loader) pollOnce(ctx context.Context, ch chan *ports.BridgeConfig, ps *
 	}
 	ps.consecutiveFailures = 0
 	l.deliverLatest(ch, cfg)
-	ps.lastSeen = v
+	ps.lastSeen = int64(cfg.Version)
 }
 
 // logPollFailure records a poll-cycle failure with rate-limited logging that
@@ -460,6 +431,7 @@ func (l *Loader) deliverLatest(ch chan *ports.BridgeConfig, cfg *ports.BridgeCon
 	for {
 		select {
 		case ch <- cfg:
+			l.recordWatchDelivery(int64(cfg.Version))
 			return
 		default:
 		}

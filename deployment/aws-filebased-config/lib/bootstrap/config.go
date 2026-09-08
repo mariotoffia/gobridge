@@ -80,40 +80,6 @@ func LoadBootstrapConfigJSON(data []byte) (deployinfra.BootstrapConfig, error) {
 	return cfg, nil
 }
 
-type optionalFileSource struct {
-	path     string
-	registry *ports.Registry
-	fallback func() *ports.BridgeConfig
-	logger   *slog.Logger
-}
-
-func newOptionalFileSource(path string, registry *ports.Registry, logger *slog.Logger, fallback func() *ports.BridgeConfig) ports.Loader {
-	return &optionalFileSource{path: path, registry: registry, fallback: fallback, logger: logger}
-}
-
-func (s *optionalFileSource) Load(_ context.Context) (*ports.BridgeConfig, error) {
-	cfg, err := parser.ParseFile(s.path, parser.FormatAuto, s.registry)
-	if err == nil {
-		return cfg, nil
-	}
-	if errors.Is(err, os.ErrNotExist) || os.IsNotExist(err) {
-		// Loud fallback: a missing config file is almost always a
-		// misconfiguration (config_file_path not pointing at the seeded EFS
-		// target). The process would otherwise start, pass /health, and
-		// bridge nothing — so warn on every fallback rather than degrade
-		// silently.
-		if s.logger != nil {
-			s.logger.Warn(
-				"bootstrap: config file not found; falling back to empty default config "+
-					"(no routes will be bridged) — verify config_file_path matches the seeder EFS target",
-				"config_file_path", s.path,
-			)
-		}
-		return s.fallback(), nil
-	}
-	return nil, err
-}
-
 func newPollWatcher(ctx context.Context, cfg deployinfra.BootstrapConfig, registry *ports.Registry, logger *slog.Logger) ports.Watcher {
 	var opts []fileconfig.WatcherOption
 	opts = append(opts,
@@ -129,7 +95,7 @@ func newPollWatcher(ctx context.Context, cfg deployinfra.BootstrapConfig, regist
 	// transport/admin server starts -- would be absorbed into a Watch-time disk
 	// re-read and never emitted, silently running stale config. A throwaway
 	// file.Source computes the baseline via the same sha256(file-bytes) the
-	// watcher compares against, without disturbing the optionalFileSource
+	// watcher compares against, without disturbing the startEmptySource
 	// fallback loader. An absent or unparseable file records no hash, so the
 	// watcher keeps its disk-read baseline (unchanged behavior).
 	if h, ok := baselineHash(ctx, cfg.ConfigFilePath, registry); ok {

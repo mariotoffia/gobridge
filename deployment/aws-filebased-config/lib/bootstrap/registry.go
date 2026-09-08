@@ -1,7 +1,11 @@
 package bootstrap
 
 import (
+	"context"
 	"net/http"
+
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodbstreams"
 
 	ecscluster "github.com/mariotoffia/gobridge/adapters/aws/cluster/ecs"
 	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
@@ -13,6 +17,31 @@ import (
 	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+// ensureDynamoDBClient shares the existing AWS construction path between config
+// loading and HA stores, preserving any client the embedding process injected.
+func (a *App) ensureDynamoDBClient(ctx context.Context) error {
+	if a.dynamoDBClient != nil {
+		return nil
+	}
+	client, err := newDynamoDBClient(ctx, a.cfg)
+	if err != nil {
+		return err
+	}
+	a.dynamoDBClient = client
+	return nil
+}
+
+// Streams has its own service endpoint in AWS. Copy only the shared client
+// settings; a supplied BaseEndpoint keeps local emulation on the same backend.
+func newDynamoDBStreamsClient(client *dynamodb.Client) *dynamodbstreams.Client {
+	opts := client.Options()
+	return dynamodbstreams.New(dynamodbstreams.Options{
+		Region: opts.Region, Credentials: opts.Credentials,
+		HTTPClient: opts.HTTPClient, Retryer: opts.Retryer,
+		BaseEndpoint: opts.BaseEndpoint,
+	})
+}
 
 type factoryRegistry struct {
 	cfg        *ports.BridgeConfig

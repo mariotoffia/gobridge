@@ -140,8 +140,8 @@ func TestApp_CoordinatedRollout_CommitsAndSwaps(t *testing.T) {
 	// makes the manager reconcile assertion below meaningful.
 	require.NoError(t, os.WriteFile(cfgPath, []byte(coordinatedConfigYAML(2, "debug")), 0o644))
 
-	wait.Until(t, 10*time.Second, "the barrier commits the file reload and this member applies it", func() bool {
-		return app.CurrentAppliedConfig().Version == 2
+	wait.Until(t, 10*time.Second, "the barrier applies the file reload and reconciles manager health", func() bool {
+		return app.CurrentAppliedConfig().Version == 2 && !app.manager.ReconfigurePending()
 	})
 	assert.Equal(t, "debug", app.CurrentAppliedConfig().Bridge.LogLevel,
 		"the committed generation really swapped")

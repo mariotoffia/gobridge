@@ -12,31 +12,6 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestConfigSingleWriter_DerivedFromNodeRole pins the pure decision: the
-// file-based App asserts httpapi.Config.ConfigSingleWriter only for the sole
-// durable config writer, i.e. the control (or empty-default-normalized-to-
-// control) node — never a worker, whose EFS mount is read-only.
-func TestConfigSingleWriter_DerivedFromNodeRole(t *testing.T) {
-	cases := []struct {
-		name string
-		role deployinfra.NodeRole
-		want bool
-	}{
-		{"control is the sole writer", deployinfra.NodeRoleControl, true},
-		{"empty default normalizes to control", "", true},
-		{"worker is not a durable writer", deployinfra.NodeRoleWorker, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := deployinfra.BootstrapConfig{NodeRole: tc.role}.Normalized()
-			a := &App{cfg: cfg}
-			if got := a.configSingleWriter(); got != tc.want {
-				t.Fatalf("configSingleWriter() for role %q = %v, want %v", tc.role, got, tc.want)
-			}
-		})
-	}
-}
-
 // TestApp_ConfigSingleWriter_ControlCommitsDurably proves the constructed
 // httpapi.Config carries ConfigSingleWriter=true for the control/single node:
 // a durable config-transaction commit against the non-CAS parser.FileStore is

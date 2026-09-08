@@ -16,6 +16,8 @@ github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.66.4 h1:uLJvZPlHcNDKpy4DwiItY
 github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.66.4/go.mod h1:De2gtqReQOh6OwdgQUnJnGdmJqRvBCHRAbVDDqCy3Pk=
 github.com/aws/aws-sdk-go-v2/service/dynamodb v1.63.2 h1:XPLNArcyPPBlFphAW0k5bP81oDq3FjuicY1sULuNN2A=
 github.com/aws/aws-sdk-go-v2/service/dynamodb v1.63.2/go.mod h1:EtI09l1zaCea6NjQWKYR7OMBtQW2be9NwG6UQHOK72g=
+github.com/aws/aws-sdk-go-v2/service/dynamodbstreams v1.36.5 h1:JCkbdcbjYSm+OmFWpb+FE15JLpzydpUU/3S44ZuRhk4=
+github.com/aws/aws-sdk-go-v2/service/dynamodbstreams v1.36.5/go.mod h1:gda4S1QknW8Pb0OM1SBZ+hh3cCFwqSrz4zo7Bp2jLy8=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.16 h1:iE4NGbvqUZnHDqddQAauZzCILYtFjOHwRM5MOOKLB5A=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.16/go.mod h1:VsjEgrP+ibcou8TlWA4tYaB+0OojuhirsmCe+U60hTA=
 github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.12.13 h1:nAmSoKdE+MqyoA/U7279w/C2oT5C8yfFFqr6hgjM/fs=

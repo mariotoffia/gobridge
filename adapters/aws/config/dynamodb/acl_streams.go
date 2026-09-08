@@ -47,6 +47,7 @@ import (
 //     back to poll mode with a single Warn instead of warn-spamming at
 //     stream cadence forever.
 func (l *Loader) streamLoop(ctx context.Context, ch chan *ports.BridgeConfig, streamArn string) {
+	l.beginWatchCursor()
 	if l.runStreams(ctx, ch, streamArn) {
 		if l.logger != nil {
 			l.logger.Warn("dynamodb config loader: streams persistently unavailable; falling back to poll mode",
@@ -168,18 +169,13 @@ func (l *Loader) runStreams(ctx context.Context, ch chan *ports.BridgeConfig, st
 	}
 }
 
-// reloadIfVersionAdvanced closes the gap a LATEST iterator opens: any
-// Save committed while no iterator was held produced no observable
-// stream record for this consumer. Compare the stored version to the
-// last loaded one and deliver a fresh config when it advanced. A zero
-// lastVersion means no baseline Load has happened yet — the initial
-// config is the caller's Load, not the watcher's, so nothing is
-// delivered in that case.
+// reloadIfVersionAdvanced closes the gap a LATEST iterator opens. Compare the
+// stored version to the last delivered config (or the initial Load baseline),
+// never to an ordinary admin Load/Save observation. A missing/version-zero Load
+// is an established baseline; only a never-loaded watcher skips initial replay.
 func (l *Loader) reloadIfVersionAdvanced(ctx context.Context, ch chan *ports.BridgeConfig) {
-	l.mu.Lock()
-	lastSeen := l.lastVersion
-	l.mu.Unlock()
-	if lastSeen == 0 {
+	lastSeen, hasBaseline := l.watchCursor()
+	if !hasBaseline {
 		return
 	}
 

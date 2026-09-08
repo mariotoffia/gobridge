@@ -524,9 +524,19 @@ ref := gobridgecdk.LookupBridge(stack, "ProdBridge", "/bridges/prod", ssmexports
 
 ## Runtime Library
 
-`lib/bootstrap.NewApp(cfg, opts...)` loads `BootstrapConfig` from env (`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` or `…_FILE`, max 1 MiB), polls `ConfigFilePath` on EFS, reloads bridge config without restart, resolves `pms://` SSM secrets, applies the MQTT ingress memory profile on every initial load/reload, and starts the admin / monitor / transport HTTP servers plus a `bridge.Runtime` with the `mqtt`, `sqs`, `http` transports and `memory`, `sqlite`, `dynamodb` stores. Clustered configs also register the existing ECS task-metadata endpoint resolver. Reload uses `swapModeOverlap` by default; `swapModePrepareCommit` when any transport advertises `CapExclusiveIdentity`.
+`lib/bootstrap.NewApp(cfg, opts...)` loads `BootstrapConfig` from env (`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` or `…_FILE`, max 1 MiB), watches the selected config source (`file` on EFS or `dynamodb`), reloads bridge config without restart, resolves `pms://` SSM secrets, applies the MQTT ingress memory profile on every initial load/reload, and starts the admin / monitor / transport HTTP servers plus a `bridge.Runtime` with the `mqtt`, `sqs`, `http` transports and `memory`, `sqlite`, `dynamodb` stores. Clustered configs also register the existing ECS task-metadata endpoint resolver. Reload uses `swapModeOverlap` by default; `swapModePrepareCommit` when any transport advertises `CapExclusiveIdentity`.
 
-Options: `WithLogger`, `WithLogLevelVar`, `WithParameterResolver`, `WithCredentialStore`, `WithShutdownTimeout`, `WithTerminalPollInterval`. Binary: `lib/cmd/gobridge-filebased`.
+The file source keeps polling and the control-only single-writer guard. The
+DynamoDB source uses one loader for loading, watching and CAS-safe admin writes;
+`config_dynamodb` selects its table and polling or streams mode. Missing config
+loads an empty default with a warning; deployment-profile guards still apply.
+Other load errors fail startup. Only `DevMode`
+creates the config table at startup. Production requires it to exist already.
+The CDK facades still seed file configurations; this runtime option does not
+provision a DynamoDB config table or change their EFS resources. See the
+[bootstrap field reference](../../docs/aws-deployment/configuration.md#field-reference).
+
+Options: `WithLogger`, `WithLogLevelVar`, `WithParameterResolver`, `WithCredentialStore`, `WithDynamoDBClient`, `WithShutdownTimeout`, `WithTerminalPollInterval`. Binary: `lib/cmd/gobridge-filebased`.
 
 **Terminal-runtime backstop.** `App.Run` polls the active runtime and returns
 `ErrRuntimeTerminal` (exiting the process non-zero) once the runtime enters an

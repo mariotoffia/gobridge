@@ -19,6 +19,13 @@
 // Load uses the row version as the authoritative CAS counter.
 // Validate and Merge delegate to the config package's shared rules.
 //
+// Watch tracks delivery separately from store observations. The initial Load,
+// including a missing item or version zero, establishes its baseline. Later
+// Load, Save and SaveIfVersion calls do not acknowledge watcher updates. After
+// acquiring a LATEST stream iterator, reconciliation compares against that
+// baseline or the last config enqueued for the watcher, so an admin operation
+// during an iterator gap cannot hide an update from the runtime.
+//
 // Change detection (Watch) supports two modes, selectable via
 // WithWatchMode:
 //

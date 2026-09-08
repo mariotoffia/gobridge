@@ -63,8 +63,8 @@ func TestIntegration_AppCoordinatedRolloutOverDynamoDB(t *testing.T) {
 	// Live-safe reload through the config file (production path): propose → the
 	// drive commits over real DynamoDB → local swap.
 	require.NoError(t, os.WriteFile(cfgPath, []byte(coordinatedConfigYAML(2, "debug")), 0o644))
-	wait.Until(t, 20*time.Second, "the barrier commits over real DynamoDB and this member applies it", func() bool {
-		return app.CurrentAppliedConfig().Version == 2
+	wait.Until(t, 20*time.Second, "the barrier applies the DynamoDB commit and reconciles manager health", func() bool {
+		return app.CurrentAppliedConfig().Version == 2 && !app.manager.ReconfigurePending()
 	})
 	assert.Equal(t, "debug", app.CurrentAppliedConfig().Bridge.LogLevel)
 	assert.False(t, app.manager.ReconfigurePending(), "AdoptRunning re-synced the manager over real DynamoDB")

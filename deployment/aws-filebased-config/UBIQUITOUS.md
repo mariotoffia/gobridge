@@ -9,8 +9,9 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 | Term | Meaning |
 |---|---|
 | **Bootstrap config** | Deployment-owned runtime parameters (`infra.BootstrapConfig`). Static per task revision. Delivered via env var `GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` or file `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`. Distinct from `ports.BridgeConfig`. |
-| **Bridge config** | The application's `ports.BridgeConfig` (YAML on EFS). Hot-reloadable. The same artifact whether on disk, in `logicalRef`, or in `appliedRef`. |
-| **Logical state** | The bridge config last *seen* on disk and parsed successfully (`logicalRef`). Updated even when the subsequent runtime swap is rejected. |
+| **Bridge config** | The application's `ports.BridgeConfig` (YAML on EFS or JSON in a DynamoDB config item). Hot-reloadable. The same artifact whether in the selected source, in `logicalRef`, or in `appliedRef`. |
+| **Config source** | Bootstrap selector `ConfigSource`: `file` (default) or `dynamodb`. Each supplies one base `config.Layer` and the matching admin `ports.ConfigStore`; the DynamoDB loader also implements `ports.ConditionalConfigStore`. |
+| **Logical state** | The bridge config last *seen* in the selected config source and parsed successfully (`logicalRef`). Updated even when the subsequent runtime swap is rejected. |
 | **Applied state** | The bridge config the *currently running* runtime was built from (`appliedRef`). On the happy path equals logical state. Diverges only after a failed reload — then logical = rejected new config, applied = last good. Used by `Stop` for `DrainTimeout` and by `recoverPrevious`. |
 | **ContainerMemoryBytes** | Bootstrap container hard limit. Defaults to 1 GiB outside CDK; the CDK base always overwrites it from the effective Fargate task `MemoryMiB`, preventing runtime accounting from diverging from the deployed limit. |
 | **ReservedMemoryBytes** | Bootstrap reservation for non-MQTT runtime memory. Together with the AWS MQTT memory profile's 25% ingress reservation, it must leave at least 20% of `ContainerMemoryBytes` as headroom. |
@@ -23,7 +24,7 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 | Term | Meaning |
 |---|---|
 | **Topology** | Deployment shape. `single` = one replica owns config writes. `filesystem_replicated` = N independent replicas read the same EFS and cross-instance coordination features are rejected. `dynamodb_coordinated_ha` (`TopologyDynamoDBCoordinatedHA`) = coordinated active/warm-standby ECS tasks using DynamoDB lease, shared outbox, and managed-subscription history stores. |
-| **NodeRole** | Per-replica identity. `control` (default) or `worker`. Declared in bootstrap; reserved for future coordination. |
+| **NodeRole** | Per-replica identity. `control` (default) or `worker`. Declared in bootstrap; only control asserts single-writer authority for a file ConfigStore. A DynamoDB config store uses CAS regardless of role. |
 | **Filesystem profile guard** | `validateFilesystemProfile` — rejects `shared_outbox` and `route.session` when topology is `filesystem_replicated`. |
 | **GoBridgeDynamoDBHA** | Separate coordinated active/warm-standby CDK facade for topology `dynamodb_coordinated_ha`; it reuses `internal/gobridgebase.New`, provisions one control task and at least two worker tasks, and does not change `GoBridgeCluster`. |
 | **DynamoDBHAProps** | Input contract for `GoBridgeDynamoDBHA`, including the shared bridge config, ECS/VPC placement, and registries. |
@@ -47,7 +48,7 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 |---|---|
 | **Parameter reference** | A bootstrap field value identifying an SSM parameter. Either `pms://name/path` (authority form), `pms:///name/path` (absolute-path form), or an absolute SSM name (`/foo/bar`). Normalized by `normalizeParameterRef`. |
 | **Parameter resolver** | The `parameterResolver` interface used by `resolveInputs`. Default is SSM-backed; tests inject custom implementations via `WithParameterResolver`. |
-| **DevMode** | Bootstrap flag that authorizes use of `SSMEndpoint` overrides (e.g. LocalStack). Production safety guard: `SSMEndpoint` without `DevMode` fails `Validate()`. |
+| **DevMode** | Bootstrap flag that authorizes use of `SSMEndpoint` overrides (e.g. LocalStack) and startup creation of the selected DynamoDB config table. Production safety guard: `SSMEndpoint` without `DevMode` fails `Validate()`. |
 | **Admin/Monitor key param** | SSM references for the admin (required) and monitor (optional) HTTP API `X-API-Key` values. Re-resolved on every reload. |
 
 ## Paths

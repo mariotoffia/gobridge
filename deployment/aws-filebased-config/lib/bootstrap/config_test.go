@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -9,10 +10,13 @@ import (
 
 	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-func TestApp_RejectsUnsupportedConfigSource(t *testing.T) {
+// TestApp_DynamoDBSource_LoadErrorStopsStartup verifies source failures propagate
+// before a runtime or listener is installed, rather than falling back to a file.
+func TestApp_DynamoDBSource_LoadErrorStopsStartup(t *testing.T) {
 	cfg := deployinfra.BootstrapConfig{
 		BridgeID:         "bridge-config",
 		AdminAPIKeyParam: "/admin",
@@ -20,15 +24,23 @@ func TestApp_RejectsUnsupportedConfigSource(t *testing.T) {
 		ConfigDynamoDB:   &deployinfra.ConfigDynamoDBSettings{TableName: "config"},
 	}.Normalized()
 	require.NoError(t, cfg.Validate(), "the bootstrap schema admits DynamoDB")
-	app := NewApp(cfg, WithParameterResolver(staticParameterResolver{}))
+	calls := 0
+	client := configDynamoDBClient(t, func(req *http.Request) (*http.Response, error) {
+		calls++
+		assert.Equal(t, "DynamoDB_20120810.GetItem", req.Header.Get("X-Amz-Target"))
+		return nil, shared.ErrUnavailable
+	})
+	app := NewApp(cfg, WithDynamoDBClient(client),
+		WithCredentialStore(&fakePullStore{}), WithParameterResolver(staticParameterResolver{}))
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })
 
-	require.ErrorContains(t, app.Start(t.Context()), `config_source "dynamodb" is not supported by this runtime`)
+	require.ErrorIs(t, app.Start(t.Context()), shared.ErrUnavailable)
+	assert.Equal(t, 1, calls)
 	assert.Nil(t, app.CurrentLogicalConfig(), "must not load an empty file-backed config")
 	assert.Nil(t, app.CurrentRuntime())
-	assert.Nil(t, app.manager)
-	assert.Nil(t, app.credentialStore)
-	assert.Nil(t, app.dynamoDBClient)
+	assert.Empty(t, app.AdminURL())
+	assert.Empty(t, app.TransportURL())
+	assert.Same(t, client, app.dynamoDBClient)
 }
 
 func TestValidateFilesystemProfile_AdditionalCases(t *testing.T) {

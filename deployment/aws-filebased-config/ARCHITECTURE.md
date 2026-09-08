@@ -7,7 +7,7 @@ Internal architecture of the deployment profile: Go module layering, CDK constru
 > describes lands. Unmarked text describes the code as it is.
 
 The profile supports two **config sources** for the hot-reloadable bridge
-config **(planned)**: `file` (YAML on EFS — today's only source) and
+config: `file` (YAML on EFS) and
 `dynamodb` (a single CAS-versioned `current` item read by
 `adapters/aws/config/dynamodb`). The bootstrap config selects the source; the
 name "filebased" in the module path predates this generalization.
@@ -101,19 +101,17 @@ declares SQLite store paths. With the `dynamodb` config source and DynamoDB
 stores, `GoBridgeDynamoDBHA` deploys with **no EFS resources at all** — the
 config yaml was that topology's only remaining filesystem use.
 
-## Config sources (planned)
+## Runtime config sources
 
-The consumer's `Bootstrap.ConfigSource` field selects where the bridge config
-lives; the facade derives everything else from it.
+`Bootstrap.ConfigSource` selects the runtime configuration source. The CDK
+facades still seed file configurations; DynamoDB configuration requires a
+separately provisioned table and permissions.
 
 | | `file` (default) | `dynamodb` |
 |---|---|---|
 | Backing store | YAML on EFS | One `current` item, `PK = "config#"+bridge_id`, monotonic `version` |
-| Provisioned by | `GoBridgeEfsConfig` | Facade-owned DynamoDB table (on-demand, PITR, retained); table name stamped into bootstrap like `ContainerMemoryBytes` |
 | Watch | EFS poll (fsnotify unreliable on NFS) | Strongly consistent poll (default) or DynamoDB Streams (`watch_mode: streams`) |
-| Seeder | Copies the synth-validated asset to EFS | Conditional `PutItem` of the synth-marshalled JSON; same `SeedOnce` / `Overwrite` / `AbortDeploy` drift modes |
 | Admin API writes | `parser.FileStore` guarded by the single-writer rule (control node only) | The loader itself — a `ports.ConditionalConfigStore`, CAS-safe for any writer |
-| IAM | EFS `ClientMount`/`ClientWrite` split | Control `GrantReadWriteData`, workers `GrantReadData`, both `GrantStreamRead` in streams mode |
 | Topology limits | all | `filesystem_replicated` rejected (workers boot from the shared filesystem by definition) |
 
 The profile always runs exactly one `config.Layer` (a base, never an
@@ -310,14 +308,14 @@ The consumer resolves them with `gobridgecdk.LookupBridge`, which returns a `*Br
 
 ## Runtime Library (`lib/bootstrap`)
 
-`lib/bootstrap.NewApp(cfg, opts...)` loads `BootstrapConfig` from env (`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` or `…_FILE`, max 1 MiB), watches the bootstrap-selected config source, swaps the active `*runtime.Runtime` without restart, resolves `pms://` SSM secrets and starts the admin / monitor / transport HTTP servers. **(planned)** Source selection lives behind one seam — `(*App).newConfigSource` returns the `config.Layer`, the `ports.ConfigStore` for the admin API, and the single-writer posture: `file` polls `ConfigFilePath` on EFS with the control-node-only write guard; `dynamodb` uses the `adapters/aws/config/dynamodb` loader as Loader, Watcher **and** `ports.ConditionalConfigStore`, so CAS replaces the single-writer guard. Start-empty triggers on `shared.ErrNotFound` from any source, not only a missing file. Reload uses `swapModeOverlap` by default; `swapModePrepareCommit` whenever any transport advertises `ports.CapExclusiveIdentity`. Reference cells (`bridgeConfigRef`, `runtimeRef`, `apiKeysRef`, `transportHandlerRef`) decouple HTTP servers from reload mechanics. Profile guard `validateFilesystemProfile` rejects `route.delivery_mode = shared_outbox` and `route.session != nil`.
+`lib/bootstrap.NewApp(cfg, opts...)` loads `BootstrapConfig` from env (`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` or `…_FILE`, max 1 MiB), watches the bootstrap-selected config source, swaps the active `*runtime.Runtime` without restart, resolves `pms://` SSM secrets and starts the admin / monitor / transport HTTP servers. Source selection lives behind one seam — `(*App).newConfigSource` returns the `config.Layer`, the `ports.ConfigStore` for the admin API, and the single-writer posture: `file` polls `ConfigFilePath` on EFS with the control-node-only write guard; `dynamodb` uses the `adapters/aws/config/dynamodb` loader as Loader, Watcher **and** `ports.ConditionalConfigStore`, so CAS replaces the single-writer guard. Start-empty triggers only on `shared.ErrNotFound` or `os.ErrNotExist`; other load errors fail startup. The wrapper applies only to Loader, preserving the original Watcher and ConfigStore. DynamoDB config-table creation runs only during startup with `DevMode`; production never creates the config table. Reload uses `swapModeOverlap` by default; `swapModePrepareCommit` whenever any transport advertises `ports.CapExclusiveIdentity`. Reference cells (`bridgeConfigRef`, `runtimeRef`, `apiKeysRef`, `transportHandlerRef`) decouple HTTP servers from reload mechanics. Profile guard `validateFilesystemProfile` rejects `route.delivery_mode = shared_outbox` and `route.session != nil`.
 
 | Project context | Touched here |
 |-----------------|--------------|
 | `bridge` | `lib/bootstrap` calls `bridge.NewBuilder`, registers transports/stores, drives `Build`/`Prepare`/`Complete`. |
 | `runtime` | `bootstrap.App` owns the active `*runtime.Runtime`; swap mode mirrors runtime semantics. |
-| `config` | `config.Manager` + file `Loader/Watcher` produce `*ports.BridgeConfig`. |
-| `httpapi` | Mounted with `ConfigStore = config.FileStore{Path}` so PUTs persist back to EFS. |
+| `config` | `config.Manager` + the selected `Loader/Watcher` produce `*ports.BridgeConfig`. |
+| `httpapi` | Config transactions persist through `parser.FileStore` or the shared DynamoDB loader; runtime apply and rollout coordination use the same paths for either source. |
 | `ports` | `ports.CapExclusiveIdentity` drives swap-mode selection. |
 
 See [../../DDD.md](../../DDD.md) for the project-level model and [UBIQUITOUS.md](./UBIQUITOUS.md) for profile-local terminology (`Bootstrap config`, `Logical vs Applied state`, `Topology`, `NodeRole`, `Swap mode`, `Parameter reference`, plus the new tier-B terms `BridgeConfigSource`, `BridgeRef`, `LookupBridge`, `QueueRegistry`, `SsmParamRegistry`, `OnConfigDrift`).
@@ -339,8 +337,8 @@ See [../../DDD.md](../../DDD.md) for the project-level model and [UBIQUITOUS.md]
 | Plaintext credential in yaml | Phase 1 hard error from `ScanForPlaintextSecrets` — no opt-out. |
 | ALB priority collision | Attachment ctor errors when consumer rule already uses `[BasePriority, BasePriority+99]`. |
 | Config table drift at deploy **(planned)** | Seeder drift modes: `SeedOnce` conditional put, `AbortDeploy` exits 10 on hash mismatch, `Overwrite` CAS-bumps `version`. |
-| Concurrent admin writes, `dynamodb` source **(planned)** | `SaveIfVersion` conditional put → `shared.ErrVersionMismatch`; no lost update, no single-writer assumption. |
-| Oversized config item **(planned)** | Adapter pre-checks 390 KiB before `PutItem` — descriptive error instead of an opaque `ValidationException`. |
+| Concurrent admin writes, `dynamodb` source | `SaveIfVersion` conditional put → `shared.ErrVersionMismatch`; no lost update, no single-writer assumption. |
+| Oversized config item | Adapter pre-checks 390 KiB before `PutItem` — descriptive error instead of an opaque `ValidationException`. |
 
 ## Extension Points
 

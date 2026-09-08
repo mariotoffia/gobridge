@@ -80,3 +80,15 @@ func (s *casConfigStore) Merge(_ context.Context, _, overlay *ports.BridgeConfig
 }
 
 var _ ports.ConditionalConfigStore = (*casConfigStore)(nil)
+
+// configLoadStore injects source errors while preserving the CAS write behavior.
+type configLoadStore struct {
+	*casConfigStore
+	load func(context.Context) (*ports.BridgeConfig, error)
+}
+
+func (s *configLoadStore) Load(ctx context.Context) (*ports.BridgeConfig, error) {
+	return s.load(ctx)
+}
+
+var _ ports.ConditionalConfigStore = (*configLoadStore)(nil)

@@ -199,7 +199,7 @@ func TestBootstrapFieldReference_PublishedJSONExamplesLoad(t *testing.T) {
 }
 
 // node_role is NOT inert at runtime: the bootstrap App derives the admin
-// config-transaction single-writer posture from it (configSingleWriter), so a
+// config-transaction single-writer posture from it for the file source, so a
 // worker's durable commit fails closed while a control node's is permitted. A
 // row that calls the field "reserved" or "non-operative" hides the one runtime
 // decision it makes, and an operator who sets `worker` on the node they post

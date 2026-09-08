@@ -68,7 +68,7 @@ func WithCredentialStore(store ports.CredentialStore) Option {
 }
 
 // WithDynamoDBClient overrides the *dynamodb.Client used by the
-// DynamoDB store factory. When unset (the default) the App builds a
+// config loader and store factory. When unset (the default) the App builds a
 // client from the ambient AWS environment during Start via
 // newDynamoDBClient. Tests and local emulation (e.g. LocalStack)
 // inject a pre-configured client here.
@@ -86,7 +86,7 @@ func WithMetricsExporter(exporter ports.MetricsExporter) Option {
 }
 
 // WithPluginRegistry overrides the *ports.Registry used to decode
-// blueprints loaded from the file source / re-parsed during secret
+// blueprints loaded from the selected config source / re-parsed during secret
 // resolution. When unset (the default) the App constructs a fresh
 // registry and populates it with the adapters this binary bundles
 // (paho, sqs, native + DynamoDB store, http transport). Tests use this
@@ -169,8 +169,8 @@ type App struct {
 	shutdownTimeoutPinned bool
 	terminalPollInterval  time.Duration
 
-	// clk drives the terminal-backstop poll ticker. Defaults to
-	// clock.System; tests keep real time (poll interval is injectable).
+	// clk drives the terminal backstop, rollout drive and DynamoDB config watch.
+	// Defaults to clock.System; tests can inject a deterministic clock.
 	clk clock.Clock
 
 	// terminalCh is signalled once by the terminal backstop when the active

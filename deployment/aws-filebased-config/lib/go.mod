@@ -6,8 +6,10 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.43.5
 	github.com/aws/aws-sdk-go-v2/config v1.32.36
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.35
+	github.com/aws/aws-sdk-go-v2/service/dynamodbstreams v1.36.5
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.73.5
 	github.com/mariotoffia/gobridge v0.0.0
+	github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb v0.0.0
 	github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm v0.0.0
 	github.com/mariotoffia/gobridge/adapters/aws/metrics/cloudwatch v0.0.0
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0
@@ -76,6 +78,7 @@ require (
 
 replace (
 	github.com/mariotoffia/gobridge => ../../..
+	github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb => ../../../adapters/aws/config/dynamodb
 	github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm => ../../../adapters/aws/credentials/ssm
 	github.com/mariotoffia/gobridge/adapters/aws/metrics/cloudwatch => ../../../adapters/aws/metrics/cloudwatch
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs => ../../../adapters/aws/transport/sqs

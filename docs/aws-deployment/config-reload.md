@@ -2,11 +2,13 @@
 
 ## Hot-Reload
 
-GoBridge watches the bridge config file for changes using a poll-based
-watcher. When the file content changes, the runtime is rebuilt and swapped
-in without process restart.
+GoBridge watches the bootstrap-selected config source: a file with a poll-based
+watcher, or a DynamoDB config item with strongly consistent polling or Streams.
+Both feed the same config manager and runtime apply path without process restart.
+Clustered deployments retain their existing rollout barrier or whole-cohort
+replacement requirements; changing the source does not bypass them.
 
-### Reload Sequence
+### Reload Sequence (file source)
 
 ```mermaid
 sequenceDiagram
@@ -40,13 +42,41 @@ trigger inotify events on other tasks. Poll mode reads the file at a fixed
 interval and compares SHA-256 hashes, which works reliably regardless of the
 underlying filesystem.
 
-### Poll Interval Tuning
+### Poll Interval Tuning (file source)
 
 | Environment | Recommended `poll_interval` | Rationale |
 |-------------|----------------------------|-----------|
 | Development | `"1s"` (default) | Fast feedback during local iteration. |
 | Staging | `"5s"` | Balance between responsiveness and EFS read cost. |
 | Production | `"5s"` to `"30s"` | Lower EFS I/O; config changes are infrequent. |
+
+### DynamoDB source
+
+DynamoDB config polling defaults to `30s`; `poll_interval` overrides it. The
+loader watches the version of the `current` item for `config#<bridge_id>` and
+also serves as the admin `ConditionalConfigStore`, so commits use atomic
+compare-and-swap rather than the file source single-writer assumption. Streams
+mode uses the same loader and requires an enabled stream and read permissions;
+`config_dynamodb.stream_poll_interval` controls its `GetRecords` cadence.
+The adapter falls back to polling if Streams is unavailable.
+
+The EFS update procedure below applies to the file source. For DynamoDB, update
+the selected item through CAS-aware tooling or admin transactions, preserving
+its monotonically increasing version. A missing item starts the transaction at
+version zero; the first successful CAS commit creates version one. Other source
+errors fail the transaction rather than falling back to an empty config. Config
+validation, runtime apply and cluster rollout coordination remain unchanged.
+
+Admin applies and watcher updates are serialized within each process. For the
+DynamoDB source, an update older than either the latest logical config or the
+running config is ignored before it can change runtime or health state. This
+prevents a delayed admin apply from undoing a newer writer's change. A superseded
+commit remains successful without applying or rolling back its older version;
+the response confirms that the write succeeded, not that its version is still
+running. Replaying the same version retains content-based deduplication and can
+retry a failed apply. Restoring old content through CAS creates a new version.
+This ordering rule does not apply to operator-controlled file versions, to
+coordinated boot/barrier decisions, or to recovery of the last good runtime.
 
 ### Swap Modes
 

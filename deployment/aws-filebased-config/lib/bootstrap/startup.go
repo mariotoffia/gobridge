@@ -6,8 +6,6 @@ import (
 
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config"
-	cfgparser "github.com/mariotoffia/gobridge/config/parser"
-	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/httpapi"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -27,9 +25,6 @@ func (a *App) Start(ctx context.Context) error {
 
 	if err := a.cfg.Validate(); err != nil {
 		return err
-	}
-	if a.cfg.ConfigSource != deployinfra.ConfigSourceFile {
-		return fmt.Errorf("bootstrap: config_source %q is not supported by this runtime; use file", a.cfg.ConfigSource)
 	}
 
 	if a.parameterResolver == nil {
@@ -91,22 +86,15 @@ func (a *App) Start(ctx context.Context) error {
 		}
 		a.credentialStore = store
 	}
-	if a.dynamoDBClient == nil {
-		client, err := newDynamoDBClient(ctx, a.cfg)
-		if err != nil {
-			return err
-		}
-		a.dynamoDBClient = client
+	if err := a.ensureDynamoDBClient(ctx); err != nil {
+		return err
 	}
 
-	source := newOptionalFileSource(a.cfg.ConfigFilePath, a.pluginRegistry, a.logger, func() *ports.BridgeConfig {
-		return defaultLogicalConfig(a.cfg)
-	})
-	watcher := newPollWatcher(ctx, a.cfg, a.pluginRegistry, a.logger)
-	a.manager = config.NewManager(
-		config.Layer{Name: "file", Loader: source, Watcher: watcher},
-		config.WithManagerLogger(a.logger),
-	)
+	src, err := a.newConfigSource(ctx)
+	if err != nil {
+		return err
+	}
+	a.manager = config.NewManager(src.layer, config.WithManagerLogger(a.logger))
 
 	logicalCfg, err := a.manager.Load(ctx)
 	if err != nil {
@@ -180,8 +168,8 @@ func (a *App) Start(ctx context.Context) error {
 	// Every node starts the transport, admin, and monitor servers regardless
 	// of NodeRole (workers still expose the admin listener today — see
 	// infra.BootstrapConfig.NodeRole). NodeRole IS consulted below for the
-	// config single-writer posture (apiCfg.ConfigSingleWriter): only the
-	// control/single node is the sole durable config writer.
+	// file config single-writer posture: only control is the sole file writer.
+	// A DynamoDB config source uses CAS instead, regardless of role.
 	a.transportServer = newTransportServer(a.handlerRef, a.logger)
 	if err := a.transportServer.Start(a.cfg.TransportHTTPAddr); err != nil {
 		return fmt.Errorf("bootstrap: start transport HTTP server: %w", err)
@@ -211,11 +199,11 @@ func (a *App) Start(ctx context.Context) error {
 			}
 			return nil
 		},
-		ConfigStore: &cfgparser.FileStore{Path: a.cfg.ConfigFilePath, Registry: a.pluginRegistry},
+		ConfigStore: src.store,
 		// ConfigProvider must expose the *effective* (currently running)
 		// config, so read from appliedRef -- the config of the last
 		// successfully-applied runtime. logicalRef holds the last config
-		// read from disk, which may be a reload that FAILED validation or
+		// read from the source, which may be a reload that FAILED validation or
 		// apply (watchLoop keeps the last-good runtime on rejection); using
 		// it here would surface a rejected config to operators as if it were
 		// live. appliedRef is nil only when nothing is cleanly running, and
@@ -225,28 +213,16 @@ func (a *App) Start(ctx context.Context) error {
 		ConfigWatchProvider: a.configWatchHealth,
 		// ConfigApplier converges the running runtime in-band when a config
 		// is committed through the admin transactions API, reusing the exact
-		// reload path the file watcher drives (applyLogicalConfig) instead of
+		// reload path the config watcher drives (applyLogicalConfig) instead of
 		// waiting for the next poll. httpapi invokes it AFTER the durable
 		// write, so a returned error surfaces as committed_not_applied (the
 		// operator reconciles) rather than a false "committed" while the
 		// runtime diverges. Without this wiring the committed_not_applied /
 		// errConfigApplyFailed path is dead in the shipped binary.
 		ConfigApplier: a.applyCommittedConfig,
-		// ConfigSingleWriter asserts THIS admin process is the sole durable
-		// writer of the config store. The profile's ConfigStore is a
-		// parser.FileStore (non-CAS: no ports.ConditionalConfigStore), so the
-		// httpapi config-transaction commit path FAILS CLOSED on a durable
-		// commit unless single-writer is asserted. In the file-based profile
-		// the CONTROL/single node owns the RW EFS mount and is the only admin
-		// writer (GoBridgeSingle is one task; GoBridgeCluster forces the
-		// control service to DesiredCount=1 and mounts workers RO), so the
-		// control role IS the sole writer. Derive the flag from NodeRole rather
-		// than hardcoding: worker nodes get false (their commits correctly fail
-		// closed — a RO EFS mount could not durably persist anyway), and a
-		// genuine multi-writer deployment must instead wire a CAS ConfigStore
-		// (ports.ConditionalConfigStore.SaveIfVersion — see xcut filestore-cas),
-		// which is always safe regardless of this flag.
-		ConfigSingleWriter: a.configSingleWriter(),
+		// Only the control node asserts sole-writer authority for a file store.
+		// DynamoDB uses ConditionalConfigStore instead, regardless of node role.
+		ConfigSingleWriter: src.singleWriter,
 	}
 	a.httpServer = httpapi.New(nil, apiCfg,
 		httpapi.WithServerLogger(a.logger),
@@ -296,29 +272,4 @@ func (a *App) Start(ctx context.Context) error {
 
 	startOK = true
 	return nil
-}
-
-// configSingleWriter reports whether THIS node is the sole durable writer of
-// the config store, which the served httpapi.Config asserts via
-// ConfigSingleWriter. The file-based profile's ConfigStore is a
-// parser.FileStore — a non-CAS store (it does not implement
-// ports.ConditionalConfigStore) — so the httpapi config-transaction commit path
-// fails closed on a durable commit unless single-writer is asserted.
-//
-// The decision is derived from the deploy-time NodeRole rather than hardcoded:
-//
-//   - control (and the empty default normalized to control by
-//     BootstrapConfig.Normalized, covering GoBridgeSingle and library/local
-//     use) owns the RW EFS mount and is the ONLY admin writer — GoBridgeCluster
-//     forces the control service to DesiredCount=1 — so it is the sole writer.
-//   - worker mounts EFS read-only in GoBridgeCluster and is NOT a durable
-//     writer; returning false makes a worker's commit fail closed (correct: a
-//     RO mount could not persist anyway) instead of a silent last-writer-wins.
-//
-// A genuine multi-writer deployment (multiple concurrent admin writers against
-// one backend) cannot be made safe with a non-CAS FileStore; it MUST wire a
-// ports.ConditionalConfigStore instead, which is always safe regardless of this
-// flag (xcut filestore-cas: parser.FileStore lacks SaveIfVersion today).
-func (a *App) configSingleWriter() bool {
-	return a.cfg.NodeRole == deployinfra.NodeRoleControl
 }

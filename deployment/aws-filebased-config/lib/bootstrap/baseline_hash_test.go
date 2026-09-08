@@ -38,7 +38,7 @@ func TestBaselineHash_MatchesFileContentHash(t *testing.T) {
 
 // TestBaselineHash_MissingFileHasNoBaseline verifies a missing config file
 // records no baseline, so the watcher keeps its disk-read baseline (unchanged
-// behavior) and the optionalFileSource fallback path is untouched.
+// behavior) and the start-empty fallback path is untouched.
 func TestBaselineHash_MissingFileHasNoBaseline(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "does-not-exist.yaml")
 

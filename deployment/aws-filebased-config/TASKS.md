@@ -191,7 +191,7 @@ type configSource struct {
 func (a *App) newConfigSource(ctx context.Context) (configSource, error)
 ```
 
-- [ ] **Step 1:** Failing unit tests (no Docker; fake ddb client via the
+- [x] **Step 1:** Failing unit tests (no Docker; fake ddb client via the
   loader's client interface or ddblocal-gated where unavoidable):
   `TestNewConfigSource_File_KeepsTodaysWiring` (layer name "file",
   store is `*cfgparser.FileStore`, singleWriter true only for control);
@@ -199,13 +199,14 @@ func (a *App) newConfigSource(ctx context.Context) (configSource, error)
   same object serves Loader/Watcher/store, singleWriter false);
   `TestStartEmpty_NotFoundFromAnySource` (wrapper returns
   `defaultLogicalConfig` on `shared.ErrNotFound`).
-- [ ] **Step 2:** Implement; DevMode → `EnsureTable` on startup (dynamodb
+- [x] **Step 2:** Implement; DevMode → `EnsureTable` on startup (dynamodb
   branch only); reuse/lazily build `a.dynamoDBClient` exactly where the HA
   store factory gets it today (`registry.go:116-121` path — locate, do not
-  duplicate construction).
-- [ ] **Step 3:** Full module tests:
+  duplicate construction). Ignore stale DynamoDB admin/watch applies under
+  the App lock so delayed commits cannot replace a newer running config.
+- [x] **Step 3:** Full module tests:
   `go -C deployment/aws/lib test ./... ` green; `make lint && make test`.
-- [ ] **Step 4:** Commit — `feat(deploy/aws): bootstrap-selected config source; CAS store lifts single-writer guard`
+- [x] **Step 4:** Commit — `feat(deploy/aws): bootstrap-selected config source; CAS store lifts single-writer guard`
 
 ### Task 3.2: End-to-end reload over DynamoDB (integration)
 
