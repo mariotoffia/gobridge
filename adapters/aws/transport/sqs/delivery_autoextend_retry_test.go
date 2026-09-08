@@ -151,8 +151,10 @@ func TestAutoExtendInterleavedFailSuccessS15(t *testing.T) {
 func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
 	t.Parallel()
 
+	var callCount atomic.Int32
 	mock := &mockSQSClient{}
 	mock.ChangeMessageVisibilityFn = func(_ context.Context, _ *awssqs.ChangeMessageVisibilityInput, _ ...func(*awssqs.Options)) (*awssqs.ChangeMessageVisibilityOutput, error) {
+		callCount.Add(1)
 		return nil, errors.New("always fail")
 	}
 
@@ -230,8 +232,10 @@ func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
 func TestAutoExtendCancelsOnDeadlineLapseAtMinVisibilityS15(t *testing.T) {
 	t.Parallel()
 
+	var callCount atomic.Int32
 	mock := &mockSQSClient{}
 	mock.ChangeMessageVisibilityFn = func(_ context.Context, _ *awssqs.ChangeMessageVisibilityInput, _ ...func(*awssqs.Options)) (*awssqs.ChangeMessageVisibilityOutput, error) {
+		callCount.Add(1)
 		return nil, errors.New("always fail")
 	}
 

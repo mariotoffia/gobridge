@@ -1401,6 +1401,131 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   the first delivery reported attempt 2 while the direct path reported 1 for the
   same message.
 
+## [0.3.6] - 2026-08-27
+
+Completes the 0.3.4/0.3.5 attempts. Same 33 modules; this train fixes the four
+defects those two exposed, so it runs end to end including the container image.
+
+### Fixed
+
+- **The jsii kernel crashed the CDK tests.** Every CDK test closed the kernel
+  on return — 154 closes. `jsii.Close()` shuts the child's stdin, the Node
+  runtime exits, and that wakes the background `cmd.Wait()` jsii keeps on the
+  child, which then reaps descriptors `Close()` has already freed, outside
+  jsii's own mutex. Go 1.26's `os/exec` dereferences that freed pipe state, so
+  the binary died with SIGSEGV roughly once in twelve runs. The kernel now
+  closes once per test binary via `TestMain`. Upstream still has this shape at
+  jsii-runtime-go v1.140.0, so the fix belongs here, not in a version bump.
+- **`make test` did not run four CDK packages.** The non-race pass listed
+  packages by hand and the list had drifted: `./constructs`,
+  `./constructs/gobridgecluster`, `./constructs/gobridgesingle` and
+  `./gobridgecdk` ran in no target at all, which is how a SIGSEGV in
+  `./constructs` first surfaced inside a release gate. It now runs the whole
+  module.
+- **Layer-2 aggregates failed their own release workflow.** The two modules
+  whose directories contain nested modules — `adapters/aws/store` and
+  `adapters/native/store` — consistently take 15 to 20 minutes to appear on
+  proxy.golang.org, where a leaf module takes about one. The verifier's
+  propagation budget was 10 minutes, so both failed while being perfectly
+  correct, and a tag cannot be re-pushed to try again. This cost 0.3.4, 0.3.5
+  and 0.3.6 their layer 2. The budget is now 20 minutes, and
+  `wait_for_layer_workflows` gives a failed run one re-run before the layer
+  dies — the same bounded retry `publish_module` already applied to a single
+  module, for the same stated reason.
+
+  An earlier attempt asked the proxy for each module's version list right after
+  pushing, on the theory that this forces a fresh read of the repository's
+  tags. It does not: `@v/list` is served from the proxy's own cache, and
+  v0.3.6 was still absent from that list minutes after its tag was pushed and
+  the request made. That step was removed rather than left in looking useful.
+- **`TestIntegration_AppCoordinatedRolloutOverDynamoDB` raced its own
+  subject.** The durable committed artifact is written *after* the local swap,
+  so reading it the moment `CurrentAppliedConfig()` reported the new version
+  raced a write still in flight, which teardown then cancelled. The test now
+  waits for the artifact.
+
+### Changed
+
+- The strict per-tag release gate no longer runs the module's tests. It runs
+  `go mod download`, `go mod verify` and `go build ./...`, which is what proves
+  a published module is consumable. A release tag's commit differs from `main`
+  only in `go.mod`/`go.sum`, so CI has already run the tests on identical
+  source, and a consumer never compiles them. See
+  [RELEASE.md](RELEASE.md#verification-modes).
+
+## [0.3.5] - 2026-08-27
+
+Completes 0.3.4: the same 33 modules, plus the consumer-smoke fix that
+0.3.4's own train exposed. First version to carry the CDK modules through a
+complete train, container image and `latest` promotion included.
+
+### Fixed
+
+- The external consumer smoke fetched the CDK by module path and then built a
+  package inside it. `go get module@version` records the requirement but not
+  the `go.sum` entries for what that module's own code imports, so the build
+  failed on 25 missing sums. This failed the 0.3.4 `cmd/gobridge` workflow
+  after all 33 module tags had already validated, skipping the image, the
+  GitHub Release and the `latest` promotion. It now fetches the package path.
+  The Paho steps never hit this: `go list` needs no build dependencies and
+  `go install pkg@version` resolves in module-agnostic mode.
+
+## [0.3.4] - 2026-08-27
+
+Publishes the two CDK modules for the first time, taking the train from 31 to
+33 modules.
+
+**Modules only — no container image.** The consumer-smoke defect fixed in
+0.3.5 failed this version's final workflow after every module tag had already
+passed the strict gate, so the image, GitHub Release and `latest` promotion
+were skipped. All 33 modules are published, resolvable and consumable at
+`v0.3.4`; there is no `ghcr.io/mariotoffia/gobridge` image associated with it.
+Use 0.3.5 if you need the image.
+
+### Added
+
+- The two CDK modules `deployment/aws-filebased-config/cdk` and
+  `deployment/aws-filebased-config/infra` are now published, taking the train
+  from 31 to 33 modules. The CDK scenarios under `docs/scenarios/cdk/` tell an
+  external app to import the constructs and the `infra` types those constructs
+  take as arguments, but neither module had ever been tagged, so none of the
+  documented examples could resolve outside this repository.
+  `deployment/aws-filebased-config/lib` stays internal — it is wiring for the
+  shipped image, not a consumer API.
+- The external consumer smoke now resolves both CDK modules against their tag
+  commits and builds `cdk/constructs/gobridgesingle`. `cdk` is not in
+  `cmd/gobridge`'s dependency graph, so nothing else in the train compiles it
+  from outside the repository; it builds rather than lists because resolution
+  alone would not catch a published manifest that no longer satisfies the
+  constructs' own imports. Cost is roughly 86 MB of module downloads and ~11s
+  of compile per pass, well inside the existing 10m per-command and 25m
+  per-pass budgets.
+
+### Changed
+
+- `cmd/gobridge` moved from layer 3 to layer 4. `cdk` requires the layer-2 store
+  aggregates, so it lands on layer 3, and the final module must be alone on the
+  highest layer for the strict all-module gate and image build to trigger once.
+- `scripts/release/run.sh` derives the highest layer from the manifest instead of
+  hardcoding `0 1 2 3`, so adding a module above the current top layer no longer
+  needs an edit to the script.
+
+### Fixed
+
+- The SQS auto-extend tests failed under parallel load. All four advanced the
+  fake clock as soon as a `ChangeMessageVisibility` call was recorded, but the
+  loop does its clock-dependent work *after* that call returns, so an advance
+  could land mid-iteration. Two distinct symptoms followed. The loop reads
+  `clk.Now()` after the call and derives "has the visibility window lapsed"
+  from it, so a mid-iteration advance made it read a later instant than the
+  tick it was handling, cancel processing on a deadline it never reached, and
+  return — after which no tick was ever served again. Separately, the loop
+  re-arms its ticker to a shorter retry cadence after a failure, so an advance
+  landing before that `Reset` stepped past the stale deadline without firing
+  and the late `Reset` rescheduled from the new now, stranding the tick.
+  `clocktest.Fake` gained `NowCalls()` and `TickerResets()` as the two
+  observable barriers, and the tests wait on them before advancing.
+
 ## [0.3.3] - 2026-07-27
 
 Completes 0.3.2: same modules, plus the two release-pipeline fixes that

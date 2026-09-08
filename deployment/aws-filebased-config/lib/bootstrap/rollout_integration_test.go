@@ -84,7 +84,7 @@ func TestIntegration_AppCoordinatedRolloutOverDynamoDB(t *testing.T) {
 			return false
 		}
 		committed = got
-		return true
+		return committed.ConfigVersion == 2
 	})
 	assert.Equal(t, 2, committed.ConfigVersion, "the commit wrote the durable artifact")
 	_, decode := app.rolloutCodec()

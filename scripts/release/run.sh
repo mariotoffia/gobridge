@@ -40,9 +40,15 @@ if [ "$DRY_RUN" != "1" ]; then
   gh auth status >/dev/null 2>&1 || die "gh is not authenticated (run: gh auth login)"
 fi
 
+# The manifest validator rejects a gap in the layer numbering, so the highest
+# declared layer is the whole sequence. Deriving it here means adding a module
+# above the current top layer needs no edit to this script.
+MAX_LAYER="$(make --no-print-directory release-modules RELEASE_FORMAT=tsv | cut -f1 | sort -n | tail -1)"
+printf '%s' "$MAX_LAYER" | grep -Eq '^[0-9]+$' || die "could not determine the highest release layer"
+
 # ---- plan (always) ----
 echo "Release plan for ${VERSION} (DRY_RUN=${DRY_RUN}, REMOTE=${REMOTE}):"
-for layer in 0 1 2 3; do
+for layer in $(seq 0 "$MAX_LAYER"); do
   mods="$(make --no-print-directory release-modules RELEASE_LAYER="$layer" 2>/dev/null || true)"
   [ -n "$mods" ] || continue
   echo "  layer ${layer}:"
@@ -112,14 +118,26 @@ wait_for_release_workflow() {
 # A tag with no run at all is treated as fatal once the grace period passes:
 # that is the signature of a bulk tag push silently not triggering workflows,
 # and it must never be mistaken for "still starting".
+#
+# A failed run gets ONE re-run before the layer dies, the same bounded retry
+# publish_module already applies to a single module and for the same reason: a
+# tag cannot be re-pushed, so a run that failed on something transient would
+# otherwise force an entire new version train for a fault that has already
+# cleared. The two aggregate modules whose directories contain nested modules,
+# adapters/aws/store and adapters/native/store, consistently take longer to
+# appear on proxy.golang.org than a leaf module does — long enough to exhaust
+# the verifier's own propagation budget — and that alone cost the v0.3.4,
+# v0.3.5 and v0.3.6 trains their layer 2. The re-run happens minutes later,
+# by which time the module has indexed. A genuine defect still fails twice.
 wait_for_layer_workflows() {
   local tags=("$@")
-  local start now snapshot tag state pending missing
+  local start now snapshot tag state pending missing run_id
+  declare -A retried=()
   start="$(date +%s)"
   while :; do
     snapshot="$(gh run list --workflow release.yml --limit 100 \
-      --json headBranch,status,conclusion \
-      --jq '.[] | "\(.headBranch)\t\(.status)\t\(.conclusion // "-")"' 2>/dev/null)" || {
+      --json headBranch,status,conclusion,databaseId \
+      --jq '.[] | "\(.headBranch)\t\(.status)\t\(.conclusion // "-")\t\(.databaseId)"' 2>/dev/null)" || {
       sleep "$WORKFLOW_POLL_SECONDS"; continue
     }
     pending=0
@@ -129,7 +147,18 @@ wait_for_layer_workflows() {
       case "$state" in
         completed/success) ;;
         "")               missing=$((missing + 1)); pending=$((pending + 1)) ;;
-        completed/*)      die "release workflow ${state#completed/} for $tag" ;;
+        completed/*)
+          if [ -n "${retried[$tag]:-}" ]; then
+            die "release workflow ${state#completed/} for $tag after one re-run"
+          fi
+          run_id="$(printf '%s\n' "$snapshot" | awk -F'\t' -v t="$tag" '$1==t {print $4; exit}')"
+          [ -n "$run_id" ] || die "release workflow ${state#completed/} for $tag (no run id to retry)"
+          echo "-- ${tag}: workflow ${state#completed/}; re-running once (run ${run_id})"
+          gh run rerun "$run_id" >/dev/null 2>&1 \
+            || die "release workflow ${state#completed/} for $tag; re-run could not be started"
+          retried[$tag]=1
+          pending=$((pending + 1))
+          ;;
         *)                pending=$((pending + 1)) ;;
       esac
     done
@@ -268,8 +297,8 @@ git push "$REMOTE" "HEAD:refs/heads/${branch}"
 BOOTSTRAP_COMMIT="$(git rev-parse HEAD)"
 make derive-release-bootstrap RELEASE_VERSION="$VERSION" RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"
 
-# §4 layers 1..3 — sequential between layers, concurrent within each
-for layer in 1 2 3; do
+# §4 layers 1..N — sequential between layers, concurrent within each
+for layer in $(seq 1 "$MAX_LAYER"); do
   echo "== §4 layer ${layer} =="
   publish_layer "$layer"
 done

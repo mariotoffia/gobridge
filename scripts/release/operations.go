@@ -33,12 +33,19 @@ const (
 	// origin matches the tag commit) with time only as the failure budget.
 	// Nothing is weakened — every assertion still has to pass, and a module
 	// that never appears still fails the release.
-	defaultModulePropagationBudget = 10 * time.Minute
+	// 20 minutes, not 10, because indexing time is not uniform across modules.
+	// A leaf module appears on proxy.golang.org in about a minute, but the two
+	// aggregates whose directories contain nested modules — adapters/aws/store
+	// and adapters/native/store — consistently took 15 to 20. At 10 minutes
+	// they failed their own release workflow on three successive trains while
+	// being perfectly correct, and the tag cannot be re-pushed to try again.
+	// The budget is a failure deadline, not a target: a module that resolves
+	// immediately still costs one poll.
+	defaultModulePropagationBudget = 20 * time.Minute
 	defaultModulePropagationPoll   = 10 * time.Second
 	moduleDownloadLimit            = 10 * time.Minute
 	moduleVerifyLimit              = 2 * time.Minute
 	moduleBuildLimit               = 15 * time.Minute
-	moduleTestLimit                = 30 * time.Minute
 	moduleTidyLimit                = 10 * time.Minute
 	smokeCommandLimit              = 10 * time.Minute
 	smokeOverallLimit              = 25 * time.Minute
@@ -131,6 +138,21 @@ func publicModuleEnvironment() map[string]string {
 	}
 }
 
+// runModuleChecks proves a published module is consumable: every module in its
+// graph is fetchable from the public proxy, the checksums match, and the
+// replace-free source compiles against those exact versions.
+//
+// It deliberately does not run the module's tests. A release tag's commit
+// differs from main only in go.mod and go.sum — the Go source is identical —
+// so `make test` in CI has already run them on this code. Re-running them here
+// tests nothing new about the published artifact, while `mod download`,
+// `mod verify` and `build` test the one thing that is new: resolution against
+// the rewritten manifests. A consumer never compiles this module's tests, so a
+// test failure is a CI concern, not a reason to refuse a tag whose code builds.
+//
+// `mod download` with no arguments already fetches the whole graph, test
+// dependencies included, so `build` adds no downloads — it only proves the
+// fetched versions actually compile together.
 func runModuleChecks(ctx context.Context, runner commandRunner, moduleDir string) error {
 	commands := []struct {
 		args    []string
@@ -139,7 +161,6 @@ func runModuleChecks(ctx context.Context, runner commandRunner, moduleDir string
 		{args: []string{"mod", "download"}, timeout: moduleDownloadLimit},
 		{args: []string{"mod", "verify"}, timeout: moduleVerifyLimit},
 		{args: []string{"build", "./..."}, timeout: moduleBuildLimit},
-		{args: []string{"test", "-count=1", "./..."}, timeout: moduleTestLimit},
 	}
 	for _, command := range commands {
 		if _, err := runner.run(ctx, commandRequest{
@@ -347,7 +368,8 @@ func discoverPublishedModules(repo string) ([]string, error) {
 		return nil, fmt.Errorf("resolving repository root: %w", err)
 	}
 	result := []string{rootModulePath}
-	for _, fixed := range []string{"httpapi", finalModulePath} {
+	fixedModules := append([]string{"httpapi", finalModulePath}, publishedDeploymentModules...)
+	for _, fixed := range fixedModules {
 		filename, err := secureJoin(repoRoot, fixed, "go.mod")
 		if err != nil {
 			return nil, fmt.Errorf("published module %s: %w", fixed, err)
@@ -1517,6 +1539,7 @@ func runConsumerSmokePass(
 
 	paho := manifest.importPath("adapters/mqtt/transport/paho")
 	command := manifest.importPath(finalModulePath)
+	cdk := manifest.importPath(cdkModulePath)
 	if _, err := runner.run(ctx, commandRequest{
 		Dir:     consumerDir,
 		Env:     environment,
@@ -1526,7 +1549,12 @@ func runConsumerSmokePass(
 	}); err != nil {
 		return fmt.Errorf("external consumer command go mod init: %w", err)
 	}
-	for _, modulePath := range []string{"adapters/mqtt/transport/paho", finalModulePath} {
+	for _, modulePath := range []string{
+		"adapters/mqtt/transport/paho",
+		cdkInfraModulePath,
+		cdkModulePath,
+		finalModulePath,
+	} {
 		if err := resolveSmokeModule(
 			ctx,
 			runner,
@@ -1540,9 +1568,22 @@ func runConsumerSmokePass(
 			return err
 		}
 	}
+	// The CDK modules are not in cmd/gobridge's graph, so nothing else in this
+	// smoke compiles them. Build the facade package rather than only listing
+	// it: resolution alone would not catch a published module whose stripped
+	// manifest no longer satisfies the constructs' own imports.
+	//
+	// Fetch by PACKAGE path, not module path. `go get module@version` records
+	// the requirement but not the go.sum entries for the packages that module's
+	// code imports, so a following `go build` fails on every missing sum. The
+	// paho pair does not hit this because `go list` needs no build deps, and
+	// `go install pkg@version` resolves in module-agnostic mode.
+	cdkFacade := cdk + "/" + cdkSmokePackage
 	commands := [][]string{
 		{"get", paho + "@" + version},
 		{"list", paho},
+		{"get", cdkFacade + "@" + version},
+		{"build", cdkFacade},
 		{"install", command + "@" + version},
 	}
 	for _, args := range commands {
