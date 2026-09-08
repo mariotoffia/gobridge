@@ -105,7 +105,7 @@ func TestIntegration_SharedSubscription_CompetingConsumers(t *testing.T) {
 
 // TestIntegration_PlainSubscription_FanOut validates that two clients
 // subscribing to a plain topic (without $share/) each receive ALL
-// messages, demonstrating the N-fold duplication that prevents.
+// messages, demonstrating the N-fold duplication avoided by shared subscriptions.
 //
 // Scenario:
 // ───────────────────────────────────────────────────────────────
