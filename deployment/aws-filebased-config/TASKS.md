@@ -216,9 +216,11 @@ func (a *App) newConfigSource(ctx context.Context) (configSource, error)
 existing app-test helpers (injected clock; follow
 `app_integration_test.go` patterns).
 
-- [ ] Failing test → implement any missing glue → green →
+- [x] Failing test → implement any missing glue → green →
   `make check-all` → commit —
   `test(deploy/aws): dynamodb-sourced config hot reload end to end`
+  Poll and Streams reloads cover seeded and empty startup; no additional
+  production wiring was needed.
 
 ⛳ Review checkpoint.
 
