@@ -54,6 +54,11 @@ type LocalCohort struct {
 // emulation and returns it ready to drive.
 func DeployLocalCohort(t *testing.T, env SandboxEnv, slots *ha.MemberSlots) LocalCohort {
 	t.Helper()
+	return deployLocalCohort(t, env, slots, infra.ConfigSourceFile)
+}
+
+func deployLocalCohort(t *testing.T, env SandboxEnv, slots *ha.MemberSlots, configSource string) LocalCohort {
+	t.Helper()
 	sandbox := haSandbox{
 		SandboxEnv:          env,
 		Image:               localBridgeImage(),
@@ -61,6 +66,7 @@ func DeployLocalCohort(t *testing.T, env SandboxEnv, slots *ha.MemberSlots) Loca
 		MQTTClientID:        "gobridge-local-ha",
 		MQTTCredentialParam: localMQTTParam,
 		AdminParam:          localAdminParam,
+		ConfigSource:        configSource,
 		// The emulator does not enforce security groups, but the fixture still
 		// opens the probe ingress it opens on AWS so the synthesized stack is the
 		// same one either way.

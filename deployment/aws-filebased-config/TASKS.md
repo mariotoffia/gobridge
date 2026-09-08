@@ -268,7 +268,7 @@ existing `run.sh` harness); Update `seeder/README.md` + `MANIFEST.md`.
 
 ### Task 4.3: Local deployment proof
 
-- [ ] Extend the `integration_local` harness with one scenario: DynamoDBHA +
+- [x] Extend the `integration_local` harness with one scenario: DynamoDBHA +
   dynamodb config source, assert bridge converges and a table-write reload
   round-trips (reuse `rollout_waits.go`/`rollout_probe.go` helpers). Run via
   the harness's documented target; then `make check-all`. Commit —

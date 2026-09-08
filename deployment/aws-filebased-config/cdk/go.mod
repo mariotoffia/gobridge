@@ -22,6 +22,7 @@ require (
 	github.com/aws/constructs-go/constructs/v10 v10.8.1
 	github.com/aws/jsii-runtime-go v1.139.0
 	github.com/eclipse/paho.golang v0.23.0
+	github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb v0.0.0
 	github.com/mariotoffia/gobridge/adapters/aws/store v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0-00010101000000-000000000000
@@ -94,6 +95,8 @@ require (
 replace github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra => ../infra
 
 replace github.com/mariotoffia/gobridge => ../../..
+
+replace github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb => ../../../adapters/aws/config/dynamodb
 
 replace github.com/mariotoffia/gobridge/adapters/aws/transport/sqs => ../../../adapters/aws/transport/sqs
 

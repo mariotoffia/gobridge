@@ -82,11 +82,6 @@ func rewriteLocalAssembly(t *testing.T, asmDir, stackName string) {
 			if err != nil {
 				t.Fatalf("task definition %s: %v", logicalID, err)
 			}
-			if len(spec.Volumes) == 0 || len(spec.Mounts) == 0 {
-				t.Fatalf("task definition %s declares no shared storage after the rewrite (%d volumes, "+
-					"%d mounts): the deployment would have no config document and every member would "+
-					"boot the empty default", logicalID, len(spec.Volumes), len(spec.Mounts))
-			}
 			if _, clash := state.taskSpecs[family]; clash {
 				t.Fatalf("two task definitions declare the family %q, so the storage restored after "+
 					"deploy could be the wrong one", family)
@@ -116,7 +111,7 @@ func rewriteLocalAssembly(t *testing.T, asmDir, stackName string) {
 	if err := os.WriteFile(path, out, 0o600); err != nil {
 		t.Fatalf("write rewritten template: %v", err)
 	}
-	t.Logf("local assembly: %d task definitions bound to %s", rewritten, state.currentConfigDir)
+	t.Logf("local assembly: %d task definitions checked; filesystem volumes, if any, bound to %s", rewritten, state.currentConfigDir)
 }
 
 // localContainerEnvironment is what every container of the deployment's own

@@ -8,6 +8,7 @@ package gobridgedynamodbha
 import (
 	"time"
 
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 
@@ -58,6 +59,12 @@ func (g *GoBridgeDynamoDBHA) Cluster() awsecs.ICluster { return g.cluster }
 
 // EfsConfig returns nil when neither file config nor parsed store paths need EFS.
 func (g *GoBridgeDynamoDBHA) EfsConfig() *cdkconstructs.GoBridgeEfsConfig { return g.efsConfig }
+
+// ConfigTable returns the shared config-source table, or nil for file config.
+//
+//nolint:ireturn // Public CDK data output intentionally returns the L2 table interface.
+func (g *GoBridgeDynamoDBHA) ConfigTable() awsdynamodb.ITable { return g.controlBase.ConfigTable }
+
 func (g *GoBridgeDynamoDBHA) Data() *DynamoDBHAData                       { return g.data }
 func (g *GoBridgeDynamoDBHA) ControlSecurityGroup() awsec2.ISecurityGroup { return g.controlSG }
 func (g *GoBridgeDynamoDBHA) WorkerSecurityGroup() awsec2.ISecurityGroup  { return g.workerSG }

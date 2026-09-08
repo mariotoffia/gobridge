@@ -38,6 +38,24 @@ health-check path probed against the container, the alarm's own query replayed
 through `GetMetricData`, the deployed role's policy read back through IAM), it
 is.
 
+The DynamoDB-config deployment proof is
+`TestLocal_DynamoDBConfigHotReload`. Run it alone, still rebuilding the runtime
+image and provisioning the local tools, with:
+
+```bash
+make test-local-deploy LOCAL_DEPLOY_RUN='^TestLocal_DynamoDBConfigHotReload$'
+```
+
+It exercises the shipped seeder, three-member generation-zero convergence, and
+two direct CAS table writes followed by per-member applied-config reads. It
+does not use an initial test seed or a config file. The local storage adapter's
+fast regression checks are `TestDeclaredTaskSpec_ConfigStorage` and
+`TestVerifyVolumeFreeTask` under the same `integration_local` build tag; they
+require neither Docker nor `GOBRIDGE_INT_LOCAL`.
+`TestDynamoDBConfigFixture_IsolatesRolloutBaseline` is a non-race CDK fixture
+check: the DynamoDB-config scenario's stack-scoped bridge ID keeps its rollout
+mirror separate from the existing file proof and from repeated deployments.
+
 ## 6. Long-running tests
 
 Catch what unit/integration cannot: goroutine leaks, soak behaviour,

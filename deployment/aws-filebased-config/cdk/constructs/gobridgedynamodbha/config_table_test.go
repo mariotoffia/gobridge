@@ -60,6 +60,8 @@ func TestDynamoDBHA_ConfigTable_SharedGrants(t *testing.T) {
 				}
 			}
 			require.NotEmpty(t, configID)
+			require.NotNil(t, h.bridge.ConfigTable())
+			assert.Equal(t, map[string]any{"Ref": configID}, h.stack.Resolve(h.bridge.ConfigTable().TableName()))
 			tasks := tpl.FindResources(jsii.String("AWS::ECS::TaskDefinition"), nil)
 			require.Len(t, *tasks, wantTasks)
 			for id, raw := range *tasks {

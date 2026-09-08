@@ -35,12 +35,19 @@ resolves the emulator, DynamoDB Local and the broker by name.
 # The whole suite.
 make test-local-deploy
 
+# One DynamoDB-config scenario, including a fresh runtime image build.
+make test-local-deploy LOCAL_DEPLOY_RUN='^TestLocal_DynamoDBConfigHotReload$'
+
 # One topology, with the tools already installed.
 PATH="$PWD/.tools/local-deploy/node_modules/.bin:$PATH" \
 GOBRIDGE_INT_LOCAL=1 GOBRIDGE_LOCAL_IMAGE=gobridge-filebased:local \
 go -C deployment/aws-filebased-config/cdk test -tags=integration_local -v \
   ./integration/ -run TestLocal_SQSDataPlane
 ```
+
+`LOCAL_DEPLOY_RUN` accepts Go's `-run` expression, including slash-separated
+subtest selectors. It defaults to the whole suite; a selector matching no tests
+fails the target rather than reporting a proof that never ran.
 
 `GOBRIDGE_INT_KEEP=1` leaves the deployed stack and everything it runs on in
 place for a post-mortem. Without it every container, network and temporary
@@ -86,6 +93,7 @@ locally, the measured reason.
 | D6 | Alarms and SNS | `TestLocal_DeadLetterAndAlarms` — the alarms are deployed, their queries replayed against real volume, and the topic's subscription proved; only the alarm→action step is not observable here (see *Emulation gaps*) |
 | D7 | Load balancer attachment | synth only — see *Emulation gaps* |
 | D8 | Config rollout over a static-slot cohort | `TestLocal_StaticSlotCohort` |
+| D9 | DynamoDB HA with the DynamoDB config source, no EFS or file config | `TestLocal_DynamoDBConfigHotReload` |
 
 ### Behaviours
 
@@ -103,6 +111,7 @@ locally, the measured reason.
 | Resilience | worker scale 1→3→1 with no duplicate delivery | `TestLocal_ClusterSharedConfigAndScaling` |
 | Resilience | dead-letter entry and redrive | `TestLocal_DeadLetterAndAlarms` |
 | Rollout | propose, commit, converge, member restart, rollback | `TestLocal_StaticSlotCohort` |
+| Config source | shipped DynamoDB seeder, agreed generation-zero baseline, direct CAS table-write hot reload and return to the original log level on every member | `TestLocal_DynamoDBConfigHotReload` — verifies actual applied config, row/JSON versions and the immutable deployment fingerprint, not only rollout generations |
 | Rollout | a change one member cannot answer for is applied by nobody | `TestLocal_StaticSlotCohort` |
 | Rollout | a subscription change is agreed by the WHOLE cohort, not only by the member that proposed it | `TestLocal_StaticSlotCohort` |
 | Rollout | the confirm window: a change every member accepts and none can run takes the cohort back | `TestLocal_StaticSlotCohort` — the lever is a subscription asking for a QoS the broker caps below it: every member builds and acks it, no member's subscriptions are ever satisfied, and the cohort reverts to its last confirmed generation |
@@ -120,9 +129,10 @@ Each of these was measured, not assumed.
 | **`SetAlarmState` does not run an alarm's actions.** The SNS subscription itself works — a plain publish to the topic reaches the subscribed queue — but putting the alarm into ALARM by hand notifies nobody. | The test proves the subscription with a probe publish first, so the two failures cannot be confused, and then skips with the measured reason. The day the emulator fires actions, the assertion starts running. | That an alarm action reaches its subscriber. |
 | **IAM is not evaluated.** A call the assumed task role has no grant for still succeeds. | The granted half is executed as the task role. For the denied half, the policy CloudFormation attached to the deployed role is read back and every SQS grant in it must name this deployment's own queues. | That AWS refuses the non-granted call. |
 | **CloudFormation cannot update an `AWS::ECS::Service`.** It reports the service it created as not found, then cannot roll back. | The idempotent-redeploy test skips with that reason rather than reporting a deployment defect that does not exist. | Whether re-deploying the same template is a no-op. Synth and the credentialed suite own it. |
-| **EFS has no NFS data plane** and CloudFormation drops task-definition volumes. | The harness rewrites each EFS volume to a host bind mount before deploy, and re-registers each deployed task definition with the volumes and mount points the assembly declared. | That the declared task definition reaches ECS intact. |
+| **EFS has no NFS data plane** and CloudFormation drops task-definition volumes. | The harness rewrites each EFS volume to a host bind mount before deploy, and re-registers filesystem-backed task definitions with the declared volumes and mount points. Explicit DynamoDB-only tasks are checked to have no volumes or mounts and remain on the deployed revision; no artificial bind mount is injected. | That a filesystem-backed task definition reaches ECS intact. |
 | **~~The config mount's ownership is not reproducible.~~ Closed.** The harness used to bind-mount a host directory `0777`, which a SQLite store correctly refuses — it will not put a database under a parent it does not own, or one that is group- or other-writable. That was an accident of convenience, not a limit: the shipped EFS access point creates the mount `755` owned by the container user, and the harness now does the same. | Each stack's config directory is chowned and chmodded to match the access point from a throwaway root container, which covers both a uid-mapping Docker host and a plain Linux one, and handed back before cleanup removes it. | Nothing. |
 | **Container `dependsOn` is not modelled.** | Nothing. A member may start before its seeder has written the shared document, exit, and be replaced until it is there. | The seeder gate. No claim rests on it. |
+| **DynamoDB tables are mirrored only after CloudFormation deploys.** | Runtime and seeder calls already address DynamoDB Local. Early tasks can encounter an absent table or config item and be replaced by their services; the shipped seeder creates the item when the table is available. The test never injects an initial config. Successful seeder stdout is read from the emulator's retained, task-family-scoped log because an early task's containers may already have been removed. | AWS startup ordering; construct assertions, not this retry behaviour, pin the `SUCCESS` dependency. |
 | **Container stdout does not reach the `awslogs` driver.** | Log assertions read the container's own logs. | Nothing material. |
 | **A destroyed stack can leave its log group behind.** Each run deploys under a fresh stack name, so leftovers accumulate in the emulator rather than colliding. | The harness removes the profile's log groups before each deploy. | Nothing. Log-group names carry the stack that owns them, so two live deployments of the same facade in one account and region no longer collide. |
 | **SSM `SecureString` parameters are stored in clear.** | Nothing needs doing: no assertion anywhere reads stored ciphertext, and the credential adapter writes `SecureString` and reads back with decryption, which its own unit tests pin. A future assertion that means to prove encryption at rest cannot live here. | Encryption at rest, which is KMS's. |
@@ -148,15 +158,36 @@ All three are closed.
       its database in a directory of its own under the mount
       (`managed-subscriptions/`), which it owns with mode `0700`; the mount
       itself stays `755`.
-- [x] **Config held in DynamoDB.** Decided rather than built: this profile does
-      **not** expose an overlay layer, and both pages now say so ([configuration
-      overview](../configuration-overview.md#overlays-and-the-admin-config-api-do-not-compose),
-      [config stores](../config-stores.md#dynamodb-loader)). Its admin config
-      transaction API reads and writes the base document, so an overlay changing
-      underneath it makes the running config and the document the API commits to
-      two different things — and for a coordinated cohort, two writers of the
-      candidate identity a rollout has to agree on. The layered pattern stays a
-      programmatic-API one.
+- [x] **Config held in DynamoDB.** Stood up by
+      `TestLocal_DynamoDBConfigHotReload` using the shared HA fixture with one
+      control and two static worker slots. The source is the single DynamoDB
+      base document, not an overlay. Its bridge ID is scoped to the stack, so
+      retained local rollout mirrors cannot supply another scenario's baseline.
+      The deployed `SeedOnce` init container
+      downloads the shipped JSON asset and creates version 1; the test checks
+      its success and every member's nonempty, agreed generation-zero artifact.
+      It reads the current item through the real loader, CAS-writes `debug`,
+      waits for a newer settled rollout, and reads each member's applied config
+      through its admin endpoint. A second CAS write restores the original log
+      level and must settle at another newer generation. Row and JSON versions
+      advance together (1 → 2 → 3), stale writes are refused, typed plugin
+      options survive, and the deployment fingerprint does not change.
+
+      No EFS resources, task volumes, container mounts or config file are
+      declared or added by the harness. The deployed definitions remain on
+      their original revisions, running containers have no mounts, and the
+      harness's unused config directory stays empty. Existing file-backed
+      fixtures still get their declared shared mounts restored.
+
+      This proves the polling source's deployed runtime path, not DynamoDB
+      Streams, AWS IAM enforcement, PITR/retention, or ECS init-container
+      ordering. The harness still substitutes its local seeder image on every
+      task definition to preserve file-source coverage. The DynamoDB seeder
+      itself runs Python without site packages and needs no PyYAML; this local
+      run does not certify the pinned upstream image. Construct and portable
+      seeder tests own those separate contracts. Overlays remain a
+      [programmatic-API pattern](../configuration-overview.md#overlays-and-the-admin-config-api-do-not-compose),
+      not a second writer layered over this base document.
 - [x] **Lambda either side of the bridge.** Stood up by
       `TestLocal_LambdaProducerAndConsumer`: a Go producer function is invoked
       directly and puts its payload on the bridge's inbound queue, the deployed

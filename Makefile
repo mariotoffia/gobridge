@@ -282,6 +282,7 @@ test-integration: audit-timings audit-test-timings ## Run all tests including in
 # the emulators, the CDK CLI wrapper and the runtime image are all provisioned
 # here, so a clean checkout with Docker and Node can run it.
 LOCAL_DEPLOY_TOOLS := .tools/local-deploy
+LOCAL_DEPLOY_RUN ?= .
 
 test-local-deploy: audit-timings audit-test-timings docker-build ## Deploy the AWS profile against local emulation and drive it (requires Docker + Node)
 	@mkdir -p reports $(LOCAL_DEPLOY_TOOLS)
@@ -297,8 +298,9 @@ test-local-deploy: audit-timings audit-test-timings docker-build ## Deploy the A
 		GOBRIDGE_INT_LOCAL=1 GOBRIDGE_LOCAL_IMAGE=$(IMAGE_LOCAL_TAG) \
 		JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 \
 		go -C deployment/aws-filebased-config/cdk test -count=1 -timeout=180m -v \
-			-tags=integration_local ./integration/... 2>&1 | tee reports/test-local-deploy.log; \
+			-tags=integration_local -run="$(value LOCAL_DEPLOY_RUN)" ./integration/... 2>&1 | tee reports/test-local-deploy.log; \
 		rc=$$?; \
+		if ! grep -q "^=== RUN " reports/test-local-deploy.log || grep -q "no tests to run" reports/test-local-deploy.log; then echo "No local deployment tests matched the selector"; rc=1; fi; \
 		echo ""; \
 		echo "command:  go test -tags=integration_local ./integration/... (deployment/aws-filebased-config/cdk)"; \
 		if [ $$rc -eq 0 ]; then echo "status:   PASS"; else echo "status:   FAIL"; fi; \

@@ -24,8 +24,8 @@ import (
 // the cohort has no shared config document at all — the seeder writes into its
 // own container filesystem and every member boots the empty default config.
 //
-// So the harness re-registers each deployed task definition with exactly what
-// the synthesized template declared for it, and points the service at that
+// So the harness re-registers filesystem-backed task definitions with exactly
+// what the synthesized template declared, and points each service at that
 // revision. Nothing is invented here: the volume names, the container paths and
 // the read-only flags are read out of the assembly, and the only substitution
 // is the one the assembly already made — an EFS filesystem the emulator cannot
@@ -40,12 +40,14 @@ import (
 // a steady state, which is what the proof is about — but the SEEDER GATE itself
 // is not exercised locally, and no claim may rest on it.
 //
-// What this costs the proof, stated plainly: the running tasks are one revision
-// removed from the ones CloudFormation registered, so a local run does NOT
+// What this costs the filesystem proof: the running tasks are one revision
+// removed from the ones CloudFormation registered, so that local run does NOT
 // prove that the declared task definition reaches ECS intact, nor that the
 // deployment's start ordering holds. Both rest on the construct's synth
 // assertions and the credentialed run. What it does prove is the shared
 // document and the cohort protocol that runs on top of it.
+// DynamoDB-only tasks need no storage restoration and stay on their deployed
+// revisions, after checking both the declared and deployed absence of storage.
 
 // localMountSpec is one container's mount of one volume, as declared.
 type localMountSpec struct {
@@ -65,9 +67,8 @@ type localTaskSpec struct {
 	Mounts  []localMountSpec
 }
 
-// restoreTaskVolumes re-registers every deployed task definition with the
-// volumes and mount points the assembly declared, and rolls each service onto
-// the restored revision.
+// restoreTaskVolumes restores the declared filesystem storage. Verified
+// volume-free DynamoDB tasks stay on the revision CloudFormation registered.
 func restoreTaskVolumes(t *testing.T, outputs StackOutputs) {
 	t.Helper()
 	state := localState
@@ -75,11 +76,11 @@ func restoreTaskVolumes(t *testing.T, outputs StackOutputs) {
 		t.Fatal("task definition restore ran before the local sandbox was stood up")
 	}
 	if state.currentConfigDir == "" {
-		t.Fatal("no shared config directory was bound for this stack; the assembly rewrite and the " +
+		t.Fatal("no local config directory was prepared for this stack; the assembly rewrite and the " +
 			"storage restore disagree about which deployment is being restored")
 	}
 	if len(state.taskSpecs) == 0 {
-		t.Fatal("the assembly declared no task storage to restore; the rewrite and the restore disagree")
+		t.Fatal("the assembly declared no task specifications; the rewrite and the restore disagree")
 	}
 	cluster := outputs["ClusterArn"]
 	if cluster == "" {
@@ -121,6 +122,12 @@ func restoreTaskVolumes(t *testing.T, outputs StackOutputs) {
 		// re-deploying the same template is a no-op has to put the service back
 		// on the revision the template declares first.
 		state.deployedTaskDefs[serviceARN] = aws.ToString(described.Services[0].TaskDefinition)
+		if len(spec.Volumes) == 0 {
+			if err := verifyVolumeFreeTask(definition.TaskDefinition); err != nil {
+				t.Fatalf("volume-free task definition %s: %v", family, err)
+			}
+			continue
+		}
 		revision := registerRestoredTaskDefinition(t, ctx, client, definition.TaskDefinition, spec, state.currentConfigDir)
 		if _, err := client.UpdateService(ctx, &ecs.UpdateServiceInput{
 			Cluster: aws.String(cluster), Service: aws.String(serviceARN),
@@ -135,7 +142,8 @@ func restoreTaskVolumes(t *testing.T, outputs StackOutputs) {
 			"nothing rolled onto still runs without the shared config document",
 			sortedKeySet(restoredFamilies), sortedSpecKeys(state.taskSpecs))
 	}
-	t.Logf("restored task storage on %d deployed services, bound to %s", restored, state.currentConfigDir)
+	t.Logf("checked %d deployed task families; restored filesystem storage on %d services, bound to %s",
+		len(restoredFamilies), restored, state.currentConfigDir)
 }
 
 // restoreDeployedTaskDefinitions rolls every service back onto the revision
@@ -281,10 +289,16 @@ func declaredTaskSpec(properties map[string]any) (string, localTaskSpec, error) 
 				"to the deployed revision")
 	}
 	spec := localTaskSpec{}
-	for _, value := range asList(properties["Volumes"]) {
+	volumes, err := storageList(properties, "Volumes")
+	if err != nil {
+		return "", spec, err
+	}
+	for _, value := range volumes {
 		volume, _ := value.(map[string]any)
 		name, _ := volume["Name"].(string)
-		if _, bound := volume["Host"]; !bound || name == "" {
+		host, _ := volume["Host"].(map[string]any)
+		path, _ := host["SourcePath"].(string)
+		if path == "" || name == "" {
 			// bindVolumesToHost rewrote every EFS volume to a host bind mount, so
 			// anything else here is a volume this harness has no way to back.
 			return "", localTaskSpec{}, fmt.Errorf(
@@ -292,18 +306,53 @@ func declaredTaskSpec(properties map[string]any) (string, localTaskSpec, error) 
 		}
 		spec.Volumes = append(spec.Volumes, name)
 	}
-	for _, value := range asList(properties["ContainerDefinitions"]) {
+	containers, err := storageList(properties, "ContainerDefinitions")
+	if err != nil || len(containers) == 0 {
+		return "", spec, fmt.Errorf("declares no readable containers: %v", err)
+	}
+	var bootstrap any
+	for _, value := range containers {
 		container, _ := value.(map[string]any)
 		name, _ := container["Name"].(string)
-		for _, entry := range asList(container["MountPoints"]) {
+		if name == "" {
+			return "", spec, fmt.Errorf("declares an unnamed container")
+		}
+		for _, raw := range asList(container["Environment"]) {
+			pair, _ := raw.(map[string]any)
+			if pair["Name"] == bootstrapDocumentVariable {
+				if bootstrap != nil {
+					return "", spec, fmt.Errorf("declares multiple bootstrap documents")
+				}
+				bootstrap = pair["Value"]
+			}
+		}
+		mounts, err := storageList(container, "MountPoints")
+		if err != nil {
+			return "", spec, err
+		}
+		for _, entry := range mounts {
 			mount, _ := entry.(map[string]any)
 			readOnly, _ := mount["ReadOnly"].(bool)
 			source, _ := mount["SourceVolume"].(string)
 			path, _ := mount["ContainerPath"].(string)
+			known := false
+			for _, volume := range spec.Volumes {
+				known = known || source == volume
+			}
+			if !known || path == "" {
+				return "", spec, fmt.Errorf("declares an invalid mount: %v", entry)
+			}
 			spec.Mounts = append(spec.Mounts, localMountSpec{
 				Container: name, SourceVolume: source, ContainerPath: path, ReadOnly: readOnly,
 			})
 		}
+	}
+	if len(spec.Volumes) == 0 && len(spec.Mounts) == 0 {
+		if _, err := volumeFreeBootstrap(bootstrap); err != nil {
+			return "", spec, err
+		}
+	} else if len(spec.Volumes) == 0 || len(spec.Mounts) == 0 {
+		return "", spec, fmt.Errorf("declares incomplete shared storage (%d volumes, %d mounts)", len(spec.Volumes), len(spec.Mounts))
 	}
 	return family, spec, nil
 }

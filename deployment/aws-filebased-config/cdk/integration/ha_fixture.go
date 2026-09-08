@@ -53,6 +53,8 @@ type haSandbox struct {
 	AdminParam          string
 	ProbeCIDR           string
 	Samples             int
+	// Empty preserves the credentialed and existing local file-source fixtures.
+	ConfigSource string
 
 	// PlaintextBroker opts the session into sending its credentials in the clear.
 	// The credentialed sandbox never sets it — its broker speaks TLS. A local
@@ -189,6 +191,11 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox, slots *ha.Mem
 		ID: "gobridge-ha-integration", DeploymentMode: "clustered",
 		ShutdownTimeout: "45s", PerRecordDrainTimeout: "2s", MaxDrainTimeout: "20s",
 	}
+	if env.ConfigSource == infra.ConfigSourceDynamoDB {
+		// Local mirrors outlive a stack. Isolate this fixture's rollout baseline
+		// from the file proof and from repeated deployments in the same process.
+		bridgeSettings.ID = *stack.StackName()
+	}
 	if slots != nil {
 		// The roster must name exactly the slots the deployment provisions; the
 		// construct rejects the stack at synth otherwise. The confirm window makes
@@ -239,11 +246,17 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox, slots *ha.Mem
 
 	src := gobridgecdk.BridgeYamlInline(cfg)
 	bootstrap := infra.BootstrapConfig{
-		BridgeID:         "gobridge-ha-integration",
+		BridgeID:         bridgeSettings.ID,
 		ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",
 		AdminAPIKeyParam: env.AdminParam,
 		AWSRegion:        env.Region,
 		MetricsExporter:  infra.MetricsExporterCloudWatch,
+	}
+	if env.ConfigSource != "" {
+		bootstrap.ConfigSource = env.ConfigSource
+	}
+	if env.ConfigSource == infra.ConfigSourceDynamoDB {
+		bootstrap.ConfigFilePath = ""
 	}
 	bridge := ha.NewGoBridgeDynamoDBHA(stack, jsii.String("DynamoDBHA"), &ha.DynamoDBHAProps{
 		Vpc:                          vpc,
@@ -301,6 +314,9 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox, slots *ha.Mem
 		// must not be emitted on the autoscaled path at all.
 		outputs["MemberSlotIDs"] = jsii.String(strings.Join(bridge.MemberSlotIDs(), ","))
 		outputs["RolloutTableName"] = jsii.String(bridge.RolloutTableName())
+	}
+	if table := bridge.ConfigTable(); table != nil {
+		outputs["ConfigTableName"] = table.TableName()
 	}
 	for name, value := range outputs {
 		out := awscdk.NewCfnOutput(stack, jsii.String(name), &awscdk.CfnOutputProps{Value: value})
