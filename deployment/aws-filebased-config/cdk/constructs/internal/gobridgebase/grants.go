@@ -20,6 +20,9 @@ import (
 // (RW for control, RO for worker) using the helpers from
 // constructs/internal/grants.
 func applyEfsGrants(p *Props, role awsiam.IRole) {
+	if p.EfsConfig == nil {
+		return
+	}
 	fs := p.EfsConfig.FileSystem()
 	switch p.Mode {
 	case ModeControl:
@@ -33,7 +36,7 @@ func applyEfsGrants(p *Props, role awsiam.IRole) {
 // encrypted with a customer-managed key. AWS-managed keys need no
 // explicit grant.
 func applyKmsGrant(p *Props, role awsiam.IRole) {
-	if p.EfsKmsKey == nil {
+	if p.EfsConfig == nil || p.EfsKmsKey == nil {
 		return
 	}
 	grants.GrantKMSEfsCmkUse(role, p.EfsKmsKey)

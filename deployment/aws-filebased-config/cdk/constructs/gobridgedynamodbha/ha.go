@@ -44,6 +44,7 @@ type DynamoDBHAProps struct {
 	VpcSubnets *awsec2.SubnetSelection
 	Cluster    awsecs.ICluster
 
+	// EfsConfig is used only for file config or parsed filesystem store paths.
 	EfsConfig *cdkconstructs.GoBridgeEfsConfig
 	EfsKmsKey awskms.IKey
 
@@ -103,8 +104,8 @@ type DynamoDBHAProps struct {
 // GoBridgeDynamoDBHA deploys one config-control task and at least two workers
 // as a coordinated active/warm-standby fleet. All tasks run the same clustered
 // runtime and may hold the DynamoDB lease; control versus worker only governs
-// EFS config-write authority. The task definitions are built exclusively by
-// internal/gobridgebase.New.
+// config-write authority through EFS or config-table grants. The task definitions
+// are built exclusively by internal/gobridgebase.New.
 type GoBridgeDynamoDBHA struct {
 	constructs.Construct
 
@@ -135,7 +136,7 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 		workerDesired = *props.WorkerDesiredCount
 	}
 
-	bootstrapControl := props.Bootstrap
+	bootstrapControl := props.Bootstrap.Normalized()
 	bootstrapControl.NodeRole = infra.NodeRoleControl
 	bootstrapControl.Topology = infra.TopologyDynamoDBCoordinatedHA
 	bootstrapControl.MetricsExporter = infra.MetricsExporterCloudWatch
@@ -184,6 +185,7 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 	// committed artifact at boot, so a restart before the first rollout recovers to
 	// the config this deployment admitted rather than to whatever the mutable EFS
 	// document happens to hold.
+	needsEFS := validation.NeedsEFS(mat.Config, bootstrapControl)
 	fingerprint := bridge.DeploymentProfileFingerprint(mat.Config)
 	baseline, err := bridge.ConfigArtifactDigest(mat.Config)
 	_ = mat.Close()
@@ -212,14 +214,18 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 	}
 	requireTwoAvailabilityZones(props.Vpc, selectedSubnets)
 
-	efsConfig := props.EfsConfig
-	if efsConfig == nil {
-		efsConfig = cdkconstructs.NewGoBridgeEfsConfig(c, jsii.String("Efs"), &cdkconstructs.GoBridgeEfsConfigProps{
-			Vpc:        props.Vpc,
-			VpcSubnets: selectedSubnets,
-			EfsKmsKey:  props.EfsKmsKey,
-		})
+	var efsConfig *cdkconstructs.GoBridgeEfsConfig
+	if needsEFS {
+		efsConfig = props.EfsConfig
+		if efsConfig == nil {
+			efsConfig = cdkconstructs.NewGoBridgeEfsConfig(c, jsii.String("Efs"), &cdkconstructs.GoBridgeEfsConfigProps{
+				Vpc:        props.Vpc,
+				VpcSubnets: selectedSubnets,
+				EfsKmsKey:  props.EfsKmsKey,
+			})
+		}
 	}
+	configTable := gobridgebase.NewConfigTable(c, bootstrapControl)
 
 	cluster := props.Cluster
 	if cluster == nil {
@@ -240,6 +246,7 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 		Mode:             gobridgebase.ModeControl,
 		Vpc:              props.Vpc,
 		EfsConfig:        efsConfig,
+		ConfigTable:      configTable,
 		EfsKmsKey:        props.EfsKmsKey,
 		Image:            props.Image,
 		Bootstrap:        bootstrapControl,
@@ -267,6 +274,7 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 			Mode:             gobridgebase.ModeWorker,
 			Vpc:              props.Vpc,
 			EfsConfig:        efsConfig,
+			ConfigTable:      configTable,
 			EfsKmsKey:        props.EfsKmsKey,
 			Image:            props.Image,
 			Bootstrap:        slotBootstrap,
@@ -297,9 +305,11 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 			Description: jsii.String("gobridge DynamoDB HA worker task"),
 		})
 	}
-	if efsSG := efsConfig.SecurityGroup(); efsSG != nil {
-		efsSG.AddIngressRule(controlSG, awsec2.Port_Tcp(jsii.Number(2049)), jsii.String("gobridge HA control NFS"), jsii.Bool(false))
-		efsSG.AddIngressRule(workerSG, awsec2.Port_Tcp(jsii.Number(2049)), jsii.String("gobridge HA worker NFS"), jsii.Bool(false))
+	if efsConfig != nil {
+		if efsSG := efsConfig.SecurityGroup(); efsSG != nil {
+			efsSG.AddIngressRule(controlSG, awsec2.Port_Tcp(jsii.Number(2049)), jsii.String("gobridge HA control NFS"), jsii.Bool(false))
+			efsSG.AddIngressRule(workerSG, awsec2.Port_Tcp(jsii.Number(2049)), jsii.String("gobridge HA worker NFS"), jsii.Bool(false))
+		}
 	}
 
 	controlProps := &awsecs.FargateServiceProps{

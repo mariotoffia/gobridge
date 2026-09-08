@@ -54,7 +54,9 @@ func (g *GoBridgeDynamoDBHA) WorkerTaskDefinitions() []awsecs.FargateTaskDefinit
 	}
 	return out
 }
-func (g *GoBridgeDynamoDBHA) Cluster() awsecs.ICluster                    { return g.cluster }
+func (g *GoBridgeDynamoDBHA) Cluster() awsecs.ICluster { return g.cluster }
+
+// EfsConfig returns nil when neither file config nor parsed store paths need EFS.
 func (g *GoBridgeDynamoDBHA) EfsConfig() *cdkconstructs.GoBridgeEfsConfig { return g.efsConfig }
 func (g *GoBridgeDynamoDBHA) Data() *DynamoDBHAData                       { return g.data }
 func (g *GoBridgeDynamoDBHA) ControlSecurityGroup() awsec2.ISecurityGroup { return g.controlSG }

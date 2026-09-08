@@ -60,7 +60,8 @@ func (b *BridgeRef) AlbARN() *string { return b.albARN }
 func (b *BridgeRef) ClusterARN() *string { return b.clusterARN }
 
 // EfsID returns the EFS file-system id token, or nil if LookupBridge
-// was not called with ssmexports.IncludeARNs().
+// was not called with ssmexports.IncludeARNs(), the producer uses no EFS, or
+// the optional EFS-presence lookup has not yet populated the synth context.
 func (b *BridgeRef) EfsID() *string { return b.efsID }
 
 // ManifestVersion returns the synth-time-resolved manifest-version
@@ -74,7 +75,9 @@ func (b *BridgeRef) ManifestVersion() string { return b.manifestVersion }
 // The prefix must match the producer side exactly (non-empty, leading
 // '/'); both panic with the same message style as WithSSMExports.
 // IncludeARNs() must be supplied to materialise AlbARN/ClusterARN/EfsID;
-// otherwise those accessors return nil.
+// otherwise those accessors return nil. EfsID also returns nil for an EFS-free
+// producer. EFS presence is cached in cdk.context.json; refresh its lookup entry
+// when changing a producer between filesystem-backed and EFS-free config.
 //
 // A child Construct named id is created under scope so multiple
 // LookupBridge calls in the same scope do not collide on logical IDs.
@@ -104,7 +107,15 @@ func LookupBridge(scope constructs.Construct, id string, prefix string, opts ...
 	if o.IncludeARNs {
 		ref.albARN = importStr("alb-arn")
 		ref.clusterARN = importStr("cluster-arn")
-		ref.efsID = importStr("efs-id")
+		// EFS-free producers omit this parameter. Resolve only its presence at
+		// synth time; when present, keep the value as a deploy-time token like
+		// the other resource IDs. CDK replaces an empty default with its own
+		// nonempty dummy value, so absence needs an explicit sentinel.
+		const noEFS = "gobridge-no-efs"
+		efs := awsssm.StringParameter_ValueFromLookup(child, jsii.String(prefix+"/efs-id"), jsii.String(noEFS), nil)
+		if efs != nil && *efs != "" && *efs != noEFS {
+			ref.efsID = importStr("efs-id")
+		}
 	}
 
 	// Derive PublicDnsName from AdminURL using token-safe intrinsics.

@@ -1,19 +1,14 @@
 package gobridgebase
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
-	"os"
-	"path"
-	"strings"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsefs"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsiam"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awskms"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslogs"
@@ -114,7 +109,8 @@ const (
 // Props configures the shared base. The fields mirror what the
 // public GoBridgeSingle / GoBridgeCluster constructs need to forward.
 //
-// Required: Vpc, EfsConfig, Image, Bootstrap, Source, Mode.
+// Required: Vpc, Image, Bootstrap, Source, Mode. EfsConfig is required only
+// when the config source or parsed store paths need a filesystem.
 type Props struct {
 	// Mode selects control vs worker task shape.
 	Mode Mode
@@ -126,6 +122,10 @@ type Props struct {
 	// uses [GoBridgeEfsConfig.ControlAccessPoint] for ModeControl
 	// and [GoBridgeEfsConfig.WorkerAccessPoint] for ModeWorker.
 	EfsConfig *cdkconstructs.GoBridgeEfsConfig
+
+	// ConfigTable is owned once by the facade and shared by all of its bases.
+	// Required only for a DynamoDB config source; separate from HA data tables.
+	ConfigTable awsdynamodb.ITable
 
 	// EfsKmsKey, when non-nil, triggers a KMS grant on the task role
 	// (kms:Decrypt + GenerateDataKey + DescribeKey) scoped to the
@@ -230,11 +230,13 @@ type Built struct {
 	SeederContainer awsecs.ContainerDefinition
 	MainLogGroup    awslogs.LogGroup
 	SeederLogGroup  awslogs.LogGroup
-	ConfigAsset     awss3assets.Asset
-	TaskRole        awsiam.IRole
-	ExecutionRole   awsiam.IRole
-	PortMappings    []PortMapping
-	Mode            Mode
+	// ConfigAsset is nil for a DynamoDB source, which has no file seeder.
+	ConfigAsset   awss3assets.Asset
+	ConfigTable   awsdynamodb.ITable
+	TaskRole      awsiam.IRole
+	ExecutionRole awsiam.IRole
+	PortMappings  []PortMapping
+	Mode          Mode
 }
 
 // New constructs a shared GoBridge task definition + log groups +
@@ -264,17 +266,6 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 		panic(fmt.Sprintf("gobridgebase: materialize bridge config source: %v", err))
 	}
 	defer func() { _ = mat.Close() }()
-	// Asset upload + EXPECTED_HASH must come from the same bytes
-	// that the parser saw — read the file once.
-	yamlBytes, err := os.ReadFile(mat.AssetPath)
-	if err != nil {
-		panic(fmt.Sprintf("gobridgebase: read materialized yaml: %v", err))
-	}
-	expectedHash := sha256Hex(yamlBytes)
-
-	asset := awss3assets.NewAsset(c, jsii.String("ConfigAsset"), &awss3assets.AssetProps{
-		Path: jsii.String(mat.AssetPath),
-	})
 
 	cpu := jsii.Number(defaultCPU)
 	if props.CPU != nil {
@@ -289,6 +280,7 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 		panic(fmt.Sprintf("gobridgebase: invalid MemoryMiB: %v", err))
 	}
 	bootstrap := props.Bootstrap.Normalized()
+	stampConfigTable(&bootstrap, props.ConfigTable)
 	// The task definition is authoritative. Never trust a separately supplied
 	// bootstrap byte limit that could drift from the actual Fargate hard limit.
 	bootstrap.ContainerMemoryBytes = containerMemoryBytes
@@ -298,23 +290,6 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 		mountPath = *props.MountPath
 	}
 
-	// seederTarget is the EFS path the seeder writes and the runtime watches.
-	// Cross-check it against the runtime's ConfigFilePath: on mismatch the
-	// container still starts and passes /health, but the runtime's
-	// optionalFileSource never finds the seeded file and silently falls back
-	// to an empty default config — a live-but-bridging-nothing task. Fail
-	// fast at synth instead. Empty ConfigFilePath is left to Bootstrap
-	// validation at container start.
-	seederTarget := joinPath(mountPath, defaultBridgeYamlName)
-	if cfp := props.Bootstrap.ConfigFilePath; cfp != "" && path.Clean(cfp) != path.Clean(seederTarget) {
-		panic(fmt.Sprintf(
-			"gobridgebase: Bootstrap.ConfigFilePath %q does not match the seeder EFS target %q "+
-				"(mount %q + %q); the runtime would watch a path the seeder never writes and bridge "+
-				"nothing while still reporting healthy. Set ConfigFilePath to the seeder target (or "+
-				"override MountPath consistently on both).",
-			cfp, seederTarget, mountPath, defaultBridgeYamlName))
-	}
-
 	taskDef := awsecs.NewFargateTaskDefinition(c, jsii.String("TaskDef"), &awsecs.FargateTaskDefinitionProps{
 		Cpu:            cpu,
 		MemoryLimitMiB: mem,
@@ -322,19 +297,7 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 		ExecutionRole:  props.ExecutionRole,
 	})
 
-	// EFS volume — single mount, access point chosen by Mode.
-	ap := pickAccessPoint(props.EfsConfig, props.Mode)
-	taskDef.AddVolume(&awsecs.Volume{
-		Name: jsii.String(volumeName),
-		EfsVolumeConfiguration: &awsecs.EfsVolumeConfiguration{
-			FileSystemId:      props.EfsConfig.FileSystem().FileSystemId(),
-			TransitEncryption: jsii.String("ENABLED"),
-			AuthorizationConfig: &awsecs.AuthorizationConfig{
-				AccessPointId: ap.AccessPointId(),
-				Iam:           jsii.String("ENABLED"),
-			},
-		},
-	})
+	addEfsVolume(taskDef, props)
 
 	// Log groups.
 	logRetention := awslogs.RetentionDays_ONE_MONTH
@@ -350,53 +313,11 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 		Retention:     logRetention,
 		RemovalPolicy: logRemoval,
 	})
-	seederLG := awslogs.NewLogGroup(c, jsii.String("SeederLogs"), &awslogs.LogGroupProps{
+	seeder, seederLG, asset := addFileSeeder(c, props, taskDef, mat, &awslogs.LogGroupProps{
 		LogGroupName:  jsii.String(logGroupPrefix(stackName, scopeID, containerNameSeeder)),
 		Retention:     logRetention,
 		RemovalPolicy: logRemoval,
-	})
-
-	// Seeder init container.
-	seederMode := defaultSeederMode(props)
-	seederImg := DefaultSeederImage()
-	if props.SeederImage != nil && *props.SeederImage != "" {
-		seederImg = *props.SeederImage
-		// An operator-supplied mirror must still be fully pinned — an
-		// unpinned or placeholder override is the same dead-on-arrival
-		// failure as the default (main container gates on seeder SUCCESS).
-		if err := validateSeederImageRef(seederImg); err != nil {
-			panic(err.Error())
-		}
-	}
-	seeder := taskDef.AddContainer(jsii.String("Seeder"), &awsecs.ContainerDefinitionOptions{
-		ContainerName: jsii.String(containerNameSeeder),
-		Image:         awsecs.ContainerImage_FromRegistry(jsii.String(seederImg), nil),
-		Essential:     jsii.Bool(false),
-		EntryPoint:    jsii.Strings("/bin/bash", "-c"),
-		Command:       jsii.Strings(SeederScript()),
-		Environment: &map[string]*string{
-			"MODE":              jsii.String(seederMode),
-			"EXPECTED_HASH":     jsii.String(expectedHash),
-			"ASSET_S3_URI":      asset.S3ObjectUrl(),
-			"EFS_TARGET_PATH":   jsii.String(seederTarget),
-			"LOG_STREAM_PREFIX": jsii.String(scopeID + "/" + containerNameSeeder),
-		},
-		Logging: awsecs.LogDriver_AwsLogs(&awsecs.AwsLogDriverProps{
-			LogGroup:     seederLG,
-			StreamPrefix: jsii.String(containerNameSeeder),
-		}),
-	})
-	seeder.AddMountPoints(&awsecs.MountPoint{
-		SourceVolume:  jsii.String(volumeName),
-		ContainerPath: jsii.String(mountPath),
-		// Seeder always mounts RW. Read-only worker modes (AdoptValid /
-		// AbortDeploy) never write EFS — the script stages under /tmp and
-		// only reads dirname(EFS_TARGET_PATH). RO enforcement for workers
-		// happens on the *main* container mount below (and is doubly
-		// enforced by the GrantEFSWorker IAM scope — no ClientWrite action
-		// is granted on the worker task role).
-		ReadOnly: jsii.Bool(false),
-	})
+	}, mountPath)
 
 	// Main container.
 	bootstrapJSON, err := json.Marshal(bootstrap)
@@ -454,15 +375,19 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 		}
 	}
 	main := taskDef.AddContainer(jsii.String("Main"), mainOpts)
-	main.AddMountPoints(&awsecs.MountPoint{
-		SourceVolume:  jsii.String(volumeName),
-		ContainerPath: jsii.String(mountPath),
-		ReadOnly:      jsii.Bool(props.Mode == ModeWorker),
-	})
-	main.AddContainerDependencies(&awsecs.ContainerDependency{
-		Container: seeder,
-		Condition: awsecs.ContainerDependencyCondition_SUCCESS,
-	})
+	if props.EfsConfig != nil {
+		main.AddMountPoints(&awsecs.MountPoint{
+			SourceVolume:  jsii.String(volumeName),
+			ContainerPath: jsii.String(mountPath),
+			ReadOnly:      jsii.Bool(props.Mode == ModeWorker),
+		})
+	}
+	if seeder != nil {
+		main.AddContainerDependencies(&awsecs.ContainerDependency{
+			Container: seeder,
+			Condition: awsecs.ContainerDependencyCondition_SUCCESS,
+		})
+	}
 
 	// Port mappings derived from yaml + bootstrap.
 	portMappings := DerivePortMappings(mat.Config, bootstrap)
@@ -476,12 +401,19 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 
 	// IAM grants.
 	taskRole := taskDef.TaskRole()
-	asset.GrantRead(taskRole)
+	if asset != nil {
+		asset.GrantRead(taskRole)
+	}
 	applyEfsGrants(props, taskRole)
 	applyKmsGrant(props, taskRole)
 	applyMetricsGrant(props, taskRole)
 	grants.GrantLogsWrite(taskRole, mainLG)
-	grants.GrantLogsWrite(taskRole, seederLG)
+	if seederLG != nil {
+		grants.GrantLogsWrite(taskRole, seederLG)
+	}
+	if bootstrap.ConfigSource == infra.ConfigSourceDynamoDB {
+		grants.GrantConfigSource(taskRole, props.ConfigTable, modeToNodeRole(props.Mode), bootstrap.ConfigDynamoDB.WatchMode)
+	}
 	applyAdapterGrants(c, props, taskRole, mat)
 
 	return &Built{
@@ -492,6 +424,7 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 		MainLogGroup:    mainLG,
 		SeederLogGroup:  seederLG,
 		ConfigAsset:     asset,
+		ConfigTable:     props.ConfigTable,
 		TaskRole:        taskRole,
 		ExecutionRole:   taskDef.ExecutionRole(),
 		PortMappings:    portMappings,
@@ -508,7 +441,7 @@ func validateProps(p *Props) {
 	if p.Vpc == nil {
 		panic("gobridgebase: Vpc is required")
 	}
-	if p.EfsConfig == nil {
+	if p.EfsConfig == nil && p.Bootstrap.ConfigSource != infra.ConfigSourceDynamoDB {
 		panic("gobridgebase: EfsConfig is required")
 	}
 	if p.Image == nil {
@@ -519,36 +452,11 @@ func validateProps(p *Props) {
 	}
 }
 
-func pickAccessPoint(efs *cdkconstructs.GoBridgeEfsConfig, m Mode) awsefs.IAccessPoint {
-	if m == ModeWorker {
-		return efs.WorkerAccessPoint()
-	}
-	return efs.ControlAccessPoint()
-}
-
-func defaultSeederMode(p *Props) string {
-	if p.Mode == ModeWorker {
-		if p.WorkerSeederMode != nil && *p.WorkerSeederMode != "" {
-			return *p.WorkerSeederMode
-		}
-		return "AdoptValid"
-	}
-	if p.SeederMode != nil && *p.SeederMode != "" {
-		return *p.SeederMode
-	}
-	return "SeedOnce"
-}
-
 func modeToNodeRole(m Mode) infra.NodeRole {
 	if m == ModeWorker {
 		return infra.NodeRoleWorker
 	}
 	return infra.NodeRoleControl
-}
-
-func sha256Hex(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
 }
 
 func logGroupPrefix(stackName, scopeID, container string) string {
@@ -559,13 +467,6 @@ func logGroupPrefix(stackName, scopeID, container string) string {
 		return "/gobridge/" + scopeID + "/" + container
 	}
 	return "/gobridge/" + stackName + "/" + scopeID + "/" + container
-}
-
-func joinPath(dir, name string) string {
-	if strings.HasSuffix(dir, "/") {
-		return dir + name
-	}
-	return dir + "/" + name
 }
 
 func memoryBytesFromMiB(memoryMiB float64) (uint64, error) {

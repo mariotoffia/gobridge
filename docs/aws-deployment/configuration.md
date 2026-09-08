@@ -21,7 +21,7 @@ flowchart LR
     end
 
     subgraph Dev Team
-        BRC[Bridge Config\nYAML on EFS]
+        BRC[Bridge Config\nYAML on EFS or JSON in DynamoDB]
     end
 
     BC --> APP[GoBridge Process]
@@ -39,7 +39,7 @@ flowchart LR
 |--------|------------------|---------------|
 | **Owner** | Infrastructure / platform team | Development / application team |
 | **Format** | JSON | YAML (or JSON) |
-| **Delivery** | Environment variable or file | EFS mount |
+| **Delivery** | Environment variable or file | EFS mount or DynamoDB config table |
 | **Mutability** | Immutable per task revision | Hot-reloadable at runtime |
 | **Contains** | Listen addresses, SSM refs, topology | Receivers, senders, routes, sessions |
 | **Sensitive data** | SSM parameter *references* only | No secrets (resolved at runtime) |
@@ -67,11 +67,11 @@ stores and derived streams client share its connection settings.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `bridge_id` | `string` | Yes | -- | Unique identifier for this bridge instance. Used as the `bridge.id` in the default logical config when the selected config source has no config yet. |
-| `config_source` | `string` | No | `"file"` | Bridge config source: `"file"` or `"dynamodb"`. Empty normalizes to `"file"`. The runtime supports both. CDK facades still seed files; DynamoDB runtime configuration requires a separately provisioned table and permissions. |
-| `config_dynamodb` | `object` | For DynamoDB | -- | DynamoDB config-source settings: `table_name` (required string), `watch_mode` (`"poll"` by default or `"streams"`), and `stream_poll_interval` (optional positive Go duration for the streams `GetRecords` cadence). Must be absent for the file source. |
+| `config_source` | `string` | No | `"file"` | Bridge config source: `"file"` or `"dynamodb"`. Empty normalizes to `"file"`. Single and DynamoDB HA CDK facades provision the config table and grants; the filesystem-replicated facade rejects DynamoDB at synth. Config-item seeding from the bundled YAML is not implemented yet; file seeding is unchanged. |
+| `config_dynamodb` | `object` | For DynamoDB | -- | DynamoDB config-source settings: `table_name` (required at runtime; CDK provisions and overwrites it), `watch_mode` (`"poll"` by default or `"streams"`), and `stream_poll_interval` (optional positive Go duration for the streams `GetRecords` cadence). Must be absent for the file source. |
 | `config_file_path` | `string` | For file | -- | Absolute path to the bridge config YAML as seen inside the container (the EFS mount point), e.g. `/var/lib/gobridge/bridge.yaml`. Required for the file source and must be empty for DynamoDB. |
 | `admin_api_key_param` | `string` | Yes | -- | SSM parameter name or `pms://` URI for the admin API key. Resolved at startup and on every config reload. The value is a single key or a JSON map of named keys — see [Admin key parameter value](#admin-key-parameter-value). |
-| `node_role` | `string` | No | `"control"` | Role of this node: `"control"` or `"worker"`. Every node starts the transport, admin and monitor servers regardless of the value; what it selects at runtime is the admin config-transaction **single-writer** posture. For the file source, a `control` node asserts it is the sole durable config writer and may commit config transactions; a `worker` node mounts EFS read-only in `GoBridgeCluster` and is refused (HTTP 500) on a durable commit -- see [Admin Config Transactions and the Single-Writer Posture](../deployment-guide.md#admin-config-transactions-and-the-single-writer-posture). For DynamoDB, neither role asserts single-writer authority: conditional writes enforce CAS. At deploy time the CDK single/cluster facades stamp it per service and validate it at synth. Unrelated to the runtime failover role (`active` / `standby` / `standalone`) the monitor probes report. |
+| `node_role` | `string` | No | `"control"` | Role of this node: `"control"` or `"worker"`. Every node starts the transport, admin and monitor servers regardless of the value; what it selects at runtime is the admin config-transaction **single-writer** posture. For the file source, a `control` node asserts it is the sole durable config writer and may commit config transactions; a `worker` node mounts EFS read-only in `GoBridgeCluster` and is refused (HTTP 500) on a durable commit -- see [Admin Config Transactions and the Single-Writer Posture](../deployment-guide.md#admin-config-transactions-and-the-single-writer-posture). For DynamoDB, neither role asserts single-writer authority: conditional writes enforce CAS. CDK nevertheless grants config writes only to control; worker task roles have read-only config access. At deploy time the CDK single/cluster facades stamp it per service and validate it at synth. Unrelated to the runtime failover role (`active` / `standby` / `standalone`) the monitor probes report. |
 | `topology` | `string` | No | `"single"` | Deployment topology: `"single"` (one replica), `"filesystem_replicated"` (N replicas sharing EFS), or `"dynamodb_coordinated_ha"` (the active/warm-standby profile stamped by `GoBridgeDynamoDBHA`). The HA value additionally requires the four `dynamodb_ha_*` identities below. |
 | `member_id` | `string` | No | `""` | This node's STABLE identity in a coordinated cluster rollout cohort. Required whenever the logical config sets `bridge.cluster.rollout: coordinated`, and it MUST appear verbatim in that config's `bridge.cluster.members`: the barrier freezes the roster as its membership epoch and counts acknowledgements against it, so an absent or drifting id aborts every rollout. Unlike `instance_id` it MUST survive a restart -- it is the cohort identity a restarted task rejoins under. Stamped per slot by `GoBridgeDynamoDBHA` when `MemberSlots` is set; empty for every non-coordinated deployment, including the autoscaled worker shape, whose interchangeable tasks have no such identity. |
 | `dynamodb_ha_lease_table_name` | `string` | No | `""` | Deployment-owned expectation: the physical DynamoDB table backing `stores.lease`. Stamped only by `GoBridgeDynamoDBHA`; the runtime refuses to boot a logical config whose lease table differs, so a tampered or stale EFS document cannot bypass synth-time admission. Required when `topology` is `"dynamodb_coordinated_ha"`. |

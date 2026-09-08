@@ -2,6 +2,8 @@
 
 Catalog of all test functions in the gobridge repository.
 
+AWS config-source construct tests are listed in [their focused index](_test_index_aws_config.md).
+
 | name | description | type | group | status |
 |------|-------------|------|-------|--------|
 | TestEnvelope_HasExpiry | validates envelope expiry detection | unit | domain | pass |

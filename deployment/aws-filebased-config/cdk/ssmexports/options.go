@@ -23,7 +23,8 @@ type Option func(*Options)
 
 // IncludeARNs enables publication of `<prefix>/alb-arn`,
 // `<prefix>/cluster-arn` and `<prefix>/efs-id` in addition to the
-// default URL parameters.
+// default URL parameters. EFS-free producers omit efs-id; LookupBridge returns
+// nil from EfsID after its optional presence lookup.
 func IncludeARNs() Option {
 	return func(o *Options) { o.IncludeARNs = true }
 }

@@ -145,6 +145,9 @@ func validateFilesystemProfile(boot infra.BootstrapConfig, cfg *ports.BridgeConf
 	if boot.Topology != infra.TopologyFilesystemReplicated {
 		return nil
 	}
+	if boot.ConfigSource == infra.ConfigSourceDynamoDB {
+		return &ErrFilesystemProfile{Reason: "filesystem_replicated requires config_source file"}
+	}
 	for _, route := range cfg.Routes {
 		if route.DeliveryMode == "shared_outbox" {
 			return &ErrFilesystemProfile{
@@ -176,6 +179,22 @@ type storePathHit struct {
 // (store, path) pairs is returned for downstream re-use by the
 // worker-control-only check (avoids walking the configs twice).
 func validateStorePaths(cfg *ports.BridgeConfig, mount string) ([]storePathHit, error) {
+	hits := collectStorePaths(cfg)
+	for _, hit := range hits {
+		if !isUnderMount(hit.Path, mount) {
+			return nil, &ErrStorePathOutsideMount{Store: hit.Store, Path: hit.Path, Mount: mount}
+		}
+	}
+	return hits, nil
+}
+
+// NeedsEFS uses the same parsed store paths as Phase1. File config always needs
+// EFS; a DynamoDB source needs it only for filesystem-backed stores.
+func NeedsEFS(cfg *ports.BridgeConfig, boot infra.BootstrapConfig) bool {
+	return boot.ConfigSource != infra.ConfigSourceDynamoDB || len(collectStorePaths(cfg)) > 0
+}
+
+func collectStorePaths(cfg *ports.BridgeConfig) []storePathHit {
 	var hits []storePathHit
 	stores := []struct {
 		name string
@@ -186,20 +205,12 @@ func validateStorePaths(cfg *ports.BridgeConfig, mount string) ([]storePathHit, 
 		{"stores.dlq", cfg.Stores.DLQ},
 		{"stores.managed_subscriptions", cfg.Stores.ManagedSubscriptions},
 	}
-	for _, s := range stores {
-		paths := extractStorePaths(s.sc)
-		for _, p := range paths {
-			if !isUnderMount(p, mount) {
-				return nil, &ErrStorePathOutsideMount{
-					Store: s.name,
-					Path:  p,
-					Mount: mount,
-				}
-			}
-			hits = append(hits, storePathHit{Store: s.name, Path: p})
+	for _, store := range stores {
+		for _, p := range extractStorePaths(store.sc) {
+			hits = append(hits, storePathHit{Store: store.name, Path: p})
 		}
 	}
-	return hits, nil
+	return hits
 }
 
 // validateWorkerControlOnly enforces matrix row 7. It only fires

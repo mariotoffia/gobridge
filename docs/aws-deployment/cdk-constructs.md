@@ -27,7 +27,7 @@ deploying a complete profile:
 | Construct | Package | Purpose |
 |-----------|---------|---------|
 | `GoBridgeEfsConfig` | `cdk/constructs` | EFS filesystem + access point for config mounting. |
-| `GoBridgeSingle` | `cdk/constructs/gobridgesingle` | One control Fargate task, RW EFS mount, no worker, no clustering. |
+| `GoBridgeSingle` | `cdk/constructs/gobridgesingle` | One control Fargate task, optional EFS mount, no worker, no clustering. |
 | `GoBridgeCluster` | `cdk/constructs/gobridgecluster` | Independent filesystem scale-out: one control task plus workers. |
 | `GoBridgeDynamoDBHA` | `cdk/constructs/gobridgedynamodbha` | DynamoDB-coordinated active/warm-standby: one control plus at least two workers and three owned tables. |
 
@@ -35,6 +35,30 @@ The constructors are `NewGoBridgeSingle(scope, id, *SingleProps)`,
 `NewGoBridgeCluster(scope, id, *ClusterProps)`, and
 `NewGoBridgeDynamoDBHA(scope, id, *DynamoDBHAProps)`. There is no `GoBridgeService` or
 `GoBridgeStack` construct and no `GoBridgeServiceProps` type.
+
+## Runtime config source
+
+Use `Bootstrap.ConfigSource`; there is no separate config-source prop. Empty or
+`file` preserves EFS and the existing file seeder. `dynamodb` on Single or
+DynamoDB HA creates one retained, on-demand, PITR-enabled config table and stamps
+its name into bootstrap without mutating caller settings. Workers receive only
+read access to that table; control receives read/write access. Set
+`Bootstrap.ConfigDynamoDB.WatchMode` to `streams` to enable the table stream and
+stream-read grants. The filesystem-replicated Cluster accepts only `file`.
+
+`BridgeConfig` still supplies YAML for synth-time validation, port mappings and
+adapter grants for either runtime source. **DynamoDB config-item seeding is not
+implemented yet**; see [storage and initialization](storage-and-secrets.md#dynamodb-for-configuration).
+
+EFS is needed only for file config or parsed SQLite paths. `EfsConfig()` returns
+nil otherwise, including when an unused `EfsConfig` prop was supplied. Pass that
+value unchanged to `GoBridgeAlarms`: the EFS alarm is omitted when no filesystem
+exists. ALB SSM exports with `IncludeARNs()` omit `efs-id` for EFS-free facades;
+the URL and cluster/ALB exports are unchanged. `LookupBridge(..., IncludeARNs())`
+uses an optional synth-time SSM lookup for EFS presence and returns nil from
+`EfsID()` until that lookup resolves, or when the producer has no filesystem.
+When changing the producer between filesystem-backed and EFS-free config, refresh
+the cached `efs-id` lookup in `cdk.context.json` after deploying the producer.
 
 ## GoBridgeEfsConfigProps
 
@@ -111,7 +135,7 @@ the single-valued accessors.
 
 ### Worker seeder: AdoptValid vs AbortDeploy
 
-Workers mount EFS read-only and cannot write config, so their default seeder
+For the file config source, workers mount EFS read-only and cannot write config, so their default seeder
 mode is **`AdoptValid`**: on startup a worker adopts whatever valid `bridge.yaml`
 the EFS filesystem currently holds — whether written by the CDK seed or by an
 Admin-API config-txn commit — and never fails on hash drift from the synth-time

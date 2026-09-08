@@ -95,7 +95,7 @@ flowchart TB
 
 `GoBridgeEfsConfig` is normally created and owned by the facade; consumers may pass an instance in to override KMS / throughput / removal policy / backup. `GoBridgeALBAttachment` and `GoBridgeAlarms` are independent opt-ins. Cross-stack consumption is via `gobridgecdk.LookupBridge` (returns a `*BridgeRef` exposing the same accessor surface as the producing constructs).
 
-**EFS is conditional (planned).** The facade provisions EFS only when
+**EFS is conditional.** The facade provisions EFS only when
 something needs a filesystem: the config source is `file`, or the parsed yaml
 declares SQLite store paths. With the `dynamodb` config source and DynamoDB
 stores, `GoBridgeDynamoDBHA` deploys with **no EFS resources at all** — the
@@ -103,13 +103,36 @@ config yaml was that topology's only remaining filesystem use.
 
 ## Runtime config sources
 
-`Bootstrap.ConfigSource` selects the runtime configuration source. The CDK
-facades still seed file configurations; DynamoDB configuration requires a
-separately provisioned table and permissions.
+`Bootstrap.ConfigSource` selects the runtime configuration source; empty means
+`file`. Single and DynamoDB HA support both sources. A DynamoDB source creates
+one facade-owned config table with string `PK`/`SK`, on-demand billing,
+point-in-time recovery, AWS-managed encryption and retention on deletion or
+replacement. It has no TTL. The facade stamps its table-name token into a copy
+of `Bootstrap.ConfigDynamoDB`; caller-owned settings are never mutated. All HA
+task definitions, including static member slots, share this same config table,
+separate from the lease, outbox, managed-subscription and rollout tables.
+
+Control receives `GrantReadWriteData`; workers receive `GrantReadData`. Only
+`watch_mode: streams` enables a `KEYS_ONLY` stream and `GrantStreamRead` for both
+roles. An omitted watch mode is stamped as `poll`.
+
+**DynamoDB config seeding is not implemented yet.** The table is initially empty;
+the YAML still drives synth-time validation and grants, but is not uploaded as
+a DynamoDB config item. The file seeder is omitted for a DynamoDB source, even
+when SQLite paths require an EFS mount. File-source seeding is unchanged.
+Switching sources does not migrate existing configuration.
+
+Without a filesystem, `EfsConfig()` returns nil, task mounts and NFS ingress are
+omitted, and no EFS or EFS-KMS grants are added. The ALB attachment omits the
+optional `efs-id` SSM export, and the alarm bundle omits its EFS I/O alarm.
+`LookupBridge` uses an optional `ValueFromLookup` to determine EFS presence;
+`EfsID()` is nil before that lookup resolves or when the producer has no EFS.
+The presence result is context-cached and must be refreshed after changing the
+producer between filesystem-backed and EFS-free config.
 
 | | `file` (default) | `dynamodb` |
 |---|---|---|
-| Backing store | YAML on EFS | One `current` item, `PK = "config#"+bridge_id`, monotonic `version` |
+| Backing store | YAML on EFS | One item, `PK = "config#"+bridge_id`, `SK = "current"`, monotonic `version` |
 | Watch | EFS poll (fsnotify unreliable on NFS) | Strongly consistent poll (default) or DynamoDB Streams (`watch_mode: streams`) |
 | Admin API writes | `parser.FileStore` guarded by the single-writer rule (control node only) | The loader itself — a `ports.ConditionalConfigStore`, CAS-safe for any writer |
 | Topology limits | all | `filesystem_replicated` rejected (workers boot from the shared filesystem by definition) |
@@ -194,8 +217,7 @@ Both access points share the same root path and the same posix user (uid/gid `10
 mode switch inside `GoBridgeCluster`. It reuses two `gobridgebase.New` calls for
 one config-control task definition and one worker task definition. The control
 service desired count is one and the worker service minimum is two. Every task
-runs the clustered runtime and can own a lease; node role controls only EFS
-config-write authority. Selected private subnets span at least two Availability
+runs the clustered runtime and can own a lease; node role controls config-write authority through EFS or config-table grants. Selected private subnets span at least two Availability
 Zones. Both services use a 0/100 replacement policy with AZ rebalancing
 disabled — the control service to prevent overlapping config writers, the worker
 service to prevent an incompatible revision running as a second cohort — and the
@@ -207,7 +229,7 @@ The facade owns exactly three on-demand, PITR-enabled, retained tables through
 managed-subscription history. It validates names from the parsed store configs,
 then runs the Task 9 builder admission path source-safely before creating
 resources. The facade stamps the canonical admitted-config fingerprint and exact
-table identities into bootstrap; every process checks its EFS config against
+table identities into bootstrap; every process checks its selected-source config against
 those expectations before planning stores or transports. Static endpoints and per-replica Exclusive MQTT client-ID suffixes
 are rejected; the bootstrap composition root registers `EcsEndpointResolver`
 for clustered configs.
@@ -257,7 +279,7 @@ Per-adapter grant functions live one-file-per-kind under `cdk/constructs/interna
 | CloudWatch Logs | `logGroup.GrantWrite(role)`. |
 | EFS | Per role: control `ClientMount`+`ClientWrite`; worker `ClientMount` only. |
 | EFS CMK | Auto-granted when `EfsKmsKey` prop is set. |
-| Config table **(planned)** | Control `GrantReadWriteData`; worker `GrantReadData`; both `GrantStreamRead` when `watch_mode: streams`; seeder RW + asset read. |
+| Config table | Control `GrantReadWriteData`; worker `GrantReadData`; both `GrantStreamRead` only when `watch_mode: streams`. Config seeder RW + asset read remain **planned**. |
 
 Adding a new plugin requires a matching pair of files (`bridgecfg/<kind>.go` and `internal/grants/<kind>.go`) — enforced by the CI check against `*ports.Registry`.
 

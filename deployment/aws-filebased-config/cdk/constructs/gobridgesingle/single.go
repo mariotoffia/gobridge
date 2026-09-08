@@ -1,5 +1,5 @@
 // Package gobridgesingle exports the GoBridgeSingle facade construct
-// — one ECS Fargate task with RW EFS mount, no clustering, built on
+// — one ECS Fargate task with an optional RW EFS mount, no clustering, built on
 // top of the shared gobridgebase. Lives in its own sub-package
 // (rather than directly under cdk/constructs) to avoid the import
 // cycle constructs → gobridgebase → constructs (for GoBridgeEfsConfig
@@ -30,7 +30,7 @@ import (
 
 // SingleProps configures a [GoBridgeSingle] facade. It is the public
 // surface for consumers who want one ECS Fargate control task with
-// RW EFS mount and no clustering. All optional fields fall back to
+// an optional RW EFS mount and no clustering. All optional fields fall back to
 // the documented defaults; only the four required fields below MUST
 // be supplied.
 //
@@ -56,7 +56,8 @@ type SingleProps struct {
 	Cluster awsecs.ICluster
 
 	// EfsConfig provides the EFS filesystem and access points.
-	// When nil a default [GoBridgeEfsConfig] is created with
+	// Used only when file config or parsed store paths need a filesystem.
+	// When needed and nil, a default [GoBridgeEfsConfig] is created with
 	// always-on encryption, ELASTIC throughput and RETAIN policy.
 	EfsConfig *cdkconstructs.GoBridgeEfsConfig
 
@@ -184,7 +185,7 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 
 	// Force control role on the bootstrap copy — SingleProps never
 	// produces a worker.
-	bootstrap := props.Bootstrap
+	bootstrap := props.Bootstrap.Normalized()
 	bootstrap.NodeRole = infra.NodeRoleControl
 
 	// Phase 1 — fast-fail tier-B validation on the resolved config.
@@ -210,6 +211,7 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 		_ = mat.Close()
 		panic(fmt.Sprintf("GoBridgeSingle: %v", err))
 	}
+	needsEFS := validation.NeedsEFS(mat.Config, bootstrap)
 	bootstrap.ManagedSubscriptionBaselines = baselines
 	// Cleanup is best-effort; the base will materialize again from
 	// the same source for the asset upload.
@@ -219,16 +221,20 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 	// gets props.VpcSubnets verbatim, so its mount targets always cover the
 	// ECS placement; a SUPPLIED one may not, and a task in an AZ without a
 	// mount target fails at container start (matrix row 14).
-	efsConfig := props.EfsConfig
-	if efsConfig == nil {
-		efsConfig = cdkconstructs.NewGoBridgeEfsConfig(c, jsii.String("Efs"), &cdkconstructs.GoBridgeEfsConfigProps{
-			Vpc:        props.Vpc,
-			VpcSubnets: props.VpcSubnets,
-			EfsKmsKey:  props.EfsKmsKey,
-		})
-	} else {
-		cdkconstructs.AssertEfsSubnetParity("GoBridgeSingle", props.Vpc, props.VpcSubnets, efsConfig)
+	var efsConfig *cdkconstructs.GoBridgeEfsConfig
+	if needsEFS {
+		efsConfig = props.EfsConfig
+		if efsConfig == nil {
+			efsConfig = cdkconstructs.NewGoBridgeEfsConfig(c, jsii.String("Efs"), &cdkconstructs.GoBridgeEfsConfigProps{
+				Vpc:        props.Vpc,
+				VpcSubnets: props.VpcSubnets,
+				EfsKmsKey:  props.EfsKmsKey,
+			})
+		} else {
+			cdkconstructs.AssertEfsSubnetParity("GoBridgeSingle", props.Vpc, props.VpcSubnets, efsConfig)
+		}
 	}
+	configTable := gobridgebase.NewConfigTable(c, bootstrap)
 
 	// ECS cluster — auto-create when not supplied.
 	cluster := props.Cluster
@@ -244,6 +250,7 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 		Mode:             gobridgebase.ModeControl,
 		Vpc:              props.Vpc,
 		EfsConfig:        efsConfig,
+		ConfigTable:      configTable,
 		EfsKmsKey:        props.EfsKmsKey,
 		Image:            props.Image,
 		Bootstrap:        bootstrap,
@@ -269,13 +276,15 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 	}
 
 	// Allow task → EFS NFS ingress when the EFS construct owns the SG.
-	if efsSG := efsConfig.SecurityGroup(); efsSG != nil {
-		efsSG.AddIngressRule(
-			sg,
-			awsec2.Port_Tcp(jsii.Number(2049)),
-			jsii.String("gobridge control task NFS access"),
-			jsii.Bool(false),
-		)
+	if efsConfig != nil {
+		if efsSG := efsConfig.SecurityGroup(); efsSG != nil {
+			efsSG.AddIngressRule(
+				sg,
+				awsec2.Port_Tcp(jsii.Number(2049)),
+				jsii.String("gobridge control task NFS access"),
+				jsii.Bool(false),
+			)
+		}
 	}
 
 	// Fargate service: DesiredCount=1 (hard-coded) + 0/100
@@ -347,7 +356,8 @@ func (g *GoBridgeSingle) TaskDefinition() awsecs.FargateTaskDefinition {
 func (g *GoBridgeSingle) Cluster() awsecs.ICluster { return g.cluster }
 
 // EfsConfig returns the EFS configuration used by the construct
-// (either the supplied one or the auto-created default).
+// (either the supplied one or the auto-created default), or nil when neither
+// the config source nor the parsed store paths require a filesystem.
 func (g *GoBridgeSingle) EfsConfig() *cdkconstructs.GoBridgeEfsConfig { return g.efsConfig }
 
 // SecurityGroup returns the security group attached to the Fargate

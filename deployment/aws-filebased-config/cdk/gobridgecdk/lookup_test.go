@@ -129,7 +129,7 @@ func TestLookupBridge_DefaultLooksUpThreeParams(t *testing.T) {
 }
 
 func TestLookupBridge_WithIncludeARNsLooksUpSixParams(t *testing.T) {
-	_, stack := newStack(t, nil)
+	_, stack := newStack(t, map[string]interface{}{efsContextKey(testPrefix): "fs-12345678"})
 	ref := gobridgecdk.LookupBridge(stack, "Ref", testPrefix, ssmexports.IncludeARNs())
 
 	if ref.AlbARN() == nil || ref.ClusterARN() == nil || ref.EfsID() == nil {
@@ -219,7 +219,7 @@ func TestLookupBridge_ManifestVersionMismatchEmitsAnnotationError(t *testing.T) 
 }
 
 func TestLookupBridge_AccessorTokensAreNonNil(t *testing.T) {
-	_, stack := newStack(t, nil)
+	_, stack := newStack(t, map[string]interface{}{efsContextKey(testPrefix): "fs-12345678"})
 	ref := gobridgecdk.LookupBridge(stack, "Ref", testPrefix, ssmexports.IncludeARNs())
 
 	for name, v := range map[string]*string{

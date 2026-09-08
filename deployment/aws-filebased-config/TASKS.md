@@ -239,14 +239,14 @@ Modify facade validation (`internal/validation/`): synth error for
 beside the existing construct tests (`!race` pattern):
 `config_table_test.go`, `efs_conditional_test.go`.
 
-- [ ] **Step 1:** Failing template tests: dynamodb source → template has one
+- [x] **Step 1:** Failing template tests: dynamodb source → template has one
   `AWS::DynamoDB::Table` for config (PK/SK schema, PITR on,
   `DeletionPolicy: Retain`), task-def has **no** EFS volume when yaml has no
   sqlite paths; file source → EFS present exactly as today; worker role has
   read-only table grant; streams mode adds stream + stream-read grants.
-- [ ] **Step 2:** Implement; run
+- [x] **Step 2:** Implement; run
   `go -C deployment/aws/cdk test ./constructs/... -v` green.
-- [ ] **Step 3:** `make lint && make test`; commit —
+- [x] **Step 3:** `make lint && make test`; commit —
   `feat(deploy/aws/cdk): dynamodb config table with conditional EFS and role-scoped grants`
 
 ### Task 4.2: Seeder DynamoDB mode

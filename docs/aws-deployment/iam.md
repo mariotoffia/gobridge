@@ -12,6 +12,25 @@ Follow the principle of least privilege when configuring IAM roles. The CDK
 constructs create scoped policies automatically, but if you manage IAM
 manually, use these as a reference.
 
+## Config-source grants
+
+For `Bootstrap.ConfigSource: dynamodb`, the Single and DynamoDB HA facades own
+one config table. The control task role receives the native CDK
+`GrantReadWriteData` grant; each worker task role receives `GrantReadData` only.
+These grants are scoped to the config table, not to the separate lease, outbox,
+DLQ, managed-subscription or rollout stores, whose existing grants do not change.
+CAS makes config writes concurrency-safe, but it does not grant a worker write
+authority: the deployed worker role remains read-only.
+
+Only `config_dynamodb.watch_mode: streams` adds `GrantStreamRead` on the enabled
+config stream for both roles (`DescribeStream`, `GetRecords`,
+`GetShardIterator`, plus `ListStreams`). Poll mode adds no stream-read grant.
+No runtime config-table creation grant is added. Config-item seeding permissions
+are not provisioned yet; the existing file seeder remains file-source-only.
+
+An EFS-free facade adds no EFS mount/write grants or EFS-CMK grant. SSM, logging
+and adapter permissions continue to be derived as before.
+
 ## Task Role
 
 The task role is assumed by the running container. It needs access to EFS,

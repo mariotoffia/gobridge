@@ -76,6 +76,11 @@
 // statements, etc.) but it makes them useless for synth-time schema
 // validation.
 //
+// EFS presence is optional: LookupBridge first uses ValueFromLookup with an
+// empty default for efs-id, then imports its deploy-time token only when present.
+// EfsID returns nil until the context lookup resolves, or when no EFS is published.
+// Refresh that cached lookup when switching the producer config source.
+//
 // The manifest-version sentinel is therefore imported with
 // awsssm.StringParameter_ValueFromLookup, which performs an actual
 // AWS API call during synth and caches the result in

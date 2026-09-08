@@ -10,6 +10,7 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 |---|---|
 | **Bootstrap config** | Deployment-owned runtime parameters (`infra.BootstrapConfig`). Static per task revision. Delivered via env var `GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` or file `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`. Distinct from `ports.BridgeConfig`. |
 | **Bridge config** | The application's `ports.BridgeConfig` (YAML on EFS or JSON in a DynamoDB config item). Hot-reloadable. The same artifact whether in the selected source, in `logicalRef`, or in `appliedRef`. |
+| **Config table** | Facade-owned DynamoDB table for the `dynamodb` config source: string `PK`/`SK`, one item at `config#<bridge_id>` / `current`, on-demand billing, PITR and retention. Shared by every HA task definition and separate from the HA data and rollout tables. CDK overwrites `ConfigDynamoDB.TableName` in an owned settings copy. |
 | **Config source** | Bootstrap selector `ConfigSource`: `file` (default) or `dynamodb`. Each supplies one base `config.Layer` and the matching admin `ports.ConfigStore`; the DynamoDB loader also implements `ports.ConditionalConfigStore`. |
 | **Logical state** | The bridge config last *seen* in the selected config source and parsed successfully (`logicalRef`). Updated even when the subsequent runtime swap is rejected. |
 | **Applied state** | The bridge config the *currently running* runtime was built from (`appliedRef`). On the happy path equals logical state. Diverges only after a failed reload — then logical = rejected new config, applied = last good. Used by `Stop` for `DrainTimeout` and by `recoverPrevious`. |
@@ -28,7 +29,7 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 | **Filesystem profile guard** | `validateFilesystemProfile` — rejects `shared_outbox` and `route.session` when topology is `filesystem_replicated`. |
 | **GoBridgeDynamoDBHA** | Separate coordinated active/warm-standby CDK facade for topology `dynamodb_coordinated_ha`; it reuses `internal/gobridgebase.New`, provisions one control task and at least two worker tasks, and does not change `GoBridgeCluster`. |
 | **DynamoDBHAProps** | Input contract for `GoBridgeDynamoDBHA`, including the shared bridge config, ECS/VPC placement, and registries. |
-| **DynamoDB HA config expectation** | Deployment-owned exact lease/outbox/managed-subscription table names plus canonical bridge-config SHA-256 fingerprint stamped into bootstrap by `GoBridgeDynamoDBHA`; every HA process checks the EFS logical config against it before planning stores or transports. |
+| **DynamoDB HA config expectation** | Deployment-owned exact lease/outbox/managed-subscription table names plus canonical bridge-config SHA-256 fingerprint stamped into bootstrap by `GoBridgeDynamoDBHA`; every HA process checks the selected-source logical config against it before planning stores or transports. |
 | **DynamoDBHAData** | Data output owned by `GoBridgeDynamoDBHA`; the sole profile API exposing the lease, shared-outbox, and managed-subscription table objects, names, and ARNs. |
 | **FailureToFullDuration** | External failover-probe CloudWatch metric in the deployment metrics namespace. One sample is the milliseconds from the conservative pre-`StopTask` timestamp through exact-holder `STOPPED`, owner plus fencing-version change, and the different successor reaching `ServiceLevelFull`. It has no runtime dimensions; warm/cold percentiles are reported separately by the credentialed harness. Missing samples are non-breaching for the alarm, while release proof must query and find its exact sample. |
 
@@ -56,7 +57,7 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 | Term | Meaning |
 |---|---|
 | **Access point path** | POSIX path *inside* EFS exposed by the access point. Default `/gobridge`. Set on the access point at creation; immutable thereafter. |
-| **Config mount path** | Path *inside the container* where the EFS access point is mounted. Default `/var/lib/gobridge` (single canonical constant `infra.DefaultMountPath`; the Phase-1 store-path validator, the ECS mount, and the seeder all derive from it). |
+| **Config mount path** | Path *inside the container* where the EFS access point is mounted when the config source or SQLite store paths require EFS. Default `/var/lib/gobridge` (single canonical constant `infra.DefaultMountPath`; the Phase-1 store-path validator, the ECS mount, and the seeder all derive from it). |
 | **Config file path** | Absolute path the bootstrap polls for the bridge config. Combines mount path + filename, e.g. `/var/lib/gobridge/bridge.yaml`. |
 
 ## CDK
@@ -87,4 +88,4 @@ Explicit producer→consumer wiring for resources referenced by name from bridge
 | Term | Meaning |
 |---|---|
 | **BridgeRef** | Consumer-side handle returned by `LookupBridge`. Exposes the same accessor surface (`AdminURL`, `HealthzURL`, optional ARNs) as the producing constructs but resolves values lazily through SSM tokens. |
-| **LookupBridge** | Top-level helper `gobridgecdk.LookupBridge(scope, id, ssmPrefix)` returning a `BridgeRef`. Reads `<prefix>/admin-url`, `<prefix>/healthz-url`, `<prefix>/manifest-version` (and optional `<prefix>/alb-arn`, `<prefix>/cluster-arn`, `<prefix>/efs-id` if producer used `IncludeARNs()`). Backed by `awsssm.StringParameter_FromStringParameterName` — soft coupling, deploy-time token, producer rotates freely. Manifest-version sentinel allows future schema breaks to fail consumer synth fast. |
+| **LookupBridge** | Top-level helper `gobridgecdk.LookupBridge(scope, id, ssmPrefix)` returning a `BridgeRef`. Reads `<prefix>/admin-url`, `<prefix>/healthz-url`, `<prefix>/manifest-version` (and optional `<prefix>/alb-arn`, `<prefix>/cluster-arn`, `<prefix>/efs-id` if producer used `IncludeARNs()`). Values use `awsssm.StringParameter_FromStringParameterName` deploy-time tokens. EFS presence uses an optional, context-cached `ValueFromLookup`; `EfsID()` is nil until presence resolves or when the producer has no EFS. Refresh that lookup after changing filesystem use. Manifest-version sentinel allows future schema breaks to fail consumer synth fast. |

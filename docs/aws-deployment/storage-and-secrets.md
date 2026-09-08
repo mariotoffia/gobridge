@@ -1,13 +1,42 @@
 # Storage and Secrets on AWS
 
 Where a GoBridge deployment keeps its three kinds of state: the configuration
-document on EFS, the credentials in SSM Parameter Store, and the durable
+document on EFS or in a DynamoDB config table, the credentials in SSM Parameter Store, and the durable
 message state in DynamoDB — with the access design and operator
 responsibilities each one carries.
 
 Part of the [AWS Deployment Overview](overview.md).
 
 ---
+
+## DynamoDB for Configuration
+
+Select `Bootstrap.ConfigSource = infra.ConfigSourceDynamoDB` on `GoBridgeSingle`
+or `GoBridgeDynamoDBHA`, and leave `ConfigFilePath` empty. The facade creates one
+config table and replaces any caller-supplied `ConfigDynamoDB.TableName` in a
+copied settings value. A nil `ConfigDynamoDB` is allowed as a CDK input; it gets
+the owned table name and `watch_mode: poll`.
+
+The table has string `PK` and `SK` keys, on-demand billing, point-in-time
+recovery and AWS-managed encryption. Deletion and replacement retain it; there
+is no TTL. The adapter stores the versioned JSON config at
+`PK = config#<bridge_id>`, `SK = current`. All HA tasks share one config table,
+which is separate from their message-state and rollout tables. Streams mode
+adds a `KEYS_ONLY` stream; the watcher reads the current item after notification.
+See [config-source IAM grants](iam.md#config-source-grants).
+
+**The CDK config table is not seeded from the bundled YAML yet.** YAML still
+supplies synth-time validation, port mappings and adapter grants. DynamoDB
+config deployments omit the file seeder; selecting this source does not migrate
+an EFS config or publish the bundled document. A missing item follows the
+runtime start-empty behavior described in [configuration](configuration.md).
+HA admission can reject that empty config, so do not treat table provisioning
+alone as a ready-to-run HA deployment.
+
+EFS is created and mounted only for a file config source or parsed SQLite store
+paths. A DynamoDB config source with DynamoDB data stores has no EFS resources,
+mounts, NFS ingress or EFS grants. A retained filesystem from an earlier stack
+revision is not deleted by switching sources and can still incur charges.
 
 ## EFS for Configuration
 

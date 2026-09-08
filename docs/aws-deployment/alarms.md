@@ -36,6 +36,12 @@ deploy-time concern, so an unprovisioned signal is silent, not degraded.
 
 ## Alarms the CDK bundle provisions
 
+Pass the facade value from `EfsConfig()` as `AlarmsProps.Efs`. It can be nil for
+Single or DynamoDB HA using a DynamoDB config source without SQLite paths. The
+bundle then omits `EfsPercentIOLimit` and `EfsIOAlarm()` returns nil; ECS, ALB and
+HA data-table alarms are unchanged. The config table does not yet get its own
+automatic alarm pair.
+
 Every row is created by `GoBridgeAlarms` for the shape named in the second
 column. Defaults are a 1-minute period over 5 evaluation periods; `AlarmsProps`
 overrides the period, the evaluation count, and the thresholds marked
@@ -51,7 +57,7 @@ means silence is health.
 | `ControlAbsence` | every shape | `ECS/ContainerInsights` `RunningTaskCount` (Maximum) | `< 1` | breaching | The control service has no running task. Silence is treated as absence — a dead cluster stops publishing the metric. |
 | `WorkerDegraded` | cluster, HA | metric math over `RunningTaskCount` / `DesiredTaskCount` (Minimum / Maximum) | `>= 1` | not breaching | A worker service is running fewer tasks than it wants. One alarm **per worker service**, so the alarm names the slot that is short; the static member-slot profile creates one per roster slot. |
 | `WarmStandbyUnavailable` | HA | metric math over control + worker `RunningTaskCount` (Minimum) | `>= 1` | breaching | Fewer than two tasks are running in total, so no warm standby is guaranteed and a failover would be a cold start. |
-| `EfsPercentIOLimit` | every shape | `AWS/EFS` `PercentIOLimit` (Average) | `> 90` *configurable* | not breaching | The config file system is near its I/O ceiling; config reads and hot reloads slow down. |
+| `EfsPercentIOLimit` | shapes with EFS | `AWS/EFS` `PercentIOLimit` (Average) | `> 90` *configurable* | not breaching | The config file system is near its I/O ceiling; config reads and hot reloads slow down. |
 | `AlbUnhealthyControl` | ALB attachment | `UnHealthyHostCount` on the control target group (Maximum) | `> 0` | not breaching | The load balancer cannot reach a healthy control target. |
 | `AlbUnhealthyWorker` | ALB attachment | `UnHealthyHostCount` on the worker target group (Maximum) | `> 0` | not breaching | The load balancer cannot reach a healthy worker target. |
 | `Alb5xxControl` | ALB attachment | `HTTPCode_Target_5XX_Count` on the control target group (Sum) | `> 5` *configurable* | not breaching | Control-plane requests are failing at the target, not at the balancer. |
