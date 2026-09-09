@@ -24,11 +24,8 @@ type deployedHealth struct {
 	Running         bool `json:"running"`
 	Healthy         bool `json:"healthy"`
 	ReadyForTraffic bool `json:"ready_for_traffic"`
-	// Empty distinguishes a bridge that came up on NO configuration from one
-	// whose routes are merely still starting. Both answer 503; only one of them
-	// will ever become ready, so a proof that accepted "not ready" without
-	// reading this would wait out its whole budget on a member that had already
-	// failed.
+	// Empty distinguishes a waiting control plane from an active runtime.
+	// StartupPending separates expected waiting from a refused configuration.
 	Empty bool   `json:"empty"`
 	Role  string `json:"role"`
 	// Sessions and Routes are the member's own account of what it runs: which
@@ -51,7 +48,21 @@ type deployedHealth struct {
 		RunningVersion *int   `json:"running_version,omitempty"`
 		DesiredVersion *int   `json:"desired_version,omitempty"`
 		LastApplyError string `json:"last_apply_error,omitempty"`
+		StartupPending bool   `json:"startup_pending,omitempty"`
 	} `json:"config_watch"`
+}
+
+func configRefusal(health deployedHealth) error {
+	if !health.Empty || health.ConfigWatch.StartupPending {
+		return nil
+	}
+	if reason := health.ConfigWatch.LastApplyError; reason != "" {
+		return fmt.Errorf("the deployed configuration was refused: %s", reason)
+	}
+	if health.ConfigWatch.Degraded && health.ConfigWatch.Reason != "" {
+		return fmt.Errorf("the deployed configuration was refused: %s", health.ConfigWatch.Reason)
+	}
+	return nil
 }
 
 // DeepHealth reads one member's deep health.

@@ -1,5 +1,10 @@
 # Deployment, long-running and shell test suites
 
+## Overview
+
+Deployment tests check the running profile. Long-running suites cover sustained
+load and recovery. Build-input checks verify how initial config enters an image.
+
 ## 5.6 Deployment tests
 
 A deployment test deploys the shipped CDK profile and drives the running system,
@@ -9,7 +14,7 @@ tags are correct: they gate not "is Docker here" but cost.
 
 | Tag | Backend | Gate |
 |---|---|---|
-| `integration_aws` | a real, credentialed AWS sandbox | `GOBRIDGE_INT_*`. Real account, real money. |
+| `integration_aws` | a real, credentialed AWS sandbox | `GOBRIDGE_INT_*`, including required `GOBRIDGE_INT_VERSION` for per-fixture Go-built images. Real account, real money. |
 | `integration_local` | the same stack via `cdklocal`, on emulators | `GOBRIDGE_INT_LOCAL=1`, Docker and Node. No account, no credentials. |
 
 One harness serves both: the sandbox, the deploy/destroy calls and the
@@ -18,15 +23,29 @@ What a deployed system must do is asserted once against a probe the two backends
 supply differently, so the proofs cannot drift apart. `GOBRIDGE_INT_KEEP=1`
 keeps the stack and everything it runs on.
 
+Credentialed fixtures require `GOBRIDGE_INT_VERSION`, a published profile `lib`
+version supporting embedded config and `-initial-config-digest`.
+`ImageFromGoBuild` builds each fixture with its parsed config.
+`GOBRIDGE_INT_IMAGE` registry overrides are rejected; compatible publication
+is a prerequisite, not something a locally passing suite proves.
+
+Local runs read the embedded payload from each staged
+`initial-config-<digest>.goenv` file's `GOFLAGS`, then build the root Dockerfile
+from this checkout with those exact bytes. They do not install a published
+module. `GOBRIDGE_LOCAL_IMAGE` skips that build only if its
+`-initial-config-digest` output matches the staged config. The probe runs with
+networking disabled. Missing support or a mismatched hash fails the run; unset
+the override to build the required fixture image.
+
 **What a local run proves, and what it does not.** It proves the runtime
 contract on a deployed stack, and — because the emulator runs each task
 definition as a real container — that the synthesized shape wires identity
 correctly. It does NOT prove AWS behaves as declared: the emulator drops
 task-definition volumes, serves no task metadata, cannot carry EFS, and has no
 container-dependency model, so the harness restores the first three and says so
-where it does. The fourth cannot be, so a local member may start before its
-init container has run — the deployment still settles, but no claim may rest on
-start ordering. It also does not evaluate IAM, never evaluates an alarm, cannot
+where it does. Initial config is now created inside the control process, not
+by an init container; its proof must not depend on container start ordering.
+The emulator also does not evaluate IAM, never evaluates an alarm, cannot
 update an `AWS::ECS::Service`, and does not route a load balancer to a task.
 Any published claim must name which half it rests on.
 
@@ -46,9 +65,13 @@ image and provisioning the local tools, with:
 make test-local-deploy LOCAL_DEPLOY_RUN='^TestLocal_DynamoDBConfigHotReload$'
 ```
 
-It exercises the shipped seeder, three-member generation-zero convergence, and
-two direct CAS table writes followed by per-member applied-config reads. It
-does not use an initial test seed or a config file. The local storage adapter's
+The initialization proof must exercise the embedded initial document through
+the shipped command, three-member generation-zero convergence, and two direct
+CAS table writes followed by per-member applied-config reads. A harness-side
+initial config write or sidecar would bypass the behavior under test.
+Deletion/recreation tests must prove safe standalone idle and rebuild, plus
+process exit for clustered deletion or uncertain teardown. Read-error cases
+must instead preserve last-success degraded operation. The local storage adapter's
 fast regression checks are `TestDeclaredTaskSpec_ConfigStorage` and
 `TestVerifyVolumeFreeTask` under the same `integration_local` build tag; they
 require neither Docker nor `GOBRIDGE_INT_LOCAL`.
@@ -153,38 +176,28 @@ long-running.
 
 ---
 
-## 10. Deployment shell tests
+## 10. Deployment build-input checks
 
-The file-based AWS deployment ships pure-bash tests that need no Go, no Docker,
-and no network:
+Configuration seeder scripts and their image-updater suites are removed.
+Initial-config build checks cover the root Make target, Docker build argument,
+and CDK Go-build asset. They must verify native `GOENV` file flags, decoding
+of `main.initialConfigBase64`, and a document large enough to expose argument
+limits. Go `@responsefile` syntax is not supported.
 
-```bash
-make -C deployment/aws-filebased-config test
-```
+Synth checks must reject a separate config S3 asset, download grant, seeder
+container, or worker config-write grant. Registry images must remain unchanged.
+Runtime creation tests must protect present invalid and legacy documents,
+assign target version 1, reread the creation winner, and preserve logical
+credential references.
 
-They cover two scripts:
+Snapshot tests cover mutable plugins with `ports.FreezableConfig` and deeply
+immutable scalar value configs without it. Admission mutations must not change
+the published config. Observation tests cover one authoritative layer, rejection
+of overlays, and `Manager.NotifyIdle` preserving a newer desired snapshot.
 
-- `seeder.sh` — the EFS config-seeder contract (single-line JSON outcome, hash
-  match/mismatch, adopt/abort modes). A PATH shim mocks the `aws` CLI over
-  fixture files.
-- `scripts/update-image.sh` — the base-image digest refresh, exercised on BOTH
-  resolver paths (crane and docker buildx) with fake `crane`, `docker`, and
-  `curl` tools that model real command output and exit codes. The checks assert
-  each resolver receives the exact concrete `2.x.y` reference, the manifest JSON
-  reaches the verifier on stdin (the pinned digest equals the hash of the exact
-  bytes), the script pins a top-level multi-platform index (OCI index or Docker
-  manifest list), **verifies `linux/amd64` + `linux/arm64` before it writes**,
-  prints only the pinned `image@sha256` reference, and **fails closed** (rewrites
-  nothing) on a missing platform, a single-arch manifest, malformed JSON, or a
-  registry that advertises no concrete `2.x.y` tag (so the mutable `2` tag is
-  never pinned). Staged fail-closed cases prove that when the digest resolves but
-  the Dockerfile target is bad — zero matching `FROM`, multiple matching `FROM`, a
-  missing target directory, or a read-only Dockerfile — the script exits non-zero
-  and **leaves both `image.txt` and the Dockerfile checksums unchanged**. A forced
-  `UPDATE_IMAGE_TOOL` other than `crane`/`docker` is rejected (exit 2). The script
-  never installs a tool (versions tested for this workflow: crane v0.21.7 / docker
-  buildx v0.34.1).
+File-initialization tests exercise local filesystems. They do not prove EFS
+crash durability; that requires separate evidence on the deployed filesystem.
 
-These are the verification gates for the container-input pins. The resolve/verify
-workflow the root `Dockerfile` follows is in [DEVELOPMENT.md](../../DEVELOPMENT.md)
-(Base image digests).
+See [initial configuration](../aws-deployment/config-initialization.md) for the
+behavior being tested and
+[base image digests](../../DEVELOPMENT.md#base-image-digests) for image-pin checks.

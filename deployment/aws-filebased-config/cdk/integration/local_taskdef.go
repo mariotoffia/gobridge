@@ -21,8 +21,8 @@ import (
 // Volumes, and without the MountPoints that refer to them: a task definition
 // that CloudFormation created comes back from DescribeTaskDefinition with
 // `volumes: null` and every container's mount points empty. Deployed that way
-// the cohort has no shared config document at all — the seeder writes into its
-// own container filesystem and every member boots the empty default config.
+// the cohort has no shared config document at all — a control task can only
+// initialize its own container filesystem, which no worker can read.
 //
 // So the harness re-registers filesystem-backed task definitions with exactly
 // what the synthesized template declared, and points each service at that
@@ -31,19 +31,10 @@ import (
 // is the one the assembly already made — an EFS filesystem the emulator cannot
 // back becomes a host bind mount of one directory.
 //
-// Container dependencies are NOT restored, because the emulator has no model
-// for them: it neither stores `dependsOn` (a definition registered with one
-// reads back without it) nor honours it (a gated container starts beside the
-// container it is gated on, not after it). So a local member can start before
-// its seeder has written the shared document, boot on no config, exit, and be
-// replaced by its service until the document is there. The cohort still reaches
-// a steady state, which is what the proof is about — but the SEEDER GATE itself
-// is not exercised locally, and no claim may rest on it.
-//
 // What this costs the filesystem proof: the running tasks are one revision
 // removed from the ones CloudFormation registered, so that local run does NOT
-// prove that the declared task definition reaches ECS intact, nor that the
-// deployment's start ordering holds. Both rest on the construct's synth
+// prove that the declared task definition reaches ECS intact. That rests on
+// the construct's synth
 // assertions and the credentialed run. What it does prove is the shared
 // document and the cohort protocol that runs on top of it.
 // DynamoDB-only tasks need no storage restoration and stay on their deployed

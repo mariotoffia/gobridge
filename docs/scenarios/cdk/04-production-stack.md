@@ -1,9 +1,16 @@
 # CDK Scenario 4: Production-Ready Stack with Monitoring
 
+## Overview
+
 Go live with alarms, dashboards, auto-scaling, hardened security, and full
 operational visibility. This scenario builds on
 [Scenario 1](01-quickstart-default-vpc.md) and adds everything you need for a
 production deployment that your on-call team can operate with confidence.
+
+The consumer owns the registry image and its embedded initial document.
+CDK declarations do not overwrite existing config. Only control may initialize
+an absent target; workers stay read-only. See
+[initial configuration](../../aws-deployment/config-initialization.md).
 
 ---
 
@@ -54,9 +61,10 @@ flowchart TB
 
 ### Non-Root Container and Read-Only Filesystem
 
-The GoBridge Dockerfile runs as UID 1000. Enforce a read-only root filesystem
+The GoBridge Dockerfile runs as user ID 65532. Enforce a read-only root filesystem
 in the container definition by setting `ReadonlyRootFilesystem: jsii.Bool(true)`.
-The EFS volume is also mounted read-only (see the complete stack below).
+The EFS config volume is writable for control and read-only for workers.
+Do not make the control config mount read-only if it must create or update config.
 
 ### SSM SecureString with Customer-Managed KMS
 
@@ -86,8 +94,8 @@ taskRole.AddToPrincipalPolicy(awsiam.NewPolicyStatement(&awsiam.PolicyStatementP
 ```
 
 The GoBridge facade (single or cluster) automatically grants
-`elasticfilesystem:ClientMount` and `elasticfilesystem:ClientRead` on the EFS
-filesystem to its task roles.
+`elasticfilesystem:ClientMount` on the EFS filesystem to both task roles.
+Only control receives `elasticfilesystem:ClientWrite`.
 
 ### VPC Endpoints
 
@@ -356,27 +364,35 @@ awsxray.NewCfnSamplingRule(stack, jsii.String("Sampling"),
 
 ## Config Management Pipeline
 
-Treat the bridge config file as a versioned artifact deployed through CI/CD:
+Treat the bridge config file as a versioned artifact. This scenario uses a
+clustered file source, so a configuration change requires cohort replacement:
 
 ```mermaid
 flowchart LR
     Repo[Git Repo] --> CP[CodePipeline]
     CP --> CB[CodeBuild]
-    CB -->|mount EFS| Validate[Validate Config]
-    Validate -->|pass| Write[Write to EFS]
-    Write --> Poll[Poll Watcher\ndetects change]
+    CB --> Validate[Validate Config]
+    Validate -->|pass| Stop[Quiesce and stop cohort]
+    Stop --> Write[Atomically write EFS target]
+    Write --> Start[Start and verify replacement cohort]
     Validate -->|fail| Reject[Reject + Notify]
 ```
 
 1. **Source** -- CodePipeline triggers on push to the `config/` directory.
-2. **Build** -- CodeBuild (VPC-connected) mounts EFS, runs
-   `gobridge validate --config bridge.yaml`.
-3. **Deploy** -- Writes validated config to EFS on success.
-4. **Reload** -- Poll watcher detects change within 5s, applies new config.
-5. **Rollback** -- On failure the pipeline halts; previous config stays.
+2. **Validate** -- Check the exact document against every member's image and
+   plugin registrations.
+3. **Quiesce** -- Stop new intake, drain, and stop every cohort member.
+4. **Replace** -- Write the validated target atomically, then start the cohort.
+5. **Verify** -- Require the target version and service convergence before
+   restoring intake. On failure, keep intake stopped and roll the entire cohort
+   back through the same procedure.
 
-This avoids task restarts for most changes. Transport endpoint or SSM parameter
-name changes may still require a restart.
+Updating an embedded document or changing `BridgeYamlAsset` is not a target
+write. Do not delete the target as a rollout shortcut: confirmed absence requires
+process exit and replacement after clustered activation, not live idle.
+Uncertain teardown also exits. Read failures retain last-success processing
+as degraded. Follow the
+[cluster rollout runbook](../../runbooks/cluster-config-rollout.md).
 
 ---
 

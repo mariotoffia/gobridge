@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +34,6 @@ const (
 	localMQTTParam  = "/gobridge/local/mqtt-credentials"
 	localAdminKey   = "local-deployment-proof-key"
 	localImageEnv   = "GOBRIDGE_LOCAL_IMAGE"
-	localImage      = "gobridge-filebased:local"
 
 	// bootstrapDocumentVariable is the container environment variable the
 	// deployment stamps its bootstrap document into.
@@ -91,16 +89,6 @@ func deployLocalCohort(t *testing.T, env SandboxEnv, slots *ha.MemberSlots, conf
 	cohort := LocalCohort{LocalStack: deployed}
 	cohort.services = cohort.mapSlotServices(t, deployed.Outputs, slots)
 	return cohort
-}
-
-// localBridgeImage is the runtime image the slots run. It has to exist on the
-// Docker host: the emulator launches task definitions as real containers, so an
-// image that is not there is a task that never starts.
-func localBridgeImage() string {
-	if override := strings.TrimSpace(os.Getenv(localImageEnv)); override != "" {
-		return override
-	}
-	return localImage
 }
 
 // mapSlotServices resolves each member id to the ECS service that runs it, by
@@ -211,10 +199,9 @@ func (c LocalCohort) Probe() cohortProbe {
 			for _, task := range tasks {
 				taskID := task.arn[strings.LastIndex(task.arn, "/")+1:]
 				for name, container := range taskContainers(taskID) {
-					// Every running container of the task is offered; the seeder
-					// has exited by then and anything that is not the runtime
-					// simply does not answer deep health.
-					_ = name
+					if !isRuntimeContainer(name) {
+						continue
+					}
 					if host := containerIP(c.backend.network, container); host != "" {
 						out = append(out, cohortMember{TaskARN: task.arn, Service: task.service, Host: host})
 					}

@@ -1,8 +1,15 @@
 # CDK Scenario 2: Custom VPC & Existing Infrastructure
 
+## Overview
+
 Add GoBridge to an established AWS environment with an existing VPC, ALB, and
 ECS cluster. Instead of creating all resources from scratch, this scenario
 imports shared infrastructure and layers the GoBridge Fargate service on top.
+
+Use a consumer-built image with embedded initial config, or provide an existing
+target. Registry images are not changed by CDK. Missing config keeps the data
+plane idle; only control can initialize it. See
+[initial configuration](../../aws-deployment/config-initialization.md).
 
 ## Use Case
 

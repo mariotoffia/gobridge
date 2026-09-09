@@ -1,5 +1,7 @@
 # aws-filebased-config — Ubiquitous Language
 
+## Overview
+
 Terms specific to this deployment profile. Additive to the project-wide [UBIQUITOUS.md](../../UBIQUITOUS.md). If a term appears both here and in the project glossary, the project glossary wins.
 
 ## Configuration
@@ -17,6 +19,22 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 | **ContainerMemoryBytes** | Bootstrap container hard limit. Defaults to 1 GiB outside CDK; the CDK base always overwrites it from the effective Fargate task `MemoryMiB`, preventing runtime accounting from diverging from the deployed limit. |
 | **ReservedMemoryBytes** | Bootstrap reservation for non-MQTT runtime memory. Together with the AWS MQTT memory profile's 25% ingress reservation, it must leave at least 20% of `ContainerMemoryBytes` as headroom. |
 | **AWS MQTT memory profile** | Runtime bootstrap policy applied to initial config and every reload: divide 25% of container memory across unique built MQTT sessions that can ingest and derive each default Receive Maximum with the Paho ingress byte model. Every Persistent/Exclusive session referenced by a declared sender consumes one deduplicated share with route concurrency zero even when no route references that sender, because resumed durable state may deliver stale backlog; an Ephemeral sender-only session consumes no share. |
+| **ConfigInitializer** | Optional strict target-creation capability; uses the [project definition](../../UBIQUITOUS.md#blueprint--configuration-portsblueprintgo--config), creates version 1 only when the document is absent, and is wired only for control. |
+| **ConfigObserver** | Source capability reporting ordered present, missing, and read-error outcomes through the existing watch path; see the [project glossary](../../UBIQUITOUS.md#blueprint--configuration-portsblueprintgo--config). |
+| **ConfigObservation** | One source result categorized by `ConfigObservationKind`, carrying the config or error. |
+| **ConfigObservationKind** | `ConfigPresent` (document observed), `ConfigMissing` (definitive document absence), or `ConfigReadError` (read failed); backend-table absence is a read error. |
+| **Inline initial source** | Logical YAML or JSON exposed through `ports.Loader`, including an embedded document decoded by the entry point, for optional initial-start creation. |
+| **First activation latch** | Process-lifetime activation record, independent of readiness; an HA standby can activate without Full readiness, and idle does not reset the latch. |
+| **ConfigPresent** | Logical document observed through the selected source; normal validation and rollout rules still govern activation. |
+| **ConfigMissing** | Definitive document absence; after activation it requires safe idle or instance termination, never stale processing. |
+| **ConfigReadError** | Source read failure; before activation remain idle with the error, after activation retain last successful config as degraded. |
+| **ConfigObservation.Sequence** | Observation order independent of the stored version; a recreated version-1 document must not disappear behind an earlier higher version. |
+| **Initialize** | Shared `config.Initialize` orchestration for strict creation and winner admission, following the [project contract](../../UBIQUITOUS.md#blueprint--configuration-portsblueprintgo--config); control authorization and process lifecycle remain profile responsibilities. |
+| **Manager.Observe** | Observation path for the profile's single authoritative `config.Layer`; overlays are unsupported and the existing `Watch` API remains available. |
+| **Manager.NotifyIdle** | Host acknowledgement after data-plane quiescence that clears confirmed running config state without removing a newer desired snapshot or rearming initialization. |
+| **Initialization snapshot** | Admission copy preserving logical references; mutable custom plugins must implement existing `ports.FreezableConfig`, while deeply immutable scalar value configs need not. |
+| **Clustered config absence** | Confirmed absence after clustered activation signals process exit and replacement; only safely quiesced standalone operation can return to idle in the same process. |
+| **Initial config creation** | Authenticated control-only `POST /api/v1/admin/config`, using a complete typed YAML or JSON document and strict `CreateIfAbsent`; see [request and outcomes](../../docs/aws-deployment/config-initialization.md#operator-creation-and-rollout). |
 
 > **Not a layer:** the `resolvedCfg` produced inside `resolveInputs` is a transient working copy with SSM secrets patched into HTTP `Config.APIKey`. It is consumed by the builder and discarded — no ref, no name to learn.
 
@@ -32,6 +50,8 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 | **DynamoDB HA config expectation** | Deployment-owned exact lease/outbox/managed-subscription table names plus canonical bridge-config SHA-256 fingerprint stamped into bootstrap by `GoBridgeDynamoDBHA`; every HA process checks the selected-source logical config against it before planning stores or transports. |
 | **DynamoDBHAData** | Data output owned by `GoBridgeDynamoDBHA`; the sole profile API exposing the lease, shared-outbox, and managed-subscription table objects, names, and ARNs. |
 | **FailureToFullDuration** | External failover-probe CloudWatch metric in the deployment metrics namespace. One sample is the milliseconds from the conservative pre-`StopTask` timestamp through exact-holder `STOPPED`, owner plus fencing-version change, and the different successor reaching `ServiceLevelFull`. It has no runtime dimensions; warm/cold percentiles are reported separately by the credentialed harness. Missing samples are non-breaching for the alarm, while release proof must query and find its exact sample. |
+| **NodeRole (current configuration authority)** | Supersedes the earlier write-authority description: workers remain read-only for file and DynamoDB config; CAS capability does not authorize worker writes or initialization. |
+| **Deployment baseline content digest** | Content-only HA baseline identity for both file and DynamoDB sources, using the [project definition](../../UBIQUITOUS.md#deployment--seeding-deploymentaws-filebased-config); committed artifacts retain their actual stored version and full digest. |
 
 ## Reload Mechanics
 
@@ -59,6 +79,7 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 | **Access point path** | POSIX path *inside* EFS exposed by the access point. Default `/gobridge`. Set on the access point at creation; immutable thereafter. |
 | **Config mount path** | Path *inside the container* where the EFS access point is mounted when the config source or SQLite store paths require EFS. Default `/var/lib/gobridge` (single canonical constant `infra.DefaultMountPath`; the Phase-1 store-path validator, the ECS mount, and the seeder all derive from it). |
 | **Config file path** | Absolute path the bootstrap polls for the bridge config. Combines mount path + filename, e.g. `/var/lib/gobridge/bridge.yaml`. |
+| **Config mount path (current users)** | The runtime config path and SQLite store paths derive from the mount; the earlier seeder reference is historical, since initialization now runs in the control process. |
 
 ## CDK
 
@@ -70,6 +91,9 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 | **BridgeImageSource** | Sealed image input to all three facades, re-exported from `cdk/internal/imgsource.Source`. `ImageFromRegistry(ref)` preserves a digest-pinned reference; `ImageFromEcrRepository(repo, tag)` uses a consumer-managed ECR tag or digest; `ImageFromGoBuild(props)` stages an embedded Dockerfile for a published command. The internal constructors are `NewRegistry`, `NewEcrRepository`, and `NewGoBuild`; `Materialize` creates the CDK image and `RuntimePlatform` aligns the Fargate task with it. |
 | **ImageGoBuildProps** | Build settings, re-exported from `imgsource.GoBuildProps`: required published lib-module `Version`, optional command `Package`, `BuildTags`, digest-pinned `GoImage` and `BaseImage`, and `Platform` (`linux/amd64` by default, or `linux/arm64`). The command must support this profile's bootstrap and health check. |
 | **DeriveBuildTags** | Sorted, deduplicated optional family tags derived from bridge-config transport and store discriminators. Base AWS, MQTT, native stores and HTTP require no extra tags. Unknown kinds and processor registrations without a profile mapping fail synth. Nil `BuildTags` invokes derivation; an explicit empty slice adds no tags. Aliases follow root `PLUGIN.md`. |
+| **BridgeConfigSource (current materialization)** | Supersedes the earlier S3-asset description: `BridgeYamlAsset` reads a local document and `BridgeYamlInline` supplies typed config; both drive validation and grants, and `ImageFromGoBuild` embeds the parsed result without a separate S3 config asset. |
+| **Embedded initial config** | Logical document carried in linker string `main.initialConfigBase64`; CDK stages it in `initial-config-<hash>.goenv`, while registry images remain consumer-owned and unchanged. |
+| **Embedded initial config digest** | SHA-256 of decoded embedded bytes, inspected with `-initial-config-digest` before runtime or network startup and checked by the Go-build image path without printing the document. |
 
 ### Registries
 
@@ -79,12 +103,27 @@ Explicit producer→consumer wiring for resources referenced by name from bridge
 |---|---|
 | **QueueRegistry** | Explicit `string→awssqs.IQueue` map provided as a construct prop. Tier B resolves YAML SQS-by-name references via `QueueRegistry.Ref(name) → QueueRef`. No auto-import scanning. Missing entry → `addError` with self-healing message: `registry.AddQueue("X", queue)`. Lives in `cdk/registry/`. |
 | **SsmParamRegistry** | Explicit `string-URI→awsssm.IParameter` map. Tier B resolves YAML SSM URI references via `SsmParamRegistry.Ref(uri) → ParamRef`. Keyed by full URI / parameter path (e.g. `/bridge/mqtt`). Missing entry → `addError`: `registry.AddParameter("/path", param)`. Lives in `cdk/registry/`. |
+| **QueueRegistry (embedded references)** | Keeps exact queue handles for grants and dependencies while the document carries a physical name or explicit tag selector; imported-queue tags remain the producer's responsibility. |
+| **BindQueueTags** | `QueueRegistry.BindQueueTags(name, tags, prefix)` binds one literal selector to a previously registered queue, applies tags to owned queues, and asserts producer-managed tags for imported queues. |
+| **ResolveQueue** | `QueueRegistry.ResolveQueue(cfg sqs.Config) (QueueRef, error)` matches config to registered queue handles without AWS calls, rejecting ambiguous or missing name/tag mappings. |
+| **QueueRef.PhysicalName** | Known physical queue name rather than its registry alias or a CDK token; empty when the physical name is unknown at synth. |
+| **QueueRef.QueueTags** | Isolated copy of the explicit selector bound through `BindQueueTags`. |
+| **QueueRef.QueueNamePrefix** | Optional physical-name prefix bound to the tag selector. |
+| **QueueAddress** | `sqs.QueueAddress = "sqs:queue"`, the [project-defined binding marker](../../UBIQUITOUS.md#transport-adapters-adapterstransport) that uses the sender's configured queue while keeping its resolved URL runtime-only. |
+| **ValidateEmbeddedSQSConfig** | `bridgecfg` check used by the image builder to require decoded name/tag references, reject embedded queue URLs, and restrict SQS binding addresses to physical names or `sqs:queue`. |
+| **GrantSQSConfig** | Shared-base grant derivation that resolves SQS receiver, sender, and binding references through `ResolveQueue`, retaining exact handles for message permissions and dependencies, with metadata reads added only for tag mode. |
+| **ScanForPlaintextSecrets** | Explicit `bridgecfg` utility for a consumer-selected reference-only credential policy; neither `Builder.Build` nor construct Phase 1 calls it by default. |
 
 ### Drift policy
+
+Historical vocabulary follows. These modes and props are removed; use the
+strict [initialization contract](../../docs/aws-deployment/config-initialization.md).
+The row is retained as glossary history, not as a supported API.
 
 | Term | Meaning |
 |---|---|
 | **OnConfigDrift** | Drift-handling policy applied by the seeder init container against the current EFS file or DynamoDB config item. `SeedOnce` (control default) seeds iff absent and warns on drift; `Overwrite` uses the CDK source of truth (DynamoDB writes CAS-bump the row and JSON version); `AbortDeploy` is read-only and exits 10 on mismatch; `AdoptValid` (worker default) adopts valid drift without writes. DynamoDB semantic hashes use actual `data` and ignore only top-level `version`. Configured via `SeederMode` / `ControlSeederMode` and `WorkerSeederMode`; DynamoDB worker modes must remain read-only. |
+| **OnConfigDrift (superseded)** | No maintained drift-mode API or seeder container remains; initialization creates only an absent document, existing config wins, and workers never initialize. |
 
 ### Cross-stack lookup
 

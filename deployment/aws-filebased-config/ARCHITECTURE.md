@@ -1,5 +1,7 @@
 # aws-filebased-config — Architecture
 
+## Overview
+
 Internal architecture of the deployment profile: Go module layering, CDK construct composition, single vs cluster topology, the synth-time validation pipeline ("tier B"), and why peer discovery is EFS-mediated instead of Cloud Map. End-to-end AWS architecture (VPC, ALB) lives in [docs/aws-deployment/overview.md](../../docs/aws-deployment/overview.md), which maps to the topology, storage, image, construct, and IAM (JSON policy) pages beside it. The DDD mapping lives in [../../DDD.md](../../DDD.md) and the local glossary in [UBIQUITOUS.md](./UBIQUITOUS.md).
 
 > Sections and table rows marked **(planned)** describe the target
@@ -12,9 +14,16 @@ config: `file` (YAML on EFS) and
 `adapters/aws/config/dynamodb`). The bootstrap config selects the source; the
 name "filebased" in the module path predates this generalization.
 
+Design goals:
+
+- Keep configuration reads, observations, and strict creation behind ports.
+- Start the control plane independently of data-plane activation.
+- Preserve existing target config and read-only worker authority.
+- Build configured images without a separate configuration-distribution service.
+
 ## Module Topology
 
-Three Go modules, separately versionable:
+Three Go modules, with public modules following the common release train:
 
 ```mermaid
 flowchart LR
@@ -30,12 +39,11 @@ flowchart LR
 
 **Dependency rule.** `infra/` imports nothing outside the standard library — CDK consumers never pull in the runtime tree, and the runtime never imports CDK. `lib/model/BootstrapConfig` and `infra.BootstrapConfig` are intentional duplicates so each module can stand alone; equivalence is guarded by tests.
 
-**Published modules (planned).** All three modules join the release train
-(`scripts/release/modules.json`) and are tagged `<module-dir>/vX.Y.Z` like
-every published module. Published copies carry no `replace` directives and
-pin real sibling versions, so an external Go CDK app consumes them with plain
-`go get` — no repository checkout. The `deployment/` internal-only rule in
-`RELEASE.md` gains this profile as its explicit exception.
+**Publication.** `infra` and `cdk` are release-train members.
+Publication of a compatible `lib` module remains pending. Published copies
+must carry no `replace` directives and must pin released sibling versions
+before an external app can build without a repository checkout. See the
+[release graph](../../RELEASE.md#canonical-release-graph).
 
 `cdk/` ships six public L2 constructs plus four supporting packages. There is **no L3 wrapper** — consumers compose the L2s directly inside their own `awscdk.Stack`.
 
@@ -48,10 +56,10 @@ pin real sibling versions, so an external Go CDK app consumes them with plain
 | `cdk/constructs/gobridgealbattachment/` | `GoBridgeALBAttachment` listener-rule wiring. |
 | `cdk/constructs/gobridgealarms/` | `GoBridgeAlarms` opinionated CloudWatch bundle. |
 | `cdk/gobridgecdk/` | Public facade: `BridgeYamlAsset`, `BridgeYamlInline`, sealed `BridgeConfigSource`, `LookupBridge`, `BridgeRef`. |
-| `cdk/bridgecfg/` | Fluent builder for `*ports.BridgeConfig` + `ScanForPlaintextSecrets`. |
+| `cdk/bridgecfg/` | Fluent builder for `*ports.BridgeConfig`. |
 | `cdk/registry/` | `QueueRegistry`, `SsmParamRegistry` and their typed `Ref` accessors. |
 | `cdk/ssmexports/` | Functional options (`IncludeARNs()`) for the cross-stack export contract. |
-| `cdk/constructs/internal/{gobridgebase,grants,seeder,singleton,validation}/` | Private shared machinery — facades MUST NOT be bypassed. |
+| `cdk/constructs/internal/{gobridgebase,grants,singleton,validation}/` | Private shared machinery — facades MUST NOT be bypassed. |
 
 ## Construct Composition
 
@@ -65,7 +73,7 @@ flowchart TB
     CLUSTER["GoBridgeCluster"]
     HA["GoBridgeDynamoDBHA"]
     EFS["GoBridgeEfsConfig<br/>(internal use; opt-in BYO)"]
-    BASE["internal/gobridgebase<br/>(task def, mounts, IAM grants,<br/>seeder init container)"]
+    BASE["internal/gobridgebase<br/>(task definition, mounts, IAM grants)"]
     ECS["awsecs.FargateService(s)"]
     ALB["GoBridgeALBAttachment<br/>(opt-in)"]
     ALM["GoBridgeAlarms<br/>(opt-in)"]
@@ -116,15 +124,17 @@ Control receives `GrantReadWriteData`; workers receive `GrantReadData`. Only
 `watch_mode: streams` enables a `KEYS_ONLY` stream and `GrantStreamRead` for both
 roles. An omitted watch mode is stamped as `poll`.
 
-The DynamoDB init container downloads a JSON asset serialized from the validated
-YAML with `parser.MarshalBridgeConfigJSON` and checks its SHA-256. It seeds an
-absent `current` item with a conditional put. `Overwrite` uses a three-attempt
-version CAS loop; `AbortDeploy` fails on semantic drift; worker-default
-`AdoptValid` accepts valid admin edits without writes. Drift is computed from
-the actual JSON data, ignoring version, not from a stored hash attribute. The
-main container retains its seeder `SUCCESS` dependency. The DynamoDB seeder
-needs no PyYAML or EFS mount. File-source seeding is unchanged; switching sources
-does not migrate existing configuration. See the [seeder contract](cdk/constructs/internal/seeder/README.md).
+The control process may initialize an absent document through
+`ports.ConfigInitializer.CreateIfAbsent`. The source uses `ports.Loader`;
+there is no new core SDK dependency. Creation is atomic at version 1, ignores
+the source version, and rereads the winner. Existing invalid or legacy documents
+remain untouched. Version-zero CAS is not strict creation because it can adopt
+a versionless row.
+
+The initial document can be embedded in the binary. No separate S3 config
+asset, download grant, or seeder container is used. Switching sources does not
+migrate existing configuration. See the
+[initialization contract](../../docs/aws-deployment/config-initialization.md).
 
 Without a filesystem, `EfsConfig()` returns nil, task mounts and NFS ingress are
 omitted, and no EFS or EFS-KMS grants are added. The ALB attachment omits the
@@ -138,7 +148,7 @@ producer between filesystem-backed and EFS-free config.
 |---|---|---|
 | Backing store | YAML on EFS | One item, `PK = "config#"+bridge_id`, `SK = "current"`, monotonic `version` |
 | Watch | EFS poll (fsnotify unreliable on NFS) | Strongly consistent poll (default) or DynamoDB Streams (`watch_mode: streams`) |
-| Admin API writes | `parser.FileStore` guarded by the single-writer rule (control node only) | The loader itself — a `ports.ConditionalConfigStore`, CAS-safe for any writer |
+| Admin API writes | `parser.FileStore` guarded by the single-writer rule (control node only) | The loader itself — a `ports.ConditionalConfigStore`; control-only authority despite CAS capability |
 | Topology limits | all | `filesystem_replicated` rejected (workers boot from the shared filesystem by definition) |
 
 The profile always runs exactly one `config.Layer` (a base, never an
@@ -155,7 +165,7 @@ constructs use its identical internal alias to avoid the lookup/ALB import cycle
 |-------------|-----------|
 | `ImageFromRegistry(ref)` | Digest-pinned registry reference — today's flow. |
 | `ImageFromEcrRepository(repo, tag)` | Consumer-managed ECR. |
-| `ImageFromGoBuild(props)` | `DockerImageAsset` over an embedded two-stage Dockerfile that runs `go install <package>@<version>` against the published lib module — no repository checkout. `BuildTags` selects optional plugin families; left nil, the facade derives them from the parsed yaml (`DeriveBuildTags`). |
+| `ImageFromGoBuild(props)` | `DockerImageAsset` running `go install <package>@<version>` against a compatible published module, with the facade's parsed config automatically embedded. No repository checkout. Nil `BuildTags` derives optional families through `DeriveBuildTags`. |
 
 The profile binary's base families are aws, mqtt, native stores and http;
 `gobridge_amqp091`, `gobridge_amqp10` and `gobridge_azure` are additive
@@ -170,15 +180,26 @@ prerequisites: deriving a tag does not register a decoder or factory. Until thos
 prerequisites are available, keep using a pinned registry image or consumer ECR
 image. Custom commands can use explicit `BuildTags` (including an empty slice)
 to bypass derivation, but must implement the profile's bootstrap and health check.
+When config is embedded, they must also support `-initial-config-digest`.
 
 The generated Dockerfile stamps `main.version` with the module version and
 `main.gitSHA` with `module@<version>`, identifying the published source without
 claiming to know its Git commit. Digest-pinned builder/runtime bases and a nonroot
 user match the root Dockerfile. The temporary context is always staged into the
 cloud assembly before removal, even if app-wide asset staging is disabled.
+It carries `initial-config-<hash>.goenv` for native Go linker settings, avoiding
+operating-system argument limits without unsupported `@responsefile` syntax.
+The command decodes `main.initialConfigBase64`. The generated build verifies
+`/gobridge-filebased -initial-config-digest` against the staged document's SHA-256
+hash. Both entry points handle the probe before runtime or network startup,
+printing the hash rather than the document. An older command that ignores the
+stamp or lacks the probe cannot silently produce a passing build.
+Registry and ECR images are
+unchanged by CDK; consumers build their own initial document or supply the
+target separately. `BridgeConfig` still declares validation and grants.
 `Platform` supports `linux/amd64` and `linux/arm64`; the same selection configures
-Docker and the Fargate task. Both builder and runtime overrides, and any seeder
-override, must support that platform. Registry/ECR constructors target
+Docker and the Fargate task. Both builder and runtime overrides
+must support that platform. Registry/ECR constructors target
 `linux/amd64`.
 
 ## Single vs Cluster
@@ -188,7 +209,7 @@ override, must support that platform. Registry/ECR constructors target
 ```mermaid
 flowchart LR
     subgraph TaskDef
-      SEED["seeder init<br/>(SeedOnce default)"] --> CTRL["bridge container<br/>NODE_ROLE=control"]
+      CTRL["bridge container<br/>NODE_ROLE=control<br/>optional initial document"]
     end
     EFS[("EFS file system<br/>(1 access point, RW)")]
     SSM[("SSM SecureString<br/>params")]
@@ -196,7 +217,6 @@ flowchart LR
     ALB{{"ALB Listener<br/>(optional, via GoBridgeALBAttachment)"}}
 
     CTRL -- "RW mount<br/>ClientMount+ClientWrite" --> EFS
-    SEED -- "RW mount" --> EFS
     CTRL --> SSM
     CTRL --> LOG
     ALB -. admin + healthz + receivers .-> CTRL
@@ -209,21 +229,17 @@ One Fargate service, `DesiredCount=1`, deployment policy `MinHealthyPercent=0 / 
 ```mermaid
 flowchart LR
     subgraph Control["ControlService (DesiredCount=1, deploy 0/100)"]
-      CSEED["seeder init"] --> CCTRL["bridge container<br/>NODE_ROLE=control"]
+      CCTRL["bridge container<br/>NODE_ROLE=control<br/>optional initialization"]
     end
     subgraph Worker["WorkerService (DesiredCount=2 default, optional autoscaling)"]
       WBR["bridge container<br/>NODE_ROLE=worker"]
     end
     EFS[("Shared EFS<br/>2 access points, root '/'<br/>posixUser uid:gid 1000:1000")]
-    LEASE[("LeaseStore on EFS<br/>peer registry")]
     SSM[("SSM SecureString")]
     LOG[("CloudWatch Logs")]
 
     CCTRL -- "RW (ClientMount+ClientWrite)" --> EFS
-    CSEED -- "RW" --> EFS
     WBR   -- "RO (readOnly:true, ClientMount only)" --> EFS
-    CCTRL --> LEASE
-    WBR --> LEASE
     CCTRL --> SSM
     WBR --> SSM
     CCTRL --> LOG
@@ -232,7 +248,10 @@ flowchart LR
 
 Both access points share the same root path and the same posix user (uid/gid `1000:1000`); the **RW/RO split is enforced at IAM and at the ECS volume level (`readOnly: true`)**, not by POSIX ownership. The control role and worker role are split for EFS grants only — `ClientMount`+`ClientWrite` for control, `ClientMount` only for workers; SQS, SSM and Logs grants are identical between roles since both task families process messages.
 
-`DesiredCount=1` for the control service is a runtime invariant (single LeaseStore writer semantics) and is **not** exposed as a prop. Workers default to two and may opt in to CPU target-tracking autoscaling via `AutoScalingProps{Min, Max, TargetCPU}`. Control seeds EFS; worker init containers check the current YAML read-only, using `AdoptValid` by default.
+`DesiredCount=1` preserves the single file-config writer and is not exposed as a
+prop. Workers default to two and may opt in to CPU target-tracking autoscaling
+via `AutoScalingProps{Min, Max, TargetCPU}`. Only control can initialize absent
+config; workers read it through the normal loader and observer.
 
 ### `GoBridgeDynamoDBHA`
 
@@ -244,18 +263,25 @@ runs the clustered runtime and can own a lease; node role controls config-write 
 Zones. Both services use a 0/100 replacement policy with AZ rebalancing
 disabled — the control service to prevent overlapping config writers, the worker
 service to prevent an incompatible revision running as a second cohort — and the
-worker service depends on the control service so the config seeder runs first.
+worker service depends on the control service. Missing config keeps workers idle;
+no container-dependency gate is needed for configuration.
 
 The facade owns exactly three on-demand, PITR-enabled, retained tables through
 `DynamoDBHAData`: `PK`-only lease with TTL omitted, `PK`/`SK` outbox with
 `ExpiryIndex`, `RecordIDIndex`, and `ClaimIndex`, and `storage_identity`-keyed
 managed-subscription history. It validates names from the parsed store configs,
-then runs the Task 9 builder admission path source-safely before creating
+then runs the builder admission path without AWS calls before creating
 resources. The facade stamps the canonical admitted-config fingerprint and exact
 table identities into bootstrap; every process checks its selected-source config against
 those expectations before planning stores or transports. Static endpoints and per-replica Exclusive MQTT client-ID suffixes
 are rejected; the bootstrap composition root registers `EcsEndpointResolver`
 for clustered configs.
+
+The generation-zero baseline uses `bridge.DeploymentBaselineContentDigest`
+for both file and DynamoDB sources. It normalizes only the top-level version
+for recognition, since initialization assigns target version 1 independently
+of the embedded version. The committed artifact retains the actual stored
+version and full `bridge.ConfigArtifactDigest`.
 
 `GoBridgeAlarms` reads this facade to add warm-standby, DynamoDB, existing
 runtime lease/outbox/DLQ, and external `FailureToFullDuration` alarms. The
@@ -265,7 +291,9 @@ CloudWatch for its exact sample.
 
 ## Tier B: parse, validate, derive
 
-Tier B is the synth-time pipeline that turns a `BridgeConfigSource` into IAM grants and CDK errors. It runs in three phases; central design promise: **misconfigurations fail at `cdk synth`, not at runtime.**
+Tier B turns a `BridgeConfigSource` into IAM grants and CDK errors. It catches
+known shape and reference errors at synth; runtime discovery still verifies
+the actual AWS resources.
 
 ### Phase 1 — Constructor (fast-fail)
 
@@ -274,17 +302,30 @@ Errors thrown immediately at the construct call site. Implemented in `cdk/constr
 1. yaml parses (`config.ParseFile`).
 2. Stage-1 validators (`config/validate.go`).
 3. Filesystem-topology constraints from `validateFilesystemProfile`: no `delivery_mode: shared_outbox`, no `route.session` lease.
-4. Plaintext credential scan (`cdk/bridgecfg/secrets.go::ScanForPlaintextSecrets`).
+4. Typed plugin configuration validation; literal credentials are permitted.
 5. SQLite store paths must sit under the EFS mount root.
 6. Cluster only: workers must not reference RW-only paths.
 
-Both `BridgeYamlAsset(path)` and `BridgeYamlInline(cfg)` go through the **same** Phase 1 walker — the inline path marshals via `config.MarshalYAML` and re-parses via `config.ParseFile` so what was validated is what gets seeded.
+Both `BridgeYamlAsset(path)` and `BridgeYamlInline(cfg)` use the same typed
+parse and validation path. The resulting logical config is the input to
+optional Go-build embedding, not a separate runtime S3 asset.
+
+The image builder also calls `bridgecfg.ValidateEmbeddedSQSConfig`. It rejects
+all SQS queue URLs, including literals, and requires receiver/sender queue
+references on their own options. SQS binding addresses must be physical names
+or `sqs.QueueAddress` (`sqs:queue`). A document-wide check rejects unresolved
+CDK tokens. Resolved target URLs remain runtime-only.
+
+`ScanForPlaintextSecrets` is an explicit utility. Neither `Builder.Build` nor
+Phase 1 runs it; literal credentials are permitted.
 
 ### Phase 2 — `construct.validate()` (aggregated)
 
 Errors are collected via `Annotations.of(scope).addError(...)` so a single `cdk synth` reports **every** missing reference, not iteration-by-iteration:
 
-1. Each SQS queue name in yaml must have a `QueueRegistry` entry (typed remediation message: `registry.AddQueue("X", queue)`).
+1. Each SQS name/tag reference resolves through `QueueRegistry.ResolveQueue`;
+   tag selection requires an explicit `BindQueueTags(name, tags, prefix)`
+   declaration on a registered handle. Ambiguous mappings fail synthesis.
 2. Each SSM URI must have an `SsmParamRegistry` entry.
 3. Each `bridge.cluster.endpoints` value parses as a URL.
 
@@ -292,39 +333,35 @@ Errors are collected via `Annotations.of(scope).addError(...)` so a single `cdk 
 
 ### Phase 3 — Grant derivation
 
-Per-adapter grant functions live one-file-per-kind under `cdk/constructs/internal/grants/`. Tier B walks the parsed yaml and emits IAM via CDK's typed grant methods (no manual ARN construction):
+Per-adapter grant functions live under `cdk/constructs/internal/grants/`.
+The shared base calls `GrantSQSConfig`, using the same `ResolveQueue` path as
+validation for receiver, sender, and binding references. It retains exact
+queue handles for message permissions and deployment dependencies:
 
 | Adapter family | Grant |
 |----------------|-------|
-| SQS receiver | `queue.GrantConsumeMessages(role)` always; `queue.Grant(role, "sqs:ChangeMessageVisibility")` additionally when `auto_extend: true`. |
+| SQS receiver | `ReceiveMessage`, `DeleteMessage`, `GetQueueAttributes`, `GetQueueUrl`; `ChangeMessageVisibility` when `auto_extend: true`. |
 | SQS sender | `queue.GrantSendMessages(role)`. |
+| SQS tag selection | Additional native `ListQueues` and `ListQueueTags` reads only in tag mode; queue handles still scope message operations and dependencies. |
 | SSM credential | `param.GrantRead(role)` (covers `ssm:GetParameter` + `kms:Decrypt` for AWS-managed keys). |
 | CloudWatch Logs | `logGroup.GrantWrite(role)`. |
 | EFS | Per role: control `ClientMount`+`ClientWrite`; worker `ClientMount` only. |
 | EFS CMK | Auto-granted when `EfsKmsKey` prop is set. |
-| Config table | Control `GrantReadWriteData`; worker `GrantReadData`; both `GrantStreamRead` only when `watch_mode: streams`. Seeders share their task role; workers are never granted config writes. Both roles can read the config asset. |
+| Config table | Control `GrantReadWriteData`; worker `GrantReadData`; both `GrantStreamRead` only when `watch_mode: streams`. No config-asset read grant. |
 
 Adding a new plugin requires a matching pair of files (`bridgecfg/<kind>.go` and `internal/grants/<kind>.go`) — enforced by the CI check against `*ports.Registry`.
 
-## No Cloud Map — LeaseStore peer discovery
+## Endpoint discovery
 
-`GoBridgeCluster` deliberately does not provision a Cloud Map namespace. Peer discovery is EFS-mediated through the LeaseStore.
-
-- Each task self-detects its reachable address via `EcsEndpointResolver` (`adapters/aws/cluster/ecs/resolver.go`), which queries the ECS task metadata endpoint.
-- The resolved endpoints are passed to the runtime via `runtime.WithClusterEndpoints(...)`; the call site lives in `bridge/builder_prepare.go` (`Builder.prepare → rtOpts = append(rtOpts, runtime.WithClusterEndpoints(endpoints))`, invoked through `Builder.Build` or `Builder.Plan`).
-- The runtime registers itself in the LeaseStore on EFS; siblings discover the live set by reading the same store.
-
-**Why not Cloud Map.**
-
-- One fewer AWS service to permission, observe and pay for; EFS is already required for hot-reloadable yaml and SQLite outbox/lease state.
-- Discovery is a property of the membership store, not DNS — no "DNS TTL vs reality" gap, no SRV record plumbing, no `servicediscovery:*` IAM.
-- Workers and control read the same store they already mount; nothing new joins the trust boundary.
-
-**Trade-off.** Peer-discovery latency is bounded by the LeaseStore TTL / poll interval, not by DNS TTL. Acceptable for this profile because: single-region / single-account is a non-goal-of-multi-region scope (see Singleton constraint), membership churn is low (deploys are gated by `MinHealthyPercent=0`), and the LeaseStore is on EFS which is already tail-latency-bounded by the workload itself.
+The profile does not provision Cloud Map. `EcsEndpointResolver` reads each
+task's endpoint through ECS metadata. Coordinated HA records holder endpoints
+in DynamoDB leases. Filesystem-replicated scale-out does not gain a distributed
+lease store by sharing EFS; it rejects lease-managed routes and shared outboxes.
 
 ## Singleton constraint
 
-**One `GoBridgeSingle`, `GoBridgeCluster`, OR `GoBridgeDynamoDBHA` per AWS account.** Multiple instances in the same account are forbidden.
+**One `GoBridgeSingle`, `GoBridgeCluster`, or `GoBridgeDynamoDBHA` per stack tree.**
+Separate stacks may host separate bridges.
 
 | Layer | Enforcement |
 |-------|-------------|
@@ -340,8 +377,8 @@ The bridge identity is taken from the deployed yaml's `bridge.name` (validated a
 
 | Constructor | Behaviour |
 |-------------|-----------|
-| `BridgeYamlAsset(path)` | `s3assets.NewAsset` reads the file for upload; tier B parses the same file from disk. Single synth pass, no drift concern. |
-| `BridgeYamlInline(*ports.BridgeConfig)` | Marshals via `config.MarshalYAML`, builds an asset from the bytes, re-parses via `config.ParseFile` so tier B walks the same structure that gets seeded. |
+| `BridgeYamlAsset(path)` | Reads and parses local config for validation, grants, and optional Go-build embedding; no separate S3 config asset. |
+| `BridgeYamlInline(*ports.BridgeConfig)` | Supplies typed config through the same validation and optional embedding path. |
 
 For cross-stack consumption, the producer publishes typed accessors via SSM Parameter Store (soft-coupled — no `Fn.importValue`):
 
@@ -353,17 +390,60 @@ The consumer resolves them with `gobridgecdk.LookupBridge`, which returns a `*Br
 
 ## Runtime Library (`lib/bootstrap`)
 
-`lib/bootstrap.NewApp(cfg, opts...)` loads `BootstrapConfig` from env (`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` or `…_FILE`, max 1 MiB), watches the bootstrap-selected config source, swaps the active `*runtime.Runtime` without restart, resolves `pms://` SSM secrets and starts the admin / monitor / transport HTTP servers. Source selection lives behind one seam — `(*App).newConfigSource` returns the `config.Layer`, the `ports.ConfigStore` for the admin API, and the single-writer posture: `file` polls `ConfigFilePath` on EFS with the control-node-only write guard; `dynamodb` uses the `adapters/aws/config/dynamodb` loader as Loader, Watcher **and** `ports.ConditionalConfigStore`, so CAS replaces the single-writer guard. Start-empty triggers only on `shared.ErrNotFound` or `os.ErrNotExist`; other load errors fail startup. The wrapper applies only to Loader, preserving the original Watcher and ConfigStore. DynamoDB config-table creation runs only during startup with `DevMode`; production never creates the config table. Reload uses `swapModeOverlap` by default; `swapModePrepareCommit` whenever any transport advertises `ports.CapExclusiveIdentity`. Reference cells (`bridgeConfigRef`, `runtimeRef`, `apiKeysRef`, `transportHandlerRef`) decouple HTTP servers from reload mechanics. Profile guard `validateFilesystemProfile` rejects `route.delivery_mode = shared_outbox` and `route.session != nil`.
+`lib/bootstrap.NewApp(cfg, opts...)` loads static `BootstrapConfig` and wires
+one selected config source. File updates retain the single-control-writer
+guard; DynamoDB updates use CAS. Both enforce read-only worker configuration
+authority. Production never creates a missing backend table.
+
+With valid bootstrap, admin and monitor stay live while the data plane awaits
+valid config. The optional initial source uses `ports.Loader`; strict target
+creation uses `ports.ConfigInitializer`. Existing watcher paths report
+`ConfigPresent`, `ConfigMissing`, and `ConfigReadError` through
+`ports.ConfigObserver`. No additional polling service is introduced.
+
+`config.Initialize` validates the target or creates an absent document using
+an initial `ports.Loader`, then reloads and admits the winner. Its admission
+callback receives an isolated snapshot. Mutable custom plugin configs require
+`ports.FreezableConfig`; deeply immutable scalar value configs do not.
+Authorization and first-activation tracking remain composition-root concerns.
+
+`Manager.Observe` supports one authoritative `config.Layer`, discovering the
+observer capability on its watcher or loader. It rejects overlays; the existing
+config-only `Watch` API remains unchanged. The host calls `Manager.NotifyIdle`
+only after quiescence, clearing confirmed running state without discarding a
+newer desired config. Neither method creates a second polling service.
+
+After first activation, confirmed absence stops new intake. Standalone operation
+drains, releases resources, and goes idle; a later valid document builds a new
+runtime. Clustered deletion or uncertain teardown signals process exit and
+replacement, never continued processing or live cluster idling.
+Read errors retain the last successful runtime as degraded.
+First activation is not readiness: a standby can activate without reaching Full.
+Returning to idle does not rearm initialization in that process. Watch ordering
+must preserve deletion and subsequent recreation, including a reset version.
+
+Reload uses overlap by default and prepare/commit for exclusive identities.
+Reference cells keep the control-plane servers independent of runtime swaps.
+Clustered updates still follow the barrier or whole-cohort replacement rules.
+
+Authenticated `POST /api/v1/admin/config` accepts a complete YAML or JSON
+document through the shared typed decoder and strict target creation. It
+rereads the winner and reports conflict, committed-not-applied, or uncertain
+write outcomes without compensating deletion. See
+[initial creation](../../docs/aws-deployment/config-initialization.md#operator-creation-and-rollout).
 
 | Project context | Touched here |
 |-----------------|--------------|
 | `bridge` | `lib/bootstrap` calls `bridge.NewBuilder`, registers transports/stores, drives `Build`/`Prepare`/`Complete`. |
 | `runtime` | `bootstrap.App` owns the active `*runtime.Runtime`; swap mode mirrors runtime semantics. |
-| `config` | `config.Manager` + the selected `Loader/Watcher` produce `*ports.BridgeConfig`. |
+| `config` | `Initialize` handles strict creation; `Manager.Observe` reports source state and `NotifyIdle` acknowledges completed runtime quiescence. |
 | `httpapi` | Config transactions persist through `parser.FileStore` or the shared DynamoDB loader; runtime apply and rollout coordination use the same paths for either source. |
 | `ports` | `ports.CapExclusiveIdentity` drives swap-mode selection. |
 
-See [../../DDD.md](../../DDD.md) for the project-level model and [UBIQUITOUS.md](./UBIQUITOUS.md) for profile-local terminology (`Bootstrap config`, `Logical vs Applied state`, `Topology`, `NodeRole`, `Swap mode`, `Parameter reference`, plus the new tier-B terms `BridgeConfigSource`, `BridgeRef`, `LookupBridge`, `QueueRegistry`, `SsmParamRegistry`, `OnConfigDrift`).
+See [../../DDD.md](../../DDD.md) for the project model and
+[UBIQUITOUS.md](./UBIQUITOUS.md) for profile terms. The
+[initialization contract](../../docs/aws-deployment/config-initialization.md)
+covers creation races, operator creation, artifact visibility, and SQS selection.
 
 ## Failure Modes & Guards
 
@@ -379,9 +459,9 @@ See [../../DDD.md](../../DDD.md) for the project-level model and [UBIQUITOUS.md]
 | Worker writes via admin API | Defence in depth: EFS mount `readOnly:true` AND ALB rule routes admin paths to control TG only. |
 | Multiple facades in same stack | `cdk/constructs/internal/singleton` synth-time scope scan. |
 | Missing `QueueRegistry` / `SsmParamRegistry` entry | Tier B Phase 2 aggregates via `Annotations.of(scope).addError(...)` — every missing reference reported in one synth, with typed remediation message. |
-| Plaintext credential in yaml | Phase 1 hard error from `ScanForPlaintextSecrets` — no opt-out. |
+| Literal credential in embedded config | Allowed; artifact readers can recover it. Base64 is not secrecy. |
 | ALB priority collision | Attachment ctor errors when consumer rule already uses `[BasePriority, BasePriority+99]`. |
-| Config table drift at deploy | Seeder drift modes: `SeedOnce` conditional put, `AbortDeploy` exits 10 on hash mismatch, `Overwrite` CAS-bumps `version`; worker-default `AdoptValid` accepts valid drift without writes. |
+| Existing target differs from embedded config | Never overwrite during initialization; normal validation and HA fingerprint checks still apply. |
 | Concurrent admin writes, `dynamodb` source | `SaveIfVersion` conditional put → `shared.ErrVersionMismatch`; no lost update, no single-writer assumption. |
 | Oversized config item | Adapter pre-checks 390 KiB before `PutItem` — descriptive error instead of an opaque `ValidationException`. |
 
@@ -390,7 +470,7 @@ See [../../DDD.md](../../DDD.md) for the project-level model and [UBIQUITOUS.md]
 - **Custom credential store**: `WithCredentialStore` on `App`.
 - **Custom SSM resolver**: `WithParameterResolver` (e.g. test fixtures, Vault wrapper).
 - **Custom CDK wiring**: compose `BridgeYamlInline(cfg)` over a hand-built `*ports.BridgeConfig` from `cdk/bridgecfg/`. The facades (`GoBridgeSingle` / `GoBridgeCluster` / `GoBridgeDynamoDBHA`) are the supported integration boundary; **bypassing them by composing `cdk/constructs/internal/gobridgebase` directly is not supported** — the package is internal precisely so the singleton / tier-B / mount-policy invariants stay enforceable.
-- **Custom transport/store**: not exposed via `App` — fork `factoryRegistry` or build a sibling deployment profile. **(planned)** The AMQP 0-9-1, AMQP 1.0 and Azure Service Bus families become compile-time opt-ins via the shared `gobridge_<family>` build tags; truly custom plugins still mean a sibling profile.
+- **Custom transport/store**: not exposed via `App` — build a sibling deployment profile. **(planned)** The AMQP 0-9-1, AMQP 1.0 and Azure Service Bus families become compile-time opt-ins via the shared `gobridge_<family>` build tags; custom plugins still need their own composition.
 - **Custom image pipeline**: pass `ImageFromRegistry` / `ImageFromEcrRepository` to keep building the image yourself; `ImageFromGoBuild` is the zero-checkout build path once a compatible module is published.
 
 ## Related Docs

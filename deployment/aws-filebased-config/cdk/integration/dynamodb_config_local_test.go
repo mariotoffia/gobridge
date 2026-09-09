@@ -28,14 +28,13 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/dockerexec"
-	"github.com/mariotoffia/gobridge/testutil/flocilocal"
 )
 
-// The shipped seeder must establish the initial config, with no test seed or
+// The runtime must initialize its embedded config, with no fixture-side write or
 // config file. Subsequent CAS writes go straight to that table, not through the
 // admin apply path, so only the deployed source watcher can initiate a rollout.
 //
-//	SeedOnce -> source table v1 -> CAS v2 (debug) -> CAS v3 (original)
+//	embedded config -> source table v1 -> CAS v2 (debug) -> CAS v3 (original)
 //	                  |                  |                 |
 //	                  +--------- watcher/coordinator -----+
 //	                                     |
@@ -64,8 +63,8 @@ func TestLocal_DynamoDBConfigHotReload(t *testing.T) {
 	probe := cohort.Probe()
 	slots := waitForEverySlot(t, ctx, probe, cohort.AdminKey, roster)
 	initial := readDynamoDBConfig(t, ctx, client, store, boot)
-	require.Equal(t, 1, initial.Version, "only the shipped SeedOnce seeder may create the initial item")
-	requireDynamoDBSeederSucceeded(t, cohort)
+	require.Equal(t, 1, initial.Version, "only the runtime's embedded loader may create the initial item")
+	requireDynamoDBRuntimeHasNoMounts(t, cohort)
 	digest, err := bridge.ConfigArtifactDigest(initial)
 	require.NoError(t, err)
 	require.NotEmpty(t, digest)
@@ -82,7 +81,7 @@ func TestLocal_DynamoDBConfigHotReload(t *testing.T) {
 		require.True(t, health.fresh(), id)
 	}
 	requireCohortConfig(t, ctx, cohort, roster, initial)
-	t.Logf("all %d slots share generation-zero baseline %s, seeded source version %d", len(slots), digest, initial.Version)
+	t.Logf("all %d slots share generation-zero baseline %s, initialized source version %d", len(slots), digest, initial.Version)
 
 	originalLevel := initial.Bridge.LogLevel
 	require.NotEqual(t, "debug", originalLevel)
@@ -126,7 +125,7 @@ func readDynamoDBConfig(t *testing.T, ctx context.Context, client *dynamodb.Clie
 		},
 	})
 	require.NoError(t, err)
-	require.NotEmpty(t, row.Item, "the deployed seeder must write the initial item, not this test")
+	require.NotEmpty(t, row.Item, "the runtime must initialize the item from its embedded config, not this test")
 	version, ok := row.Item["version"].(*ddbtypes.AttributeValueMemberN)
 	require.True(t, ok, "config row must carry a numeric version")
 	data, ok := row.Item["data"].(*ddbtypes.AttributeValueMemberS)
@@ -201,7 +200,7 @@ func requireDynamoDBConfigDeployment(t *testing.T, ctx context.Context, cohort L
 				require.NoError(t, err)
 				require.Equal(t, cohort.Outputs["ConfigTableName"], boot.ConfigDynamoDB.TableName)
 				require.Equal(t, "poll", boot.ConfigDynamoDB.WatchMode)
-				require.False(t, boot.DevMode, "the runtime must not create or seed the table")
+				require.False(t, boot.DevMode, "the runtime initializes the item but must not create the table")
 				if boot.NodeRole == infra.NodeRoleControl {
 					control = boot
 				}
@@ -212,7 +211,7 @@ func requireDynamoDBConfigDeployment(t *testing.T, ctx context.Context, cohort L
 	return control
 }
 
-func requireDynamoDBSeederSucceeded(t *testing.T, cohort LocalCohort) {
+func requireDynamoDBRuntimeHasNoMounts(t *testing.T, cohort LocalCohort) {
 	t.Helper()
 	tasks, err := cohort.runningTasks(t.Context())
 	require.NoError(t, err)
@@ -227,27 +226,4 @@ func requireDynamoDBSeederSucceeded(t *testing.T, cohort LocalCohort) {
 			require.JSONEq(t, "[]", strings.TrimSpace(string(mounts)), name)
 		}
 	}
-	// A task can start before its table is mirrored or its seeder finishes. The
-	// emulator deletes that task's containers when replacing it, including the
-	// successful seeder. Its own log stream retains their stdout; match only the
-	// task families this deployment declared, not an earlier stack's seed.
-	logs, err := dockerexec.Run(dockerexec.LogsTimeout, "logs", flocilocal.ContainerName(t))
-	require.NoError(t, err)
-	for _, line := range strings.Split(string(logs), "\n") {
-		for family := range cohort.backend.taskSpecs {
-			_, payload, found := strings.Cut(line, "[ecs:"+family+":seeder] ")
-			if !found {
-				continue
-			}
-			var result struct {
-				Mode, Reason string
-				Exit         *int
-			}
-			if json.Unmarshal([]byte(payload), &result) == nil && result.Mode == "SeedOnce" && result.Reason == "seeded" && result.Exit != nil && *result.Exit == 0 {
-				t.Logf("shipped DynamoDB seeder succeeded for %s: %s", family, payload)
-				return
-			}
-		}
-	}
-	t.Fatal("no deployed SeedOnce seeder reported success")
 }

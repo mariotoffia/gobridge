@@ -4,8 +4,6 @@
 package integration
 
 import (
-	"os"
-
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
 	elbv2 "github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2"
@@ -76,9 +74,11 @@ func newSingleFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	vpc := lookupVpc(stack, env)
 
 	inbound := awssqs.NewQueue(stack, jsii.String("InboundQ"), &awssqs.QueueProps{
+		QueueName:     jsii.String(*stack.StackName() + "-inbound"),
 		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
 	})
 	outbound := awssqs.NewQueue(stack, jsii.String("OutboundQ"), &awssqs.QueueProps{
+		QueueName:     jsii.String(*stack.StackName() + "-outbound"),
 		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
 	})
 
@@ -110,7 +110,7 @@ func newSingleFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	single := gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Single"), &gobridgesingle.SingleProps{
 		Vpc:           vpc,
 		VpcSubnets:    subnetSelection(env),
-		Image:         gobridgecdk.ImageFromRegistry(os.Getenv("GOBRIDGE_INT_IMAGE")),
+		Image:         credentialedRuntimeImageSource(),
 		Bootstrap:     bootstrap,
 		BridgeConfig:  src,
 		QueueRegistry: qr,
@@ -152,9 +152,11 @@ func newClusterFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	vpc := lookupVpc(stack, env)
 
 	inbound := awssqs.NewQueue(stack, jsii.String("InboundQ"), &awssqs.QueueProps{
+		QueueName:     jsii.String(*stack.StackName() + "-inbound"),
 		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
 	})
 	outbound := awssqs.NewQueue(stack, jsii.String("OutboundQ"), &awssqs.QueueProps{
+		QueueName:     jsii.String(*stack.StackName() + "-outbound"),
 		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
 	})
 
@@ -187,7 +189,7 @@ func newClusterFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	cluster := gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Cluster"), &gobridgecluster.ClusterProps{
 		Vpc:                vpc,
 		VpcSubnets:         subnetSelection(env),
-		Image:              gobridgecdk.ImageFromRegistry(os.Getenv("GOBRIDGE_INT_IMAGE")),
+		Image:              credentialedRuntimeImageSource(),
 		Bootstrap:          bootstrap,
 		BridgeConfig:       src,
 		QueueRegistry:      qr,

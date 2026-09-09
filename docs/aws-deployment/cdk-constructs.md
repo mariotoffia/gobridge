@@ -1,5 +1,7 @@
 # CDK Construct Library
 
+## Overview
+
 The constructs that wire a deployment together, the props each one takes, and
 a complete worked example.
 
@@ -45,7 +47,7 @@ Existing `awsecs.ContainerImage` values are no longer accepted. Choose one of:
 |-------------|-----|
 | `gobridgecdk.ImageFromRegistry(ref)` | A registry reference pinned with `@sha256:<digest>`. The reference is preserved exactly; mutable tags alone fail synth. |
 | `gobridgecdk.ImageFromEcrRepository(repo, tag)` | A consumer-managed `awsecr.IRepository` with an explicit tag or SHA-256 digest. CDK grants the execution role pull access. Prefer immutable tags or digests. |
-| `gobridgecdk.ImageFromGoBuild(props)` | A Docker asset built from a published command with `go install package@version`, without cloning the repository. |
+| `gobridgecdk.ImageFromGoBuild(props)` | A Docker asset built with `go install package@version`, automatically embedding the facade's parsed `BridgeConfig`, without a repository checkout. |
 
 `ImageGoBuildProps.Version` is required: supply a published compatible
 lib-module version, not `main` or `latest`. `Package` defaults to
@@ -64,19 +66,39 @@ An explicit empty slice (`[]string{}`) adds no tags and bypasses derivation.
 
 `Platform` defaults to `linux/amd64`; `linux/arm64` is also supported and sets
 both the Docker build platform and Fargate task architecture. Both base images
-and any seeder override must support the selected platform. Registry and ECR
+must support the selected platform. Registry and ECR
 sources use `linux/amd64`.
 
 **Publication prerequisite:** the compatible lib module and its optional plugin
 family wiring are not yet externally consumable. Deriving a build tag does not
 register runtime decoders or factories. Until those prerequisites are published,
 use a compatible pinned registry image or your own ECR image. A custom `Package`
-must implement this profile's bootstrap and health-check contract.
+must implement this profile's bootstrap and health-check contract, decode
+`main.initialConfigBase64`, and support the build's `-initial-config-digest`
+probe so an image cannot silently omit its declared initial document.
+
+After compilation, the generated build runs
+`/gobridge-filebased -initial-config-digest` and compares its output with the
+SHA-256 hash of the staged document bytes. The probe exits before runtime or
+network startup and reveals only the hash. A missing probe or mismatched hash
+fails the build, including for an older package that ignored the linker stamp.
+
+The initial document is staged as `initial-config-<hash>.goenv`; Go reads the
+linker flags through native `GOENV` settings rather than a large command
+argument or an unsupported `@responsefile`. The entry point decodes
+`main.initialConfigBase64`. No separate S3 config asset or download grant is
+created. See [initial configuration](config-initialization.md).
+
+Registry and ECR images cannot be changed by CDK. They must contain their own
+initial document, use an existing target, or wait for operator creation.
+`BridgeConfig` still drives validation and grants; it does not overwrite the
+target. Literal credentials may be embedded, but are readable in the binary,
+image, and build artifacts. Base64 is not secrecy.
 
 ## Runtime config source
 
 Use `Bootstrap.ConfigSource`; there is no separate config-source prop. Empty or
-`file` preserves EFS and the existing file seeder. `dynamodb` on Single or
+`file` selects EFS. `dynamodb` on Single or
 DynamoDB HA creates one retained, on-demand, PITR-enabled config table and stamps
 its name into bootstrap without mutating caller settings. Workers receive only
 read access to that table; control receives read/write access. Set
@@ -84,10 +106,10 @@ read access to that table; control receives read/write access. Set
 stream-read grants. The filesystem-replicated Cluster accepts only `file`.
 
 `BridgeConfig` still supplies YAML for synth-time validation, port mappings and
-adapter grants for either runtime source. For DynamoDB, synth serializes that
-validated config as a JSON asset; the init container seeds or checks the current
-item before the main container can start. See
-[storage and initialization](storage-and-secrets.md#dynamodb-for-configuration).
+adapter grants for either runtime source. A Go-built image embeds that logical
+document for optional control-only creation when the target is absent. The
+main process starts its control plane without waiting for another container.
+See [strict creation](config-initialization.md#strict-creation).
 
 EFS is needed only for file config or parsed SQLite paths. `EfsConfig()` returns
 nil otherwise, including when an unused `EfsConfig` prop was supplied. Pass that
@@ -124,7 +146,6 @@ the cached `efs-id` lookup in `cdk.context.json` after deploying the producer.
 | `CPU` | `*float64` | `512` | Fargate CPU units. |
 | `MemoryMiB` | `*float64` | `1024` | Fargate memory (MiB). |
 | `MountPath` | `*string` | `/var/lib/gobridge` | Container EFS mount path. |
-| `SeederMode` | `*string` | `"SeedOnce"` | Control seeder mode. |
 
 The single profile runs exactly one task (`DesiredCount` is not a prop) and has
 no auto-scaling.
@@ -138,8 +159,6 @@ both services), plus:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `WorkerDesiredCount` | `*float64` | `2` | Worker task count (must be ≥ 1). |
-| `ControlSeederMode` | `*string` | `"SeedOnce"` | Control seeder mode. |
-| `WorkerSeederMode` | `*string` | `"AdoptValid"` | Worker seeder mode (see below). |
 | `AutoScaling` | `*AutoScalingProps` | `nil` (off) | Opt-in worker CPU target-tracking (`{Min, Max, TargetCPU}`, `TargetCPU` `0` → 70). |
 
 The control task always runs a single copy (`DesiredCount` is hard-coded to 1).
@@ -154,7 +173,12 @@ resolved finite integer greater than or equal to `2`; unresolved numeric tokens
 are rejected. It has no worker auto-scaling surface. Table names and the
 deployment-profile fingerprint are derived from the admitted bridge config and
 injected into bootstrap by the facade, not supplied independently by callers, as
-is the baseline config digest of the seeded document.
+is the baseline config digest of the admitted document.
+
+For both file and DynamoDB sources, that baseline uses
+`bridge.DeploymentBaselineContentDigest`, excluding only the top-level version.
+Initialization assigns target version 1 independently of the embedded version.
+The actual committed artifact keeps its stored version and full digest.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -172,23 +196,94 @@ exposes `MemberSlotIDs()`,
 `RolloutTableName()`, `WorkerServices()` and `WorkerTaskDefinitions()` alongside
 the single-valued accessors.
 
-### Worker seeder: AdoptValid vs AbortDeploy
+### Worker configuration authority
 
-For the file config source, workers mount EFS read-only and cannot write config, so their default seeder
-mode is **`AdoptValid`**: on startup a worker adopts whatever valid `bridge.yaml`
-the EFS filesystem currently holds — whether written by the CDK seed or by an
-Admin-API config-txn commit — and never fails on hash drift from the synth-time
-asset. This lets the two reconfiguration paths coexist: a CDK redeploy and a
-live admin edit both leave a valid file that scale-out and crash-replacement
-workers pick up without a redeploy. Set `WorkerSeederMode` to **`AbortDeploy`**
-for strict lock-step deployments where every worker must match the synth-time
-asset exactly (an absent or mismatched file aborts the task).
+Workers only read configuration. They never initialize or overwrite the target,
+including when they use the same image as control. Missing config leaves the
+data plane idle and not ready. After first activation, confirmed absence stops
+new intake. An activated clustered worker exits for replacement rather than
+returning to idle. Standalone operation can drain and release its runtime, then
+rebuild after valid config returns. Uncertain teardown also requires exit.
+Source read errors retain the last successful config as degraded.
 
-The DynamoDB source uses the same worker defaults against the `current` config
-item, without an EFS mount. `AdoptValid` permits valid admin edits;
-`AbortDeploy` requires a matching semantic hash, ignoring the version counter.
-Both reject absent or malformed items and both remain read-only. CDK rejects
-worker `SeedOnce` or `Overwrite` rather than adding writes to the task-wide role.
+Existing invalid config cannot be replaced by the embedded document. HA
+deployment fingerprints and cluster-rollout admission still apply to existing
+valid config. There are no seeder-mode or seeder-image props.
+
+### SQS references
+
+Embedded Amazon Simple Queue Service (SQS) config names a physical queue or
+selects one by tags and an optional name prefix. A registry alias is not a
+physical queue name. For example, alias `orders` may refer to physical queue
+`orders-prod`; only `orders-prod` may appear as `queue_name`.
+
+| API | Contract |
+|---|---|
+| `QueueRegistry.AddQueue(name, queue)` | Registers an `IQueue` under a logical alias for grants and dependencies. |
+| `QueueRegistry.BindQueueTags(name, tags, prefix)` | Binds a literal selector to an already registered queue; returns an error for invalid or conflicting declarations. |
+| `QueueRegistry.ResolveQueue(cfg sqs.Config)` | Returns `(QueueRef, error)` by matching the declared reference to registered handles, without AWS calls; ambiguous or missing name/tag mappings fail. |
+| `QueueRef.PhysicalName()` | Returns the known physical name, never an alias or unresolved token; empty means the name is unknown at synth. |
+| `QueueRef.QueueTags()` | Returns an isolated copy of the explicitly bound selector. |
+| `QueueRef.QueueNamePrefix()` | Returns the optional discovery prefix bound to that selector. |
+
+Register a queue before binding its selector:
+
+```go
+queue := awssqs.NewQueue(stack, jsii.String("Orders"), &awssqs.QueueProps{
+    QueueName: jsii.String("orders-prod"),
+})
+queues := registry.NewQueueRegistry()
+queues.AddQueue("orders", queue)
+if err := queues.BindQueueTags("orders", map[string]string{
+    "application": "gobridge",
+    "purpose":     "orders",
+}, "orders-"); err != nil {
+    panic(err)
+}
+
+// Use this sender declaration in your bridgecfg builder chain.
+builder := bridgecfg.New("orders-bridge").
+    WithSQSSender("orders-out", queues.Ref("orders"))
+```
+
+Pass `queues` as the facade's `QueueRegistry`. `BindQueueTags` applies tags
+to CDK-owned queues. For an imported queue, it asserts that the producer has
+already applied them; CDK cannot change the imported resource's tags.
+The prefix must match the deployed physical name. For generated names,
+pass an empty prefix unless you can guarantee that match.
+
+`WithSQSReceiver` and `WithSQSSender` prefer the bound tags. Without tags they
+use `PhysicalName()`. A generated name that is unknown at synth needs an
+explicit tag binding for embedding. `WithRoute` gives a tag-selected sender's
+generated binding the address `sqs.QueueAddress`, whose wire value is
+`sqs:queue`. It means “use this sender's configured queue,” not per-message
+queue discovery.
+
+The image builder calls `bridgecfg.ValidateEmbeddedSQSConfig` before embedding.
+It requires decoded SQS options and rejects every `queue_url`, including literal
+URLs and URLs paired with a name. SQS receiver and sender options must each
+declare `queue_name` or `queue_tags`; a session's queue options are not inherited.
+Non-empty SQS binding addresses must be physical names or `sqs:queue`.
+Unresolved tokens anywhere in the full embedded document are also rejected.
+The selected queue URL remains runtime-only.
+
+The facade's shared base calls `GrantSQSConfig`, which uses `ResolveQueue`
+for receiver, sender, and binding references. It keeps exact queue handles for
+message-operation grants and resource dependencies. Only tag mode adds
+`ListQueues` and `ListQueueTags` metadata reads; name mode uses `GetQueueUrl`.
+Direct URLs remain available for non-embedded config. An unregistered direct
+URL leaves message-operation grants to the consumer.
+
+See [runtime selection](config-initialization.md#queue-references-in-embedded-documents)
+and [discovery grants](iam.md#sqs-discovery-grants).
+
+### Literal credentials
+
+`bridgecfg.Builder.Build` and construct Phase 1 do not reject literal
+credentials. `bridgecfg.ScanForPlaintextSecrets(cfg)` remains an explicit
+utility for consumers who choose a reference-only credential policy. It is
+not part of the default builder or facade validation path. Embedded literals
+remain visible to readers of the binary and build artifacts.
 
 ## Usage Example
 

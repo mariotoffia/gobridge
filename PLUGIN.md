@@ -1,5 +1,7 @@
 # Plugin Guide
 
+## Overview
+
 This guide explains how to extend gobridge with custom transport adapters, store backends, credential repositories, observability exporters, and message processors.
 
 All extension points follow the hexagonal architecture: implement a port interface from `ports/`, expose a typed `ports.PluginConfig`, register a decoder on a `*ports.Registry` via an exported `Register(reg *ports.Registry) error`, register the factory with the `bridge.Builder`, and gobridge handles the rest. The architectural framing for this contract lives in [DDD.md](DDD.md), [UBIQUITOUS.md](UBIQUITOUS.md), and [`docs/typed-plugin-config.adoc`](docs/typed-plugin-config.adoc).
@@ -31,9 +33,11 @@ every kind.
 The reference binary, `cmd/gobridge`, is a **blank root** when built without
 tags: no transport, store or telemetry exporter is linked. The file config
 source, `file://` credential store and admin/monitor HTTP API remain available.
-HTTP listeners still require an `http:` block in the startup config; starting
-with a missing file does not open them. A config naming a transport or store
-outside the compiled families fails with an unknown-kind error.
+`-admin-addr` plus `GOBRIDGE_ADMIN_API_KEY` enables repository-independent
+authenticated startup; legacy boot-file `http:` settings remain supported.
+A blank build does not supply listener/auth settings. Missing config leaves
+the data plane idle and not ready. Unknown plugin kinds fail decoding. See
+[control-plane startup](docs/aws-deployment/config-initialization.md#control-plane-startup).
 
 Select **plugin families** at compile time with additive **family tags**:
 
@@ -62,6 +66,13 @@ with sorted family names and `dev` for unstamped metadata. Usage also lists
 the compiled families; the startup log adds the exact decodable kinds. A blank
 root warns that no transports or stores are linked and names the tag mechanism.
 Build commands and version stamps are in [DEVELOPMENT.md](DEVELOPMENT.md#build).
+
+An embedded initial document does not select plugin families. The entry point
+decodes `main.initialConfigBase64` and uses the same typed registry as normal
+configuration loading. Only strict creation of an absent target is allowed.
+See [initial configuration](docs/aws-deployment/config-initialization.md).
+The `-seed-managed-subscriptions` operation described here is separate and
+remains supported.
 
 ### Family files and lifecycle
 
@@ -379,6 +390,10 @@ from `ports/plugin_config.go`:
 - `FreezableConfig` lets the adapter produce a deep-owned immutable configuration
   snapshot while intentionally preserving opaque runtime dependencies whose identity
   must remain stable. Core code never reflect-clones adapter configs.
+  Initialization requires it for mutable custom configs, such as a config with
+  a map or slice. Deeply immutable scalar value configs, such as a value struct
+  containing only strings and numbers, need not implement it. See
+  [initialization snapshots](docs/aws-deployment/config-initialization.md#snapshot-ownership).
 - `ReplicaIdentityConfig` declares the effective per-replica identity strategy
   used by clustered shared consumers. Validation fails closed when a shared
   subscription cannot prove a strategy.

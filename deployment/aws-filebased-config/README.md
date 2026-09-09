@@ -1,6 +1,17 @@
 # aws-filebased-config
 
-AWS deployment profile for GoBridge. Runs the bridge on **ECS Fargate** with **EFS** for hot-reloadable bridge config and **SSM Parameter Store** (SecureString) for secrets. The CDK surface is a flat set of composable L2 constructs — **there is no L3 wrapper stack**: consumers wire VPC, cluster, ALB and registries themselves.
+## Overview
+
+AWS deployment profile for GoBridge. Runs on Amazon Elastic Container Service
+(ECS) Fargate with config in Elastic File System (EFS) or DynamoDB. AWS Systems
+Manager (SSM) Parameter Store supplies runtime credentials when configured.
+Consumers compose Cloud Development Kit (CDK) constructs inside their own
+stack; there is no wrapper stack.
+
+The runtime can embed an initial logical document and create an absent target
+at first startup. Existing config is never overwritten by initialization.
+No configuration seeder container or S3 config download is required. See
+[initial configuration](../../docs/aws-deployment/config-initialization.md).
 
 ## Module Layout
 
@@ -8,7 +19,7 @@ AWS deployment profile for GoBridge. Runs the bridge on **ECS Fargate** with **E
 |-----------------------------------------------|-----------------------------------------------------------------------------------------|
 | `infra/`                                      | Zero-dep types (`BootstrapConfig`, `Exposure`, `AppSpec`). No CDK / runtime imports.    |
 | `cdk/gobridgecdk/`                            | Top-level facade: `BridgeYamlAsset`, `BridgeYamlInline`, `LookupBridge`, `BridgeRef`.   |
-| `cdk/bridgecfg/`                              | Fluent `*Builder` for `*ports.BridgeConfig` + plaintext-secret scanner.                 |
+| `cdk/bridgecfg/`                              | Fluent `*Builder` for `*ports.BridgeConfig`. |
 | `cdk/registry/`                               | `QueueRegistry` / `SsmParamRegistry` mapping logical names → CDK handles.               |
 | `cdk/constructs/`                             | `GoBridgeEfsConfig` (shared EFS + 2 access points).                                     |
 | `cdk/constructs/gobridgesingle/`              | `GoBridgeSingle` — one Fargate task, RW EFS.                                            |
@@ -38,8 +49,8 @@ Supporting:
 | Package | Surface |
 |---------|---------|
 | `cdk/gobridgecdk` | `BridgeYamlAsset(path) BridgeConfigSource`, `BridgeYamlInline(*ports.BridgeConfig) BridgeConfigSource`, `LookupBridge(scope, id, prefix, opts...) *BridgeRef`. |
-| `cdk/bridgecfg` | `bridgecfg.New(name).With…().Build() (*ports.BridgeConfig, error)` plus `ScanForPlaintextSecrets`, `RegisterCredentialScheme`, `RegisterSensitiveField`. |
-| `cdk/registry` | `NewQueueRegistry()` + `AddQueue(name, IQueue)`; `NewSsmParamRegistry()` + `AddParameter(uri, IParameter)`. |
+| `cdk/bridgecfg` | `bridgecfg.New(name).With…().Build() (*ports.BridgeConfig, error)`; explicit `ScanForPlaintextSecrets` utility, not a default policy. |
+| `cdk/registry` | `NewQueueRegistry`, `AddQueue`, `BindQueueTags(name, tags, prefix)`, `ResolveQueue`; `NewSsmParamRegistry` and `AddParameter`. |
 | `cdk/ssmexports` | `IncludeARNs()` option for `WithSSMExports`. |
 
 ## Coordinated HA: `GoBridgeDynamoDBHA`
@@ -96,8 +107,8 @@ identity: every warm standby must use the same stable Exclusive MQTT
 identity. Per-task MQTT suffixes are rejected because they would strand the
 failed holder broker queue. On every process initial apply, bootstrap compares
 the EFS-loaded config with those deployment-owned identities and fingerprint
-before it plans any store or transport, so SeedOnce/AdoptValid drift cannot
-bypass synth admission.
+before it plans any store or transport. Existing target config cannot bypass
+synth admission.
 
 ### Data tables
 
@@ -105,7 +116,7 @@ The facade creates exactly three encrypted on-demand tables. Names come from
 the actual store configs; omitted `table_name` fields resolve through the
 adapter defaults. Overrides must be literal resolved physical names. Unresolved
 CDK tokens are rejected because token markers cannot be substituted inside the
-immutable S3 config asset.
+embedded config document.
 
 | Store | Default name | Primary key | Required indexes | TTL |
 |---|---|---|---|---|
@@ -168,7 +179,7 @@ Availability Zones. Both services use a 0/100 deployment with AZ rebalancing
 disabled: the single RW control service so two config writers never overlap, and
 the worker service so an incompatible revision never runs as a second cohort
 beside the one it replaces. The worker service is deployed after the control
-service, so the config seeder always precedes the workers that read its output.
+service. Workers remain read-only and idle until valid config is available.
 The costs are an ingress gap for the duration of every deploy, AZ spread that is
 best-effort at launch instead of continuously rebalanced, and a warm-standby
 alarm that breaches for the length of each deploy.
@@ -230,52 +241,10 @@ deep backlog.
 
 ### Credentialed proof
 
-Prerequisites:
-
-- a bootstrapped CDK account and credentials able to deploy/destroy the fixture;
-- a VPC with public ALB subnets and at least two private ECS subnets in distinct
-  Availability Zones;
-- network egress or endpoints for ECR/image registry, SSM, CloudWatch, DynamoDB,
-  SQS, and the MQTT broker;
-- a TLS MQTT broker reachable from the task subnets;
-- existing SecureString parameters for the admin key and MQTT JSON credential;
-- a test runner with VPC routing to task private addresses. Set
-  `GOBRIDGE_INT_HA_PROBE_CIDR` to its narrow CIDR; the fixture alone opens port
-  8081 from that CIDR.
-
-Required variables when `GOBRIDGE_INT_HA=1`:
-
-```text
-GOBRIDGE_INT_AWS_ACCOUNT
-GOBRIDGE_INT_AWS_REGION
-GOBRIDGE_INT_VPC_ID
-GOBRIDGE_INT_AVAILABILITY_ZONES
-GOBRIDGE_INT_SUBNET_IDS
-GOBRIDGE_INT_PUBLIC_SUBNET_IDS
-GOBRIDGE_INT_IMAGE
-GOBRIDGE_INT_HA_MQTT_BROKER_URL
-GOBRIDGE_INT_HA_MQTT_CLIENT_ID
-GOBRIDGE_INT_HA_MQTT_CREDENTIAL_PARAM
-GOBRIDGE_INT_HA_ADMIN_PARAM
-GOBRIDGE_INT_HA_PROBE_CIDR
-```
-
-The availability-zone, private-subnet, and public-subnet lists must have the
-same order and cardinality. The harness imports these concrete attributes and
-produces an assembly with no VPC lookup context.
-
-Optional: `GOBRIDGE_INT_HA_SAMPLES` (1–20, default 1),
-`GOBRIDGE_INT_STACK_PREFIX`, and `GOBRIDGE_INT_KEEP=1`.
-
-```bash
-cd deployment/aws-filebased-config/cdk
-GOBRIDGE_INT_HA=1 go test -count=1 -v -tags=integration_aws -run TestHA_FailoverStopsVerifiedLeaseholder ./integration
-```
-
-Setting `GOBRIDGE_INT_HA=1` makes missing variables, credentials, stack outputs,
-metric permissions, exact-task network reachability, and missing CloudWatch
-samples hard failures. Without that explicit request, the credentialed scenario
-uses the existing build-tag skip convention and performs no deployment.
+Use the [credentialed failover procedure](../../docs/aws-deployment/topologies.md#credentialed-failover-proof)
+for prerequisites, environment variables, and the exact test command. It requires
+a reachable broker, a multi-zone VPC, protected credentials, and direct monitor
+access to the verified successor task. Missing CloudWatch samples fail the proof.
 
 This credentialed proof is a mandatory **post-merge external production-
 approval gate**. The source-tag workflow does not own a repository-specific AWS
@@ -289,7 +258,7 @@ that candidate for production use.
 Two paths converge on the sealed `gobridgecdk.BridgeConfigSource` consumed by all facades:
 
 ```go
-// (a) on-disk yaml — uploaded as an asset and parsed once for tier-B validation.
+// (a) Local YAML, parsed for validation and optional image embedding.
 src := gobridgecdk.BridgeYamlAsset("config/bridge.yaml")
 
 // (b) typed builder — assembled in Go, marshalled at synth time.
@@ -305,37 +274,25 @@ src := gobridgecdk.BridgeYamlInline(cfg)
 
 Both factories return the same opaque token; the construct does file read / YAML marshal / parse / Phase-1 validation in one synth pass.
 
+With `ImageFromGoBuild`, the facade automatically embeds this parsed config
+through `main.initialConfigBase64`. Native `GOENV` file settings carry the
+linker flags; no separate S3 config asset is produced. A compatible published
+`lib` module and any optional family wiring remain prerequisites.
+
+Registry and ECR images are consumer-built and cannot be changed by CDK.
+They need their own embedded initial document, an existing target, or operator
+creation. The snippets use registry images; `BridgeConfig` still drives
+validation and grants but does not overwrite the target.
+
 ## Quickstart
 
 ### Snippet 1 — `GoBridgeSingle`
 
+Use these declarations inside your CDK stack with `vpc` and `cluster` supplied
+by your app. The [quickstart](../../docs/scenarios/cdk/01-quickstart-default-vpc.md)
+shows a complete entry point.
+
 ```go
-package main
-
-import (
-    "github.com/aws/aws-cdk-go/awscdk/v2"
-    "github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-    "github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
-    "github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
-    "github.com/aws/aws-cdk-go/awscdk/v2/awsssm"
-    "github.com/aws/jsii-runtime-go"
-
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
-)
-
-func main() {
-    app := awscdk.NewApp(nil)
-    stack := awscdk.NewStack(app, jsii.String("BridgeStack"), nil)
-
-    vpc := awsec2.Vpc_FromLookup(stack, jsii.String("Vpc"),
-        &awsec2.VpcLookupOptions{IsDefault: jsii.Bool(true)})
-    cluster := awsecs.NewCluster(stack, jsii.String("Cluster"), &awsecs.ClusterProps{
-        Vpc: vpc, ContainerInsights: jsii.Bool(true),
-    })
-
     queues := registry.NewQueueRegistry()
     queues.AddQueue("orders-in",
         awssqs.Queue_FromQueueArn(stack, jsii.String("OrdersIn"),
@@ -359,74 +316,12 @@ func main() {
         SsmParamRegistry: params,
     })
 
-    app.Synth(nil)
-}
 ```
 
-### Snippet 2 — `GoBridgeCluster` + ALB attachment + alarms
-
-```go
-bridge := gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Bridge"), &gobridgecluster.ClusterProps{
-    Vpc:              vpc,
-    Cluster:          cluster,
-    Image:            gobridgecdk.ImageFromEcrRepository(repo, "v1.2.3"),
-    Bootstrap:        bootstrap,
-    BridgeConfig:     gobridgecdk.BridgeYamlInline(cfg),
-    QueueRegistry:    queues,
-    SsmParamRegistry: params,
-    WorkerDesiredCount: jsii.Number(3),
-    AutoScaling:      &gobridgecluster.AutoScalingProps{Min: 2, Max: 10, TargetCPU: 60},
-})
-
-attachment := gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Attach"),
-    &gobridgealbattachment.AttachmentProps{
-        Cluster:      bridge,
-        Listener:     listener, // consumer-managed elbv2.IApplicationListener
-        Vpc:          vpc,
-        BridgeConfig: gobridgecdk.BridgeYamlInline(cfg),
-        BasePriority: 200,
-    }).
-    WithCfnOutputs("Bridge").
-    WithSSMExports("/bridges/prod", ssmexports.IncludeARNs())
-
-gobridgealarms.NewGoBridgeAlarms(stack, jsii.String("Alarms"), &gobridgealarms.AlarmsProps{
-    Cluster:    bridge,
-    Efs:        bridge.EfsConfig(),
-    Attachment: attachment,
-    AlarmTopic: snsTopic,
-})
-```
-
-### Snippet 3 — `GoBridgeDynamoDBHA`
-
-```go
-bridge := gobridgedynamodbha.NewGoBridgeDynamoDBHA(stack, jsii.String("Bridge"),
-    &gobridgedynamodbha.DynamoDBHAProps{
-        Vpc:              vpc,
-        Cluster:          cluster,
-        Image:            image,
-        Bootstrap:        bootstrap,
-        BridgeConfig:     gobridgecdk.BridgeYamlInline(coordinatedCfg),
-        QueueRegistry:    queues,
-        SsmParamRegistry: params,
-    })
-
-attachment := gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Attach"),
-    &gobridgealbattachment.AttachmentProps{
-        DynamoDBHA: bridge,
-        Listener: listener,
-        Vpc: vpc,
-        BridgeConfig: gobridgecdk.BridgeYamlInline(coordinatedCfg),
-    })
-
-gobridgealarms.NewGoBridgeAlarms(stack, jsii.String("Alarms"),
-    &gobridgealarms.AlarmsProps{
-        DynamoDBHA: bridge,
-        Efs: bridge.EfsConfig(),
-        Attachment: attachment,
-        AlarmTopic: snsTopic,
-    })
-```
+For cluster composition and load-balancer attachment, use the
+[multi-bridge example](../../docs/scenarios/cdk/05-multi-bridge-cluster.md).
+For coordinated HA props and member slots, use the
+[construct reference](../../docs/aws-deployment/cdk-constructs.md#dynamodbhaprops-selected).
 
 > **No L3 wrapper.** This profile no longer ships an opinionated single-call stack or service construct — every consumer composes the L2 constructs above inside their own `awscdk.Stack`.
 
@@ -457,13 +352,23 @@ ref := gobridgecdk.LookupBridge(stack, "ProdBridge", "/bridges/prod", ssmexports
 
 `manifest-version` is resolved via `awsssm.StringParameter_ValueFromLookup` (real synth-time string, cached in `cdk.context.json`) so a producer/consumer schema mismatch surfaces as a CDK Annotation error rather than a runtime surprise.
 
-## Secrets Policy
+## Credentials and artifact visibility
 
-- The fluent builder runs `ScanForPlaintextSecrets` from `Build()`. Default sensitive field names (matched on the deepest map key, case-insensitive): `password`, `secret`, `api_key`, `apikey`, `client_secret`, `bearer_token`, `private_key`, `privatekey`, `token`, `auth_token`, `access_token`, `refresh_token`, `passphrase`. See `cdk/bridgecfg/secrets.go`.
-- Any literal string at one of those keys is rejected unless it is a credential URI from the registered allow-list (`pms`, `file` — extend with `bridgecfg.RegisterCredentialScheme(...)`).
-- The supported secret backend is **SSM Parameter Store SecureString**, addressed as either authority form `pms://path/to/param` or absolute-path form
-  `pms:///path/to/param`; both normalize to `/path/to/param`. Wire each `pms://` URI through `SsmParamRegistry.AddParameter`; the construct grants `ssm:GetParameter[s]` (and KMS decrypt where applicable) only for registered parameters.
-- The asset path (`BridgeYamlAsset`) and the marshalled inline config (`BridgeYamlInline`) are both run through the same parser plus tier-B validators, so the scan applies regardless of authoring path.
+Logical config may carry literal credentials or references. Neither the builder
+nor Phase 1 runs `ScanForPlaintextSecrets`; consumers may call it explicitly.
+Anyone with access to an image or binary can recover its
+embedded document; build contexts, CDK assemblies, and caches also need suitable
+access controls. Base64 does not conceal secrets.
+
+SSM Parameter Store SecureString references use `pms://path/to/param` or
+`pms:///path/to/param`; both normalize to `/path/to/param`. Register each
+parameter for scoped read and applicable Key Management Service (KMS) decrypt
+grants. References stay unresolved in the initial logical copy.
+
+For embedded SQS config, use a stable physical `queue_name` or optional
+`queue_tags` with `queue_name_prefix`; all embedded queue URLs are rejected.
+Tag-selected bindings use `sqs:queue`; CDK retains handles for grants. See
+[queue APIs and examples](../../docs/aws-deployment/cdk-constructs.md#sqs-references).
 
 ## What It Provisions
 
@@ -472,7 +377,7 @@ ref := gobridgecdk.LookupBridge(stack, "ProdBridge", "/bridges/prod", ssmexports
 - One ECS Fargate service, `DesiredCount=1`, deployment policy `MinHealthyPercent=0 / MaxHealthyPercent=100` (full drain before replace — eliminates concurrent EFS RW writers).
 - One control EFS access point mounted RW.
 - ECS cluster auto-created when `Cluster` is nil; Container Insights on for the auto-created cluster.
-- aws-cli **seeder** sidecar (mode `SeedOnce` by default) lays down the parsed yaml on EFS at first boot.
+- One bridge container; optional embedded initialization runs inside control.
 - Task SG → EFS SG NFS:2049 ingress; IAM grants for EFS client access, SSM `GetParameter`, KMS decrypt (when `EfsKmsKey` is set).
 - CloudWatch Logs group (default retention one month, RETAIN).
 
@@ -491,15 +396,10 @@ ref := gobridgecdk.LookupBridge(stack, "ProdBridge", "/bridges/prod", ssmexports
 - All of the above, plus:
 - Worker ECS Fargate service (`WorkerDesiredCount` default `2`, standard rolling deploy, optional CPU target-tracking via `AutoScalingProps`).
 - Shared EFS file system with **two** access points (control RW, worker RO); RW/RO split enforced at IAM + ECS volume level.
-- Worker seeder runs in `AdoptValid` mode — workers never write configuration
-  but **adopt** whatever valid `bridge.yaml` the control node last wrote (CDK
-  seed *or* an Admin-API `config-txn` commit) instead of aborting on hash
-  drift. This lets the two reconfiguration paths coexist: an Admin-API edit no
-  longer wedges later worker scale-out / crash-replacement. Set
-  `ClusterProps.WorkerSeederMode = jsii.String("AbortDeploy")` for strict
-  lock-step (workers refuse to start on any drift from the synth-time asset;
-  never use the Admin API to reconfigure in that mode). See
-  [seeder/README.md](cdk/constructs/internal/seeder/README.md#reconfiguration-paths-why-adoptvalid-is-the-worker-default).
+- Workers read current config and never initialize or overwrite it. Missing
+  config leaves their data planes idle. Clustered changes follow the
+  [rollout rules](../../docs/adr/0012-cluster-config-whole-cohort-replacement.md),
+  not an image-level drift mode.
 - Separate task SGs (`ControlSecurityGroup`, `WorkerSecurityGroup`) both granted EFS ingress.
 
 **`GoBridgeEfsConfig`** — created automatically by any facade when `EfsConfig` is nil; can be passed in to share one filesystem across facades (within the singleton-per-stack rule) or to override KMS / throughput / removal policy / backup.
@@ -527,14 +427,21 @@ ref := gobridgecdk.LookupBridge(stack, "ProdBridge", "/bridges/prod", ssmexports
 `lib/bootstrap.NewApp(cfg, opts...)` loads `BootstrapConfig` from env (`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` or `…_FILE`, max 1 MiB), watches the selected config source (`file` on EFS or `dynamodb`), reloads bridge config without restart, resolves `pms://` SSM secrets, applies the MQTT ingress memory profile on every initial load/reload, and starts the admin / monitor / transport HTTP servers plus a `bridge.Runtime` with the `mqtt`, `sqs`, `http` transports and `memory`, `sqlite`, `dynamodb` stores. Clustered configs also register the existing ECS task-metadata endpoint resolver. Reload uses `swapModeOverlap` by default; `swapModePrepareCommit` when any transport advertises `CapExclusiveIdentity`.
 
 The file source keeps polling and the control-only single-writer guard. The
-DynamoDB source uses one loader for loading, watching and CAS-safe admin writes;
-`config_dynamodb` selects its table and polling or streams mode. Missing config
-loads an empty default with a warning; deployment-profile guards still apply.
-Other load errors fail startup. Only `DevMode`
-creates the config table at startup. Production requires it to exist already.
-The CDK facades still seed file configurations; this runtime option does not
-provision a DynamoDB config table or change their EFS resources. See the
-[bootstrap field reference](../../docs/aws-deployment/configuration.md#field-reference).
+DynamoDB source uses one loader for loading, watching and CAS-safe control
+writes; `config_dynamodb` selects its table and polling or streams mode.
+With valid bootstrap, the control plane starts live but not ready while the
+data plane waits for valid config. Optional initialization uses
+`ports.ConfigInitializer.CreateIfAbsent` only after confirmed document absence,
+creates version 1, and rereads the winner.
+
+After activation, confirmed absence stops new intake. Standalone runtimes
+drain, release resources, and return to idle. Clustered runtimes, or uncertain
+teardown, require process exit and replacement. Read failures retain the last
+successful config as degraded. Same-process idle never rearms initialization;
+a fresh process may initialize again. Backend-table absence is an error.
+Only `DevMode` creates config tables at runtime; CDK owns production tables.
+Authenticated `POST /api/v1/admin/config` creates absent config; see
+[initial creation and outcomes](../../docs/aws-deployment/config-initialization.md#operator-creation-and-rollout).
 
 Options: `WithLogger`, `WithLogLevelVar`, `WithParameterResolver`, `WithCredentialStore`, `WithDynamoDBClient`, `WithShutdownTimeout`, `WithTerminalPollInterval`. Binary: `lib/cmd/gobridge-filebased`.
 
@@ -577,7 +484,9 @@ Opt-in end-to-end tests live under `cdk/integration/`, all guarded by `//go:buil
 make integration-aws   # cd cdk && go test -tags=integration_aws -count=1 -timeout=45m ./integration/...
 ```
 
-Required environment: `GOBRIDGE_INT_*` variables (account/region/image), live AWS credentials, and the `cdk` CLI on PATH. Cadence: nightly on `main` and on every release tag; not gated on PRs.
+Required: AWS account/region settings, live credentials, Docker, and `cdk`.
+Set `GOBRIDGE_INT_VERSION` to a compatible published profile `lib` version.
+Each fixture uses `ImageFromGoBuild` to embed its own config.
 
 ## Related Docs
 

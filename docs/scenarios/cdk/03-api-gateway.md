@@ -1,7 +1,14 @@
 # CDK Scenario 3: HTTP Transport Behind API Gateway
 
+## Overview
+
 Expose the GoBridge HTTP transport to external clients with managed
 authentication, rate limiting, and a custom domain.
+
+The registry image needs its own embedded initial config, an existing target,
+or operator creation. A valid bootstrap can serve liveness while missing config
+keeps transport processing idle and readiness false. See
+[initial configuration](../../aws-deployment/config-initialization.md).
 
 ## Use Case
 
@@ -17,7 +24,7 @@ streams via SSE. The platform requirements are:
 - **WAF integration** -- Block bad actors and enforce request-body size limits.
 
 Internal admin and monitor traffic continues to flow through the internal ALB
-as configured in [Scenario 1](01-quickstart-default-vpc.md). Only the transport
+as configured in [Scenario 2](02-custom-vpc.md). Only the transport
 port (8082) is exposed externally through API Gateway.
 
 ## Architecture

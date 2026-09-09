@@ -133,10 +133,7 @@ func (s LocalStack) Call(
 // RuntimeHosts returns the address of every RUNNING runtime container of the
 // named service, inside the deployment network.
 //
-// A task runs more than one container — the seeder writes the shared config and
-// exits — so the runtime is picked by name rather than by "whatever answered
-// first": a seeder that is still running would otherwise be handed back as the
-// member, and every call to it would fail for a reason that names nothing.
+// Pick the declared runtime name rather than an arbitrary ancillary container.
 func (s LocalStack) RuntimeHosts(ctx context.Context, service string) ([]string, error) {
 	tasks, err := s.serviceTasks(ctx, service)
 	if err != nil {
@@ -158,12 +155,9 @@ func (s LocalStack) RuntimeHosts(ctx context.Context, service string) ([]string,
 	return hosts, nil
 }
 
-// isRuntimeContainer reports whether an ECS container name is the bridge runtime
-// rather than one of the deployment's init containers. The facades name the
-// runtime container after the bridge and the init container after what it seeds,
-// so the seeder is excluded by name and everything else is the runtime.
+// isRuntimeContainer matches the runtime container name declared by the facades.
 func isRuntimeContainer(name string) bool {
-	return !strings.Contains(strings.ToLower(name), "seed")
+	return name == "gobridge"
 }
 
 // WaitServiceReady waits until the named service is running exactly want
@@ -178,8 +172,8 @@ func isRuntimeContainer(name string) bool {
 // replaced, and burns its whole budget on a member that is long gone.
 //
 // A service that never gets there has its containers' logs printed. Without them
-// the failure is a status code and nothing else, and the cause — a config the
-// seeder never wrote, a transport that cannot reach its backend, a store that
+// the failure is a status code and nothing else, and the cause — a config target
+// that is unavailable, a transport that cannot reach its backend, a store that
 // refused — is only ever in the container.
 func (s LocalStack) WaitServiceReady(
 	t *testing.T,
@@ -205,21 +199,11 @@ func (s LocalStack) WaitServiceReady(
 			}
 			lastStatus, lastBody = status, body
 			if status != 200 {
-				// A member that came up carrying nothing AND has an apply error is
-				// not slow, it is finished: its configuration was refused and it
-				// will never become ready. Waiting out the budget would report a
-				// timeout where the member has already said what is wrong.
-				// The refusal surfaces as an apply error when the runtime rejected
-				// the document, and as a degraded reason when the config manager
-				// did — both mean the member is carrying nothing and will not
-				// start carrying anything on its own.
-				if health, herr := s.DeepHealth(ctx, host); herr == nil && health.Empty {
-					if reason := health.ConfigWatch.LastApplyError; reason != "" {
-						return false, fmt.Errorf("the deployed configuration was refused: %s", reason)
-					}
-					if health.ConfigWatch.Degraded && health.ConfigWatch.Reason != "" {
-						return false, fmt.Errorf("the deployed configuration was refused: %s",
-							health.ConfigWatch.Reason)
+				// Expected startup waiting is retryable, but a rejected document
+				// must retain the original fast-fail diagnostic.
+				if health, herr := s.DeepHealth(ctx, host); herr == nil {
+					if err := configRefusal(health); err != nil {
+						return false, err
 					}
 				}
 				return false, nil

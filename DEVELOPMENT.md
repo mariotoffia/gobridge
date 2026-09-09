@@ -1,5 +1,7 @@
 # Development Guide
 
+## Overview
+
 This guide covers everything you need to set up a development environment, build, test, and contribute to gobridge.
 
 ## Prerequisites
@@ -17,7 +19,7 @@ For the everyday workflow — bootstrapping the workspace, adding a module, and 
 `go get`-able release — see [MODULES.md](MODULES.md); it is the simple front door and
 links here and to [RELEASE.md](RELEASE.md) for depth.
 
-```
+```text
 gobridge/
 ├── go.work                 # Workspace definition
 ├── go.mod                  # Root module (domain, ports, runtime, bridge, config, ...)
@@ -125,8 +127,35 @@ short commit SHA). Override those Make variables for release metadata.
 An equivalent direct selection is
 `go -C cmd/gobridge build -tags gobridge_mqtt,gobridge_native -o gobridge.out .`;
 without linker stamps, `-version` reports `dev` for both metadata values.
-Only version and commit metadata use `-ldflags -X`; plugins use build tags,
-and deployment settings stay in runtime configuration.
+Version, commit metadata, and optional initial configuration use linker strings;
+plugins use build tags. Runtime bootstrap settings remain separate.
+
+Embed a YAML or JSON initial document with:
+
+```bash
+make build-gobridge GOBRIDGE_TAGS=gobridge_mqtt,gobridge_native \
+  INITIAL_CONFIG_FILE=path/to/initial.yaml
+make docker-build INITIAL_CONFIG_FILE=config/initial.yaml
+docker build --build-arg INITIAL_CONFIG_FILE=config/initial.yaml -t gobridge:local .
+```
+
+The Docker input must be inside the build context. Both command entry points
+decode `main.initialConfigBase64`; initialization creates only an absent target,
+never overwrites existing config. `scripts/write-build-goenv.sh` supplies linker
+flags through a native `GOENV` file, avoiding operating-system argument limits.
+It preserves other Go environment-file settings and replaces `GOFLAGS` with
+the build's flags. Go does not support `@responsefile` for this purpose.
+
+Both commands accept `-initial-config-digest` to print the SHA-256 hash of the
+embedded bytes before runtime or network startup, without printing config data.
+Image builds compare that hash with the input; custom commands must support
+the probe when embedding config.
+
+Literal credentials are allowed, but readers of the binary, image, build context,
+or cache can recover them. Base64 provides no secrecy. Use `pms://` references
+when you do not want secret values in the artifact. See
+[initial configuration](docs/aws-deployment/config-initialization.md) for the
+creation and missing-config lifecycle.
 
 See [PLUGIN.md](PLUGIN.md#binary-composition-build-tags) for the family table.
 `go.mod` keeps the requirements for **all** optional adapters, and
@@ -134,6 +163,13 @@ See [PLUGIN.md](PLUGIN.md#binary-composition-build-tags) for the family table.
 families; they do not shrink the module graph. The Kubernetes Dockerfile
 separately defaults `GO_BUILD_TAGS` to `gobridge_mqtt,gobridge_native`, so
 building its image without overrides retains MQTT and memory/SQLite stores.
+It also accepts `INITIAL_CONFIG_FILE`, `VERSION`, and `GIT_SHA`; see the
+[Kubernetes image build](deployment/kubernetes/README.md#embed-an-initial-configuration).
+
+For repository-independent authenticated startup, set `-admin-addr` and
+`GOBRIDGE_ADMIN_API_KEY`; `-monitor-addr` and `-http-tls-cert`/`-http-tls-key`
+control the other listener settings. Legacy boot-file `http:` settings remain
+supported. See [startup and initial creation](docs/aws-deployment/config-initialization.md#control-plane-startup).
 
 ### Run Unit Tests
 
@@ -189,7 +225,7 @@ launched — when it finishes.
 |----------|--------|
 | `GOBRIDGE_INT_LOCAL=1` | Take the local branch instead of skipping on missing `GOBRIDGE_INT_*`. Set by the Make target. |
 | `GOBRIDGE_INT_KEEP=1` | Leave the stack, the containers and the shared config directory in place for a post-mortem. |
-| `GOBRIDGE_LOCAL_IMAGE` | Runtime image the slots deploy (default `gobridge-filebased:local`, built by `make docker-build`). |
+| `GOBRIDGE_LOCAL_IMAGE` | Optional image override; `-initial-config-digest` must match each staged fixture's embedded bytes or the run fails. Unset it to build this checkout through the root Dockerfile for each config-bearing CDK asset. |
 
 Two local runs cannot share a machine: the emulator starts an image registry of
 its own on a fixed host port.
@@ -264,7 +300,7 @@ The repo is a multi-module `go.work` workspace. The rules below keep it consumab
 - **Working against a local clone from another project:** use *your* project's `go.work` (`go work use ../gobridge/...`) or a `replace` in *your* go.mod — main-module replaces always apply and stay on your machine.
 - **Inter-module `require`s always name the latest published tag** (during development that is the previous release — the workspace gives you HEAD behavior locally). This keeps `make tidy`, `make update`, `make outdated`, and `make vulncheck` working: those loops run `go mod tidy` / `go list -m` per module, which ignore the workspace and resolve from the module proxy.
 - **The workspace can lie:** using a new sibling API at HEAD without bumping the require compiles locally but breaks consumers. `GOWORK=off go build ./...` in the module is the check; CI runs it per published module (see RELEASE.md).
-- **Internal-only modules** (`tests/`, `testutil/`, `scripts/`, `deployment/`) are never tagged or published and may keep local `replace` directives.
+- **Internal-only modules** under `tests/`, `testutil/`, `scripts/`, and most of `deployment/` are not tagged and may keep local `replace` directives. The AWS profile's `infra` and `cdk` modules are published exceptions. Publication of a compatible `lib` module remains a prerequisite for versioned `ImageFromGoBuild`; see [RELEASE.md](RELEASE.md#canonical-release-graph).
 
 > **Current state:** published modules still carry `replace` directives and `v0.0.0` requires; the migration steps are in [RELEASE.md — Release procedure](RELEASE.md#release-procedure).
 
@@ -303,17 +339,6 @@ keeping the human-readable tag alongside the digest. A source rebuild is
 reproducible only to the extent these pinned bases, the locked per-module
 `go.sum`, and the Go toolchain are fixed. The build claims no bit-for-bit
 reproducibility beyond those facts.
-
-The seeder base image (`public.ecr.aws/aws-cli/aws-cli`, pinned to a concrete
-`2.x.y` tag) uses the same discipline. `make -C deployment/aws-filebased-config
-update-seeder-image` discovers the highest concrete `2.x.y` tag (the upstream
-image publishes no floating `2` tag), resolves and verifies its top-level index
-(amd64 + arm64), computes the digest from the verified bytes, and rewrites both
-`image.txt` and the seeder `Dockerfile`, failing closed on a missing tag, digest,
-or platform. It never installs a tool; the tested resolver versions are crane
-v0.21.7 or docker buildx v0.34.1 (exact, not floors). Its shell checks (both the
-crane and docker paths) run under `make -C deployment/aws-filebased-config test`
-(see [TESTS.md](TESTS.md), Deployment shell tests).
 
 ## CI Workflow
 

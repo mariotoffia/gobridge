@@ -1,5 +1,7 @@
 # Releasing GoBridge
 
+## Overview
+
 How to version, tag, and publish the multi-module workspace so external consumers
 can use `go get` and `go install`. Development-side rules live in
 [DEVELOPMENT.md — Module versioning & references](DEVELOPMENT.md#module-versioning--references).
@@ -51,6 +53,12 @@ The published set is the root module, every module under `adapters/` and
 image — is internal-only and is never tagged. The manifest declares only the
 test-helper modules required to compile published-module tests as
 pseudo-version bootstrap exceptions; that does not make them tagged releases.
+
+Publishing a compatible `lib` module remains required before consumers can use
+the default versioned `ImageFromGoBuild` command. Optional profile-family
+wiring must also be available for any requested family. Do not infer support
+from an existing `cdk` or `infra` tag. See
+[CDK image sources](docs/aws-deployment/cdk-constructs.md#runtime-image-source).
 
 The two CDK modules are published because an external CDK app writes its own
 stack against the constructs, and those constructs take `infra` types as
@@ -306,27 +314,18 @@ The pre-1.0 root-only tags `v0.1.0` and `v0.2.0` predate this policy and have no
 nested module tags; they are not consumable and this proof does not apply to
 them. `v0.3.0` is the first complete train.
 
-## Seeder image publication
+## Initial configuration artifacts
 
-The final stable command-tag workflow also builds the AWS configuration seeder
-from `deployment/aws-filebased-config/cdk/constructs/internal/seeder/Dockerfile`.
-This is separate from the GoBridge runtime image described below.
+The runtime binary can embed its initial configuration; there is no maintained
+configuration-seeder image, publication job, image pin, or update command.
+The previously published Docker Hub artifact is not deleted by this change,
+but current deployments have no runtime dependency on it.
 
-Configure repository variable `DOCKERHUB_USERNAME` and Actions secret
-`DOCKERHUB_TOKEN` with Docker Hub read/write access. The seeder job has only
-`contents: read` GitHub permissions. It runs the file and DynamoDB suites during
-both platform builds, publishes to `docker.io/<account>/gobridge-seeder` by
-digest, and retains the verified reference as the
-`gobridge-seeder-image-digest` workflow artifact and in the job summary.
-No configuration or credentials are included in the image.
-
-The committed default does not move automatically. After publication, run
-`SEEDER_IMAGE=<published-reference> make update-seeder-image` and commit the
-verified pin. Build attestations can produce a different index digest on a
-rerun; the new digest does not overwrite the previous one. Keep images
-referenced by existing deployments. See the
-[seeder manifest](deployment/aws-filebased-config/cdk/constructs/internal/seeder/MANIFEST.md)
-for platform checks and private-mirror guidance.
+Consumer builds may embed YAML or JSON with `INITIAL_CONFIG_FILE`. Treat the
+resulting binary, image, build context, and cache as copies of that document.
+Literal credentials are permitted; Base64 does not conceal them. A shared
+public runtime image should not be confused with a consumer's configured image.
+See [initial configuration](docs/aws-deployment/config-initialization.md).
 
 ## Image publication
 
@@ -391,7 +390,11 @@ Production approval is a separate post-merge, credentialed gate. Deploy the AWS
 DynamoDB HA fixture in the protected target environment, stop the verified
 leaseholder, collect the required warm/cold failure-to-Full samples, and retain
 the CloudWatch evidence described in
-`deployment/aws-filebased-config/README.md`. The source-tag workflow cannot
+[the credentialed proof](docs/aws-deployment/topologies.md#credentialed-failover-proof).
+Set `GOBRIDGE_INT_VERSION` to the compatible published profile `lib` version.
+The fixtures build per-fixture embedded images through `ImageFromGoBuild`;
+registry-image overrides are not accepted. Record each built image digest with
+its module version and the proof evidence. The source-tag workflow cannot
 supply that repository-specific AWS account, VPC, broker, secrets, or release
 role. Do not describe or promote the published image as production-approved
 until this external proof and the remaining controls in the production-readiness

@@ -1,11 +1,18 @@
 # Custom VPC — complete CDK stack
 
+## Overview
+
 The full stack wires the imported VPC and ECS cluster into the
 `gobridgecluster.NewGoBridgeCluster` facade (control + worker tasks sharing one
 EFS filesystem, chosen here because we want more than one replica), then binds
 it to the shared ALB listener with the `gobridgealbattachment` construct — the
 attachment owns the target groups and listener rules, so you do not wire them by
 hand.
+
+The registry image must contain its own embedded initial document, use an
+existing target, or wait for operator creation. `BridgeConfig` declares
+validation and grants; CDK does not modify that image or overwrite config.
+See [initial configuration](../../aws-deployment/config-initialization.md).
 
 ```go
 package main
@@ -105,7 +112,7 @@ func main() {
 ```
 
 The cluster facade handles task definitions, EFS volume mounts, IAM policies,
-security groups for EFS access, container port mappings, the config seeder, and
+security groups for EFS access, container port mappings, and
 (when `AutoScaling` is set) worker CPU target-tracking. The attachment construct
 creates the admin/monitor/transport target groups and listener rules against the
 shared ALB. Exactly one of `Single` or `Cluster` is set on the attachment.

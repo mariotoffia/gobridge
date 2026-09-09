@@ -1,5 +1,7 @@
 # AWS Deployment Profile Generalization — Implementation Plan
 
+## Overview
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > `superpowers:subagent-driven-development` (recommended) or
 > `superpowers:executing-plans` to implement this plan task-by-task. Steps use
@@ -22,6 +24,13 @@ release train.
 below refer to its Decisions). The reference binary's implemented family-tag
 and registration contract is in
 [PLUGIN.md](../../PLUGIN.md#binary-composition-build-tags).
+
+**Current scope:** implement embedded initial configuration and remove the
+configuration-seeder dependency. This work stays on the current branch without
+delegation, worktrees, stash, reset, commits, or pushes. The parent owns code
+integration and final gates. Historical checked steps record earlier work;
+they do not certify the redesigned lifecycle. Publication and optional-family
+tasks remain open.
 
 ## Skill protocol (applies to every task)
 
@@ -63,7 +72,7 @@ and registration contract is in
 module lines in `deployment/aws/{infra,cdk,lib}/go.mod`; every in-repo import
 of the old module paths; `go.work` entries; root `Dockerfile`
 (`ARG BINARY_MODULE=deployment/aws/lib`, `BINARY_PKG=./cmd/gobridge-aws`);
-`Makefile` (`IMAGE_LOCAL_TAG ?= gobridge-aws:local`, seeder/deployment
+`Makefile` (`IMAGE_LOCAL_TAG ?= gobridge-aws:local`, image/deployment
 targets); `.github/workflows/*` path references; env constants
 `EnvBootstrapJSON = "GOBRIDGE_BOOTSTRAP_JSON"` /
 `EnvBootstrapFile = "GOBRIDGE_BOOTSTRAP_FILE"` in `lib/bootstrap/config.go`
@@ -226,7 +235,7 @@ existing app-test helpers (injected clock; follow
 
 ---
 
-## Chunk 4 — CDK: config table, seeder mode, conditional EFS (D5)
+## Chunk 4 — CDK: config table and conditional EFS (D5)
 
 ### Task 4.1: Config table + grants + bootstrap stamping
 
@@ -249,22 +258,12 @@ beside the existing construct tests (`!race` pattern):
 - [x] **Step 3:** `make lint && make test`; commit —
   `feat(deploy/aws/cdk): dynamodb config table with conditional EFS and role-scoped grants`
 
-### Task 4.2: Seeder DynamoDB mode
+### Task 4.2: Historical DynamoDB seeder — superseded
 
-**Files:** Create `cdk/constructs/internal/seeder/seeder-ddb.sh` (modes per
-DESIGN.md D5: SeedOnce/Overwrite/AbortDeploy against the `current` item);
-Modify `gobridgebase` seeder container wiring (env: `MODE`, `TABLE`, `PK`,
-`EXPECTED_HASH`, `ITEM_S3_URI`; synth marshals via
-`parser.MarshalBridgeConfigJSON`, ships item JSON as asset); Extend
-`seeder/tests/` bash suite with ddb fixtures (LocalStack/ddblocal per
-existing `run.sh` harness); Update `seeder/README.md` + `MANIFEST.md`.
-
-- [x] **Step 1:** Failing bash tests per mode (seed-when-absent; abort exit
-  10 on drift; overwrite CAS bump) — `make -C deployment/aws test`.
-- [x] **Step 2:** Implement script + wiring; template test asserts seeder env
-  + `ContainerDependencyCondition_SUCCESS` retained.
-- [x] **Step 3:** Suite green; `make lint && make test`; commit —
-  `feat(deploy/aws/cdk): seeder seeds the dynamodb config table with drift modes`
+The earlier implementation added a DynamoDB init container, S3 JSON asset,
+and drift modes. The approved direction removes that machinery. Task 5 now
+owns strict in-process creation for both targets. Config-table provisioning,
+conditional EFS, and read-only worker grants remain required.
 
 ### Task 4.3: Local deployment proof
 
@@ -278,46 +277,115 @@ existing `run.sh` harness); Update `seeder/README.md` + `MANIFEST.md`.
 
 ---
 
-## Chunk 5 — Image source (D6)
+## Chunk 5 — Image source and embedded initialization (D6)
+
+**State:** implemented and reviewed. Full unit, static, and integration gates
+pass; the local embedded-config HA deployment proof passes without an init container.
 
 ### Task 5.1: Sealed `BridgeImageSource`
 
-**Files:** Create `cdk/internal/imgsource/imgsource.go` (+
-`Dockerfile.tmpl` via `go:embed`, `imgsource_test.go`); Modify
-`cdk/gobridgecdk/` re-exports (`ImageFromRegistry`, `ImageFromEcrRepository`,
-`ImageFromGoBuild`, `ImageGoBuildProps`, `DeriveBuildTags` — signatures
-verbatim from DESIGN.md D6); Modify `internal/gobridgebase/base.go:136,430`
-prop `Image gobridgecdk.BridgeImageSource` (+ all three facades + their
-tests + README snippets).
+The sealed registry/ECR/Go-build surface exists. Extend it without treating
+its earlier passing tests as proof of embedded initialization.
 
-- [x] **Step 1:** Failing tests: `TestImageFromRegistry_Materializes` (asset
-  ref preserved); `TestImageFromGoBuild_RendersDockerfile` (rendered template
-  contains `go install -trimpath -tags=… <pkg>@<version>`, digest-pinned
-  bases, nonroot user); `TestDeriveBuildTags_MapsKindsBeyondProfileBase`
-  (`amqp091→gobridge_amqp091`, `servicebus→gobridge_azure`, base kinds → no
-  tag, unknown kind → error); facade template test: nil Image → panic
-  message unchanged.
-- [x] **Step 2:** Implement; `go -C deployment/aws-filebased-config/cdk test ./... -v` green.
-- [x] **Step 3:** `make lint && make test`; commit —
-  `feat(deploy/aws/cdk): sealed BridgeImageSource; CDK builds the image via go install`
+- [x] Automatically embed the facade's parsed `BridgeConfig` for Go builds.
+  Stage `initial-config-<hash>.goenv` and use native `GOENV` flags; do not use
+  unsupported `@responsefile` syntax or large shell arguments.
+- [x] Both commands decode linker string `main.initialConfigBase64`.
+  Root Make and Docker accept `INITIAL_CONFIG_FILE` as YAML or JSON.
+- [x] Both commands expose `-initial-config-digest` before runtime/network
+  startup, returning only SHA-256 of the embedded bytes. The CDK build verifies
+  `/gobridge-filebased -initial-config-digest` against the staged document.
+  Missing probe support or a mismatched digest fails the build, including old
+  custom packages that ignore the linker stamp.
+- [x] Preserve digest-pinned bases, architecture selection, build-tag derivation,
+  and the versioned `go install` path without a repository checkout.
+- [x] Registry/ECR images remain unchanged; `BridgeConfig` still drives
+  validation, grants, and dependencies, not automatic overwrite.
+- [x] Document that compatible public `lib` publication and optional-family
+  wiring remain prerequisites.
 
-### Task 5.2: Publish the seeder image on the release train
+### Task 5.2: Remove the configuration-seeder runtime dependency
 
-**Files:** Modify `.github/workflows/release.yml` (job: build + push
-`docker.io/mariotoffia/gobridge-seeder` by digest from
-`cdk/constructs/internal/seeder/Dockerfile`); Modify
-`seeder/scripts/update-image.sh` + `image.txt` (point at the pushed digest);
-Update `MANIFEST.md` (remove the "broken until SeederImage overridden" note
-once true).
+Historical note: the earlier task published a working amd64/arm64 image to
+Docker Hub. That artifact is not deleted. Its publication does not remain
+a runtime or release prerequisite.
 
-- [x] Local proof first: `docker build` the seeder Dockerfile, run the bash
-  suite against that image (PyYAML present, exit 50 impossible) → wire the
-  release job → `make lint && make test` → commit —
-  `fix(deploy/aws): working default seeder image published on the release train`
-  Docker Hub is the user-selected registry. The release job uses
-  `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`; the initial public amd64/arm64
-  image is pinned in `image.txt`. The updater verifies a supplied published
-  digest and never substitutes the upstream AWS CLI base.
+- [x] Remove sidecars, init containers, scripts, image pins/publication,
+  `SeederImage`, drift-mode APIs, `ConfigAsset`, and config S3 download grants.
+- [x] Remove release instructions and scopes for seeder-image publication.
+- [x] Preserve managed-subscription baseline seeding and HA rollout
+  generation-zero baseline creation.
+- [x] Both file and DynamoDB HA baseline recognition use
+  `DeploymentBaselineContentDigest`, excluding only the top-level version;
+  actual committed artifacts retain their stored version and full digest.
+
+### Task 5.3: Strict creation and observable absence
+
+- [x] Verify `config.Initialize(ctx, target, source, admit)` leaves source
+  unread for existing targets and isolates admission mutations. Mutable custom
+  plugin configs require `ports.FreezableConfig`; deeply immutable scalar value
+  configs do not. `parser.NewInlineSource` supplies fresh logical snapshots.
+- [x] Source is `ports.Loader`; target optionally implements
+  `ports.ConfigInitializer.CreateIfAbsent(ctx, cfg) (bool, error)`.
+  Definitive absence alone permits creation. Target version is 1, source
+  version is ignored, and the winner is reread.
+- [x] Existing invalid and legacy versionless documents are never overwritten.
+  `SaveIfVersion(..., 0)` is not a strict creation primitive.
+- [x] With valid bootstrap, start control-plane liveness but not readiness;
+  keep data-plane resources idle until valid config activates. Verify reference
+  `-admin-addr` and API-key environment startup, legacy boot-file HTTP settings,
+  optional monitor/TLS flags, and deprecated `-start-empty` without a runtime.
+- [x] After activation, confirmed absence stops intake, drains safely, releases
+  standalone resources, and goes idle for a later rebuild. Clustered deletion
+  or uncertain teardown must signal process exit and replacement.
+  Read timeout/auth/unavailability retains last successful config as degraded.
+- [x] First activation is a process latch, not readiness. HA standbys can
+  activate without Full. Same-process idle never reseeds; a fresh process may
+  initialize an absent target. Do not add a durable tombstone.
+- [x] Extend existing watchers with `ConfigObserver`, `ConfigObservation`,
+  `ConfigObservationKind`, `ConfigPresent`, `ConfigMissing`, `ConfigReadError`.
+  Preserve observation order and recreated versions; no second polling service.
+- [x] Verify `Manager.Observe` uses one authoritative layer, rejects overlays,
+  and preserves the old `Watch` API. `Manager.NotifyIdle` acknowledges completed
+  quiescence without discarding a newer desired snapshot. Do not claim EFS
+  durability from local-file tests.
+- [x] Keep worker config access read-only in runtime and IAM. Verify authenticated
+  `POST /api/v1/admin/config` with complete typed YAML/JSON and strict creation,
+  including conflict, committed-not-applied, and ambiguous-commit outcomes.
+  S3 config adapter remains deferred.
+
+### Task 5.4: Embedded SQS selection
+
+- [x] Embed stable physical `queue_name` or optional `queue_tags` with
+  `queue_name_prefix`, never unresolved URL tokens.
+- [x] Reuse existing `GetQueueUrl` for names. Tags use native SQS SDK
+  `ListQueues` pagination and `ListQueueTags`, scoped to account and region.
+  One match succeeds, none retries/not-ready, multiple error, permission
+  failures stay errors.
+- [x] Retain CDK queue handles for precise grants and dependencies; additional
+  discovery reads only for tag mode. No generic token resolver or required
+  two-phase deployment.
+- [x] Verify the final APIs: `QueueRegistry.BindQueueTags(name, tags, prefix)`,
+  `ResolveQueue`, and `QueueRef.PhysicalName`, `QueueTags`, `QueueNamePrefix`.
+  Tag-selected bindings use `sqs.QueueAddress` (`sqs:queue`).
+- [x] Verify shared-base `GrantSQSConfig` and image-builder
+  `ValidateEmbeddedSQSConfig` wiring. Reject all embedded queue URLs.
+  `ScanForPlaintextSecrets` must remain explicit rather than a default ban.
+
+### Task 5.5: Proof and public documentation
+
+- [x] Cover creation races, invalid existing targets, deletion/recreation,
+  degraded reads, standby activation, restart, and logical-reference copying.
+- [x] Prove image embedding and no seeder resources in synth/local deployment.
+- [x] Local proof builds this checkout with each staged Go-build asset's exact
+  `.goenv` payload; `GOBRIDGE_LOCAL_IMAGE` must pass the embedded-digest check.
+  Credentialed fixtures require a compatible published `GOBRIDGE_INT_VERSION`
+  and build per-fixture images rather than accepting `GOBRIDGE_INT_IMAGE`.
+- [x] Document literal credentials as allowed and artifact-visible; Base64
+  is not secrecy. Leave references unresolved in the stored logical copy.
+- [x] Run final code review, `make test`, and `make check-all`.
+  Run `TestLocal_DynamoDBConfigHotReload` through the local deployment harness
+  and confirm runtime initialization and subsequent table-write reloads.
 
 ⛳ Review checkpoint.
 
@@ -411,7 +479,7 @@ file references them (`git grep -l 'DESIGN.md\|TASKS.md' deployment cmd`).
 - D1→Chunk 0, D4→Chunk 1, D2→Chunk 2, D3→Chunk 3, D5→Chunk 4, D6→Chunk 5,
   D7→Chunk 6, D8→Chunk 7, glossary/docs→Chunk 8.
 - DESIGN.md Acceptance bullets: dynamodb boot+reload+CAS (3.2), EFS-free HA
-  synth (4.1/4.3), external `go get` consumer (6.2), working seeder default
-  (5.2), gates green (every chunk).
+  synth (4.1/4.3), external `go get` consumer (6.2), embedded initialization and
+  missing-config lifecycle (5.1–5.5), gates green (every chunk).
 - Open questions 1-3 gate Chunks 0, 4 (HA default stays `file`), and the
   streams grants in 4.1 respectively.

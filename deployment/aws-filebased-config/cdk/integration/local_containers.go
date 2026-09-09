@@ -94,16 +94,19 @@ func removeNetworkMembers(network string) {
 // each caller is told its own address, which is exactly what the agent would
 // report and exactly what a peer needs to reach it.
 //
-// It runs on the seeder image because that image is already built and already
-// has a Python interpreter; nothing about the seeder is involved.
+// The pinned AWS CLI image supplies Python; this helper has no config volume
+// and no bridge initialization role.
 func startTaskMetadata(t *testing.T, state *localBackend) string {
 	t.Helper()
+	if err := dockerexec.EnsureImage(helperImage); err != nil {
+		t.Fatalf("pull metadata and filesystem helper image: %v", err)
+	}
 	name := runScopedName(metadataPrefix, state.network)
 	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
 	out, err := dockerexec.Run(dockerexec.RunTimeout,
 		"run", "-d", "--name", name, "--network", state.network,
 		"--network-alias", metadataHost, "--entrypoint", "python3",
-		state.seederLocal, "-c", taskMetadataServer())
+		helperImage, "-c", taskMetadataServer())
 	if err != nil {
 		t.Fatalf("start the task metadata service: %v\n%s", err, out)
 	}
@@ -149,25 +152,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 http.server.ThreadingHTTPServer(("0.0.0.0", ` + fmt.Sprint(metadataPort) + `), Handler).serve_forever()
 `
-}
-
-// buildLocalSeederImage builds the current checkout's seeder Dockerfile so
-// uncommitted script changes are exercised without publishing an image first.
-// The assembly rewrite uses that local image instead of the published pin.
-// This proves current source behavior, not registry access to the pinned image.
-func buildLocalSeederImage(t *testing.T, state *localBackend) {
-	t.Helper()
-	pinned, err := os.ReadFile(filepath.Join(seederDir, "image.txt"))
-	if err != nil {
-		t.Fatalf("read the pinned seeder image reference: %v", err)
-	}
-	state.seederPinned = strings.TrimSpace(string(pinned))
-	state.seederLocal = seederImageRepo + ":" + strings.TrimPrefix(state.network, localRunPrefix)
-	out, err := dockerexec.Run(dockerexec.PullTimeout,
-		"build", "-t", state.seederLocal, seederDir)
-	if err != nil {
-		t.Fatalf("build the seeder image from %s: %v\n%s", seederDir, err, out)
-	}
 }
 
 // startCloudFormationResponder puts a TLS listener on port 443 of the emulator's

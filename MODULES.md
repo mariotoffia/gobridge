@@ -1,5 +1,7 @@
 # Modules: local development & releasing
 
+## Overview
+
 GoBridge is a multi-module Go workspace: each adapter, processor, `httpapi`, and
 `cmd/gobridge` is its own module so consumers `go get` only what they need. This is
 the single front door for the three module tasks. Deep release policy lives in
@@ -18,6 +20,12 @@ make build   # runs `make dev` automatically if go.work is missing
 - Fresh clone: `make dev && make build`.
 - `make dev` discovers modules from disk, so it is never stale — re-run it any time.
 - Plain `make test`/`make lint` run **inside** the workspace, so they can't catch a module that uses an unreleased sibling API without bumping its `require` ("the workspace can lie" — see [DEVELOPMENT.md](DEVELOPMENT.md)). To check a module as an external consumer sees it, run `GOWORK=off go build ./...` in that module's directory; the release process re-verifies every published module with the workspace disabled before tagging (see [RELEASE.md](RELEASE.md)).
+
+The AWS CDK versioned image build uses `go install package@version`, not a Git
+checkout. It requires a published, compatible AWS profile `lib` module and the
+plugin families the document names. Those prerequisites remain pending; local
+workspace success does not prove external availability. See
+[CDK image sources](docs/aws-deployment/cdk-constructs.md#runtime-image-source).
 
 ## 2. Add a new module
 

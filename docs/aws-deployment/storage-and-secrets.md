@@ -1,5 +1,7 @@
 # Storage and Secrets on AWS
 
+## Overview
+
 Where a GoBridge deployment keeps its three kinds of state: the configuration
 document on EFS or in a DynamoDB config table, the credentials in SSM Parameter Store, and the durable
 message state in DynamoDB — with the access design and operator
@@ -25,21 +27,18 @@ which is separate from their message-state and rollout tables. Streams mode
 adds a `KEYS_ONLY` stream; the watcher reads the current item after notification.
 See [config-source IAM grants](iam.md#config-source-grants).
 
-The init container seeds the config table from synth-validated JSON, preserving
-typed plugin options. Control defaults to `SeedOnce`: a conditional put creates
-an absent item at version 1 and never overwrites existing admin edits. An
-explicit `Overwrite` conditionally writes current version + 1, retrying only CAS
-conflicts up to three attempts. `AbortDeploy` is a read-only drift gate; worker
-default `AdoptValid` accepts a valid current config after admin edits. Missing or
-malformed config fails the read-only gate. The main ECS container waits for
-seeder `SUCCESS`.
+An optional embedded initial document lets the control process create an absent
+item at version 1. Creation uses `ports.ConfigInitializer.CreateIfAbsent`, not
+version-zero compare-and-swap: a versionless legacy item is still present and
+must not be replaced. The process rereads the winner after a creation race.
+Worker config access stays read-only.
 
-Drift compares the actual JSON data, ignoring the version counter, not a cached
-hash attribute. Assets use resolved physical resource names; deploy-time CDK
-tokens are rejected inside the JSON. The config table name is resolved through
-the task environment. This path needs no PyYAML or EFS seeder mount. Switching
-sources does not migrate EFS admin edits; select the initial bundled config
-deliberately. See the [seeder contract](../../deployment/aws-filebased-config/cdk/constructs/internal/seeder/README.md).
+There is no init container, JSON S3 asset, or download grant. Go-built images
+embed the facade's parsed logical document; registry images remain owned by the
+consumer. Use stable physical resource names or supported selectors inside
+embedded config. The config table name travels separately in bootstrap.
+Switching sources does not migrate EFS admin edits; choose the initial document
+deliberately. See [initialization and absence](config-initialization.md).
 
 EFS is created and mounted only for a file config source or parsed SQLite store
 paths. A DynamoDB config source with DynamoDB data stores has no EFS resources,
@@ -53,7 +52,7 @@ revision is not deleted by switching sources and can still incur charges.
 | Alternative | Limitation |
 |-------------|-----------|
 | **Environment variables** | 4 KiB per variable, 32 KiB total. Bridge configs routinely exceed this. |
-| **S3 + init container** | Config changes require a task restart; no hot-reload. |
+| **Embedded initial document** | Creates an absent target at initial startup; not a watched backend or an update mechanism. |
 | **EFS** | Shared POSIX filesystem. Poll watcher detects changes within seconds; no restart required. |
 
 GoBridge uses a **poll watcher** (default interval: 1 second) to detect config
@@ -65,6 +64,13 @@ those messages are not lost. An Ephemeral session, a QoS 0 source, or a drain
 that aborts on timeout can drop in-flight messages. See
 [MQTT — settlement semantics](../transports/mqtt-behavior.md#settlement-semantics) for the
 drain bound and loss windows.
+
+Confirmed document absence is different from a read failure. After activation,
+absence stops new intake. Standalone runtimes drain to idle and can rebuild
+when valid config returns. Clustered deletion or uncertain teardown signals
+process exit and replacement. A timeout or authorization failure retains the
+last successful config as degraded. The existing watcher reports these outcomes
+explicitly. An S3 configuration adapter is deferred.
 
 ### Access Point Design
 
@@ -138,6 +144,12 @@ GoBridge resolves API keys and credentials from AWS Systems Manager Parameter
 Store at startup. All parameters should be stored as **SecureString** type,
 which encrypts values at rest using KMS.
 
+The logical bridge document may instead carry literal credentials where the
+adapter accepts them. If embedded, those values are recoverable by readers of
+the binary, image, build context, or cache. Base64 does not hide them.
+`pms://` references remain logical references during initial copying and resolve
+only for runtime use.
+
 ### Credential URI Mapping
 
 The `BootstrapConfig` maps logical names to SSM parameter paths. At startup
@@ -182,7 +194,7 @@ on each table and required index the store names. Two operator responsibilities 
   operator-provisioned/imported.
 - **Use a resolved physical `table_name` only to override a role default.** HA
   rejects unresolved CDK tokens because token strings cannot be substituted in
-  the immutable config asset. When omitted, runtime
+  the embedded config document. When omitted, runtime
   preflight and the stack resolve and grant the same exact default:
   `gobridge-leases`, `gobridge-outbox`, `gobridge-dlq`, or
   `gobridge-managed-subscriptions`.

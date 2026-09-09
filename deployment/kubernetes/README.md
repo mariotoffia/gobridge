@@ -1,5 +1,7 @@
 # GoBridge on Kubernetes
 
+## Overview
+
 The maintained profile for running GoBridge off AWS: a `Dockerfile` that builds
 the reference composition root (`cmd/gobridge`) and one manifest,
 `gobridge.yaml`, that runs it as a StatefulSet. The Dockerfile selects
@@ -19,7 +21,7 @@ ConfigMap reload, SIGTERM drain and restart — by `TestKubernetesProfile` in
 | Stores | memory, SQLite, DynamoDB | memory, SQLite |
 | Secrets | SSM Parameter Store (`admin_api_key_param` is mandatory) | a Secret through `GOBRIDGE_ADMIN_API_KEY` / `GOBRIDGE_MONITOR_API_KEY`; `file://` credentials from a mounted Secret |
 | Config delivery | EFS / bootstrap JSON | ConfigMap volume, hot-reloaded |
-| HTTP API | addresses and keys from the bootstrap, TLS at the ALB | the config's `http:` block, optional in-process TLS |
+| HTTP API | addresses and keys from bootstrap, TLS at the ALB | explicit process flags or legacy boot-file `http:` settings; optional in-process TLS |
 | Clustering | DynamoDB HA facade | single replica per StatefulSet (no distributed lease store in this adapter set) |
 
 The AWS image cannot run here: it resolves its secrets through SSM and builds a
@@ -60,6 +62,57 @@ For the same default plugin set without Docker, run
 Put the printed digest into both `image:` fields of `gobridge.yaml`
 (`registry.example.com/gobridge@sha256:…`). A pod spec that names a tag can
 pull a different image on its next restart; a digest cannot.
+
+### Embed an initial configuration
+
+The Kubernetes Dockerfile also accepts `INITIAL_CONFIG_FILE`, `VERSION`, and
+`GIT_SHA`. Build at the repository root, with the YAML or JSON document inside
+the build context:
+
+```bash
+docker build -f deployment/kubernetes/Dockerfile \
+  --build-arg INITIAL_CONFIG_FILE=config/initial.yaml \
+  --build-arg VERSION=dev \
+  --build-arg GIT_SHA="$(git rev-parse --short HEAD)" \
+  -t registry.example.com/gobridge:configured .
+```
+
+`VERSION` defaults to `dev`; `GIT_SHA` defaults to `unknown`. They stamp
+`main.version` and `main.gitSHA`. The initial document is stored in
+`main.initialConfigBase64`, decoded by the reference command, and checked
+during the image build with `-initial-config-digest`. The probe prints only the
+decoded document's SHA-256 hash and exits before runtime or network startup.
+A custom command must support the probe when config is embedded. Leave
+`INITIAL_CONFIG_FILE` unset to build without an embedded document.
+
+The shared `scripts/write-build-goenv.sh` helper preserves existing Go
+environment-file settings except `GOFLAGS`, which it replaces with the build's
+flags. Go reads those flags through native `GOENV`, so large documents do not
+need to fit in operating-system command arguments. This is not an
+`@responsefile`; the Go command does not accept that syntax.
+
+Reading the embedded source requires no S3 download or credential lookup.
+Only a definitively absent target may be created, at version 1; existing
+documents always win. The shipped manifest supplies an existing read-only
+ConfigMap, so embedding does not replace its configuration or make that volume
+writable. A deployment using initial creation needs a writable target path and
+valid control-plane bootstrap settings. Keep managed-subscription baseline
+provisioning separate; the init container described below does not create the
+bridge config.
+
+For a writable-target deployment, pass `-admin-addr` so admin startup does not
+depend on reading the bridge document. Supply `GOBRIDGE_ADMIN_API_KEY` through
+a Kubernetes Secret; `GOBRIDGE_MONITOR_API_KEY` can set a separate monitor key.
+`-monitor-addr`, `-http-tls-cert`, and `-http-tls-key` set process-owned listener
+details. Legacy boot-file `http:` settings remain supported.
+A blank binary does not supply authenticated listener settings.
+`-start-empty` is deprecated and never starts a synthetic runtime. See
+[control-plane startup](../../docs/aws-deployment/config-initialization.md#control-plane-startup).
+
+Literal credentials are allowed, but readers of the binary, image, build
+context, or cache can recover them. Base64 is not secrecy. Target access and
+runtime credential resolution still follow their backend's requirements.
+See [initial configuration and missing-config lifecycle](../../docs/aws-deployment/config-initialization.md).
 
 ## Deploy
 
@@ -129,6 +182,12 @@ without a restart. Two rules keep that true:
 Changing the `http:` addresses or the durable session's broker identity takes
 a restart (`kubectl rollout restart statefulset/gobridge`); the reload accepts
 the file and `/deephealth` reports `restart_required`.
+
+Confirmed config deletion stops intake. A standalone runtime drains and goes
+idle, then builds a new runtime when valid config returns. A clustered runtime
+or uncertain teardown requires process exit and replacement. Read failures
+retain the last successful config as degraded. Automatic initialization never
+rearms after activation in the same process.
 
 ## Restart and upgrade
 

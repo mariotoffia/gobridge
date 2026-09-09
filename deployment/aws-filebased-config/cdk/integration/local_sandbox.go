@@ -65,10 +65,9 @@ const (
 	responderImage  = "alpine/socat:1.8.0.3@sha256:beb4a68d9e4fe6b0f21ea774a0fde6c31f580dde6368939ed70100c5385b015e"
 	responderPrefix = "gobridge-local-cfnresponder-"
 
-	// seederDir holds the deployment's seeder image definition, relative to this
-	// package. seederImageRepo is what the local run tags its build as.
-	seederDir       = "../constructs/internal/seeder"
-	seederImageRepo = "gobridge-seeder-local"
+	// helperImage supplies Python for task metadata and coreutils for matching
+	// mount ownership. It never reads or writes a bridge configuration.
+	helperImage = "public.ecr.aws/aws-cli/aws-cli:2.35.15@sha256:177c3f33d8b4b3d531a857b54289e8b101790ea9016c78431c417d8e681e7b2e"
 
 	// The task metadata service a clustered member resolves its own advertised
 	// address from. See startTaskMetadata.
@@ -97,8 +96,8 @@ type localBackend struct {
 	// stackConfigDir carves one subdirectory out of it per deployed stack.
 	configDir string
 	// currentConfigDir is the directory the stack being deployed right now binds
-	// its shared config volume to. Every stack gets its own, because the seeder
-	// writes the config document ONCE and does not overwrite an existing one: two
+	// its shared config volume to. Every stack gets its own, because the runtime
+	// initializes an absent document and never overwrites an existing one: two
 	// stacks sharing a directory means the second one's tasks boot the first
 	// one's config and address resources that no longer exist.
 	currentConfigDir string
@@ -108,8 +107,7 @@ type localBackend struct {
 	prober           string
 	responder        string
 	metadata         string
-	seederPinned     string
-	seederLocal      string
+	runtimeImages    []string
 	taskSpecs        map[string]localTaskSpec
 	// deployedTaskDefs records, per deployed service, the task definition
 	// CloudFormation put it on before the harness rolled it onto a restored one.
@@ -211,7 +209,6 @@ func localSandbox(t *testing.T) SandboxEnv {
 	localRunDirectories(t, state)
 	state.prober = startProber(t, state.network)
 	state.responder = startCloudFormationResponder(t, state)
-	buildLocalSeederImage(t, state)
 	state.metadata = startTaskMetadata(t, state)
 
 	// The test process talks to the same two endpoints the containers do, by
@@ -285,8 +282,8 @@ func localShutdown() {
 		removeLaunchedTaskContainers()
 		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "network", "rm", state.network)
 	}
-	if state.seederLocal != "" {
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rmi", "-f", state.seederLocal)
+	for _, image := range state.runtimeImages {
+		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rmi", "-f", image)
 	}
 	if state.runDir != "" && strings.Contains(state.runDir, localRunPrefix) {
 		// The per-stack config directories were handed to the container user to
@@ -316,7 +313,7 @@ func attachToNetwork(t *testing.T, network, container, alias string) {
 }
 
 // localRunPrefix names this run: its Docker network, its host directory, its
-// harness containers and the seeder image it builds all carry it, so one run's
+// harness containers and the runtime images it builds all carry it, so one run's
 // artefacts are identifiable as a set and reclaimable as one.
 const localRunPrefix = "gobridge-local-deploy-"
 
@@ -332,8 +329,8 @@ func localRunDirectories(t *testing.T, state *localBackend) {
 	if err := os.MkdirAll(state.configDir, 0o777); err != nil {
 		t.Fatalf("create shared config directory: %v", err)
 	}
-	// The seeder container writes as root and the bridge reads as an unprivileged
-	// user; MkdirAll honours the umask, so the mode is set explicitly.
+	// Each per-stack mount gets the runtime user's ownership before deployment.
+	// MkdirAll honours the umask, so the shared parent mode is set explicitly.
 	if err := os.Chmod(state.configDir, 0o777); err != nil {
 		t.Fatalf("open shared config directory: %v", err)
 	}
@@ -345,10 +342,6 @@ func localRunDirectories(t *testing.T, state *localBackend) {
 const (
 	mountOwnerUID = 65532
 	mountOwnerGID = 65532
-	// mountOwnerImage only has to provide a shell with chown and chmod, and it is
-	// already pulled by this suite for the CloudFormation responder. Its own
-	// entrypoint is socat, so every use below overrides it.
-	mountOwnerImage = "alpine/socat:1.8.0.3"
 )
 
 // matchDeployedMountOwnership gives a stack's config directory the ownership and
@@ -372,7 +365,7 @@ const (
 func matchDeployedMountOwnership(t *testing.T, dir string) {
 	t.Helper()
 	if _, err := dockerexec.Run(dockerexec.RunTimeout, "run", "--rm", "--entrypoint", "sh",
-		"-v", dir+":/mnt/gobridge", "--user", "0:0", mountOwnerImage,
+		"-v", dir+":/mnt/gobridge", "--user", "0:0", helperImage,
 		"-c", fmt.Sprintf("chown -R %d:%d /mnt/gobridge && chmod 0755 /mnt/gobridge",
 			mountOwnerUID, mountOwnerGID)); err != nil {
 		t.Fatalf("give %s the ownership the deployed EFS mount has: %v", dir, err)
@@ -391,7 +384,7 @@ func deployedMountHolds(t *testing.T, dir, relative string) bool {
 	// present one, so only a NON-1 failure is the harness rather than the
 	// answer. Say which, or a pull failure reads as a bridge that wrote nothing.
 	out, err := dockerexec.Run(dockerexec.RunTimeout, "run", "--rm", "--entrypoint", "sh",
-		"-v", dir+":/mnt/gobridge:ro", "--user", "0:0", mountOwnerImage,
+		"-v", dir+":/mnt/gobridge:ro", "--user", "0:0", helperImage,
 		"-c", "test -f /mnt/gobridge/"+relative+" || exit 1")
 	if err != nil && !strings.Contains(err.Error(), "exit status 1") {
 		t.Fatalf("cannot look inside the deployed mount %s for %s: %v\n%s", dir, relative, err, out)
@@ -406,7 +399,7 @@ func deployedMountHolds(t *testing.T, dir, relative string) bool {
 // the deployment wrote into it.
 func releaseDeployedMountOwnership(dir string) {
 	_, _ = dockerexec.Run(dockerexec.RunTimeout, "run", "--rm", "--entrypoint", "sh",
-		"-v", dir+":/mnt/gobridge", "--user", "0:0", mountOwnerImage,
+		"-v", dir+":/mnt/gobridge", "--user", "0:0", helperImage,
 		"-c", "chmod -R 0777 /mnt/gobridge")
 }
 
@@ -415,8 +408,8 @@ func releaseDeployedMountOwnership(dir string) {
 //
 // One per stack, and this is load-bearing. Every task of a stack must see the
 // SAME document — that is what the control-writes/workers-read profile is — and
-// no task may see a DIFFERENT stack's, because the seeder writes the document
-// once and leaves an existing one alone. A shared directory across stacks means
+// no task may see a DIFFERENT stack's, because runtime initialization creates
+// only an absent document. A shared directory across stacks means
 // the second deployment's tasks boot the first deployment's config and address
 // queues that were destroyed with it.
 func stackConfigDir(t *testing.T, state *localBackend, stackName string) string {

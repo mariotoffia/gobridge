@@ -78,7 +78,7 @@ func requireHAFailoverSandbox(t *testing.T) haSandbox {
 		t.Fatalf("GOBRIDGE_INT_HA=1 requires at least two private subnet IDs in distinct Availability Zones")
 	}
 	required := map[string]string{
-		"GOBRIDGE_INT_IMAGE":                    os.Getenv("GOBRIDGE_INT_IMAGE"),
+		"GOBRIDGE_INT_VERSION":                  os.Getenv("GOBRIDGE_INT_VERSION"),
 		"GOBRIDGE_INT_HA_MQTT_BROKER_URL":       os.Getenv("GOBRIDGE_INT_HA_MQTT_BROKER_URL"),
 		"GOBRIDGE_INT_HA_MQTT_CLIENT_ID":        os.Getenv("GOBRIDGE_INT_HA_MQTT_CLIENT_ID"),
 		"GOBRIDGE_INT_HA_MQTT_CREDENTIAL_PARAM": os.Getenv("GOBRIDGE_INT_HA_MQTT_CREDENTIAL_PARAM"),
@@ -105,7 +105,7 @@ func requireHAFailoverSandbox(t *testing.T) haSandbox {
 	}
 	return haSandbox{
 		SandboxEnv:          base,
-		Image:               gobridgecdk.ImageFromRegistry(required["GOBRIDGE_INT_IMAGE"]),
+		Image:               credentialedRuntimeImageSource(),
 		BrokerURL:           required["GOBRIDGE_INT_HA_MQTT_BROKER_URL"],
 		MQTTClientID:        required["GOBRIDGE_INT_HA_MQTT_CLIENT_ID"],
 		MQTTCredentialParam: required["GOBRIDGE_INT_HA_MQTT_CREDENTIAL_PARAM"],
@@ -123,6 +123,7 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox, slots *ha.Mem
 	t.Helper()
 	vpc := lookupVpc(stack, env.SandboxEnv)
 	outbound := awssqs.NewQueue(stack, jsii.String("HAOutbound"), &awssqs.QueueProps{
+		QueueName:     jsii.String(*stack.StackName() + "-ha-outbound"),
 		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
 	})
 	queues := registry.NewQueueRegistry()
@@ -156,7 +157,7 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox, slots *ha.Mem
 		CredentialsURIRef: parameterURI(env.MQTTCredentialParam),
 	}
 	sqsConfig := sqsadapter.DefaultConfig()
-	sqsConfig.QueueName = "ha-outbound"
+	sqsConfig.QueueName = *stack.StackName() + "-ha-outbound"
 	sqsConfig.Region = env.Region
 
 	leaseStore := &ports.StoreConfig{Type: awsstore.DynamoDBKind}
@@ -183,7 +184,7 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox, slots *ha.Mem
 	receiver.SetDecoded(&paho.Config{}, nil)
 	sender := ports.SenderDef{ID: "sqs-out", Transport: "sqs"}
 	sender.SetDecoded(&sqsConfig, nil)
-	binding := ports.BindingDef{ID: "sqs-out-binding", SenderID: "sqs-out", Address: "ha-outbound"}
+	binding := ports.BindingDef{ID: "sqs-out-binding", SenderID: "sqs-out", Address: sqsConfig.QueueName}
 	binding.SetDecoded(&sqsConfig, nil)
 
 	bridgeSettings := ports.BridgeSettings{

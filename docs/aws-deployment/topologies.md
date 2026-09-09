@@ -1,5 +1,7 @@
 # AWS Deployment Topologies
 
+## Overview
+
 The three shipped topologies — single task, replicated cluster, and the
 DynamoDB-coordinated HA profile — and what each one guarantees. The HA sections
 cover the rules that make failover safe: stable identities, least-privilege task
@@ -15,7 +17,7 @@ The CDK library deliberately exposes two different multi-task profiles:
 | Facade | Coordination model | Intended use | Failover objective |
 |---|---|---|---|
 | `GoBridgeCluster` | `filesystem_replicated`; independent replicas read one EFS config | Scale independent routes horizontally | None. It has no active/standby takeover and no coordinated failover SLO. |
-| `GoBridgeDynamoDBHA` | `dynamodb_coordinated_ha`; one lease holder plus warm standbys | Exclusive MQTT continuity with shared-outbox fencing | Explicit per-route `failover_slo`, admitted by Task 9 and measured externally. |
+| `GoBridgeDynamoDBHA` | `dynamodb_coordinated_ha`; one lease holder plus warm standbys | Exclusive MQTT continuity with shared-outbox fencing | Explicit per-route `failover_slo`, admitted by the builder and measured externally. |
 
 `GoBridgeCluster` remains unchanged. It rejects `route.session` and
 `shared_outbox`; it must not be described as HA. `GoBridgeDynamoDBHA` deploys one
@@ -24,8 +26,8 @@ spans at least two Availability Zones. All three tasks participate in DynamoDB
 lease acquisition, so the normal steady state has one active holder and at
 least two warm candidates. Every service uses a 0/100 non-overlapping replacement
 with Availability Zone rebalancing disabled, and the worker services are deployed
-after the control service so the config seeder precedes the workers that read its
-output.
+after the control service. Only control may initialize absent configuration;
+workers wait idle for a valid document without any seeder dependency.
 
 `0/100` caps total tasks at the desired count, so a second cohort never runs
 beside the first. It constrains counts, not ORDER: on the autoscaled shape, at a
@@ -72,17 +74,22 @@ A config change that the barrier classifies as replacement-required — and ever
 change to the deployment profile itself, including the image and the roster — is
 still a CloudFormation deploy in both shapes.
 
-A deploy that changes a **fingerprinted** field needs the shared config document
-on EFS to change with it, and the default control seeder mode (`SeedOnce`) will
-not do that: it keeps whatever document is already there and logs
-`hash_mismatch_kept_existing`. Every member then refuses to boot, because the
-document's deployment-profile fingerprint is not the one stamped into its task
-definition. Set `ControlSeederMode: "Overwrite"` for that deploy, or run the
-scale-to-zero procedure in
-[the cluster config rollout runbook](../runbooks/cluster-config-rollout.md).
-`SeedOnce` is the right default the rest of the time: it is what lets a live
-coordinated rollout (or an Admin-API commit) survive a control-task restart
-instead of being reverted to the last deployed document.
+A deploy that changes a **fingerprinted** field needs the shared target
+document to change with it. Embedding new config in an image never overwrites
+an existing target. Use the scale-to-zero procedure in
+[the cluster config rollout runbook](../runbooks/cluster-config-rollout.md):
+validate the exact config, quiesce and stop the cohort, write the target, then
+start the replacement cohort and verify convergence before restoring intake.
+Otherwise members reject the target because its deployment fingerprint differs
+from bootstrap. Existing admin changes survive ordinary control restarts.
+
+With valid bootstrap settings, missing config leaves the control plane live
+but not ready and the data plane idle. After clustered activation, confirmed
+absence stops intake and signals process exit and replacement, not same-process
+idle. Standalone operation can drain to idle; uncertain teardown also exits.
+Source read failures retain the last successful config as degraded. A warm standby counts as
+activated without needing Full readiness. See
+[initialization lifecycle](config-initialization.md#observation-and-runtime-state).
 
 ## Coordinated HA data plane
 
@@ -118,9 +125,9 @@ storage identity. `client_id_suffix` is rejected for Exclusive sessions because
 a per-task MQTT identity strands queued broker state after holder loss.
 
 The facade also stamps two identities plus the exact table names into
-deployment-owned bootstrap, and every process validates the EFS logical config
-against them before store or transport planning, so a stale or tampered
-SeedOnce/AdoptValid file cannot bypass synth-time admission:
+deployment-owned bootstrap, and every process validates the selected-source
+logical config against them before store or transport planning. An existing
+document cannot bypass synth-time admission:
 
 - **Deployment-profile fingerprint** (`dynamodb_ha_config_fingerprint`) — a hash
   of only the fields the deployment provisions: `deployment_mode`, the
@@ -135,9 +142,10 @@ SeedOnce/AdoptValid file cannot bypass synth-time admission:
   session identity or an exclusive route's `session_id` is still refused — by the
   live-reload preflight, which owns that rule.
 - **Baseline config digest** (`dynamodb_ha_baseline_config_digest`) — the content
-  identity of the document this deployment seeded, including editable content.
-  File sources include the version; DynamoDB sources exclude only the top-level
-  version because the seeder assigns it from the persisted counter, not the YAML.
+  identity of the document this deployment admitted, including editable content.
+  Both file and DynamoDB sources use `bridge.DeploymentBaselineContentDigest`,
+  normalizing only the top-level version to zero for comparison. Strict first
+  creation assigns target version 1 independently of the embedded version.
   A coordinated member uses this identity to establish the cohort's generation-zero
   committed artifact at startup. The artifact itself retains the actual source
   version and full, version-sensitive digest; see
@@ -194,7 +202,7 @@ triaging backlog age.
 
 ## Credentialed failover proof
 
-The test runner needs CDK deploy/destroy credentials, a two-AZ VPC, a reachable
+The test runner needs Docker, CDK deploy/destroy credentials, a two-AZ VPC, a reachable
 TLS MQTT broker, existing SecureString admin/MQTT parameters, CloudWatch metric
 write/read permission, and VPC routing to task private addresses. The fixture
 opens monitor port 8081 only from `GOBRIDGE_INT_HA_PROBE_CIDR`; production
@@ -210,13 +218,20 @@ GOBRIDGE_INT_VPC_ID
 GOBRIDGE_INT_AVAILABILITY_ZONES
 GOBRIDGE_INT_SUBNET_IDS
 GOBRIDGE_INT_PUBLIC_SUBNET_IDS
-GOBRIDGE_INT_IMAGE
+GOBRIDGE_INT_VERSION
 GOBRIDGE_INT_HA_MQTT_BROKER_URL
 GOBRIDGE_INT_HA_MQTT_CLIENT_ID
 GOBRIDGE_INT_HA_MQTT_CREDENTIAL_PARAM
 GOBRIDGE_INT_HA_ADMIN_PARAM
 GOBRIDGE_INT_HA_PROBE_CIDR
 ```
+
+`GOBRIDGE_INT_VERSION` must name a published, compatible AWS profile `lib`
+module version that supports embedded config and `-initial-config-digest`.
+Each credentialed fixture uses `ImageFromGoBuild` to build an image containing
+that fixture's parsed config. The harness rejects `GOBRIDGE_INT_IMAGE`; unset
+it rather than passing a registry reference. Compatible module publication is
+a prerequisite, and an existing registry image cannot substitute for it.
 
 The availability-zone, private-subnet, and public-subnet lists must have the
 same order and cardinality. The harness imports these concrete attributes and
@@ -234,5 +249,9 @@ When `GOBRIDGE_INT_HA=1`, missing variables, credentials, outputs, network
 reachability, owner/fence changes, Full readiness, or the exact CloudWatch sample
 fail the test. Without that explicit request, the credentialed build-tag test is
 skipped and no AWS deployment occurs.
+
+Retain the built image digest with the module version and failover evidence.
+This fixture image contains its own initial document; it is not the generic
+published runtime image.
 
 ---

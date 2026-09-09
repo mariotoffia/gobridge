@@ -1,6 +1,14 @@
 # Production stack — complete CDK stack
 
+## Overview
+
 The following stack assembles all production components:
+
+The consumer owns the registry image and its optional embedded initial config.
+`BridgeConfig` drives validation and grants, not an overwrite of the target.
+An image without an initial document needs existing config or operator creation;
+missing config leaves the data plane idle. See
+[initial configuration](../../aws-deployment/config-initialization.md).
 
 ```go
 package main

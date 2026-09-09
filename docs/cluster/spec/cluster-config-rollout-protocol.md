@@ -1,5 +1,7 @@
 # Design: Coordinated cluster config rollout (barrier protocol)
 
+## Overview
+
 Status: **fully implemented** — every slice has shipped. This is the canonical
 protocol design. The shipped decisions are recorded authoritatively in
 [ADR 0013](../../adr/0013-coordinated-cluster-config-rollout.md) (base barrier)
@@ -79,20 +81,16 @@ Non-goals
 
 ## 3. Protocol overview
 
-```
-operator ── POST config ──► any node (existing admin txn API)
-                              │  Propose: conditional-create rollout row
-                              │  gen=N, digest, membership epoch snapshot
-        every member ─────────┤  sees candidate (store watch)
-                              │  preflight class check → validate → BUILD
-                              │  candidate runtime (existing prepare path)
-                              │  → Ack(gen, member)   (or Nack(reason))
-        coordinator ──────────┤  (holder of the rollout lease, fenced)
-                              │  acks == epoch set → Commit(gen)   [atomic flip]
-                              │  Nack / timeout / epoch change → Abort(gen)
-        every member ─────────┘  observes Committed → swap (prepare→commit)
-                                 observes Aborted   → discard candidate
-                                 post-swap: convergence watch as today
+```mermaid
+flowchart TB
+    Operator[Operator stages config] --> Proposal[Propose generation and membership epoch]
+    Proposal --> Members[Each member validates and builds candidate]
+    Members --> Votes[Ack or Nack]
+    Votes --> Coordinator[Fenced coordinator reads votes]
+    Coordinator -->|Every member acknowledged| Commit[Commit generation]
+    Coordinator -->|Nack, timeout, or epoch change| Abort[Abort generation]
+    Commit --> Apply[Each member applies and checks convergence]
+    Abort --> Discard[Each member discards candidate]
 ```
 
 States: `Proposed → Staging → Committed | Aborted` (terminal). One active
@@ -226,7 +224,7 @@ side effect** (Chubby-style lock-delay — belt and braces over the fencing
 epoch; DynamoDB itself does this internally for its partition leaders).
 
 Joiner rule: a starting member adopts only the last **Committed**
-configuration (unchanged `AdoptValid` semantics); it never acks a rollout
+configuration through the committed-artifact path; it never acks a rollout
 proposed before it joined (its ID is not in the epoch).
 
 Guard change: the ADR 0012 refusal remains the **default**. It is lifted
@@ -398,9 +396,32 @@ config** when `current` holds a candidate the barrier has not committed, and the
 applier **reconciles** to it when the active row moved on before a member
 observed the commit. It advances on Commit (base) and, under a window, only on
 **Confirm** (§8.1) — so a crash reboots onto the last *confirmed* generation.
-Scoped, fail-safe limitation: no baseline auto-seed (a candidate sitting in
-`current` during the write→propose window is indistinguishable from a deploy
-baseline, so the artifact is established by the first real commit, not seeded).
+Without a deployment-admitted baseline identity, a candidate in `current`
+during the write→propose window cannot be distinguished from the baseline.
+The AWS HA profile supplies `dynamodb_ha_baseline_config_digest` to establish
+the generation-zero committed artifact. This is separate from creating an
+absent config-source document. Both file and DynamoDB baseline matching use
+`bridge.DeploymentBaselineContentDigest`, normalizing only the top-level version
+to zero because initialization assigns target version 1 independently of the
+embedded version. The committed artifact retains its actual stored version and
+full, version-sensitive `bridge.ConfigArtifactDigest`.
+
+**Initial configuration and deletion.** Only control may initialize an absent
+source document, through strict `CreateIfAbsent`, at version 1. Existing
+documents always win. An embedded document never replaces an existing source
+or bypasses the rollout barrier. With valid bootstrap, no valid config means
+live control-plane services but an idle, not-ready data plane.
+After clustered activation, confirmed source absence stops new intake and
+signals process exit and replacement. A clustered runtime does not return to
+live idle, with or without the coordinated barrier. Uncertain teardown also
+exits. Do not continue processing the old or cached committed config after
+confirmed absence. Standalone runtimes may rebuild after safe quiescence;
+read errors instead retain the last successful config as
+degraded. First activation is independent of Full readiness; returning to idle
+does not rearm initialization in the same process. Watchers must preserve
+delete/recreate ordering and accept a recreated source version through the
+normal validation and rollout path. See
+[initialization lifecycle](../../aws-deployment/config-initialization.md).
 
 **Composition obligations.** A coordinated root MUST wire `config.Validate`
 (an Ack proves the candidate passes the `BlueprintValidator` and builds, but not

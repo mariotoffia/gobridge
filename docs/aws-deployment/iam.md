@@ -1,5 +1,7 @@
 # IAM Least Privilege
 
+## Overview
+
 The exact task-role and execution-role policies a GoBridge deployment needs,
 why each statement is scoped the way it is, and the few places a wildcard is
 unavoidable.
@@ -25,14 +27,48 @@ authority: the deployed worker role remains read-only.
 Only `config_dynamodb.watch_mode: streams` adds `GrantStreamRead` on the enabled
 config stream for both roles (`DescribeStream`, `GetRecords`,
 `GetShardIterator`, plus `ListStreams`). Poll mode adds no stream-read grant.
-No runtime config-table creation grant is added. The DynamoDB seeder shares the
-task role with the main container: control can conditionally seed or overwrite,
-while worker `AdoptValid`/`AbortDeploy` modes only read. Both task roles receive
-read access to the JSON S3 asset and write access to their seeder log group.
-There is no per-container role and no additional worker write grant.
+No runtime config-table creation grant is added. Only the control process may
+initialize an absent document through a strict conditional write; workers
+remain read-only in runtime wiring as well as IAM. Initialization and ordinary
+admin updates share the control task role, not a separate container.
+There is no config S3 download grant or seeder log group. The deploy principal
+still needs the normal permissions for CDK image assets.
 
 An EFS-free facade adds no EFS mount/write grants or EFS-CMK grant. SSM, logging
 and adapter permissions continue to be derived as before.
+
+## SQS discovery grants
+
+The facade's shared base calls `GrantSQSConfig`, which uses
+`QueueRegistry.ResolveQueue` for receiver, sender, and binding references.
+Tag selectors must be bound with `BindQueueTags(name, tags, prefix)` on an
+already registered queue. Missing or ambiguous mappings do not fall back to
+wildcard message permissions.
+
+A stable physical `queue_name` uses `sqs:GetQueueUrl`. Tag selection adds
+`sqs:ListQueues` and `sqs:ListQueueTags`; do not add those discovery actions for
+name-only or direct-URL configurations.
+
+`ListQueues` needs `Resource: "*"`, because the SQS listing operation has no
+queue-level resource scope. The client account and region bound the search;
+an optional `queue_name_prefix` reduces the candidates. Scope `ListQueueTags`
+to the candidate queue resources that the selector may inspect. CDK retains
+the `IQueue` handles for precise send/receive grants and deployment dependencies,
+independently of runtime discovery.
+
+For example, a prefix `orders-` needs tag-read access to candidate queues under
+`arn:aws:sqs:REGION:ACCOUNT:orders-*`, not only the one selected queue.
+Without a prefix, metadata reads cover all candidate queues in that account
+and region. Send and receive grants still target the exact registered queue.
+
+The binding marker `sqs:queue` uses that configured queue. It adds no
+per-message discovery or broader message-operation grants.
+
+Discovery requires exactly one match. Zero matches retry without readiness;
+multiple matches fail as ambiguous. A denied list or tag read is an
+authorization error, never an empty result. No CloudFormation read grant or
+generic token resolver is required. See
+[embedded queue references](config-initialization.md#queue-references-in-embedded-documents).
 
 ## Task Role
 

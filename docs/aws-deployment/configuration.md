@@ -1,5 +1,7 @@
 # Configuration on AWS
 
+## Overview
+
 GoBridge uses a two-layer configuration model that separates deployment
 concerns from application concerns. The **bootstrap config** controls
 infrastructure-level settings (listen addresses, SSM parameter references,
@@ -42,7 +44,7 @@ flowchart LR
 | **Delivery** | Environment variable or file | EFS mount or DynamoDB config table |
 | **Mutability** | Immutable per task revision | Hot-reloadable at runtime |
 | **Contains** | Listen addresses, SSM refs, topology | Receivers, senders, routes, sessions |
-| **Sensitive data** | SSM parameter *references* only | No secrets (resolved at runtime) |
+| **Sensitive data** | SSM parameter references for bootstrap API keys | Literal values or credential references; embedded literals are visible to artifact readers |
 
 ---
 
@@ -53,10 +55,16 @@ The bootstrap config is defined by the `BootstrapConfig` struct in
 inline JSON via the `GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` environment variable
 or as a file path via `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`.
 
-A missing file or missing DynamoDB config item loads an empty default config and
-logs a warning. Deployment-profile validation still applies before the runtime
-starts. Only not-found errors trigger this default; access failures, malformed
-config and cancellation propagate. DynamoDB polling defaults to 30 seconds.
+With valid bootstrap settings, the control plane starts live but not ready and
+the data plane stays idle until a valid bridge document can activate. An
+optional embedded initial source can create an absent target during initial
+startup; existing documents are never overwritten. After activation, standalone
+deletion drains to idle and permits a later rebuild. Clustered deletion or
+uncertain teardown requires process exit and replacement. Read failures retain
+the last successful config as degraded.
+See [initial configuration and observations](config-initialization.md).
+
+DynamoDB polling defaults to 30 seconds.
 Streams mode requires an enabled table stream and stream-read permissions; the
 adapter falls back to polling when streams are unavailable. Library callers can
 inject an emulator client with `WithDynamoDBClient`; the config loader, runtime
@@ -66,19 +74,19 @@ stores and derived streams client share its connection settings.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `bridge_id` | `string` | Yes | -- | Unique identifier for this bridge instance. Used as the `bridge.id` in the default logical config when the selected config source has no config yet. |
-| `config_source` | `string` | No | `"file"` | Bridge config source: `"file"` or `"dynamodb"`. Empty normalizes to `"file"`. Single and DynamoDB HA CDK facades provision the config table, role-scoped grants and JSON seeder; the filesystem-replicated facade rejects DynamoDB at synth. Control defaults to seed-if-absent; workers adopt valid current config read-only. File seeding is unchanged. |
+| `bridge_id` | `string` | Yes | -- | Deployment identity used to select the config document and identify the control plane before a valid document activates. |
+| `config_source` | `string` | No | `"file"` | Bridge config source: `"file"` or `"dynamodb"`. Empty normalizes to `"file"`. Single and DynamoDB HA CDK facades provision the config table and role-scoped grants; the filesystem-replicated facade rejects DynamoDB at synth. Only control may initialize an absent document; workers remain read-only. No seeder container or S3 config asset is used. |
 | `config_dynamodb` | `object` | For DynamoDB | -- | DynamoDB config-source settings: `table_name` (required at runtime; CDK provisions and overwrites it), `watch_mode` (`"poll"` by default or `"streams"`), and `stream_poll_interval` (optional positive Go duration for the streams `GetRecords` cadence). Must be absent for the file source. |
 | `config_file_path` | `string` | For file | -- | Absolute path to the bridge config YAML as seen inside the container (the EFS mount point), e.g. `/var/lib/gobridge/bridge.yaml`. Required for the file source and must be empty for DynamoDB. |
 | `admin_api_key_param` | `string` | Yes | -- | SSM parameter name or `pms://` URI for the admin API key. Resolved at startup and on every config reload. The value is a single key or a JSON map of named keys — see [Admin key parameter value](#admin-key-parameter-value). |
-| `node_role` | `string` | No | `"control"` | Role of this node: `"control"` or `"worker"`. Every node starts the transport, admin and monitor servers regardless of the value; what it selects at runtime is the admin config-transaction **single-writer** posture. For the file source, a `control` node asserts it is the sole durable config writer and may commit config transactions; a `worker` node mounts EFS read-only in `GoBridgeCluster` and is refused (HTTP 500) on a durable commit -- see [Admin Config Transactions and the Single-Writer Posture](../deployment-guide.md#admin-config-transactions-and-the-single-writer-posture). For DynamoDB, neither role asserts single-writer authority: conditional writes enforce CAS. CDK nevertheless grants config writes only to control; worker task roles have read-only config access. At deploy time the CDK single/cluster facades stamp it per service and validate it at synth. Unrelated to the runtime failover role (`active` / `standby` / `standalone`) the monitor probes report. |
+| `node_role` | `string` | No | `"control"` | Configuration authority: `"control"` or `"worker"`. Only control may initialize or update shared config. File control uses the single-writer guard; DynamoDB updates use compare-and-swap (CAS). Workers have read-only config access in runtime wiring and deployed grants. The role does not select the monitor's failover role (`active`, `standby`, or `standalone`); either task family may process messages after activation. |
 | `topology` | `string` | No | `"single"` | Deployment topology: `"single"` (one replica), `"filesystem_replicated"` (N replicas sharing EFS), or `"dynamodb_coordinated_ha"` (the active/warm-standby profile stamped by `GoBridgeDynamoDBHA`). The HA value additionally requires the four `dynamodb_ha_*` identities below. |
 | `member_id` | `string` | No | `""` | This node's STABLE identity in a coordinated cluster rollout cohort. Required whenever the logical config sets `bridge.cluster.rollout: coordinated`, and it MUST appear verbatim in that config's `bridge.cluster.members`: the barrier freezes the roster as its membership epoch and counts acknowledgements against it, so an absent or drifting id aborts every rollout. Unlike `instance_id` it MUST survive a restart -- it is the cohort identity a restarted task rejoins under. Stamped per slot by `GoBridgeDynamoDBHA` when `MemberSlots` is set; empty for every non-coordinated deployment, including the autoscaled worker shape, whose interchangeable tasks have no such identity. |
 | `dynamodb_ha_lease_table_name` | `string` | No | `""` | Deployment-owned expectation: the physical DynamoDB table backing `stores.lease`. Stamped only by `GoBridgeDynamoDBHA`; the runtime refuses to boot a logical config whose lease table differs, so a tampered or stale EFS document cannot bypass synth-time admission. Required when `topology` is `"dynamodb_coordinated_ha"`. |
 | `dynamodb_ha_outbox_table_name` | `string` | No | `""` | As above, for `stores.outbox`. Required when `topology` is `"dynamodb_coordinated_ha"`, and must differ from the other two table names. |
 | `dynamodb_ha_managed_subscriptions_table_name` | `string` | No | `""` | As above, for `stores.managed_subscriptions`. Required when `topology` is `"dynamodb_coordinated_ha"`, and must differ from the other two table names. |
 | `dynamodb_ha_config_fingerprint` | `string` | No | `""` | 64-character SHA-256 hex of the IMMUTABLE deployment profile: `deployment_mode`, the `bridge.cluster` shape, and the identity of every deployment-owned store. It is NOT a hash of the whole document, so every later operator config change still matches it while every deployment-provisioned change moves it. Required (and validated for shape) when `topology` is `"dynamodb_coordinated_ha"`. |
-| `dynamodb_ha_baseline_config_digest` | `string` | No | `""` | 64-character SHA-256 hex digest identifying the config content this deployment admitted. File sources use the full, version-sensitive `bridge.ConfigArtifactDigest`; DynamoDB sources use `bridge.DeploymentBaselineContentDigest`, excluding only the top-level `version` because the source assigns its own counter. All editable content remains covered. A coordinated member uses it to seed the cohort's generation-zero committed artifact before it serves, so a restart before the first rollout recovers to the admitted baseline rather than an uncommitted source edit. The artifact retains the actual stored version and its full, version-sensitive digest. Empty disables baseline seeding. A present-but-malformed value is rejected at startup. |
+| `dynamodb_ha_baseline_config_digest` | `string` | No | `""` | 64-character SHA-256 hex digest identifying the content this deployment admitted. Both file and DynamoDB sources use `bridge.DeploymentBaselineContentDigest`, which normalizes only the top-level `version` to zero for comparison. Initialization assigns target version 1 independently of the embedded version; every editable field remains covered. A coordinated member uses this identity to establish the generation-zero committed artifact before serving. That artifact retains the actual stored version and full, version-sensitive `bridge.ConfigArtifactDigest`. Empty disables baseline seeding; malformed values fail startup. |
 | `dynamodb_ha_rollout_table_name` | `string` | No | `""` (adapter default `gobridge-rollouts`) | DynamoDB table backing the coordinated rollout barrier's shared state: the current proposal, the per-member acknowledgements, and the durable last-committed config artifact. Read only when the logical config sets `bridge.cluster.rollout: coordinated`. `GoBridgeDynamoDBHA` provisions the table and stamps its name when `MemberSlots` is set, deriving it as `<bridge.id>-rollouts` from the shared config document. The task role is granted only `dynamodb:GetItem` and `dynamodb:PutItem` on it, so the runtime's best-effort `CreateTable` preflight is denied and logged on every boot -- expected, because the deployment owns the table. |
 | `poll_interval` | `string` | No | `"1s"` (file), `"30s"` (DynamoDB) | Go duration string for how often the poll watcher checks the selected config source for changes. Empty, unparseable, or non-positive values use the source-specific default. |
 | `container_memory_bytes` | `uint64` | No | `1073741824` | Runtime container hard limit used by the MQTT memory profile. CDK overwrites this field from the effective Fargate `MemoryMiB`; do not set it independently in CDK deployments. |
@@ -100,7 +108,7 @@ stores and derived streams client share its connection settings.
 | `credential_poll_interval` | `string` | No | `"5m"` | Go duration string for the credential rotation poll cadence. Empty, unparseable, or non-positive falls back to 5 minutes. Shrink it to reduce the auth-failure window of a hard rotation. |
 | `credential_poll_jitter` | `string` | No | ~10% of interval | Go duration of ±jitter applied per poll so a fleet does not stampede the secrets backend on the same tick. Empty or invalid defaults to a tenth of the effective poll interval; a parseable `"0"` disables jitter. |
 | `credential_emit_on_start` | `bool` | No | `true` | Whether the poll wrapper emits an initial rotation on start. Default (unset → `true`) surfaces a rotation that landed in the build→watch window; set `false` to restore the legacy silent-baseline behavior. |
-| `managed_subscription_baselines` | `map[string][]string` | No | `{}` | Per persistent or exclusive MQTT session, the exact topic filters its broker identity already holds; an empty list attests a NEW identity with no subscriptions. A durable session does not start until its managed-subscription baseline exists, and on this profile only the task can write a `stores.managed_subscriptions` store that lives on the config mount, so the runtime seeds every entry at boot, before it builds the bridge. Seeding is idempotent and additive: an established baseline is kept and the listed filters are added to it, so a filter the running session later removed is re-added on the next boot until the attestation is redeployed without it. A session named here that the boot config does not carry as a persistent or exclusive MQTT session with subscriptions (a live rename, or the start-empty boot before the seeder has written the document) is skipped with a warning; `GoBridgeSingle` refuses such an attestation at synth. `GoBridgeSingle` stamps it from its `ManagedSubscriptionBaselines` prop; `GoBridgeDynamoDBHA` seeds its own DynamoDB table at deploy time and leaves it empty. Never attest an empty baseline for a broker identity that may still hold subscriptions -- see [MQTT durable sessions](../transports/mqtt-durable-sessions.md#managed-subscription-history). |
+| `managed_subscription_baselines` | `map[string][]string` | No | `{}` | Per persistent or exclusive MQTT session, the exact topic filters its broker identity already holds; an empty list attests a new identity with no subscriptions. A durable session cannot start without its baseline. Once valid config is available, runtime seeds the configured local store before building the bridge. Seeding is idempotent and additive: remove obsolete filters from the attestation after runtime cleanup, or the next boot adds them again. Entries for sessions absent from the logical config are skipped with a warning; `GoBridgeSingle` rejects mismatched attestations at synth. `GoBridgeDynamoDBHA` creates its own DynamoDB baselines at deploy time and leaves this map empty. This operation is separate from initial configuration creation. See [MQTT durable sessions](../transports/mqtt-durable-sessions.md#managed-subscription-history). |
 
 ### Admin key parameter value
 
@@ -173,7 +181,9 @@ in-container path. A typical mapping:
 | Bridge config file (raw EFS path) | `/bridge.yaml` (what a host mounting the file system directly sees) |
 | `config_file_path` in bootstrap | `/var/lib/gobridge/bridge.yaml` (the in-container path the runtime reads) |
 
-You should write the bridge config to EFS using one of the following methods.
+The control process can create the file using an
+[embedded initial document](config-initialization.md). To update an existing
+document, use a config transaction or an atomic external writer.
 
 > **Pre-deploy checklist item — write atomically.** Whichever method you use,
 > the writer MUST write to a temporary file on the same EFS file system and then
@@ -183,35 +193,6 @@ You should write the bridge config to EFS using one of the following methods.
 > permitted — `config/validate.go`) swaps live and **stops forwarding
 > traffic while `/health` and `/ready` stay green**. See
 > [External config writers must write atomically](../runbooks/external-config-atomic-writes.md).
-> The `cp` commands below overwrite in place; replace them with a
-> temp-file-plus-`mv` on the same mount for production writers.
-
-### Init Container
-
-Add an init container to the ECS task definition that copies the config from
-S3, a CodeArtifact archive, or an embedded default:
-
-```json
-{
-  "name": "config-init",
-  "image": "amazon/aws-cli:latest",
-  "essential": false,
-  "command": [
-    "s3", "cp",
-    "s3://my-config-bucket/gobridge/bridge.yaml",
-    "/var/lib/gobridge/bridge.yaml"
-  ],
-  "mountPoints": [
-    {
-      "sourceVolume": "gobridge-efs",
-      "containerPath": "/var/lib/gobridge"
-    }
-  ]
-}
-```
-
-The main container declares a `dependsOn` with condition `SUCCESS` on the
-init container.
 
 ### CI/CD Pipeline
 
@@ -224,7 +205,9 @@ aws efs describe-mount-targets --file-system-id $EFS_ID
 # Mount EFS via EFS mount helper (requires amazon-efs-utils)
 mount -t efs -o tls $EFS_ID:/ /mnt/efs
 # The access point roots at "/", so this is the container's /var/lib/gobridge/bridge.yaml
-cp bridge.yaml /mnt/efs/bridge.yaml
+tmp=$(mktemp /mnt/efs/.bridge.yaml.XXXXXX)
+cp bridge.yaml "$tmp"
+mv "$tmp" /mnt/efs/bridge.yaml
 umount /mnt/efs
 ```
 
@@ -245,13 +228,23 @@ sudo mkdir -p /mnt/efs
 sudo mount -t efs -o tls fs-0123456789abcdef0:/ /mnt/efs
 
 # Write config (access point roots at "/", so this is the container's /var/lib/gobridge/bridge.yaml)
-sudo cp bridge.yaml /mnt/efs/bridge.yaml
+tmp=$(sudo mktemp /mnt/efs/.bridge.yaml.XXXXXX)
+sudo cp bridge.yaml "$tmp"
+sudo mv "$tmp" /mnt/efs/bridge.yaml
 
 # Unmount
 sudo umount /mnt/efs
 ```
 
-You can also update bridge config through the admin API config-transaction
+These commands replace an existing document. Validate the staged config first;
+for clustered deployments, follow the
+[cluster rollout procedure](../runbooks/cluster-config-rollout.md) before writing.
+For an absent target, authenticated `POST /api/v1/admin/config` accepts a
+complete YAML or JSON document through the registry-aware decoder and strict
+creation capability. It is not an update transaction against a missing
+document. See [initial-create outcomes](config-initialization.md#operator-creation-and-rollout).
+
+You can update existing bridge config through the admin API config-transaction
 flow, which writes the new config durably and applies it in-band to the running
 runtime. There is **no `PUT /config` endpoint**: config changes go through a
 transaction (open → patch → commit), and the commit does the check-and-set on
@@ -357,12 +350,12 @@ feature requirements.
 | Feature | `single` | `filesystem_replicated` |
 |---------|----------|-------------------------|
 | Replicas | 1 | N |
-| Config source | EFS (single writer) | EFS (shared, poll-synced) |
+| Config source | EFS or DynamoDB (control writes) | EFS (shared, control writes) |
 | `shared_outbox` routes | Yes | No |
 | Route session leases | Yes | No |
 | `deployment_mode: clustered` | Yes | Yes |
 | `bridge.cluster.endpoints` | Optional | Recommended |
-| Config update propagation | Immediate (single instance) | Within `poll_interval` |
+| Config update propagation | Normal standalone reload rules | Detection within `poll_interval`; clustered changes require cohort replacement |
 
 ### Single Topology
 
@@ -375,8 +368,8 @@ a single task.
 
 The `filesystem_replicated` topology runs N Fargate tasks that all mount the
 same EFS file system. Each replica independently polls the bridge config file
-and builds its own runtime. This provides horizontal scaling and high
-availability, but with restrictions:
+and builds its own runtime. This provides independent horizontal scaling, not
+coordinated high availability, with these restrictions:
 
 - **No `shared_outbox` routes.** Durable outbox delivery requires distributed
   state coordination. Use `direct_hold` delivery mode instead, or switch to
@@ -432,7 +425,7 @@ receivers:
   - id: sqs-receiver
     transport: sqs
     options:
-      queue_url: "https://sqs.eu-west-1.amazonaws.com/123456789012/orders"
+      queue_name: orders
 
 senders:
   - id: mqtt-sender
@@ -458,3 +451,8 @@ routes:
 
 For the complete field-by-field reference of all bridge config options, see
 [Configuration Reference](../configuration-reference.md).
+
+Embedded SQS config uses stable physical queue names or `queue_tags` with an
+optional `queue_name_prefix`; all embedded queue URLs are rejected.
+Use binding address `sqs:queue` for a tag-selected sender. See
+[queue references](config-initialization.md#queue-references-in-embedded-documents).

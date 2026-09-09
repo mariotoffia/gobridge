@@ -5,19 +5,22 @@ Superseded by: 0012
 Date: 2026-07-03
 Deciders: GoBridge core
 
-> ADR 0012 supersedes this record as the cluster reconfiguration decision.
-> `AdoptValid` remains the worker **startup** seeding policy, but it is not a
-> live rollout mechanism. Non-no-op live reloads of or into clustered
-> deployments are rejected; config changes require whole-cohort replacement.
+## Overview
+
+This historical record explains why workers never write shared config.
+[ADR 0012](0012-cluster-config-whole-cohort-replacement.md) supersedes its
+cluster reconfiguration rule, with
+[ADR 0013](0013-coordinated-cluster-config-rollout.md) allowing coordinated
+live-safe deltas. The seeder modes described by the original decision are
+removed. The current startup rule is
+[strict initial configuration](../aws-deployment/config-initialization.md):
+only control may create an absent target; workers remain read-only.
 
 ## Context
 
-The file-based cluster keeps its `bridge.yaml` on a shared EFS volume. Two
-reconfiguration paths write to it: the CDK synth-time seed (the config baked into
-the task definition at deploy) and the Admin API commit (a hot reconfiguration an
-operator applies to the running control task). Both are legitimate, and they
-diverge — after an Admin-API commit, the live EFS config no longer matches the
-hash of the synth-time asset.
+The original file-based cluster kept `bridge.yaml` on shared EFS. Its
+deployment seeder and admin commits could produce different content: after an
+admin edit, the live file no longer matched the synth-time asset hash.
 
 Worker tasks start from that same EFS config. If a worker seeded or overwrote
 EFS on startup, a rolling worker deploy would stomp an Admin-API commit back to
@@ -25,75 +28,51 @@ the synth-time asset, and concurrent workers writing the same file during a
 rolling deploy would race. The question is what a worker does with an EFS config
 that is valid but drifted from the asset it shipped with.
 
-## Decision
+## Historical decision
 
-Workers adopt the current valid EFS config instead of seeding or overwriting it.
-The seeder on the control task is the only read-write writer of EFS. Design in
-`deployment/aws-filebased-config/cdk`.
+Workers adopted current valid EFS config rather than overwriting it.
+`AdoptValid` was the read-only worker default; `AbortDeploy` was a strict
+asset-match gate. A separate seeder implemented those startup checks.
+The single control service and read-only worker mount protected the file
+against competing writes.
 
-- **AdoptValid is the worker default.** `ModeWorker` runs the seeder in
-  `MODE=AdoptValid`
-  (`constructs/internal/gobridgebase/base.go`, default at
-  `defaultSeederMode:519`). Worker startup gates on the current EFS config being
-  present and parseable, but tolerates hash drift from the synth-time asset
-  (`base.go`, `:194-200`), so Admin-API hot reconfiguration and worker
-  self-healing coexist.
+Those modes are historical, not supported configuration options.
 
-- **Workers never write EFS.** A worker mounts EFS read-only at the ECS volume
-  layer — the main-container mount sets `ReadOnly` whenever the construct runs
-  in `ModeWorker` (`gobridgebase/base.go`). The read-only worker modes
-  (`AdoptValid` / `AbortDeploy`) stage under `/tmp` and only read
-  `dirname(EFS_TARGET_PATH)`; the worker task role is granted no
-  `ClientWrite` EFS action (`base.go`).
+## Current decision
 
-- **The seeder is the sole RW writer.** Only the seeder mounts EFS RW
-  (`base.go`, `ReadOnly: false`). The control service is pinned to
-  `DesiredCount = 1` with `MinHealthyPercent=0 / MaxHealthyPercent=100`, so the
-  previous control task fully drains before the next starts — no two RW writers
-  touch EFS at once during a rolling deploy (`cluster.go`).
+The bridge process owns optional initialization. An embedded logical document
+may create an absent target through `ports.ConfigInitializer.CreateIfAbsent`,
+at version 1. It never replaces a present document, including an invalid or
+versionless one, and it rereads the winner after a creation race. There is no
+seeder image or S3 config download dependency.
 
-- **AbortDeploy is opt-in strict lock-step.** Set `WorkerSeederMode =
-  "AbortDeploy"` (`base.go`, `cluster.go`) for deployments that
-  require every worker to run the exact synth-time asset — a worker then refuses
-  to start on any drift.
+Workers remain read-only for both file and DynamoDB config. With valid
+bootstrap, absence leaves the control plane live but not ready and the data
+plane idle. After clustered activation, confirmed absence stops intake and
+requires process exit and replacement, not a same-process transition to idle.
+Standalone runtimes can return to idle after safe quiescence; uncertain
+teardown also exits. Read errors retain the last successful runtime as degraded.
+
+First activation is not readiness: a standby may activate without reaching
+Full. Same-process idle never rearms initialization. A fresh process may create
+an absent target again; there is no durable tombstone.
 
 ## Consequences
 
-- An Admin-API commit survives a rolling worker deploy. Workers adopt the live
-  EFS config rather than reverting it to the synth-time asset.
-- The two reconfiguration paths coexist: CDK seeds the initial config, the Admin
-  API mutates it live, and workers follow whatever is currently valid on EFS.
-- Only one writer ever touches EFS, so there is no write-write race on
-  `bridge.yaml` during a deploy. This is enforced by the RO worker mount, the IAM
-  scope, and the single-control-task drain — three independent guards.
-- A worker will not start on an EFS config that is missing or unparseable. A
-  corrupt config fails the worker fast rather than running stale.
-- Teams that need lock-step deploys give up the coexistence and opt into
-  `AbortDeploy`, accepting that an Admin-API commit then blocks new workers until
-  the asset is re-synthed to match.
-- **No staged/canary rollout — reconfiguration is fleet-wide on the next read.**
-  A live Admin-API commit is adopted by *every* `AdoptValid` worker the next time
-  it reads the shared config; there is no per-node canary, percentage rollout, or
-  blast-radius staging. A valid-but-wrong commit — one that parses and passes
-  validation but is operationally wrong — therefore propagates to the whole
-  fleet. The only guards are per-node: a worker fails fast on a corrupt or
-  unparseable config (it will not start on one), and an operator recovers by
-  committing a corrected config, which likewise propagates fleet-wide on the next
-  read. This is an accepted property of the single-file config model at the
-  current scale, not a defect. Deployments that need canary semantics must stage
-  at a higher layer — a separate pre-production cluster and config, or an external
-  progressive-delivery control in front of the Admin API. See the
-  [cluster reconfiguration runbook](../runbooks/cluster-reconfiguration.md).
+- Existing admin changes survive initialization attempts and worker replacement.
+- Updating embedded config does not update the shared target.
+- Missing config and unreadable config have different processing consequences.
+- Startup creation cannot serve as a cluster rollout mechanism. Follow the
+  [cluster rollout procedure](../runbooks/cluster-config-rollout.md).
 
-## Rejected alternatives
+## Alternatives considered
 
 - **Workers seed/overwrite EFS on startup.** A rolling worker deploy would
   overwrite a live Admin-API commit with the synth-time asset, and concurrent
   workers would race on the write. Rejected — it makes hot reconfiguration and
   rolling deploys mutually destructive.
-- **AbortDeploy as the default.** Safe but rigid: every Admin-API commit would
-  strand new workers until a re-synth. Offered as opt-in for teams that want it,
-  not imposed on the common case.
+- **Asset-match gate as the default.** It would strand replacement workers
+  after valid admin edits. The historical opt-in gate is removed as well.
 - **Let workers mount EFS RW read-only by convention.** Convention is not
   enforcement. The read-only mount plus the IAM scope make a worker write
-  impossible, not merely discouraged.
+  unavailable to the deployed worker role.

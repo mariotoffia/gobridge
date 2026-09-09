@@ -1,7 +1,14 @@
 # API Gateway — complete CDK stack
 
+## Overview
+
 The full stack combines the `GoBridgeSingle` facade, NLB, VPC Link,
 REST API, usage plans, and custom domain:
+
+The registry image must contain its own embedded initial document, consume
+an existing target, or wait for operator creation. The declared `BridgeConfig`
+does not overwrite it. See
+[initial configuration](../../aws-deployment/config-initialization.md).
 
 ```go
 package main
@@ -37,7 +44,7 @@ func NewAPIGatewayStack(scope constructs.Construct, id string) awscdk.Stack {
         VpcId: jsii.String("vpc-0abc1234def56789a"),
     })
 
-    // --- GoBridge single facade (auto-creates EFS, cluster, seeder) ---
+    // --- GoBridge single facade (EFS and cluster) ---
 
     bridge := gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Bridge"),
         &gobridgesingle.SingleProps{
@@ -204,7 +211,7 @@ func main() {
 | Section | Lines | Purpose |
 |---------|-------|---------|
 | VPC lookup | `Vpc_FromLookup` | Import existing VPC by ID |
-| GoBridge service | `NewGoBridgeSingle` | Fargate task with EFS, SSM, config seeder |
+| GoBridge service | `NewGoBridgeSingle` | Fargate task with EFS and SSM; optional initialization inside control |
 | NLB + target group | `NewNetworkLoadBalancer` | Internal NLB on port 8082, health check on 8081 |
 | VPC Link | `NewVpcLink` | Connects API Gateway to the private NLB |
 | REST API + proxy | `NewRestApi`, `AddProxy` | Catches all paths, requires API key |

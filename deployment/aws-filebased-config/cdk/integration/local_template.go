@@ -33,10 +33,10 @@ import (
 //     AWS_ENDPOINT_URL_DYNAMODB outranks AWS_ENDPOINT_URL, which is what keeps
 //     the compare-and-swap data plane on DynamoDB Local.
 //
-//  3. The locally built runtime image. The facade declares a consumer ECR image;
-//     the rewrite substitutes GOBRIDGE_LOCAL_IMAGE (or the local default). A
-//     never-pushed local build has no registry digest. Other containers are
-//     left alone except for the separately managed local seeder substitution.
+//  3. The locally built runtime image. The facade stages an ImageFromGoBuild
+//     asset with its embedded config. The rewrite builds this checkout with
+//     exactly those bytes, then removes that runtime asset's publication entry.
+//     An explicit GOBRIDGE_LOCAL_IMAGE must already embed the same config.
 
 const (
 	taskDefinitionType = "AWS::ECS::TaskDefinition"
@@ -64,7 +64,12 @@ func rewriteLocalAssembly(t *testing.T, asmDir, stackName string) {
 	if len(resources) == 0 {
 		t.Fatalf("synthesized template %s declares no resources", path)
 	}
-	rewritten, substituted := 0, 0
+	assets, err := readLocalImageAssets(asmDir, stackName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	images := map[string]string{}
+	rewritten := 0
 	state.taskSpecs = map[string]localTaskSpec{}
 	state.currentConfigDir = stackConfigDir(t, state, stackName)
 	containerEnv := localContainerEnvironment()
@@ -82,8 +87,22 @@ func rewriteLocalAssembly(t *testing.T, asmDir, stackName string) {
 			}
 			bindVolumesToHost(t, logicalID, properties, state.currentConfigDir)
 			addContainerEnvironment(t, logicalID, properties, containerEnv)
-			useLocalRuntimeImage(properties)
-			substituted += useLocalSeederImage(properties, state.seederPinned, state.seederLocal)
+			container, err := runtimeContainer(properties)
+			if err != nil {
+				t.Fatalf("task definition %s: %v", logicalID, err)
+			}
+			asset, err := assets.runtimeAsset(container["Image"])
+			if err != nil {
+				t.Fatalf("task definition %s: %v", logicalID, err)
+			}
+			image := images[asset.ID]
+			if image == "" {
+				image = buildLocalRuntimeImage(t, state, asset)
+				images[asset.ID] = image
+			}
+			if err := useLocalRuntimeImage(properties, image); err != nil {
+				t.Fatal(err)
+			}
 			family, spec, err := declaredTaskSpec(properties)
 			if err != nil {
 				t.Fatalf("task definition %s: %v", logicalID, err)
@@ -106,16 +125,15 @@ func rewriteLocalAssembly(t *testing.T, asmDir, stackName string) {
 	if rewritten == 0 {
 		t.Fatalf("synthesized template %s declares no %s: nothing would run", path, taskDefinitionType)
 	}
-	if substituted != rewritten {
-		t.Fatalf("substituted the seeder image on %d of %d task definitions: the rest still name %q, "+
-			"which has no canonicalizer and exits before writing a config", substituted, rewritten, state.seederPinned)
-	}
 	out, err := json.MarshalIndent(template, "", " ")
 	if err != nil {
 		t.Fatalf("encode rewritten template: %v", err)
 	}
 	if err := os.WriteFile(path, out, 0o600); err != nil {
 		t.Fatalf("write rewritten template: %v", err)
+	}
+	if err := assets.save(); err != nil {
+		t.Fatalf("remove locally built runtime assets from publication: %v", err)
 	}
 	t.Logf("local assembly: %d task definitions checked; filesystem volumes, if any, bound to %s", rewritten, state.currentConfigDir)
 }
@@ -194,34 +212,6 @@ func bindVolumesToHost(t *testing.T, logicalID string, properties map[string]any
 			"Host": map[string]any{"SourcePath": dir},
 		}
 	}
-}
-
-// useLocalSeederImage points the seeder container at the image the local run
-// built. See buildLocalSeederImage for why the pinned one cannot run, and for
-// what this substitution does and does not prove.
-// It returns 1 when it substituted at least one container, so the caller can
-// require that every task definition got one rather than discover the miss as an
-// unexplained timeout a quarter of an hour later.
-func useLocalSeederImage(properties map[string]any, pinned, local string) int {
-	if pinned == "" || local == "" {
-		return 0
-	}
-	containers, _ := properties["ContainerDefinitions"].([]any)
-	matched := 0
-	for _, value := range containers {
-		container, ok := value.(map[string]any)
-		if !ok {
-			continue
-		}
-		if image, _ := container["Image"].(string); image == pinned {
-			container["Image"] = local
-			matched++
-		}
-	}
-	if matched == 0 {
-		return 0
-	}
-	return 1
 }
 
 // addFunctionEnvironment adds the given variables to a Lambda function, again
