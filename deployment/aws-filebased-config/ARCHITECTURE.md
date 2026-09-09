@@ -165,7 +165,7 @@ constructs use its identical internal alias to avoid the lookup/ALB import cycle
 |-------------|-----------|
 | `ImageFromRegistry(ref)` | Digest-pinned registry reference — today's flow. |
 | `ImageFromEcrRepository(repo, tag)` | Consumer-managed ECR. |
-| `ImageFromGoBuild(props)` | `DockerImageAsset` running `go install <package>@<version>` against a compatible published module, with the facade's parsed config automatically embedded. No repository checkout. Nil `BuildTags` derives optional families through `DeriveBuildTags`. |
+| `ImageFromGoBuild(props)` | `DockerImageAsset` building a writable copy of a compatible published module with the facade's config in its fixed embed file; no Git checkout. Without embedded config it uses `go install`. Nil `BuildTags` derives optional families through `DeriveBuildTags`. |
 
 The profile binary's base families are aws, mqtt, native stores and http;
 `gobridge_amqp091`, `gobridge_amqp10` and `gobridge_azure` are additive
@@ -180,20 +180,25 @@ prerequisites: deriving a tag does not register a decoder or factory. Until thos
 prerequisites are available, keep using a pinned registry image or consumer ECR
 image. Custom commands can use explicit `BuildTags` (including an empty slice)
 to bypass derivation, but must implement the profile's bootstrap and health check.
-When config is embedded, they must also support `-initial-config-digest`.
+When config is embedded, they must provide the fixed `initial-config.base64`
+file consumed through `go:embed` and support `-initial-config-digest`.
 
 The generated Dockerfile stamps `main.version` with the module version and
 `main.gitSHA` with `module@<version>`, identifying the published source without
 claiming to know its Git commit. Digest-pinned builder/runtime bases and a nonroot
 user match the root Dockerfile. The temporary context is always staged into the
 cloud assembly before removal, even if app-wide asset staging is disabled.
-It carries `initial-config-<hash>.goenv` for native Go linker settings, avoiding
-operating-system argument limits without unsupported `@responsefile` syntax.
-The command decodes `main.initialConfigBase64`. The generated build verifies
+It carries `initial-config-<rawSHA>.base64` as pure payload data, with the hash
+computed over the unencoded serialized document. The configured-image build
+downloads the requested package through Go tooling, copies its owning module
+to a writable directory, fills the command's fixed embed file, then runs
+`go build` with small metadata flags. The module cache stays unchanged.
+Both commands use `go:embed` for `main.initialConfigBase64`. Payload bytes
+never enter command arguments or the child environment. The build verifies
 `/gobridge-filebased -initial-config-digest` against the staged document's SHA-256
 hash. Both entry points handle the probe before runtime or network startup,
 printing the hash rather than the document. An older command that ignores the
-stamp or lacks the probe cannot silently produce a passing build.
+fixed-file contract or lacks the probe cannot silently produce a passing build.
 Registry and ECR images are
 unchanged by CDK; consumers build their own initial document or supply the
 target separately. `BridgeConfig` still declares validation and grants.

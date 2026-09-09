@@ -262,7 +262,7 @@ func ImageFromGoBuild(props ImageGoBuildProps) BridgeImageSource
 
 type ImageGoBuildProps struct {
     Version   string   // REQUIRED: published lib-module tag, e.g. "v0.4.0"
-    Package   string   // default "github.com/mariotoffia/gobridge/deployment/aws/lib/cmd/gobridge-aws"
+    Package   string   // default "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/cmd/gobridge-filebased"
     BuildTags []string // nil → facade injects DeriveBuildTags(parsed config)
     GoImage   string   // digest-pinned golang builder default
     BaseImage string   // digest-pinned distroless static:nonroot default
@@ -274,10 +274,14 @@ func DeriveBuildTags(cfg *ports.BridgeConfig) []string // config kinds → famil
 
 `ImageFromGoBuild.Materialize` renders an embedded two-stage Dockerfile
 template (`go:embed`) into a temp build context and returns
-`ContainerImage_FromDockerImageAsset`. The builder stage runs
-`go install -trimpath -tags=<tags> <Package>@<Version>`
-— **no repo checkout**, which is exactly what D7's replace-free publication
-makes possible. Facades change `Image awsecs.ContainerImage` →
+`ContainerImage_FromDockerImageAsset`. With config, Go tooling downloads the
+requested published package, locates its owning module, and copies that module
+to a writable build directory. The build fills the command's fixed
+`initial-config.base64` file there, then runs `go build` with selected tags
+and small version/commit linker flags. The downloaded module cache stays
+unchanged. Without config it retains `go install <Package>@<Version>`.
+Neither path needs a Git checkout; both require replace-free published modules.
+Facades change `Image awsecs.ContainerImage` →
 `Image gobridgecdk.BridgeImageSource` (breaking prop change; no compat
 needed). `DeriveBuildTags` maps kinds beyond the profile base
 (aws+mqtt+native+http) to family tags: `amqp091→gobridge_amqp091`,
@@ -285,11 +289,21 @@ needed). `DeriveBuildTags` maps kinds beyond the profile base
 synth error (they would fail at runtime anyway).
 
 **Embedded initialization replaces seeder publication.** Both command entry
-points define and decode `main.initialConfigBase64`. CDK automatically embeds
-the parsed `BridgeConfig` already passed to the facade, without another prop.
-It stages `initial-config-<hash>.goenv`; native `GOENV` file flags avoid
-operating-system argument limits. The Go command does not accept
-`@responsefile` syntax.
+points use `go:embed` on fixed `initial-config.base64`, empty by default, to
+populate `main.initialConfigBase64`. Runtime decoding and initialization stay
+unchanged. CDK embeds the parsed `BridgeConfig` already passed to the facade,
+without another prop. It stages `initial-config-<rawSHA>.base64` as pure data;
+the hash is over the unencoded serialized document.
+
+Local Make and Docker builds use the standard-library Go tool
+`scripts/buildconfig` to generate the payload and a Go overlay. Original source
+files remain unchanged. No payload enters command arguments or the environment,
+and no additional SDK or build tool is required.
+
+The prior `GOENV` approach is superseded: Go exports `GOFLAGS` to child
+processes, so file-loaded linker flags still hit Linux environment limits.
+Remove `scripts/write-build-goenv.sh`; do not substitute `@responsefile`, which
+the Go command rejects.
 
 The root build supports `make build-gobridge INITIAL_CONFIG_FILE=...`;
 Docker supports `--build-arg INITIAL_CONFIG_FILE=<file in context>` and
@@ -333,7 +347,9 @@ An S3 config adapter is deferred. No SDK dependency is added to core.
 or network startup. It reports only SHA-256 of the decoded embedded bytes.
 The CDK build executes `/gobridge-filebased -initial-config-digest` and compares
 the result with the staged bytes. Missing support or a mismatched digest fails
-the build, including older custom packages that ignore the linker stamp.
+the build. Custom commands must provide the fixed embed file, consume it
+through `go:embed`, and implement the probe; older packages cannot silently
+omit the requested initial document.
 
 **HA baseline recognition:** both file and DynamoDB sources use
 `DeploymentBaselineContentDigest`, normalizing only the top-level version.

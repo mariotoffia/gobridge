@@ -58,10 +58,11 @@ bootstrap or network startup; inspecting embedded identity needs no API key.
 ## Build an initial document into the binary
 
 Both `cmd/gobridge` and the AWS profile command,
-`deployment/aws-filebased-config/lib/cmd/gobridge-filebased`, define the linker
-string `main.initialConfigBase64`. Their entry points decode it and pass the
-logical document through the port-based initializer. YAML and JSON are accepted.
-An unset string means there is no embedded initial document.
+`deployment/aws-filebased-config/lib/cmd/gobridge-filebased`, use `go:embed` to
+read the fixed `initial-config.base64` file into `main.initialConfigBase64`.
+The checked-in file is empty by default. Their entry points decode the value
+and pass the logical document through the port-based initializer.
+YAML and JSON are accepted; an empty payload means no initial document.
 `parser.NewInlineSource(contents, registry)` exposes the decoded content through
 `ports.Loader`; each load returns a fresh typed logical config.
 
@@ -91,13 +92,19 @@ Select the plugin families the document needs. Embedding a document does not
 link a missing transport, store, or processor. See
 [binary composition](../../PLUGIN.md#binary-composition-build-tags).
 
-The build helper `scripts/write-build-goenv.sh` puts linker settings in a
-native Go environment file selected by `GOENV`. It preserves existing Go
-environment-file settings except `GOFLAGS`, which it replaces with the build's
-flags. Go reads `GOFLAGS` there, so
-the document does not have to fit in the operating system's command argument
-limit. This is not an `@responsefile`: the Go command rejects that syntax.
-The normal config-size limits still apply.
+Local Make and Docker builds run `scripts/buildconfig`, a Go standard-library
+tool. It reads `INITIAL_CONFIG_FILE` and creates a Base64 payload plus
+`overlay.json` in a temporary build directory. The Go overlay maps the command's
+fixed `initial-config.base64` path to that generated payload during compilation;
+original source files remain unchanged. Only file paths and small version flags
+travel through command arguments. No payload is put in an environment variable.
+
+Do not pass the payload through `GOFLAGS`, including flags loaded from `GOENV`.
+Go exports `GOFLAGS` to child processes, so that approach still hits Linux
+environment-size limits. The previous Go-environment-file helper is removed.
+Go also rejects `@responsefile` syntax. File embedding replaces those paths;
+normal config-size limits still apply. No additional software development kit
+(SDK) or build tool beyond Go and Docker is required.
 
 Reading the embedded source needs no S3 access or credential lookup. Writing
 the selected target still requires access to that file or backend; runtime
@@ -125,17 +132,30 @@ second config prop, separate Amazon S3 config asset, or runtime S3 download
 grant. `BridgeYamlAsset(path)` names a local authoring input, not a runtime
 S3 configuration source.
 
-The Docker build context contains `initial-config-<hash>.goenv`, where the
-hash identifies the serialized document. Changing the document changes the
-image asset. The generated build uses `go install package@version`; a
-consumer needs no repository checkout.
+The Docker build context contains `initial-config-<rawSHA>.base64` as pure data.
+`rawSHA` is the SHA-256 hash of the unencoded serialized document, not the
+Base64 text. Changing those document bytes changes the image asset.
+
+For a config-bearing image, the generated build:
+
+1. Downloads the requested published package version through Go tooling.
+2. Locates its owning module and copies that module to a writable build directory.
+3. Requires the command's fixed `initial-config.base64` file and fills that
+   file in the build copy with the staged payload.
+4. Runs `go build` with the selected tags and small version/commit linker flags.
+
+No Git checkout is needed, and the downloaded module cache is not modified.
+Without an embedded document, `ImageFromGoBuild` still uses
+`go install package@version`. Neither path puts config bytes in flags or
+environment variables.
 
 After compilation, the generated build runs
 `/gobridge-filebased -initial-config-digest` and requires the result to match
 the staged document's SHA-256 hash. A missing probe, failed probe, or mismatched
-hash fails the image build. Custom commands must support this probe when config
-is embedded. Older packages cannot silently ignore `main.initialConfigBase64`
-and produce an image without the declared document.
+hash fails the image build. Custom commands must provide the fixed embed file,
+consume it through `go:embed`, and support this probe when config is embedded.
+An older package without that contract cannot silently produce an image
+without the declared document.
 
 A compatible, published `lib` module is a prerequisite for this versioned
 build. Optional profile-family registration is also a prerequisite when the
@@ -353,7 +373,7 @@ inherit queue options from a session. A physical name may also be used as the
 binding address when known.
 
 Name lookup uses the existing SQS `GetQueueUrl` operation. Tag selection uses
-the native SQS software development kit (SDK): paginate `ListQueues`, narrow
+the native SQS SDK: paginate `ListQueues`, narrow
 by prefix when supplied, then call `ListQueueTags`. Selection is scoped to the
 client's account and region:
 
@@ -387,8 +407,8 @@ The CDK builder and Phase 1 do not run a plaintext-secret scanner.
 `bridgecfg.ScanForPlaintextSecrets` is an explicit utility for consumers
 who want their own reference-only policy.
 
-Base64 is an encoding, not secrecy. Build contexts, CDK assemblies, Go
-environment files, build caches, and published images can expose the document.
+Base64 is an encoding, not secrecy. Build contexts, CDK assemblies, generated
+payloads, writable module copies, build caches, and images can expose the document.
 Apply access controls and retention rules to those artifacts. Credential
 references reduce the secrets stored in artifacts; runtime resolution must not
 write the resolved secrets back into the initial logical copy.

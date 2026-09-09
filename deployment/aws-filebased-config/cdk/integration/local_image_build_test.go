@@ -12,7 +12,7 @@ import (
 )
 
 func TestLocalRuntimeBuild_EmbedsStagedConfigAndCleansInput(t *testing.T) {
-	payload := []byte("bridge:\n  id: staged-deployment\n")
+	payload := []byte("bridge:\n  id: staged-deployment\n  description: " + strings.Repeat("x", 200*1024) + "\n")
 	record := installImageBuildCLI(t, initialConfigDigest(payload))
 	state := &localBackend{network: localRunPrefix + "unit"}
 	var staged string

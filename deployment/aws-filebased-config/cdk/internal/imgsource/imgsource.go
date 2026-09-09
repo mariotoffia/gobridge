@@ -161,7 +161,7 @@ func (s *goBuildSource) Materialize(scope constructs.Construct, id *string, cfg 
 		panic(fmt.Sprintf("gobridgecdk: ImageFromGoBuild: write Dockerfile: %v", err))
 	}
 	if initial != nil {
-		if err := os.WriteFile(filepath.Join(dir, initial.name), initial.flags, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, initial.name), initial.data, 0o600); err != nil {
 			panic(fmt.Sprintf("gobridgecdk: ImageFromGoBuild: write initial config: %v", err))
 		}
 	}
@@ -228,7 +228,7 @@ func renderBuildContext(props GoBuildProps, cfg *ports.BridgeConfig) (string, *i
 	}
 	slices.Sort(tags)
 	tags = slices.Compact(tags)
-	initial := prepareInitialConfig(props, cfg)
+	initial := prepareInitialConfig(cfg)
 	var initialConfigFile, initialConfigDigest string
 	if initial != nil {
 		initialConfigFile = initial.name

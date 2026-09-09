@@ -14,7 +14,7 @@ families), and make the three modules consumable by external CDK apps.
 **Architecture:** Bootstrap-declared config source behind one `App` seam;
 DynamoDB loader completed into a CAS config store; facades provision the
 config table + conditional EFS; sealed `BridgeImageSource` with a
-`go install`-based `DockerImageAsset`; modules published replace-free on the
+versioned-module `DockerImageAsset`; modules published replace-free on the
 release train.
 
 **Tech Stack:** Go 1.25+, AWS SDK v2, AWS CDK v2 (Go/jsii), DynamoDB
@@ -279,26 +279,30 @@ conditional EFS, and read-only worker grants remain required.
 
 ## Chunk 5 — Image source and embedded initialization (D6)
 
-**State:** implemented and reviewed. Full unit, static, and integration gates
-pass; the local embedded-config HA deployment proof passes without an init container.
+**State:** implemented and reviewed. Native file embedding replaces the
+Linux-limited `GOFLAGS` payload path. Large Linux builds, the local HA deployment
+proof, and the complete unit/static/integration gates pass.
 
 ### Task 5.1: Sealed `BridgeImageSource`
 
-The sealed registry/ECR/Go-build surface exists. Extend it without treating
-its earlier passing tests as proof of embedded initialization.
+The build path has been rechecked after the Linux failure.
 
 - [x] Automatically embed the facade's parsed `BridgeConfig` for Go builds.
-  Stage `initial-config-<hash>.goenv` and use native `GOENV` flags; do not use
-  unsupported `@responsefile` syntax or large shell arguments.
-- [x] Both commands decode linker string `main.initialConfigBase64`.
+  Stage `initial-config-<rawSHA>.base64` as pure data; hash the unencoded document.
+- [x] Both commands populate `main.initialConfigBase64` with `go:embed` on
+  fixed `initial-config.base64`, empty by default.
   Root Make and Docker accept `INITIAL_CONFIG_FILE` as YAML or JSON.
+- [x] `scripts/buildconfig` uses only the Go standard library to generate
+  Base64 plus a Go overlay, leaving original command source files unchanged.
+  Remove the old Go-environment-file helper; no payload may enter flags or env.
 - [x] Both commands expose `-initial-config-digest` before runtime/network
   startup, returning only SHA-256 of the embedded bytes. The CDK build verifies
   `/gobridge-filebased -initial-config-digest` against the staged document.
-  Missing probe support or a mismatched digest fails the build, including old
-  custom packages that ignore the linker stamp.
-- [x] Preserve digest-pinned bases, architecture selection, build-tag derivation,
-  and the versioned `go install` path without a repository checkout.
+  Missing embed-file/probe support or a mismatched digest fails the build.
+- [x] Preserve pinned bases, platform selection, and tags. Config-bearing builds
+  download the requested package via Go, copy its owning module to a writable
+  directory, fill the embed file, and `go build` with small metadata flags.
+  No Git checkout; no-config builds retain `go install package@version`.
 - [x] Registry/ECR images remain unchanged; `BridgeConfig` still drives
   validation, grants, and dependencies, not automatic overwrite.
 - [x] Document that compatible public `lib` publication and optional-family
@@ -376,14 +380,14 @@ a runtime or release prerequisite.
 
 - [x] Cover creation races, invalid existing targets, deletion/recreation,
   degraded reads, standby activation, restart, and logical-reference copying.
-- [x] Prove image embedding and no seeder resources in synth/local deployment.
-- [x] Local proof builds this checkout with each staged Go-build asset's exact
-  `.goenv` payload; `GOBRIDGE_LOCAL_IMAGE` must pass the embedded-digest check.
+- [x] Prove native image embedding and no seeder resources in synth/local deployment.
+- [x] Local proof builds this checkout with each staged asset's exact
+  `.base64` payload; `GOBRIDGE_LOCAL_IMAGE` must pass the embedded-digest check.
   Credentialed fixtures require a compatible published `GOBRIDGE_INT_VERSION`
   and build per-fixture images rather than accepting `GOBRIDGE_INT_IMAGE`.
 - [x] Document literal credentials as allowed and artifact-visible; Base64
   is not secrecy. Leave references unresolved in the stored logical copy.
-- [x] Run final code review, `make test`, and `make check-all`.
+- [x] Re-run final code review, Linux large-payload builds, `make test`, and `make check-all`.
   Run `TestLocal_DynamoDBConfigHotReload` through the local deployment harness
   and confirm runtime initialization and subsequent table-write reloads.
 

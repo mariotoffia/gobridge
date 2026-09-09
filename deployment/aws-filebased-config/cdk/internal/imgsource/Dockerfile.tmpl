@@ -2,11 +2,22 @@ FROM {{.GoImage}} AS build
 ENV CGO_ENABLED=0 GOWORK=off GOBIN=/out
 WORKDIR /build
 {{if .InitialConfigFile}}COPY {{.InitialConfigFile}} /build/{{.InitialConfigFile}}
-ENV GOENV=/build/{{.InitialConfigFile}}
-{{end}}RUN {{if .InitialConfigFile}}env -u GOFLAGS {{end}}go install -trimpath -tags={{.Tags}}{{if not .InitialConfigFile}} -ldflags "-s -w -X main.version={{.Version}} -X main.gitSHA=module@{{.Version}}"{{end}} {{.Package}}@{{.Version}} \
-    && cp /out/* /gobridge-filebased{{if .InitialConfigFile}} \
+RUN go mod init gobridge-image-build \
+    && go get {{.Package}}@{{.Version}} \
+    && module_dir=$(go list -mod=mod -tags={{.Tags}} -f '{{"{{.Module.Dir}}"}}' {{.Package}}) \
+    && package_dir=$(go list -mod=mod -tags={{.Tags}} -f '{{"{{.Dir}}"}}' {{.Package}}) \
+    && package_suffix=${package_dir#"$module_dir"} \
+    && cp -a "$module_dir" /build/source \
+    && chmod -R u+w /build/source \
+    && test -f "/build/source$package_suffix/initial-config.base64" \
+    && cp /build/{{.InitialConfigFile}} "/build/source$package_suffix/initial-config.base64" \
+    && cd "/build/source$package_suffix" \
+    && go build -mod=mod -trimpath -tags={{.Tags}} -ldflags "-s -w -X main.version={{.Version}} -X main.gitSHA=module@{{.Version}}" -o /gobridge-filebased . \
     && initial_digest=$(/gobridge-filebased -initial-config-digest) \
-    && test "$initial_digest" = "{{.InitialConfigDigest}}"{{end}}
+    && test "$initial_digest" = "{{.InitialConfigDigest}}"
+{{else}}RUN go install -trimpath -tags={{.Tags}} -ldflags "-s -w -X main.version={{.Version}} -X main.gitSHA=module@{{.Version}}" {{.Package}}@{{.Version}} \
+    && cp /out/* /gobridge-filebased
+{{end}}
 
 FROM {{.BaseImage}} AS runtime
 COPY --from=build /gobridge-filebased /usr/local/bin/gobridge-filebased

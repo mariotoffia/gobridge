@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"encoding/base64"
 	"flag"
 	"fmt"
@@ -22,10 +23,12 @@ import (
 //
 //nolint:gochecknoglobals // -ldflags -X can only target package-level vars
 var (
-	initialConfigBase64 string
-	version             = "dev"
-	gitSHA              = "unknown"
+	version = "dev"
+	gitSHA  = "unknown"
 )
+
+//go:embed initial-config.base64
+var initialConfigBase64 string
 
 func main() {
 	var bootstrapPath string

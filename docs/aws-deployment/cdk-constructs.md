@@ -47,7 +47,7 @@ Existing `awsecs.ContainerImage` values are no longer accepted. Choose one of:
 |-------------|-----|
 | `gobridgecdk.ImageFromRegistry(ref)` | A registry reference pinned with `@sha256:<digest>`. The reference is preserved exactly; mutable tags alone fail synth. |
 | `gobridgecdk.ImageFromEcrRepository(repo, tag)` | A consumer-managed `awsecr.IRepository` with an explicit tag or SHA-256 digest. CDK grants the execution role pull access. Prefer immutable tags or digests. |
-| `gobridgecdk.ImageFromGoBuild(props)` | A Docker asset built with `go install package@version`, automatically embedding the facade's parsed `BridgeConfig`, without a repository checkout. |
+| `gobridgecdk.ImageFromGoBuild(props)` | Builds a downloaded module copy with the facade's parsed `BridgeConfig` in its fixed embed file; uses `go install package@version` only without embedded config. No Git checkout. |
 
 `ImageGoBuildProps.Version` is required: supply a published compatible
 lib-module version, not `main` or `latest`. `Package` defaults to
@@ -73,21 +73,29 @@ sources use `linux/amd64`.
 family wiring are not yet externally consumable. Deriving a build tag does not
 register runtime decoders or factories. Until those prerequisites are published,
 use a compatible pinned registry image or your own ECR image. A custom `Package`
-must implement this profile's bootstrap and health-check contract, decode
-`main.initialConfigBase64`, and support the build's `-initial-config-digest`
-probe so an image cannot silently omit its declared initial document.
+must implement this profile's bootstrap and health-check contract, provide
+`initial-config.base64` consumed through `go:embed`, and support the build's
+`-initial-config-digest` probe. The standard commands embed that file in
+`main.initialConfigBase64` and decode it before initialization.
 
 After compilation, the generated build runs
 `/gobridge-filebased -initial-config-digest` and compares its output with the
 SHA-256 hash of the staged document bytes. The probe exits before runtime or
 network startup and reveals only the hash. A missing probe or mismatched hash
-fails the build, including for an older package that ignored the linker stamp.
+fails the build. A missing fixed embed file also fails; an older package cannot
+silently omit the declared document.
 
-The initial document is staged as `initial-config-<hash>.goenv`; Go reads the
-linker flags through native `GOENV` settings rather than a large command
-argument or an unsupported `@responsefile`. The entry point decodes
-`main.initialConfigBase64`. No separate S3 config asset or download grant is
-created. See [initial configuration](config-initialization.md).
+The initial document is staged as `initial-config-<rawSHA>.base64`, containing
+only Base64 data. The hash identifies the unencoded serialized document.
+The config-bearing build downloads the requested package version with Go
+tooling, locates its owning module, and copies it to a writable build directory.
+It fills the command's fixed embed file in that copy, then runs `go build`
+with small version/commit linker flags. The module cache stays unchanged.
+Without embedded config, the build retains `go install package@version`.
+
+Config bytes never enter the command arguments or child environment.
+There is no payload-bearing `GOENV`/`GOFLAGS` path, separate S3 config asset,
+or runtime download grant. See [initial configuration](config-initialization.md).
 
 Registry and ECR images cannot be changed by CDK. They must contain their own
 initial document, use an existing target, or wait for operator creation.

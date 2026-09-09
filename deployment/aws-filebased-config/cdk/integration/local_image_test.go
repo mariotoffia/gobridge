@@ -27,23 +27,23 @@ func TestLocalRuntimeImage_ReplacesOnlyBridgeImage(t *testing.T) {
 	require.Error(t, useLocalRuntimeImage(map[string]any{}, "local:tag"))
 }
 
-func TestEmbeddedInitialConfig_ReadsCompleteGoenvPayload(t *testing.T) {
+func TestEmbeddedInitialConfig_ReadsCompleteBase64Payload(t *testing.T) {
 	payload := []byte("bridge:\n  id: local-bridge\n  description: " + strings.Repeat("x", 200*1024) + "\n")
-	encoded := base64.StdEncoding.EncodeToString(payload)
-	data := []byte("GOFLAGS=\"-ldflags=-s -w -X main.version=v0.0.0 -X main.gitSHA=module@v0.0.0 -X main.initialConfigBase64=" + encoded + "\"\n")
+	data := []byte(base64.StdEncoding.EncodeToString(payload))
 	got, err := embeddedInitialConfig(data)
 	require.NoError(t, err)
 	require.Equal(t, payload, got)
 }
 
-func TestEmbeddedInitialConfig_RejectsMissingOrAmbiguousPayload(t *testing.T) {
+func TestEmbeddedInitialConfig_RejectsInvalidBase64Payload(t *testing.T) {
 	for _, tc := range []struct{ name, data string }{
-		{"missing", `GOFLAGS="-ldflags=-s -w"`},
-		{"empty", `GOFLAGS="-ldflags=-X main.initialConfigBase64="`},
-		{"invalid", `GOFLAGS="-ldflags=-X main.initialConfigBase64=???"`},
-		{"duplicate", `GOFLAGS="-ldflags=-X main.initialConfigBase64=eA== -X main.initialConfigBase64=eQ=="`},
-		{"missing linker option", `GOFLAGS="-ldflags=main.initialConfigBase64=eA=="`},
-		{"malformed quote", `GOFLAGS="-ldflags=-X main.initialConfigBase64=eA==`},
+		{"empty", ""},
+		{"blank", "\n"},
+		{"invalid alphabet", "???"},
+		{"missing padding", "eA"},
+		{"concatenated values", "eA==eQ=="},
+		{"quoted value", `"eA=="`},
+		{"legacy linker settings", `GOFLAGS="-ldflags=-X main.initialConfigBase64=eA=="`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := embeddedInitialConfig([]byte(tc.data))
@@ -57,8 +57,8 @@ func TestLocalImageAssets_PreservesUnrelatedPublication(t *testing.T) {
 	for _, id := range []string{"first", "second"} {
 		asset := filepath.Join(dir, "asset."+id)
 		require.NoError(t, os.Mkdir(asset, 0o700))
-		require.NoError(t, os.WriteFile(filepath.Join(asset, "initial-config-"+initialConfigDigest([]byte(id))+".goenv"),
-			[]byte(`GOFLAGS="-ldflags=-X main.initialConfigBase64=`+base64.StdEncoding.EncodeToString([]byte(id))+`"`+"\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(asset, "initial-config-"+initialConfigDigest([]byte(id))+".base64"),
+			[]byte(base64.StdEncoding.EncodeToString([]byte(id))), 0o600))
 	}
 	manifest := map[string]any{
 		"version": "48.0.0", "files": map[string]any{"lambda": map[string]any{"source": "unchanged"}},
@@ -98,8 +98,8 @@ func TestLocalImageAssets_RejectsMismatchedConfigFilename(t *testing.T) {
 	dir := t.TempDir()
 	assetDir := filepath.Join(dir, "asset.runtime")
 	require.NoError(t, os.Mkdir(assetDir, 0o700))
-	flags := []byte(`GOFLAGS="-ldflags=-X main.initialConfigBase64=` + base64.StdEncoding.EncodeToString([]byte("changed config")) + `"` + "\n")
-	require.NoError(t, os.WriteFile(filepath.Join(assetDir, "initial-config-"+strings.Repeat("0", 64)+".goenv"), flags, 0o600))
+	encoded := []byte(base64.StdEncoding.EncodeToString([]byte("changed config")))
+	require.NoError(t, os.WriteFile(filepath.Join(assetDir, "initial-config-"+strings.Repeat("0", 64)+".base64"), encoded, 0o600))
 	manifest := map[string]any{"dockerImages": map[string]any{
 		"runtime": imageManifestEntry("asset.runtime", "runtime"),
 	}}

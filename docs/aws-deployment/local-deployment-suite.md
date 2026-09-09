@@ -63,17 +63,19 @@ the budget — when a member reports that its configuration was refused.
 
 Local fixtures use the same `ImageFromGoBuild` materialization as production.
 CDK serializes the parsed bridge configuration into the staged image's
-`initial-config-<sha256-of-raw-config>.goenv` file. Its one-line, double-quoted `GOFLAGS`
-value contains the linker flags, ending with
-`-X main.initialConfigBase64=<base64>`. The Dockerfile sets `GOENV` to this file
-and runs `env -u GOFLAGS go install ...` without a separate `-ldflags` argument,
-which would override the embedded settings. Go reads the large value from the
-file and manages the linker invocation itself; the build does not pass a direct
-`@response-file` argument. This is build-time configuration, not an
-environment-based runtime initializer.
+`initial-config-<sha256-of-raw-config>.base64` file. It contains only standard
+Base64, not linker flags or environment settings. The runtime's
+`main.initialConfigBase64` string reads the fixed `initial-config.base64`
+placeholder through Go's native `go:embed`. Local builds supply that file through
+a file overlay; production CDK builds supply it in a writable copy of the
+published Go module, without requiring a Git checkout.
+
+The payload stays in files throughout compilation, avoiding operating-system
+limits on individual command arguments and environment variables. This is
+build-time embedding, not an environment-based runtime initializer.
 
 Before deployment, the harness reads each runtime image asset's embedded bytes,
-checks their SHA-256 against the GOENV filename,
+checks their SHA-256 against the Base64 asset filename,
 places them in a private `.gobridge-initial-*.yaml` file in the repository root,
 and builds the root Dockerfile with `INITIAL_CONFIG_FILE` and the asset's
 platform. The runtime's `-initial-config-digest` command must report the SHA-256
@@ -82,7 +84,7 @@ reference and removes only that runtime asset's publication entry. Lambda and
 other deployment assets keep their normal publication paths.
 
 The local fixture's `v0.0.0` module version is a synthesis placeholder, not a
-version fetched with `go install`. Only the current checkout is built. No
+published module fetched for the build. Only the current checkout is built. No
 registry push or Docker Hub digest is needed for this never-published image.
 Each generated input file is registered for cleanup as soon as it is created;
 the harness removes only files and runtime images it owns.

@@ -127,8 +127,8 @@ short commit SHA). Override those Make variables for release metadata.
 An equivalent direct selection is
 `go -C cmd/gobridge build -tags gobridge_mqtt,gobridge_native -o gobridge.out .`;
 without linker stamps, `-version` reports `dev` for both metadata values.
-Version, commit metadata, and optional initial configuration use linker strings;
-plugins use build tags. Runtime bootstrap settings remain separate.
+Version and commit metadata use linker strings; initial config uses `go:embed`.
+Plugins use build tags. Runtime bootstrap settings remain separate.
 
 Embed a YAML or JSON initial document with:
 
@@ -140,11 +140,11 @@ docker build --build-arg INITIAL_CONFIG_FILE=config/initial.yaml -t gobridge:loc
 ```
 
 The Docker input must be inside the build context. Both command entry points
-decode `main.initialConfigBase64`; initialization creates only an absent target,
-never overwrites existing config. `scripts/write-build-goenv.sh` supplies linker
-flags through a native `GOENV` file, avoiding operating-system argument limits.
-It preserves other Go environment-file settings and replaces `GOFLAGS` with
-the build's flags. Go does not support `@responsefile` for this purpose.
+embed the fixed `initial-config.base64` file into `main.initialConfigBase64`.
+`scripts/buildconfig` uses only the Go standard library to generate the Base64
+payload and a Go build overlay, leaving original source files unchanged.
+The payload stays in files, not environment variables or command arguments.
+Initialization still creates only absent targets and never overwrites config.
 
 Both commands accept `-initial-config-digest` to print the SHA-256 hash of the
 embedded bytes before runtime or network startup, without printing config data.

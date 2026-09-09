@@ -274,9 +274,9 @@ src := gobridgecdk.BridgeYamlInline(cfg)
 
 Both factories return the same opaque token; the construct does file read / YAML marshal / parse / Phase-1 validation in one synth pass.
 
-With `ImageFromGoBuild`, the facade automatically embeds this parsed config
-through `main.initialConfigBase64`. Native `GOENV` file settings carry the
-linker flags; no separate S3 config asset is produced. A compatible published
+With `ImageFromGoBuild`, the facade embeds this parsed config through
+`go:embed` and the fixed `initial-config.base64` file, not payload-bearing flags
+or environment variables. No S3 config asset is produced. A compatible published
 `lib` module and any optional family wiring remain prerequisites.
 
 Registry and ECR images are consumer-built and cannot be changed by CDK.

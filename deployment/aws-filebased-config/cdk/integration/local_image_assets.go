@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -78,7 +77,7 @@ func (a *localImageAssets) runtimeAsset(image any) (localRuntimeAsset, error) {
 	if result.Platform != "linux/amd64" && result.Platform != "linux/arm64" {
 		return result, fmt.Errorf("runtime image asset has unsupported platform %q", result.Platform)
 	}
-	files, err := filepath.Glob(filepath.Join(filepath.Dir(a.path), directory, "initial-config-*.goenv"))
+	files, err := filepath.Glob(filepath.Join(filepath.Dir(a.path), directory, "initial-config-*.base64"))
 	if err != nil || len(files) != 1 {
 		return result, fmt.Errorf("runtime image asset must stage exactly one initial config, found %d: %v", len(files), err)
 	}
@@ -90,7 +89,7 @@ func (a *localImageAssets) runtimeAsset(image any) (localRuntimeAsset, error) {
 	if err != nil {
 		return result, err
 	}
-	if filepath.Base(files[0]) != "initial-config-"+initialConfigDigest(result.Config)+".goenv" {
+	if filepath.Base(files[0]) != "initial-config-"+initialConfigDigest(result.Config)+".base64" {
 		return result, fmt.Errorf("staged initial config filename must contain the raw payload's SHA-256 digest")
 	}
 	a.used[result.ID] = true
@@ -110,32 +109,12 @@ func (a *localImageAssets) save() error {
 }
 
 func embeddedInitialConfig(data []byte) ([]byte, error) {
-	const prefix = "main.initialConfigBase64="
-	var encoded string
-	found := 0
-	for _, line := range strings.Split(string(data), "\n") {
-		value, ok := strings.CutPrefix(line, "GOFLAGS=")
-		if !ok {
-			continue
-		}
-		flags, err := strconv.Unquote(value)
-		if err != nil {
-			return nil, fmt.Errorf("parse staged initial config GOFLAGS: %w", err)
-		}
-		fields := strings.Fields(strings.TrimPrefix(flags, "-ldflags="))
-		for i, field := range fields {
-			if value, ok := strings.CutPrefix(field, prefix); ok && i > 0 && fields[i-1] == "-X" {
-				encoded = value
-				found++
-			}
-		}
-	}
-	if found != 1 || encoded == "" {
-		return nil, fmt.Errorf("staged build must contain exactly one nonempty embedded initial config")
-	}
-	payload, err := base64.StdEncoding.DecodeString(encoded)
+	payload, err := base64.StdEncoding.DecodeString(string(data))
 	if err != nil {
 		return nil, fmt.Errorf("decode staged embedded initial config: %w", err)
+	}
+	if len(payload) == 0 {
+		return nil, fmt.Errorf("staged build must contain a nonempty embedded initial config")
 	}
 	return payload, nil
 }

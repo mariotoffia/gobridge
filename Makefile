@@ -70,10 +70,12 @@ build: ## Build all modules
 build-gobridge: ## Build cmd/gobridge/gobridge.out; optionally embed INITIAL_CONFIG_FILE
 	@test -f go.work || $(MAKE) dev
 	@set -eu; tmp=$$(mktemp -d); \
-		trap 'rm -f "$$tmp/goenv" "$$tmp/empty"; rmdir "$$tmp"' EXIT; \
+		trap 'rm -f "$$tmp/overlay.json" "$$tmp/initial-config.base64" "$$tmp/empty"; rmdir "$$tmp"' EXIT; \
 		: > "$$tmp/empty"; \
-		bash scripts/write-build-goenv.sh "$${INITIAL_CONFIG_FILE:-$$tmp/empty}" "$$tmp/goenv" "$$IMAGE_TAG" "$$GIT_SHA"; \
-		env -u GOFLAGS GOENV="$$tmp/goenv" go -C cmd/gobridge build -tags "$(GOBRIDGE_TAGS)" -trimpath \
+		GOOS="$$(go env GOHOSTOS)" GOARCH="$$(go env GOHOSTARCH)" \
+			go run ./scripts/buildconfig "$${INITIAL_CONFIG_FILE:-$$tmp/empty}" cmd/gobridge "$$tmp"; \
+		go -C cmd/gobridge build -overlay="$$tmp/overlay.json" -tags "$(GOBRIDGE_TAGS)" -trimpath \
+			-ldflags "-s -w -X main.version=$$IMAGE_TAG -X main.gitSHA=$$GIT_SHA" \
 			-o gobridge.out .
 
 .PHONY: dev

@@ -14,6 +14,10 @@ The repository ships a multi-stage `Dockerfile` at the root that builds the
 store uses `modernc.org/sqlite`, which is pure Go, so there is no cgo and no
 `CGO_ENABLED=1` — and ships it on `distroless/static-debian12:nonroot`:
 
+The abbreviated example below shows the image layout. Use the repository's
+actual Dockerfile for build metadata, cache mounts and optional initial-config
+embedding.
+
 ```dockerfile
 FROM golang:1.25-bookworm@sha256:ea341baa9bd5ba6784f6d7161ace70544349a6242d54d34a0fbfd2c4d51c9d58 AS build
 WORKDIR /src
@@ -51,6 +55,25 @@ Key points:
   resolve/verify commands. A source rebuild is reproducible only to the extent
   the pinned bases, the locked per-module `go.sum`, and the Go toolchain are
   fixed; nothing here claims bit-for-bit reproducibility beyond those facts.
+
+## Embedded initial configuration
+
+Supply a YAML or JSON file inside the build context:
+
+```sh
+docker build --build-arg INITIAL_CONFIG_FILE=config/initial.yaml \
+  -t gobridge-filebased:local .
+```
+
+The build uses native Go file embedding. The document is not carried in compiler
+arguments or environment variables, and the original command source is not
+modified. The image build verifies the binary's `-initial-config-digest` output
+against the supplied document.
+
+This is an initial value, not a continuous configuration source. An existing
+target document wins; an empty target can be initialized at startup. See
+[Initial configuration](config-initialization.md) for creation, idle-state and
+credential-value behavior.
 
 ## ECR Lifecycle Policy
 

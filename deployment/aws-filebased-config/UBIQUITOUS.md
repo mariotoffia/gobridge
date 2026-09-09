@@ -83,6 +83,10 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 
 ## CDK
 
+The original **Embedded initial config** row describes the superseded
+linker/Go-environment-file build path. The native-file definition in this table
+is current; earlier rows remain as glossary history.
+
 | Term | Meaning |
 |---|---|
 | **L2 construct** | `GoBridgeSingle`, `GoBridgeCluster`, `GoBridgeDynamoDBHA`, `GoBridgeAlarms`. Composable; consumers wire their own VPC / cluster / ALB. There is no L3 stack — see [ARCHITECTURE.md](ARCHITECTURE.md). |
@@ -94,6 +98,8 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 | **BridgeConfigSource (current materialization)** | Supersedes the earlier S3-asset description: `BridgeYamlAsset` reads a local document and `BridgeYamlInline` supplies typed config; both drive validation and grants, and `ImageFromGoBuild` embeds the parsed result without a separate S3 config asset. |
 | **Embedded initial config** | Logical document carried in linker string `main.initialConfigBase64`; CDK stages it in `initial-config-<hash>.goenv`, while registry images remain consumer-owned and unchanged. |
 | **Embedded initial config digest** | SHA-256 of decoded embedded bytes, inspected with `-initial-config-digest` before runtime or network startup and checked by the Go-build image path without printing the document. |
+| **Embedded initial config (native file)** | Supersedes the linker/Go-environment-file path: both commands use `go:embed` on fixed `initial-config.base64`, empty by default; CDK stages pure data in `initial-config-<rawSHA>.base64`, hashes the unencoded serialized document, and fills the command's file in a writable module copy before `go build`. |
+| **Local embed overlay** | `scripts/buildconfig` output that maps the fixed command embed file to a generated Base64 payload for Make and Docker builds without changing original source files or passing payload bytes in flags or environment variables. |
 
 ### Registries
 

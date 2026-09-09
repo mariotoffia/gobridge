@@ -29,9 +29,9 @@ version supporting embedded config and `-initial-config-digest`.
 `GOBRIDGE_INT_IMAGE` registry overrides are rejected; compatible publication
 is a prerequisite, not something a locally passing suite proves.
 
-Local runs read the embedded payload from each staged
-`initial-config-<digest>.goenv` file's `GOFLAGS`, then build the root Dockerfile
-from this checkout with those exact bytes. They do not install a published
+Local runs decode each staged `initial-config-<rawSHA>.base64` data file,
+then build the root Dockerfile from this checkout with those exact document
+bytes through the embed overlay. They do not install a published
 module. `GOBRIDGE_LOCAL_IMAGE` skips that build only if its
 `-initial-config-digest` output matches the staged config. The probe runs with
 networking disabled. Missing support or a mismatched hash fails the run; unset
@@ -180,9 +180,14 @@ long-running.
 
 Configuration seeder scripts and their image-updater suites are removed.
 Initial-config build checks cover the root Make target, Docker build argument,
-and CDK Go-build asset. They must verify native `GOENV` file flags, decoding
-of `main.initialConfigBase64`, and a document large enough to expose argument
-limits. Go `@responsefile` syntax is not supported.
+and CDK Go-build asset. They must verify fixed-file `go:embed`, decoding of
+`main.initialConfigBase64`, and a large document on Linux. Local builds must use
+the `scripts/buildconfig` overlay without changing source files. Config-bearing
+CDK builds must fetch a published module, copy it, fill its embed file, and
+verify the resulting digest; no-config builds retain `go install`.
+Payload bytes must never enter command arguments or environment variables.
+The former `GOENV` path was insufficient because Go exports `GOFLAGS` to child
+processes. No `@responsefile` workaround is supported.
 
 Synth checks must reject a separate config S3 asset, download grant, seeder
 container, or worker config-write grant. Registry images must remain unchanged.

@@ -117,7 +117,9 @@ operator creation. Literal credentials may be embedded, but artifact readers
 can recover them; Base64 does not hide them.
 
 The alternative `ImageFromGoBuild` path automatically embeds the facade's parsed
-config and uses `go install package@version` without a repository checkout.
+config by fetching the published package through Go tooling, filling its fixed
+embed file in a writable module copy, and running `go build`. No Git checkout
+is needed; the no-config path still uses `go install package@version`.
 A compatible published `lib` module and any optional family wiring remain
 prerequisites; do not assume current released versions provide them. See
 [CDK image sources](../../aws-deployment/cdk-constructs.md#runtime-image-source).

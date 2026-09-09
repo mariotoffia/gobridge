@@ -13,11 +13,11 @@ import (
 
 type initialConfigAsset struct {
 	name   string
-	flags  []byte
+	data   []byte
 	digest string
 }
 
-func prepareInitialConfig(props GoBuildProps, cfg *ports.BridgeConfig) *initialConfigAsset {
+func prepareInitialConfig(cfg *ports.BridgeConfig) *initialConfigAsset {
 	if cfg == nil {
 		return nil
 	}
@@ -31,14 +31,10 @@ func prepareInitialConfig(props GoBuildProps, cfg *ports.BridgeConfig) *initialC
 	if unresolved := awscdk.Token_IsUnresolved(string(data)); unresolved != nil && *unresolved {
 		panic("gobridgecdk: embedded initial config contains unresolved CDK tokens; use stable names or selectors")
 	}
-	// Go reads these flags from a file, avoiding shell argv limits while its
-	// own build cache still incorporates the complete linker settings.
 	digest := fmt.Sprintf("%x", sha256.Sum256(data))
 	return &initialConfigAsset{
-		name: "initial-config-" + digest + ".goenv",
-		flags: []byte(fmt.Sprintf(
-			"GOFLAGS=\"-ldflags=-s -w -X main.version=%s -X main.gitSHA=module@%s -X main.initialConfigBase64=%s\"\n",
-			props.Version, props.Version, base64.StdEncoding.EncodeToString(data))),
+		name:   "initial-config-" + digest + ".base64",
+		data:   []byte(base64.StdEncoding.EncodeToString(data)),
 		digest: digest,
 	}
 }

@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"encoding/base64"
 	"errors"
 	"flag"
@@ -37,7 +38,10 @@ import (
 // Build metadata is injected via -ldflags "-X main.version=... -X main.gitSHA=...".
 //
 //nolint:gochecknoglobals // Linker stamps require package-level string variables.
-var version, gitSHA, initialConfigBase64 string
+var version, gitSHA string
+
+//go:embed initial-config.base64
+var initialConfigBase64 string
 
 func main() {
 	os.Exit(run())

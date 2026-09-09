@@ -68,8 +68,8 @@ root warns that no transports or stores are linked and names the tag mechanism.
 Build commands and version stamps are in [DEVELOPMENT.md](DEVELOPMENT.md#build).
 
 An embedded initial document does not select plugin families. The entry point
-decodes `main.initialConfigBase64` and uses the same typed registry as normal
-configuration loading. Only strict creation of an absent target is allowed.
+decodes `main.initialConfigBase64`, filled by `go:embed`, then parses with the
+normal typed registry. Only strict creation of an absent target is allowed.
 See [initial configuration](docs/aws-deployment/config-initialization.md).
 The `-seed-managed-subscriptions` operation described here is separate and
 remains supported.

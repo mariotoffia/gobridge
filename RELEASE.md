@@ -327,6 +327,13 @@ Literal credentials are permitted; Base64 does not conceal them. A shared
 public runtime image should not be confused with a consumer's configured image.
 See [initial configuration](docs/aws-deployment/config-initialization.md).
 
+Both command packages must publish the fixed `initial-config.base64` file,
+empty by default, and consume it with `go:embed`. Config-bearing CDK builds
+download the requested package through Go tooling, copy its owning module to
+a writable directory, fill the embed file, then build and verify its digest.
+No Git checkout or payload-bearing flags/environment are used. Local Make and
+Docker builds use the standard-library `scripts/buildconfig` overlay instead.
+
 ## Image publication
 
 Only a successful stable `cmd/gobridge/vX.Y.Z` workflow can publish an image.

@@ -46,23 +46,25 @@ ENV CGO_ENABLED=0 GOWORK=off GOFLAGS=-mod=mod
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     set -eu; \
-    build_env="$(mktemp)"; \
-    empty_config="$(mktemp)"; \
-    initial_config="$empty_config"; \
+    build_dir="$(mktemp -d)"; \
+    trap 'rm -f "$build_dir/overlay.json" "$build_dir/initial-config.base64"; rmdir "$build_dir"' EXIT; \
+    overlay=""; \
     if [ -n "$INITIAL_CONFIG_FILE" ]; then \
       case "$INITIAL_CONFIG_FILE" in /*|../*|*/../*|*/..) echo "INITIAL_CONFIG_FILE must stay inside the build context" >&2; exit 2;; esac; \
       initial_config="/src/$INITIAL_CONFIG_FILE"; \
+      GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" \
+        go run /src/scripts/buildconfig/main.go "$initial_config" "/src/$BINARY_MODULE/$BINARY_PKG" "$build_dir"; \
+      overlay="$build_dir/overlay.json"; \
     fi; \
-    bash /src/scripts/write-build-goenv.sh "$initial_config" "$build_env" "$VERSION" "$GIT_SHA"; \
     cd "${BINARY_MODULE}"; \
-    env -u GOFLAGS GOENV="$build_env" go build -mod=mod -trimpath \
+    go build -overlay="$overlay" -mod=mod -trimpath \
+      -ldflags "-s -w -X main.version=$VERSION -X main.gitSHA=$GIT_SHA" \
       -o /out/gobridge-filebased "${BINARY_PKG}"; \
     if [ -n "$INITIAL_CONFIG_FILE" ]; then \
       expected_digest="$(sha256sum "$initial_config" | cut -d ' ' -f 1)"; \
       actual_digest="$(/out/gobridge-filebased -initial-config-digest)"; \
       test "$actual_digest" = "$expected_digest"; \
-    fi; \
-    rm -f "$build_env" "$empty_config"
+    fi
 
 # ---- runtime stage ----------------------------------------------------------
 # distroless/static-debian12:nonroot runs as uid:gid 65532:65532 and contains

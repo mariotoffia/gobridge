@@ -78,18 +78,20 @@ docker build -f deployment/kubernetes/Dockerfile \
 ```
 
 `VERSION` defaults to `dev`; `GIT_SHA` defaults to `unknown`. They stamp
-`main.version` and `main.gitSHA`. The initial document is stored in
-`main.initialConfigBase64`, decoded by the reference command, and checked
+`main.version` and `main.gitSHA`. The command's fixed `initial-config.base64`
+file is embedded through `go:embed` into `main.initialConfigBase64`, decoded, and checked
 during the image build with `-initial-config-digest`. The probe prints only the
 decoded document's SHA-256 hash and exits before runtime or network startup.
-A custom command must support the probe when config is embedded. Leave
+A custom command must provide that embed file and probe when config is embedded. Leave
 `INITIAL_CONFIG_FILE` unset to build without an embedded document.
 
-The shared `scripts/write-build-goenv.sh` helper preserves existing Go
-environment-file settings except `GOFLAGS`, which it replaces with the build's
-flags. Go reads those flags through native `GOENV`, so large documents do not
-need to fit in operating-system command arguments. This is not an
-`@responsefile`; the Go command does not accept that syntax.
+The shared `scripts/buildconfig` tool uses only the Go standard library.
+It generates a Base64 payload and a Go overlay that substitutes the fixed
+embed file during compilation without changing original source files.
+The checked-in embed file is empty by default. Payload bytes stay in files,
+not command arguments or environment variables. The old payload-bearing
+Go-environment-file path is removed: Go exports `GOFLAGS` to child processes,
+so it did not avoid Linux environment limits.
 
 Reading the embedded source requires no S3 download or credential lookup.
 Only a definitively absent target may be created, at version 1; existing
