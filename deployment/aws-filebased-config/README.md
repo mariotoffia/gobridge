@@ -352,7 +352,7 @@ func main() {
         Vpc:              vpc,
         Cluster:          cluster,
         // Pin the digest from the release's gobridge-image-digest.txt asset.
-        Image:            awsecs.ContainerImage_FromRegistry(jsii.String("ghcr.io/mariotoffia/gobridge@sha256:<digest>"), nil),
+        Image:            gobridgecdk.ImageFromRegistry("ghcr.io/mariotoffia/gobridge@sha256:<digest>"),
         Bootstrap:        infra.BootstrapConfig{ /* admin/monitor addrs, etc. */ },
         BridgeConfig:     gobridgecdk.BridgeYamlAsset("config/bridge.yaml"),
         QueueRegistry:    queues,
@@ -369,7 +369,7 @@ func main() {
 bridge := gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Bridge"), &gobridgecluster.ClusterProps{
     Vpc:              vpc,
     Cluster:          cluster,
-    Image:            awsecs.ContainerImage_FromEcrRepository(repo, jsii.String("v1.2.3")),
+    Image:            gobridgecdk.ImageFromEcrRepository(repo, "v1.2.3"),
     Bootstrap:        bootstrap,
     BridgeConfig:     gobridgecdk.BridgeYamlInline(cfg),
     QueueRegistry:    queues,

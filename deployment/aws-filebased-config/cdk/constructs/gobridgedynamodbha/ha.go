@@ -18,6 +18,7 @@ import (
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/grants"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/singleton"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/validation"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/imgsource"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
@@ -48,7 +49,9 @@ type DynamoDBHAProps struct {
 	EfsConfig *cdkconstructs.GoBridgeEfsConfig
 	EfsKmsKey awskms.IKey
 
-	Image        awsecs.ContainerImage
+	// Image is the required sealed gobridgecdk.BridgeImageSource shared by all
+	// tasks. Use ImageFromRegistry, ImageFromEcrRepository or ImageFromGoBuild.
+	Image        imgsource.Source
 	Bootstrap    infra.BootstrapConfig
 	BridgeConfig source.Source
 	// ManagedSubscriptionBaselines attests the known broker-side filters for

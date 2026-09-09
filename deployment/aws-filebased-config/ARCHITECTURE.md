@@ -145,11 +145,11 @@ The profile always runs exactly one `config.Layer` (a base, never an
 overlay): the admin config transaction API and the rollout candidate digest
 both require a single writer identity for the effective config.
 
-## Image source (planned)
+## Image source
 
 `gobridgecdk` exposes a sealed `BridgeImageSource` (same pattern as
-`BridgeConfigSource`), replacing the raw required `Image awsecs.ContainerImage`
-prop:
+`BridgeConfigSource`). The required `Image` prop accepts only that sealed type;
+constructs use its identical internal alias to avoid the lookup/ALB import cycle.
 
 | Constructor | Behaviour |
 |-------------|-----------|
@@ -161,6 +161,25 @@ The profile binary's base families are aws, mqtt, native stores and http;
 `gobridge_amqp091`, `gobridge_amqp10` and `gobridge_azure` are additive
 compile-time families shared with the `cmd/gobridge` tag convention
 (`PLUGIN.md`).
+
+`ImageFromGoBuild` requires a published compatible lib-module version; it never
+falls back to a branch or `latest`. The default package is
+`github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/cmd/gobridge-filebased`.
+Optional family registration and publication of a compatible module are separate
+prerequisites: deriving a tag does not register a decoder or factory. Until those
+prerequisites are available, keep using a pinned registry image or consumer ECR
+image. Custom commands can use explicit `BuildTags` (including an empty slice)
+to bypass derivation, but must implement the profile's bootstrap and health check.
+
+The generated Dockerfile stamps `main.version` with the module version and
+`main.gitSHA` with `module@<version>`, identifying the published source without
+claiming to know its Git commit. Digest-pinned builder/runtime bases and a nonroot
+user match the root Dockerfile. The temporary context is always staged into the
+cloud assembly before removal, even if app-wide asset staging is disabled.
+`Platform` supports `linux/amd64` and `linux/arm64`; the same selection configures
+Docker and the Fargate task. Both builder and runtime overrides, and any seeder
+override, must support that platform. Registry/ECR constructors target
+`linux/amd64`.
 
 ## Single vs Cluster
 
@@ -372,7 +391,7 @@ See [../../DDD.md](../../DDD.md) for the project-level model and [UBIQUITOUS.md]
 - **Custom SSM resolver**: `WithParameterResolver` (e.g. test fixtures, Vault wrapper).
 - **Custom CDK wiring**: compose `BridgeYamlInline(cfg)` over a hand-built `*ports.BridgeConfig` from `cdk/bridgecfg/`. The facades (`GoBridgeSingle` / `GoBridgeCluster` / `GoBridgeDynamoDBHA`) are the supported integration boundary; **bypassing them by composing `cdk/constructs/internal/gobridgebase` directly is not supported** — the package is internal precisely so the singleton / tier-B / mount-policy invariants stay enforceable.
 - **Custom transport/store**: not exposed via `App` — fork `factoryRegistry` or build a sibling deployment profile. **(planned)** The AMQP 0-9-1, AMQP 1.0 and Azure Service Bus families become compile-time opt-ins via the shared `gobridge_<family>` build tags; truly custom plugins still mean a sibling profile.
-- **Custom image pipeline (planned)**: pass `ImageFromRegistry` / `ImageFromEcrRepository` to keep building the image yourself; `ImageFromGoBuild` is the zero-checkout default path.
+- **Custom image pipeline**: pass `ImageFromRegistry` / `ImageFromEcrRepository` to keep building the image yourself; `ImageFromGoBuild` is the zero-checkout build path once a compatible module is published.
 
 ## Related Docs
 

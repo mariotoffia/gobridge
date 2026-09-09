@@ -1,0 +1,12 @@
+FROM {{.GoImage}} AS build
+ENV CGO_ENABLED=0 GOWORK=off GOBIN=/out
+WORKDIR /build
+RUN go install -trimpath -tags={{.Tags}} -ldflags "-s -w -X main.version={{.Version}} -X main.gitSHA=module@{{.Version}}" {{.Package}}@{{.Version}} \
+    && cp /out/* /gobridge-filebased
+
+FROM {{.BaseImage}} AS runtime
+COPY --from=build /gobridge-filebased /usr/local/bin/gobridge-filebased
+USER 65532:65532
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD ["/usr/local/bin/gobridge-filebased", "-healthcheck"]
+ENTRYPOINT ["/usr/local/bin/gobridge-filebased"]

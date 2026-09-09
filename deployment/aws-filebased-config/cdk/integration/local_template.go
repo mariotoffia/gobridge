@@ -11,13 +11,13 @@ import (
 	"testing"
 )
 
-// The two adjustments a synthesized stack needs before an emulator can run it.
+// The adjustments a synthesized stack needs before an emulator can run it.
 //
-// Both are made here, on the cloud assembly, and never inside the shipped
+// They are made here, on the cloud assembly, and never inside the shipped
 // constructs: a test-mode branch in a construct would mean the thing under test
 // is not the thing that deploys. What the deployment declares is unchanged —
 // CloudFormation still provisions the filesystem, the access points and the
-// task definitions, so the deploy path stays proven; only the two properties the
+// task definitions, so the deploy path stays proven; only the properties the
 // emulator cannot back are rewritten on the way to it.
 //
 //  1. The shared config filesystem. The emulator's ECS does not honour
@@ -32,13 +32,18 @@ import (
 //     container runs the identical binary through the identical code path —
 //     AWS_ENDPOINT_URL_DYNAMODB outranks AWS_ENDPOINT_URL, which is what keeps
 //     the compare-and-swap data plane on DynamoDB Local.
+//
+//  3. The locally built runtime image. The facade declares a consumer ECR image;
+//     the rewrite substitutes GOBRIDGE_LOCAL_IMAGE (or the local default). A
+//     never-pushed local build has no registry digest. Other containers are
+//     left alone except for the separately managed local seeder substitution.
 
 const (
 	taskDefinitionType = "AWS::ECS::TaskDefinition"
 	lambdaFunctionType = "AWS::Lambda::Function"
 )
 
-// rewriteLocalAssembly applies both adjustments to the synthesized template.
+// rewriteLocalAssembly applies these adjustments to the synthesized template.
 func rewriteLocalAssembly(t *testing.T, asmDir, stackName string) {
 	t.Helper()
 	state := localState
@@ -77,6 +82,7 @@ func rewriteLocalAssembly(t *testing.T, asmDir, stackName string) {
 			}
 			bindVolumesToHost(t, logicalID, properties, state.currentConfigDir)
 			addContainerEnvironment(t, logicalID, properties, containerEnv)
+			useLocalRuntimeImage(properties)
 			substituted += useLocalSeederImage(properties, state.seederPinned, state.seederLocal)
 			family, spec, err := declaredTaskSpec(properties)
 			if err != nil {

@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	"github.com/aws/jsii-runtime-go"
 
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
@@ -238,7 +237,7 @@ func newLocalClusterFixture(stack awscdk.Stack, env SandboxEnv, topology string,
 	cluster := gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Cluster"), &gobridgecluster.ClusterProps{
 		Vpc:                vpc,
 		VpcSubnets:         subnetSelection(env),
-		Image:              awsecs.ContainerImage_FromRegistry(jsii.String(localBridgeImage()), nil),
+		Image:              localRuntimeImageSource(stack),
 		Bootstrap:          localBootstrap("gobridge-local-cluster"),
 		BridgeConfig:       src,
 		QueueRegistry:      queues,

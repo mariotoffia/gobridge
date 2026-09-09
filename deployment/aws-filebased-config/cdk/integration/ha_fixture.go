@@ -14,7 +14,6 @@ import (
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	elbv2 "github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssns"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
@@ -46,7 +45,7 @@ const (
 
 type haSandbox struct {
 	SandboxEnv
-	Image               string
+	Image               gobridgecdk.BridgeImageSource
 	BrokerURL           string
 	MQTTClientID        string
 	MQTTCredentialParam string
@@ -106,7 +105,7 @@ func requireHAFailoverSandbox(t *testing.T) haSandbox {
 	}
 	return haSandbox{
 		SandboxEnv:          base,
-		Image:               required["GOBRIDGE_INT_IMAGE"],
+		Image:               gobridgecdk.ImageFromRegistry(required["GOBRIDGE_INT_IMAGE"]),
 		BrokerURL:           required["GOBRIDGE_INT_HA_MQTT_BROKER_URL"],
 		MQTTClientID:        required["GOBRIDGE_INT_HA_MQTT_CLIENT_ID"],
 		MQTTCredentialParam: required["GOBRIDGE_INT_HA_MQTT_CREDENTIAL_PARAM"],
@@ -261,7 +260,7 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox, slots *ha.Mem
 	bridge := ha.NewGoBridgeDynamoDBHA(stack, jsii.String("DynamoDBHA"), &ha.DynamoDBHAProps{
 		Vpc:                          vpc,
 		VpcSubnets:                   subnetSelection(env.SandboxEnv),
-		Image:                        awsecs.ContainerImage_FromRegistry(jsii.String(env.Image), nil),
+		Image:                        env.Image,
 		Bootstrap:                    bootstrap,
 		BridgeConfig:                 src,
 		ManagedSubscriptionBaselines: map[string][]string{haLeaseID: {}},

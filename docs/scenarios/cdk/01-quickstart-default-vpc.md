@@ -132,7 +132,6 @@ package main
 import (
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	"github.com/aws/jsii-runtime-go"
 
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
@@ -154,7 +153,7 @@ func main() {
 
 	gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Single"), &gobridgesingle.SingleProps{
 		Vpc:   vpc,
-		Image: awsecs.ContainerImage_FromRegistry(jsii.String("<account>.dkr.ecr.us-west-1.amazonaws.com/gobridge:latest"), nil),
+		Image: gobridgecdk.ImageFromRegistry("<account>.dkr.ecr.us-west-1.amazonaws.com/gobridge@sha256:<digest>"),
 		Bootstrap: infra.BootstrapConfig{
 			BridgeID:         "gobridge-main",
 			ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",

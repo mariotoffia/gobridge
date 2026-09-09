@@ -12,8 +12,8 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/assertions"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	"github.com/aws/jsii-runtime-go"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/imgsource"
 
 	cdkconstructs "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
@@ -52,7 +52,7 @@ func newSingleStack(t *testing.T) (awscdk.Stack, *gobridgesingle.GoBridgeSingle)
 	src := source.NewAsset(writeSingleYAML(t, singleSampleYAML))
 	g := gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Bridge"), &gobridgesingle.SingleProps{
 		Vpc:          vpc,
-		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:latest"), nil),
+		Image:        imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap:    singleBootstrap(),
 		BridgeConfig: src,
 	})
@@ -187,7 +187,7 @@ bridge:
 	}()
 	gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Bridge"), &gobridgesingle.SingleProps{
 		Vpc:          vpc,
-		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:latest"), nil),
+		Image:        imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap:    singleBootstrap(),
 		BridgeConfig: src,
 	})
@@ -234,7 +234,7 @@ func TestGoBridgeSingle_SuppliedEfsConfig_SubnetMismatchFailsSynth(t *testing.T)
 	gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Bridge"), &gobridgesingle.SingleProps{
 		Vpc:          vpc,
 		EfsConfig:    efs,
-		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:latest"), nil),
+		Image:        imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap:    singleBootstrap(),
 		BridgeConfig: source.NewAsset(writeSingleYAML(t, singleSampleYAML)),
 	})

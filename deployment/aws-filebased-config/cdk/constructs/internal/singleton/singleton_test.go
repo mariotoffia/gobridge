@@ -11,8 +11,8 @@ import (
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	"github.com/aws/jsii-runtime-go"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/imgsource"
 
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgecluster"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
@@ -49,7 +49,7 @@ func newSingle(t *testing.T, scope awscdk.Stack, id string) {
 	vpc := awsec2.NewVpc(scope, jsii.String("Vpc-"+id), nil)
 	gobridgesingle.NewGoBridgeSingle(scope, jsii.String(id), &gobridgesingle.SingleProps{
 		Vpc:          vpc,
-		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:latest"), nil),
+		Image:        imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap:    bootstrap(),
 		BridgeConfig: source.NewAsset(writeYAML(t)),
 	})
@@ -60,7 +60,7 @@ func newCluster(t *testing.T, scope awscdk.Stack, id string) {
 	vpc := awsec2.NewVpc(scope, jsii.String("Vpc-"+id), nil)
 	gobridgecluster.NewGoBridgeCluster(scope, jsii.String(id), &gobridgecluster.ClusterProps{
 		Vpc:          vpc,
-		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:latest"), nil),
+		Image:        imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap:    bootstrap(),
 		BridgeConfig: source.NewAsset(writeYAML(t)),
 	})

@@ -152,10 +152,10 @@ func main() {
         &gobridgecluster.ClusterProps{
             Vpc:     vpc,
             Cluster: cluster,
-            Image: awsecs.ContainerImage_FromRegistry(
+            Image: gobridgecdk.ImageFromRegistry(
                 // Pin the digest from the release's gobridge-image-digest.txt
                 // asset — see "Pin Images by Digest" in the deployment guide.
-                jsii.String("ghcr.io/mariotoffia/gobridge@sha256:<digest>"), nil),
+                "ghcr.io/mariotoffia/gobridge@sha256:<digest>"),
             Bootstrap: infra.BootstrapConfig{
                 // NodeRole is forced per service by the facade — do not set it.
                 AdminAddr:        ":8080",

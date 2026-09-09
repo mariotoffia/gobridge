@@ -36,6 +36,43 @@ The constructors are `NewGoBridgeSingle(scope, id, *SingleProps)`,
 `NewGoBridgeDynamoDBHA(scope, id, *DynamoDBHAProps)`. There is no `GoBridgeService` or
 `GoBridgeStack` construct and no `GoBridgeServiceProps` type.
 
+## Runtime image source
+
+All three facades require `Image`, a sealed `gobridgecdk.BridgeImageSource`.
+Existing `awsecs.ContainerImage` values are no longer accepted. Choose one of:
+
+| Constructor | Use |
+|-------------|-----|
+| `gobridgecdk.ImageFromRegistry(ref)` | A registry reference pinned with `@sha256:<digest>`. The reference is preserved exactly; mutable tags alone fail synth. |
+| `gobridgecdk.ImageFromEcrRepository(repo, tag)` | A consumer-managed `awsecr.IRepository` with an explicit tag or SHA-256 digest. CDK grants the execution role pull access. Prefer immutable tags or digests. |
+| `gobridgecdk.ImageFromGoBuild(props)` | A Docker asset built from a published command with `go install package@version`, without cloning the repository. |
+
+`ImageGoBuildProps.Version` is required: supply a published compatible
+lib-module version, not `main` or `latest`. `Package` defaults to
+`github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/cmd/gobridge-filebased`.
+The embedded Dockerfile uses digest-pinned Go and distroless nonroot bases;
+`GoImage` and `BaseImage` overrides must also be digest-pinned. Synth stages the
+context into the cloud assembly before cleaning up its temporary directory,
+including when app-wide asset staging is disabled. Docker builds and publishes
+the asset during deployment, not synth.
+
+Nil `BuildTags` invokes `DeriveBuildTags` on the parsed bridge config. AWS, MQTT,
+native stores and HTTP need no extra tags; AMQP 0-9-1, AMQP 1.0 and Azure Service
+Bus select `gobridge_amqp091`, `gobridge_amqp10` and `gobridge_azure`, including
+their aliases. Unknown kinds and unmapped processor registrations fail synth.
+An explicit empty slice (`[]string{}`) adds no tags and bypasses derivation.
+
+`Platform` defaults to `linux/amd64`; `linux/arm64` is also supported and sets
+both the Docker build platform and Fargate task architecture. Both base images
+and any seeder override must support the selected platform. Registry and ECR
+sources use `linux/amd64`.
+
+**Publication prerequisite:** the compatible lib module and its optional plugin
+family wiring are not yet externally consumable. Deriving a build tag does not
+register runtime decoders or factories. Until those prerequisites are published,
+use a compatible pinned registry image or your own ECR image. A custom `Package`
+must implement this profile's bootstrap and health-check contract.
+
 ## Runtime config source
 
 Use `Bootstrap.ConfigSource`; there is no separate config-source prop. Empty or
@@ -78,7 +115,7 @@ the cached `efs-id` lookup in `cdk.context.json` after deploying the producer.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `Vpc` | `awsec2.IVpc` | *required* | VPC for the task and EFS mount targets. |
-| `Image` | `awsecs.ContainerImage` | *required* | The `gobridge-filebased` runtime image. |
+| `Image` | `gobridgecdk.BridgeImageSource` | *required* | Sealed runtime image from `ImageFromRegistry`, `ImageFromEcrRepository`, or `ImageFromGoBuild`. |
 | `Bootstrap` | `infra.BootstrapConfig` | *required* | Runtime config; `NodeRole` forced to `control`. |
 | `BridgeConfig` | `source.Source` | *required* | Sealed config from `gobridgecdk.BridgeYamlAsset`/`BridgeYamlInline`. |
 | `QueueRegistry` | `*registry.QueueRegistry` | conditionally required | Resolves SQS queue names in the config. |
@@ -161,7 +198,6 @@ import (
     "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
     "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
     "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
-    "github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
     "github.com/aws/jsii-runtime-go"
 )
 
@@ -171,7 +207,7 @@ qr.AddQueue("inbound", inboundQueue)
 // cfg is a *ports.BridgeConfig (build it with the bridgecfg builder).
 single := gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Bridge"), &gobridgesingle.SingleProps{
     Vpc:   vpc,
-    Image: awsecs.ContainerImage_FromRegistry(jsii.String("123456789.dkr.ecr.eu-west-1.amazonaws.com/gobridge:latest"), nil),
+    Image: gobridgecdk.ImageFromRegistry("123456789.dkr.ecr.eu-west-1.amazonaws.com/gobridge@sha256:<digest>"),
     Bootstrap: infra.BootstrapConfig{
         BridgeID:         "my-bridge",
         ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",

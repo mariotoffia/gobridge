@@ -7,8 +7,8 @@ import (
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	"github.com/aws/jsii-runtime-go"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/imgsource"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgecluster"
@@ -26,7 +26,7 @@ func TestCluster_DynamoDBConfig_Rejected(t *testing.T) {
 	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)
 	require.Panics(t, func() {
 		gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Bridge"), &gobridgecluster.ClusterProps{
-			Vpc: vpc, Image: awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+			Vpc: vpc, Image: imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 			Bootstrap:    infra.BootstrapConfig{BridgeID: "test", ConfigSource: infra.ConfigSourceDynamoDB, AdminAPIKeyParam: "/test/admin"},
 			BridgeConfig: source.NewInline(&ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "test"}}),
 		})

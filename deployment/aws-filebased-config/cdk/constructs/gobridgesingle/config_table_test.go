@@ -10,8 +10,8 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/assertions"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	"github.com/aws/jsii-runtime-go"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/imgsource"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -28,7 +28,7 @@ func configSingleStack(t *testing.T, boot infra.BootstrapConfig, src source.Sour
 	stack := awscdk.NewStack(app, jsii.String("ConfigStack"), nil)
 	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)
 	g := gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Bridge"), &gobridgesingle.SingleProps{
-		Vpc: vpc, Image: awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Vpc: vpc, Image: imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap: boot, BridgeConfig: src,
 	})
 	return stack, g

@@ -9,7 +9,6 @@ import (
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	elbv2 "github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssns"
 	awssqs "github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
@@ -218,7 +217,7 @@ func newLocalSingleService(
 	props := &gobridgesingle.SingleProps{
 		Vpc:           vpc,
 		VpcSubnets:    subnetSelection(env),
-		Image:         awsecs.ContainerImage_FromRegistry(jsii.String(localBridgeImage()), nil),
+		Image:         localRuntimeImageSource(stack),
 		Bootstrap:     localBootstrap(bridgeID),
 		BridgeConfig:  src,
 		QueueRegistry: queues,

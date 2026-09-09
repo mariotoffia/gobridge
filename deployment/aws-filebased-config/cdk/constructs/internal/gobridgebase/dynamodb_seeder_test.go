@@ -13,8 +13,8 @@ import (
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/assertions"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	"github.com/aws/jsii-runtime-go"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/imgsource"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -50,7 +50,7 @@ stores:
 			b := gobridgebase.New(stack, jsii.String("DynamoBridge"), &gobridgebase.Props{
 				Mode: gobridgebase.ModeControl, Vpc: vpc, Bootstrap: boot, Source: src,
 				ConfigTable: gobridgebase.NewConfigTable(stack, boot),
-				Image:       awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+				Image:       imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 			})
 			require.NotNil(t, b.ConfigAsset)
 			data, err := os.ReadFile(filepath.Join(*awscdk.Stage_Of(stack).Outdir(), *b.ConfigAsset.AssetPath()))
@@ -97,7 +97,7 @@ func TestDynamoDBSeeder_ModeOverrides(t *testing.T) {
 				ConfigTable: gobridgebase.NewConfigTable(stack, boot),
 				SeederMode:  jsii.String(tc.mode), WorkerSeederMode: jsii.String(tc.mode),
 				Source: source.NewAsset(writeTempYAML(t, sampleYAML)),
-				Image:  awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+				Image:  imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 			})
 			assertions.Template_FromStack(stack, nil).HasResourceProperties(jsii.String("AWS::ECS::TaskDefinition"), map[string]any{
 				"ContainerDefinitions": assertions.Match_ArrayWith(&[]any{assertions.Match_ObjectLike(&map[string]any{
@@ -118,7 +118,7 @@ func TestDynamoDBSeeder_RejectsOversizeAsset(t *testing.T) {
 		gobridgebase.New(stack, jsii.String("OversizeBridge"), &gobridgebase.Props{
 			Mode: gobridgebase.ModeControl, Vpc: vpc, Bootstrap: boot, ConfigTable: table,
 			Source: source.NewAsset(writeTempYAML(t, "bridge:\n  id: "+strings.Repeat("x", 390*1024)+"\n")),
-			Image:  awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+			Image:  imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		})
 	})
 }
@@ -136,7 +136,7 @@ func TestDynamoDBSeeder_RejectsWritableWorkerMode(t *testing.T) {
 					Mode: gobridgebase.ModeWorker, Vpc: vpc, Bootstrap: boot,
 					ConfigTable: table, WorkerSeederMode: jsii.String(mode),
 					Source: source.NewAsset(writeTempYAML(t, sampleYAML)),
-					Image:  awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+					Image:  imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 				})
 			})
 		})
@@ -154,7 +154,7 @@ func TestDynamoDBSeeder_RejectsUnresolvedAssetToken(t *testing.T) {
 		gobridgebase.New(stack, jsii.String("TokenBridge"), &gobridgebase.Props{
 			Mode: gobridgebase.ModeControl, Vpc: vpc, Bootstrap: boot, ConfigTable: table,
 			Source: source.NewAsset(writeTempYAML(t, "bridge:\n  id: '"+token+"'\n")),
-			Image:  awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+			Image:  imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		})
 	})
 }

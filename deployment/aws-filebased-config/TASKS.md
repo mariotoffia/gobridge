@@ -290,15 +290,15 @@ verbatim from DESIGN.md D6); Modify `internal/gobridgebase/base.go:136,430`
 prop `Image gobridgecdk.BridgeImageSource` (+ all three facades + their
 tests + README snippets).
 
-- [ ] **Step 1:** Failing tests: `TestImageFromRegistry_Materializes` (asset
+- [x] **Step 1:** Failing tests: `TestImageFromRegistry_Materializes` (asset
   ref preserved); `TestImageFromGoBuild_RendersDockerfile` (rendered template
   contains `go install -trimpath -tags=… <pkg>@<version>`, digest-pinned
   bases, nonroot user); `TestDeriveBuildTags_MapsKindsBeyondProfileBase`
   (`amqp091→gobridge_amqp091`, `servicebus→gobridge_azure`, base kinds → no
   tag, unknown kind → error); facade template test: nil Image → panic
   message unchanged.
-- [ ] **Step 2:** Implement; `go -C deployment/aws/cdk test ./... -v` green.
-- [ ] **Step 3:** `make lint && make test`; commit —
+- [x] **Step 2:** Implement; `go -C deployment/aws-filebased-config/cdk test ./... -v` green.
+- [x] **Step 3:** `make lint && make test`; commit —
   `feat(deploy/aws/cdk): sealed BridgeImageSource; CDK builds the image via go install`
 
 ### Task 5.2: Publish the seeder image on the release train

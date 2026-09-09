@@ -12,10 +12,10 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/assertions"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsssm"
 	"github.com/aws/jsii-runtime-go"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/imgsource"
 
 	// Register the http transport plugin so yaml parsing of
 	// "transport: http" succeeds for the port-mappings fixture.
@@ -75,7 +75,7 @@ func t20BaseBuild(t *testing.T, mode gobridgebase.Mode, yaml string) (awscdk.Sta
 		Mode:      mode,
 		Vpc:       vpc,
 		EfsConfig: efs,
-		Image:     awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:latest"), nil),
+		Image:     imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap: t20BaseBootstrap(),
 		Source:    src,
 	})
@@ -346,7 +346,7 @@ func TestBase_IAM_AWSSQSAliasGetsExactQueueGrant(t *testing.T) {
 	queues.AddQueue("alias-queue", queue)
 	gobridgebase.New(stack, jsii.String("Bridge"), &gobridgebase.Props{
 		Mode: gobridgebase.ModeControl, Vpc: vpc, EfsConfig: efs,
-		Image:     awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Image:     imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap: t20BaseBootstrap(), Source: source.NewAsset(t20BaseWriteYAML(t, t20BaseAWSSQSAliasYAML)),
 		QueueRegistry: queues,
 	})
@@ -380,7 +380,7 @@ func TestBase_IAM_PMSHostPathUsesCanonicalParameterARN(t *testing.T) {
 	params.AddParameter("/name/path", parameter)
 	gobridgebase.New(stack, jsii.String("Bridge"), &gobridgebase.Props{
 		Mode: gobridgebase.ModeControl, Vpc: vpc, EfsConfig: efs,
-		Image:     awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Image:     imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap: t20BaseBootstrap(), Source: source.NewAsset(t20BaseWriteYAML(t, t20BasePMSHostPathYAML)),
 		SsmRegistry: params,
 	})

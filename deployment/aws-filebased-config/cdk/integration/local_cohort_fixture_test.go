@@ -22,7 +22,7 @@ func TestDynamoDBConfigFixture_IsolatesRolloutBaseline(t *testing.T) {
 			AvailabilityZones: []string{"us-east-1a", "us-east-1b"},
 			SubnetIDs:         []string{"subnet-private-a", "subnet-private-b"}, PublicSubnetIDs: []string{"subnet-public-a", "subnet-public-b"},
 		},
-		Image: localImage, BrokerURL: "tcp://mosquitto:1883", MQTTClientID: "gobridge-local-ha",
+		BrokerURL: "tcp://mosquitto:1883", MQTTClientID: "gobridge-local-ha",
 		MQTTCredentialParam: localMQTTParam, AdminParam: localAdminParam, ProbeCIDR: "10.0.0.0/8", PlaintextBroker: true,
 	}
 	app := awscdk.NewApp(&awscdk.AppProps{Outdir: jsii.String(t.TempDir())})
@@ -32,6 +32,7 @@ func TestDynamoDBConfigFixture_IsolatesRolloutBaseline(t *testing.T) {
 	} {
 		stack := awscdk.NewStack(app, jsii.String(tc.name), &awscdk.StackProps{Env: StackEnv(env.SandboxEnv)})
 		env.ConfigSource = tc.source
+		env.Image = localRuntimeImageSource(stack)
 		fixture := newHAFixture(t, stack, env, staticSlotRoster())
 		name := fixture.Bridge.RolloutTableName()
 		if tc.source == "" {

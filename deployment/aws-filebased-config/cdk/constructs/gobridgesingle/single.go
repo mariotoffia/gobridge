@@ -23,6 +23,7 @@ import (
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/gobridgebase"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/singleton"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/validation"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/imgsource"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
@@ -67,8 +68,9 @@ type SingleProps struct {
 	// the runtime grant.
 	EfsKmsKey awskms.IKey
 
-	// Image is the gobridge runtime container image. Required.
-	Image awsecs.ContainerImage
+	// Image is the required sealed gobridgecdk.BridgeImageSource.
+	// Use ImageFromRegistry, ImageFromEcrRepository or ImageFromGoBuild.
+	Image imgsource.Source
 
 	// Bootstrap is the deployment-owned runtime configuration. Its
 	// NodeRole is forced to NodeRoleControl by this facade —
@@ -120,7 +122,7 @@ type SingleProps struct {
 	// groups.
 	LogRemovalPolicy awscdk.RemovalPolicy
 
-	// SeederImage overrides the pinned aws-cli seeder image.
+	// SeederImage overrides the pinned seeder image.
 	SeederImage *string
 
 	// SeederMode overrides the control seeder MODE (default

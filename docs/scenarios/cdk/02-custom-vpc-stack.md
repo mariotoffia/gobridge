@@ -55,10 +55,8 @@ func NewCustomVpcStack(scope constructs.Construct, id string) awscdk.Stack {
         &gobridgecluster.ClusterProps{
             Vpc:     vpc,
             Cluster: cluster, // reuse the imported ECS cluster
-            Image: awsecs.ContainerImage_FromRegistry(
-                jsii.String("123456789012.dkr.ecr.eu-west-1.amazonaws.com/gobridge:latest"),
-                nil,
-            ),
+            Image: gobridgecdk.ImageFromRegistry(
+                "123456789012.dkr.ecr.eu-west-1.amazonaws.com/gobridge@sha256:<digest>"),
             Bootstrap: infra.BootstrapConfig{
                 BridgeID:         "gobridge-mqtt",
                 ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",

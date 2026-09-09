@@ -64,9 +64,8 @@ func NewProductionStack(scope constructs.Construct, id string, props *awscdk.Sta
     bridge := gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Bridge"),
         &gobridgecluster.ClusterProps{
             Vpc: vpc,
-            Image: awsecs.ContainerImage_FromRegistry(
-                jsii.String("123456789012.dkr.ecr.eu-west-1.amazonaws.com/gobridge:latest"), nil,
-            ),
+            Image: gobridgecdk.ImageFromRegistry(
+                "123456789012.dkr.ecr.eu-west-1.amazonaws.com/gobridge@sha256:<digest>"),
             Bootstrap: infra.BootstrapConfig{
                 BridgeID: "gobridge-prod", ConfigFilePath: "/var/lib/gobridge/bridge.yaml",
                 PollInterval: "5s", AdminAPIKeyParam: "/gobridge/prod/admin-api-key",

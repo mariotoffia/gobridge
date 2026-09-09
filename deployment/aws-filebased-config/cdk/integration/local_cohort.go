@@ -61,7 +61,6 @@ func deployLocalCohort(t *testing.T, env SandboxEnv, slots *ha.MemberSlots, conf
 	t.Helper()
 	sandbox := haSandbox{
 		SandboxEnv:          env,
-		Image:               localBridgeImage(),
 		BrokerURL:           fmt.Sprintf("tcp://%s:%d", localBrokerHost, localBrokerPort),
 		MQTTClientID:        "gobridge-local-ha",
 		MQTTCredentialParam: localMQTTParam,
@@ -76,6 +75,7 @@ func deployLocalCohort(t *testing.T, env SandboxEnv, slots *ha.MemberSlots, conf
 	}
 
 	deployed := DeployLocal(t, env, "local-ha-slots", func(stack awscdk.Stack) {
+		sandbox.Image = localRuntimeImageSource(stack)
 		_ = newHAFixture(t, stack, sandbox, slots)
 	})
 	if err := missingHAOutput(deployed.Outputs,

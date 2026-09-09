@@ -42,10 +42,8 @@ func NewAPIGatewayStack(scope constructs.Construct, id string) awscdk.Stack {
     bridge := gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Bridge"),
         &gobridgesingle.SingleProps{
             Vpc: vpc,
-            Image: awsecs.ContainerImage_FromRegistry(
-                jsii.String("123456789012.dkr.ecr.us-west-1.amazonaws.com/gobridge:latest"),
-                nil,
-            ),
+            Image: gobridgecdk.ImageFromRegistry(
+                "123456789012.dkr.ecr.us-west-1.amazonaws.com/gobridge@sha256:<digest>"),
             Bootstrap: infra.BootstrapConfig{
                 BridgeID:         "gobridge-api",
                 ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",

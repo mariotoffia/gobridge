@@ -18,6 +18,7 @@ import (
 
 	cdkconstructs "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/grants"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/imgsource"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
@@ -132,8 +133,9 @@ type Props struct {
 	// CMK encrypting the file system.
 	EfsKmsKey awskms.IKey
 
-	// Image is the gobridge runtime container image.
-	Image awsecs.ContainerImage
+	// Image is the sealed gobridgecdk.BridgeImageSource. The internal alias
+	// avoids a dependency cycle through the public facade's lookup helpers.
+	Image imgsource.Source
 
 	// Bootstrap is the deployment-owned runtime configuration. The
 	// base serializes it as the GOBRIDGE_FILEBASED_BOOTSTRAP_JSON
@@ -184,7 +186,7 @@ type Props struct {
 	// applied to log groups.
 	LogRemovalPolicy awscdk.RemovalPolicy
 
-	// SeederImage overrides the pinned aws-cli image returned by
+	// SeederImage overrides the pinned seeder image returned by
 	// [DefaultSeederImage].
 	SeederImage *string
 
@@ -267,6 +269,8 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 	}
 	defer func() { _ = mat.Close() }()
 
+	image := props.Image.Materialize(c, jsii.String("RuntimeImage"), mat.Config)
+
 	cpu := jsii.Number(defaultCPU)
 	if props.CPU != nil {
 		cpu = props.CPU
@@ -291,10 +295,11 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 	}
 
 	taskDef := awsecs.NewFargateTaskDefinition(c, jsii.String("TaskDef"), &awsecs.FargateTaskDefinitionProps{
-		Cpu:            cpu,
-		MemoryLimitMiB: mem,
-		TaskRole:       props.TaskRole,
-		ExecutionRole:  props.ExecutionRole,
+		Cpu:             cpu,
+		MemoryLimitMiB:  mem,
+		TaskRole:        props.TaskRole,
+		ExecutionRole:   props.ExecutionRole,
+		RuntimePlatform: props.Image.RuntimePlatform(),
 	})
 
 	addEfsVolume(taskDef, props)
@@ -348,7 +353,7 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 	// distroless (no curl/wget/shell) so the probe reuses the binary itself.
 	mainOpts := &awsecs.ContainerDefinitionOptions{
 		ContainerName: jsii.String(ContainerNameMain),
-		Image:         props.Image,
+		Image:         image,
 		Essential:     jsii.Bool(true),
 		User:          containerUser,
 		StopTimeout:   stopTimeout,

@@ -4,9 +4,10 @@
 package integration
 
 import (
+	"os"
+
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	elbv2 "github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2"
 	awssqs "github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
 	"github.com/aws/jsii-runtime-go"
@@ -109,7 +110,7 @@ func newSingleFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	single := gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Single"), &gobridgesingle.SingleProps{
 		Vpc:           vpc,
 		VpcSubnets:    subnetSelection(env),
-		Image:         awsecs.ContainerImage_FromRegistry(jsii.String("ghcr.io/mariotoffia/gobridge:latest"), nil),
+		Image:         gobridgecdk.ImageFromRegistry(os.Getenv("GOBRIDGE_INT_IMAGE")),
 		Bootstrap:     bootstrap,
 		BridgeConfig:  src,
 		QueueRegistry: qr,
@@ -186,7 +187,7 @@ func newClusterFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	cluster := gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Cluster"), &gobridgecluster.ClusterProps{
 		Vpc:                vpc,
 		VpcSubnets:         subnetSelection(env),
-		Image:              awsecs.ContainerImage_FromRegistry(jsii.String("ghcr.io/mariotoffia/gobridge:latest"), nil),
+		Image:              gobridgecdk.ImageFromRegistry(os.Getenv("GOBRIDGE_INT_IMAGE")),
 		Bootstrap:          bootstrap,
 		BridgeConfig:       src,
 		QueueRegistry:      qr,
