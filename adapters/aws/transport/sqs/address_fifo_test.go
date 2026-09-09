@@ -13,6 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // Finding 1 — queue-name binding address.
@@ -107,10 +108,10 @@ func TestIsFIFOQueue(t *testing.T) {
 // MaxNumberOfMessages=1, which is what actually preserves ordering at the
 // SQS API boundary.
 func TestReceiver_Run_FIFO_RequestsSingleMessage(t *testing.T) {
-	var gotMax int32 = -1
+	received := make(chan int32, 1)
 	mock := &mockSQSClient{
 		ReceiveMessageFn: func(ctx context.Context, in *awssqs.ReceiveMessageInput, _ ...func(*awssqs.Options)) (*awssqs.ReceiveMessageOutput, error) {
-			gotMax = in.MaxNumberOfMessages
+			received <- in.MaxNumberOfMessages
 			<-ctx.Done() // block until the test cancels
 			return nil, ctx.Err()
 		},
@@ -123,23 +124,23 @@ func TestReceiver_Run_FIFO_RequestsSingleMessage(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	t.Cleanup(func() {
+		cancel()
+		err := wait.RequireReceive(t, done, 2*time.Second)
+		require.ErrorIs(t, err, context.Canceled)
+	})
 	go func() {
-		defer close(done)
-		_ = r.Run(ctx, func(context.Context, ports.Delivery) error { return nil })
+		done <- r.Run(ctx, func(context.Context, ports.Delivery) error { return nil })
 	}()
 
-	// Wait until the poll loop is live (Started signals readiness), then
-	// cancel; no sleeps.
-	select {
-	case <-r.Started():
-	case <-time.After(2 * time.Second):
-		cancel()
-		t.Fatal("receiver did not start")
-	}
+	// Started precedes the first SDK call. Synchronize with the actual
+	// receive before canceling, otherwise the loop may legitimately exit
+	// without issuing ReceiveMessage.
+	gotMax := wait.RequireReceive(t, received, 2*time.Second)
+	wait.RequireClosed(t, r.Started(), 2*time.Second)
 	cancel()
-	<-done
 
 	assert.Equal(t, int32(1), gotMax, "FIFO receiver must request MaxNumberOfMessages=1")
 	assert.Equal(t, int32(1), r.cfg.MaxMessages)

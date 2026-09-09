@@ -15,7 +15,7 @@ func TestAdminAPIDefaults(t *testing.T) {
 		t.Errorf("MonitorAddr = %q, want empty", got.MonitorAddr)
 	}
 	if got.AdminAPIKey != "" {
-		t.Errorf("AdminAPIKey = %q, want empty (operator must set credential URI)", got.AdminAPIKey)
+		t.Error("AdminAPIKey default must be empty; the operator supplies a key or credential reference")
 	}
 	if got.CORSOrigins != "" {
 		t.Errorf("CORSOrigins = %q, want empty", got.CORSOrigins)

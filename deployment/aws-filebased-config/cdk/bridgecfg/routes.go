@@ -85,7 +85,11 @@ func (b *Builder) WithRouteOpts(receiverID string, senderOrBindingIDs []string, 
 		bind := ports.BindingDef{ID: bindID, SenderID: id, Address: address}
 		if sd := b.findSender(id); sd != nil {
 			bind.SessionID = sd.SessionID
-			bind.SetDecoded(sd.Config, nil)
+			pc := sd.Config
+			if frozen, ok := pc.(ports.FreezableConfig); ok {
+				pc = frozen.FreezePluginConfig()
+			}
+			bind.SetDecoded(pc, nil)
 		}
 		b.cfg.Bindings = append(b.cfg.Bindings, bind)
 		bindingIDs = append(bindingIDs, bindID)

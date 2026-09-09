@@ -2,13 +2,10 @@ package sqs
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -207,7 +204,7 @@ func (s *Sender) buildBatchEntry(idx int, env *messaging.Envelope) sqstypes.Send
 		entry.MessageAttributes = attrs
 	}
 
-	if s.cfg.isFIFO() {
+	if s.isFIFO() {
 		groupID, dedupID := extractFIFOFields(env.Headers())
 		if groupID == "" {
 			groupID = s.cfg.MessageGroupID
@@ -274,7 +271,7 @@ func (s *Sender) buildAttributes(env *messaging.Envelope) map[string]sqstypes.Me
 }
 
 func (s *Sender) applyFIFO(input *awssqs.SendMessageInput, env *messaging.Envelope) {
-	if !s.cfg.isFIFO() {
+	if !s.isFIFO() {
 		return
 	}
 
@@ -452,184 +449,9 @@ func headersToAttributes(headers map[string]any, maxAttrs int, seedBytes int, ma
 	return attrs, dropped
 }
 
-// subjectAttributeSize is the byte size the reserved "Subject" attribute
-// contributes to the SQS message-size budget: attribute name + "String"
-// data type + subject value, mirroring the name-inclusive accounting
-// headersToAttributes applies to every other candidate.
-func subjectAttributeSize(subject string) int {
-	return len(sqsSubjectAttributeName) + len("String") + len(subject)
-}
-
-// attributeValue builds the SQS MessageAttributeValue for a header value
-// and reports its approximate byte size (type name + value bytes). It
-// returns ok=false for value types SQS cannot carry as an attribute.
-func attributeValue(v any) (sqstypes.MessageAttributeValue, int, bool) {
-	switch val := v.(type) {
-	case string:
-		return sqstypes.MessageAttributeValue{
-			DataType:    aws.String("String"),
-			StringValue: aws.String(val),
-		}, len("String") + len(val), true
-	case []byte:
-		return sqstypes.MessageAttributeValue{
-			DataType:    aws.String("Binary"),
-			BinaryValue: val,
-		}, len("Binary") + len(val), true
-	case int, int32, int64, float32, float64:
-		s := fmt.Sprintf("%v", val)
-		return sqstypes.MessageAttributeValue{
-			DataType:    aws.String("Number"),
-			StringValue: aws.String(s),
-		}, len("Number") + len(s), true
-	case time.Time:
-		s := val.Format(time.RFC3339Nano)
-		return sqstypes.MessageAttributeValue{
-			DataType:    aws.String("String"),
-			StringValue: aws.String(s),
-		}, len("String") + len(s), true
-	case bool:
-		s := fmt.Sprintf("%t", val)
-		return sqstypes.MessageAttributeValue{
-			DataType:    aws.String("String"),
-			StringValue: aws.String(s),
-		}, len("String") + len(s), true
-	default:
-		return sqstypes.MessageAttributeValue{}, 0, false
-	}
-}
-
-// isValidSQSAttributeName reports whether name is a legal SQS message
-// attribute name: 1-256 chars from [A-Za-z0-9_.-], no AWS./Amazon.
-// (case-insensitive) reserved prefix, and no leading, trailing or
-// consecutive periods.
-func isValidSQSAttributeName(name string) bool {
-	if name == "" || len(name) > sqsMaxAttributeNameLen {
-		return false
-	}
-	if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") || strings.Contains(name, "..") {
-		return false
-	}
-	if hasFoldPrefix(name, "aws.") || hasFoldPrefix(name, "amazon.") {
-		return false
-	}
-	for _, r := range name {
-		switch {
-		case r >= 'A' && r <= 'Z',
-			r >= 'a' && r <= 'z',
-			r >= '0' && r <= '9',
-			r == '_', r == '-', r == '.':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-// hasFoldPrefix reports whether s starts with prefix, case-insensitively.
-func hasFoldPrefix(s, prefix string) bool {
-	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
-}
-
-// extractFIFOFields pulls MessageGroupId and MessageDeduplicationId from
-// envelope headers. Returns empty strings when not present.
-func extractFIFOFields(headers map[string]any) (groupID, dedupID string) {
-	if headers == nil {
-		return "", ""
-	}
-	if v, ok := headers[messaging.HeaderOrderingKey]; ok {
-		if s, ok := v.(string); ok {
-			groupID = s
-		}
-	}
-	if v, ok := headers[messaging.HeaderDeduplicationID]; ok {
-		if s, ok := v.(string); ok {
-			dedupID = s
-		}
-	}
-	return groupID, dedupID
-}
-
-// generateDeduplicationID derives a stable FIFO dedup id from the
-// envelope payload, subject and id. md5 is sufficient — SQS only uses
-// the value as an opaque key for dedup, not for security.
-//
-// review: Subject is now a logical event subject (no longer
-// implicitly populated from the queue name/URL on receive) and may be
-// empty. Mixing it into the hash is benign: when env.ID is set it is
-// the primary disambiguator, so distinct logical messages do not
-// collide just because they share an empty Subject. Conversely, two
-// envelopes that share payload+id+subject deliberately collide so
-// SQS dedup treats them as duplicates. When env.ID is empty the
-// CreatedAt timestamp keeps each call unique. No semantic change is
-// required.
-func generateDeduplicationID(env *messaging.Envelope) string {
-	h := md5.New()
-	h.Write(env.Payload())
-	h.Write([]byte(env.Subject()))
-	if env.ID() != "" {
-		h.Write([]byte(env.ID()))
-	} else {
-		h.Write([]byte(env.CreatedAt().String()))
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}
-
 func derefStr(s *string) string {
 	if s == nil {
 		return ""
 	}
 	return *s
-}
-
-// ensureClient lazily creates the SDK SQS client for the sender and
-// resolves the queue URL. Honours an injected fake (cfg.Client) when
-// present.
-func (s *Sender) ensureClient(ctx context.Context) error {
-	s.initMu.Lock()
-	defer s.initMu.Unlock()
-
-	client := s.loadClient()
-	if client != nil && s.queueURL != "" {
-		return nil
-	}
-
-	initCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
-	defer cancel()
-
-	if client == nil {
-		if s.cfg.Client != nil {
-			client = s.cfg.Client
-		} else if s.cfg.InitialCredentials != nil {
-			// A resolved `credentials_uri` builds the initial client with
-			// static material instead of the ambient SDK chain.
-			// Temporary (STS) material is rejected here.
-			c, err := rebuildSQSClient(initCtx, s.cfg.Region, s.cfg.Endpoint, s.cfg.Profile, s.cfg.InitialCredentials)
-			if err != nil {
-				return err
-			}
-			client = c
-		} else {
-			cfg, err := buildAWSConfig(initCtx, s.cfg.Region, s.cfg.Endpoint, s.cfg.Profile)
-			if err != nil {
-				return err
-			}
-			client = awssqs.NewFromConfig(cfg)
-		}
-		s.storeClient(client)
-	}
-
-	url, err := resolveQueueURL(initCtx, client, s.cfg.QueueURL, s.cfg.QueueName)
-	if err != nil {
-		return err
-	}
-	s.queueURL = url
-
-	if logging.DebugEnabled(s.logger) {
-		s.logger.Log(ctx, logging.LevelDebug, "sqs: sender initialized",
-			"queue_url", s.queueURL,
-			"region", s.cfg.Region,
-		)
-	}
-
-	return nil
 }

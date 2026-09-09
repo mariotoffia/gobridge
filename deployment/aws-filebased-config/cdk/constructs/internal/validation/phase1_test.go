@@ -411,11 +411,7 @@ func Test_TierB_Validation_WorkerControlOnly(t *testing.T) {
 	})
 }
 
-// Test_TierB_Validation_PlaintextSecret covers matrix row 3 by
-// driving a sender plugin payload that carries a literal password.
-// Uses bridgecfg.ScanForPlaintextSecrets behind Phase1 — the
-// scanner's typed wording is preserved inside the wrapped error.
-func Test_TierB_Validation_PlaintextSecret(t *testing.T) {
+func TestPhase1_LiteralCredentialsAreConsumerChoice(t *testing.T) {
 	cfg := baseConfig()
 	sender := ports.SenderDef{ID: "s1", Transport: "http"}
 	sender.SetDecoded(nil, mapRaw{
@@ -424,28 +420,17 @@ func Test_TierB_Validation_PlaintextSecret(t *testing.T) {
 	})
 	cfg.Senders = []ports.SenderDef{sender}
 
-	err := Phase1(baseInput(cfg))
-	if err == nil {
-		t.Fatal("expected ErrPlaintextSecret, got nil")
-	}
-	if !errors.Is(err, ErrPlaintextSecret) {
-		t.Fatalf("expected ErrPlaintextSecret, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "senders[0].config.password") {
-		t.Fatalf("error missing field path: %v", err)
+	if err := Phase1(baseInput(cfg)); err != nil {
+		t.Fatalf("Phase1 rejected consumer-supplied credentials: %v", err)
 	}
 }
 
-// Test_TierB_Validation_DeterministicOrder asserts that bridge.id
-// failures preempt the secret scan: the cheaper check fires first
-// even when a secret violation would also match. Locks the
-// documented order so future refactors can't silently reorder.
-func Test_TierB_Validation_DeterministicOrder(t *testing.T) {
+func TestPhase1_InvalidBridgeIDPrecedesEndpointValidation(t *testing.T) {
 	cfg := baseConfig()
-	cfg.Bridge.ID = "" // row 8 fails
-	sender := ports.SenderDef{ID: "s1"}
-	sender.SetDecoded(nil, mapRaw{"password": "literal"})
-	cfg.Senders = []ports.SenderDef{sender}
+	cfg.Bridge.ID = ""
+	cfg.Bridge.Cluster = &ports.ClusterConfig{
+		Endpoints: map[string]string{"node": "not-a-url"},
+	}
 
 	err := Phase1(baseInput(cfg))
 	if err == nil {
@@ -453,8 +438,5 @@ func Test_TierB_Validation_DeterministicOrder(t *testing.T) {
 	}
 	if !errors.Is(err, ErrInvalidBridgeID) {
 		t.Fatalf("expected ErrInvalidBridgeID first, got %v", err)
-	}
-	if errors.Is(err, ErrPlaintextSecret) {
-		t.Fatalf("secret scan should not run before bridge.id check; got %v", err)
 	}
 }

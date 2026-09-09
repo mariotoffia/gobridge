@@ -3,6 +3,7 @@ package sqs
 import (
 	"errors"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -31,6 +32,18 @@ func Register(reg *ports.Registry) error {
 		if raw != nil {
 			if err := raw.Decode(&c); err != nil {
 				return nil, err
+			}
+			// Null is not an omitted selector: accepting queue_tags: null
+			// would silently switch back to URL/name mode or a partial
+			// binding override. Preserve that wire-level distinction.
+			if c.QueueTags == nil {
+				var fields map[string]any
+				if err := raw.Decode(&fields); err != nil {
+					return nil, err
+				}
+				if _, present := fields["queue_tags"]; present {
+					return nil, shared.ErrInvalidConfig.WithMessage("sqs: queue_tags must be a non-empty map, not null")
+				}
 			}
 		}
 		// Reject explicit zeros with a clear error instead of the silent

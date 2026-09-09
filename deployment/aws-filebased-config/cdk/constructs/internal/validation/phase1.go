@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/bridgecfg"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
@@ -62,8 +61,8 @@ type Phase1Input struct {
 // as a typed error (see errors.go), or nil on success.
 //
 // Order: bridge.id → cluster.endpoints → filesystem profile → store
-// paths → worker / control-only → plaintext secret scan. Cheapest
-// first, secret scan last because it walks every plugin payload.
+// paths → worker / control-only. Credential storage is a consumer choice:
+// Phase1 does not reject literal values or run a secret-content scanner.
 //
 // A nil Materialized or a nil Materialized.Config is a programming
 // error (Phase 1 is meant to run AFTER source.Materialize succeeded)
@@ -103,9 +102,6 @@ func Phase1(in Phase1Input) error {
 	}
 	if err := validateWorkerControlOnly(in.Bootstrap, role, mount, storePaths); err != nil {
 		return err
-	}
-	if err := bridgecfg.ScanForPlaintextSecrets(cfg); err != nil {
-		return fmt.Errorf("%w: %w", ErrPlaintextSecret, err)
 	}
 	return nil
 }

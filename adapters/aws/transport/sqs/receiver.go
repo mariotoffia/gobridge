@@ -3,6 +3,7 @@ package sqs
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	"sync"
 	"sync/atomic"
@@ -33,6 +34,7 @@ type Receiver struct {
 	clk         clock.Clock
 	authGrace   *authGrace
 	initMu      sync.Mutex
+	queueURL    string // protected by initMu; never written into the logical cfg
 	started     chan struct{}
 	startedOnce sync.Once
 
@@ -67,6 +69,7 @@ func (r *Receiver) storeClient(c sqsAPI) {
 
 // NewReceiver creates an SQS Receiver.
 func NewReceiver(cfg ReceiverConfig, logger *slog.Logger) (*Receiver, error) {
+	cfg.QueueTags = maps.Clone(cfg.QueueTags)
 	cfg.applyDefaults()
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -126,7 +129,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 		return err
 	}
 
-	queueURL, err := resolveQueueURL(initCtx, r.loadClient(), r.cfg.QueueURL, r.cfg.QueueName)
+	queueURL, err := r.resolveQueue(initCtx)
 	if err != nil {
 		return err
 	}
@@ -178,6 +181,20 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 	}
 
 	return r.pollLoop(ctx, queueURL, maxMessages, emit)
+}
+
+func (r *Receiver) resolveQueue(ctx context.Context) (string, error) {
+	r.initMu.Lock()
+	defer r.initMu.Unlock()
+	if r.queueURL != "" {
+		return r.queueURL, nil
+	}
+	url, err := resolveQueueURL(ctx, r.loadClient(), r.cfg.QueueURL, r.cfg.QueueName, r.cfg.QueueTags, r.cfg.QueueNamePrefix)
+	if err != nil {
+		return "", err
+	}
+	r.queueURL = url
+	return url, nil
 }
 
 func (r *Receiver) pollLoop(

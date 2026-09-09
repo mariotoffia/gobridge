@@ -78,9 +78,9 @@ func (e *ErrWorkerWritesControlOnly) Error() string {
 	)
 }
 
-// ErrPlaintextSecret wraps the aggregated error returned by
-// bridgecfg.ScanForPlaintextSecrets so callers can detect "Phase 1
-// failed because of a plaintext secret" via errors.Is without
-// inspecting strings. The wrapped error carries the per-field
-// detail.
+// ErrPlaintextSecret is retained for compatibility with callers that classified
+// errors from the former automatic secret scan. Phase1 no longer returns it.
+//
+// Deprecated: Credential storage is a consumer choice. Consumers wanting a
+// URI-only policy can explicitly call bridgecfg.ScanForPlaintextSecrets.
 var ErrPlaintextSecret = errors.New("plaintext secret detected in config")

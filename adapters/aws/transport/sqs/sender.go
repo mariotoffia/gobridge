@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -100,8 +101,9 @@ func (s *Sender) storeClient(c sqsAPI) {
 }
 
 // NewSender creates an SQS Sender. The sender resolves its queue URL
-// lazily on the first Send call unless QueueURL is already set.
+// lazily on the first Send/SendBatch call unless QueueURL is already set.
 func NewSender(cfg SenderConfig, opts ...SenderOption) (*Sender, error) {
+	cfg.QueueTags = maps.Clone(cfg.QueueTags)
 	cfg.applyDefaults()
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -141,11 +143,11 @@ func (s *Sender) clock() clock.Clock {
 // queue, but a route binding address is frequently the logical queue
 // NAME — scenario configs use `address: <queue-name>` — while the sender
 // resolves a fully-qualified queue URL. Accept any unambiguous reference
-// to the bound queue: empty (use the configured queue), the resolved
+// to the bound queue: empty or QueueAddress (use the configured queue), the resolved
 // queue URL, the configured QueueName, or the queue name embedded as the
 // last path segment of the queue URL. Everything else is a mismatch.
 func (s *Sender) addressMatchesQueue(addr string) bool {
-	if addr == "" || addr == s.queueURL {
+	if addr == "" || addr == QueueAddress || addr == s.queueURL {
 		return true
 	}
 	if s.cfg.QueueName != "" && addr == s.cfg.QueueName {
@@ -185,6 +187,8 @@ func queueNameFromURL(u string) string {
 // canonical URL is resolved. That is the safe direction — build-time accepts a
 // superset of send-time, so a valid config never fails the build.
 func (s *Sender) ValidateAddress(address string) error {
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
 	if address == "" || s.addressMatchesQueue(address) {
 		return nil
 	}
@@ -204,9 +208,10 @@ func (s *Sender) ValidateAddress(address string) error {
 // for both single and batch sends, instead of the single-send path
 // falling into the transient default and retrying a config fault.
 func (s *Sender) validateFIFOGroup(env *messaging.Envelope) error {
-	if !s.cfg.isFIFO() {
+	if !s.isFIFO() {
 		return nil
 	}
+
 	groupID, _ := extractFIFOFields(env.Headers())
 	if groupID == "" && s.cfg.MessageGroupID == "" {
 		return shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
@@ -214,6 +219,10 @@ func (s *Sender) validateFIFOGroup(env *messaging.Envelope) error {
 			env.ID(), messaging.HeaderOrderingKey))
 	}
 	return nil
+}
+
+func (s *Sender) isFIFO() bool {
+	return s.cfg.isFIFO() || isFIFOQueue(s.queueURL)
 }
 
 // Send submits a single envelope to SQS.

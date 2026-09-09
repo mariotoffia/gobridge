@@ -216,6 +216,10 @@ func TestRegistryDecoder_RejectsExplicitZeros(t *testing.T) {
 type rawMap map[string]any
 
 func (m rawMap) Decode(target any) error {
+	if fields, ok := target.(*map[string]any); ok {
+		*fields = m
+		return nil
+	}
 	c, ok := target.(*Config)
 	if !ok {
 		return errors.New("rawMap: unexpected target")

@@ -40,20 +40,33 @@ func TestWithHTTPAdminAPI_PopulatesHTTPSection(t *testing.T) {
 	}
 }
 
-func TestWithHTTPAdminAPI_PlaintextKeyRejected(t *testing.T) {
+func TestWithHTTPAdminAPI_LiteralKeysAreConsumerChoice(t *testing.T) {
 	opts := bridgecfg.AdminAPIDefaults()
-	opts.AdminAPIKey = "literal-secret"
-	_, err := bridgecfg.New("b").
+	opts.AdminAPIKey = "literal-admin-key-0123456789"
+	opts.MonitorAPIKey = "literal-monitor-key-0123456789"
+	cfg, err := bridgecfg.New("b").
 		WithHTTPAdminAPI(opts).
 		Build()
+	if err != nil {
+		t.Fatalf("Build rejected consumer-supplied keys: %v", err)
+	}
+	if cfg.HTTP.AdminAPIKey.Reveal() != opts.AdminAPIKey || cfg.HTTP.MonitorAPIKey.Reveal() != opts.MonitorAPIKey {
+		t.Fatal("Build changed consumer-supplied keys")
+	}
+	// Consumers can still apply a URI-only policy explicitly. Its
+	// diagnostics identify fields, never the values they contain.
+	err = bridgecfg.ScanForPlaintextSecrets(cfg)
 	if err == nil {
-		t.Fatal("expected plaintext-secret error for inline AdminAPIKey")
+		t.Fatal("explicit plaintext scanner did not report literal keys")
 	}
 	if !strings.Contains(err.Error(), "plaintext secret") {
-		t.Errorf("error = %v, want one mentioning plaintext secret", err)
+		t.Error("explicit scanner did not identify a plaintext secret")
 	}
-	if !strings.Contains(err.Error(), "http.admin_api_key") {
-		t.Errorf("error = %v, want one naming http.admin_api_key", err)
+	if !strings.Contains(err.Error(), "http.admin_api_key") || !strings.Contains(err.Error(), "http.monitor_api_key") {
+		t.Error("explicit scanner did not name the key fields")
+	}
+	if strings.Contains(err.Error(), opts.AdminAPIKey) || strings.Contains(err.Error(), opts.MonitorAPIKey) {
+		t.Error("explicit scanner exposed key values")
 	}
 }
 

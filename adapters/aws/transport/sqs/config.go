@@ -17,12 +17,19 @@ import (
 // (bridge max retries + 3) to avoid the SQS DLQ swallowing messages
 // that the bridge would otherwise handle.
 type ReceiverConfig struct {
-	// QueueURL is the fully qualified SQS queue URL. Either QueueURL or
-	// QueueName must be set.
+	// QueueURL is the fully qualified SQS queue URL. QueueURL, QueueName,
+	// or QueueTags must be set.
 	QueueURL string
 
-	// QueueName is the logical queue name, resolved to a URL on startup.
+	// QueueName is the physical queue name, resolved to a URL on startup.
 	QueueName string
+
+	// QueueTags selects one queue by all required AWS resource tags.
+	// It cannot be combined with QueueURL or QueueName.
+	QueueTags map[string]string
+
+	// QueueNamePrefix optionally narrows the QueueTags discovery scan.
+	QueueNamePrefix string
 
 	// Region is the AWS region. Empty uses the SDK default chain.
 	Region string
@@ -123,12 +130,19 @@ type ReceiverConfig struct {
 
 // SenderConfig configures an SQS Sender.
 type SenderConfig struct {
-	// QueueURL is the fully qualified SQS queue URL. Either QueueURL or
-	// QueueName must be set.
+	// QueueURL is the fully qualified SQS queue URL. QueueURL, QueueName,
+	// or QueueTags must be set.
 	QueueURL string
 
-	// QueueName is the logical queue name, resolved to a URL on startup.
+	// QueueName is the physical queue name, resolved to a URL on first send.
 	QueueName string
+
+	// QueueTags selects one queue by all required AWS resource tags.
+	// It cannot be combined with QueueURL or QueueName.
+	QueueTags map[string]string
+
+	// QueueNamePrefix optionally narrows the QueueTags discovery scan.
+	QueueNamePrefix string
 
 	// Region is the AWS region. Empty uses the SDK default chain.
 	Region string
@@ -192,8 +206,8 @@ type SenderConfig struct {
 }
 
 func (c *ReceiverConfig) validate() error {
-	if c.QueueURL == "" && c.QueueName == "" {
-		return errors.New("sqs: either QueueURL or QueueName is required")
+	if err := validateQueueReference(c.QueueURL, c.QueueName, c.QueueTags, c.QueueNamePrefix, true); err != nil {
+		return err
 	}
 	if err := validatePoisonBackstop(c.PoisonMaxReceives, c.PoisonDropWithoutDLQ); err != nil {
 		return err
@@ -277,8 +291,8 @@ func (c *ReceiverConfig) autoExtendEnabled() bool {
 }
 
 func (c *SenderConfig) validate() error {
-	if c.QueueURL == "" && c.QueueName == "" {
-		return errors.New("sqs: either QueueURL or QueueName is required")
+	if err := validateQueueReference(c.QueueURL, c.QueueName, c.QueueTags, c.QueueNamePrefix, true); err != nil {
+		return err
 	}
 	// FIFO fail-fast: a ".fifo" queue send without a MessageGroupId is a
 	// deterministic config fault SQS rejects at runtime with

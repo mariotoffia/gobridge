@@ -58,10 +58,8 @@ func (b *Builder) WithMQTTBroker(sessionID, brokerURL string, opts ...MQTTOption
 // MQTTCredsFromSSM returns an MQTTOption that wires the session's
 // CredentialsURIRef to a pms:// URI derived from ref.Name(). The
 // runtime credential resolver consumes the URI at startup and feeds
-// the resolved username/password into the MQTT session. Inline
-// credentials remain rejected by ScanForPlaintextSecrets — this is
-// the only supported way to thread MQTT auth through the CDK
-// pipeline.
+// the resolved username/password into the MQTT session. This is an optional
+// alternative to supplying literal credentials through MQTTOption.
 //
 // The ref is captured by name; an unresolved ref still produces a
 // well-formed URI. The aggregated annotation pass reports the missing SSM

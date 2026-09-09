@@ -54,7 +54,9 @@ senders:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `queue_url` | string | -- | Fully qualified SQS queue URL |
-| `queue_name` | string | -- | Logical queue name (resolved at startup) |
+| `queue_name` | string | -- | Physical queue name (resolved at startup) |
+| `queue_tags` | map of strings | -- | Required AWS resource tags selecting exactly one queue; alternative to URL/name |
+| `queue_name_prefix` | string | -- | Optional discovery prefix; valid only with `queue_tags` |
 | `region` | string | SDK default | AWS region |
 | `endpoint` | string | -- | Override endpoint (for LocalStack) |
 | `profile` | string | -- | AWS shared-config profile name |
@@ -71,7 +73,8 @@ senders:
 | `poison_max_receives` | int | `0` (disabled) | Adapter-enforced backstop for malformed ("poison") messages the receiver cannot convert. When `> 0` and a poison message's `ApproximateReceiveCount` reaches it, the receiver **deletes** the message to break an otherwise-unbounded redelivery loop, emitting `SQSPoisonDropped`. The delete **drops the message (no DLQ copy)**, so it is subject to two enforced guards (below): it must be `>= 2` unless `poison_drop_without_dlq` is set, and it must be **strictly greater** than any native `maxReceiveCount` (verified at startup) so native redrive — which *preserves* the payload — always wins. A native redrive policy remains the preferred loss-preventing mechanism. |
 | `poison_drop_without_dlq` | bool | `false` | Explicit opt-in for the single most destructive backstop setting, `poison_max_receives: 1` (delete on the **first** conversion failure — no redelivery, no DLQ copy). Without it, `poison_max_receives == 1` is rejected at config time. It does **not** relax the startup guard that rejects a backstop preempting an existing native redrive policy. |
 
-Either `queue_url` or `queue_name` must be provided.
+Provide `queue_url`, `queue_name`, or `queue_tags`. URL and name may still be
+supplied together; the URL takes precedence. Tags cannot be combined with either.
 
 > **Startup redrive validation (enforced).** On startup the receiver performs a
 > best-effort `GetQueueAttributes` read of the source queue's native redrive
@@ -98,19 +101,136 @@ Either `queue_url` or `queue_name` must be provided.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `queue_url` | string | -- | Fully qualified SQS queue URL |
-| `queue_name` | string | -- | Logical queue name (resolved at startup) |
+| `queue_name` | string | -- | Physical queue name (resolved at first send) |
+| `queue_tags` | map of strings | -- | Required AWS resource tags selecting exactly one queue; alternative to URL/name |
+| `queue_name_prefix` | string | -- | Optional discovery prefix; valid only with `queue_tags` |
 | `region` | string | SDK default | AWS region |
 | `endpoint` | string | -- | Override endpoint (for LocalStack) |
 | `profile` | string | -- | AWS shared-config profile name |
 | `delay_seconds` | int | 0 | Delivery delay in seconds (0--900). Backs the `delayed_send` capability. **Rejected on FIFO queues** -- see the FIFO delay rule below. |
 | `batch_size` | int | 10 | Messages per SendMessageBatch (1--10) |
-| `timeout` | duration | `30s` | Per-call send timeout |
+| `timeout` | duration | `30s` | Bounds lazy initialization and each send call |
 | `message_group_id` | string | -- | Default FIFO message group ID |
 | `fifo` | bool | `false` | Opt into per-envelope FIFO groups via the `x-bridge.ordering-key` header |
 | `max_message_bytes` | int | 1048576 | Message-size ceiling in bytes (body + attributes). `0` keeps the 1 MiB default, which is the service's own default `MaximumMessageSize`; set it to match a queue provisioned below that. |
 | `credentials_uri` | string | -- | URI resolved by the bridge credential store at build time |
 
-Either `queue_url` or `queue_name` must be provided.
+Provide `queue_url`, `queue_name`, or `queue_tags`. URL and name may still be
+supplied together; the URL takes precedence. Tags cannot be combined with either.
+
+## Queue discovery by tags
+
+Use a stable physical `queue_name` when one is known. Otherwise, `queue_tags`
+lets an embedded configuration identify a queue without a deployment-time URL
+token or manual URL resolution:
+
+```yaml
+senders:
+  - id: orders-out
+    transport: sqs
+    options:
+      region: eu-west-1
+      queue_tags:
+        application: orders
+        environment: production
+      queue_name_prefix: orders-  # Optional; omit if the name is unknown.
+bindings:
+  - id: to-orders
+    sender_id: orders-out
+    address: "sqs:queue"
+```
+
+`address: "sqs:queue"` means “use this sender's configured queue” and is exposed
+as `sqs.QueueAddress` in Go. It does not enable per-message queue selection.
+The same selector fields work on receivers. A binding cannot change its sender's
+queue or discovery scope: the runtime constructs the sender only from
+`SenderDef.Config`. Bindings may repeat the identical selector or carry partial
+non-reference options, but must not select another queue, region, profile,
+endpoint, or credential source. CDK rejects those changes before embedding,
+registry validation, or IAM grants. Binding options do not construct a separate
+sender or merge into its configuration.
+
+The adapter uses only the SQS APIs: paginated `ListQueues` with `MaxResults`
+and `NextToken`, followed by `ListQueueTags` on every candidate. The configured
+AWS credentials and region determine the scan's account and region. All required
+tag keys and values must match, including the presence of keys whose value is
+empty. The optional prefix narrows the names returned by SQS.
+
+- Exactly one observed match: use its queue URL.
+- No match: return transient `UNAVAILABLE`. Receiver readiness stays false;
+  the runtime owns retries. Senders return the transient error from their
+  lazy initialization.
+- Multiple matches: return permanent `INVALID_CONFIG` with an ambiguity error.
+  The adapter never chooses the first queue.
+- An API or permission failure: preserve its classified error and underlying
+  cause; do not turn it into a no-match result.
+
+Discovery runs during receiver startup or the sender's first `Send`/`SendBatch`.
+Receiver `init_timeout`, sender `timeout`, and any earlier caller deadline bound
+the scan. Failed discovery is not cached. Successful discovery pins the URL in
+the adapter instance; it never replaces the logical selector in the configuration.
+Later tag changes do not retarget a running adapter. Recreate the adapter to
+resolve again. This is an observed scan, not an atomic snapshot of AWS tags.
+
+A selector must contain 1–50 tags. Keys must contain 1–128 UTF-8 characters;
+values may contain 0–256. Empty maps, null selectors, and empty keys are invalid.
+The prefix is at most 80 characters and permits letters, digits, hyphens,
+underscores, and periods. Neither selector values nor prefixes receive defaults.
+
+**IAM permissions.** In addition to the queue's exact send/receive permissions,
+tag discovery requires `sqs:ListQueues` on `*` because AWS does not support
+resource-scoping that action. `sqs:ListQueueTags` must cover **every scanned
+candidate**, using queue ARNs in the account/region with the configured prefix,
+or all queue names when no prefix is set. Granting it only on the intended queue
+would abort discovery when a different candidate is inspected. These are
+metadata permissions; send, receive, delete, and visibility grants must remain
+scoped to the exact intended queue. URL/name modes need no tag-discovery grants.
+Name resolution requires `sqs:GetQueueUrl`.
+
+**CDK registration.** Keep the actual `awssqs.IQueue` in `QueueRegistry`. Call
+`AddQueue("orders", queue)`, then
+`BindQueueTags("orders", map[string]string{"application": "orders"}, "")`
+and check the returned error before passing `Ref("orders")` to the builder.
+The registry alias is not a physical queue name. The builder uses explicit
+selector bindings or a known physical name, never an automatically generated
+`QueueUrl` token. For an owned queue, binding applies the selector tags through
+CDK. For an imported queue, binding is an explicit contract that its producer
+applies those tags; CDK neither scans AWS nor assumes imported tags are visible.
+Synth validation requires one registered queue for each selector, while runtime
+discovery also detects additional matching queues outside the registry.
+
+Registry resolution honors explicit `region`; otherwise CDK uses the consuming
+task stack's region (ECS supplies it to the SDK environment). A custom credential
+profile does not erase that known region. It rejects known
+region/account mismatches before granting access, and keeps the complete SQS
+configuration during validation rather than reducing it to a queue name.
+Name and tag discovery use the credential account, not the queue producer's
+account: `ListQueues` cannot discover another account's queues.
+
+For the normal task-role/default-credential path, the consuming stack supplies
+the expected account. A configured profile, `credentials_uri`, or custom endpoint
+makes the credential account unknown to CDK. Unresolved stack/queue environments
+are also unknown. In those cases registry binding is the caller's assertion that
+the queue is in the actual runtime discovery scope; synth does not inspect
+credentials or query AWS to prove that assertion. Deployment-specific SDK-chain
+overrides outside plugin config must be reviewed against this default-credential
+contract. Known mismatches fail; unknown identity is not presented as verified.
+Direct queue URLs retain their non-embedded cross-account support.
+
+Before embedding, `bridgecfg.ValidateEmbeddedSQSConfig` requires each SQS sender
+and receiver to specify a physical name or tag selector. It rejects `queue_url`
+even when literal or paired with a name, and rejects URL-shaped SQS binding
+addresses. The check follows inherited transport kinds but does not inherit
+queue options from sessions. Since SQS creates no live Session, receiver/sender
+connection attachments are rejected; declare the transport explicitly and put
+queue options on each receiver/sender. A binding's `session_id` is instead its
+outbox/drainer owner and may reference a stateful MQTT session independently of
+the SQS sender. A binding referencing a stateless SQS session is rejected.
+Non-embedded configurations still support URLs.
+
+If tag discovery finds a FIFO queue, the adapter enforces FIFO rules before
+polling or sending: the receiver polls one message at a time, and the sender
+requires a default group or `fifo: true` and rejects per-message delay.
 
 **FIFO build-time rule.** A `.fifo` queue send requires either
 `message_group_id` (a default group) or `fifo: true` (per-envelope groups via
@@ -337,4 +457,3 @@ so neither can be injected through an attribute.
 > -- see Azure Service Bus below.
 
 ---
-

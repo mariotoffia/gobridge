@@ -2,6 +2,7 @@ package sqs
 
 import (
 	"errors"
+	"maps"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
@@ -21,9 +22,14 @@ type Config struct {
 	// Common
 	QueueURL  string `mapstructure:"queue_url" yaml:"queue_url" json:"queue_url"`
 	QueueName string `mapstructure:"queue_name" yaml:"queue_name" json:"queue_name"`
-	Region    string `mapstructure:"region" yaml:"region" json:"region"`
-	Endpoint  string `mapstructure:"endpoint" yaml:"endpoint" json:"endpoint"`
-	Profile   string `mapstructure:"profile" yaml:"profile" json:"profile"`
+	// QueueTags selects exactly one queue by all required AWS resource tags.
+	// It is an alternative to QueueURL/QueueName, not an additional filter.
+	QueueTags map[string]string `mapstructure:"queue_tags" yaml:"queue_tags,omitempty" json:"queue_tags,omitempty"`
+	// QueueNamePrefix optionally narrows the tag discovery scan.
+	QueueNamePrefix string `mapstructure:"queue_name_prefix" yaml:"queue_name_prefix,omitempty" json:"queue_name_prefix,omitempty"`
+	Region          string `mapstructure:"region" yaml:"region" json:"region"`
+	Endpoint        string `mapstructure:"endpoint" yaml:"endpoint" json:"endpoint"`
+	Profile         string `mapstructure:"profile" yaml:"profile" json:"profile"`
 
 	// CredentialsURIRef is the optional URI consulted by the bridge's
 	// credential store at build time. The resolved material is
@@ -99,6 +105,7 @@ type Config struct {
 // replaces the pointer on the frozen copy.
 func (c Config) FreezePluginConfig() ports.PluginConfig {
 	frozen := c
+	frozen.QueueTags = maps.Clone(c.QueueTags)
 	if c.AutoExtend != nil {
 		autoExtend := *c.AutoExtend
 		frozen.AutoExtend = &autoExtend
@@ -165,9 +172,12 @@ func DefaultConfig() Config {
 // (receiver, sender, binding override), so it deliberately does not
 // require a queue reference: a binding carries only overrides and a
 // receiver/sender may leave the queue to its own spec. Completeness
-// (queue_url or queue_name) is enforced by ValidateQueue at the
+// (queue_url, queue_name or queue_tags) is enforced by ValidateQueue at the
 // points that actually build a Receiver/Sender.
 func (c Config) Validate() error {
+	if err := validateQueueReference(c.QueueURL, c.QueueName, c.QueueTags, c.QueueNamePrefix, false); err != nil {
+		return err
+	}
 	if c.MaxMessages < 0 || c.MaxMessages > 10 {
 		return errors.New("sqs: max_messages must be in [1,10]")
 	}
@@ -213,10 +223,7 @@ func (c Config) Validate() error {
 // (factory, CDK bridgecfg builder) — not from Validate, which also
 // runs on binding overrides that legitimately omit the queue.
 func (c Config) ValidateQueue() error {
-	if c.QueueURL == "" && c.QueueName == "" {
-		return errors.New("sqs: either queue_url or queue_name is required")
-	}
-	return nil
+	return validateQueueReference(c.QueueURL, c.QueueName, c.QueueTags, c.QueueNamePrefix, true)
 }
 
 // toReceiverConfig projects the unified Config onto the internal
@@ -225,6 +232,8 @@ func (c Config) toReceiverConfig() ReceiverConfig {
 	return ReceiverConfig{
 		QueueURL:              c.QueueURL,
 		QueueName:             c.QueueName,
+		QueueTags:             maps.Clone(c.QueueTags),
+		QueueNamePrefix:       c.QueueNamePrefix,
 		Region:                c.Region,
 		Endpoint:              c.Endpoint,
 		Profile:               c.Profile,
@@ -282,6 +291,8 @@ func (c Config) toSenderConfig() SenderConfig {
 	return SenderConfig{
 		QueueURL:           c.QueueURL,
 		QueueName:          c.QueueName,
+		QueueTags:          maps.Clone(c.QueueTags),
+		QueueNamePrefix:    c.QueueNamePrefix,
 		Region:             c.Region,
 		Endpoint:           c.Endpoint,
 		Profile:            c.Profile,
