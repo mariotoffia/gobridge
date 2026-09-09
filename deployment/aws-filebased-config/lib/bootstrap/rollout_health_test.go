@@ -182,6 +182,7 @@ func TestApp_RolloutHealth_ReachesTheConfigWatchProjection(t *testing.T) {
 
 	require.NoError(t, app.Start(t.Context()))
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	awaitApplied(t, app)
 
 	require.NoError(t, os.WriteFile(cfgPath, []byte(coordinatedConfigYAML(2, "debug")), 0o644))
 	wait.Until(t, 10*time.Second, "the barrier commits the reload and this member applies it", func() bool {

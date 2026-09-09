@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"net/http"
+	"time"
 )
 
 // App shutdown and the terminal-state watch: the SIGTERM path, the blocking Run
@@ -11,7 +12,15 @@ import (
 // runtime at all and cannot get one back on its own.
 
 func (a *App) Stop(ctx context.Context) error {
-	a.mu.Lock()
+	// A construction syscall may ignore cancellation. Never wait on its state
+	// lock past the caller's deadline; Run must remain able to exit the process.
+	for !a.mu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-a.clk.After(10 * time.Millisecond):
+		}
+	}
 	if !a.started {
 		a.mu.Unlock()
 		return nil
@@ -53,11 +62,12 @@ func (a *App) Stop(ctx context.Context) error {
 	currentRuntime := a.runtimeRef.Get()
 	currentApplied := a.appliedRef.Get()
 
-	if manager != nil {
-		manager.Stop()
-	}
-
 	var firstErr error
+	if manager != nil && !waitCtx(ctx, manager.Stop) {
+		// An observer can be inside an uncancellable NFS read. One bounded join
+		// attempt is enough: do not trap Run here or spawn repeated read attempts.
+		firstErr = ctx.Err()
+	}
 	if httpServer != nil {
 		if err := httpServer.Stop(ctx); err != nil && firstErr == nil {
 			firstErr = err
@@ -127,7 +137,7 @@ func (a *App) Run(ctx context.Context) error {
 			"exiting non-zero so the orchestrator restarts the task")
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), a.shutdownTimeout)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Duration(a.processBudget.Load()))
 	defer cancel()
 	if err := a.Stop(shutdownCtx); err != nil && runErr == nil {
 		runErr = err
@@ -179,6 +189,7 @@ func (a *App) runtimeTerminal() bool {
 // reload succeeds.
 func (a *App) enterWedgedState() {
 	a.wedged.Store(true)
+	a.lastAppliedFingerprint = ""
 	a.runtimeRef.Set(nil)
 	a.appliedRef.Set(nil)
 	a.handlerRef.Set(http.NotFoundHandler())

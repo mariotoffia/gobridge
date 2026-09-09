@@ -1264,6 +1264,9 @@ func (s *Supervisor) wedgeAfterFailedStop(stopErr error) {
 // restart the process. Any runtime it builds but cannot start is
 // stopped rather than leaked.
 func (s *Supervisor) recoverOldOrWedge(ctx context.Context, oldCfg *ports.BridgeConfig) {
+	if ctx.Err() != nil {
+		return
+	} // Process cancellation withdraws authorization; do not restore old work.
 	// Bound the recovery build by the swap deadline. If the swap failed because a
 	// broker is partitioned, rebuilding the OLD config hits the same broker and
 	// NewSession can hang; an UNBOUNDED build here would keep apply() from

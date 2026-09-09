@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,9 +25,22 @@ func MarshalYAML(cfg *ports.BridgeConfig) ([]byte, error) {
 // The write uses a temporary file in the same directory followed by an
 // atomic rename, so readers never see a partially written file.
 func WriteFile(path string, cfg *ports.BridgeConfig) error {
-	data, err := MarshalYAML(cfg)
+	_, err := writeFile(path, cfg, false)
+	return err
+}
+
+func writeFile(path string, cfg *ports.BridgeConfig, createOnly bool) (created bool, err error) {
+	var data []byte
+	if createOnly && detectFormat(path) == FormatJSON {
+		data, err = MarshalBridgeConfigJSON(cfg)
+	} else {
+		data, err = MarshalYAML(cfg)
+	}
 	if err != nil {
-		return err
+		return false, err
+	}
+	if createOnly && len(data) > MaxConfigBytes {
+		return false, fmt.Errorf("config: serialized config exceeds maximum size of %d bytes", MaxConfigBytes)
 	}
 
 	dir := filepath.Dir(path)
@@ -36,13 +50,13 @@ func WriteFile(path string, cfg *ports.BridgeConfig) error {
 	// existing file keeps its current permissions so an operator-tightened or
 	// deployment-managed mode is not clobbered.
 	perm := os.FileMode(0600)
-	if info, err := os.Stat(path); err == nil {
+	if info, err := os.Stat(path); !createOnly && err == nil {
 		perm = info.Mode().Perm()
 	}
 
 	f, err := os.CreateTemp(dir, ".gobridge-config-*.yaml.tmp")
 	if err != nil {
-		return fmt.Errorf("config: create temp file in %s: %w", dir, err)
+		return false, fmt.Errorf("config: create temp file in %s: %w", dir, err)
 	}
 	tmpPath := f.Name()
 
@@ -50,27 +64,40 @@ func WriteFile(path string, cfg *ports.BridgeConfig) error {
 	ok := false
 	defer func() {
 		if !ok {
-			_ = f.Close()
-			_ = os.Remove(tmpPath)
+			if closeErr := f.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+				err = errors.Join(err, fmt.Errorf("config: close temporary file: %w", closeErr))
+			}
+			if removeErr := os.Remove(tmpPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				err = errors.Join(err, fmt.Errorf("config: remove temporary file: %w", removeErr))
+			}
 		}
 	}()
 
 	if _, err := f.Write(data); err != nil {
-		return fmt.Errorf("config: write temp file: %w", err)
+		return false, fmt.Errorf("config: write temp file: %w", err)
+	}
+	if err := f.Chmod(perm); err != nil {
+		return false, fmt.Errorf("config: chmod temp file: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		return fmt.Errorf("config: sync temp file: %w", err)
+		return false, fmt.Errorf("config: sync temp file: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("config: close temp file: %w", err)
+		return false, fmt.Errorf("config: close temp file: %w", err)
 	}
 
-	if err := os.Chmod(tmpPath, perm); err != nil {
-		return fmt.Errorf("config: chmod temp file: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("config: rename %s -> %s: %w", tmpPath, path, err)
+	if createOnly {
+		if err := os.Link(tmpPath, path); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				return false, nil
+			}
+			return false, fmt.Errorf("config: publish without replacement: %w", err)
+		}
+		if err := os.Remove(tmpPath); err != nil {
+			return false, fmt.Errorf("config: remove published temporary name: %w", err)
+		}
+	} else if err := os.Rename(tmpPath, path); err != nil {
+		return false, fmt.Errorf("config: rename %s -> %s: %w", tmpPath, path, err)
 	}
 
 	// fsync the parent directory so the rename (a directory-entry change) is
@@ -78,11 +105,11 @@ func WriteFile(path string, cfg *ports.BridgeConfig) error {
 	// directory entry unpersisted and lose the just-committed config even
 	// though the file data itself was fsynced above.
 	if err := syncDir(dir); err != nil {
-		return fmt.Errorf("config: sync dir %s: %w", dir, err)
+		return false, fmt.Errorf("config: sync dir %s: %w", dir, err)
 	}
 
 	ok = true
-	return nil
+	return true, nil
 }
 
 // syncDir fsyncs a directory so a rename into it is durable across a crash.

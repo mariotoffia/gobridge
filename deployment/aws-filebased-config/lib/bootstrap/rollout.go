@@ -11,7 +11,6 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbrollout"
 	"github.com/mariotoffia/gobridge/bridge"
 	cfgparser "github.com/mariotoffia/gobridge/config/parser"
-	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -195,6 +194,7 @@ func (a *App) buildRolloutDriver(ctx context.Context) error {
 
 	a.rolloutConfig = rc
 	a.rolloutDriver = bridge.NewClusterRolloutDriver(newAppRolloutHost(a), rc)
+	a.rolloutHealthDriver.Store(a.rolloutDriver)
 	return nil
 }
 
@@ -220,8 +220,8 @@ type rolloutBaseline struct {
 // the wrong one would durably poison the baseline. The composition root can,
 // because the deployment stamps the digest of the document it admitted. So the
 // seed happens ONLY when the config this member has just built and installed is
-// that exact content. A DynamoDB source assigns its own version, so recognition
-// ignores only that counter; file sources still require the exact version too.
+// that exact content. Both supported repositories assign their own version,
+// so recognition ignores only that counter.
 // Any other content keeps the conservative joiner rule.
 //
 // A store failure is FATAL — a member that believed it had a baseline but did not
@@ -234,7 +234,7 @@ func (a *App) seedRolloutBaseline(ctx context.Context, cfg *ports.BridgeConfig) 
 	}
 	digest, err := bridge.ConfigArtifactDigest(cfg)
 	baselineDigest := digest
-	if err == nil && a.cfg.ConfigSource == deployinfra.ConfigSourceDynamoDB {
+	if err == nil {
 		baselineDigest, err = bridge.DeploymentBaselineContentDigest(cfg)
 	}
 	if err != nil {
@@ -433,6 +433,10 @@ func (a *App) refuseClusteredReload(logical *ports.BridgeConfig, reason string) 
 // config instead.
 func (a *App) applyBarrierCommitted(ctx context.Context, cfg *ports.BridgeConfig) {
 	a.mu.Lock()
+	if a.missing.Load() || a.wedged.Load() {
+		a.mu.Unlock()
+		return
+	}
 	fp := a.parsedFingerprint(cfg, true)
 	alreadyRunning := fp != "" && fp == a.lastAppliedFingerprint
 	var err error

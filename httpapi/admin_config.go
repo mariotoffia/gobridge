@@ -20,6 +20,7 @@ func (s *Server) registerConfigRoutes(mux *http.ServeMux) {
 	const prefix = "/api/v1/admin/config"
 
 	mux.HandleFunc("GET "+prefix, s.requireAdminAuth(s.handleConfigGet))
+	mux.HandleFunc("POST "+prefix, s.requireAdminAuth(s.handleConfigCreate))
 	mux.HandleFunc("POST "+prefix+"/transactions", s.requireAdminAuth(s.handleConfigTxnCreate))
 	mux.HandleFunc("GET "+prefix+"/transactions/{txnID}", s.requireAdminAuth(s.handleConfigTxnGet))
 	mux.HandleFunc("PATCH "+prefix+"/transactions/{txnID}", s.requireAdminAuth(s.handleConfigTxnPatch))
@@ -146,6 +147,10 @@ func (s *Server) handleConfigTxnPatch(w http.ResponseWriter, r *http.Request) {
 
 // handleConfigTxnCommit validates and writes the config to disk.
 func (s *Server) handleConfigTxnCommit(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.ConfigReadOnly {
+		writeErr(w, http.StatusForbidden, "configuration repository is read-only")
+		return
+	}
 	txnID := r.PathValue("txnID")
 
 	newVersion, err := s.configTxn.Commit(r.Context(), txnID)

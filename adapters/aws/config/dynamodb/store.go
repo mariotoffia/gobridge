@@ -49,37 +49,51 @@ func (l *Loader) Save(ctx context.Context, cfg *ports.BridgeConfig) error {
 // An absent or versionless row can be created or adopted only at version zero.
 // On success both the document and cfg.Version carry expectedVersion+1.
 func (l *Loader) SaveIfVersion(ctx context.Context, cfg *ports.BridgeConfig, expectedVersion int) error {
+	_, err := l.save(ctx, cfg, expectedVersion, false)
+	return err
+}
+
+// CreateIfAbsent publishes version 1 only if the entire target item is absent.
+// Unlike version-zero CAS it never adopts an existing versionless item.
+func (l *Loader) CreateIfAbsent(ctx context.Context, cfg *ports.BridgeConfig) (bool, error) {
+	return l.save(ctx, cfg, 0, true)
+}
+
+func (l *Loader) save(ctx context.Context, cfg *ports.BridgeConfig, expectedVersion int, createOnly bool) (bool, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 	if cfg == nil {
-		return shared.ErrInvalidConfig.WithMessage("dynamodb config save: config must not be nil")
+		return false, shared.ErrInvalidConfig.WithMessage("dynamodb config save: config must not be nil")
 	}
 	if expectedVersion < 0 || expectedVersion == math.MaxInt {
-		return shared.ErrInvalidConfig.WithMessage("dynamodb config save: expected version cannot be incremented")
+		return false, shared.ErrInvalidConfig.WithMessage("dynamodb config save: expected version cannot be incremented")
 	}
 	next := *cfg
 	next.Version = expectedVersion + 1
 	data, err := parser.MarshalBridgeConfigJSON(&next)
 	if err != nil {
-		return fmt.Errorf("dynamodb config save: marshal: %w", err)
+		return false, fmt.Errorf("dynamodb config save: marshal: %w", err)
 	}
 	if len(data) > maxConfigItemBytes {
-		return fmt.Errorf("dynamodb config save: serialized config is %d bytes, which exceeds the %d-byte per-item limit (DynamoDB caps a single item at 400 KB); reduce the configuration size", len(data), maxConfigItemBytes)
+		return false, fmt.Errorf("dynamodb config save: serialized config is %d bytes, which exceeds the %d-byte per-item limit (DynamoDB caps a single item at 400 KB); reduce the configuration size", len(data), maxConfigItemBytes)
 	}
-	if err := l.session.putConfigItem(ctx, l.pk(), data, int64(next.Version), int64(expectedVersion)); err != nil {
+	if err := l.session.putConfigItem(ctx, l.pk(), data, int64(next.Version), int64(expectedVersion), createOnly); err != nil {
 		if isConditionFailed(err) {
-			return shared.ErrVersionMismatch.
+			if createOnly {
+				return false, nil
+			}
+			return false, shared.ErrVersionMismatch.
 				WithMessage("dynamodb config save: concurrent update detected; reload and retry").
 				With("expectedVersion", expectedVersion)
 		}
-		return err
+		return false, err
 	}
 	cfg.Version = next.Version
 	l.mu.Lock()
 	l.lastVersion = int64(next.Version)
 	l.mu.Unlock()
-	return nil
+	return true, nil
 }
 
 // EnsureTable creates the DynamoDB table if it does not already exist.
@@ -97,4 +111,5 @@ func (l *Loader) EnsureTable(ctx context.Context) error {
 var (
 	_ ports.ConfigStore            = (*Loader)(nil)
 	_ ports.ConditionalConfigStore = (*Loader)(nil)
+	_ ports.ConfigInitializer      = (*Loader)(nil)
 )

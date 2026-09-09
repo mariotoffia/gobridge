@@ -1,13 +1,8 @@
 package bootstrap
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
-	"fmt"
-	"log/slog"
 	"net/http"
-	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -51,15 +46,13 @@ func TestNewConfigSource_File_KeepsTodaysWiring(t *testing.T) {
 				assert.Same(t, app.pluginRegistry, store.Registry)
 				_, cas := src.store.(ports.ConditionalConfigStore)
 				assert.False(t, cas)
-				loader, ok := src.layer.Loader.(*startEmptySource)
-				require.True(t, ok)
-				assert.IsType(t, &fileconfig.Source{}, loader.loader)
+				assert.IsType(t, &fileconfig.Source{}, src.layer.Loader)
 				watcher, ok := src.layer.Watcher.(*fileconfig.Watcher)
 				require.True(t, ok)
 				fields := reflect.ValueOf(watcher).Elem()
 				assert.Equal(t, int64(fileconfig.ModePoll), fields.FieldByName("mode").Int())
 				assert.Equal(t, int64(7*time.Second), fields.FieldByName("pollInterval").Int())
-				assert.True(t, fields.FieldByName("baselineHashSet").Bool())
+				assert.False(t, fields.FieldByName("baselineHashSet").Bool(), "Observe owns the exact initial snapshot")
 				loaded, err := src.layer.Loader.Load(t.Context())
 				require.NoError(t, err)
 				assert.Equal(t, seed.Bridge.ID, loaded.Bridge.ID)
@@ -118,9 +111,7 @@ func TestNewConfigSource_DynamoDB_WiresLoaderAsStore(t *testing.T) {
 			loader, ok := src.store.(*ddbconfig.Loader)
 			require.True(t, ok)
 			assert.Same(t, loader, src.layer.Watcher)
-			wrapped, ok := src.layer.Loader.(*startEmptySource)
-			require.True(t, ok)
-			assert.Same(t, loader, wrapped.loader)
+			assert.Same(t, loader, src.layer.Loader)
 			cas, ok := src.store.(ports.ConditionalConfigStore)
 			require.True(t, ok)
 			loaded, err := src.layer.Loader.Load(t.Context())
@@ -170,64 +161,6 @@ func TestNewConfigSource_DynamoDB_WatchOptions(t *testing.T) {
 			assert.Equal(t, tc.wantMode != ddbconfig.ModeStreams, fields.FieldByName("session").Elem().FieldByName("streams").IsNil())
 		})
 	}
-}
-
-// TestStartEmpty_NotFoundFromAnySource verifies only missing config becomes an
-// empty default; wrapped storage, permission, parse and cancellation errors fail.
-func TestStartEmpty_NotFoundFromAnySource(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		err     error
-		missing bool
-	}{
-		{"domain not found", shared.ErrNotFound, true},
-		{"wrapped domain not found", fmt.Errorf("load: %w", shared.ErrNotFound), true},
-		{"file not found", os.ErrNotExist, true},
-		{"wrapped file not found", fmt.Errorf("load: %w", os.ErrNotExist), true},
-		{"unavailable", shared.ErrUnavailable, false},
-		{"permission", os.ErrPermission, false},
-		{"invalid config", shared.ErrInvalidConfig, false},
-		{"cancelled", context.Canceled, false},
-		{"deadline", context.DeadlineExceeded, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var logs bytes.Buffer
-			fallback := defaultLogicalConfig(dynamoDBSourceConfig())
-			calls := 0
-			src := &startEmptySource{
-				loader: configLoaderFunc(func(ctx context.Context) (*ports.BridgeConfig, error) {
-					assert.Same(t, t.Context(), ctx)
-					return nil, tc.err
-				}),
-				logger:   slog.New(slog.NewTextHandler(&logs, nil)),
-				fallback: func() *ports.BridgeConfig { calls++; return fallback },
-			}
-			loaded, err := src.Load(t.Context())
-			if tc.missing {
-				require.NoError(t, err)
-				assert.Same(t, fallback, loaded)
-				assert.Equal(t, 1, calls)
-				assert.Contains(t, logs.String(), "WARN")
-			} else {
-				require.ErrorIs(t, err, tc.err)
-				assert.Nil(t, loaded)
-				assert.Zero(t, calls)
-				assert.Empty(t, logs.String())
-			}
-		})
-	}
-}
-
-// TestStartEmpty_LoadedConfigPassesThrough verifies successful loads retain identity.
-func TestStartEmpty_LoadedConfigPassesThrough(t *testing.T) {
-	want := &ports.BridgeConfig{Version: 42}
-	src := &startEmptySource{
-		loader:   configLoaderFunc(func(context.Context) (*ports.BridgeConfig, error) { return want, nil }),
-		fallback: func() *ports.BridgeConfig { t.Error("unexpected fallback"); return nil },
-	}
-	got, err := src.Load(t.Context())
-	require.NoError(t, err)
-	assert.Same(t, want, got)
 }
 
 func dynamoDBSourceConfig() deployinfra.BootstrapConfig {

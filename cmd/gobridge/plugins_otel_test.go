@@ -49,9 +49,9 @@ func TestOTelFamily_ConstructsExporterAndTracer(t *testing.T) {
 	assert.Contains(t, compiledFamilies, "otel")
 }
 
-// TestOTelFamily_RunCleansUpOnHTTPFailure verifies run flushes runtime metrics
-// before closing its exporter when HTTP startup fails. The collector is local.
-func TestOTelFamily_RunCleansUpOnHTTPFailure(t *testing.T) {
+// TestOTelFamily_HTTPFailurePrecedesObservability verifies that a control-plane
+// startup failure cannot start a runtime or its exporters. The collector is local.
+func TestOTelFamily_HTTPFailurePrecedesObservability(t *testing.T) {
 	if testing.Short() {
 		t.Skip("local HTTP collector integration")
 	}
@@ -67,6 +67,7 @@ func TestOTelFamily_RunCleansUpOnHTTPFailure(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", collector.URL+"/metrics-env")
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", collector.URL+"/traces-env")
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_HEADERS", "Collector-Key=test")
+	t.Setenv("GOBRIDGE_ADMIN_API_KEY", "test-admin-key-long-enough")
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bridge.yaml")
@@ -86,11 +87,11 @@ http:
 	var exit *exec.ExitError
 	require.ErrorAs(t, err, &exit, "%s", out)
 	assert.Equal(t, 1, exit.ExitCode(), "%s", out)
-	assert.Contains(t, string(out), "failed to start HTTP server")
+	assert.Contains(t, string(out), "invalid-address")
 	assert.Contains(t, string(out), "bridge stopped")
 	assert.NotContains(t, string(out), "failed to close")
 	assert.NotContains(t, string(out), "supervisor shutdown")
-	assert.Equal(t, int64(2), exports.Load(), "runtime Flush followed by process Close; output: %s", out)
+	assert.Zero(t, exports.Load(), "control-plane failure must precede runtime observability; output: %s", out)
 }
 
 // TestOTelFamily_RunProcess isolates the command's flags and signal handling.

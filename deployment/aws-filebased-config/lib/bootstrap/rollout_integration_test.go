@@ -58,13 +58,17 @@ func TestIntegration_AppCoordinatedRolloutOverDynamoDB(t *testing.T) {
 
 	require.NoError(t, app.Start(t.Context()))
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })
-	require.Equal(t, 1, app.CurrentAppliedConfig().Version, "booted coordinated on real DynamoDB")
+	wait.Until(t, 20*time.Second, "booted coordinated on real DynamoDB", func() bool {
+		cfg := app.CurrentAppliedConfig()
+		return cfg != nil && cfg.Version == 1 && !app.manager.ReconfigurePending()
+	})
 
 	// Live-safe reload through the config file (production path): propose → the
 	// drive commits over real DynamoDB → local swap.
 	require.NoError(t, os.WriteFile(cfgPath, []byte(coordinatedConfigYAML(2, "debug")), 0o644))
 	wait.Until(t, 20*time.Second, "the barrier applies the DynamoDB commit and reconciles manager health", func() bool {
-		return app.CurrentAppliedConfig().Version == 2 && !app.manager.ReconfigurePending()
+		cfg := app.CurrentAppliedConfig()
+		return cfg != nil && cfg.Version == 2 && !app.manager.ReconfigurePending()
 	})
 	assert.Equal(t, "debug", app.CurrentAppliedConfig().Bridge.LogLevel)
 	assert.False(t, app.manager.ReconfigurePending(), "AdoptRunning re-synced the manager over real DynamoDB")
@@ -136,11 +140,22 @@ func TestIntegration_AppSeedsAndRecoversTheRolloutBaselineOverDynamoDB(t *testin
 
 	first := newMember()
 	require.NoError(t, first.Start(t.Context()))
-	require.Equal(t, 1, first.CurrentAppliedConfig().Version)
+	t.Cleanup(func() { _ = first.Stop(context.Background()) })
+	wait.Until(t, 20*time.Second, "first member activates the baseline", func() bool {
+		cfg := first.CurrentAppliedConfig()
+		return cfg != nil && cfg.Version == 1 && !first.manager.ReconfigurePending()
+	})
 
 	rolloutStore := dynamodbrollout.NewStore(client, dynamodbrollout.WithTableName(rolloutTable))
-	committed, err := rolloutStore.CommittedConfig(context.Background())
-	require.NoError(t, err, "the generation-zero baseline must be durable in DynamoDB before the member serves")
+	var committed persistence.CommittedRolloutConfig
+	wait.Until(t, 20*time.Second, "generation-zero baseline becomes durable", func() bool {
+		got, err := rolloutStore.CommittedConfig(t.Context())
+		if err != nil {
+			return false
+		}
+		committed = got
+		return committed.ConfigVersion == 1
+	})
 	assert.Equal(t, uint64(0), committed.Generation)
 	require.NoError(t, first.Stop(context.Background()))
 
@@ -150,7 +165,16 @@ func TestIntegration_AppSeedsAndRecoversTheRolloutBaselineOverDynamoDB(t *testin
 	second := newMember()
 	require.NoError(t, second.Start(t.Context()))
 	t.Cleanup(func() { _ = second.Stop(context.Background()) })
+	wait.Until(t, 20*time.Second, "restarted member activates its committed baseline", func() bool {
+		cfg := second.CurrentAppliedConfig()
+		health := second.configWatchHealth()
+		return cfg != nil && cfg.Version == 1 &&
+			health.RunningVersion != nil && *health.RunningVersion == 1 &&
+			health.DesiredVersion != nil && *health.DesiredVersion == 2 &&
+			health.ReconfigurePending
+	})
 	assert.Equal(t, 1, second.CurrentAppliedConfig().Version,
 		"a restart in the write-before-propose window boots the cohort's committed baseline")
 	assert.Equal(t, "info", second.CurrentAppliedConfig().Bridge.LogLevel)
+	assert.True(t, second.manager.ReconfigurePending(), "uncommitted source version 2 remains distinct from running baseline 1")
 }

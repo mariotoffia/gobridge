@@ -59,7 +59,7 @@ func TestApp_ConfigSingleWriter_WorkerCommitFailsClosed(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	resp, _ = adminJSON(t, http.MethodPost, txnBase+"/"+txnID+"/commit", key, "")
-	require.Equal(t, http.StatusInternalServerError, resp.StatusCode,
+	require.Equal(t, http.StatusForbidden, resp.StatusCode,
 		"a non-writer worker must fail closed on a non-CAS store commit, not perform a last-writer-wins Save")
 }
 
@@ -92,5 +92,6 @@ func startSingleWriterApp(t *testing.T, role deployinfra.NodeRole, bridgeID stri
 
 	require.NoError(t, app.Start(t.Context()))
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	awaitApplied(t, app)
 	return app
 }

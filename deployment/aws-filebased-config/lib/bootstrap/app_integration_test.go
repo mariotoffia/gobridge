@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsssm "github.com/aws/aws-sdk-go-v2/service/ssm"
@@ -13,6 +14,7 @@ import (
 
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/testutil/flocilocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 func TestIntegration_AppStartsWithSSMSecrets(t *testing.T) {
@@ -40,11 +42,14 @@ func TestIntegration_AppStartsWithSSMSecrets(t *testing.T) {
 		AWSRegion:          flocilocal.Region,
 		SSMEndpoint:        flocilocal.Endpoint(t),
 		DevMode:            true,
-	})
+	}, WithInitialConfig("bridge:\n  id: bridge-integration\n"))
 
 	require.NoError(t, app.Start(t.Context()))
 	t.Cleanup(func() {
 		_ = app.Stop(context.Background())
+	})
+	wait.Until(t, 5*time.Second, "initial configuration becomes active", func() bool {
+		return app.CurrentAppliedConfig() != nil
 	})
 
 	req, err := http.NewRequest(http.MethodGet, app.AdminURL()+"/api/v1/admin/config", nil)

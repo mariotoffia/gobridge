@@ -19,8 +19,8 @@ import (
 // A persistent or exclusive MQTT session does not start until its
 // managed-subscription baseline exists, and on this profile the only process
 // that can write a SQLite store on the config mount is the task itself. The
-// bootstrap document carries the attestation and the App seeds it at every
-// boot, before it builds the bridge, through the same builder and store
+// bootstrap document carries the attestation and the App applies it before
+// building a runtime that uses the session, through the same builder and store
 // factories the runtime uses.
 
 func durableIngressConfig(historyPath string) (*ports.BridgeConfig, *paho.Config) {
@@ -86,9 +86,8 @@ func TestApp_SeedsManagedSubscriptionBaselinesAtBoot(t *testing.T) {
 	require.Empty(t, filters, "an empty attestation records a new identity with no filters")
 }
 
-// The bootstrap document is frozen while the bridge config is live, and a task
-// can boot on the empty start-empty config before the seeder has written the
-// document: an attestation the boot config cannot take is skipped, not fatal.
+// Bootstrap attestations are fixed while the active configuration can change.
+// An attested session omitted from that configuration is skipped, not fatal.
 func TestApp_SeedSkipsWhatTheBootConfigCannotTake(t *testing.T) {
 	historyPath := filepath.Join(t.TempDir(), "history", "managed-subscriptions.db")
 	cfg, mqtt := durableIngressConfig(historyPath)
@@ -111,7 +110,7 @@ func TestApp_SeedSkipsWhatTheBootConfigCannotTake(t *testing.T) {
 
 	empty := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "gobridge-single"}}
 	require.NoError(t, seedThrough(t, app, empty),
-		"the start-empty config names no store, so there is nothing to seed and nothing to refuse")
+		"a configuration without a managed-subscription store has no history to seed")
 }
 
 // The seeded set must be the set the runtime demands a baseline for, which

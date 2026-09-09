@@ -152,7 +152,9 @@ type Manager struct {
 	// close it (a double close panics). running is only cleared after doneCh, so
 	// it cannot distinguish "already asked to stop" from "still running";
 	// stopping does. Reset in Watch on (re)start.
-	stopping bool
+	stopping            bool
+	observationCancel   context.CancelFunc
+	observationSequence uint64
 }
 
 // ManagerOption configures a Manager.
@@ -261,6 +263,7 @@ func (m *Manager) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error)
 	}
 	m.running = true
 	m.stopping = false
+	m.observationCancel = nil
 	m.stopCh = make(chan struct{})
 	m.doneCh = make(chan struct{})
 	stopCh := m.stopCh
@@ -334,28 +337,33 @@ func (m *Manager) Stop() {
 	if !m.stopping {
 		m.stopping = true
 		close(m.stopCh)
+		if m.observationCancel != nil {
+			m.observationCancel()
+		}
 	}
 	m.mu.Unlock()
 
 	<-doneCh // both concurrent callers wait for watchLoop goroutine to exit
 
 	m.mu.Lock()
-	m.running = false
+	if m.doneCh == doneCh {
+		m.running = false
+	}
 	m.mu.Unlock()
 }
 
-// WatchDegraded reports whether any config layer's change watcher is
-// currently failing to (re)establish. When true, live reconfiguration for at
-// least one layer is unavailable and the manager is retrying with backoff;
-// the last good config keeps serving. Safe for concurrent use.
+// WatchDegraded reports watcher establishment failures and observation
+// read/validation faults. The last good config remains desired on a read fault;
+// confirmed document absence is a separate observation, not a read failure.
+// Safe for concurrent use.
 func (m *Manager) WatchDegraded() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.watchErrs) > 0
 }
 
-// WatchErrors returns a snapshot of the current per-layer watch
-// establishment errors (empty when healthy). Safe for concurrent use.
+// WatchErrors returns current per-layer watch, read and validation errors
+// (empty when healthy). Safe for concurrent use.
 func (m *Manager) WatchErrors() map[string]error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

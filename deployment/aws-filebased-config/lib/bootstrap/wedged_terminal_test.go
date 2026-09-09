@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/config/parser"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
@@ -21,7 +22,7 @@ import (
 // give-up paths left runtimeRef nil with no flag, and runtimeTerminal treated
 // nil as a transient swap window — so the backstop never fired and the task
 // bridged nothing forever.
-func TestRecoverPrevious_GiveUpMarksWedgedAndTerminal(t *testing.T) {
+func TestRecoverPrevious_WithoutHistoryRemainsAwaitingConfig(t *testing.T) {
 	app := NewApp(testBootstrapCfg())
 
 	// A fresh App with no runtime is in a transient (pre-first-swap) state,
@@ -31,14 +32,14 @@ func TestRecoverPrevious_GiveUpMarksWedgedAndTerminal(t *testing.T) {
 	// recoverPrevious with no previous config to recover to is a give-up path.
 	app.recoverPrevious(context.Background(), nil)
 
-	require.True(t, app.wedged.Load(), "give-up path must latch the wedged flag")
-	require.True(t, app.runtimeTerminal(), "wedged App must report terminal so the backstop fires")
+	require.False(t, app.wedged.Load(), "no previous configuration is a recoverable waiting state")
+	require.False(t, app.runtimeTerminal())
 	require.Nil(t, app.CurrentRuntime(), "wedged App has no active runtime")
 }
 
 // TestInstallPlan_ClearsWedged proves a later successful apply un-latches the
 // wedged flag so a recovered App stops reporting terminal.
-func TestInstallPlan_ClearsWedged(t *testing.T) {
+func TestInstallPlan_RejectsTerminalResurrection(t *testing.T) {
 	app := NewApp(testBootstrapCfg())
 	app.wedged.Store(true)
 	require.True(t, app.runtimeTerminal())
@@ -46,14 +47,14 @@ func TestInstallPlan_ClearsWedged(t *testing.T) {
 	// installPlan is the common success path; a minimal plan with an
 	// HTTP-less registry (transportHandler falls back to NotFoundHandler) is
 	// enough to exercise the flag clear without building a real runtime.
-	app.installPlan(&runtimePlan{
+	err := app.installPlan(&runtimePlan{
 		logical:  &ports.BridgeConfig{},
 		inputs:   &resolvedInputs{},
 		registry: &factoryRegistry{cfg: &ports.BridgeConfig{}},
 	})
 
-	require.False(t, app.wedged.Load(), "successful apply must clear the wedged latch")
-	require.False(t, app.runtimeTerminal())
+	require.Error(t, err)
+	require.True(t, app.runtimeTerminal(), "a late callback must not clear terminal withdrawal")
 }
 
 // TestWatchTerminal_FiresWhenWedged drives the injected clock: once the App is
@@ -113,7 +114,10 @@ func TestApp_LiveProbeFailsClosedWhenWedged(t *testing.T) {
 		"/admin": "admin-secret-key-123456",
 	}))
 
+	require.NoError(t, parser.WriteFile(cfgPath, defaultLogicalConfig(app.cfg)))
 	require.NoError(t, app.Start(t.Context()))
+	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	awaitApplied(t, app)
 	realRT := app.CurrentRuntime()
 	require.NotNil(t, realRT)
 	t.Cleanup(func() {

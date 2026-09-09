@@ -2,12 +2,9 @@ package bootstrap
 
 import (
 	"bytes"
-	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 
@@ -15,7 +12,6 @@ import (
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config/parser"
@@ -78,53 +74,6 @@ func LoadBootstrapConfigJSON(data []byte) (deployinfra.BootstrapConfig, error) {
 		return deployinfra.BootstrapConfig{}, err
 	}
 	return cfg, nil
-}
-
-func newPollWatcher(ctx context.Context, cfg deployinfra.BootstrapConfig, registry *ports.Registry, logger *slog.Logger) ports.Watcher {
-	var opts []fileconfig.WatcherOption
-	opts = append(opts,
-		fileconfig.WithMode(fileconfig.ModePoll),
-		fileconfig.WithPollInterval(cfg.EffectivePollInterval()),
-	)
-	if logger != nil {
-		opts = append(opts, fileconfig.WithLogger(logger))
-	}
-	// Baseline the watcher's change detection from the config content as of now
-	// (before Watch starts), closing the window where an edit landing between
-	// the initial Load and Watch -- which here spans the runtime build and the
-	// transport/admin server starts -- would be absorbed into a Watch-time disk
-	// re-read and never emitted, silently running stale config. A throwaway
-	// file.Source computes the baseline via the same sha256(file-bytes) the
-	// watcher compares against, without disturbing the startEmptySource
-	// fallback loader. An absent or unparseable file records no hash, so the
-	// watcher keeps its disk-read baseline (unchanged behavior).
-	if h, ok := baselineHash(ctx, cfg.ConfigFilePath, registry); ok {
-		opts = append(opts, fileconfig.WithBaselineHash(h))
-	}
-	return fileconfig.NewWatcher(cfg.ConfigFilePath, registry, opts...)
-}
-
-// baselineHash returns the sha256 content hash the poll watcher should adopt as
-// its change-detection baseline, by loading the file through a dedicated
-// file.Source. The second return is false when the file is missing or does not
-// parse, in which case the watcher falls back to its own Watch-time disk read.
-func baselineHash(ctx context.Context, path string, registry *ports.Registry) ([sha256.Size]byte, bool) {
-	src := fileconfig.NewSource(path, registry)
-	if _, err := src.Load(ctx); err != nil {
-		return [sha256.Size]byte{}, false
-	}
-	return src.LoadHash()
-}
-
-func defaultLogicalConfig(cfg deployinfra.BootstrapConfig) *ports.BridgeConfig {
-	return &ports.BridgeConfig{
-		Bridge: ports.BridgeSettings{
-			ID:              cfg.BridgeID,
-			DeploymentMode:  "standalone",
-			ShutdownTimeout: "30s",
-			DrainTimeout:    "30s",
-		},
-	}
 }
 
 // applyLogLevel updates the wired slog.LevelVar from bridge.log_level so a

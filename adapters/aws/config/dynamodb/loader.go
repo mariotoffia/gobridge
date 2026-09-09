@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -125,8 +126,11 @@ type Loader struct {
 	// math/rand/v2.Float64; tests inject a deterministic source.
 	randFloat func() float64
 
-	mu          sync.Mutex
-	lastVersion int64 // last ordinary Load/Save observation, not a delivery acknowledgement
+	mu                  sync.Mutex
+	watching            bool
+	observation         *configObservation
+	observationSequence uint64
+	lastVersion         int64 // last ordinary Load/Save observation, not a delivery acknowledgement
 
 	// The first Load (including absence/version zero) seeds the watch baseline.
 	// Later store reads/writes must not acknowledge config for the watcher.
@@ -221,35 +225,7 @@ func (l *Loader) pk() string { return "config#" + l.bridgeID }
 // stream is disabled while watching) still degrade to poll mode after
 // streamAcquireFallbackAfter consecutive acquisition failures.
 func (l *Loader) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error) {
-	l.beginWatchCursor()
-	ch := make(chan *ports.BridgeConfig, 1)
-
-	if l.mode == ModeStreams {
-		arn, reason := l.resolveStreamArn(ctx)
-		if reason == "" {
-			go l.streamLoop(ctx, ch, arn)
-			return ch, nil
-		}
-		// Streams are not reachable at startup. Historically this was a
-		// PERMANENT downgrade to poll mode — a single transient DescribeTable
-		// error (throttle, brief IAM propagation) disabled push-based updates
-		// for the entire process lifetime. Instead poll now but keep re-probing
-		// the stream in the background and upgrade to the streams consumer once
-		// it becomes reachable.
-		if l.logger != nil {
-			l.logger.Warn("dynamodb config loader: streams unavailable; polling and will retry streams in the background",
-				"reason", reason,
-				"table", l.session.tableName,
-				"poll_interval", l.pollInterval.String(),
-			)
-		}
-		go l.superviseStreamReacquire(ctx, ch)
-		return ch, nil
-	}
-
-	ticker := l.clk.NewTicker(l.pollInterval)
-	go l.pollLoop(ctx, ch, ticker)
-	return ch, nil
+	return l.watch(ctx, nil)
 }
 
 // superviseStreamReacquire owns ch while streams are unavailable: it polls (so
@@ -302,6 +278,8 @@ func (l *Loader) pollUntilStreamReachable(ctx context.Context, ch chan *ports.Br
 		case <-reprobeC:
 			if a, reason := l.resolveStreamArn(ctx); reason == "" {
 				return a, true
+			} else {
+				l.observeResult(ctx, nil, shared.ErrUnavailable.WithMessage(reason))
 			}
 			backoff = nextBackoff(backoff)
 			reprobeC = l.clk.After(backoff)
@@ -367,6 +345,10 @@ type pollState struct {
 // (rate-limited) and escalate to Error after pollFailureEscalateAfter
 // consecutive occurrences.
 func (l *Loader) pollOnce(ctx context.Context, ch chan *ports.BridgeConfig, ps *pollState) {
+	if l.observation != nil {
+		l.observeCurrent(ctx)
+		return
+	}
 	v, err := l.currentVersion(ctx)
 	if err != nil {
 		l.logPollFailure(ps, "version check", err)

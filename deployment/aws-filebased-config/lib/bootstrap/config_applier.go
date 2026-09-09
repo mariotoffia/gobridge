@@ -26,6 +26,7 @@ const (
 )
 
 type runtimePlan struct {
+	epoch    uint64
 	logical  *ports.BridgeConfig
 	resolved *ports.BridgeConfig
 	inputs   *resolvedInputs
@@ -37,6 +38,8 @@ type runtimePlan struct {
 }
 
 func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfig, barrierCommitted bool) error {
+	a.applying.Store(true)
+	defer a.applying.Store(false)
 	// The cluster reload seam (design cluster-config-rollout-protocol.md §6). A
 	// per-process live reload of a clustered deployment has no cluster-wide version
 	// barrier or coordinated rollback, so by default it is refused (ADR 0012): a
@@ -90,6 +93,10 @@ const (
 )
 
 func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfig, seed bool) (*runtimePlan, error) {
+	epoch := a.observationEpoch.Load()
+	if observed, ok := ctx.Value(repositoryEpochKey{}).(uint64); ok {
+		epoch = observed
+	}
 	inputs, err := resolveInputs(ctx, a.parameterResolver, a.cfg, a.pluginRegistry, logical)
 	if err != nil {
 		return nil, err
@@ -99,13 +106,11 @@ func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfi
 	}
 
 	registry := a.newFactoryRegistry(inputs.RuntimeConfig)
-	// A durable MQTT session does not start without its managed-subscription
-	// baseline, and on this profile the task is the only thing that can write a
-	// store on the config mount. Seed what the deployment attested BEFORE the
-	// runtime that needs it is built — on every apply, not only at boot: this
-	// process routinely boots on the start-empty config (the seeder writes the
-	// document from another container, with no ordering guarantee) and the
-	// session that needs the baseline arrives with the first real config.
+	// Managed-subscription history is a prerequisite of durable MQTT sessions.
+	// Apply the bootstrap attestations before building a runtime that needs them,
+	// including first activation after waiting and later configuration changes.
+	// This resource-opening step is separate from startup-only config repository
+	// initialization, whose pre-create admission must not open runtime resources.
 	// The recovery path skips it: it rebuilds a config that already applied, so
 	// its baselines are already seeded, and a store hiccup there would turn a
 	// recoverable swap failure into a wedged process.
@@ -117,6 +122,7 @@ func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfi
 	mode := registry.detectSwapMode(inputs.RuntimeConfig)
 
 	plan := &runtimePlan{
+		epoch:    epoch,
 		logical:  logical,
 		resolved: inputs.RuntimeConfig,
 		inputs:   inputs,
@@ -149,6 +155,10 @@ func (a *App) applyOverlap(
 	oldApplied *ports.BridgeConfig,
 	oldRegistry *factoryRegistry,
 ) error {
+	if err := a.authorizePlan(plan); err != nil {
+		_ = stopRuntime(context.Background(), plan.runtime, plan.logical)
+		return err
+	}
 	if err := plan.runtime.Start(a.runtimeStartCtx(ctx)); err != nil {
 		// A candidate whose late Start fails still opened stores,
 		// sessions, and adapter resources during Build. Stop it before returning so
@@ -167,7 +177,9 @@ func (a *App) applyOverlap(
 		}
 	}()
 
-	a.installPlan(plan)
+	if err := a.installPlan(plan); err != nil {
+		return err
+	}
 	installed = true
 
 	if oldRuntime != nil {
@@ -229,6 +241,10 @@ func (a *App) applyPrepareCommit(
 	}
 	a.runtimeRef.Set(nil)
 
+	if err := a.authorizePlan(plan); err != nil {
+		plan.plan.Close()
+		return err
+	}
 	newRuntime, err := plan.plan.Commit(ctx)
 	if err != nil {
 		// A partially-built candidate from a failed Commit still holds
@@ -239,6 +255,10 @@ func (a *App) applyPrepareCommit(
 		a.recoverPrevious(ctx, oldApplied)
 		return fmt.Errorf("bootstrap: complete runtime: %w", err)
 	}
+	if err := a.authorizePlan(plan); err != nil {
+		_ = stopRuntime(context.Background(), newRuntime, plan.logical)
+		return err
+	}
 	if err := newRuntime.Start(a.runtimeStartCtx(ctx)); err != nil {
 		// Stop the committed-but-unstarted candidate before recovering,
 		// so its opened stores/sessions are released rather than leaked.
@@ -247,48 +267,64 @@ func (a *App) applyPrepareCommit(
 		return fmt.Errorf("bootstrap: start runtime: %w", err)
 	}
 	plan.runtime = newRuntime
-	a.installPlan(plan)
+	if err := a.installPlan(plan); err != nil {
+		newRuntime.Fence()
+		_ = stopRuntime(context.Background(), newRuntime, plan.logical)
+		return err
+	}
 	return nil
 }
 
 func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) {
-	if logical == nil {
-		a.enterWedgedState()
+	if logical == nil || a.missing.Load() || a.wedged.Load() {
 		return
 	}
-
+	lifetime := a.runtimeStartCtx(ctx)
+	ctx, finish := a.recoveryContext(ctx)
+	defer finish()
 	plan, err := a.prepareRuntimePlan(ctx, logical, skipBaselineSeed)
 	if err != nil {
+		if a.recoveryRevoked(ctx) {
+			return
+		}
 		a.logger.Error("bootstrap: failed to rebuild previous runtime after prepare/commit failure", "error", err)
 		a.enterWedgedState()
 		return
 	}
-
-	switch plan.mode {
-	case swapModePrepareCommit:
+	err = ctx.Err()
+	if err == nil {
+		err = a.authorizePlan(plan)
+	}
+	if err == nil && plan.mode == swapModePrepareCommit {
 		plan.runtime, err = plan.plan.Commit(ctx)
-	default:
-		// Overlap mode: plan.runtime was already built by prepareRuntimePlan.
 	}
 	if err == nil {
-		err = plan.runtime.Start(a.runtimeStartCtx(ctx))
+		err = a.startRecovery(ctx, lifetime, plan)
 	}
-	if err != nil {
-		// The recovery candidate itself failed to commit/start. Stop it
-		// (nil-safe) so it does not leak resources on top of the failed swap before
-		// entering the wedged state that the orchestrator restarts out of.
-		if plan.runtime != nil {
-			_ = stopRuntime(context.Background(), plan.runtime, logical)
-		}
-		a.logger.Error("bootstrap: failed to restart previous runtime after prepare/commit failure", "error", err)
-		a.enterWedgedState()
+	if err == nil {
+		err = a.installPlan(plan)
+	}
+	if err == nil {
 		return
 	}
-
-	a.installPlan(plan)
+	if plan.plan != nil {
+		plan.plan.Close()
+	}
+	if plan.runtime != nil {
+		plan.runtime.Fence()
+		_ = stopRuntime(context.Background(), plan.runtime, logical)
+	}
+	if a.recoveryRevoked(ctx) {
+		return
+	}
+	a.logger.Error("bootstrap: failed to restart previous runtime after prepare/commit failure", "error", err)
+	a.enterWedgedState()
 }
 
-func (a *App) installPlan(plan *runtimePlan) {
+func (a *App) installPlan(plan *runtimePlan) error {
+	if err := a.authorizePlan(plan); err != nil {
+		return err
+	}
 	// bridge.log_level is committed WITH the runtime, never ahead of it. Applied
 	// at the top of the reload path it changed live process verbosity even for a
 	// candidate that deployment-profile validation or the build then rejected,
@@ -300,6 +336,11 @@ func (a *App) installPlan(plan *runtimePlan) {
 	// has an active runtime again and can self-heal.
 	a.wedged.Store(false)
 	a.runtimeRef.Set(plan.runtime)
+	if err := a.authorizePlan(plan); err != nil {
+		plan.runtime.Fence()
+		return err
+	}
+	a.activated.Store(true)
 	a.appliedRef.Set(plan.logical)
 	a.apiKeysRef.Set(plan.inputs.AdminAPIKey, plan.inputs.MonitorAPIKey)
 	a.handlerRef.Set(plan.registry.transportHandler())
@@ -317,6 +358,7 @@ func (a *App) installPlan(plan *runtimePlan) {
 	if a.onRuntimeInstalled != nil {
 		a.onRuntimeInstalled()
 	}
+	return nil
 }
 
 // closeSupersededHTTP drains the SSE senders of a superseded (or shutting-down)
@@ -352,4 +394,14 @@ func (a *App) runtimeStartCtx(ctx context.Context) context.Context {
 		return a.rootCtx
 	}
 	return ctx
+}
+
+func (a *App) authorizePlan(plan *runtimePlan) error {
+	if a.missing.Load() || a.wedged.Load() || plan.epoch != a.observationEpoch.Load() {
+		return fmt.Errorf("bootstrap: configuration authorization withdrawn")
+	}
+	if a.rootCtx != nil {
+		return a.rootCtx.Err()
+	}
+	return nil
 }

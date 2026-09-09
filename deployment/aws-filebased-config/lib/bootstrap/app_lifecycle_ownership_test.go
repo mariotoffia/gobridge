@@ -267,12 +267,14 @@ func TestAppStart_AdoptsTheConfiguredProcessShutdownBudget(t *testing.T) {
 	adopted := NewApp(bootCfg, resolver)
 	require.NoError(t, adopted.Start(t.Context()))
 	t.Cleanup(func() { _ = adopted.Stop(context.Background()) })
+	awaitApplied(t, adopted)
 	assert.Equal(t, 12*time.Second, adopted.shutdownTimeout,
 		"the App must spend the budget bridge.shutdown_timeout declares, not an invisible default")
 
 	pinned := NewApp(bootCfg, resolver, WithShutdownTimeout(3*time.Second))
 	require.NoError(t, pinned.Start(t.Context()))
 	t.Cleanup(func() { _ = pinned.Stop(context.Background()) })
+	awaitApplied(t, pinned)
 	assert.Equal(t, 3*time.Second, pinned.shutdownTimeout,
 		"an explicit WithShutdownTimeout must still win over the config field")
 }

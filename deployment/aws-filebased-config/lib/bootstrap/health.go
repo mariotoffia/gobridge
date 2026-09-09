@@ -27,6 +27,9 @@ func (a *App) degradedConfigWatch() (bool, string) {
 	// a watcher error so operators see the same ConfigDegraded signal the generic
 	// Supervisor emits.
 	convDegraded, convReason := a.convergenceDegradedState()
+	if reason := a.observationError.Load(); reason != nil {
+		return true, reason.reason
+	}
 
 	if a.manager == nil {
 		return convDegraded, convReason
@@ -53,13 +56,22 @@ func (a *App) degradedConfigWatch() (bool, string) {
 
 func (a *App) configWatchHealth() httpapi.ConfigWatchHealth {
 	degraded, reason := a.degradedConfigWatch()
-	status := httpapi.ConfigWatchHealth{Degraded: degraded, Reason: reason}
+	status := httpapi.ConfigWatchHealth{Degraded: degraded, Reason: reason,
+		StartupPending: !a.activated.Load() && !a.wedged.Load()}
+	if diagnostic := a.observationError.Load(); diagnostic != nil && !diagnostic.startupPending {
+		status.StartupPending = false
+	}
 	// The rollout block first: it is the one part of this projection that does not
 	// come from the config manager, so a deployment wired without one must still
 	// publish it rather than reporting a coordinated cohort as having no barrier.
 	a.applyRolloutHealth(&status)
 	if a.manager == nil {
 		return status
+	}
+	for _, err := range a.manager.WatchErrors() {
+		if !httpapi.ConfigStartupPending(err) {
+			status.StartupPending = false
+		}
 	}
 	status.ReconfigurePending = a.manager.ReconfigurePending()
 	if version, ok := a.manager.AppliedVersion(); ok {
@@ -70,6 +82,9 @@ func (a *App) configWatchHealth() httpapi.ConfigWatchHealth {
 	}
 	if err := a.manager.LastApplyError(); err != nil {
 		status.LastApplyError = err.Error()
+		if !httpapi.ConfigStartupPending(err) {
+			status.StartupPending = false
+		}
 		status.Degraded = true
 	}
 	if status.ReconfigurePending {
@@ -87,10 +102,11 @@ func (a *App) configWatchHealth() httpapi.ConfigWatchHealth {
 // running" — and so a member the barrier has left behind says so on the field
 // every health check already watches. A no-op when no barrier runs.
 func (a *App) applyRolloutHealth(status *httpapi.ConfigWatchHealth) {
-	if a.rolloutDriver == nil {
+	driver := a.rolloutHealthDriver.Load()
+	if driver == nil {
 		return
 	}
-	r, ok := a.rolloutDriver.Status()
+	r, ok := driver.Status()
 	if !ok {
 		return
 	}

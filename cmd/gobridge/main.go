@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,25 +24,20 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
-	"github.com/mariotoffia/gobridge/bridge"
-	"github.com/mariotoffia/gobridge/config"
-	cfgparser "github.com/mariotoffia/gobridge/config/parser"
-	"github.com/mariotoffia/gobridge/domain/clock"
-	"github.com/mariotoffia/gobridge/httpapi"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
-	credentials "github.com/mariotoffia/gobridge/runtime/credentials"
 
 	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	filecreds "github.com/mariotoffia/gobridge/adapters/native/credentials/file"
+	"github.com/mariotoffia/gobridge/domain/clock"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
 // Build metadata is injected via -ldflags "-X main.version=... -X main.gitSHA=...".
 //
 //nolint:gochecknoglobals // Linker stamps require package-level string variables.
-var version, gitSHA string
+var version, gitSHA, initialConfigBase64 string
 
 func main() {
 	os.Exit(run())
@@ -67,20 +63,26 @@ Usage of %s:
 `, pluginSummary(), os.Args[0])
 		flag.PrintDefaults()
 	}
+	showInitialDigest := flag.Bool("initial-config-digest", false, "print the SHA-256 of the exact embedded initial configuration bytes and exit without startup")
 	showVersion := flag.Bool("version", false, "print version and compiled plugin families, then exit")
 	configPath := flag.String("config", "bridge.yaml", "path to configuration file")
 	logLevel := flag.String("log-level", "info", "log level ("+strings.Join(ports.LogLevelNames(), ", ")+")")
 	credentialsDir := flag.String("credentials-dir", "credentials",
 		"base directory backing file:// credential URIs (native file credential store)")
-	startEmpty := flag.Bool("start-empty", true,
-		"start with an empty configuration when -config does not exist; "+
-			"set false to refuse to boot a bridge that would carry no routes")
+	_ = flag.Bool("start-empty", true, "deprecated: absent configuration waits without a data-plane runtime")
+	adminAddr := flag.String("admin-addr", "", "process-owned admin listener; requires GOBRIDGE_ADMIN_API_KEY; otherwise use boot http settings")
+	monitorAddr := flag.String("monitor-addr", defaultMonitorAddr, "process-owned monitor listener")
+	tlsCert := flag.String("http-tls-cert", "", "process-owned HTTP TLS certificate")
+	tlsKey := flag.String("http-tls-key", "", "process-owned HTTP TLS private key")
 	var seedBaselines repeatableFlag
 	flag.Var(&seedBaselines, "seed-managed-subscriptions",
 		"seed the managed-subscription baseline of a persistent/exclusive MQTT session and exit: "+
 			"`session-id` attests a NEW broker identity with no subscriptions, "+
 			"`session-id=filter,filter` records the exact filters the existing broker session holds; repeatable")
 	flag.Parse()
+	if *showInitialDigest {
+		return writeInitialConfigDigest(os.Stdout, os.Stderr, initialConfigBase64)
+	}
 
 	if *showVersion {
 		if _, err := fmt.Fprintln(os.Stdout, versionLine()); err != nil {
@@ -101,17 +103,7 @@ Usage of %s:
 	logStartup(logger, reg)
 
 	fileSource := fileconfig.NewSource(*configPath, reg)
-	// Start-empty: a missing config file is a supported, healthy state — mirror
-	// the deployment profile's optionalFileSource. The bridge boots with an
-	// empty logical config (bridge.id only, zero routes) behind a loud WARN and
-	// converges once the file is created; the watcher watches the DIRECTORY, so
-	// file creation is picked up. It does NOT converge through the admin config
-	// API: this root binds its HTTP listeners once from the boot config, and the
-	// start-empty config has no HTTP block, so a missing file means there is no
-	// admin API and no probe port to recover through. Any other load error
-	// (unreadable, bad parse) stays fatal, and -start-empty=false refuses the
-	// fallback outright for a deployment that must never carry zero routes.
-	loader := configLoader(fileSource, *configPath, *startEmpty, logger)
+	loader := fileSource
 
 	// One-shot seed: the baseline is written through the same registry, loader
 	// and store factories the bridge below would use, then the process exits
@@ -129,309 +121,33 @@ Usage of %s:
 		return 0
 	}
 
-	baseCfg, err := loader.Load(context.Background())
+	initial, err := base64.StdEncoding.DecodeString(initialConfigBase64)
 	if err != nil {
-		logger.Error("failed to load config", "path", *configPath, "error", err)
+		logger.Error("invalid embedded initial configuration encoding")
 		return 1
 	}
-
-	watcherOpts := []fileconfig.WatcherOption{
-		fileconfig.WithWatchConfig(baseCfg.ConfigWatch),
-		fileconfig.WithLogger(logger),
-	}
-	// Baseline the watcher's change detection from the hash of the exact bytes
-	// the initial Load parsed, rather than a disk re-read taken at Watch time.
-	// Otherwise a file edited between Load and Watch is absorbed into the
-	// baseline and never emitted, silently running stale config. LoadHash is
-	// populated only after the successful Load above.
-	if h, ok := fileSource.LoadHash(); ok {
-		watcherOpts = append(watcherOpts, fileconfig.WithBaselineHash(h))
-	}
-
-	fileWatcher := fileconfig.NewWatcher(*configPath, reg, watcherOpts...)
-
-	mgr := config.NewManager(
-		config.Layer{Name: "file", Loader: loader, Watcher: fileWatcher},
-		config.WithManagerLogger(logger),
-	)
-
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-
-	cfg, err := mgr.Load(ctx)
-	if err != nil {
-		logger.Error("invalid config", "error", err)
-		return 1
-	}
-
-	// The reload pipeline reports DEFINITIVE apply outcomes back to the config
-	// manager so the manager's desired-vs-running divergence tracking
-	// (RunningVersion / ReconfigurePending) actually clears after a swap. The
-	// manager correlates by the EXACT config pointer it emitted, which the
-	// pipeline forwards unchanged as SwapEvent.NewConfig.
-	pipeline := newReloadPipeline(reg, logger, withApplyResultNotifier(mgr))
-
-	// Credential store wiring. The stock binary registers the
-	// native file:// credential repository so file:// credential URIs in the
-	// config resolve out of the box — previously NO credential store was
-	// registered here, so an operator copying a documented file:// example
-	// into this image got "no credential store registered". Production builds
-	// add SSM (or other) pull stores the SAME way: resolver.Register(...).
-	//
-	// The resolver is lifted into a runtime-owned push store by the supervisor
-	// (poll-based wrapper). EmitOnStart is set so a rotation that
-	// lands in the build->watch window is surfaced on the first tick rather
-	// than silently baselined; a default jitter (~10% of the interval)
-	// de-synchronizes polls so many sessions do not stampede the backend on the
-	// same tick.
-	credResolver := newDefaultCredentialResolver(*credentialsDir, logger)
-	credPollInterval := credentials.DefaultCredentialPollInterval
-	credPollConfig := ports.PollBasedWrapperConfig{
-		PollInterval: credPollInterval,
-		Jitter:       credPollInterval / 10,
-		EmitOnStart:  true,
-	}
-
-	// Own exporters at process scope: hot-reloaded runtimes share them.
-	// Install cleanup before construction so partial startup also unwinds.
-	var closeMetrics, closeTracer func(context.Context) error
-	supDone := make(chan error, 1)
-	supExited := true // Nothing to wait for until Run has been launched.
-	currentConfig := func() *ports.BridgeConfig { return cfg }
-	defer func() {
-		cancel()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), currentShutdownTimeout(currentConfig, cfg))
-		defer shutdownCancel()
-		shutdownSupervisor(shutdownCtx, supExited, supDone, logger, closeMetrics, closeTracer)
-		logger.Info("bridge stopped")
-	}()
-
-	metrics, closeMetrics, err := newMetricsExporter(ctx, logger)
-	if err != nil {
-		logger.Error("failed to create metrics exporter", "error", err)
-		return 1
-	}
-	tracer, closeTracer, err := newTracer(ctx, logger)
-	if err != nil {
-		logger.Error("failed to create tracer", "error", err)
-		return 1
-	}
-
-	supervisorOpts := []bridge.SupervisorOption{
-		bridge.WithSupervisorLogger(logger),
-		// File-change debouncing is done by the reload pipeline (below) so
-		// admin commits can bypass the window and apply in-band; the Supervisor
-		// therefore applies each config the pipeline forwards immediately.
-		bridge.WithReconfigStrategy(bridge.NewDirectStrategy()),
-		bridge.WithOnSwap(pipeline.onSwap),
-		bridge.WithSupervisorPolledCredentialStore(credResolver, credPollConfig),
-	}
-	if metrics != nil {
-		supervisorOpts = append(supervisorOpts, bridge.WithSupervisorMetrics(metrics))
-	}
-	if tracer != nil {
-		supervisorOpts = append(supervisorOpts, bridge.WithSupervisorTracer(tracer))
-	}
-	sup := bridge.NewSupervisor(supervisorOpts...)
-	currentConfig = sup.Config
-
-	if err := wireAllFactories(ctx, sup, logger, metrics); err != nil {
-		logger.Error("failed to wire plugin factories", "error", err)
-		return 1
-	}
-
-	watchCh, err := mgr.Watch(ctx)
-	if err != nil {
-		logger.Error("failed to start config watcher", "error", err)
-		return 1
-	}
-	defer mgr.Stop()
-
-	// Debounce raw file-watcher changes here (moved out of the Supervisor) and
-	// merge them with in-band admin commits onto the single channel the
-	// Supervisor drains. The pipeline drops the watcher's re-emit of a config an
-	// admin commit already applied in-band, so a commit costs exactly one swap.
-	windowedFile := bridge.NewWindowedStrategy(10*time.Second, 30*time.Second, nil).Filter(ctx, watchCh)
-	go pipeline.run(ctx, windowedFile)
-
-	// supStopped is closed by the goroutine below AFTER it has buffered Run's
-	// single result on supDone. It is a close-only broadcast that lets
-	// waitForSupervisorRuntime notice an early Run exit (an initial build/start
-	// failure) WITHOUT consuming supDone: supDone carries exactly one value and
-	// is reserved for the single downstream reader (the primary select below, or
-	// awaitSupervisorShutdown). A closed channel is broadcast-safe, so observing
-	// it in the wait and again downstream cannot race or steal the result.
-	supStopped := make(chan struct{})
-	supExited = false
-	go func() {
-		err := sup.Run(ctx, cfg, pipeline.changes())
-		supDone <- err // buffered (cap 1): never blocks; value now readable
-		close(supStopped)
-	}()
-
-	// Wait for the supervisor to build and start the initial runtime, bounded by
-	// initialRuntimeWait (which bounds a slow or hung SYNCHRONOUS initial build —
-	// see the constant). The wait also observes supStopped, so an initial
-	// build/start failure surfaces promptly instead of blocking the full ceiling.
-	waitRes := waitForSupervisorRuntime(sup.Runtime, clock.System, initialRuntimeWait, supStopped)
-	rt := waitRes.runtime
-	if rt == nil {
-		if waitRes.supEnded {
-			supExited = true
-			// Run returned before publishing a runtime: the SYNCHRONOUS initial
-			// build or non-blocking start failed (e.g. credential resolution or
-			// store construction errored). Broker/session connects run in the
-			// background and never gate publication, so they cannot be the cause.
-			// Surface its actual error, buffered on supDone. Reading supDone
-			// here is race-free: supExited tells the deferred shutdown not to
-			// read the single result again.
-			if err := <-supDone; err != nil && !errors.Is(err, context.Canceled) {
-				logger.Error("supervisor exited before producing a runtime", "error", err)
-			} else {
-				logger.Error("supervisor stopped before producing a runtime")
-			}
-		} else {
-			logger.Error("supervisor did not produce a runtime within timeout",
-				"timeout", initialRuntimeWait)
+	control := ports.HTTPConfig{AdminAddr: *adminAddr, MonitorAddr: *monitorAddr, TLSCertFile: *tlsCert, TLSKeyFile: *tlsKey}
+	if control.AdminAddr == "" {
+		// Legacy listener settings require reading the boot file. Explicit
+		// process settings avoid any repository I/O before listeners are up.
+		boot, loadErr := loader.Load(ctx)
+		if loadErr == nil && boot.HTTP != nil {
+			control = *boot.HTTP
 		}
-		cancel()
-		return 1
-	}
-
-	// Boot apply confirmed: the supervisor built and published the initial
-	// runtime for the exact boot config pointer (mgr.Load's desiredConfig). Tell
-	// the manager so RunningVersion advances off its pre-apply sentinel and
-	// ReconfigurePending clears — otherwise the first divergence report would
-	// show the boot config as never-applied until a later reload. This
-	// is the definitive success ack for the boot config; later reloads are acked
-	// through pipeline.onSwap.
-	mgr.NotifyApplyResult(cfg, nil)
-
-	if cfg.HTTP != nil {
-		// The listeners below are bound ONCE, from this block. Keep a copy so
-		// deep health can report a later reload that changed it as
-		// restart-required instead of leaving the change silently inert.
-		bootHTTP := *cfg.HTTP
-		// Keys may arrive through the environment (a mounted Secret) so the
-		// config file never has to carry them; see httpAPIKeys.
-		adminKey, monitorKey := httpAPIKeys(cfg.HTTP, os.LookupEnv)
-		apiCfg := httpapi.Config{
-			AdminAddr:     cfg.HTTP.AdminAddr,
-			MonitorAddr:   cfg.HTTP.MonitorAddr,
-			AdminAPIKey:   adminKey,
-			MonitorAPIKey: monitorKey,
-			CORSOrigins:   cfg.HTTP.CORSOrigins,
-			TLSCertFile:   cfg.HTTP.TLSCertFile,
-			TLSKeyFile:    cfg.HTTP.TLSKeyFile,
-			RuntimeProvider: func() ports.Runtime {
-				rt := sup.Runtime()
-				if rt == nil {
-					return nil
-				}
-				return rt
-			},
-			ConfigStore:    &cfgparser.FileStore{Path: *configPath, Registry: reg},
-			ConfigProvider: sup.Config,
-			// Surface watcher failure, desired/running apply divergence, and any
-			// desired change this process cannot apply without a restart.
-			ConfigWatchProvider: func() httpapi.ConfigWatchHealth {
-				return configWatchHealth(sup, mgr, &bootHTTP)
-			},
-			// The supervisor's own terminal state, so /live fails closed the
-			// moment a swap AND its recovery both fail. Without it the probe sees
-			// only "no runtime", which is indistinguishable from a healthy swap
-			// window, and a wedged process keeps answering 200 until the
-			// coarse-grained terminal backstop below finally trips.
-			TerminalProvider: sup.Terminal,
-			// Route admin start/stop through the supervisor so POST /bridge/stop
-			// is a clean deliberate pause (not process-suicide) and POST
-			// /bridge/start rebuilds a fresh single-use runtime afterwards.
-			BridgeController: sup,
-			// Apply a committed config in-band by feeding it to the Supervisor's
-			// reload path (bypassing the debounce window) and blocking until the
-			// swap outcome is known — a failed apply surfaces as
-			// committed_not_applied instead of a false "committed". Without this
-			// the errConfigApplyFailed path is dead and commits rely solely on
-			// the (debounced) file watcher to converge.
-			ConfigApplier: pipeline.applyCommitted,
-		}
-		apiCfg.AdminAddr = orDefault(apiCfg.AdminAddr, defaultAdminAddr)
-		apiCfg.MonitorAddr = orDefault(apiCfg.MonitorAddr, defaultMonitorAddr)
-		auditLogger := httpapi.NewSlogAuditLogger(logger)
-		httpOpts := []httpapi.Option{
-			httpapi.WithServerLogger(logger),
-			httpapi.WithAuditLogger(auditLogger),
-		}
-		if metrics != nil {
-			httpOpts = append(httpOpts, httpapi.WithMetrics(metrics))
-		}
-		srv := httpapi.New(rt, apiCfg, httpOpts...)
-		if err := srv.Start(ctx); err != nil {
-			logger.Error("failed to start HTTP server", "error", err)
+		if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) && !errors.Is(loadErr, shared.ErrNotFound) {
+			logger.Error("cannot read boot HTTP settings; use -admin-addr for repository-independent startup")
 			return 1
 		}
-		defer func() {
-			// Bound the HTTP drain so a wedged in-flight admin request cannot
-			// hang process shutdown forever; reuse the bridge shutdown budget.
-			stopCtx, stopCancel := context.WithTimeout(context.Background(), currentShutdownTimeout(sup.Config, cfg))
-			defer stopCancel()
-			_ = srv.Stop(stopCtx)
-		}()
-		logger.Info("HTTP servers started", "admin", apiCfg.AdminAddr, "monitor", apiCfg.MonitorAddr)
 	}
-
-	logger.Info("bridge started", "instance_id", rt.InstanceID())
-
-	// Deployment-independent liveness backstop. The /live 503-on-terminal path
-	// only restarts the process where a Kubernetes livenessProbe is wired. With
-	// HTTP disabled or no probe (systemd, bare process), a terminal
-	// (unrecoverable) runtime would otherwise stall silently forever. This
-	// watcher takes the process down so an external supervisor restarts it. The
-	// channel is buffered so the watcher never blocks if we exit for another
-	// reason first.
-	//
-	// The predicate polls sup.Terminal(), NOT sup.Runtime().Terminal(): when a
-	// swap AND its recovery both fail the supervisor is left WEDGED with no
-	// active runtime (sup.Runtime() == nil), routing nothing. A runtime-only
-	// check would miss that case and idle alive forever. sup.Terminal covers both
-	// the wedged nil-runtime case and an active-but-terminal runtime.
-	terminalCh := make(chan struct{}, 1)
-	go func() {
-		if watchTerminal(ctx, clock.System, terminalPollInterval, sup.Terminal) {
-			terminalCh <- struct{}{}
-		}
-	}()
-
-	sig := make(chan os.Signal, 2)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-
-	exitCode := 0
-	select {
-	case received := <-sig:
-		logger.Info("shutdown signal received", "signal", received.String())
-	case err := <-supDone:
-		// The supervisor self-exited: its single result is now consumed, so the
-		// bounded shutdown wait below must not read supDone a second time — that
-		// read would block until the full ShutdownTimeout elapsed.
-		supExited = true
-		if err != nil && !errors.Is(err, context.Canceled) {
-			logger.Error("supervisor exited unexpectedly", "error", err)
-		}
-	case <-terminalCh:
-		logger.Error("runtime entered terminal (unrecoverable) state; " +
-			"exiting non-zero so the orchestrator restarts the process")
-		exitCode = 1
+	control.AdminAddr = orDefault(control.AdminAddr, defaultAdminAddr)
+	control.MonitorAddr = orDefault(control.MonitorAddr, defaultMonitorAddr)
+	if err := runObservedConfig(ctx, *configPath, *credentialsDir, reg, control, string(initial), logger, clock.System); err != nil {
+		logger.Error("bridge stopped", "error", err)
+		return 1
 	}
-
-	cancel()
-
-	go func() {
-		s := <-sig
-		logger.Error("second signal received, forcing exit", "signal", s.String())
-		os.Exit(2)
-	}()
-
-	return exitCode
+	return 0
 }
 
 func logStartup(logger *slog.Logger, reg *ports.Registry) {

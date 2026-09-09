@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -95,6 +96,12 @@ type Config struct {
 	// ConfigProvider returns the current effective BridgeConfig.
 	// Typically wired to bridge.Supervisor.Config().
 	ConfigProvider func() *ports.BridgeConfig `json:"-"`
+
+	// ConfigDecoder enables authenticated complete-document creation without a
+	// fictional applied config. ConfigAdmitter must not create runtime resources.
+	ConfigDecoder  func(io.Reader) (*ports.BridgeConfig, error)     `json:"-"`
+	ConfigAdmitter func(context.Context, *ports.BridgeConfig) error `json:"-"`
+	ConfigReadOnly bool                                             `json:"-"`
 
 	// DegradedProvider reports whether live reconfiguration is currently
 	// degraded and a human-readable reason. "Degraded" means the bridge keeps

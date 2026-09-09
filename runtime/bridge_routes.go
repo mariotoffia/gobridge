@@ -221,7 +221,8 @@ func (rt *Runtime) InjectRedrive(ctx context.Context, routeID, bindingID string,
 
 func (rt *Runtime) injectToBinding(ctx context.Context, routeID, bindingID string, env *messaging.Envelope, redrivenFrom string) error {
 	rt.mu.Lock()
-	if !rt.running {
+	// Every injection/redrive path shares this admission boundary with Fence.
+	if !rt.running || rt.fenced {
 		rt.mu.Unlock()
 		return fmt.Errorf("runtime is not running")
 	}

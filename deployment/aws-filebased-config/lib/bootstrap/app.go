@@ -122,9 +122,21 @@ type App struct {
 	// WithMetricsExporter) and Closed in Stop — the App owns its lifecycle.
 	metricsExporter ports.MetricsExporter
 
-	manager         *config.Manager
-	httpServer      *httpapi.Server
-	transportServer *transportServer
+	initialSource    ports.Loader
+	initialContents  string
+	activated        atomic.Bool
+	applying         atomic.Bool
+	activating       atomic.Bool
+	missing          atomic.Bool
+	observationEpoch atomic.Uint64
+	generationMu     sync.Mutex
+	recoveryCancel   context.CancelFunc
+	recoveryRuntime  *goruntime.Runtime
+	observationError atomic.Pointer[repositoryDiagnostic]
+	historical       *ports.BridgeConfig
+	manager          *config.Manager
+	httpServer       *httpapi.Server
+	transportServer  *transportServer
 
 	logicalRef bridgeConfigRef
 	appliedRef bridgeConfigRef
@@ -150,12 +162,13 @@ type App struct {
 	// otherwise, so a deployment that did not opt in keeps the ADR 0012 refusal.
 	// stopRolloutDrive stops the drive goroutine on Stop, bounded by the process
 	// shutdown budget it is handed.
-	rolloutConfig bridge.ClusterRolloutConfig
-	rolloutDriver *bridge.ClusterRolloutDriver
+	rolloutConfig       bridge.ClusterRolloutConfig
+	rolloutDriver       *bridge.ClusterRolloutDriver
+	rolloutHealthDriver atomic.Pointer[bridge.ClusterRolloutDriver]
 	// baselineRef holds the generation-zero committed artifact this member verified
 	// at startup (nil when the deployment stamped no admitted baseline document).
-	// It is written once in Start, before any server is listening, and read
-	// concurrently by deep-health probes.
+	// It is published during first activation, before readiness is released,
+	// and read concurrently by deep-health probes.
 	baselineRef      atomic.Pointer[rolloutBaseline]
 	stopRolloutDrive func(context.Context)
 
@@ -163,6 +176,7 @@ type App struct {
 	watchWg     sync.WaitGroup
 
 	shutdownTimeout time.Duration
+	processBudget   atomic.Int64
 	// shutdownTimeoutPinned records that a caller supplied the budget through
 	// WithShutdownTimeout, so Start must not replace it with the boot config's
 	// bridge.shutdown_timeout.
@@ -255,6 +269,7 @@ func NewApp(cfg deployinfra.BootstrapConfig, opts ...Option) *App {
 	if app.pluginRegistry == nil {
 		app.pluginRegistry = newDefaultPluginRegistry()
 	}
+	app.processBudget.Store(int64(app.shutdownTimeout))
 	return app
 }
 

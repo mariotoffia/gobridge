@@ -3,7 +3,6 @@ package bootstrap
 import (
 	"context"
 	"net/http"
-	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -102,24 +101,39 @@ func TestIntegration_AppReloadsDynamoDBConfig(t *testing.T) {
 			}
 
 			require.NoError(t, app.Start(t.Context()))
+			if !tc.empty {
+				wait.Until(t, 5*time.Second, "initial config activates asynchronously", func() bool {
+					applied := app.CurrentAppliedConfig()
+					return app.CurrentRuntime() != nil && applied != nil &&
+						applied.Version == initialVersion && installs.Load() == 1
+				})
+			}
 			initialRuntime := app.CurrentRuntime()
-			require.NotNil(t, initialRuntime)
 			initialConfig := app.CurrentAppliedConfig()
-			require.NotNil(t, initialConfig)
-			require.Equal(t, initialVersion, initialConfig.Version)
-			require.Equal(t, initialLevel, initialConfig.Bridge.LogLevel)
-			require.Equal(t, int64(1), installs.Load())
 			if tc.empty {
-				_, err := writer.Load(t.Context())
-				require.ErrorIs(t, err, shared.ErrNotFound, "start-empty must not persist the fallback")
+				require.Nil(t, initialRuntime)
+				require.Nil(t, initialConfig)
+				require.Zero(t, installs.Load(), "waiting must not install a synthetic runtime")
+			} else {
+				require.Equal(t, initialLevel, initialConfig.Bridge.LogLevel)
 			}
 
-			wait.Until(t, 5*time.Second, "DynamoDB watcher cadence is ready", func() bool {
+			wait.Until(t, 5*time.Second, "initial DynamoDB observation and watcher are ready", func() bool {
 				if tc.mode == "streams" {
 					return streamReads.Load() > 0 && fc.TimerCount() > 0
 				}
-				return slices.Contains(fc.TickerPeriods(), time.Second)
+				// Observe creates its poll ticker before returning the channel,
+				// so consuming its initial snapshot proves that watch is ready.
+				// The App retry ticker alone cannot establish that fact.
+				if tc.empty {
+					return app.missing.Load()
+				}
+				return app.CurrentAppliedConfig() != nil
 			})
+			if tc.empty {
+				_, err := writer.Load(t.Context())
+				require.ErrorIs(t, err, shared.ErrNotFound, "waiting must not persist a fallback")
+			}
 			readsBeforeSave := streamReads.Load()
 
 			// Save mutates Version: use a fresh object, never the shared logical/
@@ -133,12 +147,20 @@ func TestIntegration_AppReloadsDynamoDBConfig(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, changed.Version, source.Version)
 			require.Equal(t, changed.Bridge, source.Bridge)
-			require.Same(t, initialRuntime, app.CurrentRuntime(), "no watch tick has fired")
-			require.Equal(t, initialVersion, initialConfig.Version)
-			require.Equal(t, initialLevel, initialConfig.Bridge.LogLevel)
+			if tc.empty {
+				require.Nil(t, app.CurrentRuntime(), "no watch tick has fired")
+			} else {
+				require.Same(t, initialRuntime, app.CurrentRuntime(), "no watch tick has fired")
+				require.Equal(t, initialVersion, initialConfig.Version)
+				require.Equal(t, initialLevel, initialConfig.Bridge.LogLevel)
+			}
 
 			fc.Advance(time.Second)
 			streamTicks := 1
+			wantInstalls := int64(2)
+			if tc.empty {
+				wantInstalls = 1
+			}
 			wait.Until(t, 5*time.Second, "runtime replacement and config health converge", func() bool {
 				health := app.configWatchHealth()
 				applied := app.CurrentAppliedConfig()
@@ -146,7 +168,7 @@ func TestIntegration_AppReloadsDynamoDBConfig(t *testing.T) {
 				// installPlan's callback precedes NotifyApplyResult. Wait for the
 				// full acknowledgement, not just the new runtime or version.
 				if app.CurrentRuntime() != nil && app.CurrentRuntime() != initialRuntime &&
-					installs.Load() == 2 && applied != nil && logical != nil &&
+					installs.Load() == wantInstalls && applied != nil && logical != nil &&
 					applied.Version == source.Version && logical.Version == source.Version &&
 					health.DesiredVersion != nil && *health.DesiredVersion == source.Version &&
 					health.RunningVersion != nil && *health.RunningVersion == source.Version &&
@@ -166,8 +188,10 @@ func TestIntegration_AppReloadsDynamoDBConfig(t *testing.T) {
 			assert.Equal(t, source, app.CurrentAppliedConfig())
 			assert.Empty(t, app.configWatchHealth().Reason)
 			if tc.mode == "streams" {
+				// The App also owns a startup-retry ticker at PollInterval.
+				// Actual GetRecords calls and sub-hour clock advances prove that
+				// Streams, rather than the table poll fallback, delivered this edit.
 				assert.Greater(t, streamReads.Load(), readsBeforeSave)
-				assert.NotContains(t, fc.TickerPeriods(), time.Hour, "Streams must not fall back to polling")
 			}
 		})
 	}

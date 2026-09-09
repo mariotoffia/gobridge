@@ -2,9 +2,11 @@ package bootstrap
 
 import (
 	"context"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -181,6 +183,7 @@ func TestApp_SeedsGenerationZeroBaselineBeforeReadiness(t *testing.T) {
 	app, _ := coordinatedBaselineApp(t, store, coordinatedConfigYAML(1, "info"))
 	require.NoError(t, app.Start(t.Context()))
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	awaitApplied(t, app)
 
 	committed, err := store.CommittedConfig(context.Background())
 	require.NoError(t, err, "the deployment baseline must be durable once the process is ready")
@@ -202,6 +205,8 @@ func TestApp_RestartInWriteBeforeProposeWindowBootsTheBaseline(t *testing.T) {
 	store := memoryrollout.NewStore()
 	first, cfgPath := coordinatedBaselineApp(t, store, coordinatedConfigYAML(1, "info"))
 	require.NoError(t, first.Start(t.Context()))
+	t.Cleanup(func() { _ = first.Stop(context.Background()) })
+	awaitApplied(t, first)
 	require.NoError(t, first.Stop(context.Background()))
 
 	// The operator writes the change; no rollout has proposed it yet.
@@ -212,6 +217,7 @@ func TestApp_RestartInWriteBeforeProposeWindowBootsTheBaseline(t *testing.T) {
 	second := coordinatedBaselineAppAt(t, store, cfgPath, first.cfg.DynamoDBHABaselineConfigDigest)
 	require.NoError(t, second.Start(t.Context()))
 	t.Cleanup(func() { _ = second.Stop(context.Background()) })
+	awaitApplied(t, second)
 
 	assert.Equal(t, 1, second.CurrentAppliedConfig().Version,
 		"a restart in the write-before-propose window must boot the committed baseline")
@@ -229,6 +235,8 @@ func TestApp_ConflictingBaselineAdoptsTheEstablishedOne(t *testing.T) {
 	store := memoryrollout.NewStore()
 	first, _ := coordinatedBaselineApp(t, store, coordinatedConfigYAML(1, "info"))
 	require.NoError(t, first.Start(t.Context()))
+	t.Cleanup(func() { _ = first.Stop(context.Background()) })
+	awaitApplied(t, first)
 	require.NoError(t, first.Stop(context.Background()))
 	established, err := store.CommittedConfig(context.Background())
 	require.NoError(t, err)
@@ -237,6 +245,7 @@ func TestApp_ConflictingBaselineAdoptsTheEstablishedOne(t *testing.T) {
 	second, _ := coordinatedBaselineApp(t, store, coordinatedConfigYAML(1, "warn"))
 	require.NoError(t, second.Start(t.Context()))
 	t.Cleanup(func() { _ = second.Stop(context.Background()) })
+	awaitApplied(t, second)
 
 	after, err := store.CommittedConfig(context.Background())
 	require.NoError(t, err)
@@ -259,8 +268,9 @@ func TestApp_BaselineIsNotSeededUntilTheConfigHasBeenBuilt(t *testing.T) {
 	unstartable := coordinatedConfigYAML(1, "info") + "http:\n  tls_cert_file: /nope/cert.pem\n  tls_key_file: /nope/key.pem\n"
 	app, _ := coordinatedBaselineApp(t, store, unstartable)
 
-	require.Error(t, app.Start(t.Context()), "precondition: this config cannot start on this profile")
+	require.NoError(t, app.Start(t.Context()), "the control plane starts independently")
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	wait.Until(t, time.Second, "activation rejection", func() bool { return app.observationError.Load() != nil })
 
 	_, err := store.CommittedConfig(context.Background())
 	assert.Error(t, err, "a config the member could not run must not become the cohort's baseline")
@@ -284,6 +294,7 @@ func TestApp_UnstampedBaselineKeepsTheConservativeJoiner(t *testing.T) {
 
 	require.NoError(t, app.Start(t.Context()))
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	awaitApplied(t, app)
 
 	_, err := store.CommittedConfig(context.Background())
 	assert.Error(t, err, "no stamped baseline digest means no seed; the conservative joiner rule still applies")
@@ -313,29 +324,22 @@ func coordinatedBaselineAppAt(t *testing.T, store ports.ClusterRolloutStore, cfg
 	)
 }
 
-// baselineDigestOnDisk computes the artifact digest of the config document at
-// path, the way a deployment computes it for the document it seeds.
+// baselineDigestOnDisk computes the deployment content attestation of the
+// document at path, excluding the repository-owned version.
 func baselineDigestOnDisk(t *testing.T, path string) string {
 	t.Helper()
 	cfg, err := cfgparser.ParseFile(path, cfgparser.FormatAuto, newDefaultPluginRegistry())
 	require.NoError(t, err)
-	digest, err := bridge.ConfigArtifactDigest(cfg)
+	digest, err := bridge.DeploymentBaselineContentDigest(cfg)
 	require.NoError(t, err)
 	return digest
 }
 
-// TestBaselineDigest_SurvivesTheSeededDocumentRoundTrip pins the assumption the
-// whole baseline mechanism rests on: the deployment computes the digest from the
-// document it uploads, while the runtime computes it from the document the EFS
-// seeder actually wrote — and the seeder writes a CANONICALIZED form of the
-// upload (keys sorted, formatting normalized), not the bytes byte-for-byte.
-//
-// The digest is taken over the parsed config, not the file bytes, so both sides
-// agree as long as parsing is insensitive to key order and re-serialization. If
-// that ever stops being true the seed silently stops matching in production and
-// every member quietly keeps the old restart window, so it is pinned here rather
-// than discovered from a runbook.
-func TestBaselineDigest_SurvivesTheSeededDocumentRoundTrip(t *testing.T) {
+// Configuration serialization and key ordering must not change the full
+// artifact digest when the logical content and version stay the same. Deployment
+// content attestation separately excludes the repository-owned version; this test
+// holds that version constant to isolate the wire-format round trip.
+func TestBaselineDigest_SurvivesConfigRoundTrip(t *testing.T) {
 	registry := newDefaultPluginRegistry()
 	deployed, err := cfgparser.Parse(strings.NewReader(coordinatedConfigYAML(1, "info")), cfgparser.FormatYAML, registry)
 	require.NoError(t, err)
@@ -343,9 +347,9 @@ func TestBaselineDigest_SurvivesTheSeededDocumentRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("re-serialized document", func(t *testing.T) {
-		seeded, err := cloneBridgeConfig(deployed, registry)
+		roundTripped, err := cloneBridgeConfig(deployed, registry)
 		require.NoError(t, err)
-		got, err := bridge.ConfigArtifactDigest(seeded)
+		got, err := bridge.ConfigArtifactDigest(roundTripped)
 		require.NoError(t, err)
 		assert.Equal(t, want, got)
 	})
@@ -365,6 +369,6 @@ version: 1
 		require.NoError(t, err)
 		got, err := bridge.ConfigArtifactDigest(reordered)
 		require.NoError(t, err)
-		assert.Equal(t, want, got, "the seeder sorts keys; that must not move the digest")
+		assert.Equal(t, want, got, "reordering configuration keys must not change artifact identity")
 	})
 }

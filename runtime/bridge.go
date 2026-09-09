@@ -71,6 +71,7 @@ type Runtime struct {
 	drainers        []*outbox.Drainer
 	globalSem       chan struct{}
 	running         bool
+	fenced          bool
 	healthy         bool
 	terminal        bool
 	// stopped records a clean, DELIBERATE Stop (an admin pause or a

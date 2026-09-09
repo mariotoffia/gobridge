@@ -18,6 +18,7 @@ import (
 	"github.com/mariotoffia/gobridge/adapters/native/memorylease"
 	"github.com/mariotoffia/gobridge/adapters/native/memoryrollout"
 	"github.com/mariotoffia/gobridge/bridge"
+	"github.com/mariotoffia/gobridge/config"
 	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
@@ -25,18 +26,18 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// CDK baseline_digest_test.go pins actual per-slot stamps from materialized YAML.
-// These tests pass persisted seeder versions through the real DynamoDB loader,
-// App startup and committed-artifact codec, with only the remote API replaced.
+// CDK tests pin per-slot content attestations from the validated configuration.
+// These tests pass repository-assigned versions through the real DynamoDB loader,
+// first activation and committed-artifact codec, replacing only the remote API.
 func TestApp_DynamoDBBaseline_SeedsTheStoredVersion(t *testing.T) {
 	for _, tc := range []struct {
 		name                   string
 		yamlVersion, persisted int
 	}{
-		{"default fresh seed", 0, 1},
-		{"explicit fresh seed", 99, 1},
-		{"default overwrite", 0, 8},
-		{"explicit overwrite", 99, 8},
+		{"unversioned source, first target revision", 0, 1},
+		{"versioned source, first target revision", 99, 1},
+		{"unversioned source, existing target revision", 0, 8},
+		{"versioned source, existing target revision", 99, 8},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			deployed := deploymentBaselineConfig(t, tc.yamlVersion)
@@ -47,6 +48,7 @@ func TestApp_DynamoDBBaseline_SeedsTheStoredVersion(t *testing.T) {
 			store := memoryrollout.NewStore()
 			app := dynamoDBBaselineApp(t, store, &stored, stamp)
 			require.NoError(t, app.Start(t.Context()))
+			awaitApplied(t, app)
 
 			committed, err := store.CommittedConfig(t.Context())
 			require.NoError(t, err, "a source-assigned version must not prevent generation-zero seeding")
@@ -81,6 +83,7 @@ func TestApp_DynamoDBBaseline_RejectsChangedContent(t *testing.T) {
 	store := memoryrollout.NewStore()
 	app := dynamoDBBaselineApp(t, store, &changed, stamp)
 	require.NoError(t, app.Start(t.Context()))
+	awaitApplied(t, app)
 	_, err = store.CommittedConfig(t.Context())
 	assert.ErrorIs(t, err, shared.ErrNotFound, "uncommitted operator content must not become the baseline")
 }
@@ -94,6 +97,7 @@ func TestApp_DynamoDBBaseline_RestartBeforeProposalRecoversStoredVersion(t *test
 	store := memoryrollout.NewStore()
 	first := dynamoDBBaselineApp(t, store, &stored, stamp)
 	require.NoError(t, first.Start(t.Context()))
+	awaitApplied(t, first)
 	require.NoError(t, first.Stop(t.Context()))
 
 	// The mutable source now holds an operator edit, but no proposal exists yet.
@@ -104,6 +108,7 @@ func TestApp_DynamoDBBaseline_RestartBeforeProposalRecoversStoredVersion(t *test
 	require.ErrorIs(t, err, shared.ErrNotFound)
 	restarted := dynamoDBBaselineApp(t, store, &changed, stamp)
 	require.NoError(t, restarted.Start(t.Context()))
+	awaitApplied(t, restarted)
 	assert.Equal(t, 1, restarted.CurrentAppliedConfig().Version)
 	assert.Equal(t, "info", restarted.CurrentAppliedConfig().Bridge.LogLevel)
 }
@@ -135,14 +140,16 @@ func TestApp_DynamoDBBaseline_ReportsFullArtifactIdentity(t *testing.T) {
 	assert.Equal(t, established.Digest, app.baselineRef.Load().Digest)
 }
 
-func TestApp_FileBaseline_RejectsVersionOnlyChange(t *testing.T) {
+func TestApp_FileBaseline_RecognizesAssignedVersion(t *testing.T) {
 	store := memoryrollout.NewStore()
 	app, path := coordinatedBaselineApp(t, store, coordinatedConfigYAML(0, "info"))
 	require.NoError(t, os.WriteFile(path, []byte(coordinatedConfigYAML(1, "info")), 0o600))
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })
 	require.NoError(t, app.Start(t.Context()))
-	_, err := store.CommittedConfig(t.Context())
-	assert.ErrorIs(t, err, shared.ErrNotFound, "file deployments still require the exact source version")
+	awaitApplied(t, app)
+	committed, err := store.CommittedConfig(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 1, committed.ConfigVersion, "file initialization assigns the repository version")
 }
 
 func deploymentBaselineConfig(t *testing.T, version int) *ports.BridgeConfig {
@@ -192,4 +199,64 @@ func dynamoDBBaselineApp(t *testing.T, store ports.ClusterRolloutStore, stored *
 		require.NoError(t, app.Stop(ctx))
 	})
 	return app
+}
+
+// Exercise real file initialization before baseline publication: repository
+// versions identify stored artifacts, not the deployment's content attestation.
+func TestFileInitializationBaselineRecognizesSourceOwnedVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name                       string
+		sourceVersion              int
+		existing                   string
+		storedVersion, sourceLoads int
+	}{
+		{name: "source version zero", sourceVersion: 0, storedVersion: 1, sourceLoads: 1},
+		{name: "source version ninety-nine", sourceVersion: 99, storedVersion: 1, sourceLoads: 1},
+		{name: "existing versionless document", sourceVersion: 99,
+			existing: strings.TrimPrefix(coordinatedConfigYAML(0, "info"), "version: 0\n")},
+		{name: "existing explicit zero version", sourceVersion: 99, existing: coordinatedConfigYAML(0, "info")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deployed := deploymentBaselineConfig(t, tc.sourceVersion)
+			stamp, err := bridge.DeploymentBaselineContentDigest(deployed)
+			require.NoError(t, err)
+			path := t.TempDir() + "/bridge.yaml"
+			if tc.existing != "" {
+				require.NoError(t, os.WriteFile(path, []byte(tc.existing), 0o600))
+			}
+			rolloutStore := memoryrollout.NewStore()
+			app := coordinatedBaselineAppAt(t, rolloutStore, path, stamp)
+			target := &cfgparser.FileStore{Path: path, Registry: app.pluginRegistry}
+			loads := 0
+			source := configLoaderFunc(func(context.Context) (*ports.BridgeConfig, error) {
+				loads++
+				return deployed, nil
+			})
+			require.NoError(t, config.Initialize(t.Context(), target, source, app.admitInitialConfig))
+			assert.Equal(t, tc.sourceLoads, loads)
+			assert.Equal(t, tc.sourceVersion, deployed.Version, "initialization must not rewrite its caller's configuration")
+			stored, err := target.Load(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, tc.storedVersion, stored.Version)
+			if tc.existing != "" {
+				contents, err := os.ReadFile(path)
+				require.NoError(t, err)
+				assert.Equal(t, tc.existing, string(contents), "existing versionless/zero-version bytes are authoritative")
+			}
+			require.NoError(t, app.buildRolloutDriver(t.Context()))
+			boot, err := app.rolloutDriver.ResolveBoot(t.Context(), stored)
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				require.NoError(t, stopRuntime(context.Background(), app.CurrentRuntime(), app.CurrentAppliedConfig()))
+			})
+			require.NoError(t, app.applyLogicalConfig(t.Context(), boot, false))
+			require.NoError(t, app.seedRolloutBaseline(t.Context(), boot))
+			committed, err := rolloutStore.CommittedConfig(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, tc.storedVersion, committed.ConfigVersion)
+			fullDigest, err := bridge.ConfigArtifactDigest(stored)
+			require.NoError(t, err)
+			assert.Equal(t, fullDigest, committed.Digest, "the committed artifact retains its real version-sensitive identity")
+		})
+	}
 }

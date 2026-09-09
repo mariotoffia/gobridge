@@ -100,6 +100,9 @@ func (f *casFakeDDB) PutItem(_ context.Context, in *awsddb.PutItemInput, _ ...fu
 	//   OR (attribute_not_exists(version) AND expected == 0)
 	allowed := (f.hasRow && !f.versionAbsent && f.storedVersion == expected) ||
 		((!f.hasRow || f.versionAbsent) && expected == 0)
+	if f.lastPutCond == "attribute_not_exists(#pk)" {
+		allowed = !f.hasRow
+	}
 	if !allowed {
 		return nil, &ddbtypes.ConditionalCheckFailedException{}
 	}
@@ -212,7 +215,7 @@ func TestSave_AdoptsVersionlessItem(t *testing.T) {
 	// condition level where the guard lives.
 	f2 := &casFakeDDB{hasRow: true, versionAbsent: true, getReturnsVersion: -1}
 	s := &session{ddb: f2, tableName: "cfg"}
-	if err := s.putConfigItem(ctx, "config#cas", []byte("{}"), 6, 5); !isConditionFailed(err) {
+	if err := s.putConfigItem(ctx, "config#cas", []byte("{}"), 6, 5, false); !isConditionFailed(err) {
 		t.Fatalf("non-zero expected against a version-less row must fail the CAS condition, got %v", err)
 	}
 }

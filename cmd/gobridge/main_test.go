@@ -33,8 +33,8 @@ func TestBlankRoot_RejectsMQTTConfig(t *testing.T) {
 	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
 		t.Fatalf("command error = %v, want exit 1; output: %s", err, out)
 	}
-	if !strings.Contains(string(out), `unknown plugin kind \"mqtt\"`) {
-		t.Fatalf("want unknown MQTT kind; output: %s", out)
+	if !strings.Contains(string(out), `cannot read boot HTTP settings`) {
+		t.Fatalf("want boot decoder rejection; output: %s", out)
 	}
 }
 

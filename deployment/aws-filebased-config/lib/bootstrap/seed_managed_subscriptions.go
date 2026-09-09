@@ -12,15 +12,11 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// A persistent or exclusive MQTT session does not start until its
-// managed-subscription baseline exists: the adapter loads the exact filter
-// history before it opens the broker connection, and a missing baseline is
-// "history unknown", not "no history" (ADR 0003). The DynamoDB HA facade seeds
-// its table at deploy time; on the file-based profile the store may live on the
-// config mount, which only the task can write, so the attestation travels in
-// the bootstrap document and is seeded here at every boot. Seeding is
-// idempotent — an established baseline is kept and the listed filters are
-// added — so a restart never disturbs a history the running session built up.
+// A persistent or exclusive MQTT session needs an exact managed-subscription
+// baseline before opening its broker connection. Missing history means "unknown",
+// not "no subscriptions" (ADR 0003). Bootstrap attestations let the application
+// initialize that history before applying a configuration that uses the session.
+// This is independent of startup-only initialization of the config repository.
 
 // seedManagedSubscriptionBaselines seeds the baselines the bootstrap document
 // declares into the managed-subscription store cfg names, through the builder
@@ -31,12 +27,10 @@ import (
 // listed filters are added to it, so a filter the running session later removed
 // is re-added on the next apply until the attestation is redeployed without it.
 //
-// It runs on every apply rather than once at boot. The bootstrap document is
-// frozen in the task definition while the bridge config is live: this process
-// routinely boots on the start-empty config, because the seeder writes the
-// document from another container with no ordering guarantee, and the durable
-// session arrives with the first real config. A reload that ADDS one is the
-// same case.
+// It runs on every apply rather than only on first activation. Bootstrap
+// attestations are fixed for the task revision, while the active configuration
+// can arrive after an initial waiting period or introduce a durable session in
+// a later reload. Waiting without a configuration does not open a history store.
 //
 // An attested session the config in hand does not carry as a persistent or
 // exclusive MQTT session, or a config naming no stores.managed_subscriptions,

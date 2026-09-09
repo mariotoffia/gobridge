@@ -71,8 +71,8 @@ const DefaultCredentialPollInterval = 5 * time.Minute
 // to ephemeral Fargate storage (outbox/DLQ durability lost on task replace).
 const DefaultMountPath = "/var/lib/gobridge"
 
-// DefaultBridgeYamlName is the file the seeder writes onto EFS and the runtime
-// watches. Stable so admin tooling can reference a well-known path.
+// DefaultBridgeYamlName is the mounted configuration file initialized and
+// watched by the runtime. Stable so admin tooling can reference a known path.
 const DefaultBridgeYamlName = "bridge.yaml"
 
 // Metrics exporter selectors for BootstrapConfig.MetricsExporter. An empty
@@ -127,9 +127,9 @@ type BootstrapConfig struct {
 	// deployment's own baseline instead of whatever the mutable config source
 	// happens to hold at that moment.
 	//
-	// File sources use the full, version-sensitive ConfigArtifactDigest. DynamoDB
-	// sources use DeploymentBaselineContentDigest, excluding only the top-level
-	// Version because the source assigns that counter independently of the YAML.
+	// Both sources use DeploymentBaselineContentDigest, excluding only the
+	// top-level Version because initialization assigns that counter independently
+	// of the embedded document.
 	// The committed artifact still stores the actual source version and full digest.
 	//
 	// It is deliberately NOT the same value as DynamoDBHAConfigFingerprint: the

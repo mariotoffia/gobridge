@@ -18,6 +18,7 @@ import (
 // through the target sender. It validates fencing tokens to prevent
 // stale owners from sending after a lease transfer.
 type Drainer struct {
+	fenced         atomic.Bool
 	outboxStore    ports.OutboxStore
 	leaseStore     ports.LeaseStore
 	sender         ports.Sender

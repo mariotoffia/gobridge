@@ -89,6 +89,12 @@ func (a *App) watchLoop(ctx context.Context, watchCh <-chan *ports.BridgeConfig)
 func (a *App) applyCommittedConfig(ctx context.Context, cfg *ports.BridgeConfig) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.wedged.Load() {
+		return ErrRuntimeTerminal
+	}
+	if a.started && (a.missing.Load() || a.runtimeRef.Get() == nil) {
+		return ports.ErrApplyInFlight
+	}
 	if a.isStaleSourceConfig(cfg) {
 		// The durable commit succeeded but a newer source version superseded
 		// it. This is not an apply failure or an in-flight apply: neither
@@ -135,6 +141,9 @@ func (a *App) isStaleSourceConfig(cfg *ports.BridgeConfig) bool {
 // successful apply, so a rejected reload does not suppress a later retry of the
 // same bytes once the underlying problem is fixed.
 func (a *App) applyLogicalIfChanged(ctx context.Context, logical *ports.BridgeConfig, parsed bool) (bool, error) {
+	if a.wedged.Load() {
+		return false, ErrRuntimeTerminal
+	}
 	fp := a.parsedFingerprint(logical, parsed)
 	if fp != "" && fp == a.lastAppliedFingerprint {
 		if a.onReloadSkipped != nil {

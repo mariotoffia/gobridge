@@ -124,6 +124,9 @@ func Run(t *testing.T, newStore func(t *testing.T) ports.ConfigStore) {
 	t.Run("Conditional", func(t *testing.T) {
 		runConditional(t, newStore)
 	})
+	t.Run("Initialization", func(t *testing.T) {
+		runInitialization(t, newStore)
+	})
 }
 
 func runConditional(t *testing.T, newStore func(t *testing.T) ports.ConfigStore) {

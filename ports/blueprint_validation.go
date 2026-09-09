@@ -84,6 +84,8 @@ func (e *BlueprintValidationError) Warnf(format string, args ...any) {
 type ConfigStore interface {
 	// Load returns the current parsed blueprint from the underlying
 	// store (e.g. on-disk YAML). ctx is honoured for cancellation.
+	// Initialization requires a document-level shared.ErrNotFound classification
+	// for absence; missing storage and decode failures must not use that class.
 	Load(ctx context.Context) (*BridgeConfig, error)
 
 	// Save persists the blueprint at the stored version plus one (starting
@@ -120,7 +122,9 @@ type ConditionalConfigStore interface {
 	// so the caller can reload the current config and re-apply its edit.
 	// expectedVersion is the BridgeConfig.Version the caller based its edit
 	// on; a store with no prior config treats expectedVersion == 0 as
-	// "create if absent". On success cfg.Version is set to expectedVersion+1;
+	// version zero. Stores may also adopt existing versionless documents at
+	// zero; strict creation requires ConfigInitializer instead.
+	// On success cfg.Version is set to expectedVersion+1;
 	// on failure it is unchanged. ctx is honoured for cancellation.
 	SaveIfVersion(ctx context.Context, cfg *BridgeConfig, expectedVersion int) error
 }

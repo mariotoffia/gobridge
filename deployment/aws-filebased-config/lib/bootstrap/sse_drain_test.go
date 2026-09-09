@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
+	"github.com/mariotoffia/gobridge/config/parser"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -86,10 +87,12 @@ func startAppWithSSE(t *testing.T, bridgeID string) *App {
 		AdminAPIKeyParam:  "/admin",
 	}, WithParameterResolver(staticParameterResolver{"/admin": "admin-secret-key-123456"}))
 
+	require.NoError(t, parser.WriteFile(cfgPath, defaultLogicalConfig(app.cfg)))
 	require.NoError(t, app.Start(t.Context()))
 	// Idempotent backstop: test 1 Stops explicitly; this no-ops afterward
 	// (Stop returns immediately once started=false).
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	awaitApplied(t, app)
 
 	reloadConfig(t, app, sseRouteConfig(bridgeID, "info"))
 	return app

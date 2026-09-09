@@ -57,8 +57,10 @@ func TestNewConfigSource_DynamoDB_EnsuresTableOnlyInDevMode(t *testing.T) {
 			cfg := dynamoDBSourceConfig()
 			cfg.DevMode, cfg.ConfigDynamoDB.WatchMode = tc.dev, tc.mode
 			app := NewApp(cfg, WithDynamoDBClient(client))
-			_, err := app.newConfigSource(t.Context())
+			src, err := app.newConfigSource(t.Context())
 			require.NoError(t, err)
+			assert.Empty(t, operations, "composition must not perform repository I/O")
+			require.NoError(t, app.ensureConfigRepository(t.Context(), src.store))
 			if tc.dev {
 				assert.Equal(t, []string{"DynamoDB_20120810.CreateTable", "DynamoDB_20120810.DescribeTable"}, operations)
 			} else {
@@ -78,8 +80,9 @@ func TestNewConfigSource_DynamoDB_EnsureFailurePropagates(t *testing.T) {
 	cfg := dynamoDBSourceConfig()
 	cfg.DevMode = true
 	app := NewApp(cfg, WithDynamoDBClient(client))
-	_, err := app.newConfigSource(t.Context())
-	require.ErrorIs(t, err, shared.ErrNotAuthorized)
+	src, err := app.newConfigSource(t.Context())
+	require.NoError(t, err)
+	require.ErrorIs(t, app.ensureConfigRepository(t.Context(), src.store), shared.ErrNotAuthorized)
 }
 
 // TestNewConfigSource_DynamoDB_LazilyBuildsSharedClient verifies source wiring
@@ -98,7 +101,7 @@ func TestNewConfigSource_DynamoDB_LazilyBuildsSharedClient(t *testing.T) {
 
 // TestNewConfigSource_DynamoDB_MissingItemStartsEmpty verifies the wrapper
 // supplies a default only to the loader; the admin store retains missing-item truth.
-func TestNewConfigSource_DynamoDB_MissingItemStartsEmpty(t *testing.T) {
+func TestNewConfigSource_DynamoDB_MissingItemRemainsAbsent(t *testing.T) {
 	client := configDynamoDBClient(t, func(*http.Request) (*http.Response, error) {
 		return configJSONResponse(`{}`, http.StatusOK), nil
 	})
@@ -106,8 +109,8 @@ func TestNewConfigSource_DynamoDB_MissingItemStartsEmpty(t *testing.T) {
 	src, err := app.newConfigSource(t.Context())
 	require.NoError(t, err)
 	got, err := src.layer.Loader.Load(t.Context())
-	require.NoError(t, err)
-	assert.Equal(t, defaultLogicalConfig(app.cfg), got)
+	require.ErrorIs(t, err, shared.ErrNotFound)
+	assert.Nil(t, got)
 	_, err = src.store.Load(t.Context())
 	require.ErrorIs(t, err, shared.ErrNotFound)
 }
@@ -161,6 +164,7 @@ func TestApp_DynamoDBSource_WiresManagerAndAdmin(t *testing.T) {
 		require.NoError(t, app.Stop(ctx))
 	})
 	require.NoError(t, app.Start(t.Context()))
+	awaitApplied(t, app)
 	require.NotNil(t, app.CurrentRuntime())
 	assert.Equal(t, 7, app.CurrentAppliedConfig().Version)
 	assert.Same(t, app.CurrentLogicalConfig(), app.CurrentAppliedConfig())

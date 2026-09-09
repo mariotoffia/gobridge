@@ -43,10 +43,13 @@ const dlqDepthSampleInterval = 30 * time.Second
 // drainers, then spawns background goroutines. It returns immediately;
 // use Stop to shut down gracefully.
 func (rt *Runtime) Start(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
-	if rt.terminal || rt.stopped {
+	if rt.terminal || rt.stopped || rt.fenced {
 		// Stop closes the outbox/DLQ/lease stores and cancels every
 		// drainer/manager, but the drainers/managers/entries are never rebuilt.
 		// A restart would append fresh drainers over CLOSED stores and duplicate

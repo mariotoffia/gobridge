@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -21,16 +22,21 @@ import (
 //
 //nolint:gochecknoglobals // -ldflags -X can only target package-level vars
 var (
-	version = "dev"
-	gitSHA  = "unknown"
+	initialConfigBase64 string
+	version             = "dev"
+	gitSHA              = "unknown"
 )
 
 func main() {
 	var bootstrapPath string
 	var healthcheck bool
+	showInitialDigest := flag.Bool("initial-config-digest", false, "print the SHA-256 of the exact embedded initial configuration bytes and exit without startup")
 	flag.StringVar(&bootstrapPath, "bootstrap-file", "", "path to the bootstrap JSON file")
 	flag.BoolVar(&healthcheck, "healthcheck", false, "probe the local monitor liveness endpoint and exit 0 (alive) or 1 (unavailable); used as the container HEALTHCHECK")
 	flag.Parse()
+	if *showInitialDigest {
+		os.Exit(writeInitialConfigDigest(os.Stdout, os.Stderr, initialConfigBase64))
+	}
 
 	// Health check runs as its own short-lived process invocation (the
 	// container HEALTHCHECK), so handle it before the mandatory config load:
@@ -52,7 +58,13 @@ func main() {
 	levelVar := new(slog.LevelVar)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: levelVar}))
 	logger.Info("gobridge-filebased starting", "version", version, "git_sha", gitSHA)
+	initial, err := base64.StdEncoding.DecodeString(initialConfigBase64)
+	if err != nil {
+		logger.Error("invalid embedded initial configuration encoding")
+		os.Exit(1)
+	}
 	app := bootstrap.NewApp(cfg,
+		bootstrap.WithInitialConfig(string(initial)),
 		bootstrap.WithLogger(logger),
 		bootstrap.WithLogLevelVar(levelVar),
 	)

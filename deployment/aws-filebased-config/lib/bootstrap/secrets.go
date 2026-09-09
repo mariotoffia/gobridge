@@ -194,40 +194,9 @@ func resolveInputs(
 	registry *ports.Registry,
 	logical *ports.BridgeConfig,
 ) (*resolvedInputs, error) {
-	adminKey, err := resolver.ResolveString(ctx, bootstrapCfg.AdminAPIKeyParam)
+	adminKey, monitorKey, err := resolveControlKeys(ctx, resolver, bootstrapCfg)
 	if err != nil {
 		return nil, err
-	}
-	// Validate the admin-key parameter at startup AND on every reload so a
-	// malformed, below-floor, or unsafe-named value fails fast rather than
-	// installing a key that startup would have rejected. On the reload path a
-	// returned error makes watchLoop discard the plan and keep the last-good
-	// runtime. parseAdminKeys enforces the JSON SHAPE (a leading '{' is a
-	// name->key map; malformed JSON is a hard error, never a literal key);
-	// httpapi.ValidateAdminKeys then enforces the SAME tag-safe name and
-	// minAPIKeyLen rules as httpapi's startup validateConfig (DRY).
-	parsedAdminKeys, err := parseAdminKeys(adminKey)
-	if err != nil {
-		return nil, err
-	}
-	if err := httpapi.ValidateAdminKeys(parsedAdminKeys); err != nil {
-		return nil, err
-	}
-
-	monitorKey := ""
-	if bootstrapCfg.MonitorAPIKeyParam != "" {
-		monitorKey, err = resolver.ResolveString(ctx, bootstrapCfg.MonitorAPIKeyParam)
-		if err != nil {
-			return nil, err
-		}
-		// Enforce the SAME below-floor guard httpapi's startup validateConfig
-		// applies, at startup AND on every reload, so a rotated monitor key that
-		// is non-empty but too short fails fast (watchLoop discards the plan and
-		// keeps the last-good runtime) instead of silently weakening the monitor
-		// plane. An empty key is allowed (monitor auth then folds to admin-only).
-		if err := httpapi.ValidateMonitorKey(monitorKey); err != nil {
-			return nil, err
-		}
 	}
 
 	resolvedCfg, err := cloneBridgeConfig(logical, registry)
@@ -322,4 +291,44 @@ func normalizeParameterRef(ref string) (string, error) {
 		return ref, nil
 	}
 	return "/" + ref, nil
+}
+
+func resolveControlKeys(ctx context.Context, resolver parameterResolver, bootstrapCfg deployinfra.BootstrapConfig) (string, string, error) {
+	adminKey, err := resolver.ResolveString(ctx, bootstrapCfg.AdminAPIKeyParam)
+	if err != nil {
+		return "", "", err
+	}
+	// Validate the admin-key parameter at startup AND on every reload so a
+	// malformed, below-floor, or unsafe-named value fails fast rather than
+	// installing a key that startup would have rejected. On the reload path a
+	// returned error makes watchLoop discard the plan and keep the last-good
+	// runtime. parseAdminKeys enforces the JSON SHAPE (a leading '{' is a
+	// name->key map; malformed JSON is a hard error, never a literal key);
+	// httpapi.ValidateAdminKeys then enforces the SAME tag-safe name and
+	// minAPIKeyLen rules as httpapi's startup validateConfig (DRY).
+	parsedAdminKeys, err := parseAdminKeys(adminKey)
+	if err != nil {
+		return "", "", err
+	}
+	if err := httpapi.ValidateAdminKeys(parsedAdminKeys); err != nil {
+		return "", "", err
+	}
+
+	monitorKey := ""
+	if bootstrapCfg.MonitorAPIKeyParam != "" {
+		monitorKey, err = resolver.ResolveString(ctx, bootstrapCfg.MonitorAPIKeyParam)
+		if err != nil {
+			return "", "", err
+		}
+		// Enforce the SAME below-floor guard httpapi's startup validateConfig
+		// applies, at startup AND on every reload, so a rotated monitor key that
+		// is non-empty but too short fails fast (watchLoop discards the plan and
+		// keeps the last-good runtime) instead of silently weakening the monitor
+		// plane. An empty key is allowed (monitor auth then folds to admin-only).
+		if err := httpapi.ValidateMonitorKey(monitorKey); err != nil {
+			return "", "", err
+		}
+	}
+
+	return adminKey, monitorKey, nil
 }

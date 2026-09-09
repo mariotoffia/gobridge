@@ -402,6 +402,9 @@ func (d *Drainer) claimOpContext(ctx context.Context, limit int) (context.Contex
 }
 
 func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) (int, int, error) {
+	if d.fenced.Load() {
+		return 0, 0, context.Canceled
+	}
 	start := d.clk.Now()
 	sessionTag := shared.Tag{Key: shared.TagKeySessionID, Value: d.partitionKey}
 	routeTag := shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID}

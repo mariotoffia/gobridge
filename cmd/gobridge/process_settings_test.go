@@ -2,18 +2,13 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"log/slog"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
-	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -22,42 +17,6 @@ import (
 // assert on what an operator is actually told.
 func captureLogger(buf *bytes.Buffer) *slog.Logger {
 	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-}
-
-// TestStartEmpty_DoesNotAdvertiseAnAbsentAdminAPI proves the missing-config
-// warning stays truthful. The start-empty config carries no `http` block, and
-// this composition root creates its HTTP listeners once from the boot config,
-// so a missing file means there is no admin API and no probe port at all.
-// Telling the operator to "push a config through the admin config API" sends
-// them at an endpoint that does not exist.
-func TestStartEmpty_DoesNotAdvertiseAnAbsentAdminAPI(t *testing.T) {
-	var buf bytes.Buffer
-	path := filepath.Join(t.TempDir(), "does-not-exist.yaml")
-	loader := configLoader(fileconfig.NewSource(path, ports.NewRegistry()), path, true, captureLogger(&buf))
-
-	cfg, err := loader.Load(context.Background())
-	require.NoError(t, err)
-	require.Nil(t, cfg.HTTP, "precondition: the start-empty config defines no HTTP block")
-
-	msg := buf.String()
-	require.NotEmpty(t, msg, "a missing config file must be warned about")
-	assert.NotContains(t, strings.ToLower(msg), "admin config api",
-		"start-empty must not advertise an admin API this process will not serve")
-	assert.Contains(t, strings.ToLower(msg), "restart",
-		"start-empty must tell the operator the recovery path that actually works: create the file and restart")
-}
-
-// TestStartEmpty_CanBeRefused proves a deployment that must never bridge
-// nothing can turn the fallback off: with start-empty disabled a missing config
-// file stays a fatal load error instead of silently booting a route-less bridge.
-func TestStartEmpty_CanBeRefused(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "does-not-exist.yaml")
-	loader := configLoader(fileconfig.NewSource(path, ports.NewRegistry()), path, false, discardLogger())
-
-	_, err := loader.Load(context.Background())
-
-	require.Error(t, err, "with start-empty refused a missing config file must fail the process")
-	assert.ErrorIs(t, err, shared.ErrNotFound)
 }
 
 // TestCurrentShutdownTimeout_ReadsTheRunningConfig proves the process shutdown

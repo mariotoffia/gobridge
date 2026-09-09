@@ -139,7 +139,7 @@ func TestApp_CommitAppliesExactlyOnceWithActiveWatcher(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		applied := app.CurrentAppliedConfig()
-		return applied != nil && applied.Bridge.LogLevel == "warn"
+		return applied != nil && applied.Bridge.LogLevel == "warn" && rebuilds.Load() >= 2
 	}, 3*time.Second, 10*time.Millisecond)
 	require.GreaterOrEqual(t, rebuilds.Load(), int64(2),
 		"a genuine external disk edit must trigger a runtime rebuild (the idempotency skip must not eat real changes)")

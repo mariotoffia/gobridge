@@ -288,6 +288,10 @@ type deepHealthResponse struct {
 
 // ConfigWatchHealth is the deep-health projection of live-reconfiguration state.
 type ConfigWatchHealth struct {
+	// StartupPending marks an ordinary initial wait or retryable startup fault,
+	// never a rejected configuration or terminal lifecycle. It does not imply
+	// readiness and must not suppress failures after first activation.
+	StartupPending     bool   `json:"startup_pending,omitempty"`
 	Degraded           bool   `json:"degraded"`
 	Reason             string `json:"reason,omitempty"`
 	ReconfigurePending bool   `json:"reconfigure_pending"`
@@ -414,7 +418,18 @@ type deepHealthRouteResponse struct {
 func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 	rt := s.currentRuntime()
 	if rt == nil {
-		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+		if s.cfg.ConfigWatchProvider == nil {
+			writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+			return
+		}
+		// Control-plane health exists before a data-plane runtime. Preserve the
+		// old error field while exposing whether startup is waiting or rejected.
+		body := map[string]any{"error": "runtime not available", "running": false,
+			"healthy": false, "empty": true, "ready_for_traffic": false, "level": ports.LevelLive.String()}
+		if s.cfg.ConfigWatchProvider != nil {
+			body["config_watch"] = s.cfg.ConfigWatchProvider()
+		}
+		writeJSON(w, http.StatusServiceUnavailable, body)
 		return
 	}
 	dh := rt.DeepHealth(r.Context())

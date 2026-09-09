@@ -131,6 +131,7 @@ func TestApp_CoordinatedRollout_CommitsAndSwaps(t *testing.T) {
 
 	require.NoError(t, app.Start(t.Context()))
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	awaitApplied(t, app)
 	require.Equal(t, 1, app.CurrentAppliedConfig().Version, "booted on the coordinated v1")
 
 	// Reload a live-safe delta the way production does — write it to the config
@@ -228,12 +229,11 @@ func TestApp_ClusterReload_InterchangeableWorkerRefusesCoordinatedBoot(t *testin
 		WithClusterRolloutStores(memoryrollout.NewStore(), memorylease.NewStore(memorylease.WithAcknowledgeSingleReplica(true))),
 		WithParameterResolver(staticParameterResolver{"/admin": "admin-secret-key-123456"}),
 	)
-	err := app.Start(t.Context())
+	require.NoError(t, app.Start(t.Context()))
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })
-	require.Error(t, err, "a coordinated config without a stable member_id must refuse to start")
-	assert.Contains(t, err.Error(), "member_id")
-	assert.Contains(t, err.Error(), "whole-cohort replacement",
-		"the refusal must name the procedure the operator uses instead")
+	wait.Until(t, time.Second, "unwired cohort rejected", func() bool { return app.observationError.Load() != nil })
+	require.Nil(t, app.CurrentRuntime())
+
 }
 
 // TestApp_ClusterReload_RefusesEnablingCoordinatedRolloutLive proves a running

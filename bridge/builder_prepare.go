@@ -163,12 +163,17 @@ func (p *BuildPlan) Abort() { p.Close() }
 // It is unexported to enforce that callers cannot construct an
 // invalid prepare/complete sequence — the public surface is Build
 // (single-shot) or Plan/Commit (explicit two-phase).
-func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
+// Preflight validates a blueprint and capabilities without opening stores or
+// constructing sessions, receivers, senders, or credential refreshers.
+func (b *Builder) Preflight(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Surface deferred registration errors (e.g. a duplicate processor name)
 	// before doing any work, so a name collision fails the Build loudly rather
 	// than silently dropping a processor referenced by a route.
 	if len(b.regErrs) > 0 {
-		return nil, errors.Join(b.regErrs...)
+		return errors.Join(b.regErrs...)
 	}
 
 	// Build against a bridge-owned structural copy. Plugin configs advertising
@@ -179,31 +184,39 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 	var err error
 	b.cfg, err = cloneConfigForBuild(b.cfg)
 	if err != nil {
-		return nil, fmt.Errorf("bridge: freeze config for build: %w", err)
+		return fmt.Errorf("bridge: freeze config for build: %w", err)
 	}
 
 	if err := runtime.CheckRandSource(); err != nil {
-		return nil, fmt.Errorf("bridge: entropy source unavailable: %w", err)
+		return fmt.Errorf("bridge: entropy source unavailable: %w", err)
 	}
 
 	if b.validator != nil {
 		if err := b.validator(b.cfg); err != nil {
-			return nil, fmt.Errorf("bridge: config validation: %w", err)
+			return fmt.Errorf("bridge: config validation: %w", err)
 		}
 	}
 	if err := b.validatePostAcquireActivationTimings(); err != nil {
-		return nil, err
+		return err
 	}
 	if err := b.validateFailoverBudgets(); err != nil {
-		return nil, err
+		return err
 	}
 	// Cardinality is a pure capability-based preflight. It must run before
 	// buildStores or complete creates any store, session, receiver, sender, or
 	// runtime resource: a rejected topology must leave the live system untouched.
 	if err := b.validateDedicatedIngressSessions(); err != nil {
-		return nil, err
+		return err
 	}
 	if err := b.validateIngressMemory(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
+	if err := b.Preflight(ctx); err != nil {
 		return nil, err
 	}
 

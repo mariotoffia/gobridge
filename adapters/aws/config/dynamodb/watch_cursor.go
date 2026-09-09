@@ -3,7 +3,6 @@ package dynamodb
 import (
 	"bytes"
 	"context"
-	"fmt"
 
 	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -14,21 +13,26 @@ import (
 // read, including an absent item, establishes the initial watch baseline. Later
 // admin reads must not advance the watcher past config it has not delivered.
 func (l *Loader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
+	cfg, _, err := l.load(ctx)
+	return cfg, err
+}
+
+func (l *Loader) load(ctx context.Context) (*ports.BridgeConfig, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	rawData, version, found, err := l.session.getConfigItem(ctx, l.pk())
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !found {
 		l.recordLoadedVersion(0)
-		return nil, shared.ErrNotFound.WithMessage("config not found for bridge " + l.bridgeID)
+		return nil, true, shared.ErrNotFound.WithMessage("config not found for bridge " + l.bridgeID)
 	}
 
 	cfg, err := parser.Parse(bytes.NewReader([]byte(rawData)), parser.FormatJSON, l.registry)
 	if err != nil {
-		return nil, fmt.Errorf("dynamodb config load: parse: %w", err)
+		return nil, false, shared.ErrInvalidConfig.WithMessage("dynamodb config load: parse").Wrap(err)
 	}
 
 	// The row version is the CAS authority, including for externally seeded
@@ -36,7 +40,7 @@ func (l *Loader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 	cfg.Version = int(version)
 	l.recordLoadedVersion(version)
 
-	return cfg, nil
+	return cfg, false, nil
 }
 
 // recordLoadedVersion distinguishes an established empty baseline from a loader

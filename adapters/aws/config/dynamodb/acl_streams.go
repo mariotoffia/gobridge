@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodbstreams"
 	dstreamtypes "github.com/aws/aws-sdk-go-v2/service/dynamodbstreams/types"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -75,6 +76,11 @@ func (l *Loader) runStreams(ctx context.Context, ch chan *ports.BridgeConfig, st
 		if shardIter == "" {
 			iter, err := l.session.acquireLatestIterator(ctx, streamArn)
 			if err != nil || iter == "" {
+				fault := err
+				if fault == nil {
+					fault = shared.ErrUnavailable.WithMessage("dynamodb config stream has no iterator")
+				}
+				l.observeResult(ctx, nil, fault)
 				acquireFailures++
 				if l.logger != nil {
 					l.logger.Warn("dynamodb config loader: stream shard acquisition failed",
@@ -102,6 +108,7 @@ func (l *Loader) runStreams(ctx context.Context, ch chan *ports.BridgeConfig, st
 
 		records, nextIter, err := l.session.getRecords(ctx, shardIter)
 		if err != nil {
+			l.observeResult(ctx, nil, err)
 			recordFailures++
 			if l.logger != nil {
 				l.logger.Warn("dynamodb config loader: GetRecords failed",
@@ -139,10 +146,16 @@ func (l *Loader) runStreams(ctx context.Context, ch chan *ports.BridgeConfig, st
 		for _, rec := range records {
 			if matchesWatchedKey(rec, l.pk()) {
 				matched = true
-				break
+				if l.observation != nil && rec.EventName == dstreamtypes.OperationTypeRemove {
+					l.observe(ctx, ports.ConfigMissing, nil, shared.ErrNotFound.WithMessage("config removed"))
+				}
 			}
 		}
-		if matched {
+		if l.observation != nil {
+			if matched || l.observation.kind == ports.ConfigReadError {
+				l.observeCurrent(ctx)
+			}
+		} else if matched {
 			cfg, err := l.Load(ctx)
 			if err != nil {
 				if l.logger != nil {
@@ -174,6 +187,10 @@ func (l *Loader) runStreams(ctx context.Context, ch chan *ports.BridgeConfig, st
 // never to an ordinary admin Load/Save observation. A missing/version-zero Load
 // is an established baseline; only a never-loaded watcher skips initial replay.
 func (l *Loader) reloadIfVersionAdvanced(ctx context.Context, ch chan *ports.BridgeConfig) {
+	if l.observation != nil {
+		l.observeCurrent(ctx)
+		return
+	}
 	lastSeen, hasBaseline := l.watchCursor()
 	if !hasBaseline {
 		return

@@ -118,9 +118,10 @@ func configItemVersion(item map[string]ddbtypes.AttributeValue) (int64, error) {
 // the missing version lets the loader adopt such a row once, after which normal
 // CAS applies. On a genuine version conflict the SDK
 // ConditionalCheckFailedException is returned unwrapped so the loader can
-// classify it as a lost-update conflict.
-func (s *session) putConfigItem(ctx context.Context, pk string, data []byte, version, expectedVersion int64) error {
-	_, err := s.ddb.PutItem(ctx, &dynamodb.PutItemInput{
+// classify it as a lost-update conflict. createOnly instead guards whole-item
+// absence, without changing version-zero adoption for ordinary saves.
+func (s *session) putConfigItem(ctx context.Context, pk string, data []byte, version, expectedVersion int64, createOnly bool) error {
+	input := &dynamodb.PutItemInput{
 		TableName: &s.tableName,
 		Item: map[string]ddbtypes.AttributeValue{
 			attrPK:      &ddbtypes.AttributeValueMemberS{Value: pk},
@@ -136,7 +137,13 @@ func (s *session) putConfigItem(ctx context.Context, pk string, data []byte, ver
 			":expected": &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(expectedVersion, 10)},
 			":zero":     &ddbtypes.AttributeValueMemberN{Value: "0"},
 		},
-	})
+	}
+	if createOnly {
+		input.ConditionExpression = aws.String("attribute_not_exists(#pk)")
+		input.ExpressionAttributeNames = map[string]string{"#pk": attrPK}
+		input.ExpressionAttributeValues = nil
+	}
+	_, err := s.ddb.PutItem(ctx, input)
 	if err != nil {
 		if isConditionFailed(err) {
 			return err

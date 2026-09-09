@@ -107,18 +107,12 @@ func rolloutHealth(r bridge.RolloutStatus) *httpapi.ClusterRolloutHealth {
 	}
 }
 
-// terminalPollInterval is how often the liveness backstop checks whether the
-// current runtime has gone terminal. Terminal state only follows a sustained
-// failure (e.g. ~30s of lease-store outage before step-down), so a coarse poll
-// is ample and cheap.
-const terminalPollInterval = 5 * time.Second
-
 // terminalConfirmSamples is how many CONSECUTIVE positive terminal reads the
 // backstop requires before it exits the process. A single positive sample can
 // be a transient read during a healthy reconfiguration swap window; requiring N
 // consecutive confirmations means a swap-window blip never kills a healthy
 // process, while a genuine terminal/wedged state (which persists) still trips
-// after N×terminalPollInterval.
+// after N polling intervals.
 const terminalConfirmSamples = 3
 
 // watchTerminal polls isTerminal every poll interval, returning true only after

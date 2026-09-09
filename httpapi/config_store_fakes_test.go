@@ -92,3 +92,17 @@ func (s *configLoadStore) Load(ctx context.Context) (*ports.BridgeConfig, error)
 }
 
 var _ ports.ConditionalConfigStore = (*configLoadStore)(nil)
+
+type initialConfigStore struct{ casConfigStore }
+
+func (s *initialConfigStore) CreateIfAbsent(_ context.Context, cfg *ports.BridgeConfig) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.current != nil {
+		return false, nil
+	}
+	copy := *cfg
+	copy.Version = 1
+	s.current = &copy
+	return true, nil
+}
