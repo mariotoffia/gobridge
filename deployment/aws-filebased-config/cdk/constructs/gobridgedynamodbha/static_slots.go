@@ -32,7 +32,7 @@ import (
 // instead — they must name the same set — so neither can drift from the other.
 type MemberSlots struct {
 	// ControlMemberID is the member_id of the config-control slot: the single task
-	// that mounts EFS read-write and whose seeder writes bridge.yaml.
+	// that may initialize and update the active configuration repository.
 	ControlMemberID string
 	// WorkerMemberIDs are the member_ids of the read-only slots, one single-task
 	// ECS service each. At least two are required, so that losing any one task
@@ -99,12 +99,12 @@ const staticSlotAdvisory = "GoBridgeDynamoDBHA: static member-slot profile. Ever
 	"whole-cohort replacement. Still deployed by replacement: anything the barrier refuses as " +
 	"live-unsafe, and every change to the deployment profile itself — store table identities, the " +
 	"cohort roster, the container image, the task definition. A profile change ALSO needs the shared " +
-	"config document on EFS to change with it: the default control seeder mode is SeedOnce, which keeps " +
+	"config document to change with it: embedded initialization keeps " +
 	"the existing document, and a member refuses to boot a document whose deployment-profile fingerprint " +
-	"is not the one stamped into its task definition — so use ControlSeederMode Overwrite (or the " +
-	"scale-to-zero procedure in docs/runbooks/cluster-config-rollout.md) for that deploy. Each slot deploys at " +
+	"is not the one stamped into its task definition — so update the target using the " +
+	"scale-to-zero procedure in docs/runbooks/cluster-config-rollout.md for that deploy. Each slot deploys at " +
 	"MinimumHealthyPercent=0 / MaximumPercent=100 and the worker slots are ordered after the control " +
-	"slot, so a slot never overlaps itself and the config seeder always precedes the slots it feeds. " +
+	"slot, so a slot never overlaps itself and read-only workers wait for the shared configuration. " +
 	"Costs to plan for: one slot down for the length of its own replacement, no ECS Availability Zone " +
 	"rebalancing (AZ spread is best-effort at launch), and an in-flight rollout abandoned by a " +
 	"CloudFormation deploy — quiesce rollouts before deploying."

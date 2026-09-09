@@ -47,9 +47,9 @@ func TestDynamoDBHA_EFSFree_Consumers(t *testing.T) {
 	for _, raw := range *tpl.FindResources(jsii.String("AWS::ECS::TaskDefinition"), nil) {
 		props := (*raw)["Properties"].(map[string]any)
 		assert.Empty(t, props["Volumes"])
-		assert.Len(t, props["ContainerDefinitions"], 2)
+		assert.Len(t, props["ContainerDefinitions"], 1)
 		main := mainContainerFromTask(t, *raw)
 		assert.Empty(t, main["MountPoints"])
-		assert.Equal(t, []any{map[string]any{"ContainerName": "seeder", "Condition": "SUCCESS"}}, main["DependsOn"])
+		assert.Empty(t, main["DependsOn"])
 	}
 }

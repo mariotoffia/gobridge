@@ -73,15 +73,9 @@ func TestSingle_EFS_Conditional(t *testing.T) {
 						} else {
 							assert.Empty(t, task["Volumes"])
 						}
-						var seeded bool
+						assert.Len(t, task["ContainerDefinitions"], 1)
 						for _, rawContainer := range task["ContainerDefinitions"].([]any) {
 							container := rawContainer.(map[string]any)
-							if container["Name"] == "seeder" {
-								seeded = true
-								if tc.source == infra.ConfigSourceDynamoDB {
-									assert.Empty(t, container["MountPoints"], "DynamoDB seeding must not use the SQLite EFS mount")
-								}
-							}
 							if container["Name"] != "gobridge" {
 								continue
 							}
@@ -90,9 +84,8 @@ func TestSingle_EFS_Conditional(t *testing.T) {
 							} else {
 								assert.Empty(t, container["MountPoints"])
 							}
-							assert.Equal(t, []any{map[string]any{"ContainerName": "seeder", "Condition": "SUCCESS"}}, container["DependsOn"])
+							assert.Empty(t, container["DependsOn"])
 						}
-						assert.True(t, seeded, "both config sources must gate startup on the seeder")
 					}
 				})
 			}

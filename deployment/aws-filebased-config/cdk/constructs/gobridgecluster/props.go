@@ -110,24 +110,6 @@ type ClusterProps struct {
 	// groups. Applied to BOTH services.
 	LogRemovalPolicy awscdk.RemovalPolicy
 
-	// SeederImage overrides the pinned seeder image used
-	// by BOTH services.
-	SeederImage *string
-
-	// ControlSeederMode overrides the control seeder MODE
-	// (default "SeedOnce").
-	ControlSeederMode *string
-
-	// WorkerSeederMode overrides the worker seeder MODE (default
-	// "AdoptValid" — workers adopt the current valid EFS bridge.yaml,
-	// whether written by CDK seed or an Admin-API config-txn commit,
-	// rather than aborting on hash drift from the synth-time asset).
-	// Set "AbortDeploy" for strict lock-step deployments where every
-	// worker must match the synth-time asset exactly. See the profile
-	// README "Reconfiguration paths" section for the coexistence
-	// semantics.
-	WorkerSeederMode *string
-
 	// ControlServiceName overrides the auto-generated control ECS
 	// service name.
 	ControlServiceName *string

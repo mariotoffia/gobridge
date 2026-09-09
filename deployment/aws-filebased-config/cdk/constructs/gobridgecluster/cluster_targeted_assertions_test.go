@@ -59,15 +59,14 @@ func t20ClusterNew(t *testing.T) (awscdk.Stack, *gobridgecluster.GoBridgeCluster
 }
 
 // TestCluster_ResourceCounts: 2 ECS Services, 2 TaskDefinitions, and a
-// log group per container per service (4 total: control main+seeder, worker
-// main+seeder).
+// one runtime log group per service.
 func TestCluster_ResourceCounts(t *testing.T) {
 	stack, _ := t20ClusterNew(t)
 	tpl := assertions.Template_FromStack(stack, nil)
 
 	tpl.ResourceCountIs(jsii.String("AWS::ECS::Service"), jsii.Number(2))
 	tpl.ResourceCountIs(jsii.String("AWS::ECS::TaskDefinition"), jsii.Number(2))
-	tpl.ResourceCountIs(jsii.String("AWS::Logs::LogGroup"), jsii.Number(4))
+	tpl.ResourceCountIs(jsii.String("AWS::Logs::LogGroup"), jsii.Number(2))
 
 	groups := tpl.FindResources(jsii.String("AWS::Logs::LogGroup"), nil)
 	var controlNames, workerNames []string
@@ -81,8 +80,8 @@ func TestCluster_ResourceCounts(t *testing.T) {
 			workerNames = append(workerNames, name)
 		}
 	}
-	if len(controlNames) != 2 || len(workerNames) != 2 {
-		t.Fatalf("expected 2 LogGroups per service, got control=%v worker=%v", controlNames, workerNames)
+	if len(controlNames) != 1 || len(workerNames) != 1 {
+		t.Fatalf("expected 1 LogGroup per service, got control=%v worker=%v", controlNames, workerNames)
 	}
 }
 

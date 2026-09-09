@@ -1,1 +1,0 @@
-docker.io/mariotoffia/gobridge-seeder@sha256:c220ab1b77926275df58f33db2cde6832a4dcdf549706f9e931898131636f5bc

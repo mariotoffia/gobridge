@@ -72,7 +72,7 @@ const (
 // a single EFS filesystem (one control access point, one worker
 // access point) and a single ECS cluster. It is a thin wrapper
 // over two [gobridgebase] instances — all task-def, EFS, IAM,
-// asset and seeder machinery is owned by the shared base; this
+// image and configuration wiring is owned by the shared base; this
 // construct only adds the surrounding ECS services, security
 // groups, EFS ingress rules and runs the Phase 1 / Phase 2 tier-B
 // validators on the resolved BridgeConfig.
@@ -133,7 +133,7 @@ type GoBridgeCluster struct {
 //     worker-specific checks fire. On failure: panic.
 //  3. Build (or reuse) the EFS config and ECS cluster — both
 //     shared between control and worker services.
-//  4. Delegate task-def + IAM + asset + seeder construction to two
+//  4. Delegate task-def + IAM + image construction to two
 //     separate [gobridgebase.New] calls — one in CONTROL mode, one
 //     in WORKER mode — sharing the same EFS config (different
 //     access points selected per mode).
@@ -237,7 +237,7 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 		})
 	}
 
-	// Control base (CONTROL mode → RW EFS mount, SeedOnce seeder).
+	// Control base (CONTROL mode allows target initialization and updates).
 	controlBuilt := gobridgebase.New(c, jsii.String("ControlBase"), &gobridgebase.Props{
 		Mode:             gobridgebase.ModeControl,
 		Vpc:              props.Vpc,
@@ -253,11 +253,9 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 		MountPath:        props.MountPath,
 		LogRetention:     props.LogRetention,
 		LogRemovalPolicy: props.LogRemovalPolicy,
-		SeederImage:      props.SeederImage,
-		SeederMode:       props.ControlSeederMode,
 	})
 
-	// Worker base (WORKER mode → RO EFS mount, AdoptValid seeder).
+	// Worker base (WORKER mode reads the target and never initializes it).
 	workerBuilt := gobridgebase.New(c, jsii.String("WorkerBase"), &gobridgebase.Props{
 		Mode:             gobridgebase.ModeWorker,
 		Vpc:              props.Vpc,
@@ -273,8 +271,6 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 		MountPath:        props.MountPath,
 		LogRetention:     props.LogRetention,
 		LogRemovalPolicy: props.LogRemovalPolicy,
-		SeederImage:      props.SeederImage,
-		WorkerSeederMode: props.WorkerSeederMode,
 	})
 
 	// Per-service security groups.

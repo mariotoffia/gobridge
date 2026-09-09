@@ -116,7 +116,7 @@ func policyRoleLogicalIDs(props map[string]any) []string {
 	return out
 }
 
-func TestGoBridgeDynamoDBHA_StaticMemberSlotServicesWaitForTheRolloutTableAndTheConfigSeeder(t *testing.T) {
+func TestGoBridgeDynamoDBHA_StaticMemberSlotServicesWaitForTheRolloutTableAndControl(t *testing.T) {
 	h := newStaticSlotHarness(t, nil)
 	template := assertions.Template_FromStack(h.stack, nil)
 	services := template.FindResources(jsii.String("AWS::ECS::Service"), nil)
@@ -147,8 +147,8 @@ func TestGoBridgeDynamoDBHA_StaticMemberSlotServicesWaitForTheRolloutTableAndThe
 		}
 	}
 
-	// The worker slots wait for the control slot (the config seeder precedes the
-	// slots it feeds) AND form a chain, so a task-definition change replaces one
+	// The worker slots wait for the control slot and form a chain, so a
+	// task-definition change replaces one
 	// slot at a time instead of taking the whole worker cohort down at once. Each
 	// slot runs a single task at MinimumHealthyPercent=0, so a parallel update
 	// would stop every one of them before starting any replacement.
@@ -156,8 +156,7 @@ func TestGoBridgeDynamoDBHA_StaticMemberSlotServicesWaitForTheRolloutTableAndThe
 	for _, logicalID := range workerIDs {
 		deps := dependsOn(*(*services)[logicalID])
 		if !deps[controlID] {
-			t.Fatalf("%s does not depend on %s: a worker slot booting before the config seeder would "+
-				"fail its deployment-profile fingerprint and trip the circuit breaker", logicalID, controlID)
+			t.Fatalf("%s does not depend on control %s", logicalID, controlID)
 		}
 		for _, peer := range workerIDs {
 			if peer != logicalID && deps[peer] {

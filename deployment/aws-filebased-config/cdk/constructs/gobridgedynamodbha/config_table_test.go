@@ -67,36 +67,14 @@ func TestDynamoDBHA_ConfigTable_SharedGrants(t *testing.T) {
 			for id, raw := range *tasks {
 				main := mainContainerFromTask(t, *raw)
 				boot := haConfigBootstrap(t, main)
-				assert.Equal(t, []any{map[string]any{"ContainerName": "seeder", "Condition": "SUCCESS"}}, main["DependsOn"])
+				assert.Empty(t, main["DependsOn"])
 				containers := (*raw)["Properties"].(map[string]any)["ContainerDefinitions"].([]any)
-				require.Len(t, containers, 2)
-				for _, entry := range containers {
-					container := entry.(map[string]any)
-					if container["Name"] != "seeder" {
-						continue
-					}
-					env := map[string]any{}
-					for _, raw := range container["Environment"].([]any) {
-						value := raw.(map[string]any)
-						env[value["Name"].(string)] = value["Value"]
-					}
-					mode := "AdoptValid"
-					if boot.NodeRole == infra.NodeRoleControl {
-						mode = "SeedOnce"
-					}
-					assert.Equal(t, mode, env["MODE"])
-					assert.Equal(t, map[string]any{"Ref": configID}, env["TABLE"])
-					assert.Equal(t, "config#"+boot.BridgeID, env["PK"])
-					assert.NotEmpty(t, env["ITEM_S3_URI"])
-					assert.Regexp(t, "^[0-9a-f]{64}$", env["EXPECTED_HASH"])
-					assert.NotContains(t, env, "EFS_TARGET_PATH")
-					assert.Equal(t, false, container["Essential"])
-				}
+				require.Len(t, containers, 1)
 				require.NotNil(t, boot.ConfigDynamoDB)
 				assert.Equal(t, "Ref:"+configID, boot.ConfigDynamoDB.TableName, id)
 				assert.Equal(t, "2s", boot.ConfigDynamoDB.StreamPollInterval)
 				roleID := (*raw)["Properties"].(map[string]any)["TaskRoleArn"].(map[string]any)["Fn::GetAtt"].([]any)[0].(string)
-				assertConfigAssetRead(t, tpl, roleID)
+				assertNoConfigAssetRead(t, tpl, roleID)
 				tableActions, streamActions := configRoleActions(t, tpl, roleID, configID)
 				for _, action := range []string{"dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan"} {
 					assert.True(t, tableActions[action], "%s lacks %s", id, action)
@@ -117,7 +95,7 @@ func TestDynamoDBHA_ConfigTable_SharedGrants(t *testing.T) {
 	}
 }
 
-func assertConfigAssetRead(t *testing.T, tpl assertions.Template, roleID string) {
+func assertNoConfigAssetRead(t *testing.T, tpl assertions.Template, roleID string) {
 	t.Helper()
 	for _, raw := range *tpl.FindResources(jsii.String("AWS::IAM::Policy"), nil) {
 		props := (*raw)["Properties"].(map[string]any)
@@ -131,16 +109,10 @@ func assertConfigAssetRead(t *testing.T, tpl assertions.Template, roleID string)
 			actions, err := json.Marshal(statement["Action"])
 			require.NoError(t, err)
 			if statement["Effect"] == "Allow" && strings.Contains(string(actions), "s3:GetObject") {
-				resource, err := json.Marshal(statement["Resource"])
-				require.NoError(t, err)
-				assert.Contains(t, string(resource), "cdk-hnb659fds-assets-")
-				assert.NotEqual(t, `"*"`, string(resource), "asset read must be bucket-scoped")
-				assert.NotContains(t, string(actions), "s3:PutObject")
-				return
+				t.Errorf("task role %s must not need a config asset read grant", roleID)
 			}
 		}
 	}
-	t.Errorf("task role %s has no config asset read grant", roleID)
 }
 
 func configRoleActions(t *testing.T, tpl assertions.Template, roleID, tableID string) (map[string]bool, map[string]bool) {

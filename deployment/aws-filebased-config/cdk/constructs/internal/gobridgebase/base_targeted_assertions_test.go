@@ -178,10 +178,8 @@ func TestBase_PortMappings_AdminPlusHTTPReceiver(t *testing.T) {
 	}
 }
 
-// TestBase_IAM_SeederAssetReadGrants asserts the seeder asset task role
-// policy includes the S3 statements emitted by Asset.GrantRead — namely
-// s3:GetObject* and s3:GetBucket* (the latter covers GetBucketLocation).
-func TestBase_IAM_SeederAssetReadGrants(t *testing.T) {
+// TestBase_IAM_NoConfigAssetReadGrants keeps config initialization independent of S3.
+func TestBase_IAM_NoConfigAssetReadGrants(t *testing.T) {
 	stack, _ := t20BaseBuild(t, gobridgebase.ModeControl, t20BaseSampleYAML)
 	tpl := assertions.Template_FromStack(stack, nil)
 
@@ -203,12 +201,8 @@ func TestBase_IAM_SeederAssetReadGrants(t *testing.T) {
 			}
 		}
 	}
-	if !sawGetObject {
-		t.Fatalf("no s3:GetObject* statement found on any IAM policy")
-	}
-	if !sawGetBucket {
-		t.Fatalf("no s3:GetBucket* statement found on any IAM policy " +
-			"(GetBucketLocation is part of Asset.GrantRead's bucket grants)")
+	if sawGetObject || sawGetBucket {
+		t.Fatal("configuration initialization must not grant S3 asset reads")
 	}
 }
 

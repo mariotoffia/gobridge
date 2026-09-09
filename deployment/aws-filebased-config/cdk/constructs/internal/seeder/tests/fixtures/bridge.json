@@ -1,1 +1,0 @@
-{"bridge":{"id":"test-bridge","log_level":"info"},"version":99,"stores":{"outbox":{"type":"dynamodb","options":{"table_name":"test-outbox"}}},"sessions":[],"routes":[]}

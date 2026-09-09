@@ -23,12 +23,12 @@ import (
 //
 //  1. the facade REJECTS a config that opts into coordinated rollout, and
 //  2. the services deploy under whole-cohort replacement rules — no second
-//     cohort, and the config seeder before the workers it feeds — so a
+//     cohort, and the control service before its workers — so a
 //     store/identity-incompatible revision cannot run as a full parallel fleet
 //     beside the revision it replaces.
 //
 // The low-level barrier itself is untouched and stays available to custom and
-// static-member-slot composition roots (Chunk 17).
+// static-member-slot composition roots.
 
 // withClusterBlock returns validHAYAML with a bridge.cluster block inserted. It
 // fails the test rather than returning the input unchanged when the anchor moves:
@@ -136,18 +136,9 @@ func TestGoBridgeDynamoDBHA_WorkerServiceForcesWholeCohortReplacement(t *testing
 	}
 }
 
-// TestGoBridgeDynamoDBHA_WorkerReplacementWaitsForControlSeeder pins the update
-// ORDER between the two services, which whole-cohort replacement makes
-// load-bearing. Only the control task's seeder writes bridge.yaml onto EFS, and
-// every task refuses to boot a config whose fingerprint does not match the one
-// stamped into its own task definition. Without ordering, CloudFormation updates
-// both services at once: new workers boot against the still-old EFS config, fail
-// the fingerprint check, exhaust the deployment circuit breaker and roll back —
-// by which time the new control task has seeded the NEW config, so the
-// rolled-back old workers fail their fingerprint too. Under the previous
-// overlapping policy the old worker cohort survived that race; at 0/100 it does
-// not, so the dependency is what keeps a failed deploy recoverable.
-func TestGoBridgeDynamoDBHA_WorkerReplacementWaitsForControlSeeder(t *testing.T) {
+// TestGoBridgeDynamoDBHA_WorkerReplacementWaitsForControl preserves deployment
+// ordering. Workers remain read-only and may wait for control initialization.
+func TestGoBridgeDynamoDBHA_WorkerReplacementWaitsForControl(t *testing.T) {
 	h := newHAHarness(t, nil)
 	template := assertions.Template_FromStack(h.stack, nil)
 	services := template.FindResources(jsii.String("AWS::ECS::Service"), nil)
@@ -174,7 +165,7 @@ func TestGoBridgeDynamoDBHA_WorkerReplacementWaitsForControlSeeder(t *testing.T)
 		}
 	}
 	t.Fatalf("worker service %s DependsOn = %v, want it to include the control service %s so the "+
-		"config seeder runs before the worker cohort is replaced", workerID, depends, controlID)
+		"control service is updated before the worker cohort", workerID, depends, controlID)
 }
 
 // TestGoBridgeDynamoDBHA_AdvertisesWholeCohortReplacementPolicy proves the

@@ -33,8 +33,8 @@ import (
 // narrows the window, the runbook closes it.
 const wholeCohortAdvisory = "GoBridgeDynamoDBHA: config changes deploy by whole-cohort replacement. " +
 	"Both services deploy at MinimumHealthyPercent=0 / MaximumPercent=100 and the worker service is " +
-	"ordered after the control service, so no second cohort runs beside the first and the config " +
-	"seeder always precedes the workers it feeds. ECS may still replace workers in batches, so a " +
+	"ordered after the control service. Workers wait for the shared configuration; embedded " +
+	"initialization never replaces an existing document. ECS may still replace workers in batches, so a " +
 	"revision that changes durable session identity or store targets MUST use the scale-to-zero " +
 	"procedure in docs/runbooks/cluster-config-rollout.md rather than a rolling update. This profile " +
 	"has NO coordinated cluster rollout: its ECS worker tasks are interchangeable and carry no " +

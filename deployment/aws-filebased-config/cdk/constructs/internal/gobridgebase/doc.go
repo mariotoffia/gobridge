@@ -9,9 +9,8 @@
 //   - a single EFS volume bound to the appropriate access point
 //     exposed by [GoBridgeEfsConfig] (control mounted RW, worker
 //     mounted with readOnly:true at the ECS volume layer);
-//   - the seeder init container (see internal/seeder), wired with
-//     EXPECTED_HASH and MODE env vars so worker tasks gate startup
-//     on config drift while control tasks materialise the file;
+//   - the runtime image, including initial configuration when ImageFromGoBuild
+//     is selected; initialization itself is owned by the running bridge;
 //   - one CloudWatch log group per container named
 //     "/gobridge/<stack-name>/<construct-id>/<container-name>" with
 //     RemovalPolicy.RETAIN by default. The stack name is part of it

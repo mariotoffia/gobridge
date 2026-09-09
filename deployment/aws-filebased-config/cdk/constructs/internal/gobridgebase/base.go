@@ -12,7 +12,6 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsiam"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awskms"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslogs"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awss3assets"
 	"github.com/aws/constructs-go/constructs/v10"
 	"github.com/aws/jsii-runtime-go"
 
@@ -24,19 +23,8 @@ import (
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 )
 
-// Mode selects which kind of GoBridge task definition the base will
-// emit. Each Mode produces a different EFS mount stance and a
-// different seeder behaviour:
-//
-//   - ModeControl: EFS mounted RW, seeder runs in MODE=SeedOnce (or
-//     the operator-supplied [Props.SeederMode] override).
-//   - ModeWorker:  EFS mounted RO at the ECS volume layer, seeder
-//     runs in MODE=AdoptValid (default): worker startup gates on the
-//     current config being present + parseable, but tolerates
-//     hash drift from the synth-time asset so Admin-API hot
-//     reconfiguration and worker self-healing coexist. Override via
-//     [Props.WorkerSeederMode] (e.g. "AbortDeploy" for strict
-//     lock-step).
+// Mode selects config access: control can initialize and update the target;
+// workers keep read-only access and wait for a configuration to become available.
 type Mode string
 
 const (
@@ -58,11 +46,6 @@ const (
 // (a split path silently loses outbox/DLQ durability on task replacement).
 const defaultMountPath = infra.DefaultMountPath
 
-// defaultBridgeYamlName is the file the seeder writes onto EFS and
-// the runtime watches. Kept stable so admin tooling can reference a
-// well-known path.
-const defaultBridgeYamlName = infra.DefaultBridgeYamlName
-
 // volumeName is the ECS task-def volume key. Stable so tests can
 // assert mount points by name.
 const volumeName = "gobridge-config"
@@ -73,10 +56,6 @@ const volumeName = "gobridge-config"
 // via [awsecs.LoadBalancerTargetOptions.ContainerName] without
 // duplicating the literal.
 const ContainerNameMain = "gobridge"
-
-// containerNameSeeder is the logical container name of the seeder
-// init container.
-const containerNameSeeder = "seeder"
 
 // defaultBinaryPath is where the runtime container image installs the
 // production binary. The container HEALTHCHECK invokes this same static binary
@@ -144,9 +123,8 @@ type Props struct {
 
 	// Source is the sealed BridgeConfigSource (see top-level
 	// gobridgecdk facade). The base materializes it once at synth
-	// time, parses the resulting bridge.yaml, derives port mappings
-	// from it, and uploads its bytes as an S3 asset for the seeder
-	// to download.
+	// time, derives port mappings and grants, and supplies the initial
+	// configuration to ImageFromGoBuild for embedding in the executable.
 	Source source.Source
 
 	// QueueRegistry resolves SQS queue names referenced by the
@@ -178,29 +156,12 @@ type Props struct {
 	MountPath *string
 
 	// LogRetention overrides the default CloudWatch log retention
-	// (awslogs.RetentionDays_ONE_MONTH). Applies to both the main
-	// and seeder log groups.
+	// (awslogs.RetentionDays_ONE_MONTH).
 	LogRetention awslogs.RetentionDays
 
 	// LogRemovalPolicy overrides the default RemovalPolicy.RETAIN
 	// applied to log groups.
 	LogRemovalPolicy awscdk.RemovalPolicy
-
-	// SeederImage overrides the pinned seeder image returned by
-	// [DefaultSeederImage].
-	SeederImage *string
-
-	// SeederMode overrides the default seeder MODE for ModeControl
-	// (default "SeedOnce"). Ignored for ModeWorker — use WorkerSeederMode.
-	SeederMode *string
-
-	// WorkerSeederMode overrides the ModeWorker seeder MODE. Default
-	// "AdoptValid": a worker adopts whatever valid bridge config the control
-	// node last wrote (CDK seed OR Admin-API config-txn commit) instead of
-	// aborting on hash drift, so hot reconfiguration and worker self-healing
-	// coexist. Set "AbortDeploy" for strict lock-step (workers refuse to
-	// start on any drift from the synth-time asset). Ignored for ModeControl.
-	WorkerSeederMode *string
 
 	// StopTimeout overrides the main container StopTimeout
 	// (defaultStopTimeoutSeconds). Must exceed the runtime drain budget with
@@ -227,22 +188,18 @@ type Props struct {
 type Built struct {
 	constructs.Construct
 
-	TaskDefinition  awsecs.FargateTaskDefinition
-	MainContainer   awsecs.ContainerDefinition
-	SeederContainer awsecs.ContainerDefinition
-	MainLogGroup    awslogs.LogGroup
-	SeederLogGroup  awslogs.LogGroup
-	// ConfigAsset holds YAML for file sources or validated JSON for DynamoDB.
-	ConfigAsset   awss3assets.Asset
-	ConfigTable   awsdynamodb.ITable
-	TaskRole      awsiam.IRole
-	ExecutionRole awsiam.IRole
-	PortMappings  []PortMapping
-	Mode          Mode
+	TaskDefinition awsecs.FargateTaskDefinition
+	MainContainer  awsecs.ContainerDefinition
+	MainLogGroup   awslogs.LogGroup
+	ConfigTable    awsdynamodb.ITable
+	TaskRole       awsiam.IRole
+	ExecutionRole  awsiam.IRole
+	PortMappings   []PortMapping
+	Mode           Mode
 }
 
 // New constructs a shared GoBridge task definition + log groups +
-// asset + IAM scaffolding under scope/id. Panics on invalid props
+// image + IAM scaffolding under scope/id. Panics on invalid props
 // (missing required fields, unknown Mode, materialization errors).
 //
 // New is jsii-bound: callers must run inside a CDK App scope with
@@ -293,6 +250,7 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 	if props.MountPath != nil && *props.MountPath != "" {
 		mountPath = *props.MountPath
 	}
+	stampConfigFilePath(&bootstrap, mountPath)
 
 	taskDef := awsecs.NewFargateTaskDefinition(c, jsii.String("TaskDef"), &awsecs.FargateTaskDefinitionProps{
 		Cpu:             cpu,
@@ -318,12 +276,6 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 		Retention:     logRetention,
 		RemovalPolicy: logRemoval,
 	})
-	seeder, seederLG, asset := addConfigSeeder(c, props, taskDef, mat, &awslogs.LogGroupProps{
-		LogGroupName:  jsii.String(logGroupPrefix(stackName, scopeID, containerNameSeeder)),
-		Retention:     logRetention,
-		RemovalPolicy: logRemoval,
-	}, mountPath)
-
 	// Main container.
 	bootstrapJSON, err := json.Marshal(bootstrap)
 	if err != nil {
@@ -387,13 +339,6 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 			ReadOnly:      jsii.Bool(props.Mode == ModeWorker),
 		})
 	}
-	if seeder != nil {
-		main.AddContainerDependencies(&awsecs.ContainerDependency{
-			Container: seeder,
-			Condition: awsecs.ContainerDependencyCondition_SUCCESS,
-		})
-	}
-
 	// Port mappings derived from yaml + bootstrap.
 	portMappings := DerivePortMappings(mat.Config, bootstrap)
 	for _, pm := range portMappings {
@@ -406,34 +351,25 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 
 	// IAM grants.
 	taskRole := taskDef.TaskRole()
-	if asset != nil {
-		asset.GrantRead(taskRole)
-	}
 	applyEfsGrants(props, taskRole)
 	applyKmsGrant(props, taskRole)
 	applyMetricsGrant(props, taskRole)
 	grants.GrantLogsWrite(taskRole, mainLG)
-	if seederLG != nil {
-		grants.GrantLogsWrite(taskRole, seederLG)
-	}
 	if bootstrap.ConfigSource == infra.ConfigSourceDynamoDB {
 		grants.GrantConfigSource(taskRole, props.ConfigTable, modeToNodeRole(props.Mode), bootstrap.ConfigDynamoDB.WatchMode)
 	}
 	applyAdapterGrants(c, props, taskRole, mat)
 
 	return &Built{
-		Construct:       c,
-		TaskDefinition:  taskDef,
-		MainContainer:   main,
-		SeederContainer: seeder,
-		MainLogGroup:    mainLG,
-		SeederLogGroup:  seederLG,
-		ConfigAsset:     asset,
-		ConfigTable:     props.ConfigTable,
-		TaskRole:        taskRole,
-		ExecutionRole:   taskDef.ExecutionRole(),
-		PortMappings:    portMappings,
-		Mode:            props.Mode,
+		Construct:      c,
+		TaskDefinition: taskDef,
+		MainContainer:  main,
+		MainLogGroup:   mainLG,
+		ConfigTable:    props.ConfigTable,
+		TaskRole:       taskRole,
+		ExecutionRole:  taskDef.ExecutionRole(),
+		PortMappings:   portMappings,
+		Mode:           props.Mode,
 	}
 }
 

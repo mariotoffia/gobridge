@@ -122,13 +122,6 @@ type SingleProps struct {
 	// groups.
 	LogRemovalPolicy awscdk.RemovalPolicy
 
-	// SeederImage overrides the pinned seeder image.
-	SeederImage *string
-
-	// SeederMode overrides the control seeder MODE (default
-	// "SeedOnce").
-	SeederMode *string
-
 	// ServiceName overrides the auto-generated ECS service name.
 	ServiceName *string
 }
@@ -136,7 +129,7 @@ type SingleProps struct {
 // GoBridgeSingle is the L2 facade construct that deploys the
 // single-task control profile of gobridge: one Fargate task with RW
 // EFS mount, no worker, no clustering. It is a thin wrapper over
-// [gobridgebase] — all task-def, EFS, IAM, seeder and asset
+// [gobridgebase] — all task-def, EFS, IAM and image
 // machinery is owned by the shared base; this construct only adds
 // the surrounding ECS service, security group, EFS ingress rule and
 // runs the Phase 1 / Phase 2 tier-B validators on the resolved
@@ -166,7 +159,7 @@ type GoBridgeSingle struct {
 //  2. Materialize the BridgeConfig source once and run Phase 1
 //     fast-fail validation against it. On failure: panic.
 //  3. Build (or reuse) the EFS config and ECS cluster.
-//  4. Delegate task-def + IAM + asset + seeder construction to
+//  4. Delegate task-def + IAM + image construction to
 //     [gobridgebase.New] in CONTROL mode.
 //  5. Create the FargateService with DesiredCount=1 and a 0/100
 //     deployment strategy.
@@ -216,7 +209,7 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 	needsEFS := validation.NeedsEFS(mat.Config, bootstrap)
 	bootstrap.ManagedSubscriptionBaselines = baselines
 	// Cleanup is best-effort; the base will materialize again from
-	// the same source for the asset upload.
+	// the same source for image construction.
 	_ = mat.Close()
 
 	// EFS config — auto-create when not supplied. An auto-created config
@@ -247,7 +240,7 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 		})
 	}
 
-	// Shared base (CONTROL mode → RW EFS mount, SeedOnce seeder).
+	// Shared base (CONTROL mode allows target initialization and updates).
 	built := gobridgebase.New(c, jsii.String("Base"), &gobridgebase.Props{
 		Mode:             gobridgebase.ModeControl,
 		Vpc:              props.Vpc,
@@ -264,8 +257,6 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 		MountPath:        props.MountPath,
 		LogRetention:     props.LogRetention,
 		LogRemovalPolicy: props.LogRemovalPolicy,
-		SeederImage:      props.SeederImage,
-		SeederMode:       props.SeederMode,
 	})
 
 	// Security group for the task.

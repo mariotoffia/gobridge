@@ -42,10 +42,10 @@ func TestWorkflows_BuildKitAndBinfmtPinsCannotSwap(t *testing.T) {
 			}
 		}
 	}
-	if buildkitPins != 3 {
-		t.Errorf("BuildKit pin count = %d, want one in CI and two in release", buildkitPins)
+	if buildkitPins != 2 {
+		t.Errorf("BuildKit pin count = %d, want one in CI and one in release", buildkitPins)
 	}
-	if binfmtPins != 2 {
-		t.Errorf("binfmt pin count = %d, want two in release", binfmtPins)
+	if binfmtPins != 1 {
+		t.Errorf("binfmt pin count = %d, want one in release", binfmtPins)
 	}
 }

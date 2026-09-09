@@ -69,13 +69,8 @@ type DynamoDBHAProps struct {
 	MemoryMiB *float64
 	MountPath *string
 
-	LogRetention     awslogs.RetentionDays
-	LogRemovalPolicy awscdk.RemovalPolicy
-	SeederImage      *string
-
-	ControlSeederMode *string
-	WorkerSeederMode  *string
-
+	LogRetention       awslogs.RetentionDays
+	LogRemovalPolicy   awscdk.RemovalPolicy
 	ControlServiceName *string
 	WorkerServiceName  *string
 
@@ -183,20 +178,16 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 	// which is why it is not a hash of the whole document: doing that made every
 	// real change fail admission on every member after the cohort committed it.
 	//
-	// The baseline digest identifies THIS deployment content. DynamoDB assigns its
-	// own source version, so only that counter is excluded for a DynamoDB source;
-	// file sources retain the full version-sensitive document identity.
+	// The baseline digest identifies THIS deployment content. Both target stores
+	// assign their initial version, so the baseline excludes that counter.
+	// The actual committed artifact still retains its full version identity.
 	// A coordinated member uses it to seed the cohort's generation-zero
 	// committed artifact at boot, so a restart before the first rollout recovers to
 	// the config this deployment admitted rather than to whatever the mutable
 	// config source happens to hold.
 	needsEFS := validation.NeedsEFS(mat.Config, bootstrapControl)
 	fingerprint := bridge.DeploymentProfileFingerprint(mat.Config)
-	digestBaseline := bridge.ConfigArtifactDigest
-	if bootstrapControl.ConfigSource == infra.ConfigSourceDynamoDB {
-		digestBaseline = bridge.DeploymentBaselineContentDigest
-	}
-	baseline, err := digestBaseline(mat.Config)
+	baseline, err := bridge.DeploymentBaselineContentDigest(mat.Config)
 	_ = mat.Close()
 	if err != nil {
 		panic(fmt.Sprintf("GoBridgeDynamoDBHA: digest coordinated HA config: %v", err))
@@ -267,8 +258,6 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 		MountPath:        props.MountPath,
 		LogRetention:     props.LogRetention,
 		LogRemovalPolicy: props.LogRemovalPolicy,
-		SeederImage:      props.SeederImage,
-		SeederMode:       props.ControlSeederMode,
 	})
 	// One worker-side deployment unit per slot. The autoscaled profile has exactly
 	// one, with no member identity; the static member-slot profile has one per
@@ -295,8 +284,6 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 			MountPath:        props.MountPath,
 			LogRetention:     props.LogRetention,
 			LogRemovalPolicy: props.LogRemovalPolicy,
-			SeederImage:      props.SeederImage,
-			WorkerSeederMode: props.WorkerSeederMode,
 		}))
 	}
 
@@ -383,16 +370,9 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 	}
 
 	// Order the worker replacement AFTER the control service reaches steady state.
-	// Only the control task's seeder writes bridge.yaml onto EFS, and every task
-	// refuses to boot a config whose fingerprint does not match the one stamped
-	// into its own task definition (lib/bootstrap.validateDynamoDBHAProfile). With
-	// both services updating concurrently, new workers would boot against the
-	// still-old EFS config, fail the fingerprint check, and trip the deployment
-	// circuit breaker — while the new control task seeded the NEW config, so the
-	// rolled-back old workers would fail their fingerprint too. The overlapping
-	// deployment policy used to hide that race behind a surviving old cohort; at
-	// 0/100 it does not, so this ordering is what keeps a failed deploy
-	// recoverable.
+	// Only control may initialize the target; workers wait for configuration.
+	// Updating an existing document remains an explicit configuration operation,
+	// and every task still checks its deployment-profile fingerprint.
 	services := append([]awsecs.FargateService{control}, workers...)
 	for i, worker := range workers {
 		worker.Node().AddDependency(control)
