@@ -184,7 +184,7 @@ All three are closed.
       ordering. The harness still substitutes its local seeder image on every
       task definition to preserve file-source coverage. The DynamoDB seeder
       itself runs Python without site packages and needs no PyYAML; this local
-      run does not certify the pinned upstream image. Construct and portable
+      run does not certify the published image digest. Construct and portable
       seeder tests own those separate contracts. Overlays remain a
       [programmatic-API pattern](../configuration-overview.md#overlays-and-the-admin-config-api-do-not-compose),
       not a second writer layered over this base document.

@@ -252,7 +252,8 @@ synth error (they would fail at runtime anyway).
 
 **Seeder image is fixed on the release train:** `release.yml` gains a job
 that builds `cdk/constructs/internal/seeder/Dockerfile` and pushes
-`ghcr.io/mariotoffia/gobridge-seeder` by digest; `image.txt` is updated to
+`docker.io/mariotoffia/gobridge-seeder` by digest (the user-selected registry,
+using `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`); `image.txt` is updated to
 that digest (closing the recorded "seeder default is broken" residual). The
 `SeederImage` prop stays as the override.
 

@@ -66,7 +66,7 @@ func loadSeederAssets() (seederAssets, error) {
 	return seederValue, seederErr
 }
 
-// seederImageRefPattern matches a fully-pinned "<repo>:<tag>@sha256:<64hex>"
+// seederImageRefPattern matches a fully-pinned "<repo>[:<tag>]@sha256:<64hex>"
 // reference. The digest MUST be a real 64-hex sha256 — an all-zeros
 // placeholder (the pre-provisioning sentinel) is rejected explicitly by
 // validateSeederImageRef so a checkout that forgot `make update-seeder-image`
@@ -85,7 +85,8 @@ func validateSeederImageRef(ref string) error {
 	if m == nil {
 		return fmt.Errorf(
 			"gobridgebase: seeder image reference %q is not a fully-pinned "+
-				"\"<repo>:<tag>@sha256:<digest>\" value; run `make -C deployment/aws-filebased-config update-seeder-image` "+
+				"\"<repo>[:<tag>]@sha256:<digest>\" value; set SEEDER_IMAGE to a published reference and run "+
+				"`make -C deployment/aws-filebased-config update-seeder-image` "+
 				"and commit constructs/internal/seeder/image.txt",
 			ref,
 		)
@@ -94,7 +95,7 @@ func validateSeederImageRef(ref string) error {
 		return fmt.Errorf(
 			"gobridgebase: seeder image digest is the all-zeros placeholder "+
 				"(%q); the seeder container cannot be pulled and the main container "+
-				"depends on its SUCCESS, so every task would hang on startup. Run "+
+				"depends on its SUCCESS, so every task would hang on startup. Set SEEDER_IMAGE to a published reference, run "+
 				"`make -C deployment/aws-filebased-config update-seeder-image` and commit the real digest",
 			ref,
 		)
@@ -102,9 +103,9 @@ func validateSeederImageRef(ref string) error {
 	return nil
 }
 
-// DefaultSeederImage returns the pinned aws-cli image reference
+// DefaultSeederImage returns the published seeder image reference
 // shipped with constructs/internal/seeder/image.txt. Format:
-// "<repo>:<tag>@sha256:<digest>".
+// "<repo>[:<tag>]@sha256:<digest>".
 func DefaultSeederImage() string {
 	a, err := loadSeederAssets()
 	if err != nil {

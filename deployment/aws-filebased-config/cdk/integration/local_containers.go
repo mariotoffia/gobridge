@@ -151,21 +151,10 @@ http.server.ThreadingHTTPServer(("0.0.0.0", ` + fmt.Sprint(metadataPort) + `), H
 `
 }
 
-// buildLocalSeederImage builds the deployment's own seeder image so the local
-// run has a seeder that can actually run.
-//
-// The profile points its seeder container at the upstream aws-cli image, which
-// does not ship the PyYAML the seeder script gates on: every published aws-cli
-// tag fails `python3 -c 'import yaml'`, so the seeder exits 50 and the main
-// container comes up with no config. The repository already carries the
-// Dockerfile that layers the missing package on; the local run builds it and
-// the assembly rewrite points the seeder container at the result.
-//
-// This substitution is the local run's, not the deployment's: it proves the
-// seeder CONTRACT end to end — download, canonicalize, atomic write, the main
-// container gated on its success — and it does NOT prove the image the profile
-// pins, which remains unusable until that pin names an image with a
-// canonicalizer.
+// buildLocalSeederImage builds the current checkout's seeder Dockerfile so
+// uncommitted script changes are exercised without publishing an image first.
+// The assembly rewrite uses that local image instead of the published pin.
+// This proves current source behavior, not registry access to the pinned image.
 func buildLocalSeederImage(t *testing.T, state *localBackend) {
 	t.Helper()
 	pinned, err := os.ReadFile(filepath.Join(seederDir, "image.txt"))

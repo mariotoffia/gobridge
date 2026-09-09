@@ -157,114 +157,81 @@ JSON
 # Malformed JSON → must fail closed.
 printf '{not valid json' > "${WORKDIR}/idx-bad.json"
 
-# --- tag-list fixtures (crane `ls` lines + registry v2 JSON) ------------------
-# "concrete" advertises the mutable 2 and latest plus real 2.x.y tags; the
-# script must pick the HIGHEST concrete 2.x.y (2.35.24), never the mutable 2.
-printf '%s\n' latest 2 1.0.0 2.4.0 2.35.9 2.35.24 > "${WORKDIR}/tags-concrete.txt"
-cat > "${WORKDIR}/tags-concrete.json" <<'JSON'
-{"tags":["latest","2","1.0.0","2.4.0","2.35.9","2.35.24"]}
-JSON
-# "none" advertises only mutable/floating tags → no concrete 2.x.y exists.
-printf '%s\n' latest 2 > "${WORKDIR}/tags-none.txt"
-cat > "${WORKDIR}/tags-none.json" <<'JSON'
-{"tags":["latest","2"]}
-JSON
+# Pin the released seeder, never its upstream base or a mutable tag.
+SEEDER_REPO="docker.io/mariotoffia/gobridge-seeder"
+index_ref() {
+  printf '%s@sha256:%s\n' "$SEEDER_REPO" \
+    "$(python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1")"
+}
 
-# run_ui tool name manifest tagset want_exit want_written [expect_tag] [df_shape]
-# df_shape: one-from (default) | zero-from | two-from | readonly | missing-dir
+# run_ui tool name manifest ref want_exit [destination]
 run_ui() {
-  local tool="$1" name="$2" manifest="$3" tagset="$4" want_exit="$5" want_written="$6" expect_tag="${7:-}" df_shape="${8:-one-from}"
+  local tool="$1" name="$2" manifest="$3" ref="$4" want_exit="$5" destination="${6:-normal}"
   local img="${WORKDIR}/ui-${tool}-${name}-image.txt"
   local dfile="${WORKDIR}/ui-${tool}-${name}-Dockerfile"
   local toollog="${WORKDIR}/ui-${tool}-${name}-tool.log"
   printf 'SENTINEL-OLD\n' > "$img"
-  local df_present=yes
-  case "$df_shape" in
-    one-from)  printf 'FROM public.ecr.aws/aws-cli/aws-cli:2.0.0@sha256:0000\nRUN true\n' > "$dfile" ;;
-    zero-from) printf 'FROM alpine:3.20\nRUN true\n' > "$dfile" ;;
-    two-from)  printf 'FROM public.ecr.aws/aws-cli/aws-cli:2.0.0@sha256:0\nFROM public.ecr.aws/aws-cli/aws-cli:2.0.1@sha256:1\n' > "$dfile" ;;
-    readonly)  printf 'FROM public.ecr.aws/aws-cli/aws-cli:2.0.0@sha256:0000\nRUN true\n' > "$dfile"; chmod 0444 "$dfile" ;;
-    missing-dir) dfile="${WORKDIR}/ui-${tool}-${name}-nodir/Dockerfile"; df_present=no ;;
-  esac
-  local img_sum_before dfile_sum_before=""
+  printf 'FROM public.ecr.aws/aws-cli/aws-cli:2.0.0@sha256:0000\n' > "$dfile"
+  local img_sum_before dfile_sum_before
   img_sum_before=$(cksum < "$img")
-  [ "$df_present" = yes ] && dfile_sum_before=$(cksum < "$dfile")
+  dfile_sum_before=$(cksum < "$dfile")
+  case "$destination" in
+    readonly) chmod 0444 "$img" ;;
+    missing-dir) img="${WORKDIR}/missing-${name}/image.txt" ;;
+    directory) img="${WORKDIR}/directory-${name}"; mkdir "$img" ;;
+  esac
   : > "$toollog"
   local out rc=0
   set +e
   out=$(UPDATE_IMAGE_TOOL="$tool" FAKE_TOOL_LOG="$toollog" \
         FAKE_CRANE_MANIFEST="$manifest" FAKE_DOCKER_MANIFEST="$manifest" \
-        FAKE_CRANE_TAGS="${WORKDIR}/tags-${tagset}.txt" \
-        FAKE_REGISTRY_TAGS="${WORKDIR}/tags-${tagset}.json" \
-        IMAGE_TXT="$img" SEEDER_DOCKERFILE="$dfile" \
+        SEEDER_IMAGE="$ref" IMAGE_TXT="$img" SEEDER_DOCKERFILE="$dfile" \
         bash "$UPDATE_IMAGE" 2>/dev/null)
   rc=$?
   set -e
-  [ "$df_shape" = readonly ] && chmod 0644 "$dfile" 2>/dev/null
+  [ "$destination" = readonly ] && chmod 0644 "$img"
   local label="ui-${tool}-${name}"
   if [ "$rc" -ne "$want_exit" ]; then
     nope "$label" "want exit $want_exit got $rc; out: $out; log: $(cat "$toollog" 2>/dev/null)"; return
   fi
-  if [ "$want_written" = "yes" ]; then
-    case "$out" in *$'\n'*) nope "$label" "stdout must be one line, got: $out"; return ;; esac
-    local expect_ref="public.ecr.aws/aws-cli/aws-cli:${expect_tag}"
-    # The resolver must receive the EXACT concrete reference.
+  if [ "$rc" = "0" ]; then
     if [ "$tool" = "crane" ]; then
-      grep -qF "crane manifest ${expect_ref}" "$toollog" \
-        || { nope "$label" "crane resolver ref != ${expect_ref}; log: $(cat "$toollog")"; return; }
+      grep -qxF "crane manifest ${ref}" "$toollog" \
+        || { nope "$label" "resolver did not use the pinned reference"; return; }
     else
-      grep -qF "docker buildx imagetools inspect ${expect_ref} --raw" "$toollog" \
-        || { nope "$label" "docker resolver ref != ${expect_ref}; log: $(cat "$toollog")"; return; }
+      grep -qxF "docker buildx imagetools inspect ${ref} --raw" "$toollog" \
+        || { nope "$label" "resolver did not use the pinned reference"; return; }
     fi
-    # The digest must be computed from the exact bytes that reached the verifier
-    # on stdin (proves the JSON was piped in, not clobbered).
-    local expect_digest
-    expect_digest="sha256:$(python3 -c 'import sys,hashlib;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$manifest")"
-    if [ "$out" != "${expect_ref}@${expect_digest}" ]; then
-      nope "$label" "stdout '$out' != ${expect_ref}@${expect_digest}"; return
-    fi
-    if [ "$(cat "$img")" != "$out" ]; then
-      nope "$label" "image.txt content != printed pinned ref"; return
-    fi
-    if [ "$(grep -m1 '^FROM ' "$dfile")" != "FROM $out" ]; then
-      nope "$label" "Dockerfile FROM not synced to the pinned ref"; return
+    if [ "$out" != "$ref" ] || [ "$(cat "$img")" != "$ref" ]; then
+      nope "$label" "output and image.txt must equal the released reference"; return
     fi
   else
-    # Fail closed: NEITHER file may change (unchanged checksums).
-    if [ "$(cksum < "$img")" != "$img_sum_before" ]; then
+    if [ -f "$img" ] && [ "$(cksum < "$img")" != "$img_sum_before" ]; then
       nope "$label" "image.txt changed on a fail-closed run"; return
     fi
-    if [ "$df_present" = yes ] && [ "$(cksum < "$dfile")" != "$dfile_sum_before" ]; then
-      nope "$label" "Dockerfile changed on a fail-closed run"; return
-    fi
+  fi
+  if [ "$(cksum < "$dfile")" != "$dfile_sum_before" ]; then
+    nope "$label" "upstream Dockerfile must not be changed when pinning the built image"; return
   fi
   ok "$label"
 }
 
-# Both resolver paths: crane (crane ls + crane manifest) and docker buildx
-# (registry API tag list + imagetools inspect --raw). One-FROM Dockerfile.
 for tool in crane docker; do
-  run_ui "$tool" "ok"              "${WORKDIR}/idx-ok.json"     concrete 0 yes 2.35.24
-  run_ui "$tool" "missing-arm64"   "${WORKDIR}/idx-noarm.json"  concrete 3 no
-  run_ui "$tool" "not-an-index"    "${WORKDIR}/idx-single.json" concrete 3 no
-  run_ui "$tool" "malformed-json"  "${WORKDIR}/idx-bad.json"    concrete 3 no
-  run_ui "$tool" "rejects-mutable-2" "${WORKDIR}/idx-ok.json"   none     3 no
+  run_ui "$tool" "ok" "${WORKDIR}/idx-ok.json" "$(index_ref "${WORKDIR}/idx-ok.json")" 0
+  run_ui "$tool" "missing-arm64" "${WORKDIR}/idx-noarm.json" "$(index_ref "${WORKDIR}/idx-noarm.json")" 3
+  run_ui "$tool" "not-an-index" "${WORKDIR}/idx-single.json" "$(index_ref "${WORKDIR}/idx-single.json")" 3
+  run_ui "$tool" "malformed-json" "${WORKDIR}/idx-bad.json" "$(index_ref "${WORKDIR}/idx-bad.json")" 3
+  run_ui "$tool" "digest-mismatch" "${WORKDIR}/idx-ok.json" "$(index_ref "${WORKDIR}/idx-noarm.json")" 3
+  run_ui "$tool" "fetch-failed" "${WORKDIR}/missing.json" "$(index_ref "${WORKDIR}/idx-ok.json")" 3
+  run_ui "$tool" "mutable-tag" "${WORKDIR}/idx-ok.json" "$SEEDER_REPO:latest" 2
+  run_ui "$tool" "missing-ref" "${WORKDIR}/idx-ok.json" "" 2
 done
-# The docker path must also accept a Docker manifest-list mediaType.
-run_ui "docker" "docker-manifest-list" "${WORKDIR}/idx-dockerlist.json" concrete 0 yes 2.35.24
-
-# A forced UPDATE_IMAGE_TOOL must be exactly crane|docker; anything else exits 2
-# before any tool call or file write.
-run_ui "bogus" "invalid-tool" "${WORKDIR}/idx-ok.json" concrete 2 no
-
-# Staged fail-closed replacement: the digest resolves, but a bad Dockerfile target
-# must abort BEFORE either file is rewritten (exit 4, both checksums unchanged).
-run_ui "crane" "staged-zero-from"   "${WORKDIR}/idx-ok.json" concrete 4 no "" zero-from
-run_ui "crane" "staged-two-from"    "${WORKDIR}/idx-ok.json" concrete 4 no "" two-from
-run_ui "crane" "staged-missing-dir" "${WORKDIR}/idx-ok.json" concrete 4 no "" missing-dir
-# The read-only-file guard only holds for a non-root user (root ignores 0444).
+run_ui "docker" "docker-manifest-list" "${WORKDIR}/idx-dockerlist.json" "$(index_ref "${WORKDIR}/idx-dockerlist.json")" 0
+run_ui "bogus" "invalid-tool" "${WORKDIR}/idx-ok.json" "$(index_ref "${WORKDIR}/idx-ok.json")" 2
+run_ui "crane" "missing-dir" "${WORKDIR}/idx-ok.json" "$(index_ref "${WORKDIR}/idx-ok.json")" 4 missing-dir
+run_ui "crane" "directory-pin" "${WORKDIR}/idx-ok.json" "$(index_ref "${WORKDIR}/idx-ok.json")" 4 directory
 if [ "$(id -u)" != "0" ]; then
-  run_ui "crane" "staged-readonly-df" "${WORKDIR}/idx-ok.json" concrete 4 no "" readonly
+  run_ui "crane" "readonly-pin" "${WORKDIR}/idx-ok.json" "$(index_ref "${WORKDIR}/idx-ok.json")" 4 readonly
 fi
 
 echo "------------"

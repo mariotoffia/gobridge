@@ -306,6 +306,28 @@ The pre-1.0 root-only tags `v0.1.0` and `v0.2.0` predate this policy and have no
 nested module tags; they are not consumable and this proof does not apply to
 them. `v0.3.0` is the first complete train.
 
+## Seeder image publication
+
+The final stable command-tag workflow also builds the AWS configuration seeder
+from `deployment/aws-filebased-config/cdk/constructs/internal/seeder/Dockerfile`.
+This is separate from the GoBridge runtime image described below.
+
+Configure repository variable `DOCKERHUB_USERNAME` and Actions secret
+`DOCKERHUB_TOKEN` with Docker Hub read/write access. The seeder job has only
+`contents: read` GitHub permissions. It runs the file and DynamoDB suites during
+both platform builds, publishes to `docker.io/<account>/gobridge-seeder` by
+digest, and retains the verified reference as the
+`gobridge-seeder-image-digest` workflow artifact and in the job summary.
+No configuration or credentials are included in the image.
+
+The committed default does not move automatically. After publication, run
+`SEEDER_IMAGE=<published-reference> make update-seeder-image` and commit the
+verified pin. Build attestations can produce a different index digest on a
+rerun; the new digest does not overwrite the previous one. Keep images
+referenced by existing deployments. See the
+[seeder manifest](deployment/aws-filebased-config/cdk/constructs/internal/seeder/MANIFEST.md)
+for platform checks and private-mirror guidance.
+
 ## Image publication
 
 Only a successful stable `cmd/gobridge/vX.Y.Z` workflow can publish an image.

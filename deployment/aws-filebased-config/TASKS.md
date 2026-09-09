@@ -304,16 +304,20 @@ tests + README snippets).
 ### Task 5.2: Publish the seeder image on the release train
 
 **Files:** Modify `.github/workflows/release.yml` (job: build + push
-`ghcr.io/mariotoffia/gobridge-seeder` by digest from
+`docker.io/mariotoffia/gobridge-seeder` by digest from
 `cdk/constructs/internal/seeder/Dockerfile`); Modify
 `seeder/scripts/update-image.sh` + `image.txt` (point at the pushed digest);
 Update `MANIFEST.md` (remove the "broken until SeederImage overridden" note
 once true).
 
-- [ ] Local proof first: `docker build` the seeder Dockerfile, run the bash
+- [x] Local proof first: `docker build` the seeder Dockerfile, run the bash
   suite against that image (PyYAML present, exit 50 impossible) → wire the
   release job → `make lint && make test` → commit —
   `fix(deploy/aws): working default seeder image published on the release train`
+  Docker Hub is the user-selected registry. The release job uses
+  `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`; the initial public amd64/arm64
+  image is pinned in `image.txt`. The updater verifies a supplied published
+  digest and never substitutes the upstream AWS CLI base.
 
 ⛳ Review checkpoint.
 

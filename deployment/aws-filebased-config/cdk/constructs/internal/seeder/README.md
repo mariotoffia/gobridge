@@ -5,11 +5,10 @@ GoBridge container starts. ECS gates the main container on seeder `SUCCESS`.
 `seeder.sh` handles YAML on EFS; `seeder-ddb.sh` handles the DynamoDB `current`
 item. The DynamoDB seeder never mounts EFS, even when SQLite stores need it.
 
-The container image is based on the upstream `public.ecr.aws/aws-cli/aws-cli`
-pinned by [image.txt](image.txt), which ships `aws` and `python3` but NOT the
-`PyYAML` the **file** canonicalizer needs — [Dockerfile](Dockerfile) layers that on.
-The DynamoDB path uses Python's standard library only and runs on the pinned
-upstream image without installing packages.
+The published `docker.io/mariotoffia/gobridge-seeder` image is pinned by
+[image.txt](image.txt). [Dockerfile](Dockerfile) adds PyYAML to a pinned AWS CLI
+base, so file and DynamoDB seeding both work without runtime package installs.
+The DynamoDB path uses Python's standard library only.
 See [MANIFEST.md](MANIFEST.md) for pin/override semantics.
 
 ## File env contract
@@ -167,7 +166,8 @@ extras (`stream`, `target`, `hash`, `expected`, `actual`, `uri`, `path`,
 - Refresh pinned digest:
 
   ```sh
-  make -C deployment/aws-filebased-config update-seeder-image
+  SEEDER_IMAGE='docker.io/mariotoffia/gobridge-seeder@sha256:<digest>' \
+    make -C deployment/aws-filebased-config update-seeder-image
   ```
 
 ## Run locally

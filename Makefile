@@ -92,7 +92,7 @@ docker-build: ## Build the production runtime image (gobridge-filebased, no push
 		-t $(IMAGE):$(IMAGE_TAG) \
 		-t $(IMAGE_LOCAL_TAG) .
 
-update-seeder-image: ## Refresh the pinned seeder (aws-cli) digest and commit-ready image.txt
+update-seeder-image: ## Verify published SEEDER_IMAGE and update the committed seeder digest
 	$(MAKE) -C deployment/aws-filebased-config update-seeder-image
 
 # ============================================================================

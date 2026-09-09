@@ -12,7 +12,7 @@ help:  ## Show this help.
 test:  ## Run seeder integration tests (bash + python3 + PyYAML).
 	@bash $(SEEDER_DIR)/tests/run.sh
 
-update-seeder-image:  ## Refresh pinned aws-cli image digest in image.txt.
+update-seeder-image:  ## Pin a published SEEDER_IMAGE=docker.io/<account>/gobridge-seeder@sha256:<digest>.
 	@bash $(SEEDER_DIR)/scripts/update-image.sh
 
 integration-aws:  ## Run opt-in AWS integration tests (requires GOBRIDGE_INT_* env + AWS creds + cdk CLI).
