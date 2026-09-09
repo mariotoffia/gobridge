@@ -34,7 +34,7 @@ type Source interface {
 
 // GoBuildProps is the internal carrier for ImageGoBuildProps; see the deployment
 // UBIQUITOUS.md. The published package must include this profile's bootstrap,
-// health check and selected plugin families.
+// health check, initial-config-digest probe and selected plugin families.
 type GoBuildProps struct {
 	// Version is a required published lib-module version, for example v0.4.0.
 	// Branch names and mutable queries such as main/latest are not accepted.
@@ -147,7 +147,7 @@ func (s *ecrSource) Materialize(_ constructs.Construct, _ *string, _ *ports.Brid
 
 //nolint:ireturn // CDK exposes container images only as jsii interfaces.
 func (s *goBuildSource) Materialize(scope constructs.Construct, id *string, cfg *ports.BridgeConfig) awsecs.ContainerImage {
-	dockerfile := renderDockerfile(s.props, cfg)
+	dockerfile, initial := renderBuildContext(s.props, cfg)
 	dir, err := os.MkdirTemp("", "gobridgecdk-image-*")
 	if err != nil {
 		panic(fmt.Sprintf("gobridgecdk: ImageFromGoBuild: create context: %v", err))
@@ -159,6 +159,11 @@ func (s *goBuildSource) Materialize(scope constructs.Construct, id *string, cfg 
 	}()
 	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(dockerfile), 0o600); err != nil {
 		panic(fmt.Sprintf("gobridgecdk: ImageFromGoBuild: write Dockerfile: %v", err))
+	}
+	if initial != nil {
+		if err := os.WriteFile(filepath.Join(dir, initial.name), initial.flags, 0o600); err != nil {
+			panic(fmt.Sprintf("gobridgecdk: ImageFromGoBuild: write initial config: %v", err))
+		}
 	}
 	child := constructs.NewConstruct(scope, id)
 	// This context is temporary, even when the app disables staging globally.
@@ -211,6 +216,11 @@ func normalize(props GoBuildProps) GoBuildProps {
 }
 
 func renderDockerfile(props GoBuildProps, cfg *ports.BridgeConfig) string {
+	dockerfile, _ := renderBuildContext(props, cfg)
+	return dockerfile
+}
+
+func renderBuildContext(props GoBuildProps, cfg *ports.BridgeConfig) (string, *initialConfigAsset) {
 	props = normalize(props)
 	tags := slices.Clone(props.BuildTags)
 	if tags == nil {
@@ -218,15 +228,23 @@ func renderDockerfile(props GoBuildProps, cfg *ports.BridgeConfig) string {
 	}
 	slices.Sort(tags)
 	tags = slices.Compact(tags)
+	initial := prepareInitialConfig(props, cfg)
+	var initialConfigFile, initialConfigDigest string
+	if initial != nil {
+		initialConfigFile = initial.name
+		initialConfigDigest = initial.digest
+	}
 	var out bytes.Buffer
 	tmpl := template.Must(template.New("Dockerfile").Parse(dockerfileTemplate))
 	if err := tmpl.Execute(&out, struct {
 		GoBuildProps
-		Tags string
-	}{props, strings.Join(tags, ",")}); err != nil {
+		Tags                string
+		InitialConfigFile   string
+		InitialConfigDigest string
+	}{props, strings.Join(tags, ","), initialConfigFile, initialConfigDigest}); err != nil {
 		panic(fmt.Sprintf("gobridgecdk: ImageFromGoBuild: render Dockerfile: %v", err))
 	}
-	return out.String()
+	return out.String(), initial
 }
 
 // DeriveBuildTags returns sorted, unique optional family tags. The base profile

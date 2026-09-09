@@ -1,8 +1,12 @@
 FROM {{.GoImage}} AS build
 ENV CGO_ENABLED=0 GOWORK=off GOBIN=/out
 WORKDIR /build
-RUN go install -trimpath -tags={{.Tags}} -ldflags "-s -w -X main.version={{.Version}} -X main.gitSHA=module@{{.Version}}" {{.Package}}@{{.Version}} \
-    && cp /out/* /gobridge-filebased
+{{if .InitialConfigFile}}COPY {{.InitialConfigFile}} /build/{{.InitialConfigFile}}
+ENV GOENV=/build/{{.InitialConfigFile}}
+{{end}}RUN {{if .InitialConfigFile}}env -u GOFLAGS {{end}}go install -trimpath -tags={{.Tags}}{{if not .InitialConfigFile}} -ldflags "-s -w -X main.version={{.Version}} -X main.gitSHA=module@{{.Version}}"{{end}} {{.Package}}@{{.Version}} \
+    && cp /out/* /gobridge-filebased{{if .InitialConfigFile}} \
+    && initial_digest=$(/gobridge-filebased -initial-config-digest) \
+    && test "$initial_digest" = "{{.InitialConfigDigest}}"{{end}}
 
 FROM {{.BaseImage}} AS runtime
 COPY --from=build /gobridge-filebased /usr/local/bin/gobridge-filebased

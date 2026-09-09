@@ -28,6 +28,9 @@ ARG BINARY_MODULE=cmd/gobridge
 FROM golang:1.25-bookworm@sha256:ea341baa9bd5ba6784f6d7161ace70544349a6242d54d34a0fbfd2c4d51c9d58 AS build
 ARG BINARY_MODULE
 ARG GO_BUILD_TAGS="gobridge_mqtt,gobridge_native"
+ARG INITIAL_CONFIG_FILE=""
+ARG VERSION=dev
+ARG GIT_SHA=unknown
 
 WORKDIR /src
 COPY . .
@@ -35,9 +38,24 @@ COPY . .
 ENV CGO_ENABLED=0
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
-    make dev && \
-    cd "${BINARY_MODULE}" && \
-    go build -tags "$GO_BUILD_TAGS" -trimpath -ldflags="-s -w" -o /out/gobridge . && \
+    set -eu; \
+    make dev; \
+    build_env="$(mktemp)"; \
+    empty_config="$(mktemp)"; \
+    initial_config="$empty_config"; \
+    if [ -n "$INITIAL_CONFIG_FILE" ]; then \
+      case "$INITIAL_CONFIG_FILE" in /*|../*|*/../*|*/..) echo "INITIAL_CONFIG_FILE must stay inside the build context" >&2; exit 2;; esac; \
+      initial_config="/src/$INITIAL_CONFIG_FILE"; \
+    fi; \
+    bash /src/scripts/write-build-goenv.sh "$initial_config" "$build_env" "$VERSION" "$GIT_SHA"; \
+    cd "${BINARY_MODULE}"; \
+    env -u GOFLAGS GOENV="$build_env" go build -tags "$GO_BUILD_TAGS" -trimpath -o /out/gobridge .; \
+    if [ -n "$INITIAL_CONFIG_FILE" ]; then \
+      expected_digest="$(sha256sum "$initial_config" | cut -d ' ' -f 1)"; \
+      actual_digest="$(/out/gobridge -initial-config-digest)"; \
+      test "$actual_digest" = "$expected_digest"; \
+    fi; \
+    rm -f "$build_env" "$empty_config"; \
     mkdir -p /out/state
 
 # ---- runtime stage ----------------------------------------------------------

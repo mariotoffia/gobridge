@@ -97,7 +97,7 @@ func TestGoBuild_RendersPublishedPackageAndHardenedRuntime(t *testing.T) {
 		Senders: []ports.SenderDef{{Transport: "amqp10"}, {Transport: "amqp091"}},
 	})
 	require.Contains(t, dockerfile, "go install -trimpath -tags=gobridge_amqp091,gobridge_amqp10")
-	require.Contains(t, dockerfile, `-ldflags "-s -w -X main.version=v0.4.0 -X main.gitSHA=module@v0.4.0"`)
+	require.Contains(t, dockerfile, "ENV GOENV=/build/initial-config-")
 	require.Contains(t, dockerfile, "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/cmd/gobridge-filebased@v0.4.0")
 	require.Contains(t, dockerfile, "CGO_ENABLED=0")
 	require.Contains(t, dockerfile, "GOWORK=off")

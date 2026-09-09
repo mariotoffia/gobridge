@@ -33,7 +33,9 @@ func ImageFromEcrRepository(repo awsecr.IRepository, tag string) BridgeImageSour
 // Version is required. Nil BuildTags derives optional families from the parsed
 // bridge config; an explicit empty slice adds none. Asset staging happens at
 // synth time; Docker builds and publishes the staged asset during deployment.
-// The command must implement the profile's bootstrap and health-check contract.
+// The facade's BridgeConfig is embedded as the initial configuration. The
+// command must implement the profile's bootstrap, health-check and
+// -initial-config-digest contracts; the build verifies the embedded digest.
 //
 //nolint:ireturn // BridgeImageSource is sealed by design.
 func ImageFromGoBuild(props ImageGoBuildProps) BridgeImageSource { return imgsource.NewGoBuild(props) }

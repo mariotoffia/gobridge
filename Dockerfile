@@ -34,6 +34,8 @@ ARG BINARY_PKG
 # Version metadata (optional; passed by CI via --build-arg).
 ARG VERSION=dev
 ARG GIT_SHA=unknown
+# Optional YAML/JSON file inside the build context, compiled as an initial value.
+ARG INITIAL_CONFIG_FILE=""
 
 WORKDIR /src
 # Copy the whole repository: the target module's replace directives point up
@@ -43,10 +45,24 @@ COPY . .
 ENV CGO_ENABLED=0 GOWORK=off GOFLAGS=-mod=mod
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
-    cd "${BINARY_MODULE}" && \
-    go build -trimpath \
-      -ldflags="-s -w -X main.version=${VERSION} -X main.gitSHA=${GIT_SHA}" \
-      -o /out/gobridge-filebased "${BINARY_PKG}"
+    set -eu; \
+    build_env="$(mktemp)"; \
+    empty_config="$(mktemp)"; \
+    initial_config="$empty_config"; \
+    if [ -n "$INITIAL_CONFIG_FILE" ]; then \
+      case "$INITIAL_CONFIG_FILE" in /*|../*|*/../*|*/..) echo "INITIAL_CONFIG_FILE must stay inside the build context" >&2; exit 2;; esac; \
+      initial_config="/src/$INITIAL_CONFIG_FILE"; \
+    fi; \
+    bash /src/scripts/write-build-goenv.sh "$initial_config" "$build_env" "$VERSION" "$GIT_SHA"; \
+    cd "${BINARY_MODULE}"; \
+    env -u GOFLAGS GOENV="$build_env" go build -mod=mod -trimpath \
+      -o /out/gobridge-filebased "${BINARY_PKG}"; \
+    if [ -n "$INITIAL_CONFIG_FILE" ]; then \
+      expected_digest="$(sha256sum "$initial_config" | cut -d ' ' -f 1)"; \
+      actual_digest="$(/out/gobridge-filebased -initial-config-digest)"; \
+      test "$actual_digest" = "$expected_digest"; \
+    fi; \
+    rm -f "$build_env" "$empty_config"
 
 # ---- runtime stage ----------------------------------------------------------
 # distroless/static-debian12:nonroot runs as uid:gid 65532:65532 and contains

@@ -9,7 +9,7 @@
 .PHONY: audit-timings audit-test-timings
 .PHONY: arch-graph dupl-report goconst-report
 .PHONY: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-pluginsym
-.PHONY: docker-build update-seeder-image
+.PHONY: docker-build
 .PHONY: verify-release-preparation verify-published-modules verify-release-tag
 .PHONY: release-modules stage-published-module stage-release-bootstrap derive-release-bootstrap
 .PHONY: smoke-released-modules release-latest-version verify-remote-release-tag
@@ -27,6 +27,8 @@ IMAGE_TAG  ?= dev
 # docker-build and never pushed.
 IMAGE_LOCAL_TAG ?= gobridge-filebased:local
 GIT_SHA    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+INITIAL_CONFIG_FILE ?=
+export IMAGE_TAG GIT_SHA INITIAL_CONFIG_FILE
 
 GOBRIDGE_TAGS ?=
 
@@ -65,11 +67,14 @@ build: ## Build all modules
 	@echo "Building all modules..."
 	go build ./...
 
-build-gobridge: ## Build cmd/gobridge/gobridge.out (blank unless GOBRIDGE_TAGS is set)
+build-gobridge: ## Build cmd/gobridge/gobridge.out; optionally embed INITIAL_CONFIG_FILE
 	@test -f go.work || $(MAKE) dev
-	go -C cmd/gobridge build -tags "$(GOBRIDGE_TAGS)" -trimpath \
-		-ldflags "-s -w -X main.version=$(IMAGE_TAG) -X main.gitSHA=$(GIT_SHA)" \
-		-o gobridge.out .
+	@set -eu; tmp=$$(mktemp -d); \
+		trap 'rm -f "$$tmp/goenv" "$$tmp/empty"; rmdir "$$tmp"' EXIT; \
+		: > "$$tmp/empty"; \
+		bash scripts/write-build-goenv.sh "$${INITIAL_CONFIG_FILE:-$$tmp/empty}" "$$tmp/goenv" "$$IMAGE_TAG" "$$GIT_SHA"; \
+		env -u GOFLAGS GOENV="$$tmp/goenv" go -C cmd/gobridge build -tags "$(GOBRIDGE_TAGS)" -trimpath \
+			-o gobridge.out .
 
 .PHONY: dev
 dev: ## Regenerate the Go workspace (go.work) from every on-disk module (local-dev bootstrap)
@@ -89,11 +94,9 @@ docker-build: ## Build the production runtime image (gobridge-filebased, no push
 	docker build \
 		--build-arg VERSION=$(IMAGE_TAG) \
 		--build-arg GIT_SHA=$(GIT_SHA) \
+		--build-arg INITIAL_CONFIG_FILE="$(INITIAL_CONFIG_FILE)" \
 		-t $(IMAGE):$(IMAGE_TAG) \
 		-t $(IMAGE_LOCAL_TAG) .
-
-update-seeder-image: ## Verify published SEEDER_IMAGE and update the committed seeder digest
-	$(MAKE) -C deployment/aws-filebased-config update-seeder-image
 
 # ============================================================================
 # Multi-module release preparation
@@ -285,7 +288,7 @@ test-integration: audit-timings audit-test-timings ## Run all tests including in
 LOCAL_DEPLOY_TOOLS := .tools/local-deploy
 LOCAL_DEPLOY_RUN ?= .
 
-test-local-deploy: audit-timings audit-test-timings docker-build ## Deploy the AWS profile against local emulation and drive it (requires Docker + Node)
+test-local-deploy: audit-timings audit-test-timings ## Build each embedded-config image and deploy against local emulation (requires Docker + Node)
 	@mkdir -p reports $(LOCAL_DEPLOY_TOOLS)
 	@echo "Installing the local CDK CLI into $(LOCAL_DEPLOY_TOOLS) ..."
 	@cd $(LOCAL_DEPLOY_TOOLS) && npm install --silent --no-fund --no-audit --no-save aws-cdk aws-cdk-local >/dev/null
@@ -296,7 +299,7 @@ test-local-deploy: audit-timings audit-test-timings docker-build ## Deploy the A
 	@echo "Report will be saved to: reports/test-local-deploy.log"
 	@bash -c 'set -o pipefail; start=$$(date +%s); \
 		PATH="$(CURDIR)/$(LOCAL_DEPLOY_TOOLS)/node_modules/.bin:$$PATH" \
-		GOBRIDGE_INT_LOCAL=1 GOBRIDGE_LOCAL_IMAGE=$(IMAGE_LOCAL_TAG) \
+		GOBRIDGE_INT_LOCAL=1 \
 		JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 \
 		go -C deployment/aws-filebased-config/cdk test -count=1 -timeout=180m -v \
 			-tags=integration_local -run="$(value LOCAL_DEPLOY_RUN)" ./integration/... 2>&1 | tee reports/test-local-deploy.log; \
