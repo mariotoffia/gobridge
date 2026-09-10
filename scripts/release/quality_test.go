@@ -393,15 +393,23 @@ go 1.25.0
 			t.Errorf("smoke did not resolve %s; resolved %v", want, resolved)
 		}
 	}
+	// These are spelled out rather than derived from cdkSmokePackages and
+	// libCommandPackage. A check built from the same constant it is checking
+	// passes whatever that constant says, including an empty package list or a
+	// command name that names nothing.
+	//
 	// Fetching the module path alone leaves go.sum without entries for what the
 	// CDK's own code imports, and the build that follows fails on every one of
-	// them. The fetch must name the package.
-	//
-	// gobridgecdk carries the image sources and the sealed BridgeImageSource
-	// the facades take; no facade imports it in non-test code, so building only
-	// gobridgesingle would leave that whole public surface uncompiled.
-	for _, pkg := range cdkSmokePackages {
-		facade := cdk + "/" + pkg
+	// them, so the fetch must name the package. gobridgecdk reaches every
+	// facade; gobridgesingle is the path a consumer's stack actually names.
+	wantBuilt := []string{
+		cdk + "/gobridgecdk",
+		cdk + "/constructs/gobridgesingle",
+	}
+	if len(built) != len(wantBuilt) {
+		t.Errorf("smoke built %v, want exactly %v", built, wantBuilt)
+	}
+	for _, facade := range wantBuilt {
 		if want := facade + "@" + testReleaseVersion; !slices.Contains(fetched, want) {
 			t.Errorf("smoke did not go get %s; fetched %v", want, fetched)
 		}
@@ -415,9 +423,42 @@ go 1.25.0
 	// A consumer never imports lib, but its cdk deploy compiles this command
 	// out of the module zip. Resolving the tag proves the manifest; only a
 	// build proves the published source compiles from the proxy.
-	profileCommand := manifest.importPath(libModulePath) + "/" + libCommandPackage
+	profileCommand := manifest.ModulePrefix +
+		"/deployment/aws-filebased-config/lib/cmd/gobridge-filebased"
 	if want := profileCommand + "@" + testReleaseVersion; !slices.Contains(installed, want) {
 		t.Errorf("smoke did not install %s; installed %v", want, installed)
+	}
+}
+
+// TestSmokePackagePaths_ExistOnDisk guards the literals the smoke composes its
+// commands from. They are spelled out in three places that must agree — this
+// file, model.go, and the CDK's own default package — and nothing else notices
+// when a directory is renamed. Without this, the first signal is `go install`
+// failing in the final gate of a release, after every tag is immutable.
+func TestSmokePackagePaths_ExistOnDisk(t *testing.T) {
+	t.Parallel()
+
+	repo := filepath.Join("..", "..")
+	for _, pkg := range cdkSmokePackages {
+		dir := filepath.Join(repo, filepath.FromSlash(cdkModulePath), filepath.FromSlash(pkg))
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("cdkSmokePackages names %q, which is not a directory: %v", pkg, err)
+		}
+	}
+	commandDir := filepath.Join(repo, filepath.FromSlash(libModulePath), filepath.FromSlash(libCommandPackage))
+	if _, err := os.Stat(commandDir); err != nil {
+		t.Fatalf("libCommandPackage names %q, which is not a directory: %v", libCommandPackage, err)
+	}
+	// The CDK builds this same command by default. If the two drift, a
+	// consumer's image build and the release smoke stop testing the same thing.
+	imgsource, err := os.ReadFile(filepath.Join(repo,
+		filepath.FromSlash(cdkModulePath), "internal", "imgsource", "imgsource.go"))
+	if err != nil {
+		t.Fatalf("reading imgsource.go: %v", err)
+	}
+	want := "github.com/mariotoffia/gobridge/" + libModulePath + "/" + libCommandPackage
+	if !strings.Contains(string(imgsource), want) {
+		t.Errorf("imgsource.go does not name %q as the default package", want)
 	}
 }
 
@@ -694,4 +735,58 @@ type qualityRunner func(context.Context, commandRequest) ([]byte, error)
 
 func (run qualityRunner) run(ctx context.Context, request commandRequest) ([]byte, error) {
 	return run(ctx, request)
+}
+
+// TestResolveSmokeModule_TransientProxyStatesAreRetryable pins the classifier
+// the retry loop depends on. runConsumerSmokeWithOptions retries only
+// *smokeCommandError, so a condition returned as a plain error consumes the
+// whole smoke on the first attempt with all twenty retries unused.
+//
+// An empty origin commit and an unreported go.mod both mean the proxy answered
+// before it had materialised the module — the same lag tryResolveModule
+// deliberately waits out. Only a commit that disagrees with the local tag is a
+// real fault, because that is a moved tag or a poisoned cache.
+func TestResolveSmokeModule_TransientProxyStatesAreRetryable(t *testing.T) {
+	t.Parallel()
+
+	repo, manifest := smokeFixture(t)
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	importPath := manifest.importPath(cdkInfraModulePath)
+
+	goMod := moduleGoModForTest(repo, cdkInfraModulePath)
+	tests := []struct {
+		name          string
+		goMod         string
+		originHash    string
+		wantRetryable bool
+	}{
+		{name: "no origin commit yet", goMod: goMod, originHash: "", wantRetryable: true},
+		{name: "go.mod not materialised yet", goMod: "", originHash: commit, wantRetryable: true},
+		{
+			name:          "commit disagrees with the local tag",
+			goMod:         goMod,
+			originHash:    "ffffffffffffffffffffffffffffffffffffffff",
+			wantRetryable: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			listed := listedModule{Path: importPath, Version: testReleaseVersion, GoMod: tt.goMod}
+			listed.Origin.Hash = tt.originHash
+			runner := qualityRunner(func(_ context.Context, _ commandRequest) ([]byte, error) {
+				return json.Marshal(listed)
+			})
+			err := resolveSmokeModule(context.Background(), runner, t.TempDir(), nil,
+				manifest, cdkInfraModulePath, testReleaseVersion, commit)
+			if err == nil {
+				t.Fatal("resolveSmokeModule() = nil, want an error")
+			}
+			var commandErr *smokeCommandError
+			if got := errors.As(err, &commandErr); got != tt.wantRetryable {
+				t.Fatalf("retryable = %v, want %v (err = %v)", got, tt.wantRetryable, err)
+			}
+		})
+	}
 }

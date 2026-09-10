@@ -1689,7 +1689,16 @@ func resolveSmokeModule(
 	if listed.Path != importPath || listed.Version != version {
 		return fmt.Errorf("resolved smoke module %s as %s@%s", query, listed.Path, listed.Version)
 	}
-	if listed.Origin.Hash == "" || listed.Origin.Hash != expectedCommit {
+	// An absent origin commit is the proxy answering before it has materialised
+	// the module, not a moved tag. Reporting it as a mismatch both stops the
+	// smoke on the first of twenty attempts and prints a message that reads
+	// like tag tampering. Only a commit that DISAGREES is a real fault.
+	if listed.Origin.Hash == "" {
+		return &smokeCommandError{
+			err: fmt.Errorf("smoke module %s reported no origin commit", query),
+		}
+	}
+	if listed.Origin.Hash != expectedCommit {
 		return fmt.Errorf(
 			"smoke module %s resolved from origin %q, want tag commit %s",
 			query,
@@ -1698,7 +1707,9 @@ func resolveSmokeModule(
 		)
 	}
 	if listed.GoMod == "" {
-		return fmt.Errorf("smoke module %s did not report its downloaded go.mod", query)
+		return &smokeCommandError{
+			err: fmt.Errorf("smoke module %s did not report its downloaded go.mod", query),
+		}
 	}
 	data, err := os.ReadFile(listed.GoMod)
 	if err != nil {
