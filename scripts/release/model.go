@@ -24,6 +24,12 @@ const (
 	cdkModulePath        = "deployment/aws-filebased-config/cdk"
 	cdkInfraModulePath   = "deployment/aws-filebased-config/infra"
 	libModulePath        = "deployment/aws-filebased-config/lib"
+
+	// libCommandPackage is the profile binary the CDK's default image source
+	// compiles inside its Docker build. Nothing a consumer writes imports it,
+	// so only installing it from the proxy proves the published module zip
+	// still builds; a resolvable tag does not.
+	libCommandPackage = "cmd/gobridge-filebased"
 )
 
 // cdkSmokePackages are the CDK packages an external stack writes against.

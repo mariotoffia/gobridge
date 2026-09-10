@@ -39,10 +39,11 @@ flowchart LR
 
 **Dependency rule.** `infra/` imports nothing outside the standard library — CDK consumers never pull in the runtime tree, and the runtime never imports CDK. `lib/model/BootstrapConfig` and `infra.BootstrapConfig` are intentional duplicates so each module can stand alone; equivalence is guarded by tests.
 
-**Publication.** `infra` and `cdk` are release-train members.
-Publication of a compatible `lib` module remains pending. Published copies
-must carry no `replace` directives and must pin released sibling versions
-before an external app can build without a repository checkout. See the
+**Publication.** `infra`, `lib` and `cdk` are all release-train members —
+`lib` because the default image source compiles its command from the module
+proxy. Published copies carry no `replace` directives and pin released sibling
+versions, which is what lets an external app build without a repository
+checkout. See the
 [release graph](../../RELEASE.md#canonical-release-graph).
 
 `cdk/` ships six public L2 constructs plus four supporting packages. There is **no L3 wrapper** — consumers compose the L2s directly inside their own `awscdk.Stack`.

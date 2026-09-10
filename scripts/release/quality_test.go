@@ -375,7 +375,7 @@ go 1.25.0
 		// version, so an external consumer needs lib to resolve publicly too.
 		manifest.importPath(libModulePath) + "@" + testReleaseVersion,
 	}
-	var resolved, built, fetched []string
+	var resolved, built, fetched, installed []string
 	for _, request := range requests {
 		switch {
 		case len(request.Args) == 4 && slices.Equal(request.Args[:3], []string{"list", "-m", "-json"}):
@@ -384,6 +384,8 @@ go 1.25.0
 			built = append(built, request.Args[1])
 		case len(request.Args) == 2 && request.Args[0] == "get":
 			fetched = append(fetched, request.Args[1])
+		case len(request.Args) == 2 && request.Args[0] == "install":
+			installed = append(installed, request.Args[1])
 		}
 	}
 	for _, want := range wantResolved {
@@ -409,6 +411,13 @@ go 1.25.0
 	}
 	if slices.Contains(fetched, cdk+"@"+testReleaseVersion) {
 		t.Errorf("smoke fetched the cdk module path; go build needs the package path")
+	}
+	// A consumer never imports lib, but its cdk deploy compiles this command
+	// out of the module zip. Resolving the tag proves the manifest; only a
+	// build proves the published source compiles from the proxy.
+	profileCommand := manifest.importPath(libModulePath) + "/" + libCommandPackage
+	if want := profileCommand + "@" + testReleaseVersion; !slices.Contains(installed, want) {
+		t.Errorf("smoke did not install %s; installed %v", want, installed)
 	}
 }
 

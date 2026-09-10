@@ -226,12 +226,12 @@ GOBRIDGE_INT_HA_ADMIN_PARAM
 GOBRIDGE_INT_HA_PROBE_CIDR
 ```
 
-`GOBRIDGE_INT_VERSION` must name a published, compatible AWS profile `lib`
-module version that supports embedded config and `-initial-config-digest`.
+`GOBRIDGE_INT_VERSION` must name a published AWS profile `lib` module
+version that supports embedded config and `-initial-config-digest`.
 Each credentialed fixture uses `ImageFromGoBuild` to build an image containing
 that fixture's parsed config. The harness rejects `GOBRIDGE_INT_IMAGE`; unset
-it rather than passing a registry reference. Compatible module publication is
-a prerequisite, and an existing registry image cannot substitute for it.
+it rather than passing a registry reference — an existing registry image cannot
+substitute for the versioned build.
 
 The availability-zone, private-subnet, and public-subnet lists must have the
 same order and cardinality. The harness imports these concrete attributes and

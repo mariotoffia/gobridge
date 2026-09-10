@@ -301,16 +301,22 @@ go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobri
 go build github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk
 go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle@vX.Y.Z
 go build github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle
+go install github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/cmd/gobridge-filebased@vX.Y.Z
 go install github.com/mariotoffia/gobridge/cmd/gobridge@vX.Y.Z
 ```
 
 It rejects every `replace` or `exclude` directive in resolved module manifests
 and in the generated consumer go.mod.
 
-The `lib` module is resolved but not built. Nothing a consumer writes imports
-it; `ImageFromGoBuild` fetches it inside a Docker build at deploy time, so what
-the smoke has to prove is that the tag exists on the proxy and its published
-manifest carries no `replace`.
+The `lib` module is resolved *and* its command is installed. Nothing a consumer
+writes imports it, so resolution proves only that the tag exists and that its
+published manifest carries no `replace`. What a consumer actually runs is a
+`go build` of `lib/cmd/gobridge-filebased` inside the `ImageFromGoBuild` Docker
+build at deploy time — after a stack update has begun. The strict per-module
+gate compiles that tree from the staged manifest, but only this install
+compiles it from the published module zip, which is the artifact the consumer
+gets. It runs in module-agnostic mode, so it needs no `go.sum` entry in the
+generated consumer manifest.
 
 The CDK steps **build** rather than list. `cdk` is not in `cmd/gobridge`'s
 dependency graph, so nothing else in the train compiles it from outside the

@@ -87,17 +87,21 @@ Save the [bridge configuration](#bridge-configuration) as `bridge.yaml` next to
 your CDK app before synthesizing. The same document describes the image's
 initial config and the CDK declaration.
 
-`gobridgecdk.ImageFromGoBuild` builds the image for you at synth time. It
-downloads the profile command at the version you name through Go tooling,
-copies the owning module to a writable directory, fills its fixed embed file
-with the facade's parsed `BridgeConfig`, and runs `go build` — no Git checkout
-and no `docker build` of your own. The result is the same multi-stage,
-`CGO_ENABLED=0` (pure-Go SQLite via `modernc.org/sqlite`),
-distroless/static-debian12 image running as nonroot UID 65532, with a
-`HEALTHCHECK` that runs the binary directly (`-healthcheck`, which probes the
-local monitor `/live` endpoint). Docker publishes the staged asset to your
-CDK bootstrap ECR repository during `cdk deploy`, so `cdk bootstrap` and a
-running Docker daemon are the only prerequisites.
+`gobridgecdk.ImageFromGoBuild` builds the image for you — no Git checkout and
+no `docker build` of your own. `cdk synth` only stages the build context: a
+generated Dockerfile plus the facade's parsed `BridgeConfig`. Everything else
+happens during `cdk deploy`, when Docker downloads the profile command at the
+version you name, copies its owning module to a writable directory, fills the
+fixed embed file, runs `go build`, and pushes the image to your CDK bootstrap
+asset repository. **A bad version, an unpublished plugin family, or an
+unreachable module proxy therefore surfaces at deploy, not at synth.**
+
+The result is the same multi-stage, `CGO_ENABLED=0` (pure-Go SQLite via
+`modernc.org/sqlite`), distroless/static-debian12 image running as nonroot UID
+65532, with a `HEALTHCHECK` that runs the binary directly (`-healthcheck`,
+which probes the local monitor `/live` endpoint). It needs `cdk bootstrap`, a
+running Docker daemon, and outbound network from the build container to the Go
+module proxy and to the two digest-pinned base images.
 
 The build verifies the binary's `-initial-config-digest` output against the
 staged document, so an image can never disagree with the config the stack
@@ -105,8 +109,10 @@ declares. Optional plugin families are derived from that config; a family must
 be wired into the version you name. Literal credentials may be embedded, but
 artifact readers can recover them; Base64 does not hide them.
 
-If you would rather run your own image — an air-gapped registry, a custom
-`Package`, or a build pipeline you already own — use
+On a version whose train predates the profile modules, or if you would rather
+run your own image — an air-gapped registry, a custom `Package`, or a build
+pipeline you already own — build it from this repository's root `Dockerfile`
+([Container image](../../aws-deployment/container-image.md)) and use
 `gobridgecdk.ImageFromRegistry("...@sha256:<digest>")` or
 `gobridgecdk.ImageFromEcrRepository(repo, tag)` instead. CDK cannot modify
 those images: they must carry their own initial document, find an existing

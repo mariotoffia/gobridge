@@ -276,8 +276,9 @@ Both factories return the same opaque token; the construct does file read / YAML
 
 With `ImageFromGoBuild`, the facade embeds this parsed config through
 `go:embed` and the fixed `initial-config.base64` file, not payload-bearing flags
-or environment variables. No S3 config asset is produced. A compatible published
-`lib` module and any optional family wiring remain prerequisites.
+or environment variables. No S3 config asset is produced. Name a version whose
+release train published the profile modules, and whose profile binary links any
+optional family the document uses.
 
 Registry and ECR images are consumer-built and cannot be changed by CDK.
 They need their own embedded initial document, an existing target, or operator

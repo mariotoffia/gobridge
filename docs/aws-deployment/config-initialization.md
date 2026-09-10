@@ -157,11 +157,11 @@ consume it through `go:embed`, and support this probe when config is embedded.
 An older package without that contract cannot silently produce an image
 without the declared document.
 
-A compatible, published `lib` module is a prerequisite for this versioned
-build. Optional profile-family registration is also a prerequisite when the
-document uses those families. Those publication and wiring tasks remain
-pending; existing released versions are not evidence that this path is ready.
-See the [image-source contract](cdk-constructs.md#runtime-image-source).
+The `lib` module ships on the release train, so this versioned build needs a
+version from a train that published the profile modules. Optional profile-family
+registration is a property of that version too: a document using those families
+needs a profile binary that links them. See the
+[image-source contract](cdk-constructs.md#runtime-image-source).
 
 ### Registry and ECR images
 

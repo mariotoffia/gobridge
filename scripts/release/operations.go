@@ -1593,7 +1593,11 @@ func runConsumerSmokePass(
 			[]string{"build", facade},
 		)
 	}
-	commands = append(commands, []string{"install", command + "@" + version})
+	profileCommand := manifest.importPath(libModulePath) + "/" + libCommandPackage
+	commands = append(commands,
+		[]string{"install", profileCommand + "@" + version},
+		[]string{"install", command + "@" + version},
+	)
 	for _, args := range commands {
 		output, err := runner.run(ctx, commandRequest{
 			Dir:     consumerDir,
