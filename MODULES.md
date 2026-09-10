@@ -24,10 +24,11 @@ make build   # runs `make dev` automatically if go.work is missing
 The AWS CDK configured-image build fetches a versioned package through Go
 tooling, copies its owning module to a writable build directory, fills the fixed
 embed file, and runs `go build`. No Git checkout is needed. Without embedded
-config it still uses `go install package@version`. Both paths require a
-published, compatible AWS profile `lib` module and the
-plugin families the document names. Those prerequisites remain pending; local
-workspace success does not prove external availability. See
+config it still uses `go install package@version`. Both paths resolve the AWS
+profile `lib` module from the module proxy, so `lib` is on the release train
+(see [RELEASE.md](RELEASE.md#canonical-release-graph)) and `ImageFromGoBuild`
+must name a version that train has published. A requested plugin family must
+also be wired in that version; local workspace success does not prove it. See
 [CDK image sources](docs/aws-deployment/cdk-constructs.md#runtime-image-source).
 
 ## 2. Add a new module
@@ -40,7 +41,8 @@ workspace success does not prove external availability. See
    The release tool strips these per-tag at publish time — do not remove them by hand.
 3. `make dev` — the module joins the workspace automatically.
 4. **If it is published** (anything under `adapters/`, `processors/`, or `httpapi`,
-   `cmd/gobridge`, root): add it to
+   `cmd/gobridge`, root, or the three `deployment/aws-filebased-config/*` profile
+   modules): add it to
    [`scripts/release/modules.json`](scripts/release/modules.json) with its dependency
    `layer` (a module may only require lower layers). `make lint` runs `make
    modules-check` and **fails** if you forget this step.

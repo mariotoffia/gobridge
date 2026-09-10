@@ -37,6 +37,7 @@
     {"path": "httpapi", "layer": 2},
 
     {"path": "deployment/aws-filebased-config/cdk", "layer": 3},
+    {"path": "deployment/aws-filebased-config/lib", "layer": 3},
 
     {"path": "cmd/gobridge", "layer": 4}
   ],

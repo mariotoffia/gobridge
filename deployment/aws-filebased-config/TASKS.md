@@ -404,7 +404,7 @@ DESIGN.md D7; `testutil/testcontent` into `bootstrap_modules`); `RELEASE.md`
 (deployment exception + dead-tags note for the orphaned
 `aws-filebased-config` v0.3.x tags); `MODULES.md`; `DEVELOPMENT.md:236`.
 
-- [ ] `make modules-check` green; `make verify-release-preparation` green;
+- [x] `make modules-check` green; `make verify-release-preparation` green;
   dry-run `make release VERSION=vX.Y.Z` shows the three modules in
   dependency order. Commit —
   `feat(release): publish deployment/aws infra, lib and cdk modules`

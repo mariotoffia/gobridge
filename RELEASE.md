@@ -34,38 +34,47 @@ make release-modules RELEASE_FORMAT=tsv
 make release-modules RELEASE_LAYER=1
 ```
 
-The repository currently has **33 published modules**:
+The repository currently has **34 published modules**:
 
 | Layer | Count | Contents |
 |---|---:|---|
 | 0 | 1 | Root module |
 | 1 | 27 | Direct-root adapter/processor leaf modules, plus `deployment/aws-filebased-config/infra` |
 | 2 | 3 | `adapters/aws/store`, `adapters/native/store`, and `httpapi` |
-| 3 | 1 | `deployment/aws-filebased-config/cdk` |
+| 3 | 2 | `deployment/aws-filebased-config/cdk` and `deployment/aws-filebased-config/lib` |
 | 4 | 1 | `cmd/gobridge` |
 
 The published set is the root module, every module under `adapters/` and
-`processors/`, `httpapi`, `cmd/gobridge`, and the two CDK modules
-`deployment/aws-filebased-config/infra` and
-`deployment/aws-filebased-config/cdk`. Everything else under `tests/`,
-`testutil/`, `scripts/`, and `deployment/` — including
-`deployment/aws-filebased-config/lib`, which is internal wiring for the shipped
-image — is internal-only and is never tagged. The manifest declares only the
-test-helper modules required to compile published-module tests as
-pseudo-version bootstrap exceptions; that does not make them tagged releases.
+`processors/`, `httpapi`, `cmd/gobridge`, and the three AWS deployment-profile
+modules `deployment/aws-filebased-config/{infra,lib,cdk}`. Everything else
+under `tests/`, `testutil/`, `scripts/`, and `deployment/` is internal-only and
+is never tagged. The manifest declares only the test-helper modules required to
+compile published-module tests as pseudo-version bootstrap exceptions; that
+does not make them tagged releases.
 
-Publishing a compatible `lib` module remains required before consumers can use
-the default versioned `ImageFromGoBuild` command. Optional profile-family
-wiring must also be available for any requested family. Do not infer support
-from an existing `cdk` or `infra` tag. See
+The deployment-profile modules are published because an external CDK app writes
+its own stack against the constructs, those constructs take `infra` types as
+arguments, and the default `ImageFromGoBuild` image source builds the profile
+command out of `lib` from the module proxy at the train version. All three must
+resolve publicly or the documented quickstart in `docs/scenarios/cdk/` cannot
+compile — and cannot build its image — outside this repository. `cdk` and `lib`
+both sit above the layer-2 store aggregates they require, which is why
+`cmd/gobridge` moved to layer 4 — the final module must be alone on the highest
+layer.
+
+Optional profile-family wiring must still be available for any family a bridge
+config requests; a published `lib` tag does not by itself imply support for
+every family. See
 [CDK image sources](docs/aws-deployment/cdk-constructs.md#runtime-image-source).
 
-The two CDK modules are published because an external CDK app writes its own
-stack against the constructs, and those constructs take `infra` types as
-arguments. Both must resolve from the proxy or the documented quickstart in
-`docs/scenarios/cdk/` cannot compile outside this repository. `cdk` sits above
-the layer-2 store aggregates it requires, which is why `cmd/gobridge` moved to
-layer 4 — the final module must be alone on the highest layer.
+**Pre-existing profile tags are not a usable train.** `infra` carries
+`v0.3.4`-`v0.3.6` and `cdk` carries `v0.3.4` and `v0.3.6` (no `v0.3.5`); `lib`
+has never been tagged. Those tags were cut before the profile joined the
+release train, they are weeks behind the documented API, and no `v0.3.x` names
+a complete profile set. They stay in place — policy 7 forbids moving or
+deleting a tag — and they must not be referenced from documentation or consumer
+instructions. The first usable profile version is the first train published
+after this change.
 
 ## Policy
 
@@ -262,9 +271,9 @@ failed on propagation alone must not cost an entire new version train. A
 genuine defect still fails twice and stops the train.
 
 No layer can start until every tag in the layer below it is green and visible,
-so the final `cmd/gobridge` tag is reached only after
-`deployment/aws-filebased-config/cdk`, which in turn waits on all three layer-2
-tags. If a tagged workflow fails, stop. Do not retag; diagnose and start a new
+so the final `cmd/gobridge` tag is reached only after both layer-3 modules,
+`deployment/aws-filebased-config/cdk` and `deployment/aws-filebased-config/lib`,
+which in turn wait on all three layer-2 tags. If a tagged workflow fails, stop. Do not retag; diagnose and start a new
 patch train.
 
 ### 5. Final public proof

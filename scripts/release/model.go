@@ -23,6 +23,7 @@ const (
 	finalModulePath      = "cmd/gobridge"
 	cdkModulePath        = "deployment/aws-filebased-config/cdk"
 	cdkInfraModulePath   = "deployment/aws-filebased-config/infra"
+	libModulePath        = "deployment/aws-filebased-config/lib"
 
 	// cdkSmokePackage is the facade an external stack instantiates. Building
 	// it reaches gobridgecdk, bridgecfg, registry, the shared constructs and
@@ -36,8 +37,11 @@ const (
 // shipped image. An external CDK app writes its own stack against the
 // constructs, and those constructs take infra types (BootstrapConfig and
 // friends) as arguments, so both modules must resolve from the proxy or the
-// documented quickstart cannot compile outside this repository.
-var publishedDeploymentModules = []string{cdkModulePath, cdkInfraModulePath}
+// documented quickstart cannot compile outside this repository. The profile
+// lib module joins them because the default image source builds its command
+// from the module proxy at the train version: an unpublished lib makes that
+// build unreachable for anyone outside this checkout.
+var publishedDeploymentModules = []string{cdkModulePath, cdkInfraModulePath, libModulePath}
 
 var (
 	stableVersionPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
