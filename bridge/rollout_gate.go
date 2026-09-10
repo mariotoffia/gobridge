@@ -36,8 +36,9 @@ func evaluateProposal(oldCfg, candidateCfg *ports.BridgeConfig, candidateBytes [
 // generation counter is a total order and subsumes the coordinator fencing epoch
 // (already enforced at the store).
 //
-// It is deliberately IN-MEMORY ONLY. A durable high-water was considered (design
-// §11 Phase 4) and is not needed: across a restart the same guarantee is
+// It is deliberately IN-MEMORY ONLY. A durable high-water was considered
+// (cluster-config-rollout-protocol.md §11) and is not needed: across a restart
+// the same guarantee is
 // reconstructed from state that is already durable and already authoritative —
 //
 //   - the store admits exactly one active rollout and hands back only the
@@ -89,7 +90,7 @@ func (g *nodeRolloutGate) record(gen uint64) {
 // payloads; a cohort whose members register different plugin sets would diverge
 // here, and does so LOUDLY (a Nack naming the digest mismatch) rather than
 // silently. TestCandidateConfigDigest_IsStableAcrossIndependentLoads pins the
-// property; UC-CR7 (Phase 5) proves it across real processes.
+// property; UC-CR7 proves it across real processes.
 func candidateConfigDigest(raw []byte) string {
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])

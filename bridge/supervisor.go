@@ -344,7 +344,7 @@ func WithAllowDestructiveReload(allow bool) SupervisorOption {
 // artifact that lets a (re)joining member boot on the committed config after an
 // abort and a member that missed a commit reconcile to it. Coverage is the
 // bridge/ unit tests, the integration cluster-rollout suite over real DynamoDB,
-// and the long-running multi-process UC-CR proofs (ADR 0013 / Phase 5).
+// and the long-running multi-process UC-CR proofs (ADR 0013).
 //
 // It is opt-in. The Supervisor is one RolloutHost; the shipped file-based
 // bootstrap.App is the other, both driving the same barrier

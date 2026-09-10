@@ -100,15 +100,15 @@ type ClusterRolloutStore interface {
 	Converge(ctx context.Context, generation uint64, memberID string) error
 
 	// Confirm confirms a provisionally-committed generation under the
-	// coordinator's fencing token: the confirm-window success decision (design
-	// §8.1). Requires the confirm barrier (active window with every epoch
+	// coordinator's fencing token: the confirm-window success decision
+	// (cluster-config-rollout-protocol.md §8.1). Requires the confirm barrier (active window with every epoch
 	// member converged) else ErrRolloutNotConfirmable; enforces fencing and
 	// terminal-immutability. Idempotent under a same-or-newer token.
 	Confirm(ctx context.Context, generation uint64, token persistence.LeaseToken) error
 
 	// Revert reverts a provisionally-committed generation under the coordinator's
-	// fencing token, recording reason: the confirm-window deadman decision (design
-	// §8.1). Every member then reverts to the last confirmed generation. Enforces
+	// fencing token, recording reason: the confirm-window deadman decision
+	// (cluster-config-rollout-protocol.md §8.1). Every member then reverts to the last confirmed generation. Enforces
 	// fencing and terminal-immutability. Idempotent under a same-or-newer
 	// token.
 	Revert(ctx context.Context, generation uint64, token persistence.LeaseToken, reason string) error
