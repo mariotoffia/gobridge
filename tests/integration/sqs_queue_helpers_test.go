@@ -35,6 +35,30 @@ func createSQSQueue(t testing.TB, client *awssqs.Client, name string) string {
 	return createSQSQueueWithAttrs(t, client, name, nil)
 }
 
+// createSQSQueueWithTags creates a queue carrying the given AWS resource
+// tags and registers a t.Cleanup to delete it. Tags are a separate SQS input
+// from attributes, so this is its own constructor rather than another
+// parameter on the attribute one.
+func createSQSQueueWithTags(
+	t testing.TB, client *awssqs.Client, name string, tags map[string]string,
+) string {
+	t.Helper()
+	out, err := client.CreateQueue(context.Background(), &awssqs.CreateQueueInput{
+		QueueName: aws.String(name),
+		Tags:      tags,
+	})
+	if err != nil {
+		t.Fatalf("create tagged queue %q: %v", name, err)
+	}
+	queueURL := *out.QueueUrl
+	t.Cleanup(func() {
+		_, _ = client.DeleteQueue(context.Background(), &awssqs.DeleteQueueInput{
+			QueueUrl: aws.String(queueURL),
+		})
+	})
+	return queueURL
+}
+
 // createSQSQueueWithAttrs creates a queue with the given attributes and
 // registers a t.Cleanup to delete it.
 func createSQSQueueWithAttrs(
