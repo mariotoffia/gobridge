@@ -137,3 +137,72 @@ func TestNewFactoryRegistry_RegistersDynamoDBStoreFactory(t *testing.T) {
 	assert.Contains(t, reg.stores, "memory")
 	assert.Contains(t, reg.stores, "sqlite")
 }
+
+// exclusiveConfigStubFactory advertises no capability but reports exclusivity
+// from a receiver config, the way amqp091's factory does before any receiver
+// has been built.
+type exclusiveConfigStubFactory struct {
+	stubFactory
+	exclusive bool
+}
+
+func (f *exclusiveConfigStubFactory) ConfigRequiresExclusiveIdentity(ports.PluginConfig) bool {
+	return f.exclusive
+}
+
+// TestDetectSwapMode_PrepareCommitWhenSessionDeclaresExclusive pins the probe
+// a capability check cannot make: a session declared exclusive is a
+// single-owner identity whatever its transport advertises. AMQP 1.0 obeys the
+// single-use exclusive-session rule without advertising
+// ports.CapExclusiveIdentity, so overlapping the swap would attach the new
+// consumer while the old one still holds the identity.
+func TestDetectSwapMode_PrepareCommitWhenSessionDeclaresExclusive(t *testing.T) {
+	reg := &factoryRegistry{
+		cfg: &ports.BridgeConfig{
+			Sessions: []ports.SessionDef{
+				{ID: "amqp-sess", Transport: "amqp10", SessionMode: "exclusive"},
+			},
+		},
+		transports: map[string]ports.TransportFactory{
+			"amqp10": &stubFactory{capabilities: []ports.Capability{ports.CapStatefulSession}},
+		},
+	}
+
+	assert.Equal(t, swapModePrepareCommit, reg.detectSwapMode(reg.cfg))
+}
+
+// TestDetectSwapMode_PrepareCommitWhenRouteCarriesInlineSession covers the
+// other config-declared form: a route session block is always a lease-managed
+// single-owner session.
+func TestDetectSwapMode_PrepareCommitWhenRouteCarriesInlineSession(t *testing.T) {
+	reg := &factoryRegistry{
+		cfg: &ports.BridgeConfig{
+			Routes: []ports.RouteDef{
+				{ID: "r1", ReceiverID: "rx", Session: &ports.RouteSessionDef{}},
+			},
+		},
+		transports: map[string]ports.TransportFactory{},
+	}
+
+	assert.Equal(t, swapModePrepareCommit, reg.detectSwapMode(reg.cfg))
+}
+
+// TestDetectSwapMode_PrepareCommitWhenReceiverConfigDeclaresExclusive pins the
+// third probe: a factory can report exclusivity from an incoming receiver
+// config before it has built anything. Capabilities() latches only AFTER an
+// exclusive receiver exists, and this root builds a fresh factory for every
+// plan, so the latch is always cold here — without this probe the first (and
+// every) swap onto an exclusive config would overlap.
+func TestDetectSwapMode_PrepareCommitWhenReceiverConfigDeclaresExclusive(t *testing.T) {
+	reg := &factoryRegistry{
+		cfg: &ports.BridgeConfig{
+			Sessions:  []ports.SessionDef{{ID: "sess", Transport: "amqp091"}},
+			Receivers: []ports.ReceiverDef{{ID: "rx", SessionID: "sess"}},
+		},
+		transports: map[string]ports.TransportFactory{
+			"amqp091": &exclusiveConfigStubFactory{exclusive: true},
+		},
+	}
+
+	assert.Equal(t, swapModePrepareCommit, reg.detectSwapMode(reg.cfg))
+}

@@ -82,6 +82,27 @@ target document wins; an empty target can be initialized at startup. See
 [Initial configuration](config-initialization.md) for creation, idle-state and
 credential-value behavior.
 
+## Optional plugin families
+
+The image always links AWS (SQS, DynamoDB), MQTT, the native stores and HTTP.
+AMQP 0-9-1, AMQP 1.0 and Azure Service Bus are compile-time opt-ins, selected
+with the `gobridge_<family>` build tags shared with the reference binary
+([PLUGIN.md](../../PLUGIN.md#binary-composition-build-tags)):
+
+```sh
+docker build --build-arg GO_BUILD_TAGS=gobridge_amqp091,gobridge_azure \
+  -t gobridge-filebased:local .
+# or, through the Makefile
+make docker-build GOBRIDGE_TAGS=gobridge_amqp091
+```
+
+Only those three tags change this image; the base families are unconditional,
+and `gobridge_all` selects every optional family. A config naming a kind whose
+family was not selected fails to decode at startup, and the startup log names
+every kind the binary can decode. CDK consumers do not set this by hand:
+`ImageFromGoBuild` derives the tags from the bridge config, or takes an
+explicit `BuildTags` list.
+
 ## ECR Lifecycle Policy
 
 We recommend keeping the **last 10 tagged images** and expiring untagged

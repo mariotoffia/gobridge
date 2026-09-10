@@ -8,7 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.35
 	github.com/aws/aws-sdk-go-v2/service/dynamodbstreams v1.36.5
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.73.5
-	github.com/mariotoffia/gobridge v0.0.0
+	github.com/mariotoffia/gobridge v0.3.6
 	github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb v0.0.0
 	github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm v0.0.0
 	github.com/mariotoffia/gobridge/adapters/aws/metrics/cloudwatch v0.0.0
@@ -26,10 +26,23 @@ require (
 )
 
 require (
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.22.0 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.14.0 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus v1.10.0 // indirect
+	github.com/Azure/go-amqp v1.7.0 // indirect
+	github.com/AzureAD/microsoft-authentication-library-for-go v1.8.0 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.37 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.12.13 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
+	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions v0.3.6 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions v0.0.0 // indirect
+	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
+	github.com/rabbitmq/amqp091-go v1.13.0 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 )
 
 require (
@@ -53,11 +66,14 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091 v0.3.6
+	github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10 v0.3.6
 	github.com/mariotoffia/gobridge/adapters/aws/store v0.3.6
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq v0.3.6 // indirect
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.3.6
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.3.6 // indirect
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbrollout v0.0.0
+	github.com/mariotoffia/gobridge/adapters/azure/transport/servicebus v0.3.6
 	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq v0.0.0 // indirect
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq v0.0.0 // indirect
@@ -112,3 +128,15 @@ replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox => ../
 replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions => ../../../adapters/aws/store/dynamodbmanagedsubscriptions
 
 replace github.com/mariotoffia/gobridge/testutil/mqttlocal => ../../../testutil/mqttlocal
+
+replace github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091 => ../../../adapters/amqp/transport/amqp091
+
+replace github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10 => ../../../adapters/amqp/transport/amqp10
+
+replace github.com/mariotoffia/gobridge/adapters/azure/transport/servicebus => ../../../adapters/azure/transport/servicebus
+
+replace github.com/mariotoffia/gobridge/testutil/rabbitmqlocal => ../../../testutil/rabbitmqlocal
+
+replace github.com/mariotoffia/gobridge/testutil/artemislocal => ../../../testutil/artemislocal
+
+replace github.com/mariotoffia/gobridge/testutil/asblocal => ../../../testutil/asblocal

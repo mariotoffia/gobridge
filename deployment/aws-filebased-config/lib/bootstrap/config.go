@@ -97,9 +97,10 @@ func (a *App) applyLogLevel(logical *ports.BridgeConfig) {
 // newDefaultPluginRegistry returns a *ports.Registry populated with
 // the PluginConfig decoders for the adapters this binary bundles.
 // Adding a new adapter to the file-based-config deployment means
-// adding its Register call here. Registration errors are surfaced
-// as panics: a duplicate kind in the bundled set is a programming
-// error that must be caught at process start.
+// adding its Register call here; the optional families selected by
+// build tag add theirs through registerOptionalDecoders. Registration
+// errors are surfaced as panics: a duplicate kind in the bundled set
+// is a programming error that must be caught at process start.
 func newDefaultPluginRegistry() *ports.Registry {
 	reg := ports.NewRegistry()
 	if err := errors.Join(
@@ -108,6 +109,7 @@ func newDefaultPluginRegistry() *ports.Registry {
 		nativestore.Register(reg),
 		awsstore.Register(reg),
 		httptransport.Register(reg),
+		registerOptionalDecoders(reg),
 	); err != nil {
 		panic("bootstrap: register bundled plugin decoders: " + err.Error())
 	}

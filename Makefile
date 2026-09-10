@@ -91,12 +91,13 @@ dev: ## Regenerate the Go workspace (go.work) from every on-disk module (local-d
 # Container image
 # ============================================================================
 
-docker-build: ## Build the production runtime image (gobridge-filebased, no push)
+docker-build: ## Build the production runtime image (gobridge-filebased, no push). GOBRIDGE_TAGS selects optional families; only gobridge_amqp091/amqp10/azure/all change this image
 	@echo "Building $(IMAGE):$(IMAGE_TAG) ..."
 	docker build \
 		--build-arg VERSION=$(IMAGE_TAG) \
 		--build-arg GIT_SHA=$(GIT_SHA) \
 		--build-arg INITIAL_CONFIG_FILE="$(INITIAL_CONFIG_FILE)" \
+		--build-arg GO_BUILD_TAGS="$(GOBRIDGE_TAGS)" \
 		-t $(IMAGE):$(IMAGE_TAG) \
 		-t $(IMAGE_LOCAL_TAG) .
 
@@ -233,6 +234,10 @@ test: audit-timings audit-test-timings ## Run unit tests (no Docker, integration
 	done; \
 	echo "--- Testing ./cmd/gobridge (-tags=gobridge_all) ---"; \
 	go -C cmd/gobridge test -tags gobridge_all -count=1 -short -race -timeout 120s ./... || rc=$$?; \
+	echo "--- Testing ./deployment/aws-filebased-config/lib (-tags=gobridge_all) ---"; \
+	go -C deployment/aws-filebased-config/lib test -tags gobridge_all -count=1 -short -race -timeout 120s ./... || rc=$$?; \
+	echo "--- Testing ./deployment/aws-filebased-config/lib (-tags=gobridge_amqp091) ---"; \
+	go -C deployment/aws-filebased-config/lib test -tags gobridge_amqp091 -count=1 -short -timeout 120s ./bootstrap/ || rc=$$?; \
 	exit $$rc; } 2>&1 | tee reports/test-unit.log; \
 	rc=$$?; \
 	echo ""; \

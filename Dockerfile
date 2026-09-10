@@ -36,6 +36,11 @@ ARG VERSION=dev
 ARG GIT_SHA=unknown
 # Optional YAML/JSON file inside the build context, compiled as an initial value.
 ARG INITIAL_CONFIG_FILE=""
+# Optional comma-separated plugin family tags (gobridge_amqp091, gobridge_amqp10,
+# gobridge_azure, or gobridge_all). The profile always links AWS, MQTT, native
+# stores and HTTP; these add transports on top. Empty means the base set only.
+# Tag names and the families they select are in PLUGIN.md.
+ARG GO_BUILD_TAGS=""
 
 WORKDIR /src
 # Copy the whole repository: the target module's replace directives point up
@@ -57,7 +62,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
       overlay="$build_dir/overlay.json"; \
     fi; \
     cd "${BINARY_MODULE}"; \
-    go build -overlay="$overlay" -mod=mod -trimpath \
+    go build -overlay="$overlay" -mod=mod -trimpath -tags "$GO_BUILD_TAGS" \
       -ldflags "-s -w -X main.version=$VERSION -X main.gitSHA=$GIT_SHA" \
       -o /out/gobridge-filebased "${BINARY_PKG}"; \
     if [ -n "$INITIAL_CONFIG_FILE" ]; then \

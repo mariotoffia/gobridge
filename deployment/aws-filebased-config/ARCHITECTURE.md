@@ -172,16 +172,20 @@ constructs use its identical internal alias to avoid the lookup/ALB import cycle
 The profile binary's base families are aws, mqtt, native stores and http;
 `gobridge_amqp091`, `gobridge_amqp10` and `gobridge_azure` are additive
 compile-time families shared with the `cmd/gobridge` tag convention
-(`PLUGIN.md`).
+(`PLUGIN.md`). Each has a tagged file plus inverse stub in `lib/bootstrap`,
+and `plugins.go` is the single place that enumerates them:
+`registerOptionalDecoders` extends the decoder registry and
+`wireOptionalTransports` extends the transport factory map, both before the
+existing registration paths. The `pluginsym` checker does not police this
+root; the tagged tests beside those files do, one per family, asserting both
+seams and that a build without the tag omits the family.
 
 `ImageFromGoBuild` requires a published compatible lib-module version; it never
 falls back to a branch or `latest`. The default package is
 `github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/cmd/gobridge-filebased`.
-The profile binary links AWS, MQTT, native stores and HTTP; `lib` declares no
-`//go:build` family files, so deriving a tag registers no decoder or factory.
-Until a train publishes `lib`, keep using a pinned registry image or consumer
-ECR image. Custom commands can use explicit `BuildTags` (including an empty slice)
-to bypass derivation, but must implement the profile's bootstrap and health check.
+Derived or explicit family tags reach the build as `-tags`. Custom commands
+can use explicit `BuildTags` (including an empty slice) to bypass derivation,
+but must implement the profile's bootstrap and health check.
 When config is embedded, they must provide the fixed `initial-config.base64`
 file consumed through `go:embed` and support `-initial-config-digest`.
 
@@ -477,7 +481,7 @@ covers creation races, operator creation, artifact visibility, and SQS selection
 - **Custom credential store**: `WithCredentialStore` on `App`.
 - **Custom SSM resolver**: `WithParameterResolver` (e.g. test fixtures, Vault wrapper).
 - **Custom CDK wiring**: compose `BridgeYamlInline(cfg)` over a hand-built `*ports.BridgeConfig` from `cdk/bridgecfg/`. The facades (`GoBridgeSingle` / `GoBridgeCluster` / `GoBridgeDynamoDBHA`) are the supported integration boundary; **bypassing them by composing `cdk/constructs/internal/gobridgebase` directly is not supported** — the package is internal precisely so the singleton / tier-B / mount-policy invariants stay enforceable.
-- **Custom transport/store**: not exposed via `App` — build a sibling deployment profile. **(planned)** The AMQP 0-9-1, AMQP 1.0 and Azure Service Bus families become compile-time opt-ins via the shared `gobridge_<family>` build tags; custom plugins still need their own composition.
+- **Custom transport/store**: not exposed via `App` — build a sibling deployment profile. The AMQP 0-9-1, AMQP 1.0 and Azure Service Bus families are compile-time opt-ins via the shared `gobridge_<family>` build tags; custom plugins still need their own composition.
 - **Custom image pipeline**: pass `ImageFromRegistry` / `ImageFromEcrRepository` to keep building the image yourself; `ImageFromGoBuild` is the zero-checkout build path once a compatible module is published.
 
 ## Related Docs

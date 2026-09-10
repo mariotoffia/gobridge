@@ -29,8 +29,8 @@ and registration contract is in
 configuration-seeder dependency. This work stays on the current branch without
 delegation, worktrees, stash, reset, commits, or pushes. The parent owns code
 integration and final gates. Historical checked steps record earlier work;
-they do not certify the redesigned lifecycle. Publication and optional-family
-tasks remain open.
+they do not certify the redesigned lifecycle. The documentation sweep is the
+last open task.
 
 ## Skill protocol (applies to every task)
 
@@ -446,7 +446,7 @@ pluginsym); Modify `lib/go.mod` (amqp091, amqp10, servicebus requires at
 published tags); root `Dockerfile` (`ARG GO_BUILD_TAGS=""` →
 `go build -tags`).
 
-- [ ] Failing tagged tests per family in `registry_wiring_test.go` style
+- [x] Failing tagged tests per family in `registry_wiring_test.go` style
   (alias→same-factory `require.Same`; decoder kinds present) —
   `go -C deployment/aws/lib test -tags gobridge_amqp091 -run FactoryRegistry -v`;
   untagged run asserts families absent → implement → all four combinations

@@ -1451,56 +1451,12 @@ func (s *Supervisor) detectSwapMode(cfg *ports.BridgeConfig) SwapMode {
 		return s.swapMode
 	}
 
-	// A config that DECLARES exclusivity is serialized regardless of whether its
-	// transport factory advertises CapExclusiveIdentity. amqp10 obeys the
-	// single-use exclusive-session rule but does NOT advertise the capability
-	// (UBIQUITOUS.md:111, PLUGIN.md:173-176), so the capability/hook probes below
-	// miss it — and applyOverlap builds (and opens) the new exclusive session
-	// before stopping the old one, colliding on the broker identity. hasExclusive
-	// Sessions inspects exactly the two config-declared exclusive forms: a named
-	// session with session_mode: exclusive, and a route inline session (always
-	// exclusive per ports/blueprint.go:359). A single such declaration anywhere
-	// forces the serialized prepare-commit swap.
-	if hasExclusiveSessions(cfg) {
-		return SwapPrepareCommit
-	}
-
 	s.mu.RLock()
 	transports := maps.Clone(s.transports)
 	s.mu.RUnlock()
 
-	for _, sess := range cfg.Sessions {
-		tf, ok := transports[sess.Transport]
-		if !ok {
-			continue
-		}
-		if slices.Contains(tf.Capabilities(), ports.CapExclusiveIdentity) {
-			return SwapPrepareCommit
-		}
-	}
-	// Capabilities() only reports exclusivity once a factory has already
-	// BUILT an exclusive receiver, so the loop above misses the FIRST reconfig
-	// that INTRODUCES one (config A: no exclusive → config B: exclusive on the
-	// same queue). That swap would still run Overlap, attaching the new
-	// exclusive consumer while the old consumer holds the queue → broker 403 →
-	// terminal teardown. Detect it up front from the incoming receiver configs
-	// via the optional per-transport hook.
-	for i := range cfg.Receivers {
-		recv := &cfg.Receivers[i]
-		transport := recv.Transport
-		if transport == "" {
-			if sd := findSession(cfg, recv.SessionID); sd != nil {
-				transport = sd.Transport
-			}
-		}
-		tf, ok := transports[transport]
-		if !ok {
-			continue
-		}
-		if d, ok := tf.(exclusiveIdentityConfigDetector); ok &&
-			d.ConfigRequiresExclusiveIdentity(recv.Config) {
-			return SwapPrepareCommit
-		}
+	if RequiresSerializedSwap(cfg, transports) {
+		return SwapPrepareCommit
 	}
 	return SwapOverlap
 }
