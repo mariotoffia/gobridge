@@ -46,7 +46,7 @@ func NewStore(opts ...Option) *Store {
 // cloneEntry returns a DLQEntry whose envelope is fully independent of e
 // (and therefore of any stored state). e.Snapshot() deep-clones the
 // envelope; RehydrateDLQEntry then takes ownership without a redundant
-// second clone. This is the in-memory store's defensive boundary
+// second clone. This is the in-memory store's defensive boundary:
 // neither a caller's input reference nor a returned entry
 // can alias the envelope map held in s.entries.
 func cloneEntry(e routing.DLQEntry) routing.DLQEntry {

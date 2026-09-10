@@ -12,7 +12,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════
-// (c10-filter-nonfinite): numeric ordering comparisons
+// Numeric ordering comparisons
 // (gt/lt/gte/lte) must reject non-finite operands (NaN, +Inf, -Inf).
 //
 // strconv.ParseFloat accepts the literal strings "NaN", "Inf",

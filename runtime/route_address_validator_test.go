@@ -28,7 +28,7 @@ func (r *recordingAddressValidator) ValidateAddress(string) error {
 	return r.err
 }
 
-// TestRouteRunner_AddressValidator_Reject_RoutesDLQ covers
+// TestRouteRunner_AddressValidator_Reject_RoutesDLQ covers the
 // generic dispatch path: a non-nil AddressValidator that returns an
 // error must short-circuit the send and route the message to the DLQ
 // with shared.ErrInvalidTopic semantics.

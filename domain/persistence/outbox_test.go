@@ -125,7 +125,7 @@ func TestOutboxRecord_PersistenceSnapshot_RehydrateIsolatesDispatchHeaders(t *te
 	}
 }
 
-// TestOutboxRecord_OrderingKey verifies: OrderingKey reads
+// TestOutboxRecord_OrderingKey verifies that OrderingKey reads
 // the messaging.HeaderOrderingKey header from the embedded envelope and
 // reports presence only for a non-empty string key.
 func TestOutboxRecord_OrderingKey(t *testing.T) {

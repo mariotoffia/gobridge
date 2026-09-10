@@ -12,7 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// (HIGH, c12-filter-leak): filter numeric conversions must NOT leak
+// Filter numeric conversions must NOT leak
 // raw payload/header values into errors, route logs, or DLQ error
 // metadata. A gt/lt/gte/lte comparison on a non-numeric field previously
 // formatted the raw failing value (`parse float %q`, plus the value

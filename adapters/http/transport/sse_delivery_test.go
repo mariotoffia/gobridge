@@ -123,7 +123,7 @@ func newChunk18Sender(t *testing.T, id string, cfg transport.Config, rec ports.M
 	return s.(*transport.SSESender)
 }
 
-func chunk18Envelope(id string) ports.OutboundMessage {
+func sseEnvelope(id string) ports.OutboundMessage {
 	return ports.OutboundMessage{Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID: id, Subject: "s.sse", Payload: []byte(`{}`),
 	})}
@@ -137,7 +137,7 @@ func TestSSE_ZeroSubscribers_DefaultFailsTransient(t *testing.T) {
 	cap := &capturingHandler{}
 	sender := newChunk18Sender(t, "zero-default", transport.Config{}, rec, slog.New(cap))
 
-	err := sender.Send(context.Background(), chunk18Envelope("e0"))
+	err := sender.Send(context.Background(), sseEnvelope("e0"))
 	if err == nil {
 		t.Fatal("default zero-delivery must return a transient error, got nil")
 	}
@@ -166,7 +166,7 @@ func TestSSE_ZeroSubscribers_AcceptLossAcksButLogsError(t *testing.T) {
 	sender := newChunk18Sender(t, "zero-acceptloss",
 		transport.Config{AtMostOnceAcceptLoss: true}, rec, slog.New(cap))
 
-	if err := sender.Send(context.Background(), chunk18Envelope("e0")); err != nil {
+	if err := sender.Send(context.Background(), sseEnvelope("e0")); err != nil {
 		t.Fatalf("accept-loss zero-delivery must ack (nil), got %v", err)
 	}
 	if got := len(rec.FindEntries(transport.MetricSSENoSubscribers)); got != 1 {
@@ -185,7 +185,7 @@ func TestSSE_ZeroSubscribers_FailOnZeroReturnsTransient(t *testing.T) {
 	sender := newChunk18Sender(t, "zero-fail",
 		transport.Config{FailOnZeroDelivery: true}, rec, nil)
 
-	err := sender.Send(context.Background(), chunk18Envelope("e0"))
+	err := sender.Send(context.Background(), sseEnvelope("e0"))
 	if err == nil {
 		t.Fatal("FailOnZeroDelivery: zero subscribers must return an error, got nil")
 	}
@@ -234,17 +234,17 @@ func TestSSE_AllBuffersFull_FailOnZeroReturnsTransient(t *testing.T) {
 
 	// e0 is queued, the handler reads it and parks inside Write — the
 	// buffer is now empty and the handler will not drain further.
-	if err := sender.Send(context.Background(), chunk18Envelope("e0")); err != nil {
+	if err := sender.Send(context.Background(), sseEnvelope("e0")); err != nil {
 		t.Fatalf("Send(e0): %v", err)
 	}
 	wait.RequireClosed(t, w.entered, 2*time.Second)
 
 	// e1 fills the size-1 buffer (still a delivery: buffer had room).
-	if err := sender.Send(context.Background(), chunk18Envelope("e1")); err != nil {
+	if err := sender.Send(context.Background(), sseEnvelope("e1")); err != nil {
 		t.Fatalf("Send(e1) filled the buffer, must still ack: %v", err)
 	}
 	// e2 finds the buffer full for the only client → 100% dropped.
-	err := sender.Send(context.Background(), chunk18Envelope("e2"))
+	err := sender.Send(context.Background(), sseEnvelope("e2"))
 	if err == nil {
 		t.Fatal("FailOnZeroDelivery: all-buffers-full must return an error, got nil")
 	}
@@ -291,15 +291,15 @@ func TestSSE_AllBuffersFull_DefaultFailsTransient(t *testing.T) {
 		return sender.ClientCount() >= 1
 	})
 
-	if err := sender.Send(context.Background(), chunk18Envelope("e0")); err != nil {
+	if err := sender.Send(context.Background(), sseEnvelope("e0")); err != nil {
 		t.Fatalf("Send(e0): %v", err)
 	}
 	wait.RequireClosed(t, w.entered, 2*time.Second)
-	if err := sender.Send(context.Background(), chunk18Envelope("e1")); err != nil {
+	if err := sender.Send(context.Background(), sseEnvelope("e1")); err != nil {
 		t.Fatalf("Send(e1): %v", err)
 	}
 	// e2 finds the buffer full for the only client → 100% dropped.
-	err := sender.Send(context.Background(), chunk18Envelope("e2"))
+	err := sender.Send(context.Background(), sseEnvelope("e2"))
 	if err == nil {
 		t.Fatal("default all-buffers-full must return a transient error, got nil")
 	}
@@ -338,7 +338,7 @@ func TestSSE_SendAfterCloseReturnsTransient(t *testing.T) {
 				t.Fatalf("Close: %v", err)
 			}
 
-			err := sender.Send(context.Background(), chunk18Envelope("after-close"))
+			err := sender.Send(context.Background(), sseEnvelope("after-close"))
 			if err == nil {
 				t.Fatal("Send after Close must return a transient error, got nil")
 			}

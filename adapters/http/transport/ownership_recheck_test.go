@@ -1,6 +1,6 @@
 package transport_test
 
-// Deterministic test for audit chunk, finding 6: cluster SSE
+// Deterministic test: cluster SSE
 // ownership is resolved once at connect time, so a rebalance that moves
 // the route to another node AFTER a client connects would leave that
 // client on a live-but-event-less stream forever. The handler now

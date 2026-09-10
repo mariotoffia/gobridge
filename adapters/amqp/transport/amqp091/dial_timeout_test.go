@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════
-// Production-readiness remediation tests: bounded dial (Chunk-11).
+// Dialing is bounded by the configured timeout.
 //
 // amqp091-go's DialConfig only applies its OWN 30s default when Config.Dial is
 // nil. With a ConnectTimeout shorter than 30s, dialWithTimeout gave up at

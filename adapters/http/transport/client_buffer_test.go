@@ -1,6 +1,6 @@
 package transport_test
 
-// Deterministic test for audit chunk, finding 7: the per-client SSE
+// Deterministic test: the per-client SSE
 // event-queue depth is configurable via Config.ClientBufferSize (formerly
 // hardcoded at 256). A sender built with a small buffer must drop the
 // (N+1)th queued event — proof the configured size, not the 256 default,
@@ -48,14 +48,14 @@ func TestSSE_ClientBufferSizeHonored(t *testing.T) {
 
 	// e0 is dequeued by the handler, which then parks inside Write. The
 	// buffer is now empty and stays undrained for the rest of the test.
-	if err := sender.Send(context.Background(), chunk18Envelope("e0")); err != nil {
+	if err := sender.Send(context.Background(), sseEnvelope("e0")); err != nil {
 		t.Fatalf("Send(e0): %v", err)
 	}
 	wait.RequireClosed(t, w.entered, 2*time.Second)
 
 	// Exactly bufferSize events fit without a drop.
 	for i := 0; i < bufferSize; i++ {
-		if err := sender.Send(context.Background(), chunk18Envelope("fill")); err != nil {
+		if err := sender.Send(context.Background(), sseEnvelope("fill")); err != nil {
 			t.Fatalf("Send(fill %d): %v", i, err)
 		}
 	}
@@ -68,7 +68,7 @@ func TestSSE_ClientBufferSizeHonored(t *testing.T) {
 	// the old hardcoded 256 buffer this event would still fit, so the drop
 	// proves ClientBufferSize is honored. Accept-loss is enabled, so the
 	// all-dropped send still acks (returns nil).
-	if err := sender.Send(context.Background(), chunk18Envelope("overflow")); err != nil {
+	if err := sender.Send(context.Background(), sseEnvelope("overflow")); err != nil {
 		t.Fatalf("Send(overflow) under accept-loss must ack: %v", err)
 	}
 	drops := rec.FindEntries(transport.MetricSSEDroppedEvents)

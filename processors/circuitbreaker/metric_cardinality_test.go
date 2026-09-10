@@ -15,7 +15,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════
-// (c10-cb-metric-cardinality): the breaker key can be
+// The breaker key can be
 // caller-controlled (WithKeyExtractor(HeaderKey("tenant-id"))), so
 // tagging it verbatim on the shared circuit-breaker metrics
 // (CircuitBreakerStateChanged / Trips / Rejections) let one producer

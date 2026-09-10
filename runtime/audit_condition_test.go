@@ -10,7 +10,7 @@ import (
 // ═══════════════════════════════════════════════════════════════════
 // Condition Evaluator Audit Tests
 //
-// Validates edge cases identified:
+// Validates these edge cases:
 //   - condToFloat64 missing unsigned integer types
 //   - numericCompare float64 precision loss for large int64
 //   - isIn with typed slices

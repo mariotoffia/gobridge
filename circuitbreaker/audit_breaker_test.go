@@ -14,7 +14,7 @@ import (
 // ═══════════════════════════════════════════════════════════════════
 // Circuit Breaker Audit Tests
 //
-// Validates edge cases identified:
+// Validates these edge cases:
 //   - State.String() for unknown state value
 //   - Concurrent half-open probe limiting
 //   - Config.WithDefaults zero-value handling

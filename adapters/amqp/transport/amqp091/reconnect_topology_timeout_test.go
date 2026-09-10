@@ -1,6 +1,5 @@
 // ═══════════════════════════════════════════════
-// Production-readiness remediation tests: bounded topology declaration
-// (Chunk-11).
+// Topology declaration is bounded by the configured timeout.
 //
 // The amqp091-go declare calls (conn.Channel / ExchangeDeclare /
 // QueueDeclare / QueueBind — see acl_session.go) are NOT context-aware: on a

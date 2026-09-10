@@ -1,6 +1,5 @@
 // ═══════════════════════════════════════════════
-// Production-readiness remediation tests: credential rotation honours ctx
-// (Chunk-11).
+// Credential rotation honours context cancellation.
 //
 // AMQP 0-9-1 has no re-auth primitive, so ApplyCredentials rotates by "close
 // then redial": it closes the live connection to let the reconnect loop redial

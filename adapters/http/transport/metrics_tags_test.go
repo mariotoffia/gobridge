@@ -1,6 +1,6 @@
 package transport_test
 
-// Deterministic test for audit chunk, finding 4: adapter metrics must
+// Deterministic test: adapter metrics must
 // be tagged with the owning component id. Before the fix every SSE sender
 // emitted the SSEClients gauge on the SAME untagged series, so with more
 // than one sender in a process the last writer clobbered the others. Here

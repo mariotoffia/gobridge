@@ -11,10 +11,9 @@ import (
 // MQTT Topic Validation Review Tests
 //
 // The MQTT-specific portion of these tests was moved to
-// adapters/mqtt/transport/paho/topic_validator_test.go as part of
-// MQTT topic validation is now a transport-supplied
-// AddressValidator capability and the runtime no longer owns MQTT
-// semantics. Only the transport-agnostic RenderAddress tests remain
+// adapters/mqtt/transport/paho/topic_validator_test.go: MQTT topic
+// validation is now a transport-supplied AddressValidator capability and
+// the runtime no longer owns MQTT semantics. Only the transport-agnostic RenderAddress tests remain
 // here.
 // ═══════════════════════════════════════════════════════════════════
 

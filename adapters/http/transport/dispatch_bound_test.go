@@ -1,6 +1,6 @@
 package transport_test
 
-// Deterministic test for audit chunk, finding 3: the DETACHED ingress
+// Deterministic test: the DETACHED ingress
 // dispatch must be bounded by MaxDispatchDuration UNCONDITIONALLY — it
 // must not depend on the request context carrying a deadline. A bare
 // http.Server installs no request-context deadline, so before the fix the

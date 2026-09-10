@@ -1,6 +1,6 @@
 package transport_test
 
-// Black-box tests issue 4: programmatic configs passed straight to
+// Black-box tests: programmatic configs passed straight to
 // the factory's NewReceiver/NewSender must be run through Config.Validate,
 // not just the YAML decode path. Before the fix a caller could hand a
 // contradictory or out-of-range Config to the constructor and have it
