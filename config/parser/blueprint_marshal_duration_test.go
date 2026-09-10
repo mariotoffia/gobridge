@@ -7,7 +7,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
 	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -24,11 +23,42 @@ import (
 // broker config in the shipped AWS profile carries a duration, so this was not a
 // corner.
 
+// durationStoreKind is the registry discriminator for the store config below.
+const durationStoreKind = "durationstore"
+
+// durationStoreConfig stands in for a real store's typed config: two duration
+// fields, a plain numeric field, and a string, which is every shape the
+// projection walk distinguishes. It is declared here rather than borrowed from
+// an adapter because the parser lives in the root module, which every other
+// module depends on — a test import of an adapter module inverts that direction
+// and makes the root module unpublishable ahead of the adapters. The walk keys
+// off reflect field types, not off any adapter's identity, so a local struct
+// pins the same contract.
+type durationStoreConfig struct {
+	TableName          string        `mapstructure:"table_name" yaml:"table_name" json:"table_name"`
+	StaleClaimDuration time.Duration `mapstructure:"stale_claim_duration" yaml:"stale_claim_duration" json:"stale_claim_duration"`
+	CompactionGrace    time.Duration `mapstructure:"compaction_grace" yaml:"compaction_grace" json:"compaction_grace"`
+	MaxScanPages       int           `mapstructure:"max_scan_pages" yaml:"max_scan_pages" json:"max_scan_pages"`
+}
+
+func (durationStoreConfig) Kind() string    { return durationStoreKind }
+func (durationStoreConfig) Validate() error { return nil }
+
+func decodeDurationStoreConfig(raw ports.RawConfig) (ports.PluginConfig, error) {
+	var cfg durationStoreConfig
+	if raw != nil {
+		if err := raw.Decode(&cfg); err != nil {
+			return nil, err //nolint:wrapcheck // surfaced verbatim by the registry caller.
+		}
+	}
+	return &cfg, nil
+}
+
 func durationBearingConfig() *ports.BridgeConfig {
-	lease := &ports.StoreConfig{Type: awsstore.DynamoDBKind}
-	lease.SetDecoded(&awsstore.DynamoDBConfig{TableName: "leases"}, nil)
-	outbox := &ports.StoreConfig{Type: awsstore.DynamoDBKind}
-	outbox.SetDecoded(&awsstore.DynamoDBConfig{
+	lease := &ports.StoreConfig{Type: durationStoreKind}
+	lease.SetDecoded(&durationStoreConfig{TableName: "leases"}, nil)
+	outbox := &ports.StoreConfig{Type: durationStoreKind}
+	outbox.SetDecoded(&durationStoreConfig{
 		TableName:          "outbox",
 		StaleClaimDuration: 60 * time.Second,
 		CompactionGrace:    24 * time.Hour,
@@ -42,7 +72,7 @@ func durationBearingConfig() *ports.BridgeConfig {
 func durationRegistry(t *testing.T) *ports.Registry {
 	t.Helper()
 	reg := ports.NewRegistry()
-	require.NoError(t, awsstore.Register(reg))
+	require.NoError(t, reg.Register(durationStoreKind, decodeDurationStoreConfig))
 	return reg
 }
 
@@ -55,12 +85,12 @@ func TestMarshalBridgeConfigJSON_RoundTripsDurations(t *testing.T) {
 	back, err := parser.Parse(bytes.NewReader(raw), parser.FormatJSON, durationRegistry(t))
 	require.NoError(t, err, "the projection must be readable by the parser that decodes it: %s", raw)
 
-	outbox, ok := back.Stores.Outbox.Config.(*awsstore.DynamoDBConfig)
+	outbox, ok := back.Stores.Outbox.Config.(*durationStoreConfig)
 	require.True(t, ok, "the outbox store lost its typed options")
 	require.Equal(t, 60*time.Second, outbox.StaleClaimDuration)
 	require.Equal(t, 24*time.Hour, outbox.CompactionGrace)
 
-	lease, ok := back.Stores.Lease.Config.(*awsstore.DynamoDBConfig)
+	lease, ok := back.Stores.Lease.Config.(*durationStoreConfig)
 	require.True(t, ok, "the lease store lost its typed options")
 	require.Zero(t, lease.StaleClaimDuration, "an unset duration stays unset")
 	require.Equal(t, "leases", lease.TableName)
