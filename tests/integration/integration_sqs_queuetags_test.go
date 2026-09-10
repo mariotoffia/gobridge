@@ -36,11 +36,13 @@ import (
 // └──────┴──────────────────────────────────────────────────────────────┘
 //
 // Every selector below is scoped to a value unique to the test that built
-// it. The emulator is shared by every package in the test binary, and
-// ListQueues returns the whole account, so a selector like {app: bridge}
-// would match queues other tests happen to be holding open and turn QT4 and
-// QT5 into coin flips. The unique value is what makes the account look, to
-// this test only, like it holds exactly the queues the test created.
+// it. ListQueues returns the whole account, so an unscoped selector like
+// {app: bridge} would match queues this suite did not create. Tests in this
+// package run sequentially against a per-process emulator, so the scope is
+// not defending against a sibling test here; it defends the three cases that
+// do bite — a -count=N repeat where a DeleteQueue cleanup silently failed, a
+// future tagged-queue test in this package, and a run under FLOCI_ENDPOINT
+// where several processes share one emulator.
 //
 // The multi-page ListQueues loop is deliberately absent. Discovery asks for
 // 1000 results per page, so a second page needs more than 1000 live queues —
@@ -190,10 +192,16 @@ func TestIntegration_SQS_QueueTags_SubsetMatchIgnoresExtraTags(t *testing.T) {
 		"team":           "platform",
 		"cost-centre":    "42",
 	})
-	// Carries only the first selector key; "role" differs.
-	createSQSQueueWithTags(t, client, uniqueQueueName("qt3-partial"), map[string]string{
+	// Carries both selector keys, but "role" holds a different value.
+	createSQSQueueWithTags(t, client, uniqueQueueName("qt3-other-value"), map[string]string{
 		"gobridge-scope": scope,
 		"role":           "egress",
+	})
+	// Carries only ONE of the two selector keys. This is the case a selector
+	// that tested presence instead of value would wrongly match: with two
+	// matches the resolver reports ambiguity and the send below fails.
+	createSQSQueueWithTags(t, client, uniqueQueueName("qt3-missing-key"), map[string]string{
+		"gobridge-scope": scope,
 	})
 
 	sender, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
@@ -278,7 +286,13 @@ func TestIntegration_SQS_QueueTags_NoMatchIsUnavailable(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 
+	client := newSQSClient(t)
 	scope := queueTagScope(t)
+	// A queue the scan must fetch tags for and then reject. Without it the
+	// test passes against an empty account and proves nothing about matching.
+	createSQSQueueWithTags(t, client, uniqueQueueName("qt5-decoy"), map[string]string{
+		"gobridge-scope": scope + "-decoy",
+	})
 
 	sender, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueTags: map[string]string{"gobridge-scope": scope},
@@ -324,7 +338,7 @@ func TestIntegration_SQS_QueueTags_NamePrefixNarrowsScan(t *testing.T) {
 	selector := map[string]string{"gobridge-scope": scope}
 
 	prefix := uniqueQueueName("qt6-wanted")
-	wantURL := createSQSQueueWithTags(t, client, prefix, selector)
+	wantURL := createSQSQueueWithTags(t, client, prefix+"-a", selector)
 	createSQSQueueWithTags(t, client, uniqueQueueName("qt6-other"), selector)
 
 	sender, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
