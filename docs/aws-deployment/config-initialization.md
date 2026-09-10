@@ -158,7 +158,8 @@ An older package without that contract cannot silently produce an image
 without the declared document.
 
 The `lib` module ships on the release train, so this versioned build needs a
-version from a train that published the profile modules. Optional profile-family
+version from a train that published the profile modules — no released train has
+done so yet, and the `v0.3.x` tags are not a complete profile set. Optional profile-family
 registration is a property of that version too: a document using those families
 needs a profile binary that links them. See the
 [image-source contract](cdk-constructs.md#runtime-image-source).

@@ -108,7 +108,8 @@ definitions, IAM, log groups and the worker autoscaling target.
 The registry image must carry its own embedded initial config, consume an
 existing target, or wait for operator creation. CDK cannot modify it.
 `ImageFromGoBuild` instead embeds the parsed facade config automatically,
-building the profile command from the published module. See
+building the profile command from the published `lib` module — which no
+released train has published yet. See
 [initial configuration](../../aws-deployment/config-initialization.md).
 
 ```go

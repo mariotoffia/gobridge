@@ -486,7 +486,8 @@ make integration-aws   # cd cdk && go test -tags=integration_aws -count=1 -timeo
 ```
 
 Required: AWS account/region settings, live credentials, Docker, and `cdk`.
-Set `GOBRIDGE_INT_VERSION` to a compatible published profile `lib` version.
+Set `GOBRIDGE_INT_VERSION` to a profile `lib` version from a published train.
+No released train has published `lib` yet.
 Each fixture uses `ImageFromGoBuild` to embed its own config.
 
 ## Related Docs

@@ -67,11 +67,11 @@ config requests; a published `lib` tag does not by itself imply support for
 every family. See
 [CDK image sources](docs/aws-deployment/cdk-constructs.md#runtime-image-source).
 
-**Pre-existing profile tags are not a usable train.** `infra` carries
-`v0.3.4`-`v0.3.6` and `cdk` carries `v0.3.4` and `v0.3.6` (no `v0.3.5`); `lib`
-has never been tagged. Those tags were cut before the profile joined the
-release train, they are weeks behind the documented API, and no `v0.3.x` names
-a complete profile set. They stay in place — policy 7 forbids moving or
+**Pre-existing profile tags are not a usable train.** `infra` and `cdk` joined
+the train at `v0.3.4` and carry real tags — `infra` `v0.3.4`-`v0.3.6`, `cdk`
+`v0.3.4` and `v0.3.6` (no `v0.3.5`). `lib` has never been tagged at any version,
+so no `v0.3.x` names a complete profile set. Those tags also predate the sealed
+image sources by two weeks: `ImageFromGoBuild` does not exist in `cdk/v0.3.6`. They stay in place — policy 7 forbids moving or
 deleting a tag — and they must not be referenced from documentation or consumer
 instructions. The first usable profile version is the first train published
 after this change.
@@ -321,13 +321,12 @@ generated consumer manifest.
 The CDK steps **build** rather than list. `cdk` is not in `cmd/gobridge`'s
 dependency graph, so nothing else in the train compiles it from outside the
 repository, and resolution alone would not catch a published manifest that no
-longer satisfies the constructs' own imports. Both CDK packages are built
-because neither reaches the other: `constructs/gobridgesingle` is the facade a
-stack instantiates and pulls in `bridgecfg`, `registry`, the shared constructs
-and the `infra` types they take, while `gobridgecdk` holds the image sources
-and the sealed `BridgeImageSource` those facades accept — and no facade imports
-it outside its own tests. Together they are the surface the quickstart in
-`docs/scenarios/cdk/` uses.
+longer satisfies the constructs' own imports. `gobridgecdk` imports
+`gobridgealbattachment` and `ssmexports` and reaches every facade transitively,
+so building it alone already compiles the whole public surface.
+`constructs/gobridgesingle` is built as well because it is the import path a
+consumer's stack actually names, and a broken direct fetch of that path is the
+first thing a reader would hit.
 
 The CDK steps fetch the **package** path, not the module path. `go get
 module@version` records the requirement but not the `go.sum` entries for what
@@ -423,7 +422,8 @@ DynamoDB HA fixture in the protected target environment, stop the verified
 leaseholder, collect the required warm/cold failure-to-Full samples, and retain
 the CloudWatch evidence described in
 [the credentialed proof](docs/aws-deployment/topologies.md#credentialed-failover-proof).
-Set `GOBRIDGE_INT_VERSION` to the compatible published profile `lib` version.
+Set `GOBRIDGE_INT_VERSION` to a profile `lib` version from a published train.
+No released train has published `lib` yet.
 The fixtures build per-fixture embedded images through `ImageFromGoBuild`;
 registry-image overrides are not accepted. Record each built image digest with
 its module version and the proof evidence. The source-tag workflow cannot

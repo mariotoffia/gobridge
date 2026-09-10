@@ -74,7 +74,14 @@ mkdir gobridge-quickstart && cd gobridge-quickstart
 go mod init example.com/gobridge-quickstart
 go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk@vX.Y.Z
 go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra@vX.Y.Z
+
+# The CDK CLI needs to know how to run your app.
+printf '{"app": "go run ."}\n' > cdk.json
 ```
+
+Run `go mod tidy` after writing the stack below, before `cdk deploy`. `go get`
+on a module path records the requirement but not the `go.sum` entries for what
+that module's own code imports, and the build fails on every missing one.
 
 Use the same `vX.Y.Z` on both lines and pass it to `ImageFromGoBuild` below —
 one version covers the constructs, the declaration types and the bridge binary.
@@ -93,15 +100,19 @@ generated Dockerfile plus the facade's parsed `BridgeConfig`. Everything else
 happens during `cdk deploy`, when Docker downloads the profile command at the
 version you name, copies its owning module to a writable directory, fills the
 fixed embed file, runs `go build`, and pushes the image to your CDK bootstrap
-asset repository. **A bad version, an unpublished plugin family, or an
-unreachable module proxy therefore surfaces at deploy, not at synth.**
+asset repository. **A malformed `Version` fails at synth; a version that does
+not exist, or an unreachable module proxy, fails during `cdk deploy` — after a
+stack update has begun.** An AMQP or Azure Service Bus config is worse again:
+the profile binary links only AWS, MQTT, native stores and HTTP, the extra
+build tag is accepted silently, and the task fails at startup.
 
 The result is the same multi-stage, `CGO_ENABLED=0` (pure-Go SQLite via
 `modernc.org/sqlite`), distroless/static-debian12 image running as nonroot UID
 65532, with a `HEALTHCHECK` that runs the binary directly (`-healthcheck`,
 which probes the local monitor `/live` endpoint). It needs `cdk bootstrap`, a
-running Docker daemon, and outbound network from the build container to the Go
-module proxy and to the two digest-pinned base images.
+running Docker daemon that can pull the two digest-pinned base images, outbound
+network from the build container to the Go module proxy, and credentials that
+may push to the bootstrap asset repository in ECR.
 
 The build verifies the binary's `-initial-config-digest` output against the
 staged document, so an image can never disagree with the config the stack

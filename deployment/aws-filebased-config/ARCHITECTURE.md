@@ -43,7 +43,8 @@ flowchart LR
 `lib` because the default image source compiles its command from the module
 proxy. Published copies carry no `replace` directives and pin released sibling
 versions, which is what lets an external app build without a repository
-checkout. See the
+checkout; the development tree carries local `replace` directives that the
+release tool strips at publish time. See the
 [release graph](../../RELEASE.md#canonical-release-graph).
 
 `cdk/` ships six public L2 constructs plus four supporting packages. There is **no L3 wrapper** — consumers compose the L2s directly inside their own `awscdk.Stack`.
@@ -176,10 +177,10 @@ compile-time families shared with the `cmd/gobridge` tag convention
 `ImageFromGoBuild` requires a published compatible lib-module version; it never
 falls back to a branch or `latest`. The default package is
 `github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/cmd/gobridge-filebased`.
-Optional family registration and publication of a compatible module are separate
-prerequisites: deriving a tag does not register a decoder or factory. Until those
-prerequisites are available, keep using a pinned registry image or consumer ECR
-image. Custom commands can use explicit `BuildTags` (including an empty slice)
+The profile binary links AWS, MQTT, native stores and HTTP; `lib` declares no
+`//go:build` family files, so deriving a tag registers no decoder or factory.
+Until a train publishes `lib`, keep using a pinned registry image or consumer
+ECR image. Custom commands can use explicit `BuildTags` (including an empty slice)
 to bypass derivation, but must implement the profile's bootstrap and health check.
 When config is embedded, they must provide the fixed `initial-config.base64`
 file consumed through `go:embed` and support `-initial-config-digest`.

@@ -72,12 +72,18 @@ must support the selected platform. Registry and ECR
 sources use `linux/amd64`.
 
 **Version prerequisite:** pick a version from a train that publishes the profile
-modules; the `v0.3.x` profile tags predate the train and are not a complete set
-([RELEASE.md](../../RELEASE.md#canonical-release-graph)). Optional plugin family
-wiring is a property of that version too — deriving a build tag does not by
-itself register runtime decoders or factories, so a config that needs AMQP or
-Azure Service Bus requires a version whose profile binary links that family.
-Where neither holds, use a pinned registry image or your own ECR image instead.
+modules; the `v0.3.x` profile tags are not a complete set and no released train
+has published `lib`
+([RELEASE.md](../../RELEASE.md#canonical-release-graph)).
+
+**Optional families are not wired in the profile binary.** The default `Package`
+links AWS, MQTT, native stores and HTTP only, and `lib` declares no `//go:build`
+family files at any version. A derived `gobridge_amqp091`, `gobridge_amqp10` or
+`gobridge_azure` tag therefore selects nothing: `go build` accepts a tag no file
+declares and produces a binary without that transport, and the digest probe
+hashes bytes without parsing them, so the mismatch surfaces at container startup
+rather than at build. Use a custom `Package` for those transports, or a pinned
+registry image.
 A custom `Package` must implement this profile's bootstrap and health-check
 contract, provide `initial-config.base64` consumed through `go:embed`, and
 support the build's `-initial-config-digest` probe. The standard commands embed

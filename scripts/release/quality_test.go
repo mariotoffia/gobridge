@@ -308,7 +308,7 @@ go 1.25.0
 }
 
 // TestConsumerSmoke_ResolvesAndBuildsPublishedCDK pins the external proof for
-// the two CDK modules. Nothing else in the smoke reaches them — cdk is not in
+// the deployment-profile modules. Nothing else in the smoke reaches them — cdk is not in
 // cmd/gobridge's graph — so the pass has to resolve both against their tag
 // commits and actually compile the facade package a third-party stack imports.
 // Resolution alone would not catch a published manifest that no longer

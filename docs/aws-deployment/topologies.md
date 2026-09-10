@@ -227,7 +227,8 @@ GOBRIDGE_INT_HA_PROBE_CIDR
 ```
 
 `GOBRIDGE_INT_VERSION` must name a published AWS profile `lib` module
-version that supports embedded config and `-initial-config-digest`.
+version that supports embedded config and `-initial-config-digest`. No released
+train has published `lib` yet, so this needs a train cut after it joined.
 Each credentialed fixture uses `ImageFromGoBuild` to build an image containing
 that fixture's parsed config. The harness rejects `GOBRIDGE_INT_IMAGE`; unset
 it rather than passing a registry reference — an existing registry image cannot
