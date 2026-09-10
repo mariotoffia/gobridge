@@ -64,10 +64,28 @@ type RouteConfig struct {
 	// (the RegisterTransportFactory name declared under `transport:`, or the
 	// adapter's canonical PluginConfig.Kind). The runtime uses it to strip
 	// foreign redelivery-count headers on ingress so an untrusted producer on a
-	// count-less source cannot forge another transport's count key (F3). Empty
+	// count-less source cannot forge another transport's count key. Empty
 	// disables the strip. Populated by the builder from the resolved receiver
 	// transport; optional for programmatic callers.
 	SourceTransport string
+
+	// SourceRedeliveryRefusal is the source transport's own account of why this
+	// route's source will NOT redeliver an unsettled message, and empty when it
+	// will (or when the transport has no opinion). It exists so the direct_hold
+	// refusal can name which precondition failed — a QoS 0 subscription and a
+	// session the broker discards are the same verdict with different fixes, and
+	// only the transport knows which one it is. Populated by the builder from
+	// ports.SourceRedeliveryConfig; optional for programmatic callers.
+	SourceRedeliveryRefusal string
+
+	// SourceSessionID is the id of the session this route's receiver subscribes
+	// through, when the source is a stateful transport. The runtime installs the
+	// ingress settlement barrier for this route on that session, so a session
+	// managed only for its receivers (RegisterIngressSession) waits for the
+	// deliveries the route accepted to settle before it recycles a broker
+	// connection. Populated by the builder; optional for programmatic callers,
+	// whose route session argument covers the same need by identity.
+	SourceSessionID string
 }
 
 // CheckRandSource probes crypto/rand once and returns a permanent

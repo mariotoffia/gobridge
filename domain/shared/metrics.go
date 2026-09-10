@@ -22,6 +22,23 @@ const (
 	// standby can take over a node-local broker outage (CLUSTER-2). Only emitted
 	// when broker_health_step_down is configured (opt-in).
 	MetricBrokerHealthStepDown = "BrokerHealthStepDown"
+	// MetricRouteOwnerUnknown counts route-locator decisions taken while the
+	// current owner of an exclusivity-sensitive route could NOT be determined,
+	// tagged with TagKeyReason: "lease_expired" (the local clock is at or past
+	// the owner-written ExpiresAt), "lease_unowned" (no lease row — a normal
+	// transfer window), "store_unavailable" (a lease-store error with no usable
+	// cached owner) or "store_breaker_open" (the locator refused without calling
+	// a repeatedly-failing store).
+	//
+	// The locator reads owner expiry off ITS OWN wall clock, so fleet clock skew
+	// above the renew margin shows up here as a rising "lease_expired" count
+	// against a healthy owner, and a whole-fleet cold start shows up
+	// as "lease_expired" for one full lease-observation window before a successor
+	// acquires. Both are ADVISORY routing effects only — the locator
+	// mints no token, so data-path fencing stays skew-immune — which is exactly
+	// why they need a signal: without it an operator sees unexplained 502/503
+	// responses with no way to separate skew from a dead store.
+	MetricRouteOwnerUnknown = "RouteOwnerUnknown"
 )
 
 // Outbox metric names.
@@ -64,6 +81,24 @@ const (
 	// depth. Tagged with the partition (TagKeyPartition), sharing the series shape
 	// with MetricOutboxDepth.
 	MetricOutboxClaimBatchSize = "OutboxClaimBatchSize"
+	// MetricOutboxClaimedDepth is the partition-keyed gauge of records currently
+	// CLAIMED — work an owner has taken but not yet driven to a terminal state.
+	// It is read from the OPTIONAL ports.OutboxClaimedDepthReporter capability on
+	// the drain cadence, alongside MetricOutboxDepth.
+	//
+	// It exists because MetricOutboxDepth counts PENDING records only, so a
+	// record left Claimed by a failed release, an abandoned batch, or a dead
+	// owner is invisible: the backlog gauge reads zero while messages sit
+	// undelivered. The two gauges are read together — depth at zero with a
+	// standing non-zero claimed depth is the signature of stranded work, and on a
+	// route using ordering keys it is also what a group stalled behind a stranded
+	// head looks like. A claimed depth that tracks the claim batch size and falls
+	// back to zero each cycle is normal in-flight work, not a problem.
+	//
+	// Emitted only when the store implements the capability; a real error from
+	// the count is recorded on MetricOutboxDepthFailures exactly like the pending
+	// count, and the gauge is skipped for that cycle rather than reported wrong.
+	MetricOutboxClaimedDepth = "OutboxClaimedDepth"
 	// MetricOutboxDepthFailures counts drain cycles where a SUPPORTED outbox
 	// depth reporter's CountPending returned a REAL error (a DB/read failure,
 	// not ports.ErrOutboxDepthUnsupported). On such a cycle the drainer skips the
@@ -80,11 +115,25 @@ const (
 	MetricOutboxReplayCount       = "OutboxReplayCount"
 	MetricOutboxRecordFailures    = "OutboxRecordFailures"
 	MetricOutboxDuplicateRisk     = "OutboxDuplicateRisk"
+	// MetricOutboxDuplicateSuppressed counts ingress persists rejected because
+	// the outbox already holds that envelope identity, so the source was settled
+	// without writing a new record. A redelivery of an already-persisted message
+	// is the benign case. The same signal fires when a producer reuses an
+	// envelope ID for a DIFFERENT message: the runtime cannot tell the two apart,
+	// and suppression then discards a real message. A sustained non-zero rate on
+	// one route means its source's identity namespace is colliding.
+	MetricOutboxDuplicateSuppressed = "OutboxDuplicateSuppressed"
 	// MetricOutboxDeferred counts claimed records the drainer could NOT process
-	// this cycle (batch deadline expired before the send launched or completed)
-	// and released/left for the next drain. They are neither successes nor hard
-	// failures; a rising value under load flags a drain budget too small for the
-	// batch size (see Drainer.drainBatch batch-deadline handling).
+	// this cycle and released/left for the next drain. Two things produce them:
+	// the batch deadline expiring before a send launched or completed, and the
+	// UNATTEMPTED tail of an ordering group whose head failed (a DLQ-store write
+	// error, or a post-send Complete the store refused) — the group stops at the
+	// first record that does not go terminal, so a younger same-key record can
+	// never overtake it, and everything behind it goes back to pending. They are
+	// neither successes nor hard failures; a rising value under load flags a
+	// drain budget too small for the batch size, and a rising value alongside
+	// MetricOutboxRecordFailures flags a flaky record stalling its whole key
+	// (see Drainer.drainBatch).
 	MetricOutboxDeferred = "OutboxDeferred"
 	// MetricOutboxClaimConflicts counts per-record claim transactions aborted
 	// because a concurrent Persist/Claim/Complete touched the same item — as
@@ -147,7 +196,28 @@ const (
 	// cardinality. Alarm on DLQDepth > 0 sustained.
 	MetricDLQDepth         = "DLQDepth"
 	MetricDLQWriteFailures = "DLQWriteFailures"
-	MetricDeliveryPanics   = "DeliveryPanics"
+	// MetricDLQDuplicateSuppressed counts DLQ writes the store refused because
+	// the entry already existed — the SAME terminal event being recorded twice.
+	// A DLQ write is durable BEFORE the source delivery is settled, so a failed
+	// settle redelivers the message, it fails identically, and the router writes
+	// the same derived entry identity again. The refusal is reported as success
+	// (the evidence is already durable) and counted here, so the collapse is
+	// visible rather than silent. A rising value means settlement is failing
+	// after DLQ writes land — look at the source acknowledgement path, not the
+	// DLQ store.
+	MetricDLQDuplicateSuppressed = "DLQDuplicateSuppressed"
+	// MetricDLQWriteHold is the wall-clock time a synchronous DLQ write held its
+	// caller — and with it a route and global concurrency slot. The DLQ write is
+	// deliberately synchronous and confirmed before the source delivery is
+	// settled (evidence must be at least as durable as the message it describes),
+	// so a DLQ-store outage BACKPRESSURES intake rather than losing evidence.
+	// That hold is bounded by the router's attempt/timeout/backoff budget —
+	// 10.5s in the shipped runtime wiring — and this timer is what makes
+	// it visible: alarm on a sustained p99 approaching the ceiling, which means
+	// the DLQ store, not the route, is stalling intake. Emitted on EVERY Route
+	// call (success and failure) so the alarm has a baseline instead of silence.
+	MetricDLQWriteHold   = "DLQWriteHold"
+	MetricDeliveryPanics = "DeliveryPanics"
 	// MetricDLQRedrives counts DLQ entries an admin redrive claimed and
 	// re-injected successfully (route_id-tagged). MetricDLQRedriveFailures counts
 	// redrive attempts that failed after (or during) the claim — inject failed,
@@ -182,7 +252,7 @@ const (
 	// MetricReceiveCountUnparseable counts deliveries whose source-transport
 	// redelivery-count header was PRESENT but uninterpretable as an integer, so
 	// receiveCount failed open to a first delivery (count 0) and
-	// MaxReplayAttempts could not cap replays (E5-FU3). Failing open is
+	// MaxReplayAttempts could not cap replays. Failing open is
 	// deliberate — a good message is never DLQ'd on a parse error — but a
 	// permanently-failing recoverable send on such a message would otherwise
 	// retry unbounded with no signal; a rising value makes that observable and
@@ -218,7 +288,7 @@ const (
 	MetricReconcileFailures = "ReconcileFailures"
 	// MetricSessionRestarts counts per-session supervised restarts: a session
 	// manager returned a transient error and was restarted in isolation
-	// (capped backoff) instead of tearing down the whole runtime (C3-FU2).
+	// (capped backoff) instead of tearing down the whole runtime.
 	// A rising value flags a session that keeps failing to reconnect/re-acquire
 	// its lease while the rest of the bridge stays up — alert on it.
 	MetricSessionRestarts = "SessionRestarts"
@@ -293,7 +363,7 @@ const (
 //   - live reconfiguration is no longer available (the config-change stream
 //     closed and the bridge is running blind on its last good config);
 //   - a reload was APPLIED but its transport sessions never CONVERGED within
-//     the transport's declared activation budget (MQTT-R1: reload success
+//     the transport's declared activation budget (reload success
 //     signals are green while the transport cannot reach its broker state —
 //     e.g. an ACL-denied topic or rotated-away credentials committed as a
 //     successful swap). This clears on its own when the sessions later
@@ -327,11 +397,57 @@ const (
 // series is per-member: a member that never observes a resolution its peers did
 // has diverged. A rising aborted rate means changes are being rejected —
 // read the rollout row's reason (or deep health) for which member and why.
+// MetricClusterRolloutStoreCalls counts every rollout store and coordinator-lease
+// call the barrier drive makes, dimensioned by the call class (TagKeyOperation =
+// "read" | "vote" | "decide" | "lease" | "artifact" | "propose") and its outcome
+// (TagKeyOutcome = "success" | "failure" | "timeout" | "blocked"). "timeout"
+// means the call blew its own budget and was abandoned; "blocked" means the
+// barrier refused to start a call because an earlier abandoned one has still not
+// returned. Either, sustained, means the rollout store is not answering — the
+// failure the local deadman and the stale-observation signals exist for.
+//
+// MetricClusterRolloutObservationAge reports, in seconds, how long ago this
+// member last read the rollout row. It is the freshness signal: every other
+// rollout series is a projection of the LAST observation, so an operator needs to
+// know whether that observation is two seconds or ten minutes old before acting
+// on it. Alert above a few poll intervals.
+//
+// MetricClusterRolloutRetries reports how many consecutive attempts this member
+// has made at a local safety operation it has not yet completed
+// (TagKeyOperation = "apply" | "artifact" | "revert"), and zero once it
+// succeeds. A non-zero value that stays non-zero is a member repairing itself;
+// one that reaches the bound becomes the terminal gauge below.
+//
+// MetricClusterRolloutDiverged is the fleet convergence signal: a 0/1 gauge that
+// reads 1 while this member is NOT running the generation the cohort has already
+// decided on (committed or confirmed), and 0 otherwise. It is the one rollout
+// series that is genuinely per-member — every other one describes the shared row,
+// which reads "committed" identically on a converged member and on one whose swap
+// failed. The barrier is atomic before the commit and per-member after it
+// (ADR 0013), so a short 1 during a rollout is normal; a 1 that persists past the
+// apply repair's bound is a split cohort. Alarm on the fleet MAXIMUM over several
+// evaluation periods.
+//
+// MetricClusterRolloutTerminal reports the rollout generation whose SAFE state
+// this member could not reach — a committed config it could not durably record,
+// or a provisional config it could not revert — and zero when there is none. It
+// is not a rate: any non-zero value means this member cannot get itself back to
+// a state consistent with the cohort's decision and needs operator attention.
+// WHICH action differs, and deep health carries it: a member that cannot record
+// the artifact is running the correct config and must NOT be replaced (that is
+// what would boot it on the older generation) — repair the rollout store. A
+// member that cannot revert is running rejected config, and replacing it is the
+// repair.
 const (
-	MetricClusterRolloutState    = "ClusterRolloutState"
-	MetricClusterRolloutAcks     = "ClusterRolloutAcks"
-	MetricClusterRolloutEpoch    = "ClusterRolloutEpoch"
-	MetricClusterRolloutResolved = "ClusterRolloutResolved"
+	MetricClusterRolloutState          = "ClusterRolloutState"
+	MetricClusterRolloutAcks           = "ClusterRolloutAcks"
+	MetricClusterRolloutEpoch          = "ClusterRolloutEpoch"
+	MetricClusterRolloutResolved       = "ClusterRolloutResolved"
+	MetricClusterRolloutStoreCalls     = "ClusterRolloutStoreCalls"
+	MetricClusterRolloutObservationAge = "ClusterRolloutObservationAge"
+	MetricClusterRolloutRetries        = "ClusterRolloutRetries"
+	MetricClusterRolloutDiverged       = "ClusterRolloutDiverged"
+	MetricClusterRolloutTerminal       = "ClusterRolloutTerminal"
 )
 
 // Standard dimension key names for metric tags.
@@ -354,6 +470,12 @@ const (
 	// counter (committed/aborted). Distinct from TagKeyState, which names a
 	// point-in-time lifecycle state rather than how something ended.
 	TagKeyOutcome = "outcome"
+	// TagKeyOperation dimensions a metric by the CLASS of operation it counts —
+	// used by the coordinated cluster rollout barrier to separate its store call
+	// classes (read/vote/decide/lease/artifact/propose) and its local repair
+	// operations (apply/artifact/revert). The classes are a closed set, so
+	// cardinality is fixed.
+	TagKeyOperation = "operation"
 	// TagKeyProcessor dimensions a filter-drop counter by the processor that
 	// discarded the message. Processor names are operator-defined and bounded,
 	// so cardinality stays low.

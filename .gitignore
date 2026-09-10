@@ -69,3 +69,9 @@ reports/
 
 # codex review scratch files
 .codex-review-*.txt
+
+# Local deployment proof tooling (installed by `make test-local-deploy`).
+.tools/
+
+# Per-build embedded configuration used by the local deployment harness.
+/.gobridge-initial-*.yaml

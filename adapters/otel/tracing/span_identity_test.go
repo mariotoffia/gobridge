@@ -22,7 +22,7 @@ var (
 )
 
 // TestSpanIdentity_ExposesActiveSpanIDs proves the adapter span implements
-// the OPTIONAL ports.SpanIdentity capability (O12): the runtime stamps
+// the OPTIONAL ports.SpanIdentity capability: the runtime stamps
 // trace_id/span_id log-correlation fields from the ACTIVE span, so the
 // accessors must return the W3C hex identity of the span the SDK actually
 // recorded — for a root span (fresh trace) and for a child span joined to an
@@ -73,7 +73,7 @@ func TestSpanIdentity_ExposesActiveSpanIDs(t *testing.T) {
 		assert.Equal(t, upTraceID, ident.TraceID(), "child joins the upstream trace")
 		assert.Regexp(t, w3cSpanIDRE, ident.SpanID())
 		assert.NotEqual(t, upSpanID, ident.SpanID(),
-			"SpanID must be the ACTIVE span's id, not the upstream parent's (O12)")
+			"SpanID must be the ACTIVE span's id, not the upstream parent's")
 	})
 }
 

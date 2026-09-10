@@ -41,7 +41,7 @@ func headersToMessage(headers map[string]any) *amqp.Message {
 			hasProps = true
 		}
 	}
-	// Finding 5 (domain invariant): the amqp10.subject header is
+	// Domain invariant: the amqp10.subject header is
 	// deliberately NOT mapped to Properties.Subject. Envelope.Subject is
 	// the SOLE egress source for the AMQP Subject (applied in
 	// envelopeToMessage), so a free-form amqp10.subject header can never
@@ -65,7 +65,7 @@ func headersToMessage(headers map[string]any) *amqp.Message {
 		}
 	}
 	if v, ok := headers[headerGroupSequence]; ok {
-		// F12 / FIX 5: group-sequence is a uint32 on the wire. JSON headers
+		// group-sequence is a uint32 on the wire. JSON headers
 		// arrive as float64 and cross-bridge headers may be int/int64/uint;
 		// accept the common numeric carriers, bounded to [0, MaxUint32], and
 		// drop an out-of-range or non-integral value (leaving it unset)
@@ -132,7 +132,7 @@ func headersToMessage(headers map[string]any) *amqp.Message {
 }
 
 // amqp10GroupSequence normalises a group-sequence header value to the
-// uint32 the AMQP 1.0 wire uses (F12 / FIX 5). It accepts the numeric
+// uint32 the AMQP 1.0 wire uses. It accepts the numeric
 // carriers a header can arrive as — uint32, int, int64, uint, uint64 and
 // float64 (JSON decodes integers as float64) — and reports ok only when
 // the value is a non-negative integer within [0, MaxUint32]. A fractional
@@ -189,8 +189,8 @@ func envelopeToMessage(env *messaging.Envelope, durable bool) *amqp.Message {
 	// headerMessageID, when present, carries the DETERMINISTIC STRING
 	// rendering of the inbound message-id: messageToHeaders renders a
 	// typed uuid/ulong/binary id via messageIDToString so no go-amqp SDK
-	// type ever reaches the domain envelope headers (ACL purity,
-	// finding F9). headersToMessage therefore set Properties.MessageID to
+	// type ever reaches the domain envelope headers (ACL purity).
+	// headersToMessage therefore set Properties.MessageID to
 	// that string, and egress emits a string message-id. Downstream
 	// message-id dedup still holds because the rendering is stable
 	// (same id → same string). Only stamp the (string) envelope ID when

@@ -5,18 +5,10 @@ import (
 	"fmt"
 )
 
-// ErrYamlParse is the sentinel returned when the upstream YAML parse
-// fails. Phase 1 itself does not re-parse — see the package doc — but
-// the constant is exported so callers that bridge a config.ParseFile
-// failure into the validator surface can wrap it consistently:
-//
-//	fmt.Errorf("%w: %v", validation.ErrYamlParse, parseErr)
-var ErrYamlParse = errors.New("bridge.yaml: parse failed")
-
 // ErrInvalidBridgeID is returned when cfg.Bridge.ID does not match
-// the bridge-name regex required by the Validation Matrix. The
-// matrix names the field "bridge.name"; on the typed Go side it is
-// BridgeSettings.ID. The Error message documents the mapping.
+// the required bridge-name regex. Operator-facing text calls the field
+// "bridge.name"; on the typed Go side it is BridgeSettings.ID. The Error
+// message documents the mapping.
 var ErrInvalidBridgeID = errors.New("bridge.id: invalid value")
 
 // ErrEndpointURL is returned when an entry in
@@ -86,9 +78,9 @@ func (e *ErrWorkerWritesControlOnly) Error() string {
 	)
 }
 
-// ErrPlaintextSecret wraps the aggregated error returned by
-// bridgecfg.ScanForPlaintextSecrets so callers can detect "Phase 1
-// failed because of a plaintext secret" via errors.Is without
-// inspecting strings. The wrapped error carries the per-field
-// detail.
+// ErrPlaintextSecret is retained for compatibility with callers that classified
+// errors from the former automatic secret scan. Phase1 no longer returns it.
+//
+// Deprecated: Credential storage is a consumer choice. Consumers wanting a
+// URI-only policy can explicitly call bridgecfg.ScanForPlaintextSecrets.
 var ErrPlaintextSecret = errors.New("plaintext secret detected in config")

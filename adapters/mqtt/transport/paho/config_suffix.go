@@ -11,7 +11,7 @@ import (
 )
 
 // ClientIDSuffixHostname and ClientIDSuffixNonce are the supported
-// client_id_suffix tokens (M-3).
+// client_id_suffix tokens.
 const (
 	ClientIDSuffixHostname = "hostname"
 	ClientIDSuffixNonce    = "nonce"
@@ -19,7 +19,7 @@ const (
 
 // resolveClientIDSuffix returns base with the suffix token expanded and
 // appended ("-<value>"), producing a per-replica-unique client_id for
-// $share scale-out from a single shared config file (M-3). An empty suffix
+// $share scale-out from a single shared config file. An empty suffix
 // returns base unchanged. An unsupported token, or a failed hostname
 // lookup, returns an error so the misconfiguration fails the build rather
 // than silently colliding client_ids. Callers must enforce mode-specific

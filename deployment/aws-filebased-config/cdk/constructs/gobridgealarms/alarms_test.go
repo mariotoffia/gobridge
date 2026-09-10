@@ -12,10 +12,10 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/assertions"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awscloudwatch"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	elbv2 "github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssns"
 	"github.com/aws/jsii-runtime-go"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/imgsource"
 
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgealarms"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgealbattachment"
@@ -80,7 +80,7 @@ func (h *harness) newSingle(t *testing.T) *gobridgesingle.GoBridgeSingle {
 	src := source.NewAsset(writeYAML(t, sampleYAML))
 	return gobridgesingle.NewGoBridgeSingle(h.stack, jsii.String("Single"), &gobridgesingle.SingleProps{
 		Vpc:          h.vpc,
-		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:latest"), nil),
+		Image:        imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap:    bootstrap(),
 		BridgeConfig: src,
 	})
@@ -91,7 +91,7 @@ func (h *harness) newCluster(t *testing.T) *gobridgecluster.GoBridgeCluster {
 	src := source.NewAsset(writeYAML(t, sampleYAML))
 	return gobridgecluster.NewGoBridgeCluster(h.stack, jsii.String("Cluster"), &gobridgecluster.ClusterProps{
 		Vpc:          h.vpc,
-		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:latest"), nil),
+		Image:        imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap:    bootstrap(),
 		BridgeConfig: src,
 	})
@@ -368,7 +368,7 @@ func TestAlarms_Validation_PanicMessages(t *testing.T) {
 				src := source.NewAsset(writeYAML(t, sampleYAML))
 				c := gobridgecluster.NewGoBridgeCluster(stack2, jsii.String("Cluster"), &gobridgecluster.ClusterProps{
 					Vpc:          vpc2,
-					Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:latest"), nil),
+					Image:        imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 					Bootstrap:    bootstrap(),
 					BridgeConfig: src,
 				})

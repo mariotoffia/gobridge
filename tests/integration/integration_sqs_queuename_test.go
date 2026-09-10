@@ -11,11 +11,11 @@ import (
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
+	"github.com/mariotoffia/gobridge/testutil/flocilocal"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SQS QueueName resolution integration tests with ElasticMQ
+// SQS QueueName resolution integration tests against the local AWS emulator
 //
 // Validates that Sender and Receiver configured with QueueName (instead of
 // QueueURL) lazily resolve the queue URL and function correctly end-to-end.
@@ -47,11 +47,11 @@ func TestIntegration_SQS_Sender_QueueNameResolution(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 
-	client := sqslocal.Client(t)
-	queueName := sqslocal.UniqueQueue("qn1")
-	queueURL := sqslocal.CreateQueue(t, client, queueName)
+	client := newSQSClient(t)
+	queueName := uniqueQueueName("qn1")
+	queueURL := createSQSQueue(t, client, queueName)
 
-	ep := sqslocal.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	sender, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueName: queueName,
 		Endpoint:  ep,
@@ -97,13 +97,13 @@ func TestIntegration_SQS_Receiver_QueueNameResolution(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 
-	client := sqslocal.Client(t)
-	queueName := sqslocal.UniqueQueue("qn2")
-	queueURL := sqslocal.CreateQueue(t, client, queueName)
+	client := newSQSClient(t)
+	queueName := uniqueQueueName("qn2")
+	queueURL := createSQSQueue(t, client, queueName)
 
 	sendToSQS(t, client, queueURL, `{"resolved":"by-name"}`, nil)
 
-	ep := sqslocal.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	autoExtend := false
 	receiver, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueName:         queueName,
@@ -159,11 +159,11 @@ func TestIntegration_SQS_SenderReceiver_FullRoundTrip(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 
-	client := sqslocal.Client(t)
-	queueName := sqslocal.UniqueQueue("qn3")
-	sqslocal.CreateQueue(t, client, queueName)
+	client := newSQSClient(t)
+	queueName := uniqueQueueName("qn3")
+	createSQSQueue(t, client, queueName)
 
-	ep := sqslocal.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 
 	sender, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueName: queueName,
@@ -284,11 +284,11 @@ func TestIntegration_SQS_Sender_BatchThenReceive(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 
-	client := sqslocal.Client(t)
-	queueName := sqslocal.UniqueQueue("qn4")
-	sqslocal.CreateQueue(t, client, queueName)
+	client := newSQSClient(t)
+	queueName := uniqueQueueName("qn4")
+	createSQSQueue(t, client, queueName)
 
-	ep := sqslocal.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 
 	sender, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueName: queueName,

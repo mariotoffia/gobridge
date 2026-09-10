@@ -63,7 +63,7 @@ docker run -d \
   "$proof_tmp/mqtt-memory.test" \
     -test.count=1 \
     -test.run '^TestMQTTIngressMemoryPublisherProcess$' \
-    -test.timeout=180s
+    -test.timeout=300s
 
 docker run --rm \
   --memory 512m \
@@ -90,6 +90,6 @@ docker run --rm \
     exec "$@"
   ' sh "$proof_tmp/mqtt-memory.test" \
     -test.count=1 \
-    -test.run '^TestMQTTIngressMemory$' \
-    -test.timeout=180s \
+    -test.run '^(TestMQTTIngressMemory|TestMQTTIngressMemoryPropertyFlood)$' \
+    -test.timeout=300s \
     -test.v

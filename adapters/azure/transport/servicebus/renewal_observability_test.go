@@ -2,10 +2,10 @@ package servicebus
 
 // renewal_observability_test.go
 //
-// F3: the shared session renewer must NOT die permanently after a burst
+// the shared session renewer must NOT die permanently after a burst
 //     of consecutive failures — it must keep covering every session the
 //     poll loop accepts afterwards (renewal continuity across re-accepts).
-// F7: both renewers must make renewal degradation alertable — a failure
+// both renewers must make renewal degradation alertable — a failure
 //     counter and a renewer-stopped/degraded signal, not just the
 //     success counter.
 //
@@ -26,12 +26,12 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
-// F3 + F7 (session renewer): a session whose lock renewal fails past the
+// + (session renewer): a session whose lock renewal fails past the
 // consecutive-failure threshold must NOT kill the renewer. After a fresh
 // session is accepted (sessionGen bumps, mirroring ensureSessionSeam) the
 // renewer must renew the NEW session — proving renewal continuity across
 // re-accepts. It must also emit the failure counter and the degraded
-// signal for the failing session (F7).
+// signal for the failing session.
 func TestRunSessionRenewer_RecoversAcrossReacceptAfterFailures(t *testing.T) {
 	t.Parallel()
 
@@ -80,11 +80,11 @@ func TestRunSessionRenewer_RecoversAcrossReacceptAfterFailures(t *testing.T) {
 			"renewer stopped renewing the failing session (must not die on consecutive failures)")
 	}
 
-	// F7: the failing session must have emitted the failure counter and
+	// the failing session must have emitted the failure counter and
 	// the degraded signal (exactly once per episode).
 	require.GreaterOrEqual(t, metrics.count(MetricASBLockRenewalFailures), int64(autoExtendMaxFailures))
 	require.Equal(t, int64(1), metrics.count(MetricASBLockRenewerStopped))
-	// FIX 3: the session renewer's stopped signal is scoped "session"
+	// the session renewer's stopped signal is scoped "session"
 	// (degraded but still running) — distinct from a delivery renewer's
 	// "delivery" scope (imminent redelivery).
 	require.True(t, metrics.hasTag(MetricASBLockRenewerStopped, asbTagKeyRenewerScope, asbRenewerScopeSession))
@@ -97,12 +97,12 @@ func TestRunSessionRenewer_RecoversAcrossReacceptAfterFailures(t *testing.T) {
 
 	fake.Advance(6 * time.Second) // next tick → renew via the NEW session
 	waitUntil(t, 5*time.Second, func() bool { return renewsHealthy.Load() >= 1 },
-		"renewer must renew the re-accepted session after a prior session's failures (F3)")
+		"renewer must renew the re-accepted session after a prior session's failures")
 
 	cancel()
 }
 
-// F7 (per-delivery auto-extend): the loop must emit the failure counter
+// (per-delivery auto-extend): the loop must emit the failure counter
 // on every renewal error and the renewer-stopped signal when it gives up
 // after autoExtendMaxFailures consecutive failures.
 func TestAutoExtendLoop_EmitsFailureAndStoppedMetrics(t *testing.T) {
@@ -135,7 +135,7 @@ func TestAutoExtendLoop_EmitsFailureAndStoppedMetrics(t *testing.T) {
 
 	require.GreaterOrEqual(t, metrics.count(MetricASBLockRenewalFailures), int64(autoExtendMaxFailures))
 	require.Equal(t, int64(1), metrics.count(MetricASBLockRenewerStopped))
-	// FIX 3: the per-delivery renewer's stopped signal is scoped
+	// the per-delivery renewer's stopped signal is scoped
 	// "delivery" (the message WILL redeliver), distinct from "session".
 	require.True(t, metrics.hasTag(MetricASBLockRenewerStopped, asbTagKeyRenewerScope, asbRenewerScopeDelivery))
 	require.False(t, metrics.hasTag(MetricASBLockRenewerStopped, asbTagKeyRenewerScope, asbRenewerScopeSession))

@@ -69,7 +69,7 @@ func TestBug_PasswordRotation_OnLiveCM_RebuildsViaReload(t *testing.T) {
 		Username:   "u-old",
 		Password:   shared.NewSecret("p-old"),
 		// This test exercises the live-CM rebuild-on-rotation mechanics, not
-		// the HIGH-4 plaintext gate; opt in so the tcp:// rotation is allowed.
+		// the plaintext gate; opt in so the tcp:// rotation is allowed.
 		AllowPlaintextCredentials: true,
 	}, connectivity.SessionEphemeral, nil)
 	defer func() { _ = s.Close(context.Background()) }()
@@ -259,7 +259,7 @@ func TestBug_CloseWaitsForInFlightStart(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// FIX 1 (HIGH, security-adjacent): Reload-vs-Start race leaves stale TLS live.
+// (HIGH, security-adjacent): Reload-vs-Start race leaves stale TLS live.
 //
 // Reload grabbed s.cm under s.mu WITHOUT first awaiting an in-flight Start. A
 // supervisor-driven Start (superviseSession re-Run) mid-dial has not installed
@@ -319,7 +319,7 @@ func TestBug_ReloadAwaitsInFlightStart_TearsDownRotatedCM(t *testing.T) {
 	go func() { startErr <- s.Start(context.Background()) }()
 	<-dial1Entered
 
-	// Rotation Reload races the in-flight Start. With FIX 1 it WAITS on the
+	// Rotation Reload races the in-flight Start. With it WAITS on the
 	// in-flight startDone rather than seeing cm==nil and skipping teardown.
 	reloadErr := make(chan error, 1)
 	go func() { reloadErr <- s.Reload(context.Background()) }()
@@ -343,7 +343,7 @@ func TestBug_ReloadAwaitsInFlightStart_TearsDownRotatedCM(t *testing.T) {
 		"Reload rebuilds the connection after awaiting the in-flight Start")
 
 	require.Equal(t, int32(2), dialCount.Load(),
-		"FIX 1: Reload awaited the in-flight Start, tore its connection down, and RE-DIALED a fresh one")
+		"Reload awaited the in-flight Start, tore its connection down, and RE-DIALED a fresh one")
 
 	mu.Lock()
 	first, second := conns[0], conns[1]

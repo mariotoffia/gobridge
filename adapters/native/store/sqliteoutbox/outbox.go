@@ -15,7 +15,7 @@ import (
 
 // Compile-time interface assertions. io.Closer lets a lifecycle-aware
 // composition root release the file handle on stop/reload without importing
-// this package's concrete type (I5). ports.OutboxStore/OutboxReleaser are
+// this package's concrete type. ports.OutboxStore/OutboxReleaser are
 // satisfied structurally and asserted in the test package to keep this
 // production file free of a ports import (see .go-arch-lint.yml).
 var _ io.Closer = (*Store)(nil)
@@ -68,7 +68,7 @@ func WithClock(c clock.Clock) Option {
 	}
 }
 
-// WithStaleClaimDuration enables time-based reclaim of stranded claims (I1).
+// WithStaleClaimDuration enables time-based reclaim of stranded claims.
 // When d > 0 a Claim may additionally reclaim a record that is still claimed
 // but whose claim is older than d, recovering work orphaned by an owner that
 // crashed between Claim and Complete/Release. When d <= 0 (the default) the
@@ -116,17 +116,15 @@ func WithRetention(d time.Duration) Option {
 	return func(s *Store) { s.retention = d }
 }
 
-// NewStore opens (or creates) a SQLite database at dbPath and runs the
-// schema migration. Use ":memory:" for a purely in-memory database.
+// NewStore opens (or creates) a SQLite database at dbPath and creates the
+// schema. Use ":memory:" for a purely in-memory database.
 func NewStore(dbPath string, opts ...Option) (*Store, error) {
-	// Options first: openSession stamps legacy fence rows with the
-	// (possibly test-injected) clock's now.
 	s := &Store{clk: clock.System, retention: defaultRetention, metrics: noopMeter{}}
 	for _, o := range opts {
 		o(s)
 	}
 
-	sess, err := openSession(dbPath, s.clk.Now().UnixMilli())
+	sess, err := openSession(dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +147,7 @@ func (s *Store) Persist(ctx context.Context, records []*persistence.OutboxRecord
 
 // Claim atomically claims up to limit pending records under partition pk.
 func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error) {
-	// F1 fencing guard: reject a zero-value / invalid LeaseToken (empty owner
+	// fencing guard: reject a zero-value / invalid LeaseToken (empty owner
 	// OR zero version, persistence.LeaseToken.Valid) at the facade BEFORE any
 	// SQL runs, so the raw claim UPDATE never fences on an empty owner / zero
 	// version. The inner sqlSession.claim is only reachable through this method
@@ -172,7 +170,7 @@ func (s *Store) Claim(ctx context.Context, pk string, token persistence.LeaseTok
 // A successful Complete may piggyback a throttled retention compaction pass
 // (see WithRetention).
 func (s *Store) Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
-	// F1 fencing guard: reject a zero-value / invalid LeaseToken at the facade
+	// fencing guard: reject a zero-value / invalid LeaseToken at the facade
 	// BEFORE any SQL runs (defense-in-depth: the guarded UPDATE's owner+version
 	// fence also rejects it, but the explicit guard keeps the raw SQL from
 	// running with a bad token).
@@ -198,7 +196,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 // wall-clock stale-claim wait. Fencing is owner+version+status,
 // identical to Complete.
 func (s *Store) Release(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error {
-	// F1 fencing guard: reject a zero-value / invalid LeaseToken at the facade
+	// fencing guard: reject a zero-value / invalid LeaseToken at the facade
 	// BEFORE any SQL runs (defense-in-depth alongside the guarded UPDATE's
 	// owner+version fence).
 	if !token.Valid() {
@@ -214,15 +212,25 @@ func (s *Store) Release(ctx context.Context, recordIDs []string, token persisten
 }
 
 // Expire marks pending records whose expires_at is older than before
-// as expired, SCOPED to the supplied partition (M1). Claimed records are
+// as expired, SCOPED to the supplied partition. Claimed records are
 // never expired here, and records in other partitions are left untouched.
 // A successful Expire may piggyback a throttled retention compaction pass
 // (see WithRetention).
-func (s *Store) Expire(ctx context.Context, before time.Time, partition string) (int, error) {
-	if logging.TraceEnabled(s.logger) {
-		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: expire", "partition_key", partition)
+func (s *Store) Expire(ctx context.Context, before time.Time, partition string, token persistence.LeaseToken) (int, error) {
+	// Expiry terminally destroys pending records a successor could still
+	// deliver, so it carries the same valid-token requirement as Claim and
+	// Complete: a zero-value token is never a real lease.
+	if !token.Valid() {
+		return 0, shared.ErrStaleFencingToken.
+			WithMessage("expire rejected: invalid (zero-value) fencing token").
+			With("givenOwner", token.Owner).
+			With("givenVersion", token.Version)
 	}
-	n, err := s.sess.expire(ctx, before, partition)
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: expire",
+			"partition_key", partition, "owner_id", token.Owner, "lease_version", token.Version)
+	}
+	n, err := s.sess.expire(ctx, before, partition, token, s.clk.Now())
 	if err != nil {
 		return 0, s.observe(ctx, err)
 	}
@@ -287,6 +295,20 @@ func (s *Store) CountPending(ctx context.Context, pk string) (int, error) {
 		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: count_pending", "partition_key", pk)
 	}
 	n, err := s.sess.countPending(ctx, pk)
+	return n, s.observe(ctx, err)
+}
+
+// CountClaimed reports the number of CLAIMED records for pk — work an owner
+// took but has not driven to a terminal state
+// (ports.OutboxClaimedDepthReporter). CountPending excludes those rows, so
+// without this a record stranded by a failed release reads as an empty backlog.
+// Backed by the same indexed COUNT(*) as CountPending. An empty pk counts
+// across every partition. A real backend read failure is returned as-is.
+func (s *Store) CountClaimed(ctx context.Context, pk string) (int, error) {
+	if logging.TraceEnabled(s.logger) {
+		s.logger.Log(ctx, logging.LevelTrace, "sqliteoutbox: count_claimed", "partition_key", pk)
+	}
+	n, err := s.sess.countClaimed(ctx, pk)
 	return n, s.observe(ctx, err)
 }
 

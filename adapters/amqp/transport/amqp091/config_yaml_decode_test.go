@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════
-// Production-readiness remediation test: canonical YAML shape (F2).
+// Production-readiness remediation test: canonical YAML shape.
 //
 // The published docs showed FLAT option keys (options.broker_url,
 // options.queue_name, options.exchange) which the strict (ErrorUnused)
@@ -94,7 +94,7 @@ func TestPluginOptionsDecode_CanonicalYAML_FullExample(t *testing.T) {
 	require.Equal(t, "gobridge-orders", cfg.Receiver.ConsumerTag)
 	require.Equal(t, 64, cfg.Receiver.PrefetchCount)
 
-	// Sender (incl. the F1 delivery_mode knob).
+	// Sender (incl. the delivery_mode knob).
 	require.Equal(t, "orders", cfg.Sender.Exchange)
 	require.Equal(t, "orders.bridged", cfg.Sender.RoutingKey)
 	require.True(t, cfg.Sender.Mandatory)

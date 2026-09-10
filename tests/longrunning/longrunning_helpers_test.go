@@ -28,7 +28,6 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
@@ -217,8 +216,8 @@ func (p *chainOrderProcessor) Process(ctx context.Context, env *messaging.Envelo
 // setupFIFOQueue creates an SQS FIFO queue with content-based dedup.
 func setupFIFOQueue(t *testing.T, prefix string) (string, *awssqs.Client) {
 	t.Helper()
-	client := sqslocal.Client(t)
-	name := sqslocal.UniqueQueue(prefix) + ".fifo"
+	client := newSQSClient(t)
+	name := uniqueQueueName(prefix) + ".fifo"
 	result, err := client.CreateQueue(context.Background(), &awssqs.CreateQueueInput{
 		QueueName: aws.String(name),
 		Attributes: map[string]string{
@@ -432,9 +431,7 @@ func newMQTTCollectorWithBroker(
 	go func() {
 		defer c.wg.Done()
 		err := recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
-			c.mu.Lock()
-			c.messages = append(c.messages, del.Envelope())
-			c.mu.Unlock()
+			c.record(del.Envelope())
 			return del.Ack(ctx)
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {
@@ -608,9 +605,7 @@ func newPersistentCollectorWithBroker(
 	go func() {
 		defer c.wg.Done()
 		err := recv.Run(recvCtx, func(ctx context.Context, del ports.Delivery) error {
-			c.mu.Lock()
-			c.messages = append(c.messages, del.Envelope())
-			c.mu.Unlock()
+			c.record(del.Envelope())
 			return del.Ack(ctx)
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {

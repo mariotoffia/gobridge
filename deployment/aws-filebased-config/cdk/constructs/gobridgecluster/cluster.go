@@ -16,7 +16,7 @@
 // (shared_outbox, route.session leases), so there is no single-active
 // lease owner and no 30-60s failover path. Coordinated failover
 // requires DynamoDB-backed lease/outbox stores, which are out of this
-// reference construct's scope (c15-cluster-notha). See the
+// reference construct's scope. See the
 // GoBridgeCluster type doc for the full non-HA advisory.
 package gobridgecluster
 
@@ -27,8 +27,6 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsapplicationautoscaling"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awskms"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awslogs"
 	"github.com/aws/constructs-go/constructs/v10"
 	"github.com/aws/jsii-runtime-go"
 
@@ -36,12 +34,10 @@ import (
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/gobridgebase"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/singleton"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/validation"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 )
 
-// Non-HA honesty markers (c15-cluster-notha). GoBridgeCluster is a
+// Non-HA honesty markers. GoBridgeCluster is a
 // filesystem-replicated SCALE-OUT topology, not coordinated-failover
 // HA. The tag keys/values below are stamped onto every taggable
 // resource the construct synthesizes and DO reach the deployed stack,
@@ -67,147 +63,16 @@ const (
 		"topology=filesystem_replicated, under which the runtime rejects shared_outbox " +
 		"and route.session, so there is no single-active lease owner and no 30-60s " +
 		"failover path. Coordinated-failover HA requires DynamoDB-backed lease/outbox " +
-		"stores, which are out of this reference construct's scope (c15-cluster-notha)."
+		"stores, which are out of this reference construct's scope."
 )
-
-// AutoScalingProps opts the worker service into target-tracking CPU
-// autoscaling. Min/Max bound the worker DesiredCount; TargetCPU is
-// the target average ECS service CPU utilization in percent. When
-// TargetCPU is zero (the default) it is treated as 70.
-type AutoScalingProps struct {
-	Min       float64
-	Max       float64
-	TargetCPU float64
-}
-
-// ClusterProps configures a [GoBridgeCluster] facade. It is the
-// public surface for consumers who want a control + worker pair
-// sharing one EFS filesystem.
-//
-// Required: Vpc, Image, Bootstrap, BridgeConfig.
-//
-// Conditionally required (Phase 2 validation surfaces a typed error
-// when missing while the yaml needs them): QueueRegistry,
-// SsmParamRegistry.
-type ClusterProps struct {
-	// Vpc is the VPC both Fargate services and the EFS mount
-	// targets live in. Required.
-	Vpc awsec2.IVpc
-
-	// VpcSubnets selects the subnets used for ECS placement and
-	// (when EfsConfig is auto-created) EFS mount targets. nil
-	// means "all private subnets in Vpc". Applied to BOTH services.
-	VpcSubnets *awsec2.SubnetSelection
-
-	// Cluster is an existing ECS cluster shared by both services.
-	// When nil a fresh cluster is created in Vpc as a child of
-	// this construct.
-	Cluster awsecs.ICluster
-
-	// EfsConfig provides the EFS filesystem and access points
-	// shared by both services. When nil a default
-	// [GoBridgeEfsConfig] is created with always-on encryption,
-	// ELASTIC throughput and RETAIN policy.
-	EfsConfig *cdkconstructs.GoBridgeEfsConfig
-
-	// EfsKmsKey, when non-nil, is forwarded to BOTH base calls for
-	// KMS grants on the task roles.
-	EfsKmsKey awskms.IKey
-
-	// Image is the gobridge runtime container image used by both
-	// services. Required.
-	Image awsecs.ContainerImage
-
-	// Bootstrap is the deployment-owned runtime configuration. Its
-	// NodeRole is forced per service by this facade — control gets
-	// NodeRoleControl, workers get NodeRoleWorker. Never mutated
-	// in place. Required.
-	Bootstrap infra.BootstrapConfig
-
-	// BridgeConfig is the sealed source produced by
-	// gobridgecdk.BridgeYamlAsset / BridgeYamlInline. Required.
-	BridgeConfig source.Source
-
-	// QueueRegistry resolves SQS queue names referenced by the
-	// parsed bridge config. Conditionally required.
-	QueueRegistry *registry.QueueRegistry
-
-	// SsmParamRegistry resolves SSM parameter URIs referenced by
-	// the parsed bridge config. Conditionally required.
-	SsmParamRegistry *registry.SsmParamRegistry
-
-	// ControlSecurityGroup, when non-nil, is the security group
-	// attached to the control Fargate service. When nil one is
-	// auto-created.
-	ControlSecurityGroup awsec2.ISecurityGroup
-
-	// WorkerSecurityGroup, when non-nil, is the security group
-	// attached to the worker Fargate service. When nil one is
-	// auto-created.
-	WorkerSecurityGroup awsec2.ISecurityGroup
-
-	// CPU overrides the default Fargate CPU units (512). Applied
-	// to BOTH task definitions.
-	CPU *float64
-
-	// MemoryMiB overrides the default Fargate memory (1024 MiB).
-	// Applied to BOTH task definitions.
-	MemoryMiB *float64
-
-	// MountPath overrides the default container EFS mount path
-	// ("/var/lib/gobridge"). Applied to BOTH services.
-	MountPath *string
-
-	// LogRetention overrides the default CloudWatch log retention
-	// (one month). Applied to BOTH services.
-	LogRetention awslogs.RetentionDays
-
-	// LogRemovalPolicy overrides the default RETAIN policy on log
-	// groups. Applied to BOTH services.
-	LogRemovalPolicy awscdk.RemovalPolicy
-
-	// SeederImage overrides the pinned aws-cli seeder image used
-	// by BOTH services.
-	SeederImage *string
-
-	// ControlSeederMode overrides the control seeder MODE
-	// (default "SeedOnce").
-	ControlSeederMode *string
-
-	// WorkerSeederMode overrides the worker seeder MODE (default
-	// "AdoptValid" — workers adopt the current valid EFS bridge.yaml,
-	// whether written by CDK seed or an Admin-API config-txn commit,
-	// rather than aborting on hash drift from the synth-time asset).
-	// Set "AbortDeploy" for strict lock-step deployments where every
-	// worker must match the synth-time asset exactly. See the profile
-	// README "Reconfiguration paths" section for the coexistence
-	// semantics.
-	WorkerSeederMode *string
-
-	// ControlServiceName overrides the auto-generated control ECS
-	// service name.
-	ControlServiceName *string
-
-	// WorkerServiceName overrides the auto-generated worker ECS
-	// service name.
-	WorkerServiceName *string
-
-	// WorkerDesiredCount sets the worker service DesiredCount.
-	// Default 2 when nil. Must be >= 1 when set.
-	WorkerDesiredCount *float64
-
-	// AutoScaling, when non-nil, opts the worker service into
-	// target-tracking CPU autoscaling. Off by default.
-	AutoScaling *AutoScalingProps
-}
 
 // GoBridgeCluster is the L2 facade construct that deploys the
 // clustered profile of gobridge: one control Fargate task with RW
 // EFS mount plus N worker Fargate tasks with RO EFS mount, sharing
 // a single EFS filesystem (one control access point, one worker
 // access point) and a single ECS cluster. It is a thin wrapper
-// over two [gobridgebase] (T10) instances — all task-def, EFS, IAM,
-// asset and seeder machinery is owned by the shared base; this
+// over two [gobridgebase] instances — all task-def, EFS, IAM,
+// image and configuration wiring is owned by the shared base; this
 // construct only adds the surrounding ECS services, security
 // groups, EFS ingress rules and runs the Phase 1 / Phase 2 tier-B
 // validators on the resolved BridgeConfig.
@@ -236,7 +101,7 @@ type ClusterProps struct {
 // honest at the deployed-resource level (not just in source), the
 // construct stamps gobridge:topology / gobridge:ha tags onto every
 // taggable resource and emits a synth-time info annotation stating the
-// non-HA nature (c15-cluster-notha).
+// non-HA nature.
 //
 // The control DesiredCount is hard-coded to 1 and NOT exposed as a
 // prop: it is a runtime invariant of the single-LeaseStore-writer
@@ -268,7 +133,7 @@ type GoBridgeCluster struct {
 //     worker-specific checks fire. On failure: panic.
 //  3. Build (or reuse) the EFS config and ECS cluster — both
 //     shared between control and worker services.
-//  4. Delegate task-def + IAM + asset + seeder construction to two
+//  4. Delegate task-def + IAM + image construction to two
 //     separate [gobridgebase.New] calls — one in CONTROL mode, one
 //     in WORKER mode — sharing the same EFS config (different
 //     access points selected per mode).
@@ -280,7 +145,7 @@ type GoBridgeCluster struct {
 //  7. Run Phase 2 aggregated validation via CDK Annotations so a
 //     single synth surfaces every missing registry reference.
 //
-// TODO(T13): synth-time scope scan to enforce singleton
+// TODO: synth-time scope scan to enforce singleton
 // constraint — error if multiple GoBridgeSingle / GoBridgeCluster
 // siblings exist in the same Stack tree.
 func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterProps) *GoBridgeCluster {
@@ -301,7 +166,7 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 	// one control + N workers share a single EFS filesystem. Force
 	// Topology=filesystem_replicated on both copies (regardless of what the
 	// caller left in props.Bootstrap, whose zero value normalizes to
-	// "single"). This is load-bearing: both the Phase-1 synth validator and
+	// "single"). This is load-bearing: both the fast-fail synth validator and
 	// the runtime guard (lib/bootstrap.validateFilesystemProfile) return
 	// early on the "single" topology, so leaving the default in place would
 	// silently permit shared_outbox routes and route.session leases on
@@ -310,7 +175,7 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 	bootstrapControl.Topology = infra.TopologyFilesystemReplicated
 	bootstrapWorker.Topology = infra.TopologyFilesystemReplicated
 
-	// Be HONEST about what this construct is (c15-cluster-notha). The name
+	// Be HONEST about what this construct is. The name
 	// "Cluster" can read as "HA / coordinated failover", but forcing
 	// filesystem_replicated above makes this a SCALE-OUT topology: N
 	// replicas independently read one EFS config, there is no single-active
@@ -348,7 +213,10 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 
 	// Shared EFS config — auto-create when not supplied. Used by
 	// BOTH services (control access point for control, worker
-	// access point for worker).
+	// access point for worker). An auto-created config gets
+	// props.VpcSubnets verbatim, so its mount targets always cover the
+	// ECS placement; a SUPPLIED one may not, and a task in an AZ without
+	// a mount target fails at container start (matrix row 14).
 	efsConfig := props.EfsConfig
 	if efsConfig == nil {
 		efsConfig = cdkconstructs.NewGoBridgeEfsConfig(c, jsii.String("Efs"), &cdkconstructs.GoBridgeEfsConfigProps{
@@ -356,6 +224,8 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 			VpcSubnets: props.VpcSubnets,
 			EfsKmsKey:  props.EfsKmsKey,
 		})
+	} else {
+		cdkconstructs.AssertEfsSubnetParity("GoBridgeCluster", props.Vpc, props.VpcSubnets, efsConfig)
 	}
 
 	// Shared ECS cluster — auto-create when not supplied.
@@ -367,7 +237,7 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 		})
 	}
 
-	// Control base (CONTROL mode → RW EFS mount, SeedOnce seeder).
+	// Control base (CONTROL mode allows target initialization and updates).
 	controlBuilt := gobridgebase.New(c, jsii.String("ControlBase"), &gobridgebase.Props{
 		Mode:             gobridgebase.ModeControl,
 		Vpc:              props.Vpc,
@@ -383,11 +253,9 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 		MountPath:        props.MountPath,
 		LogRetention:     props.LogRetention,
 		LogRemovalPolicy: props.LogRemovalPolicy,
-		SeederImage:      props.SeederImage,
-		SeederMode:       props.ControlSeederMode,
 	})
 
-	// Worker base (WORKER mode → RO EFS mount, AdoptValid seeder).
+	// Worker base (WORKER mode reads the target and never initializes it).
 	workerBuilt := gobridgebase.New(c, jsii.String("WorkerBase"), &gobridgebase.Props{
 		Mode:             gobridgebase.ModeWorker,
 		Vpc:              props.Vpc,
@@ -403,8 +271,6 @@ func NewGoBridgeCluster(scope constructs.Construct, id *string, props *ClusterPr
 		MountPath:        props.MountPath,
 		LogRetention:     props.LogRetention,
 		LogRemovalPolicy: props.LogRemovalPolicy,
-		SeederImage:      props.SeederImage,
-		WorkerSeederMode: props.WorkerSeederMode,
 	})
 
 	// Per-service security groups.

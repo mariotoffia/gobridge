@@ -11,7 +11,7 @@ import (
 )
 
 // TestInjectToBinding_SharedOutbox_ConfinesRedriveToOneBinding is the
-// regression test for the binding-scoped DLQ redrive defect (FIX 1).
+// regression test for the binding-scoped DLQ redrive defect.
 //
 // The admin redrive used to carry the target binding in the reserved header
 // x-bridge.route-override, then call Inject. But doHandleDelivery strips every
@@ -95,7 +95,7 @@ func TestInjectToBinding_SharedOutbox_ConfinesRedriveToOneBinding(t *testing.T) 
 }
 
 // TestInject_SharedOutbox_FanOutPersistsAllBindings is the control for the
-// FIX 1 regression: a plain Inject (no binding override) on the same fan-out
+// regression: a plain Inject (no binding override) on the same fan-out
 // route persists a record for EVERY binding. It documents the pre-fix
 // behaviour that a binding-scoped redrive must avoid, and guards against a
 // regression that would over-confine ordinary deliveries.

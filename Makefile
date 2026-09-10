@@ -3,13 +3,13 @@
 # This Makefile provides convenient commands for building, testing, and
 # maintaining the multi-module Go workspace.
 
-.PHONY: all build test test-integration test-long-running lint lint-fix check check-all clean tidy sync help
+.PHONY: all build build-gobridge test test-integration test-local-deploy test-long-running test-release-gate test-soak fuzz lint lint-fix check check-all clean tidy sync help
 .PHONY: install vulncheck update update-major outdated
 .PHONY: hooks hooks-install hooks-uninstall
 .PHONY: audit-timings audit-test-timings
 .PHONY: arch-graph dupl-report goconst-report
 .PHONY: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-pluginsym
-.PHONY: docker-build update-seeder-image
+.PHONY: docker-build
 .PHONY: verify-release-preparation verify-published-modules verify-release-tag
 .PHONY: release-modules stage-published-module stage-release-bootstrap derive-release-bootstrap
 .PHONY: smoke-released-modules release-latest-version verify-remote-release-tag
@@ -22,7 +22,15 @@ export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
 # `make docker-build IMAGE=ghcr.io/mariotoffia/gobridge IMAGE_TAG=v1.2.3`).
 IMAGE      ?= ghcr.io/mariotoffia/gobridge
 IMAGE_TAG  ?= dev
+
+# The runtime image tag the local deployment proof deploys. It is built by
+# docker-build and never pushed.
+IMAGE_LOCAL_TAG ?= gobridge-filebased:local
 GIT_SHA    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+INITIAL_CONFIG_FILE ?=
+export IMAGE_TAG GIT_SHA INITIAL_CONFIG_FILE
+
+GOBRIDGE_TAGS ?=
 
 RELEASE_LAYER            ?= -1
 RELEASE_FORMAT           ?= path
@@ -59,6 +67,17 @@ build: ## Build all modules
 	@echo "Building all modules..."
 	go build ./...
 
+build-gobridge: ## Build cmd/gobridge/gobridge.out; optionally embed INITIAL_CONFIG_FILE
+	@test -f go.work || $(MAKE) dev
+	@set -eu; tmp=$$(mktemp -d); \
+		trap 'rm -f "$$tmp/overlay.json" "$$tmp/initial-config.base64" "$$tmp/empty"; rmdir "$$tmp"' EXIT; \
+		: > "$$tmp/empty"; \
+		GOOS="$$(go env GOHOSTOS)" GOARCH="$$(go env GOHOSTARCH)" \
+			go run ./scripts/buildconfig "$${INITIAL_CONFIG_FILE:-$$tmp/empty}" cmd/gobridge "$$tmp"; \
+		go -C cmd/gobridge build -overlay="$$tmp/overlay.json" -tags "$(GOBRIDGE_TAGS)" -trimpath \
+			-ldflags "-s -w -X main.version=$$IMAGE_TAG -X main.gitSHA=$$GIT_SHA" \
+			-o gobridge.out .
+
 .PHONY: dev
 dev: ## Regenerate the Go workspace (go.work) from every on-disk module (local-dev bootstrap)
 	@echo "Regenerating go.work from on-disk modules..."
@@ -77,10 +96,9 @@ docker-build: ## Build the production runtime image (gobridge-filebased, no push
 	docker build \
 		--build-arg VERSION=$(IMAGE_TAG) \
 		--build-arg GIT_SHA=$(GIT_SHA) \
-		-t $(IMAGE):$(IMAGE_TAG) .
-
-update-seeder-image: ## Refresh the pinned seeder (aws-cli) digest and commit-ready image.txt
-	$(MAKE) -C deployment/aws-filebased-config update-seeder-image
+		--build-arg INITIAL_CONFIG_FILE="$(INITIAL_CONFIG_FILE)" \
+		-t $(IMAGE):$(IMAGE_TAG) \
+		-t $(IMAGE_LOCAL_TAG) .
 
 # ============================================================================
 # Multi-module release preparation
@@ -200,14 +218,22 @@ test: audit-timings audit-test-timings ## Run unit tests (no Docker, integration
 	@cd deployment/aws-filebased-config/cdk && AWS_EC2_METADATA_DISABLED=true \
 		go test -count=1 -timeout 120s -tags=integration_aws \
 		-run '^TestLookupVpc_ExplicitAttributesProduceCompleteAssembly$$' ./integration
+	# The local deployment backend shares files with the credentialed one, so a
+	# change made while working either path can break the other. Nothing else in
+	# any gate compiles this tag, and an edit that only breaks it would otherwise
+	# reach a branch green.
+	@cd deployment/aws-filebased-config/cdk && go vet -tags=integration_local ./integration/...
 	@echo "Running unit tests across all modules..."
 	@echo "Report will be saved to: reports/test-unit.log"
-	@bash -c 'set -o pipefail; { rc=0; for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
+	@bash -c 'set -o pipefail; { rc=0; for modfile in $$(find . -name go.mod -not -path "./.worktrees/*" -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
 		gowork=""; if [ "$$dir" = "./scripts/release" ]; then gowork=off; fi; \
 		echo "--- Testing $$dir ---"; \
 		(cd "$$dir" && GOWORK="$$gowork" go test -count=1 -short -race -timeout 120s ./...) || rc=$$?; \
-	done; exit $$rc; } 2>&1 | tee reports/test-unit.log; \
+	done; \
+	echo "--- Testing ./cmd/gobridge (-tags=gobridge_all) ---"; \
+	go -C cmd/gobridge test -tags gobridge_all -count=1 -short -race -timeout 120s ./... || rc=$$?; \
+	exit $$rc; } 2>&1 | tee reports/test-unit.log; \
 	rc=$$?; \
 	echo ""; \
 	echo "========================================"; \
@@ -226,16 +252,21 @@ test: audit-timings audit-test-timings ## Run unit tests (no Docker, integration
 
 
 test-integration: audit-timings audit-test-timings ## Run all tests including integration (requires Docker)
+	@test -f go.work || $(MAKE) dev
 	@mkdir -p reports
 	@echo "Running all tests (unit + integration) across all modules..."
 	@echo "Report will be saved to: reports/test-integration.log"
-	@bash -c 'set -o pipefail; { rc=0; for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
+	@bash -c 'set -o pipefail; { rc=0; for modfile in $$(find . -name go.mod -not -path "./.worktrees/*" -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
 		gowork=""; if [ "$$dir" = "./scripts/release" ]; then gowork=off; fi; \
 		echo "--- Testing $$dir ---"; \
 		(cd "$$dir" && AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
 			GOWORK="$$gowork" go test -count=1 -p 1 -race -timeout 600s -v ./...) || rc=$$?; \
-	done; exit $$rc; } 2>&1 | tee reports/test-integration.log; \
+	done; \
+	echo "--- Testing ./cmd/gobridge (-tags=gobridge_all) ---"; \
+	AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+		go -C cmd/gobridge test -tags gobridge_all -count=1 -p 1 -race -timeout 600s -v ./... || rc=$$?; \
+	exit $$rc; } 2>&1 | tee reports/test-integration.log; \
 	rc=$$?; \
 	echo ""; \
 	echo "========================================"; \
@@ -252,13 +283,144 @@ test-integration: audit-timings audit-test-timings ## Run all tests including in
 	fi; \
 	exit $$rc'
 
+# Local deployment proof: the aws-filebased-config CDK profile deployed against
+# local emulation and driven end to end. No AWS account and no credentials —
+# the emulators, the CDK CLI wrapper and the runtime image are all provisioned
+# here, so a clean checkout with Docker and Node can run it.
+LOCAL_DEPLOY_TOOLS := .tools/local-deploy
+LOCAL_DEPLOY_RUN ?= .
+
+test-local-deploy: audit-timings audit-test-timings ## Build each embedded-config image and deploy against local emulation (requires Docker + Node)
+	@mkdir -p reports $(LOCAL_DEPLOY_TOOLS)
+	@echo "Installing the local CDK CLI into $(LOCAL_DEPLOY_TOOLS) ..."
+	@cd $(LOCAL_DEPLOY_TOOLS) && npm install --silent --no-fund --no-audit --no-save aws-cdk aws-cdk-local >/dev/null
+	@echo "Running the local deployment proof..."
+	# The binary timeout has to exceed the sum of every test's OWN budget, or a
+	# slow-but-correct run dies here instead of inside the phase that was slow —
+	# and the panic then names the whole binary rather than the wait that hung.
+	@echo "Report will be saved to: reports/test-local-deploy.log"
+	@bash -c 'set -o pipefail; start=$$(date +%s); \
+		PATH="$(CURDIR)/$(LOCAL_DEPLOY_TOOLS)/node_modules/.bin:$$PATH" \
+		GOBRIDGE_INT_LOCAL=1 \
+		JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 \
+		go -C deployment/aws-filebased-config/cdk test -count=1 -timeout=180m -v \
+			-tags=integration_local -run="$(value LOCAL_DEPLOY_RUN)" ./integration/... 2>&1 | tee reports/test-local-deploy.log; \
+		rc=$$?; \
+		if ! grep -q "^=== RUN " reports/test-local-deploy.log || grep -q "no tests to run" reports/test-local-deploy.log; then echo "No local deployment tests matched the selector"; rc=1; fi; \
+		echo ""; \
+		echo "command:  go test -tags=integration_local ./integration/... (deployment/aws-filebased-config/cdk)"; \
+		if [ $$rc -eq 0 ]; then echo "status:   PASS"; else echo "status:   FAIL"; fi; \
+		echo "tests:    $$(grep -cE "^(    )*--- (PASS|FAIL|SKIP):" reports/test-local-deploy.log || true)"; \
+		echo "duration: $$(( $$(date +%s) - start ))s"; \
+		echo "report:   reports/test-local-deploy.log"; \
+		if [ $$rc -ne 0 ]; then \
+			echo ""; \
+			echo "FAILED tests:"; \
+			grep -E "^(    )*--- FAIL:" reports/test-local-deploy.log || true; \
+		fi; \
+		exit $$rc'
+
+# The proofs a release rests on, named exactly. `go test -run` treats a pattern
+# that matches nothing as success, so a renamed test would quietly drop its
+# proof from the gate while the run still reported green — every name here is
+# pinned against the suite by tests/docsexamples, which runs on every pull
+# request. One entry per behaviour the release claims: process death,
+# separate-process failover, the published lease profile, no-loss under a
+# rolling restart, message conservation at the declared release volume,
+# broker kill/restart, and broker-path isolation under a flapping broker.
+# TestMQTTIngressMemory is deliberately absent: it asserts nothing without a
+# real cgroup bound, so scripts/test-mqtt-ingress-memory.sh runs it instead.
+RELEASE_LONGRUNNING_TESTS := \
+	TestTask14_ProcessKillBoundaries \
+	TestUC3SeparateProcessFailover \
+	TestUC3PublishedProfileFailover \
+	TestUC12_RollingRestart_NoMessageLoss \
+	TestGAP_ReleaseVolumeConservation \
+	TestUC42_BrokerKillRestart_SharedOutbox \
+	TestUC49_SharedOutboxVsDirectHold_BrokerFlapping
+
+# Anchored alternation: ^(A|B|C)$ so a prefix cannot pull in a neighbour.
+RELEASE_LONGRUNNING_RUN = ^($(shell echo $(RELEASE_LONGRUNNING_TESTS) | tr ' ' '|'))$$
+
+test-release-gate: audit-timings audit-test-timings ## Run only the long-running proofs a release is gated on (Docker; developer machine)
+	@mkdir -p reports
+	@echo "Running the release long-running subset..."
+	@echo "Report will be saved to: reports/test-release-gate.log"
+	@bash -c 'set -o pipefail; start=$$(date +%s); \
+		AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+		GOBRIDGE_MQTT_MEMORY=256m GOBRIDGE_MQTT_CPUS=2.0 \
+		GOBRIDGE_AWS_EMULATOR_MEMORY=2g GOBRIDGE_AWS_EMULATOR_CPUS=2.0 \
+		GOBRIDGE_DDB_MEMORY=1g GOBRIDGE_DDB_CPUS=2.0 \
+		go -C tests/longrunning test -count=1 -race -timeout 10800s -v -tags=longrunning \
+			-run "$(RELEASE_LONGRUNNING_RUN)" ./... 2>&1 | tee reports/test-release-gate.log; \
+		rc=$$?; \
+		echo ""; \
+		echo "selected: $(RELEASE_LONGRUNNING_TESTS)"; \
+		echo "ran:      $$(grep -cE "^--- (PASS|FAIL): " reports/test-release-gate.log || true)"; \
+		echo "duration: $$(( $$(date +%s) - start ))s"; \
+		echo "report:   reports/test-release-gate.log"; \
+		if [ $$rc -ne 0 ]; then echo ""; echo "FAILED tests:"; \
+			grep -E "^--- FAIL:" reports/test-release-gate.log || true; fi; \
+		exit $$rc'
+	# The cgroup proof is the release gate's other half: run through the suite
+	# it detects no memory bound and skips itself, so the harness re-runs it
+	# inside a container with an enforced limit.
+	@scripts/test-mqtt-ingress-memory.sh
+
+# The published soak profile. `make test-long-running` runs the same test at its
+# short profile so the suite stays usable; this target runs it for the full
+# declared hour, which is what a slow goroutine, timer, connection or memory
+# leak needs to become visible. Give it the time — it is a developer-machine
+# run, never a CI one.
+test-soak: audit-timings audit-test-timings ## Run the 60-minute soak profile (Docker; developer machine, ~70 min)
+	@mkdir -p reports
+	@echo "Running the 60-minute soak profile (this takes over an hour)..."
+	@bash -c 'set -o pipefail; start=$$(date +%s); \
+		AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+		GOBRIDGE_SOAK_DURATION=60m \
+		go -C tests/longrunning test -count=1 -race -timeout 10800s -v -tags=longrunning \
+			-run "^TestUC68_Soak$$" ./... 2>&1 | tee reports/test-soak.log; \
+		rc=$$?; \
+		echo ""; \
+		echo "duration: $$(( $$(date +%s) - start ))s"; \
+		echo "report:   reports/test-soak.log"; \
+		exit $$rc'
+
+# Time-bounded fuzzing. Seed corpora already run on every pull request as
+# ordinary unit tests; this target mutates. Each target gets FUZZTIME (default
+# 5m) of its own, so the whole run costs targets x FUZZTIME. Crashers land in
+# the package's testdata/fuzz directory — commit them, they become seeds.
+FUZZTIME ?= 5m
+
+# One `<package directory>:<target>` entry per fuzz target. `go test -fuzz` can
+# mutate only one target in one package per run, so each entry is its own run.
+# tests/docsexamples pins every name here against the source: a renamed target
+# would otherwise leave this list selecting nothing and still exit 0.
+FUZZ_TARGETS := \
+	runtime:FuzzRenderAddress \
+	domain/messaging:FuzzEnvelopeHeaderRoundTrip \
+	adapters/mqtt/transport/paho:FuzzValidateMQTTTopic \
+	adapters/mqtt/transport/paho:FuzzIngressPublishProperties
+
+fuzz: ## Mutate every fuzz target for FUZZTIME each (default 5m; developer machine)
+	@mkdir -p reports
+	@echo "Fuzzing each target for $(FUZZTIME)..."
+	@bash -c 'set -o pipefail; rc=0; : > reports/fuzz.log; \
+		for entry in $(FUZZ_TARGETS); do \
+			dir=$${entry%%:*}; target=$${entry##*:}; \
+			echo "--- $$dir $$target ---" | tee -a reports/fuzz.log; \
+			(go -C "$$dir" test -run "^$$target$$" -fuzz "^$$target$$" \
+				-fuzztime=$(FUZZTIME) . 2>&1) | tee -a $(PWD)/reports/fuzz.log || rc=$$?; \
+		done; \
+		echo ""; echo "report: reports/fuzz.log"; exit $$rc'
+
 test-long-running: audit-timings audit-test-timings ## Run long-running stress tests (requires Docker, -tags=longrunning)
 	@mkdir -p reports
 	@echo "Running long-running stress tests..."
 	@echo "Report will be saved to: reports/test-long-running.log"
 	@bash -c 'set -o pipefail; AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
 	GOBRIDGE_MQTT_MEMORY=256m GOBRIDGE_MQTT_CPUS=2.0 \
-	GOBRIDGE_SQS_MEMORY=2g GOBRIDGE_SQS_CPUS=2.0 \
+	GOBRIDGE_AWS_EMULATOR_MEMORY=2g GOBRIDGE_AWS_EMULATOR_CPUS=2.0 \
 	GOBRIDGE_DDB_MEMORY=1g GOBRIDGE_DDB_CPUS=2.0 \
 		go -C tests/longrunning test -count=1 -race -timeout 10800s -v -tags=longrunning ./... 2>&1 | tee reports/test-long-running.log; \
 		rc=$$?; \
@@ -303,6 +465,8 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 	@bash -c 'set -o pipefail; bash scripts/lint-arch-mapping-test.sh 2>&1 | tee reports/arch-mapping.log'
 	@echo "=== x-bridge header governance ==="
 	@bash -c 'set -o pipefail; bash scripts/lint-xbridge-headers.sh --self-test 2>&1 | tee reports/xbridge-headers.log'
+	@echo "=== planning-reference governance ==="
+	@bash -c 'set -o pipefail; bash scripts/lint-planning-refs.sh --self-test 2>&1 | tee reports/planning-refs.log'
 	@echo "=== gofmt ==="
 	@FILES=$$(gofmt -l $$(git ls-files '*.go')); \
 	echo "$$FILES" > reports/gofmt.log; \
@@ -314,7 +478,7 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 	fi
 	@echo "=== go vet ==="
 	@bash -c 'set -eo pipefail; mkdir -p "$(GOBRIDGE_GO_CACHE)"; export GOCACHE="$(GOBRIDGE_GO_CACHE)"; : > reports/go-vet.log; \
-	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" | sort); do \
+	for modfile in $$(find . -name go.mod -not -path "./.worktrees/*" -not -path "*/vendor/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
 		gowork=""; if [ "$$dir" = "./scripts/release" ]; then gowork=off; fi; \
 		if [ -z "$$(cd "$$dir" && GOWORK="$$gowork" go list ./... 2>/dev/null)" ]; then \
@@ -324,6 +488,17 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 		echo "--- Vetting $$dir ---" | tee -a reports/go-vet.log; \
 		(cd "$$dir" && GOWORK="$$gowork" go vet ./... 2>&1) | tee -a $(PWD)/reports/go-vet.log; \
 	done'
+	# The long-running suite carries a build tag nothing above supplies, so the
+	# module walk lists no packages for it and skips it entirely. Vetting it
+	# under its own tag type-checks every file, so a refactor that breaks a
+	# production proof fails the branch instead of surfacing hours later on a
+	# developer machine. Compiling it is all that happens here — running it is
+	# `make test-long-running`, a developer-machine target, never a CI one.
+	@echo "=== go vet (tests/longrunning, tagged) ==="
+	@bash -c 'set -o pipefail; echo "--- Vetting ./tests/longrunning (-tags=longrunning) ---" \
+		| tee -a reports/go-vet.log; \
+		go -C tests/longrunning vet -tags=longrunning ./... 2>&1 \
+		| tee -a $(PWD)/reports/go-vet.log'
 	@echo "=== golangci-lint ==="
 	@bash -c 'major=$$(golangci-lint version 2>/dev/null | sed -nE "s/.*version v?([0-9]+).*/\1/p" | head -1); \
 	if [ "$$major" != "2" ]; then \
@@ -332,7 +507,7 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 		exit 1; \
 	fi'
 	@bash -c 'set -eo pipefail; mkdir -p "$(GOBRIDGE_GO_CACHE)"; export GOCACHE="$(GOBRIDGE_GO_CACHE)"; : > reports/golangci.log; \
-	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" | sort); do \
+	for modfile in $$(find . -name go.mod -not -path "./.worktrees/*" -not -path "*/vendor/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
 		gowork=""; if [ "$$dir" = "./scripts/release" ]; then gowork=off; fi; \
 		if [ -z "$$(cd "$$dir" && GOWORK="$$gowork" go list ./... 2>/dev/null)" ]; then \
@@ -354,7 +529,7 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 	done'
 	@echo "=== cfgshape (typed plugin config) ==="
 	@bash -c 'set -eo pipefail; : > reports/cfgshape.log; \
-	for modfile in $$(find . -name go.mod -not -path "*/vendor/*" -not -path "./scripts/*" -not -path "./tests/*" -not -path "./testutil/*" | sort); do \
+	for modfile in $$(find . -name go.mod -not -path "./.worktrees/*" -not -path "*/vendor/*" -not -path "./scripts/*" -not -path "./tests/*" -not -path "./testutil/*" | sort); do \
 		dir=$$(dirname "$$modfile"); \
 		if [ -z "$$(cd "$$dir" && go list ./... 2>/dev/null)" ]; then continue; fi; \
 		echo "--- cfgshape $$dir ---" | tee -a reports/cfgshape.log; \
@@ -363,7 +538,7 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 	@echo "=== registrychk (CDK builder + grants coverage) ==="
 	@bash -c 'set -o pipefail; $(PWD)/bin/registrychk 2>&1 | tee reports/registrychk.log'
 	@echo "=== pluginsym (registry symmetry) ==="
-	@bash -c 'set -o pipefail; $(PWD)/bin/pluginsym 2>&1 | tee reports/pluginsym.log'
+	@bash -c 'set -o pipefail; $(PWD)/bin/pluginsym -dir cmd/gobridge 2>&1 | tee reports/pluginsym.log'
 	@echo "=== Module graph (advisory) ==="
 	@go mod graph > reports/arch-graph.txt
 	@echo "reports/arch-graph.txt — $$(wc -l < reports/arch-graph.txt | tr -d ' ') edges"
@@ -379,6 +554,7 @@ lint: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-plugi
 	@echo "  Blocking reports:"
 	@echo "    reports/go-arch-lint.log         reports/go-arch-lint-graph.svg"
 	@echo "    reports/arch-mapping.log         reports/gofmt.log"
+	@echo "    reports/xbridge-headers.log      reports/planning-refs.log"
 	@echo "    reports/go-vet.log               reports/golangci.log"
 	@echo "    reports/aggcheck.log             reports/aclcheck.log"
 	@echo "    reports/cfgshape.log             reports/registrychk.log"
@@ -420,26 +596,26 @@ tidy: ## Sync workspace and tidy all module dependencies
 	@echo "Syncing workspace..."
 	go work sync
 	@echo "Tidying all modules..."
-	@find . -name go.mod -not -path '*/vendor/*' -execdir sh -c 'echo "Tidying $$(pwd)..." && GOWORK=off go mod tidy' \;
+	@find . -name go.mod -not -path './.worktrees/*' -not -path '*/vendor/*' -execdir sh -c 'echo "Tidying $$(pwd)..." && GOWORK=off go mod tidy' \;
 
 sync: tidy ## Alias for tidy (workspace sync is included)
 
 update: ## Update all dependencies to latest minor/patch versions
-	@find . -name go.mod -not -path '*/vendor/*' -not -path '*/legacy/*' \
+	@find . -name go.mod -not -path './.worktrees/*' -not -path '*/vendor/*' -not -path '*/legacy/*' \
 		-execdir sh -c 'echo "Updating $$(pwd)..." && GOWORK=off go get -u ./... && GOWORK=off go mod tidy' \;
 	@$(MAKE) tidy
 
 update-major: ## Show available major version upgrades (requires gomajor)
-	@find . -name go.mod -not -path '*/vendor/*' -not -path '*/legacy/*' \
+	@find . -name go.mod -not -path './.worktrees/*' -not -path '*/vendor/*' -not -path '*/legacy/*' \
 		-execdir sh -c 'echo "=== Major versions in $$(pwd) ===" && GOWORK=off gomajor list' \;
 
 outdated: ## Show outdated direct dependencies (requires go-mod-outdated)
-	@find . -name go.mod -not -path '*/vendor/*' -not -path '*/legacy/*' \
+	@find . -name go.mod -not -path './.worktrees/*' -not -path '*/vendor/*' -not -path '*/legacy/*' \
 		-execdir sh -c 'echo "=== Outdated in $$(pwd) ===" && GOWORK=off go list -m -u -json all | go-mod-outdated -direct -update' \;
 
 vulncheck: ## Check all modules for known vulnerabilities (requires govulncheck)
 	@echo "Running vulnerability check..."
-	@find . -name go.mod -not -path '*/vendor/*' -not -path '*/legacy/*' \
+	@find . -name go.mod -not -path './.worktrees/*' -not -path '*/vendor/*' -not -path '*/legacy/*' \
 		-execdir sh -c 'echo "=== Checking $$(pwd) ===" && GOWORK=off govulncheck ./...' \;
 
 clean: ## Clean build cache and test cache
@@ -518,14 +694,15 @@ audit-timings: ## Check for unauthorized timing calls in production code
 		echo "All timing calls are authorized."; \
 	fi
 
-audit-test-timings: ## Check for new time.Sleep calls in test code and test infrastructure
+audit-test-timings: ## Check for new time.Sleep or Gosched spin-polling in test code and test infrastructure
 	@echo "Checking for new time.Sleep calls in tests..."
 	@VIOLATIONS=$$({ rg --no-heading -n -g '*_test.go' -g '!testutil/wait/*' \
 		'time\.Sleep\(' . ; \
 		rg --no-heading -n -g '!*_test.go' -g '!testutil/wait/*' -g '!testutil/dockerexec/*' \
-		'time\.Sleep\(' testutil ports/storetest tests/testutil ; } \
+		'time\.Sleep\(' testutil ports/storetest ports/configstoretest tests/testutil \
+		deployment/aws-filebased-config/cdk/integration ; } \
 		| sort \
-		| grep -v -F -f audit/test-timing-allowlist.txt); \
+		| awk -f scripts/audit-timing-filter.awk); \
 	if [ -n "$$VIOLATIONS" ]; then \
 		echo "$$VIOLATIONS"; \
 		COUNT=$$(echo "$$VIOLATIONS" | wc -l | tr -d ' '); \
@@ -533,9 +710,25 @@ audit-test-timings: ## Check for new time.Sleep calls in test code and test infr
 		echo "$$COUNT new time.Sleep call(s) in tests."; \
 		echo "Remove the sleep, or (with justification) add the line to"; \
 		echo "audit/test-timing-allowlist.txt — annotate with // CLASS: reason."; \
+		echo "(Entries match on file and code, not line number, so an edit"; \
+		echo " above an allowed sleep does not need the entry renumbered.)"; \
 		exit 1; \
 	else \
 		echo "No new test timing violations."; \
+	fi
+	@echo "Checking for Gosched spin-polling in tests..."
+	@SPIN=$$(rg --no-heading -n -g '*_test.go' 'runtime\.Gosched\(\)|stdruntime\.Gosched\(\)' . || true); \
+	if [ -n "$$SPIN" ]; then \
+		echo "$$SPIN"; \
+		echo ""; \
+		echo "runtime.Gosched() found in test code."; \
+		echo "A Gosched loop is a hand-rolled poller wearing a disguise: it dodges the"; \
+		echo "time.Sleep rule above while staying runnable at all times, so it competes"; \
+		echo "for CPU with the goroutine it is waiting for and starves it under -race."; \
+		echo "Use testutil/wait (Until, Poll, RequireReceive, Silent, StableFor) instead."; \
+		exit 1; \
+	else \
+		echo "No Gosched spin-polling in tests."; \
 	fi
 
 # ============================================================================

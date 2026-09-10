@@ -249,10 +249,10 @@ func TestHandleConfigTxnCommit_ApplierFailureRollsBack(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "rolled_back")
 	assert.NotContains(t, rec.Body.String(), "committed_not_applied")
 
-	// The rejected version 1 was rolled back: disk holds the previous version 0.
+	// Restoring the previous content is another commit, after rejected version 1.
 	parsed, err := parser.ParseFile(path, parser.FormatYAML, newTestRegistry(t))
 	require.NoError(t, err)
-	assert.Equal(t, 0, parsed.Version)
+	assert.Equal(t, 2, parsed.Version)
 }
 
 // A successful ConfigApplier is invoked with the committed config and the

@@ -21,7 +21,7 @@ const (
 	// an externally-managed exchange, or ACCESS_REFUSED under least-privilege
 	// credentials). Publisher declare is best-effort: the failure is metered
 	// here rather than aborting the session, because publishing to the exchange
-	// still works when it already exists (ADV-F1-P3). A climbing count means the
+	// still works when it already exists (ADV). A climbing count means the
 	// bridge cannot own the exchange topology and an operator should pre-declare
 	// it (or grant configure permission).
 	MetricAMQP091PublisherDeclareFailed = "AMQP091PublisherDeclareFailed"

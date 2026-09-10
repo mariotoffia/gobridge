@@ -5,12 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
@@ -290,4 +296,136 @@ func TestRouter_ClassifyError_BridgeError(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Production contract: the synchronous DLQ write hold is BOUNDED and OBSERVABLE.
+//
+// A DLQ-store outage holds the calling route goroutine — and with it a route
+// and global concurrency slot — for the whole synchronous write budget. That
+// hold is ACCEPTED: the evidence must be durable before the source delivery is
+// settled, so the alternative is loss. What the tradeoff requires is that the
+// hold is (a) bounded by a value an operator can read, and (b) reported, so a
+// DLQ outage is diagnosed from a metric rather than inferred from stalled
+// intake.
+//
+// The bound is derived from the SAME constants the runtime wires
+// (runtime/bridge_start.go): RuntimeWriteMaxAttempts attempts, each capped at
+// RuntimeWriteTimeout, plus the backoff between them — 2×5s + 500ms = 10.5s.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// deadlineRecordingStore fails every write immediately and records the deadline
+// the router attached to each attempt, so the per-attempt bound is asserted
+// without waiting for it. Signals each attempt on attempts (unbuffered — the
+// router blocks until the test reads).
+type deadlineRecordingStore struct {
+	*FakeStore
+	mu         sync.Mutex
+	remaining  []time.Duration
+	noDeadline int
+	attempts   chan struct{}
+}
+
+func (s *deadlineRecordingStore) Write(ctx context.Context, _ routing.DLQEntry) error {
+	deadline, ok := ctx.Deadline()
+	s.mu.Lock()
+	if ok {
+		s.remaining = append(s.remaining, time.Until(deadline))
+	} else {
+		s.noDeadline++
+	}
+	s.mu.Unlock()
+	s.attempts <- struct{}{}
+	return shared.ErrUnavailable
+}
+
+func (s *deadlineRecordingStore) observed() (remaining []time.Duration, noDeadline int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]time.Duration(nil), s.remaining...), s.noDeadline
+}
+
+// TestRouter_BlackHoledStoreHoldIsBoundedAndMetered_ProductionContract pins the
+// accepted tradeoff: a black-holed DLQ store holds the caller for at
+// most Router.MaxWriteHold(), every attempt carries the per-write deadline that
+// makes that bound real, the caller is told the evidence is NOT durable (so it
+// leaves the source unsettled), and the hold is emitted as MetricDLQWriteHold.
+func TestRouter_BlackHoledStoreHoldIsBoundedAndMetered_ProductionContract(t *testing.T) {
+	fake := clocktest.NewAt(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	metrics := &ports.RecordingExporter{}
+	store := &deadlineRecordingStore{FakeStore: NewFakeStore(), attempts: make(chan struct{})}
+
+	router := dlq.NewFromConfig(dlq.Config{
+		Store:            store,
+		Clock:            fake,
+		Metrics:          metrics,
+		WriteTimeout:     dlq.RuntimeWriteTimeout,
+		WriteMaxAttempts: dlq.RuntimeWriteMaxAttempts,
+	})
+
+	require.Equal(t, 10500*time.Millisecond, router.MaxWriteHold(),
+		"the documented production DLQ hold ceiling (2 attempts × 5s + 500ms backoff)")
+
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{
+		ID:      "hold-bound-1",
+		Subject: "test/hold",
+		Payload: []byte("payload"),
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- router.Route(context.Background(), env,
+			"route-1", "bind-1", "devices/1/state", "sess-1", "src-1",
+			shared.ErrUnavailable, 1)
+	}()
+
+	<-store.attempts // attempt 1 — immediate
+	require.Eventually(t, func() bool { return fake.TimerCount() == 1 },
+		time.Second, time.Millisecond, "backoff timer for attempt 2 not registered")
+	fake.Advance(500 * time.Millisecond)
+	<-store.attempts // attempt 2 — after the injected-clock backoff
+
+	err := <-errCh
+	require.Error(t, err, "a failed DLQ write must be reported so the caller leaves the source unsettled")
+
+	remaining, noDeadline := store.observed()
+	require.Len(t, remaining, dlq.RuntimeWriteMaxAttempts, "exactly the configured number of attempts")
+	assert.Zero(t, noDeadline, "every write attempt must carry a deadline; an undeadlined attempt is an unbounded hold")
+	for i, rem := range remaining {
+		assert.Greater(t, rem, time.Duration(0), "attempt %d deadline already expired", i+1)
+		assert.LessOrEqual(t, rem, dlq.RuntimeWriteTimeout, "attempt %d exceeds the per-write bound", i+1)
+	}
+
+	held := metrics.FindEntries(shared.MetricDLQWriteHold)
+	require.Len(t, held, 1, "every Route must report the hold it cost")
+	assert.LessOrEqual(t, held[0].Duration, router.MaxWriteHold(),
+		"the reported hold must never exceed the documented ceiling")
+	assert.Equal(t, 500*time.Millisecond, held[0].Duration,
+		"the hold is measured on the injected clock (both attempts returned instantly; only the backoff elapsed)")
+	require.Len(t, metrics.FindEntries(shared.MetricDLQWriteFailures), 1,
+		"a permanently failed write must raise the failure counter operators alarm on")
+}
+
+// TestRouter_SuccessfulWriteReportsHold_ProductionContract proves the hold
+// signal is not outage-only: a healthy DLQ write also reports its hold, so the
+// alarm threshold in the runbook is set against a real baseline rather than
+// against silence.
+func TestRouter_SuccessfulWriteReportsHold_ProductionContract(t *testing.T) {
+	metrics := &ports.RecordingExporter{}
+	router := dlq.NewFromConfig(dlq.Config{
+		Store:            NewFakeStore(),
+		Clock:            clocktest.NewAt(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		Metrics:          metrics,
+		WriteTimeout:     dlq.RuntimeWriteTimeout,
+		WriteMaxAttempts: dlq.RuntimeWriteMaxAttempts,
+	})
+
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "hold-ok-1", Subject: "test/hold"})
+	require.NoError(t, router.Route(context.Background(), env,
+		"route-1", "bind-1", "devices/1/state", "sess-1", "src-1", shared.ErrUnavailable, 1))
+
+	held := metrics.FindEntries(shared.MetricDLQWriteHold)
+	require.Len(t, held, 1, "a successful write must report its hold too")
+	assert.Zero(t, held[0].Duration, "no backoff elapsed on the injected clock for a first-attempt success")
+	assert.Empty(t, metrics.FindEntries(shared.MetricDLQWriteFailures))
 }

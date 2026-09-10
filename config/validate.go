@@ -75,6 +75,11 @@ const rolloutModeCoordinated = "coordinated"
 // rolloutModeRefuse is the explicit spelling of the default.
 const rolloutModeRefuse = "refuse"
 
+// rolloutModeIndependent lets every member apply a live-safe change on its own,
+// the way a standalone bridge does — no barrier, no vote, no shared store. It
+// needs no roster, because nothing counts acknowledgements.
+const rolloutModeIndependent = "independent"
+
 // validateClusterRollout admits a coordinated-rollout deployment only when its
 // barrier can actually function. Each rule below rejects a shape that would fail
 // LATER — at the first live reload, or worse, silently:
@@ -86,7 +91,7 @@ const rolloutModeRefuse = "refuse"
 //     cohort to coordinate, and the guard never consults the barrier.
 //   - coordinated REQUIRES a non-empty bridge.cluster.members roster. The roster
 //     is the membership epoch the barrier freezes at Propose and counts acks
-//     against (I2); with an empty epoch every ack set vacuously covers it, so the
+//     against; with an empty epoch every ack set vacuously covers it, so the
 //     first coordinator observation would commit a config no member validated.
 //   - A duplicate member id is rejected rather than deduped: it means the roster
 //     was written by hand against a real cohort and one id is wrong, and the
@@ -112,15 +117,32 @@ func validateClusterRollout(ve *ValidationError, cfg *ports.BridgeConfig) {
 		// configuration error: there is no barrier to confirm.
 		if c.ConfirmWindow != "" {
 			ve.Addf("bridge.cluster.confirm_window: only valid when bridge.cluster.rollout is %q; the "+
-				"refuse/standalone paths have no rollout barrier to confirm (design §8.1)", rolloutModeCoordinated)
+				"refuse/standalone paths have no rollout barrier to confirm (ADR 0014)", rolloutModeCoordinated)
+		}
+		return
+	case rolloutModeIndependent:
+		// Every member applies the change itself, so there is no barrier, no
+		// roster to count acknowledgements against and nothing to confirm. The
+		// only rule is the one shared with the modes above: a confirm window here
+		// would promise a rollback nothing can perform.
+		if c.ConfirmWindow != "" {
+			ve.Addf("bridge.cluster.confirm_window: only valid when bridge.cluster.rollout is %q; %q "+
+				"applies a change on each member independently, so there is no cohort-wide commit to "+
+				"confirm and nothing that could revert one", rolloutModeCoordinated, rolloutModeIndependent)
+		}
+		if !deploymentIsClustered(cfg) {
+			ve.Addf("bridge.cluster.rollout: %q requires a clustered deployment "+
+				"(bridge.deployment_mode: clustered); a standalone bridge already applies a live-safe "+
+				"change directly and has no cohort the setting could describe", rolloutModeIndependent)
 		}
 		return
 	case rolloutModeCoordinated:
 	default:
 		ve.Addf("bridge.cluster.rollout: %q is not a valid value; use %q (the default: refuse every "+
-			"live reload of a clustered deployment, ADR 0012) or %q (coordinated rollout barrier). An "+
+			"live reload of a clustered deployment, ADR 0012), %q (every member applies a live-safe "+
+			"change on its own, as a standalone bridge does) or %q (coordinated rollout barrier). An "+
 			"unrecognised value must not be silently treated as %q",
-			c.Rollout, rolloutModeRefuse, rolloutModeCoordinated, rolloutModeRefuse)
+			c.Rollout, rolloutModeRefuse, rolloutModeIndependent, rolloutModeCoordinated, rolloutModeRefuse)
 		return
 	}
 	if !deploymentIsClustered(cfg) {
@@ -156,7 +178,7 @@ func validateClusterRollout(ve *ValidationError, cfg *ports.BridgeConfig) {
 }
 
 // validateConfirmWindow rejects a malformed or non-positive confirm window on a
-// coordinated cohort (design §8.1). Empty is fine (the base protocol). A parse
+// coordinated cohort (ADR 0014). Empty is fine (the base protocol). A parse
 // failure or a value <= 0 must not silently disable the window — an operator who
 // wrote confirm_window expects a provisional apply, and a silent zero would give
 // them the base protocol under a different name.
@@ -208,7 +230,7 @@ func deploymentIsClustered(cfg *ports.BridgeConfig) bool {
 }
 
 // validateClusterEndpoints rejects the copied-from-docs peer-membership shape of
-// cluster.endpoints at load time instead of at forward time (finding HIGH-1).
+// cluster.endpoints at load time instead of at forward time.
 // cluster.endpoints advertises THIS instance's CAPABILITY endpoints keyed by
 // capability (e.g. http -> "http://host:port"); the HTTP forwarder looks up
 // target.Endpoints["http"] to forward a remote exclusive request
@@ -251,8 +273,8 @@ func validateClusterEndpoints(ve *ValidationError, cfg *ports.BridgeConfig) {
 }
 
 // validateClusteredExclusiveHTTPDirectHold rejects direct_hold delivery for a
-// clustered exclusive route whose ingress is the HTTP transport (finding
-// HIGH-4). Forwarded trusted HTTP requests deliberately skip the ownership
+// clustered exclusive route whose ingress is the HTTP transport.
+// Forwarded trusted HTTP requests deliberately skip the ownership
 // re-check (adapters/http/transport/receiver.go), and direct_hold sends straight
 // from the sender boundary with NO lease/fencing token
 // (runtime/route/runner.go), so a request forwarded to an owner that has just
@@ -341,10 +363,10 @@ func routeIsExclusive(cfg *ports.BridgeConfig, r ports.RouteDef) bool {
 // a standby take over while the old owner still believes it holds it, risking
 // split-brain. The per-attempt renewCallTimeout term matters because renewLoop
 // resets its timer AFTER the renew call returns, so a hung backend adds up to
-// renew_call_timeout to every attempt (finding H2). This mirrors the invariant
+// renew_call_timeout to every attempt. This mirrors the invariant
 // runtime/session Config.Validate enforces (renewWorstCaseSpan); duplicating it
 // in the config layer fails a statically-rejectable blueprint before any
-// runtime is built (contract C3). renew_interval left empty is derived
+// runtime is built (contract). renew_interval left empty is derived
 // downstream and is safe, so it is not checked here; lease_ttl empty falls back
 // to the runtime default.
 func validateSessionRenewTiming(ve *ValidationError, cfg *ports.BridgeConfig) {
@@ -390,7 +412,7 @@ func validateSessionRenewTiming(ve *ValidationError, cfg *ports.BridgeConfig) {
 			maxFails = defaultMaxRenewFails
 		}
 		// renew_call_timeout is an operator-settable blueprint field (finding
-		// H2 folded it into the safety invariant). When unset/zero the runtime
+		// folded it into the safety). When unset/zero the runtime
 		// derives it as min(renewInterval/2, 5s) floored at 1s
 		// (runtime/session.deriveRenewCallTimeout); the literals below duplicate
 		// that derivation so the config-layer worst case matches the runtime's.
@@ -443,7 +465,7 @@ func parseRenewCallTimeout(s *ports.RouteSessionDef, renewInterval time.Duration
 
 // validateConnectLeaseBudget warns when a deferred-connect (connect_after_lease)
 // lease-bound session's broker connect+reconcile budget can consume so much of
-// the lease TTL that the FIRST renewal completes at or after expiry (finding F2).
+// the lease TTL that the FIRST renewal completes at or after expiry.
 // For such a session the lease is acquired FIRST, then the broker connect AND the
 // subscription reconcile run (each bounded by the transport's connect budget),
 // and only then does the renew loop start — so the first renewal completes no
@@ -453,7 +475,7 @@ func parseRenewCallTimeout(s *ports.RouteSessionDef, renewInterval time.Duration
 //
 // after acquisition. The reconcile term is included because the runtime does not
 // begin renewing until subscriptions are re-established (ports.SessionReconciled);
-// omitting it understates real failover time (finding H4 — the budget math must
+// omitting it understates real failover time (finding — the budget math must
 // count connect AND reconcile, not connect alone). There is no dedicated
 // reconcile-timeout knob, so the subscribe round-trip is modelled conservatively
 // as one additional connect_timeout worth of broker interaction — an advisory
@@ -476,7 +498,7 @@ func parseRenewCallTimeout(s *ports.RouteSessionDef, renewInterval time.Duration
 //
 // Eager-connect sessions (connect_after_lease=false) connect BEFORE acquiring
 // the lease, so their connect budget does not erode the post-acquire TTL and is
-// skipped. nil defaults to true for these always-exclusive sessions (finding F6).
+// skipped. nil defaults to true for these always-exclusive sessions.
 func validateConnectLeaseBudget(ve *ValidationError, cfg *ports.BridgeConfig) {
 	const (
 		defaultMaxRenewFails = 3
@@ -531,7 +553,7 @@ func validateConnectLeaseBudget(ve *ValidationError, cfg *ports.BridgeConfig) {
 		// reconcile-timeout knob exists, so model the subscribe round-trip
 		// conservatively as one more connect_timeout worth of broker
 		// interaction. Including it stops the failover budget from understating
-		// real failover time (finding H4).
+		// real failover time.
 		reconcile := connect
 		firstRenew := connect + reconcile + renew + jitter/2 + callTimeout
 		if firstRenew >= lease {
@@ -550,7 +572,7 @@ func validateConnectLeaseBudget(ve *ValidationError, cfg *ports.BridgeConfig) {
 // connect_timeout is a transport-specific raw option (mqtt/amqp), so it is read
 // defensively from the session raw map (mirroring validateStaleClaimDuration); a
 // missing key, an unknown/absent raw map, or a non-duration value returns
-// ok=false so the F2 advisory is simply skipped rather than emitting a spurious
+// ok=false so the advisory is simply skipped rather than emitting a spurious
 // error the transport validator owns.
 func sessionConnectTimeout(cfg *ports.BridgeConfig, sessionID string) (time.Duration, bool) {
 	for i := range cfg.Sessions {
@@ -581,7 +603,7 @@ func sessionConnectTimeout(cfg *ports.BridgeConfig, sessionID string) (time.Dura
 }
 
 // derivedRenewIntervalForConfig duplicates runtime/session.deriveRenewInterval so
-// the F2 advisory uses the SAME effective renew interval the runtime derives when
+// the advisory uses the SAME effective renew interval the runtime derives when
 // renew_interval is left empty. The config package must not import runtime/session
 // (layering), so the formula and its literals are duplicated with this note; keep
 // it in sync with deriveRenewInterval/deriveRenewJitter.
@@ -609,6 +631,18 @@ func validateBridgeFields(ve *ValidationError, cfg *ports.BridgeConfig) {
 	if cfg.Bridge.DeploymentMode != "" {
 		validateEnum(ve, "bridge.deployment_mode", cfg.Bridge.DeploymentMode,
 			"standalone", "clustered")
+	}
+
+	// log_level is a closed enum that nothing validated: a composition root
+	// KEEPS its current level for an unrecognised value (resetting verbosity
+	// mid-incident would be worse), so a misspelled level committed cleanly and
+	// then did nothing. Validate against the same table the roots parse with, so
+	// a value that validates always applies.
+	if cfg.Bridge.LogLevel != "" {
+		if _, ok := ports.ParseLogLevel(cfg.Bridge.LogLevel); !ok {
+			ve.Addf("bridge.log_level: invalid value %q, must be one of: %s",
+				cfg.Bridge.LogLevel, strings.Join(ports.LogLevelNames(), ", "))
+		}
 	}
 
 	if cfg.Bridge.ShutdownTimeout != "" {
@@ -727,6 +761,37 @@ func validateStaleClaimDuration(ve *ValidationError, cfg *ports.BridgeConfig) {
 		return
 	}
 
+	// Lower bound. A stale-claim reclaim hands a record to a second sender while
+	// the first may still be delivering it, so the threshold has to dominate how
+	// long a HEALTHY owner can hold a claim. Two thresholds, because they carry
+	// different certainty:
+	//
+	//   - At or below the largest route send_timeout the overlap is certain: the
+	//     first owner's send has not even timed out yet when the reclaim lands,
+	//     so reclaim stops being crash recovery and becomes a duplicate-delivery
+	//     generator on a perfectly healthy owner — silently, since nothing fails.
+	//     That is an error.
+	//   - Between that and send_timeout plus the drain-batch ceiling the overlap
+	//     depends on where the record sat in its batch: a record claimed at the
+	//     head of a batch may not start sending until most of the batch budget
+	//     has elapsed. Real but configuration-dependent, so a warning naming the
+	//     window rather than a rejection.
+	send, ceiling := sendTimeoutCeiling(cfg), drainBatchCeiling(cfg)
+	if stale <= send {
+		ve.Addf("stores.outbox.options.stale_claim_duration (%s) must exceed the largest route "+
+			"send_timeout (%s): at or below it another owner reclaims and re-sends a record "+
+			"whose first delivery has not even timed out yet", stale, send)
+		return
+	}
+	if stale <= send+ceiling {
+		ve.Warnf("stores.outbox.options.stale_claim_duration (%s) is below the worst-case "+
+			"in-flight claim ceiling (%s = the largest route send_timeout %s plus the "+
+			"drain-batch ceiling %s). A record claimed at the head of a batch can wait most of "+
+			"that budget before its own send starts, so a reclaim inside this window can "+
+			"duplicate a delivery that is still in flight",
+			stale, send+ceiling, send, ceiling)
+	}
+
 	maxGrace := routing.DefaultStepDownGrace
 	for _, r := range cfg.Routes {
 		if r.Session == nil {
@@ -754,3 +819,45 @@ func validateStaleClaimDuration(ve *ValidationError, cfg *ports.BridgeConfig) {
 			stale, maxGrace, maxGrace+15*time.Second)
 	}
 }
+
+// sendTimeoutCeiling is the largest per-record delivery budget any route can
+// spend: the maximum EFFECTIVE send_timeout across routes, where a route
+// without an explicit value contributes the runtime default. It is the floor a
+// wall-clock stale-claim reclaim must clear — see validateStaleClaimDuration.
+func sendTimeoutCeiling(cfg *ports.BridgeConfig) time.Duration {
+	var maxSend time.Duration
+	for _, r := range cfg.Routes {
+		send := routing.DefaultSendTimeout
+		if r.Policy.SendTimeout != "" {
+			if d, err := time.ParseDuration(r.Policy.SendTimeout); err == nil && d > 0 {
+				send = d
+			}
+		}
+		if send > maxSend {
+			maxSend = send
+		}
+	}
+	if maxSend == 0 {
+		return routing.DefaultSendTimeout
+	}
+	return maxSend
+}
+
+// drainBatchCeiling is the configured upper bound on a single outbox drain
+// batch: bridge.max_drain_timeout, or the drainer's own default when unset.
+//
+// It deliberately does NOT read bridge.drain_timeout. That key bounds how long
+// the supervisor lets a runtime DRAIN ON STOP — a different budget entirely —
+// and borrowing it here inflated this ceiling from 10s to 30s, widening the
+// stale-claim warning band by twenty seconds of pure fiction.
+func drainBatchCeiling(cfg *ports.BridgeConfig) time.Duration {
+	if d := cfg.Bridge.MaxDrainTimeoutDuration(); d > 0 {
+		return d
+	}
+	return defaultMaxDrainBatchCeiling
+}
+
+// defaultMaxDrainBatchCeiling mirrors runtime/outbox.defaultMaxDrainTimeout, the
+// batch ceiling applied when bridge.max_drain_timeout is unset. Duplicated here
+// because config validation must not depend on the runtime package.
+const defaultMaxDrainBatchCeiling = 10 * time.Second

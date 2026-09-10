@@ -51,6 +51,14 @@ bindings:
     sender_id: sqs-out
     address: processing-events
 
+stores:
+  # The default policy dead-letters permanent failures and expired messages;
+  # a route that says so needs a store to write them to.
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/dlq.db
+
 routes:
   - id: forward
     receiver_id: sqs-in

@@ -16,7 +16,7 @@ const (
 	DefaultTableName = "gobridge-rollouts"
 
 	// singletonPK is the fixed partition key of the single rollout row: a rollout
-	// store holds exactly one active rollout at a time (invariant I1), so the
+	// store holds exactly one active rollout at a time, so the
 	// aggregate is one item, not one-per-generation. A new generation overwrites
 	// the row (guarded by the revision counter), so history is not retained —
 	// matching the in-memory reference store's single-slot semantics.
@@ -35,7 +35,7 @@ const (
 	attrDeadline     = "deadline_ms"
 	attrCoordVersion = "coord_version"
 
-	// Confirm window (design §8.1). All three are absent for a base-protocol
+	// Confirm window (ADR 0014). All three are absent for a base-protocol
 	// rollout; confirm_deadline_ms and converged are also absent pre-commit.
 	attrConfirmWindowMs   = "confirm_window_ms"
 	attrConfirmDeadlineMs = "confirm_deadline_ms"

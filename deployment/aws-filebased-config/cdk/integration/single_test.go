@@ -14,11 +14,11 @@ import (
 	"github.com/aws/jsii-runtime-go"
 )
 
-// Test_T21_Integration_Single_Healthz deploys a GoBridgeSingle +
+// TestIntegration_Single_Healthz deploys a GoBridgeSingle +
 // GoBridgeALBAttachment stack against the sandbox account and waits
 // for the ALB-fronted health endpoint (HealthzURL) to return 200, then probes
 // the admin /status endpoint and asserts a parseable JSON object.
-func Test_T21_Integration_Single_Healthz(t *testing.T) {
+func TestIntegration_Single_Healthz(t *testing.T) {
 	env := RequireSandbox(t)
 
 	app := NewApp(t, env)

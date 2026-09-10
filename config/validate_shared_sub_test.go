@@ -10,7 +10,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════
-// S4: Clustered MQTT Shared Subscription Validation
+// Clustered MQTT Shared Subscription Validation
 //
 // Validates that MQTT receivers in clustered mode require either
 // $share/ topic prefixes (MQTT v5 shared subscriptions) or an

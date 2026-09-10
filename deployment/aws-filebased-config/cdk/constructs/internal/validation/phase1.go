@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/bridgecfg"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
@@ -25,9 +24,9 @@ const defaultMountPath = infra.DefaultMountPath
 // directories under the mount root.
 const controlOnlySubdir = "control-only"
 
-// bridgeIDPattern is the regex required by the Validation Matrix
-// row 8. The matrix names the field bridge.name; on the typed Go
-// side it is BridgeSettings.ID.
+// bridgeIDPattern is the regex a bridge identifier must match. Operator-
+// facing text calls the field bridge.name; on the typed Go side it is
+// BridgeSettings.ID.
 var bridgeIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
 
 // pathFieldNames lists the lower-cased keys treated as filesystem
@@ -57,13 +56,13 @@ type Phase1Input struct {
 	NodeRole     infra.NodeRole
 }
 
-// Phase1 runs the fast-fail Phase-1 validators in deterministic
+// Phase1 runs the fast-fail validators in deterministic
 // order against in.Materialized.Config. It returns the FIRST failure
 // as a typed error (see errors.go), or nil on success.
 //
 // Order: bridge.id → cluster.endpoints → filesystem profile → store
-// paths → worker / control-only → plaintext secret scan. Cheapest
-// first, secret scan last because it walks every plugin payload.
+// paths → worker / control-only. Credential storage is a consumer choice:
+// Phase1 does not reject literal values or run a secret-content scanner.
 //
 // A nil Materialized or a nil Materialized.Config is a programming
 // error (Phase 1 is meant to run AFTER source.Materialize succeeded)
@@ -104,9 +103,6 @@ func Phase1(in Phase1Input) error {
 	if err := validateWorkerControlOnly(in.Bootstrap, role, mount, storePaths); err != nil {
 		return err
 	}
-	if err := bridgecfg.ScanForPlaintextSecrets(cfg); err != nil {
-		return fmt.Errorf("%w: %w", ErrPlaintextSecret, err)
-	}
 	return nil
 }
 
@@ -145,6 +141,9 @@ func validateFilesystemProfile(boot infra.BootstrapConfig, cfg *ports.BridgeConf
 	if boot.Topology != infra.TopologyFilesystemReplicated {
 		return nil
 	}
+	if boot.ConfigSource == infra.ConfigSourceDynamoDB {
+		return &ErrFilesystemProfile{Reason: "filesystem_replicated requires config_source file"}
+	}
 	for _, route := range cfg.Routes {
 		if route.DeliveryMode == "shared_outbox" {
 			return &ErrFilesystemProfile{
@@ -176,6 +175,22 @@ type storePathHit struct {
 // (store, path) pairs is returned for downstream re-use by the
 // worker-control-only check (avoids walking the configs twice).
 func validateStorePaths(cfg *ports.BridgeConfig, mount string) ([]storePathHit, error) {
+	hits := collectStorePaths(cfg)
+	for _, hit := range hits {
+		if !isUnderMount(hit.Path, mount) {
+			return nil, &ErrStorePathOutsideMount{Store: hit.Store, Path: hit.Path, Mount: mount}
+		}
+	}
+	return hits, nil
+}
+
+// NeedsEFS uses the same parsed store paths as Phase1. File config always needs
+// EFS; a DynamoDB source needs it only for filesystem-backed stores.
+func NeedsEFS(cfg *ports.BridgeConfig, boot infra.BootstrapConfig) bool {
+	return boot.ConfigSource != infra.ConfigSourceDynamoDB || len(collectStorePaths(cfg)) > 0
+}
+
+func collectStorePaths(cfg *ports.BridgeConfig) []storePathHit {
 	var hits []storePathHit
 	stores := []struct {
 		name string
@@ -186,20 +201,12 @@ func validateStorePaths(cfg *ports.BridgeConfig, mount string) ([]storePathHit, 
 		{"stores.dlq", cfg.Stores.DLQ},
 		{"stores.managed_subscriptions", cfg.Stores.ManagedSubscriptions},
 	}
-	for _, s := range stores {
-		paths := extractStorePaths(s.sc)
-		for _, p := range paths {
-			if !isUnderMount(p, mount) {
-				return nil, &ErrStorePathOutsideMount{
-					Store: s.name,
-					Path:  p,
-					Mount: mount,
-				}
-			}
-			hits = append(hits, storePathHit{Store: s.name, Path: p})
+	for _, store := range stores {
+		for _, p := range extractStorePaths(store.sc) {
+			hits = append(hits, storePathHit{Store: store.name, Path: p})
 		}
 	}
-	return hits, nil
+	return hits
 }
 
 // validateWorkerControlOnly enforces matrix row 7. It only fires

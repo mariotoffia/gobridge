@@ -39,12 +39,12 @@ const (
 	// (Ack/Retry/Extend/auto-extend). The SDK HTTP client has no overall
 	// request timeout, so this is the only guard against a black-holed
 	// connection wedging the delivery goroutine for the TCP RTO. See
-	// settlementContext (Finding 5).
+	// settlementContext.
 	sqsSettlementTimeout = 10 * time.Second
 
 	// ackDeleteMarginSeconds is the minimum visibility (in seconds) Ack
-	// guarantees remains on a message before it issues DeleteMessage
-	// (Finding: c8-autoextend-margin). DeleteMessage is bounded by
+	// guarantees remains on a message before it issues DeleteMessage.
+	// DeleteMessage is bounded by
 	// sqsSettlementTimeout (10s); if the live visibility window were shorter,
 	// the message could resurface to another consumer BEFORE the delete lands
 	// — a duplicate (and, on a FIFO queue, group churn). A visibility_timeout
@@ -55,7 +55,7 @@ const (
 	ackDeleteMarginSeconds int32 = int32(sqsSettlementTimeout/time.Second) + 5
 
 	// marginCMVTimeout bounds the pre-delete visibility-margin
-	// ChangeMessageVisibility (Finding: c8-autoextend-margin). It is
+	// ChangeMessageVisibility. It is
 	// deliberately SHORT and INDEPENDENT of the delete's sqsSettlementTimeout
 	// budget: the margin CMV and the DeleteMessage must not share one 10s
 	// context, or a slow-but-eventually-successful CMV could starve the
@@ -68,7 +68,7 @@ const (
 
 // settlementContext returns the context for a settlement/extend SQS call
 // (Ack/Retry/Extend/auto-extend). It ALWAYS bounds the call with
-// sqsSettlementTimeout, even while ctx is still live (Finding 5): the SDK
+// sqsSettlementTimeout, even while ctx is still live: the SDK
 // HTTP client has no overall request timeout, so a black-holed connection
 // during DeleteMessage/ChangeMessageVisibility would otherwise wedge the
 // delivery goroutine for the TCP RTO (tens of minutes) — holding a
@@ -125,7 +125,7 @@ func clampVisibilitySeconds(seconds int64) int32 {
 
 // autoExtendInterval returns the tick interval for the auto-extend loop
 // given the current visibility timeout (seconds): a THIRD of the
-// visibility window (Finding 5), floored at 1s so the clock Ticker never
+// visibility window, floored at 1s so the clock Ticker never
 // receives a non-positive duration (NewTicker / Reset panic on d <= 0).
 //
 // Ticking at vis/3 (rather than vis/2) leaves margin after a single
@@ -183,7 +183,7 @@ type sqsDelivery struct {
 	// windowDeadline is the wall-clock instant (unix nanos) at which the
 	// CURRENT visibility window lapses. It is seeded in newDelivery and
 	// refreshed on every successful ChangeMessageVisibility — both the
-	// auto-extend loop's own extends AND a user Extend (Finding 2). The
+	// auto-extend loop's own extends AND a user Extend. The
 	// auto-extend loop reads it to decide whether a transient CMV failure
 	// happened inside a still-valid window (retry) or after it lapsed
 	// (cancel). Without refreshing it on user Extend, a user push to
@@ -267,7 +267,7 @@ func (d *sqsDelivery) Envelope() *messaging.Envelope { return d.env }
 // redelivered on restart.
 //
 // Before deleting, Ack guarantees the message still has a visibility margin
-// larger than the delete's own timeout (Finding: c8-autoextend-margin) via
+// larger than the delete's own timeout, via
 // ensureDeleteVisibilityMargin, so the delete always lands before the
 // message could resurface to another consumer.
 func (d *sqsDelivery) Ack(ctx context.Context) error {
@@ -284,11 +284,10 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 		)
 	}
 
-	// Guarantee the delete a visibility margin (Finding: c8-autoextend-
-	// margin). Auto-extend is already stopped above, so this final extension
-	// cannot race the background loop. It is passed the CALLER ctx (not
-	// settleCtx): the margin CMV bounds itself independently so it can never
-	// consume the delete's settlement budget.
+	// Guarantee the delete a visibility margin. Auto-extend is already stopped
+	// above, so this final extension cannot race the background loop. It is
+	// passed the CALLER ctx (not settleCtx): the margin CMV bounds itself
+	// independently so it can never consume the delete's settlement budget.
 	d.ensureDeleteVisibilityMargin(ctx)
 
 	start := d.clk.Now()
@@ -308,7 +307,7 @@ func (d *sqsDelivery) Ack(ctx context.Context) error {
 
 // ensureDeleteVisibilityMargin extends the message visibility to
 // ackDeleteMarginSeconds when the live window would otherwise lapse before
-// DeleteMessage can complete (Finding: c8-autoextend-margin). DeleteMessage
+// DeleteMessage can complete. DeleteMessage
 // is bounded by sqsSettlementTimeout; a shorter remaining window could let
 // the message resurface to another consumer mid-delete → duplicate
 // processing. It is a no-op on the common path (a comfortably-large window
@@ -426,7 +425,7 @@ func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
 		)
 	}
 
-	// Bound the CMV call unconditionally (Finding 5): a hung connection
+	// Bound the CMV call unconditionally: a hung connection
 	// must not wedge the caller for the TCP RTO.
 	callCtx, callCancel := settlementContext(ctx)
 	defer callCancel()
@@ -445,7 +444,7 @@ func (d *sqsDelivery) Extend(ctx context.Context, until time.Time) error {
 	d.visibilityTimeout.Store(timeout)
 	// Refresh the auto-extend loop's window deadline so a transient CMV
 	// failure inside the freshly-extended window is not mistaken for a
-	// lapsed window and does not prematurely cancel processing (Finding 2).
+	// lapsed window and does not prematurely cancel processing.
 	d.windowDeadline.Store(d.clk.Now().Add(time.Duration(timeout) * time.Second).UnixNano())
 	return nil
 }
@@ -528,8 +527,8 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 
 	// The CURRENT visibility window's lapse instant lives in
 	// d.windowDeadline (unix nanos), seeded by newDelivery and refreshed on
-	// every successful extend — the loop's own (below) AND a user Extend
-	// (Finding 2). Reading it each failure lets a transient error retry
+	// every successful extend — the loop's own (below) AND a user Extend.
+	// Reading it each failure lets a transient error retry
 	// until (but not past) the true expiry instead of relying solely on a
 	// fixed failure count; reading the atomic (not a loop-local) means a
 	// user push to now+10m is honoured instead of ignored, so a blip inside
@@ -543,7 +542,7 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 			return
 		case <-ticker.C():
 			vis = d.visibilityTimeout.Load()
-			// Bound the CMV call unconditionally (Finding 5): a hung
+			// Bound the CMV call unconditionally: a hung
 			// connection must increment the failure counter within
 			// sqsSettlementTimeout, not stall the loop for the TCP RTO.
 			callCtx, callCancel := context.WithTimeout(ctx, sqsSettlementTimeout)
@@ -565,8 +564,7 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 				// means the lock is already lost — the message is (or is
 				// about to be) visible to another consumer. Retrying is
 				// pointless and only widens the duplicate window, so cancel
-				// processing immediately instead of treating it as transient
-				// (Finding 8).
+				// processing immediately instead of treating it as transient.
 				var notInflight *sqstypes.MessageNotInflight
 				var invalidHandle *sqstypes.ReceiptHandleIsInvalid
 				if errors.As(err, &notInflight) || errors.As(err, &invalidHandle) {
@@ -600,7 +598,7 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 				// the minimum visibility (vis==2, interval floored to 1s)
 				// does windowLapsed fire first, cancelling the instant the
 				// lock is genuinely lost. The deadline is read from the
-				// atomic so a user Extend (Finding 2) pushes it out.
+				// atomic so a user Extend pushes it out.
 				deadline := time.Unix(0, d.windowDeadline.Load())
 				windowLapsed := !now.Before(deadline)
 				if windowLapsed || consecutiveFailures >= autoExtendMaxFailures {
@@ -634,7 +632,7 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 			}
 			consecutiveFailures = 0
 			// A successful extend resets the visibility window to `vis`
-			// from now; publish the new deadline (Finding 2) and restore the
+			// from now; publish the new deadline and restore the
 			// normal cadence.
 			d.windowDeadline.Store(now.Add(time.Duration(vis) * time.Second).UnixNano())
 			newInterval := autoExtendInterval(vis)
@@ -659,7 +657,7 @@ func (d *sqsDelivery) autoExtendLoop(ctx context.Context) {
 // auto-extend: half the remaining window to the visibility deadline,
 // floored at 1s so the clock Ticker never receives a non-positive
 // duration. Retrying at half the remaining window packs several attempts
-// in before the lock is lost while never busy-looping (Finding 5).
+// in before the lock is lost while never busy-looping.
 func autoExtendRetryInterval(remaining time.Duration) time.Duration {
 	retry := remaining / 2
 	if retry < time.Second {

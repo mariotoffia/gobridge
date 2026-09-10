@@ -47,6 +47,28 @@ const (
 	// Envelope header-map buckets, outbox/queue item state, and allocator
 	// page/size-class rounding observed by the finite-cgroup proof.
 	retainedPacketFixedBytes uint64 = 32 << 10
+	// maxDecodedUserProperties is the most User Properties the SDK ever decodes
+	// from one inbound PUBLISH. The CONNECT advertises only a whole-packet
+	// Maximum Packet Size, so a compliant broker forwards a packet whose
+	// metadata section is nothing but five-byte User Properties — tens of
+	// thousands of them at the default payload size — and the SDK would
+	// materialise every one of them twice before the publish callback could
+	// refuse the packet. The predecode guard therefore cuts the list on the
+	// raw bytes to one entry above the retained cap
+	// (truncatePublishUserProperties): enough for the callback to see the
+	// violation and ack-and-drop, one more than the retained slot budgets.
+	// The bound holds for EVERY decoded packet — the one being decoded, the
+	// ones the SDK queues ahead of the callback, and the ones the router
+	// retains — so no slot has to budget the wire worst case.
+	maxDecodedUserProperties = maxIngressUserProperties + 1
+	// sdkDecodeWireMultiple is how many wire-sized allocations one SDK decode
+	// can make: the read buffer it fills from the guard (one), the doubled
+	// replacement that buffer grows into when the packet ends within one read
+	// chunk of the buffer's capacity (two), and the topic, property and
+	// payload copies the decoder takes out of it (one more, at most the wire
+	// size again). The first buffer is garbage once the second exists, but it
+	// stays heap until the collector runs, so the slot budgets all four.
+	sdkDecodeWireMultiple uint64 = 4
 )
 
 // wirePacketSizeFor returns the MQTT v5 Maximum Packet Size advertised to the
@@ -62,7 +84,9 @@ func wirePacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
 }
 
 // decodedPacketSizeFor returns a conservative retained-heap base for one
-// accepted decoded packet representation.
+// ACCEPTED decoded packet representation. An accepted packet has passed the
+// router's local caps (onPublishReceived checks them before anything retains
+// the packet), so maxIngressUserProperties is the right property budget here.
 func decodedPacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
 	wire, err := wirePacketSizeFor(maxPayloadBytes)
 	if err != nil {
@@ -77,16 +101,38 @@ func decodedPacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
 	return uint32(decoded), nil
 }
 
+// transientDecodedPacketSizeFor returns the heap Paho can hold while it
+// consumes ONE wire packet, INCLUDING a packet the router will immediately
+// ack-and-drop. It differs from decodedPacketSizeFor in two ways: the SDK's
+// read buffer and its copies count sdkDecodeWireMultiple times over, and the
+// property budget is maxDecodedUserProperties — the one entry above the cap
+// the guard lets through — because the guard, not the decoder, bounds the
+// count. The zero-payload packet at the advertised maximum is pinned against
+// this budget by measurement in config_ingress_memory_test.go.
+func transientDecodedPacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
+	wire, err := wirePacketSizeFor(maxPayloadBytes)
+	if err != nil {
+		return 0, err
+	}
+	decoded := sdkDecodeWireMultiple*uint64(wire) +
+		maxDecodedUserProperties*retainedUserPropertyBytes +
+		retainedPacketFixedBytes
+	if decoded > math.MaxUint32 {
+		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: transient decoded packet memory exceeds uint32")
+	}
+	return uint32(decoded), nil
+}
+
 // maxPacketSizeFor returns the crossing-slot base: one complete raw wire packet
-// held by mqttIngressConn plus the conservative accepted decoded representation
-// Paho builds while consuming it. A rejected packet retains only the raw half,
-// so the same slot also covers a maximum-wire rejection.
+// held by mqttIngressConn plus the worst-case decoded representation Paho builds
+// while consuming it. A rejected packet retains only the raw half, so the same
+// slot also covers a maximum-wire rejection.
 func maxPacketSizeFor(maxPayloadBytes uint32) (uint32, error) {
 	wire, err := wirePacketSizeFor(maxPayloadBytes)
 	if err != nil {
 		return 0, err
 	}
-	decoded, err := decodedPacketSizeFor(maxPayloadBytes)
+	decoded, err := transientDecodedPacketSizeFor(maxPayloadBytes)
 	if err != nil {
 		return 0, err
 	}

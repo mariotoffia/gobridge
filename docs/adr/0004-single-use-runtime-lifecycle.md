@@ -27,19 +27,19 @@ and `/live` fails closed.
 - **Start-once, stop-once.** `Start` on a stopped runtime returns an error
   rather than resetting state: `"runtime: cannot start a stopped runtime
   (single-use lifecycle); build a new runtime"`
-  (`runtime/bridge_start.go:44-46`). Configuration changes replace the instance
+  (`runtime/bridge_start.go`). Configuration changes replace the instance
   (swap mode); they never restart one.
 
 - **Terminal state on the port.** `ports.Runtime` exposes `Terminal() bool`
-  (`ports/runtime.go:158`). A runtime that can never serve again reports
+  (`ports/runtime.go`). A runtime that can never serve again reports
   `Terminal() == true`.
 
 - **Wedge = swap failed AND recovery failed.** In the file-based bootstrap, the
   process is WEDGED only when a prepare/commit swap failed **and** the recovery
   back to the previous runtime also failed (`wedged atomic.Bool`,
-  `deployment/aws-filebased-config/lib/bootstrap/app.go:145-154`). `Run` exits
-  non-zero once terminal (`ErrRuntimeTerminal`, `app.go:34`), driven by a
-  terminal backstop poll (`defaultTerminalPollInterval = 5s`, `app.go:39`).
+  `deployment/aws-filebased-config/lib/bootstrap/app.go`). `Run` exits
+  non-zero once terminal (`ErrRuntimeTerminal`, `app.go`), driven by a
+  terminal backstop poll (`defaultTerminalPollInterval = 5s`, `app.go`).
 
 - **Fail closed via a sentinel.** A `terminalRuntime` stands in for the wedged
   instance (`bootstrap/terminal_runtime.go`): `Terminal() == true`,

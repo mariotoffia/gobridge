@@ -24,10 +24,14 @@ may need a process restart to complete takeover.
    means this instance is serving.
 
 2. Confirm who holds the lease. `GET /api/v1/monitor/deephealth` (authenticated)
-   reports the instance `role` (`leader` once it holds a lease, otherwise
-   `standby`) and a per-session `has_lease` flag
-   ([http-api.md](../http-api.md)). The surviving instance should show
-   `role: leader` with `has_lease: true` on the exclusive session.
+   reports the instance `role` -- `active` once an exclusive session holds a
+   lease, `standby` while exclusive sessions are configured but none holds one,
+   `standalone` when no exclusive session is configured at all -- and a
+   per-session `has_lease` flag
+   ([http-api-monitor.md](../http-api-monitor.md)). The surviving instance
+   should show `role: active` with `has_lease: true` on the exclusive session.
+   The bare `/ready` probe answers 503 for a `standby` (it is capped below
+   `full`), so a standby that reads not-ready is expected, not broken.
    `GET /api/v1/monitor/topology` does **not** expose lease ownership — its
    `running: true` is reported by a standby too. Cross-check the lease metrics
    under `GoBridge/Runtime`
@@ -66,11 +70,76 @@ may need a process restart to complete takeover.
    cross-host wall-clock subtraction. A cold process still pays its real startup
    delay and starts observation at zero when no prior observer confirmed time.
 
-4. Distinguish a clean takeover from a stuck single-active session. The MQTT
+   Both shipped lease profiles evaluated at their defaults — the 360s standalone
+   one and the 45s clustered one — are in
+   [Failover budget](../failover-budget.md#the-two-derived-lease-profiles).
+   Read the profile the incident's deployment actually runs: they differ by more
+   than 3x.
+
+   **The owner is up, renewing, and nothing flows.** That is not this failure
+   mode. A member that alone lost its path to the broker keeps renewing, so the
+   lease never moves and no alarm above fires. Check
+   `routes[].session.broker_health_step_down`: `off` (or, on a config predating
+   the required decision, absent) means the deployment chose to ride it out and
+   the only recovery is repairing that member's broker path or stopping the
+   process. A positive value means the owner releases the lease after that long
+   non-converged, and `BrokerHealthStepDown` counts it — a non-zero rate on one
+   member is the signal. Its budget is separate from the one above; see
+   [Failover budget](../failover-budget.md#two-failure-modes-two-formulas).
+
+4. **Advisory 502/503 on exclusive routes? Read `RouteOwnerUnknown`.** The route
+   locator decides who owns an exclusive route by comparing **its own** wall
+   clock with the owner-written `expires_at`. That decision is advisory only —
+   the locator mints no fencing token, so the data path stays skew-immune — but
+   it does gate forwarding, and every unverifiable decision is counted on
+   `RouteOwnerUnknown` with a `reason` dimension:
+
+   | `reason` | Meaning | Action |
+   |---|---|---|
+   | `lease_expired` | This node's clock is at or past the owner's `expires_at`. | See the two causes below. |
+   | `lease_unowned` | No lease row — a normal transfer window. | None if it settles within one acquire poll. |
+   | `store_unavailable` | The lease store failed and no usable cached owner remains. | [DynamoDB store outage / throttling](dynamodb-store-outage-throttling.md). |
+   | `store_breaker_open` | The locator refused without calling a repeatedly-failing store. | As above; the breaker closes on the first success. |
+
+   A sustained `lease_expired` count has exactly two causes:
+
+   - **Fleet clock skew.** The owner renewed against its clock and considers the
+     lease live; this node's clock disagrees by more than the renew margin.
+     Budget fleet skew below one renew interval (default clustered profile: 45 s
+     `lease_ttl`, so keep skew under a few seconds) and verify NTP/chrony on
+     every node before suspecting the lease store. Skew never corrupts data —
+     it degrades routing availability.
+   - **Cold takeover after a whole-fleet restart.** Takeover requires a full
+     local lease-observation window regardless of how long ago the row expired,
+     so an hours-expired row from a previous generation still costs about one
+     `lease_ttl` before the first acquisition. Expect `lease_expired` for that
+     window after a full-fleet stop/start and include it in recovery objectives:
+     it is additive to, not covered by, the `failover_slo` above, which measures
+     failure detection on a **running** cohort.
+
+   Alarm on `RouteOwnerUnknown` (`reason=lease_expired`) sustained beyond one
+   `lease_ttl` plus one acquire poll — past that it is skew or a stuck acquire,
+   not a takeover in progress.
+
+5. Distinguish a clean takeover from a stuck single-active session. The MQTT
    (Paho) session is **single-use**: once closed it cannot be restarted, so
    an instance re-acquiring the lease must **restart the process** to get a fresh
    session (see [Scenario 8](../scenarios/08-clustered-exclusive-sessions.md)).
    A terminal runtime fails `GET /api/v1/monitor/live` closed.
+
+6. A **session failure** is not a node failure and must not cost a TTL. When a
+   reconnect reconcile fails, or the transport's event stream dies, the owner
+   closes its source, releases the lease, and the supervisor restarts that one
+   session. On the default `connect_after_lease` profile the restarted session
+   briefly re-seizes the lease (the store's same-owner path grants it at once)
+   and only then discovers the single-use transport refuses to start again. That
+   node is now provably dead, so it **releases** before going terminal: a standby
+   takes over within one `acquire_poll_interval`, not one `lease_ttl`.
+
+   So a `LeaseTransfers` advance that lags a session failure by roughly a full
+   `lease_ttl` is a symptom, not the design — check that the restarting node
+   logged `lease released` with `reason=deferred connect failure` before it went
+   terminal.
 
 ## Action
 

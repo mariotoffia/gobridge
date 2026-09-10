@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestStrictJSON_RejectsTrailingAndMultiValue is the B9-FU-STRICTJSON
+// TestStrictJSON_RejectsTrailingAndMultiValue is the
 // regression: decodeStrictJSON must reject a body that carries a valid
 // leading JSON value followed by trailing garbage (e.g. `{"ttl":"90s"}JUNK`)
 // or a second JSON value, instead of silently honoring the leading value.

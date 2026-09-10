@@ -55,7 +55,7 @@ func mustPersistPending(t *testing.T, store *sqliteoutbox.Store, id, sessionID s
 	}
 }
 
-// TestClaim_RejectsInvalidTokenAndDoesNotMutate is the F1 facade fencing guard
+// TestClaim_RejectsInvalidTokenAndDoesNotMutate is the facade fencing guard
 // on Claim: an invalid token is rejected with shared.ErrStaleFencingToken
 // BEFORE any SQL runs, claims zero records, and leaves the pending row untouched
 // so a valid token still wins it. Mutation-verify: delete the guard in
@@ -84,7 +84,7 @@ func TestClaim_RejectsInvalidTokenAndDoesNotMutate(t *testing.T) {
 	}
 }
 
-// TestComplete_RejectsInvalidTokenAndDoesNotMutate is the F1 facade fencing
+// TestComplete_RejectsInvalidTokenAndDoesNotMutate is the facade fencing
 // guard on Complete: an invalid token is rejected with
 // shared.ErrStaleFencingToken and leaves the row claimed so its rightful owner
 // can still complete it.
@@ -110,7 +110,7 @@ func TestComplete_RejectsInvalidTokenAndDoesNotMutate(t *testing.T) {
 	}
 }
 
-// TestRelease_RejectsInvalidTokenAndDoesNotMutate is the F1 facade fencing
+// TestRelease_RejectsInvalidTokenAndDoesNotMutate is the facade fencing
 // guard on Release: an invalid token is rejected with
 // shared.ErrStaleFencingToken and leaves the row claimed (not pending).
 func TestRelease_RejectsInvalidTokenAndDoesNotMutate(t *testing.T) {

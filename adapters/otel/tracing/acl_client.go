@@ -25,10 +25,10 @@ type tracerClient interface {
 	StartSpan(ctx context.Context, name string, tags []shared.Tag) (context.Context, ports.Span)
 	// Extract reads a W3C trace context from carrier headers into ctx
 	// so a subsequently started span becomes a child of the remote
-	// parent (K1). Signature is SDK-free by design.
+	// parent. Signature is SDK-free by design.
 	Extract(ctx context.Context, headers map[string]any) context.Context
 	// Inject writes the active span context in ctx onto carrier headers
-	// for outbound propagation (K1). Returns the (possibly new) map.
+	// for outbound propagation. Returns the (possibly new) map.
 	Inject(ctx context.Context, headers map[string]any) map[string]any
 	Close(ctx context.Context) error
 }
@@ -47,7 +47,7 @@ type otelTracerClient struct {
 func newTracerClient(ctx context.Context, cfg Config) (*otelTracerClient, error) {
 	var exporterOpts []otlptracehttp.Option
 	// Only pin the endpoint when explicitly configured; otherwise the
-	// SDK honors OTEL_EXPORTER_OTLP[_TRACES]_ENDPOINT env vars (K7).
+	// SDK honors OTEL_EXPORTER_OTLP[_TRACES]_ENDPOINT env vars.
 	if cfg.Endpoint != "" {
 		exporterOpts = append(exporterOpts, otlptracehttp.WithEndpointURL(cfg.Endpoint))
 	}
@@ -65,7 +65,7 @@ func newTracerClient(ctx context.Context, cfg Config) (*otelTracerClient, error)
 
 	// resource.Default() already merges OTEL_SERVICE_NAME and
 	// OTEL_RESOURCE_ATTRIBUTES; only override attributes explicitly set
-	// via options so env-provided values are not clobbered (K7).
+	// via options so env-provided values are not clobbered.
 	var resAttrs []attribute.KeyValue
 	if cfg.ServiceName != "" {
 		resAttrs = append(resAttrs, semconv.ServiceName(cfg.ServiceName))
@@ -120,7 +120,7 @@ func batchOptions(cfg Config) []sdktrace.BatchSpanProcessorOption {
 // samplerFromConfig builds a ParentBased sampler whose root decision is
 // a TraceIDRatioBased sampler at the configured ratio. ParentBased
 // respects a sampled remote parent (propagation), while a ratio of 0.0
-// disables sampling of new root traces (K6). SamplerRatio is assumed
+// disables sampling of new root traces. SamplerRatio is assumed
 // non-nil (applyDefaults guarantees it).
 func samplerFromConfig(cfg Config) sdktrace.Sampler {
 	ratio := 1.0
@@ -152,7 +152,7 @@ func (c *otelTracerClient) StartSpan(
 	}
 
 	// ctx may already carry a remote span context established by
-	// Extract; tracer.Start then parents the new span accordingly (K1).
+	// Extract; tracer.Start then parents the new span accordingly.
 	ctx, span := c.tracer.Start(ctx, name, spanOpts...)
 	return ctx, &otelSpan{span: span}
 }
@@ -183,7 +183,7 @@ func (c *otelTracerClient) Close(ctx context.Context) error {
 // OTel propagation.TextMapCarrier interface. W3C keys ("traceparent",
 // "tracestate") are written lowercase, matching the bridge header
 // vocabulary, but lookup is case-insensitive per the W3C Trace Context
-// spec (MF-9): transports that stamp "Traceparent" (HTTP-style header
+// spec: transports that stamp "Traceparent" (HTTP-style header
 // casing) must not silently break trace continuity.
 type headerCarrier map[string]any
 
@@ -218,7 +218,7 @@ func (c headerCarrier) Keys() []string {
 }
 
 // observedSpanExporter wraps a SpanExporter to surface export failures
-// through an error callback that would otherwise be invisible (K3).
+// through an error callback that would otherwise be invisible.
 type observedSpanExporter struct {
 	sdktrace.SpanExporter
 	onError func(error)

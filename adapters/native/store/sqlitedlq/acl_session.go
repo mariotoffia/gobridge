@@ -30,11 +30,11 @@ type sqlSession struct {
 // The connection pool is capped at a single open connection: modernc.org/sqlite
 // gives every *sql.Conn its own private database for ":memory:" paths (a wider
 // pool would fracture an in-memory store), and on a file database it serialises
-// writers so in-process goroutines never race into SQLITE_BUSY (I2).
+// writers so in-process goroutines never race into SQLITE_BUSY.
 //
 // ponytail: single-writer ceiling — sufficient for the single-process
 // deployments this DLQ store targets; a read-heavy deployment would add a
-// separate read-only pool over the WAL. See I2.
+// separate read-only pool over the WAL.
 func openSession(path string) (*sqlSession, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -48,7 +48,7 @@ func openSession(path string) (*sqlSession, error) {
 	// timeout that first conversion fails fast with SQLITE_BUSY under
 	// concurrent opens of a not-yet-WAL file. Arming it first makes the driver
 	// block-and-retry up to the timeout — the retry policy for cross-process
-	// contention on a file database, including the initial WAL conversion (I2).
+	// contention on a file database, including the initial WAL conversion.
 	//
 	// synchronous=FULL is pinned explicitly rather than relying on the driver
 	// default: WAL mode's own default is NORMAL (which can lose the last
@@ -68,56 +68,10 @@ func openSession(path string) (*sqlSession, error) {
 
 	if _, err := db.Exec(schemaSQL); err != nil {
 		_ = db.Close()
-		return nil, wrapErr(err, "sqlitedlq: migrate", "path", path)
-	}
-
-	// Additive migration for databases created before the address column
-	// existed (finding: durable backends silently dropped DLQEntry.Address).
-	if err := migrateColumn(db, "address", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		_ = db.Close()
-		return nil, wrapErr(err, "sqlitedlq: migrate address", "path", path)
+		return nil, wrapErr(err, "sqlitedlq: create schema", "path", path)
 	}
 
 	return &sqlSession{db: db}, nil
-}
-
-// migrateColumn adds column with definition def to the dlq table when a
-// legacy database lacks it. CREATE TABLE IF NOT EXISTS does not alter
-// existing tables, so pre-existing files need the explicit ALTER.
-func migrateColumn(db *sql.DB, column, def string) error {
-	has, err := hasColumn(db, column)
-	if err != nil {
-		return err
-	}
-	if has {
-		return nil
-	}
-	if _, err := db.Exec(`ALTER TABLE dlq ADD COLUMN ` + column + ` ` + def); err != nil {
-		// A concurrent first-upgrade open (multi-process shared file) can
-		// lose the ALTER race with "duplicate column name": both opens
-		// passed the table_info check above, then both ran ALTER. Re-check;
-		// if the column now exists the migration is effectively complete.
-		if got, chkErr := hasColumn(db, column); chkErr == nil && got {
-			return nil
-		}
-		return fmt.Errorf("sqlitedlq: add dlq.%s column: %w", column, err)
-	}
-	return nil
-}
-
-// hasColumn reports whether the dlq table already has the named column.
-func hasColumn(db *sql.DB, column string) (bool, error) {
-	rows, err := db.Query(`SELECT 1 FROM pragma_table_info('dlq') WHERE name = ?`, column)
-	if err != nil {
-		return false, fmt.Errorf("sqlitedlq: inspect dlq.%s column: %w", column, err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	has := rows.Next()
-	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("sqlitedlq: inspect dlq.%s column: %w", column, err)
-	}
-	return has, nil
 }
 
 // close releases the underlying *sql.DB.

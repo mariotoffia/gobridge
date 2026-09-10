@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestCondition_GreaterThan_UnsignedHeaderValues is the regression for FIX 8:
+// TestCondition_GreaterThan_UnsignedHeaderValues is the regression:
 // toFloat64 had no unsigned cases, so a uint/uint8/uint16/uint32/uint64 header
 // value in a gt/lt condition returned "cannot convert" -> ErrInvalidPayload
 // (Rejected -> DLQ) for a perfectly numeric value. Every unsigned width must now

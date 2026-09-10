@@ -24,140 +24,9 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awscloudwatch"
 	cwactions "github.com/aws/aws-cdk-go/awscdk/v2/awscloudwatchactions"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
-	awsecs "github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
-	elbv2 "github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awssns"
 	"github.com/aws/constructs-go/constructs/v10"
 	"github.com/aws/jsii-runtime-go"
-
-	cdkconstructs "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgealbattachment"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgecluster"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgedynamodbha"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
 )
-
-// AlarmsProps configures the GoBridgeAlarms bundle. Exactly one of
-// Single or Cluster MUST be supplied. Efs and AlarmTopic are
-// required. Attachment is optional — when nil the ALB-related
-// alarms are skipped (Single deployments without an ALB still get
-// cluster + EFS alarms).
-type AlarmsProps struct {
-	Single     *gobridgesingle.GoBridgeSingle
-	Cluster    *gobridgecluster.GoBridgeCluster
-	DynamoDBHA *gobridgedynamodbha.GoBridgeDynamoDBHA
-
-	Efs        *cdkconstructs.GoBridgeEfsConfig
-	Attachment *gobridgealbattachment.GoBridgeALBAttachment
-
-	AlarmTopic awssns.ITopic
-
-	Period      awscdk.Duration
-	Evaluations *float64
-
-	EfsPercentIOLimitThreshold *float64
-	Alb5xxThreshold            *float64
-
-	DisableControlAbsence bool
-	DisableWorkerDegraded bool
-	DisableEfsIO          bool
-	DisableAlbUnhealthy   bool
-	DisableAlb5xx         bool
-
-	// EnableRollupAlarms opts in to alarms on the custom runtime rollup
-	// metrics (OutboxDepth, DLQEntries, LeaseExpiries, LeaseAcquireFailures)
-	// published by the cloudwatch metrics exporter when
-	// BootstrapConfig.MetricsExporter=cloudwatch with
-	// WithRollupMetrics(DefaultRollupMetrics()...). OFF by default: a
-	// deployment without that exporter emits no such metrics and the alarms
-	// would sit in INSUFFICIENT_DATA. The alarms carry NO dimensions and so
-	// only match the zero-dimension rollup series the exporter
-	// double-publishes (MF-4). They publish to AlarmTopic like every other
-	// alarm in the bundle.
-	EnableRollupAlarms bool
-
-	// RollupMetricsNamespace overrides the CloudWatch namespace the rollup
-	// alarms read. Empty defaults to rollupNamespaceDefault; it MUST equal
-	// BootstrapConfig.EffectiveMetricsNamespace() (the namespace the exporter
-	// publishes to) or the rollup alarms never leave INSUFFICIENT_DATA.
-	RollupMetricsNamespace *string
-
-	// OutboxDepthThreshold overrides the OutboxDepth alarm threshold
-	// (default 1000). LeaseAcquireFailuresThreshold overrides the
-	// LeaseAcquireFailures alarm threshold (default 3).
-	OutboxDepthThreshold          *float64
-	LeaseAcquireFailuresThreshold *float64
-}
-
-// GoBridgeAlarms is the bundle construct exposing each generated
-// CloudWatch alarm. Accessors return nil when the corresponding
-// alarm was skipped (disabled or not applicable for the deployment
-// shape).
-type GoBridgeAlarms struct {
-	constructs.Construct
-
-	controlAbsence   awscloudwatch.IAlarm
-	workerDegraded   awscloudwatch.IAlarm
-	efsIO            awscloudwatch.IAlarm
-	albUnhealthyCtrl awscloudwatch.IAlarm
-	albUnhealthyWrk  awscloudwatch.IAlarm
-	alb5xxCtrl       awscloudwatch.IAlarm
-	alb5xxWrk        awscloudwatch.IAlarm
-
-	outboxDepth          awscloudwatch.IAlarm
-	dlqEntries           awscloudwatch.IAlarm
-	leaseExpiries        awscloudwatch.IAlarm
-	leaseAcquireFailures awscloudwatch.IAlarm
-
-	warmStandbyUnavailable awscloudwatch.IAlarm
-	failureToFullDuration  awscloudwatch.IAlarm
-	dynamoThrottles        []awscloudwatch.IAlarm
-	dynamoSystemErrors     []awscloudwatch.IAlarm
-	leaseTransfers         awscloudwatch.IAlarm
-	outboxDrainLatency     awscloudwatch.IAlarm
-	outboxDepthFailures    awscloudwatch.IAlarm
-	outboxRecordFailures   awscloudwatch.IAlarm
-	outboxDrainStalled     awscloudwatch.IAlarm
-	dlqDepth               awscloudwatch.IAlarm
-	dlqWriteFailures       awscloudwatch.IAlarm
-
-	mqttIngressPoison   awscloudwatch.IAlarm
-	reconcileFailures   awscloudwatch.IAlarm
-	mqttSessionTakeover awscloudwatch.IAlarm
-	mqttQoSDowngraded   awscloudwatch.IAlarm
-}
-
-const (
-	// rollupNamespaceDefault mirrors infra.DefaultMetricsNamespace /
-	// domain/shared.MetricNamespace: the namespace the runtime exporter
-	// publishes to. Duplicated as a literal to avoid a dependency edge from
-	// the CDK constructs onto the runtime domain module.
-	rollupNamespaceDefault = "GoBridge/Runtime"
-
-	// Rollup metric names mirror domain/shared.Metric* (the strings the
-	// exporter emits). The rollup alarms match the zero-dimension copies.
-	metricOutboxDepth          = "OutboxDepth"
-	metricDLQEntries           = "DLQEntries"
-	metricLeaseExpiries        = "LeaseExpiries"
-	metricLeaseAcquireFailures = "LeaseAcquireFailures"
-	metricLeaseTransfers       = "LeaseTransfers"
-	metricOutboxDrainLatency   = "OutboxDrainLatency"
-	metricOutboxDepthFailures  = "OutboxDepthFailures"
-	metricOutboxRecordFailures = "OutboxRecordFailures"
-	metricOutboxDrainStalled   = "OutboxDrainStalled"
-	metricDLQDepth             = "DLQDepth"
-	metricDLQWriteFailures     = "DLQWriteFailures"
-	// MQTT rollup metric names (mirror adapters/mqtt/.../metrics.go). The MQTT
-	// docs instruct operators to alert on these; wiring them here closes the gap
-	// where the bundle carried none of them (finding §8 alarms.go).
-	metricMQTTIngressPoisonDropped = "MQTTIngressPoisonDropped"
-	metricReconcileFailures        = "ReconcileFailures"
-	metricMQTTSessionTakeover      = "MQTTSessionTakeover"
-	metricMQTTQoSDowngraded        = "MQTTQoSDowngraded"
-)
-
-// FailureToFullMetricName is emitted only by the credentialed external failover probe.
-const FailureToFullMetricName = "FailureToFullDuration"
 
 // NewGoBridgeAlarms wires the alarm bundle into scope.
 func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProps) *GoBridgeAlarms {
@@ -176,7 +45,7 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 	}
 
 	clusterName := resolveClusterName(props)
-	controlServiceName, workerServiceName := resolveServiceNames(props)
+	controlServiceName, workerServiceNames := resolveServiceNames(props)
 
 	topicAction := cwactions.NewSnsAction(props.AlarmTopic)
 
@@ -205,46 +74,61 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 	}
 
 	if (props.Cluster != nil || props.DynamoDBHA != nil) && !props.DisableWorkerDegraded {
-		running := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
-			Namespace:  jsii.String("ECS/ContainerInsights"),
-			MetricName: jsii.String("RunningTaskCount"),
-			DimensionsMap: &map[string]*string{
-				"ServiceName": workerServiceName,
-				"ClusterName": clusterName,
-			},
-			Statistic: jsii.String("Minimum"),
-			Period:    period,
-		})
-		desired := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
-			Namespace:  jsii.String("ECS/ContainerInsights"),
-			MetricName: jsii.String("DesiredTaskCount"),
-			DimensionsMap: &map[string]*string{
-				"ServiceName": workerServiceName,
-				"ClusterName": clusterName,
-			},
-			Statistic: jsii.String("Maximum"),
-			Period:    period,
-		})
-		expr := awscloudwatch.NewMathExpression(&awscloudwatch.MathExpressionProps{
-			Expression: jsii.String("IF(running < desired, 1, 0)"),
-			UsingMetrics: &map[string]awscloudwatch.IMetric{
-				"running": running,
-				"desired": desired,
-			},
-			Period: period,
-			Label:  jsii.String("WorkerCapacityDegraded"),
-		})
-		alarm := awscloudwatch.NewAlarm(c, jsii.String("WorkerDegraded"), &awscloudwatch.AlarmProps{
-			Metric:             expr,
-			Threshold:          jsii.Number(1),
-			EvaluationPeriods:  evals,
-			ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-			TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
-			AlarmDescription:   jsii.String("GoBridge worker service running task count below desired count."),
-		})
-		alarm.AddAlarmAction(topicAction)
-		alarm.AddOkAction(topicAction)
-		g.workerDegraded = alarm
+		// ONE alarm per worker-side service rather than one summed alarm over all of
+		// them. Two reasons, and the second is the load-bearing one:
+		//
+		//   - the alarm names the slot that is short a task, which is the first thing
+		//     an operator needs; and
+		//   - a summed expression grows two metric inputs per slot, and a CloudWatch
+		//     metric-math alarm has a hard cap on how many it may reference. A summed
+		//     alarm would therefore turn a large enough roster into a DEPLOY-time
+		//     failure, after the services and the retained rollout table already
+		//     exist. Per-slot alarms are three inputs each, forever.
+		for i, serviceName := range workerServiceNames {
+			// The first alarm keeps the bare construct id so an existing single-worker
+			// deployment does not see its alarm replaced.
+			id := "WorkerDegraded"
+			if i > 0 {
+				id = fmt.Sprintf("WorkerDegraded%d", i)
+			}
+			running := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
+				Namespace:     jsii.String("ECS/ContainerInsights"),
+				MetricName:    jsii.String("RunningTaskCount"),
+				DimensionsMap: &map[string]*string{"ServiceName": serviceName, "ClusterName": clusterName},
+				Statistic:     jsii.String("Minimum"),
+				Period:        period,
+			})
+			desired := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
+				Namespace:     jsii.String("ECS/ContainerInsights"),
+				MetricName:    jsii.String("DesiredTaskCount"),
+				DimensionsMap: &map[string]*string{"ServiceName": serviceName, "ClusterName": clusterName},
+				Statistic:     jsii.String("Maximum"),
+				Period:        period,
+			})
+			expr := awscloudwatch.NewMathExpression(&awscloudwatch.MathExpressionProps{
+				Expression: jsii.String("IF(running < desired, 1, 0)"),
+				UsingMetrics: &map[string]awscloudwatch.IMetric{
+					"running": running,
+					"desired": desired,
+				},
+				Period: period,
+				Label:  jsii.String("WorkerCapacityDegraded"),
+			})
+			alarm := awscloudwatch.NewAlarm(c, jsii.String(id), &awscloudwatch.AlarmProps{
+				Metric:             expr,
+				Threshold:          jsii.Number(1),
+				EvaluationPeriods:  evals,
+				ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+				TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
+				AlarmDescription:   jsii.String("GoBridge worker service running task count below desired count."),
+			})
+			alarm.AddAlarmAction(topicAction)
+			alarm.AddOkAction(topicAction)
+			g.workerDegradedAlarms = append(g.workerDegradedAlarms, alarm)
+			if g.workerDegraded == nil {
+				g.workerDegraded = alarm
+			}
+		}
 	}
 
 	if props.DynamoDBHA != nil {
@@ -253,14 +137,15 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 			DimensionsMap: &map[string]*string{"ServiceName": controlServiceName, "ClusterName": clusterName},
 			Statistic:     jsii.String("Minimum"), Period: period,
 		})
-		workerRunning := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
-			Namespace: jsii.String("ECS/ContainerInsights"), MetricName: jsii.String("RunningTaskCount"),
-			DimensionsMap: &map[string]*string{"ServiceName": workerServiceName, "ClusterName": clusterName},
-			Statistic:     jsii.String("Minimum"), Period: period,
-		})
+		workersExpr, workerMetrics := serviceCountSum(workerServiceNames, clusterName,
+			"RunningTaskCount", "Minimum", "wr", period)
+		using := map[string]awscloudwatch.IMetric{"control": controlRunning}
+		for id, metric := range workerMetrics {
+			using[id] = metric
+		}
 		warm := awscloudwatch.NewMathExpression(&awscloudwatch.MathExpressionProps{
-			Expression:   jsii.String("IF(control + workers < 2, 1, 0)"),
-			UsingMetrics: &map[string]awscloudwatch.IMetric{"control": controlRunning, "workers": workerRunning},
+			Expression:   jsii.String("IF(control + " + workersExpr + " < 2, 1, 0)"),
+			UsingMetrics: &using,
 			Period:       period, Label: jsii.String("WarmStandbyUnavailable"),
 		})
 		alarm := awscloudwatch.NewAlarm(c, jsii.String("WarmStandbyUnavailable"), &awscloudwatch.AlarmProps{
@@ -274,7 +159,7 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 		g.warmStandbyUnavailable = alarm
 	}
 
-	if !props.DisableEfsIO {
+	if props.Efs != nil && !props.DisableEfsIO {
 		threshold := jsii.Number(90)
 		if props.EfsPercentIOLimitThreshold != nil {
 			threshold = props.EfsPercentIOLimitThreshold
@@ -400,7 +285,16 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 			{name: "Lease", table: data.LeaseTable()},
 			{name: "Outbox", table: data.OutboxTable()},
 			{name: "ManagedSubscriptions", table: data.ManagedSubscriptionsTable()},
+			// The rollout table is nil on the autoscaled profile, which provisions
+			// none. Where it exists it is the barrier's only coordination store AND
+			// the boot-resolve gate, so throttling on it both stalls every rollout
+			// and can stop a replaced task from starting at all — the one table whose
+			// silence is least affordable.
+			{name: "Rollout", table: data.RolloutTable()},
 		} {
+			if table.table == nil {
+				continue
+			}
 			throttle, system := newDynamoDBAlarms(c, table.name, table.table, period, evals, topicAction)
 			g.dynamoThrottles = append(g.dynamoThrottles, throttle)
 			g.dynamoSystemErrors = append(g.dynamoSystemErrors, system)
@@ -441,9 +335,12 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 			"Sum", jsii.Number(0), period, evals, topicAction,
 			awscloudwatch.TreatMissingData_NOT_BREACHING, "GoBridge failed to write a dead-letter entry.")
 
-		// MQTT operational alarms the transport docs instruct operators to wire
-		// (finding §8 alarms.go). Sum>0 over the window with NOT_BREACHING on missing
-		// data (these are event counters, absent when healthy).
+		// MQTT operational alarms the transport docs instruct operators to wire.
+		// Sum>0 over the window with NOT_BREACHING on missing data (these are event
+		// counters, absent when healthy). Each is emitted per session_id, so these
+		// dimensionless alarms match ONLY the rollup copies — the exporter must be
+		// configured with the default rollup list or none of them can ever fire; see
+		// docs/aws-deployment/alarms.md.
 		g.mqttIngressPoison = newRollupAlarm(c, "HAMQTTIngressPoisonDropped", ns, metricMQTTIngressPoisonDropped,
 			"Sum", jsii.Number(0), period, evals, topicAction,
 			awscloudwatch.TreatMissingData_NOT_BREACHING,
@@ -460,210 +357,16 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 			"Sum", jsii.Number(0), period, evals, topicAction,
 			awscloudwatch.TreatMissingData_NOT_BREACHING,
 			"GoBridge MQTT broker granted a lower QoS than requested; delivery guarantees are weaker than configured.")
+
+	}
+
+	// Fleet convergence alarms for a coordinated cohort. Deliberately OUTSIDE the
+	// deployment-shape branches above: the barrier runs wherever a composition
+	// root drives it, and gating these on one facade would install them only where
+	// they cannot fire.
+	if props.EnableClusterRolloutAlarms {
+		g.newClusterRolloutAlarms(c, rolloutMetricsNamespace(props), period, evals, topicAction)
 	}
 
 	return g
 }
-
-func newDynamoDBAlarms(scope constructs.Construct, prefix string, table awsdynamodb.ITable,
-	period awscdk.Duration, evals *float64, action awscloudwatch.IAlarmAction,
-) (awscloudwatch.IAlarm, awscloudwatch.IAlarm) {
-	operations := []awsdynamodb.Operation{
-		awsdynamodb.Operation_GET_ITEM,
-		awsdynamodb.Operation_PUT_ITEM,
-		awsdynamodb.Operation_UPDATE_ITEM,
-		awsdynamodb.Operation_DELETE_ITEM,
-		awsdynamodb.Operation_QUERY,
-		awsdynamodb.Operation_SCAN,
-		awsdynamodb.Operation_TRANSACT_WRITE_ITEMS,
-	}
-	throttleMetric := table.MetricThrottledRequestsForOperations(&awsdynamodb.OperationsMetricOptions{
-		Operations: &operations, Period: period, Statistic: jsii.String("Sum"),
-	})
-	throttle := awscloudwatch.NewAlarm(scope, jsii.String(prefix+"DynamoDBThrottles"), &awscloudwatch.AlarmProps{
-		Metric: throttleMetric, Threshold: jsii.Number(0), EvaluationPeriods: evals,
-		ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
-		TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
-		AlarmDescription:   jsii.String("GoBridge " + prefix + " DynamoDB table throttled runtime requests."),
-	})
-	throttle.AddAlarmAction(action)
-	throttle.AddOkAction(action)
-
-	systemMetric := table.MetricSystemErrorsForOperations(&awsdynamodb.SystemErrorsForOperationsMetricOptions{
-		Operations: &operations, Period: period, Statistic: jsii.String("Sum"),
-	})
-	system := awscloudwatch.NewAlarm(scope, jsii.String(prefix+"DynamoDBSystemErrors"), &awscloudwatch.AlarmProps{
-		Metric: systemMetric, Threshold: jsii.Number(0), EvaluationPeriods: evals,
-		ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
-		TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
-		AlarmDescription:   jsii.String("GoBridge " + prefix + " DynamoDB table returned system errors."),
-	})
-	system.AddAlarmAction(action)
-	system.AddOkAction(action)
-	return throttle, system
-}
-
-// newRollupAlarm builds a dimensionless alarm on a custom runtime rollup
-// metric. The alarm carries no DimensionsMap so it matches only the
-// zero-dimension rollup series the exporter double-publishes (MF-4).
-func newRollupAlarm(scope constructs.Construct, id, namespace, metricName, statistic string,
-	threshold *float64, period awscdk.Duration, evals *float64,
-	action awscloudwatch.IAlarmAction, treatMissing awscloudwatch.TreatMissingData, desc string,
-) awscloudwatch.IAlarm {
-	metric := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
-		Namespace:  jsii.String(namespace),
-		MetricName: jsii.String(metricName),
-		Statistic:  jsii.String(statistic),
-		Period:     period,
-	})
-	alarm := awscloudwatch.NewAlarm(scope, jsii.String(id), &awscloudwatch.AlarmProps{
-		Metric:             metric,
-		Threshold:          threshold,
-		EvaluationPeriods:  evals,
-		ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
-		TreatMissingData:   treatMissing,
-		AlarmDescription:   jsii.String(desc),
-	})
-	alarm.AddAlarmAction(action)
-	alarm.AddOkAction(action)
-	return alarm
-}
-
-func newUnhealthyAlarm(scope constructs.Construct, id string, tg elbv2.ApplicationTargetGroup,
-	period awscdk.Duration, evals *float64, action awscloudwatch.IAlarmAction, desc string,
-) awscloudwatch.IAlarm {
-	metric := tg.Metrics().UnhealthyHostCount(&awscloudwatch.MetricOptions{
-		Statistic: jsii.String("Maximum"),
-		Period:    period,
-	})
-	alarm := awscloudwatch.NewAlarm(scope, jsii.String(id), &awscloudwatch.AlarmProps{
-		Metric:             metric,
-		Threshold:          jsii.Number(0),
-		EvaluationPeriods:  evals,
-		ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
-		TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
-		AlarmDescription:   jsii.String(desc),
-	})
-	alarm.AddAlarmAction(action)
-	alarm.AddOkAction(action)
-	return alarm
-}
-
-func new5xxAlarm(scope constructs.Construct, id string, tg elbv2.ApplicationTargetGroup,
-	period awscdk.Duration, evals, threshold *float64, action awscloudwatch.IAlarmAction, desc string,
-) awscloudwatch.IAlarm {
-	metric := tg.Metrics().HttpCodeTarget(elbv2.HttpCodeTarget_TARGET_5XX_COUNT, &awscloudwatch.MetricOptions{
-		Statistic: jsii.String("Sum"),
-		Period:    period,
-	})
-	alarm := awscloudwatch.NewAlarm(scope, jsii.String(id), &awscloudwatch.AlarmProps{
-		Metric:             metric,
-		Threshold:          threshold,
-		EvaluationPeriods:  evals,
-		ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
-		TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
-		AlarmDescription:   jsii.String(desc),
-	})
-	alarm.AddAlarmAction(action)
-	alarm.AddOkAction(action)
-	return alarm
-}
-
-func (g *GoBridgeAlarms) ControlAbsenceAlarm() awscloudwatch.IAlarm      { return g.controlAbsence }
-func (g *GoBridgeAlarms) WorkerDegradedAlarm() awscloudwatch.IAlarm      { return g.workerDegraded }
-func (g *GoBridgeAlarms) EfsIOAlarm() awscloudwatch.IAlarm               { return g.efsIO }
-func (g *GoBridgeAlarms) AlbUnhealthyControlAlarm() awscloudwatch.IAlarm { return g.albUnhealthyCtrl }
-func (g *GoBridgeAlarms) AlbUnhealthyWorkerAlarm() awscloudwatch.IAlarm  { return g.albUnhealthyWrk }
-func (g *GoBridgeAlarms) Alb5xxControlAlarm() awscloudwatch.IAlarm       { return g.alb5xxCtrl }
-func (g *GoBridgeAlarms) Alb5xxWorkerAlarm() awscloudwatch.IAlarm        { return g.alb5xxWrk }
-
-func (g *GoBridgeAlarms) OutboxDepthAlarm() awscloudwatch.IAlarm   { return g.outboxDepth }
-func (g *GoBridgeAlarms) DLQEntriesAlarm() awscloudwatch.IAlarm    { return g.dlqEntries }
-func (g *GoBridgeAlarms) LeaseExpiriesAlarm() awscloudwatch.IAlarm { return g.leaseExpiries }
-func (g *GoBridgeAlarms) LeaseAcquireFailuresAlarm() awscloudwatch.IAlarm {
-	return g.leaseAcquireFailures
-}
-
-func (g *GoBridgeAlarms) WarmStandbyUnavailableAlarm() awscloudwatch.IAlarm {
-	return g.warmStandbyUnavailable
-}
-func (g *GoBridgeAlarms) FailureToFullDurationAlarm() awscloudwatch.IAlarm {
-	return g.failureToFullDuration
-}
-func (g *GoBridgeAlarms) DynamoDBThrottleAlarms() []awscloudwatch.IAlarm {
-	return append([]awscloudwatch.IAlarm(nil), g.dynamoThrottles...)
-}
-func (g *GoBridgeAlarms) DynamoDBSystemErrorAlarms() []awscloudwatch.IAlarm {
-	return append([]awscloudwatch.IAlarm(nil), g.dynamoSystemErrors...)
-}
-func (g *GoBridgeAlarms) LeaseTransfersAlarm() awscloudwatch.IAlarm     { return g.leaseTransfers }
-func (g *GoBridgeAlarms) OutboxDrainLatencyAlarm() awscloudwatch.IAlarm { return g.outboxDrainLatency }
-func (g *GoBridgeAlarms) OutboxDepthFailuresAlarm() awscloudwatch.IAlarm {
-	return g.outboxDepthFailures
-}
-func (g *GoBridgeAlarms) OutboxRecordFailuresAlarm() awscloudwatch.IAlarm {
-	return g.outboxRecordFailures
-}
-func (g *GoBridgeAlarms) OutboxDrainStalledAlarm() awscloudwatch.IAlarm { return g.outboxDrainStalled }
-func (g *GoBridgeAlarms) DLQDepthAlarm() awscloudwatch.IAlarm           { return g.dlqDepth }
-func (g *GoBridgeAlarms) DLQWriteFailuresAlarm() awscloudwatch.IAlarm   { return g.dlqWriteFailures }
-
-func (g *GoBridgeAlarms) MQTTIngressPoisonAlarm() awscloudwatch.IAlarm { return g.mqttIngressPoison }
-func (g *GoBridgeAlarms) ReconcileFailuresAlarm() awscloudwatch.IAlarm { return g.reconcileFailures }
-func (g *GoBridgeAlarms) MQTTSessionTakeoverAlarm() awscloudwatch.IAlarm {
-	return g.mqttSessionTakeover
-}
-func (g *GoBridgeAlarms) MQTTQoSDowngradedAlarm() awscloudwatch.IAlarm { return g.mqttQoSDowngraded }
-
-func validateAlarmsProps(p *AlarmsProps) {
-	if p == nil {
-		panic("GoBridgeAlarms requires non-nil AlarmsProps.")
-	}
-	count := 0
-	if p.Single != nil {
-		count++
-	}
-	if p.Cluster != nil {
-		count++
-	}
-	if p.DynamoDBHA != nil {
-		count++
-	}
-	if count != 1 {
-		panic(fmt.Sprintf(
-			"GoBridgeAlarms requires exactly one of Single, Cluster, or DynamoDBHA (found %d). Pass the facade you instantiated.",
-			count,
-		))
-	}
-	if p.Efs == nil {
-		panic("GoBridgeAlarms.Efs is required. Pass <facade>.EfsConfig().")
-	}
-	if p.Efs.FileSystem() == nil {
-		panic("GoBridgeAlarms.Efs.FileSystem() returned nil. The EFS construct must be fully initialized before passing to GoBridgeAlarms.")
-	}
-	if p.AlarmTopic == nil {
-		panic("GoBridgeAlarms.AlarmTopic is required.")
-	}
-}
-
-func resolveClusterName(p *AlarmsProps) *string {
-	if p.Cluster != nil {
-		return p.Cluster.Cluster().ClusterName()
-	}
-	if p.DynamoDBHA != nil {
-		return p.DynamoDBHA.Cluster().ClusterName()
-	}
-	return p.Single.Cluster().ClusterName()
-}
-
-func resolveServiceNames(p *AlarmsProps) (control, worker *string) {
-	if p.Cluster != nil {
-		return svcName(p.Cluster.ControlService()), svcName(p.Cluster.WorkerService())
-	}
-	if p.DynamoDBHA != nil {
-		return svcName(p.DynamoDBHA.ControlService()), svcName(p.DynamoDBHA.WorkerService())
-	}
-	return svcName(p.Single.ControlService()), nil
-}
-
-func svcName(s awsecs.IService) *string { return s.ServiceName() }

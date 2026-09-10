@@ -74,10 +74,29 @@ bridge:
 sessions:
   - id: mqtt-conn
     transport: mqtt
+    # direct_hold relies on the broker redelivering what a crashed process never
+    # acknowledged; only a persistent (or exclusive) session does that.
+    session_mode: persistent
     options:
       session:
         broker_url: tcp://mqtt.example.com:1883
         client_id: prod-ingest-01
+        clean_start: false
+        session_expiry_interval: 3600
+
+stores:
+  # A persistent session keeps an exact record of the filters it installed on
+  # the broker (ADR 0003); seed the baseline once, before the first start:
+  #   gobridge -config bridge.yaml -seed-managed-subscriptions mqtt-conn
+  managed_subscriptions:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/managed-subscriptions.db
+  # Where a message the route gives up on is kept.
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
 
 receivers:
   - id: mqtt-in
@@ -93,11 +112,18 @@ senders:
 bindings:
   - id: to-sqs
     sender_id: sqs-out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # connect, subscribe, reconcile. A session nobody manages never subscribes.
+    session_id: mqtt-conn
     address: sensor-events
 routes:
   - id: sensor-ingest
     receiver_id: mqtt-in
     bindings: [to-sqs]
+    policy:
+      # Exactly one replica consumes this subscription; a second copy of this
+      # process would double-deliver. See Scenario 8 for fenced ownership.
+      allow_unfenced: true
 ```
 
 If the watcher reads the file after the writer has put down only the first two

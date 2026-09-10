@@ -66,7 +66,7 @@ import (
 //     topic is UNSUBSCRIBED (deduped, best-effort) to converge broker state.
 //   - COVERED (a still-desired subscription whose receiver handler
 //     registered later than the grace window): it is RETAINED un-acked in
-//     the pending buffer (HIGH-1). Ack-dropping a still-covered live-route
+//     the pending buffer. Ack-dropping a still-covered live-route
 //     publish would convert startup slowness into acknowledged loss and
 //     break at-least-once; instead it is held (bounded by receive_maximum)
 //     until the handler registers and flushes it, or the broker redelivers
@@ -101,13 +101,29 @@ type router struct {
 	// verification starts. Production leaves it nil. Guarded by mu.
 	awaitManagedReplayHook func()
 	// connEpoch identifies the CURRENT broker connection generation. It is
-	// bumped on every beginGrace (i.e. every OnConnectionUp) and stamped onto
-	// each entry buffered under it (bufferLocked). On a RECONNECT, beginGrace
-	// purges every entry whose epoch predates connEpoch: those carry dead acks
-	// and the broker redelivers their QoS 1/2 fresh, so keeping them would
-	// double-count against the receive_maximum count cap and ack-drop a live
-	// message as a bogus overflow (A-1). Guarded by mu.
+	// bumped once per connection by advanceGenerationLocked — from whichever of
+	// the connection-up callback (beginGrace) or the first packet of a new Paho
+	// client (noteLiveClient) observes the connection first — and stamped onto
+	// each entry buffered under it (bufferLocked). Advancing purges every entry
+	// whose epoch predates connEpoch: those carry dead acks and the broker
+	// redelivers their QoS 1/2 fresh, so keeping them would double-count against
+	// the receive_maximum count cap and ack-drop a live message as a bogus
+	// overflow. Guarded by mu.
 	connEpoch uint64
+	// liveClient is the Paho client that delivered the most recent packet, and
+	// generationOpener records which event opened the current generation (see
+	// noteLiveClient / beginGrace). Together they make the generation identity
+	// follow the CLIENT rather than the connection-up callback, which Paho does
+	// not order against its own publish delivery. Guarded by mu.
+	liveClient *pahov5.Client
+	// replacementPending is armed by noteConnectionTornDown and cleared when the
+	// next generation opens. It marks the only window in which an unfamiliar
+	// client can be a REPLACEMENT connection rather than a straggler from a
+	// superseded socket. generationOpenedByClient is the one-shot marker saying
+	// that replacement's first packet already opened the generation, so the
+	// connection-up callback that follows must not open it again. Guarded by mu.
+	replacementPending       bool
+	generationOpenedByClient bool
 	// unsettled records every QoS 1/2 packet accepted in connEpoch until its
 	// protocol Ack succeeds. The map is cleared on every epoch transition because
 	// old packet handles die with their connection and the broker redelivers them.
@@ -141,7 +157,7 @@ type router struct {
 	// packet advertises the whole-packet limit (max_payload_bytes + metadata
 	// allowance); this local guard enforces the finer body/metadata split the
 	// broker cannot see. A violation is acked-and-dropped, never terminal
-	// (MQTT-L1) — see ingressCapViolation.
+	// see ingressCapViolation.
 	maxPayloadBytes uint32
 	// poisonLogged dedups the poison Error log per violation class so a
 	// poison flood cannot flood the log while the metric still counts every
@@ -193,7 +209,7 @@ type router struct {
 	// a subscription the session wants. It lets settleUnmatched split a
 	// post-grace unmatched publish into a still-desired live route (covered:
 	// a subscription whose handler registered late — RETAINED un-acked so
-	// at-least-once holds, HIGH-1) versus a benign orphan (a route removed
+	// at-least-once holds) versus a benign orphan (a route removed
 	// from config — acked, dropped, unsubscribed). Set by NewSession (wired to
 	// Session.topicCovered); nil in tests / the legacy Route path, where
 	// every unmatched publish is treated as an orphan (previous behaviour).
@@ -203,7 +219,7 @@ type router struct {
 	// Guarded by mu.
 	unsubscribed map[string]struct{}
 	// coveredWarned dedups the covered-retention WARN per topic so a
-	// high-throughput covered topic whose handler registered late (HIGH-1)
+	// high-throughput covered topic whose handler registered late
 	// logs once, not once per retained publish. The metric still counts every
 	// retention; only the log is deduped. Guarded by mu.
 	coveredWarned map[string]struct{}
@@ -219,7 +235,7 @@ type router struct {
 	metrics ports.MetricsExporter
 	// sessionID tags every router loss/drop metric so a multi-session
 	// deployment can attribute an orphan/overflow/stale-purge drop to the
-	// session that produced it (A-11). Empty when the router is built without
+	// session that produced it. Empty when the router is built without
 	// a session (legacy/test construction); the tag is then omitted.
 	sessionID         string
 	routeCount        atomic.Int64 // total messages received by dispatch
@@ -227,11 +243,11 @@ type router struct {
 	bufferedCount     atomic.Int64 // messages held for a not-yet-registered handler
 	unmatchedDropped  atomic.Int64 // orphan messages acked-and-dropped past grace
 	coveredDropped    atomic.Int64 // covered-topic QoS 0 dropped past grace when the buffer could not hold it
-	coveredRetained   atomic.Int64 // covered-topic messages RETAINED un-acked past grace (HIGH-1; NOT lost)
+	coveredRetained   atomic.Int64 // covered-topic messages RETAINED un-acked past grace (NOT lost)
 	overflowDropped   atomic.Int64 // QoS 1/2 acked-and-dropped because a broker exceeded receive_maximum (protocol violation; unreachable with a compliant broker)
-	stalePurged       atomic.Int64 // old-connection entries discarded on reconnect purge or recycle-window discard (A-1 / MQTT-L4); QoS 1/2 redelivered, QoS 0 best-effort loss
-	poisonDropped     atomic.Int64 // ingress-cap violations acked-and-dropped instead of latching terminal (MQTT-L1)
-	ackAfterReconnect atomic.Int64 // settlements mapped to success because the connection cycled (ErrPacketNotFound); broker redelivers (MQTT-L5)
+	stalePurged       atomic.Int64 // old-connection entries discarded on reconnect purge or recycle-window discard; QoS 1/2 redelivered, QoS 0 best-effort loss
+	poisonDropped     atomic.Int64 // ingress-cap violations acked-and-dropped instead of latching terminal
+	ackAfterReconnect atomic.Int64 // settlements mapped to success because the connection cycled (ErrPacketNotFound); broker redelivers
 }
 
 // routerHandler pairs a dispatch function with the topic filters that
@@ -265,7 +281,7 @@ type pendingPublish struct {
 	// epoch is the router.connEpoch under which this entry was buffered. A
 	// reconnect (beginGrace) purges every entry whose epoch predates the new
 	// connEpoch: its ack is dead and the broker redelivers the QoS 1/2 fresh
-	// (A-1). Set under r.mu at buffer time.
+	// Set under r.mu at buffer time.
 	epoch uint64
 	// retainCounted latches once this entry has been counted on
 	// MetricMQTTRouterCoveredRetained (blocking-#4 dedup). Both the grace-end
@@ -348,7 +364,7 @@ func (r *router) CoveredDroppedCount() int64 {
 }
 
 // CoveredRetainedCount returns the number of publishes on STILL-COVERED topics
-// RETAINED un-acked past the startup grace window (HIGH-1) — held for a late
+// RETAINED un-acked past the startup grace window — held for a late
 // receiver handler (flushed on RegisterFiltered) or broker redelivery, NOT
 // lost. Distinct from CoveredDroppedCount (covered QoS 0 the buffer could not
 // hold) and from the orphan cleanup counted by UnmatchedDroppedCount.
@@ -371,7 +387,7 @@ func (r *router) OverflowDroppedCount() int64 {
 
 // StalePurgedCount returns the number of pre-registration pending publishes
 // DISCARDED across reconnects because they were buffered under a prior broker
-// connection (A-1). QoS 1/2 entries counted here are redelivered fresh by a
+// connection. QoS 1/2 entries counted here are redelivered fresh by a
 // clean_start=false broker (not lost); QoS 0 entries are a best-effort loss.
 // A steadily rising value indicates frequent reconnects while receivers
 // register slowly, not data loss for QoS 1/2.
@@ -381,7 +397,7 @@ func (r *router) StalePurgedCount() int64 {
 
 // IngressPoisonDroppedCount returns the number of inbound publishes
 // acked-and-dropped because they violated a local representational ingress
-// cap the broker cannot enforce (MQTT-L1). Each is an acknowledged,
+// cap the broker cannot enforce. Each is an acknowledged,
 // deliberate loss — the alternative was a publisher-triggerable permanent
 // terminal loop. Any non-zero value warrants finding the offending
 // publisher (docs/runbooks/mqtt-ingress-poison.md).
@@ -391,7 +407,7 @@ func (r *router) IngressPoisonDroppedCount() int64 {
 
 // AckAfterReconnectCount returns the number of delivery settlements mapped
 // to success because the underlying connection cycled between receive and
-// settle (paho ErrPacketNotFound; MQTT-L5). Each one is a guaranteed broker
+// settle (paho ErrPacketNotFound;). Each one is a guaranteed broker
 // redelivery — a burst after a reconnect storm predicts a duplicate flood
 // on routes without downstream dedup.
 func (r *router) AckAfterReconnectCount() int64 {

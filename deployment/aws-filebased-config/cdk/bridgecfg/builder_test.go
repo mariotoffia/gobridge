@@ -31,9 +31,8 @@ func newTestRegistry(t *testing.T) *ports.Registry {
 	return reg
 }
 
-// TestBuilder_Canonical_RoundTrip exercises the documented happy path
-// from the design doc (lines 71-90): build a representative bridge
-// config via the fluent API, marshal it through parser.MarshalYAML,
+// TestBuilder_Canonical_RoundTrip exercises the documented happy path:
+// build a representative bridge config via the fluent API, marshal it through parser.MarshalYAML,
 // re-parse it with config.Parse, and assert every field that crossed
 // the YAML boundary survived intact.
 //

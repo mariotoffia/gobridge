@@ -1,5 +1,7 @@
 # CDK Scenario 5: Multi-Bridge Cluster with Shared EFS
 
+## Overview
+
 Deploy a control + worker GoBridge topology with one `GoBridgeCluster` facade — both services
 and a shared EFS filesystem are derived from a single `bridge.yaml`.
 
@@ -7,13 +9,14 @@ and a shared EFS filesystem are derived from a single `bridge.yaml`.
 
 You need high-throughput message routing across a fleet of GoBridge tasks. The cluster facade
 materializes one control task (RW EFS, admin API) plus N worker tasks (RO EFS, transport
-ingress) sharing the same `bridge.yaml`. When the control task writes a configuration update,
-workers detect the change via a poll watcher and converge automatically.
+ingress) sharing the same `bridge.yaml`. Workers observe changes through the
+file watcher, but clustered updates require whole-cohort replacement. This
+profile does not provide coordinated active/standby failover.
 
 This topology suits workloads where:
 
 - Message volume exceeds what a single task can handle.
-- Configuration changes must propagate to all workers without restarts.
+- Workers need the same configuration under one control writer.
 - A single control plane simplifies administrative access (no sticky sessions needed).
 - The `shared_outbox` delivery mode is **not** required — all routes use `direct_hold`.
 
@@ -23,7 +26,6 @@ This topology suits workloads where:
 flowchart TD
     subgraph EFS["EFS (shared)"]
         Config["bridge.yaml"]
-        Lease["LeaseStore<br/>(peer registry)"]
     end
 
     subgraph Control["Control Task (DesiredCount=1, RW)"]
@@ -39,17 +41,16 @@ flowchart TD
     CA -->|write config| Config
     Config -->|poll watcher| Workers
     Config -->|poll watcher| Control
-    Control -.->|register / discover| Lease
-    Workers -.->|register / discover| Lease
 
     ALB[Internal ALB] --> CA
     ALB --> WT
 ```
 
 `GoBridgeCluster` builds both ECS services, the EFS filesystem and its two access points
-(RW for control, RO for worker), the seeder init container, and the IAM split. Peer discovery
-uses an EFS-mediated **LeaseStore** populated by `EcsEndpointResolver` at task start — there
-is **no Cloud Map**, no private DNS namespace, no static peer-endpoints block in yaml.
+(RW for control, RO for worker), and the IAM split. Only control may initialize
+an absent document. Workers remain read-only and wait idle for valid config;
+there is no configuration sidecar. Sharing EFS does not create a distributed
+lease store.
 
 ## Topology: filesystem_replicated
 
@@ -60,7 +61,7 @@ that require distributed coordination -- those need the HA/DynamoDB config profi
 | Feature | Supported? | Notes |
 |---------|-----------|-------|
 | `deployment_mode: clustered` | Yes | Required for the cluster facade |
-| Peer discovery | Yes | EFS LeaseStore + `EcsEndpointResolver`; no Cloud Map needed |
+| Coordinated failover | No | Use `GoBridgeDynamoDBHA` with DynamoDB leases |
 | `shared_outbox` routes | No | Use the HA/DynamoDB profile instead |
 | Route session leases | No | Use the HA/DynamoDB profile instead |
 | Independent route definitions | Yes | Each worker runs all routes defined in `bridge.yaml` |
@@ -83,10 +84,10 @@ do not set `NodeRole` yourself.
 | EFS mount | RW (`ClientMount`+`ClientWrite`) | RO (`ClientMount` only) | Cluster IAM split |
 | Exposed ports | Admin + Monitor + Transport | Admin + Monitor + Transport | Every node starts all three servers |
 | `DesiredCount` | `1` (hard-coded) | `WorkerDesiredCount` (default 2) | Runtime invariant |
-| Deploy strategy | `MinHealthy=0`, `MaxHealthy=100` | CDK rolling defaults | Single LeaseStore writer |
+| Deploy strategy | `MinHealthy=0`, `MaxHealthy=100` | CDK rolling defaults | Single file-config writer |
 
 The control `DesiredCount=1` and `MinHealthy=0`/`MaxHealthy=100` deploy strategy guarantee a
-single LeaseStore writer at all times — including across rolling deploys. Both invariants are
+single file-config writer at all times — including across rolling deploys. Both invariants are
 hard-coded and **not** exposed as caller-tunable props.
 
 ## Singleton Constraint
@@ -102,7 +103,14 @@ hard-coded and **not** exposed as caller-tunable props.
 
 Wire the VPC, ECS cluster, image, registries and bootstrap, then hand them to
 `gobridgecluster.NewGoBridgeCluster`. The facade owns the EFS filesystem, both task
-definitions, IAM, the seeder, log groups and the worker autoscaling target.
+definitions, IAM, log groups and the worker autoscaling target.
+
+The registry image must carry its own embedded initial config, consume an
+existing target, or wait for operator creation. CDK cannot modify it.
+`ImageFromGoBuild` instead embeds the parsed facade config automatically,
+building the profile command from the published `lib` module — which no
+released train has published yet. See
+[initial configuration](../../aws-deployment/config-initialization.md).
 
 ```go
 package main
@@ -152,10 +160,10 @@ func main() {
         &gobridgecluster.ClusterProps{
             Vpc:     vpc,
             Cluster: cluster,
-            Image: awsecs.ContainerImage_FromRegistry(
-                // Pin a released tag (or, better, a digest) — see the
-                // "Pin images by digest" note in the deployment guide.
-                jsii.String("ghcr.io/mariotoffia/gobridge:v0.2.0"), nil),
+            Image: gobridgecdk.ImageFromRegistry(
+                // Pin the digest from the release's gobridge-image-digest.txt
+                // asset — see "Pin Images by Digest" in the deployment guide.
+                "ghcr.io/mariotoffia/gobridge@sha256:<digest>"),
             Bootstrap: infra.BootstrapConfig{
                 // NodeRole is forced per service by the facade — do not set it.
                 AdminAddr:        ":8080",
@@ -183,7 +191,7 @@ func main() {
 Two paths produce the sealed `BridgeConfig` source consumed by the cluster facade:
 
 ```go
-// (a) On-disk yaml — uploaded as a CDK asset, parsed once for tier-B validation.
+// (a) Local YAML for validation, grants, and optional Go-build embedding.
 src := gobridgecdk.BridgeYamlAsset("config/bridge.yaml")
 
 // (b) Typed builder — assembled in Go, marshalled at synth time.
@@ -207,17 +215,26 @@ receivers:
   - id: orders-in
     transport: sqs
     options:
-      queue_name: orders-in        # resolved via QueueRegistry
+      queue_name: orders-in        # physical name; runtime uses GetQueueUrl
 
 senders:
   - id: ingest
     transport: sqs
     options:
-      queue_name: orders-out       # resolved via QueueRegistry
+      queue_name: orders-out       # physical name; runtime uses GetQueueUrl
 
 bindings:
   - id: to-ingest
     sender_id: ingest
+    address: orders-out
+
+stores:
+  # A clustered deployment needs a distributed DLQ for the failures the
+  # default policy dead-letters.
+  dlq:
+    type: dynamodb
+    options:
+      table_name: gobridge-dlq
 
 routes:
   - id: forward
@@ -230,8 +247,31 @@ The typed builder above produces the equivalent shape — `WithRoute` synthesise
 binding named `<sender>-binding` (here `ingest-binding`) when the id resolves to a
 sender rather than a previously-declared binding.
 
-There is no static peer-endpoints block — peer endpoints are discovered from the
-LeaseStore at runtime.
+### Select a queue by tags
+
+The example above uses physical queue names. To select the imported output
+queue by tags, bind a selector before building the config:
+
+```go
+if err := queues.BindQueueTags("orders-out", map[string]string{
+    "application": "gobridge",
+    "purpose":     "orders-output",
+}, "orders-"); err != nil {
+    panic(err)
+}
+```
+
+The producer must apply these tags to the imported queue. For CDK-owned queues,
+`BindQueueTags` applies them. Build again using `queues.Ref("orders-out")`;
+the sender now carries `queue_tags` and `queue_name_prefix`, and `WithRoute`
+uses `address: sqs:queue` for its generated binding. Hand-authored YAML needs
+the same marker. It means “use the configured queue”; the URL stays runtime-only.
+
+`QueueRef.PhysicalName()` returns the known physical name, while `Name()` is
+the registry alias. `QueueTags()` and `QueueNamePrefix()` expose the selector.
+The facade uses `ResolveQueue` to retain exact grants and dependencies.
+See the [CDK queue reference](../../aws-deployment/cdk-constructs.md#sqs-references)
+for generated names, ambiguous selectors, and discovery permissions.
 
 ### Optional: ALB attachment + alarms
 
@@ -264,41 +304,26 @@ construct.
 
 ## Config Propagation
 
-When the control node writes a configuration update via the admin API, the change propagates to
-workers through EFS file polling.
+File polling detects changes; it does not coordinate a rollout. For a clustered
+file source, [ADR 0012](../../adr/0012-cluster-config-whole-cohort-replacement.md)
+requires whole-cohort replacement for non-no-op changes.
 
 ```mermaid
 sequenceDiagram
     participant Admin as Operator
-    participant Control as Control Node
+    participant Cohort as Control and workers
     participant EFS as EFS Filesystem
-    participant W1 as Worker 1
-    participant W2 as Worker 2
-
-    Admin->>Control: POST /api/v1/admin/config/transactions
-    Control-->>Admin: 201 (txn_id = TXN)
-    Admin->>Control: PATCH .../transactions/TXN (stage change)
-    Control-->>Admin: 200 (merged preview)
-    Admin->>Control: POST .../transactions/TXN/commit
-    Control->>EFS: Write bridge.yaml
-    Control-->>Admin: 200 (committed, version N)
-
-    Note over W1,W2: Workers poll EFS at poll_interval
-
-    W1->>EFS: Stat bridge.yaml (mtime check)
-    EFS-->>W1: mtime changed
-    W1->>EFS: Read bridge.yaml
-    W1->>W1: Reload routes
-
-    W2->>EFS: Stat bridge.yaml (mtime check)
-    EFS-->>W2: mtime changed
-    W2->>EFS: Read bridge.yaml
-    W2->>W2: Reload routes
+    Admin->>Cohort: Quiesce intake, drain, stop every member
+    Admin->>EFS: Atomically write validated config
+    Admin->>Cohort: Start replacement cohort
+    Cohort->>EFS: Read and validate target
+    Cohort-->>Admin: Report target version and service state
+    Admin->>Cohort: Restore intake after convergence
 ```
 
 ### Poll interval trade-offs
 
-| Interval | Propagation delay | EFS reads/min (3 workers) | Best for |
+| Interval | Detection delay | EFS checks/min (3 workers) | Best for |
 |----------|-------------------|---------------------------|----------|
 | `1s` | Up to 1 second | 180 | Rapid iteration, dev/staging |
 | `2s` | Up to 2 seconds | 90 | Production default |
@@ -308,6 +333,12 @@ sequenceDiagram
 Each poll performs an `os.Stat` call to check the file modification time. A full read occurs
 only when the mtime changes. For most workloads, a 2-second interval balances responsiveness
 and EFS operation costs.
+
+After clustered activation, confirmed absence stops intake and signals process
+exit and replacement, not a live transition to idle. Uncertain teardown also
+exits. Read errors keep the last successful runtime as degraded. A fresh control
+process may initialize an absent target; workers remain read-only.
+Watchers must retain delete/recreate ordering.
 
 ## Scaling Workers
 
@@ -345,10 +376,29 @@ bridge:
 sessions:
   - id: mqtt-conn
     transport: mqtt
+    # direct_hold relies on the broker redelivering what a crashed process never
+    # acknowledged; only a persistent (or exclusive) session does that.
+    session_mode: persistent
     options:
       session:
         broker_url: tls://mqtt.example.com:8883
-        client_id: gobridge-worker   # give each worker task a unique id
+        client_id: gobridge-worker
+        client_id_suffix: hostname   # each worker task connects under its own id
+        assert_stable_client_identity: true
+        clean_start: false
+        session_expiry_interval: 3600
+
+stores:
+  # A persistent session keeps an exact record of the filters it installed on
+  # the broker (ADR 0003); a cluster keeps it in DynamoDB, seeded per worker.
+  managed_subscriptions:
+    type: dynamodb
+    options:
+      table_name: gobridge-managed-subscriptions
+  dlq:
+    type: dynamodb
+    options:
+      table_name: gobridge-dlq
 
 receivers:
   - id: mqtt-in
@@ -359,7 +409,7 @@ receivers:
   - id: sqs-in
     transport: sqs
     options:
-      queue_name: events            # resolved via QueueRegistry
+      queue_name: events            # physical name; runtime uses GetQueueUrl
 
 senders:
   - id: sse-out
@@ -371,12 +421,23 @@ senders:
 bindings:
   - id: to-api
     sender_id: sse-out
+    address: events
+  - id: to-api-from-mqtt
+    sender_id: sse-out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # connect, subscribe, reconcile. A session nobody manages never subscribes.
+    session_id: mqtt-conn
+    address: events
 
 routes:
   - id: mqtt-forward
     receiver_id: mqtt-in
     delivery_mode: direct_hold
-    bindings: [to-api]
+    bindings: [to-api-from-mqtt]
+    policy:
+      # The shared subscription splits the stream across workers; no single
+      # owner fences it, and that is the intended scale-out.
+      allow_unfenced: true
   - id: sqs-forward
     receiver_id: sqs-in
     delivery_mode: direct_hold
@@ -388,57 +449,20 @@ subscriptions so that messages are load-balanced across workers rather than dupl
 
 ### Staged config rollout
 
-Roll config out to the cluster through the admin transactions API on the control
-node. A transaction opens against the current config version, lets you preview
-the merged result, and writes `bridge.yaml` to EFS only on commit — so workers
-never read a half-written file. Discard the transaction to back out before it
-goes live.
-
-```bash
-CONTROL="http://control.gobridge.local:8080"
-
-# 1. Open a transaction against the current config version.
-TXN=$(curl -s -X POST -H "X-API-Key: ${API_KEY}" \
-  "${CONTROL}/api/v1/admin/config/transactions" | jq -r .txn_id)
-
-# 2. Stage a partial change (JSON BridgeConfig overlay) and preview the merge.
-curl -s -X PATCH -H "X-API-Key: ${API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d @patch.json \
-  "${CONTROL}/api/v1/admin/config/transactions/${TXN}" | jq .
-
-# 3. Commit: validates, checks the version CAS, writes bridge.yaml, applies.
-curl -s -X POST -H "X-API-Key: ${API_KEY}" \
-  "${CONTROL}/api/v1/admin/config/transactions/${TXN}/commit" | jq .
-# → {"status":"committed","version":N}
-```
-
-The version CAS is checked at commit against the version captured when the
-transaction opened, so a concurrent write returns `409`; a config that fails
-validation returns `422`. The change goes live at commit: the control node
-persists `bridge.yaml` to EFS, and workers pick it up on their next poll (see
-[Config Propagation](#config-propagation)).
-
-To back out before commit, discard the transaction:
-
-```bash
-curl -s -X DELETE -H "X-API-Key: ${API_KEY}" \
-  "${CONTROL}/api/v1/admin/config/transactions/${TXN}"
-# → {"status":"rolled_back"}
-```
-
-To reverse a change that already committed, open a new transaction, PATCH the
-previous values back, and commit. The full endpoint table, status codes, and
-merge semantics live in the [HTTP API Reference](../../http-api.md#config-transactions);
-the [config-rollback runbook](../../runbooks/config-rollback.md) walks the
-incident case.
+Validate the exact document against every member's image before replacing the
+cohort. Follow the [cluster rollout runbook](../../runbooks/cluster-config-rollout.md)
+for quiescence, atomic target writes, restart, convergence checks, and rollback.
+An admin transaction can persist a candidate but cannot make independent
+file watchers into a rollout barrier. Do not treat a durable write as proof
+that every member applied it.
 
 ### Canary deployments
 
 The singleton-per-stack constraint forbids a third `GoBridgeCluster` (or `GoBridgeSingle`)
 inside the same stack. Deploy a canary as a **separate stack** pointing at a separate config
-asset path; promote by updating the production stack's `BridgeYamlAsset` once the canary is
-healthy.
+target. Once the canary passes, promote the validated document through the
+production cohort-replacement procedure. Changing `BridgeYamlAsset` or the
+image's embedded document alone does not update an existing target.
 
 ## What's Next
 
@@ -451,6 +475,6 @@ healthy.
 - [HTTP API Guide](../../aws-deployment/http-api.md) — admin API config transactions. The
   single control task avoids sticky-session complexity.
 - [aws-filebased-config ARCHITECTURE](../../../deployment/aws-filebased-config/ARCHITECTURE.md)
-  — internal layering of the cluster facade, RW/RO EFS split, seeder lifecycle.
+  — internal layering of the cluster facade, RW/RO EFS split, initialization lifecycle.
 - [aws-filebased-config UBIQUITOUS](../../../deployment/aws-filebased-config/UBIQUITOUS.md) —
   canonical terminology (LeaseStore, EcsEndpointResolver, tier-B validation).

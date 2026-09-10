@@ -28,11 +28,20 @@ var _ ports.Sender = (*Sender)(nil)
 var _ ports.NonDurableEgressReporter = (*Sender)(nil)
 
 // NewSender creates a Sender bound to the given Session.
+//
+// The sender's publish deadline is registered with the session: the SDK bounds
+// each packet acknowledgement INSIDE the caller's context, so the session has
+// to know the longest publish budget it serves or the SDK would cut a
+// configured publish short (see Session.packetTimeout). Senders are built
+// before the session dials, so the budget is in place for the first CONNECT;
+// one created against an already-connected session takes effect on its next
+// reconnect.
 func NewSender(session *Session, opts SenderOptions) *Sender {
 	m := session.metrics
 	if m == nil {
 		m = &ports.NoopExporter{}
 	}
+	session.notePublishAckBudget(opts.Timeout)
 	return &Sender{session: session, opts: opts, logger: session.logger, metrics: m}
 }
 
@@ -79,13 +88,13 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	}
 
 	// Apply timeout: honour whichever of the configured sender timeout and
-	// the caller's deadline is stricter (see applyTimeout for the M-1 rule).
+	// the caller's deadline is stricter (see applyTimeout for the rule).
 	ctx, timeoutCancel := s.applyTimeout(ctx)
 	defer timeoutCancel()
 
 	sessionTag := shared.Tag{Key: shared.TagKeySessionID, Value: s.session.opts.ClientID}
 
-	// Publish through the ACL's domain-shaped seam (F-2) rather than the raw
+	// Publish through the ACL's domain-shaped seam rather than the raw
 	// autopaho.ConnectionManager: the seam serialises the envelope and returns
 	// only the reason code, keeping port-side egress SDK-free.
 	start := s.session.clock().Now()
@@ -96,8 +105,25 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 		s.metrics.Timer(MetricMQTTPublishLatency, elapsed, sessionTag)
 		s.metrics.Counter(MetricMQTTPublishFailures, 1, sessionTag)
 		if logging.DebugEnabled(s.logger) {
-			s.logger.Log(ctx, logging.LevelDebug, "mqtt: publish failed",
-				"topic", topic, "error", err)
+			attrs := []any{"topic", topic, "error", err}
+			if resp.Acknowledged {
+				// Only meaningful when the broker actually answered; without an
+				// acknowledgement the zero value would read as "success".
+				attrs = append(attrs, "reason_code", fmt.Sprintf("0x%02X", resp.ReasonCode))
+			}
+			s.logger.Log(ctx, logging.LevelDebug, "mqtt: publish failed", attrs...)
+		}
+		// The SDK returns the PUBACK / PUBREC together with a generic error for
+		// every reason code of 0x80 or higher, and the reason code is the only
+		// place the broker's actual verdict survives. Classifying it first is
+		// what keeps a denial permanent: the generic fallback would call it a
+		// transient outage, so the route would retry a message the broker will
+		// never accept until the replay budget is spent, then dead-letter it
+		// with the cause lost.
+		if resp.Acknowledged {
+			if berr := s.publishReasonError(resp.ReasonCode, topic); berr != nil {
+				return berr
+			}
 		}
 		return MapError(err)
 	}
@@ -135,7 +161,7 @@ func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 // that signals throttling. 0x93 (Receive Maximum exceeded) and 0xA1
 // (Subscription Identifiers not supported) are NOT valid PUBACK/PUBREC
 // reason codes, so they get no back-off hint (they classify as generic
-// errors); the old dead checks for them were removed (finding 7).
+// errors); the old dead checks for them were removed.
 func (s *Sender) publishReasonError(code byte, topic string) *shared.BridgeError {
 	berr := MapPublishReasonCode(code)
 	if berr == nil {
@@ -178,7 +204,7 @@ const defaultSendTimeout = 60 * time.Second
 //   - Timeout > 0 (configured): apply it whenever it is stricter than the
 //     caller's remaining deadline (or there is none). This stops an
 //     operator-set options.sender.timeout from being silently shadowed by a
-//     looser route policy.send_timeout (M-1). A configured timeout LOOSER
+//     looser route policy.send_timeout. A configured timeout LOOSER
 //     than the caller's deadline is ignored — we never extend the caller's
 //     ceiling, so the route send_timeout remains the upper bound.
 func (s *Sender) applyTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

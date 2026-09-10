@@ -16,7 +16,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// A3: DLQ writes are synchronous and confirmed.
+// DLQ writes are synchronous and confirmed.
 //
 // Route returns only once the entry is durably written (nil) or has
 // permanently failed (non-nil). Callers must not settle the source delivery
@@ -32,7 +32,7 @@ func syncEnv(id string) *messaging.Envelope {
 	})
 }
 
-// TestRouter_Route_ConfirmedBeforeReturn proves the core A3 guarantee: the
+// TestRouter_Route_ConfirmedBeforeReturn proves the core guarantee: the
 // entry is present in the store the instant Route returns nil.
 func TestRouter_Route_ConfirmedBeforeReturn(t *testing.T) {
 	store := NewFakeStore()

@@ -39,7 +39,7 @@ func unmarshalEntry(item map[string]ddbtypes.AttributeValue) (routing.DLQEntry, 
 	}
 
 	// RehydrateDLQEntry: the envelope was freshly decoded and is already
-	// owned, so the entry takes it without a redundant clone (finding #9).
+	// owned, so the entry takes it without a redundant clone.
 	return routing.RehydrateDLQEntry(spec), nil
 }
 

@@ -15,10 +15,18 @@ change to a cohort for exactly this reason (see
 
 **Coordinated rollout** lifts that restriction for *live-safe* changes. You post
 the new config to one node; every member validates and builds it; and only once
-**all** of them agree does a single elected coordinator commit it — at which point
-they all swap together. If any member can't accept the change, nothing swaps and
-the old config keeps serving. No process ever runs a config the others haven't
-agreed to.
+**all** of them agree does a single elected coordinator commit it. If any member
+can't accept the change, nothing swaps and the old config keeps serving. No
+process ever runs a config the others haven't agreed to.
+
+The *decision* is atomic; the swap after it is per member. Each one applies the
+committed generation locally, normally within a poll of the commit — but a member
+whose broker or store is unhealthy can fail where its peers succeed, and then the
+cohort runs two generations until it recovers or is replaced. That window is
+bounded and alarmed rather than prevented; see
+[Operating a coordinated cohort](../cluster/operating.md#after-the-commit-state-committed-with-applied-false).
+The [confirm window](#variation-confirm-window-auto-revert) below is what removes
+it, by reverting the whole cohort instead of leaving it split.
 
 This is the worked example for the [cluster configuration guide](../cluster/README.md)
 and [ADR 0013](../adr/0013-coordinated-cluster-config-rollout.md). For the
@@ -70,16 +78,41 @@ bridge:
 sessions:
   - id: mqtt
     transport: mqtt
+    # direct_hold relies on the broker redelivering what a crashed process never
+    # acknowledged; only a persistent (or exclusive) session does that.
+    session_mode: persistent
     options:
       session:
         broker_url: tcp://broker.internal:1883
         client_id: cohort-ingress
+        # Three members share one broker: each needs its own client id, and a
+        # plain filter would deliver every event to every member. The hostname
+        # suffix keys the id per member (the members are named, stable hosts,
+        # which the assertion vouches for); the shared subscription splits the
+        # stream across the cohort.
+        client_id_suffix: hostname
+        assert_stable_client_identity: true
+        clean_start: false
+        session_expiry_interval: 3600
+
+stores:
+  # A persistent session keeps an exact record of the filters it installed on
+  # the broker (ADR 0003); a cohort keeps it in DynamoDB, seeded per member.
+  managed_subscriptions:
+    type: dynamodb
+    options:
+      table_name: gobridge-managed-subscriptions
+  dlq:
+    type: dynamodb
+    options:
+      table_name: gobridge-dlq
 
 receivers:
   - id: in
     session_id: mqtt
     topics:
-      - topic: "events/#"
+      - topic: "$share/cohort/events/#"
+        qos: 1
 
 senders:
   - id: out
@@ -91,12 +124,19 @@ senders:
 bindings:
   - id: fwd
     sender_id: out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # connect, subscribe, reconcile. A session nobody manages never subscribes.
+    session_id: mqtt
     address: processed/events
 
 routes:
   - id: process
     receiver_id: in
     bindings: [fwd]
+    policy:
+      # The shared subscription splits the stream across members; no single
+      # owner fences it, and that is the intended scale-out.
+      allow_unfenced: true
 ```
 
 **Prerequisites (deployment-level, not shown above).** Coordinated mode also

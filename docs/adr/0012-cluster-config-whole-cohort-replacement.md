@@ -6,6 +6,8 @@ Deciders: GoBridge core
 Supersedes: 0007
 Superseded by: 0013 (for live-safe deltas only)
 
+## Overview
+
 > **Superseded by [0013](0013-coordinated-cluster-config-rollout.md) for live-safe
 > deltas.** A coordinated cohort (`cluster.rollout: coordinated` on the versioned
 > DynamoDB config source) now rolls live-safe deltas through an all-member barrier
@@ -28,8 +30,9 @@ strand durable records. A local config-version CAS only serializes writes to a
 shared config source; it does not coordinate application across the cohort.
 
 ADR 0007 selected `AdoptValid` so read-only workers would not overwrite valid
-Admin-API changes on shared EFS. That remains a safe startup seeding rule, but
-the ADR incorrectly treated adoption as a live cluster rollout mechanism.
+Admin-API changes on shared EFS. The mode is now historical; the enduring rule
+is read-only worker configuration access. The original ADR incorrectly treated
+startup adoption as a live cluster rollout mechanism.
 
 ## Decision
 
@@ -44,8 +47,17 @@ deployment, fail-closed.
 - `WithAllowDestructiveReload` does not bypass the guard. Local backlog
   deletion cannot replace cluster coordination.
 - Byte-identical watcher re-emits remain accepted no-ops.
-- `AdoptValid` remains the read-only worker startup policy. It only controls
-  which already-committed config a freshly starting worker adopts.
+- Workers remain read-only. Optional control-only initialization creates
+  strictly absent documents; it never overwrites an existing target and does
+  not authorize a rollout. See
+  [initial configuration](../aws-deployment/config-initialization.md).
+- A confirmed source deletion is not an ordinary reload rejection that permits
+  the old runtime to keep processing. An activated clustered runtime stops
+  intake and signals process exit and replacement, regardless of whether it
+  uses the coordinated barrier. It does not return to live idle in that process.
+  Uncertain teardown also exits. A read timeout or unavailable backend instead
+  retains the last successful config as degraded. Neither case rearms
+  initialization after first activation.
 
 A clustered config change is an externally coordinated whole-cohort
 replacement:
@@ -71,11 +83,11 @@ previous config. The normative procedure is
   rejected. Operators must not use that as a rollout shortcut; they must follow
   the whole-cohort procedure.
 - Standalone live reload behavior is unchanged.
-- Startup seeding and runtime reconfiguration are separate decisions:
-  `AdoptValid` prevents workers from overwriting shared config, while this ADR
-  governs when clustered config may become active.
+- Initial creation and runtime reconfiguration are separate decisions.
+  Updating an embedded initial document cannot replace the staged target write
+  in the whole-cohort procedure.
 
-## Rejected alternatives
+## Alternatives considered
 
 - **Independent live reload with eventual convergence.** Rejected because a
   failed or delayed member leaves an unbounded mixed-version window.

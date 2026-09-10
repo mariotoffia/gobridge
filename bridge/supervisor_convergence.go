@@ -10,7 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
-// Post-swap convergence watch (MQTT-R1).
+// Post-swap convergence watch.
 //
 // A successful apply() proves only that the new runtime BUILT and its
 // Start() returned — for transports that dial and reconcile in background
@@ -47,10 +47,30 @@ const (
 // satisfied. LevelSubscribed — not LevelFull — because a healthy standby
 // instance is capped at LevelSubscribed by design (routes deliberately not
 // ready until it holds the lease), and requiring Full would flag every
-// active/standby deployment as non-converged forever. Both MQTT-R1 failure
+// active/standby deployment as non-converged forever. Both failure
 // classes still trip it: rotated-away credentials never reach connected,
 // and a broker-rejected SUBACK never satisfies subscriptions.
 const convergenceReadyLevel = ports.LevelSubscribed
+
+// runtimeConverged reports whether rt has reached the state a committed config
+// is expected to reach, and the readiness level it actually achieved (so a
+// degraded reason can name it). It takes ONE health snapshot and derives both
+// answers from it, keeping the verdict internally consistent.
+//
+// An EMPTY instance — no routes and no sessions, which is what a deliberately
+// route-less configuration produces — is converged as soon as it is running.
+// It is capped below LevelSubscribed precisely because it bridges nothing, so
+// demanding LevelSubscribed from it would mark every such deployment
+// applied-but-not-converged forever and stall a coordinated rollout's confirm
+// window on a config that has nothing left to do.
+func runtimeConverged(ctx context.Context, rt *runtime.Runtime) (bool, ports.ReadinessLevel) {
+	dh := rt.DeepHealth(ctx)
+	level := ports.ReadinessLevelFromDeepHealth(dh)
+	if dh.Empty {
+		return level >= ports.LevelRunning, level
+	}
+	return level >= convergenceReadyLevel, level
+}
 
 // watchPostSwapConvergence starts the background convergence watch for a
 // freshly committed runtime. It is a no-op for a nil runtime (a reload
@@ -123,8 +143,8 @@ func (s *Supervisor) runConvergenceWatch(ctx context.Context, rt *runtime.Runtim
 			// the operator signal).
 			return
 		}
-		level := rt.ReadinessLevel(ctx)
-		if level >= convergenceReadyLevel {
+		converged, level := runtimeConverged(ctx, rt)
+		if converged {
 			// Deliberately SILENT on the healthy path (no per-reload log):
 			// convergence within budget is the normal case, and a background
 			// log here would race test/operator log capture that treats
@@ -142,7 +162,7 @@ func (s *Supervisor) runConvergenceWatch(ctx context.Context, rt *runtime.Runtim
 				marked = true
 				if s.logger != nil {
 					s.logger.Warn("supervisor: reload applied but NOT converged — reload success signals are "+
-						"green while the transport has not reached its declared broker state (MQTT-R1); "+
+						"green while the transport has not reached its declared broker state; "+
 						"MetricConfigDegraded=1 with the convergence reason until sessions converge or the "+
 						"config is reverted",
 						"config_version", configVersion,

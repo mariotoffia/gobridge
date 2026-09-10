@@ -48,23 +48,14 @@ func TestApp_StartsWithMissingFileAndServesAdminConfig(t *testing.T) {
 		_ = app.Stop(context.Background())
 	})
 
-	require.NotNil(t, app.CurrentRuntime())
-	require.NotNil(t, app.CurrentLogicalConfig())
-	assert.Equal(t, "bridge-a", app.CurrentLogicalConfig().Bridge.ID)
-	health := app.configWatchHealth()
-	require.NotNil(t, health.DesiredVersion)
-	require.NotNil(t, health.RunningVersion)
-	assert.Equal(t, *health.DesiredVersion, *health.RunningVersion)
-	assert.False(t, health.ReconfigurePending)
-	assert.False(t, health.Degraded)
-
-	resp, body := getJSON(t, app.AdminURL()+"/api/v1/admin/config", "admin-secret-key-123456")
+	require.Nil(t, app.CurrentRuntime())
+	require.Nil(t, app.CurrentAppliedConfig())
+	resp, _ := getJSON(t, app.MonitorURL()+"/api/v1/monitor/live", "")
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	configBody, ok := body["config"].(map[string]any)
-	require.True(t, ok)
-	bridgeBody, ok := configBody["bridge"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "bridge-a", bridgeBody["id"])
+	resp, _ = getJSON(t, app.MonitorURL()+"/api/v1/monitor/ready", "")
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	resp, _ = getJSON(t, app.AdminURL()+"/api/v1/admin/config", "admin-secret-key-123456")
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }
 
 func TestApp_ReloadsWhenConfigFileAppears(t *testing.T) {
@@ -139,7 +130,7 @@ func TestApp_ConfigHealthReportsRejectedReload(t *testing.T) {
 	}, 3*time.Second, 10*time.Millisecond)
 }
 
-// TestApp_AdminConfigEndpointReturnsAppliedNotRejectedReload is the B3
+// TestApp_AdminConfigEndpointReturnsAppliedNotRejectedReload is the
 // regression: a reload that fails to apply is written into logicalRef
 // (watchLoop does this before calling applyLogicalConfig), but the admin
 // config endpoint must surface the *effective* (applied) config, never the
@@ -161,11 +152,13 @@ func TestApp_AdminConfigEndpointReturnsAppliedNotRejectedReload(t *testing.T) {
 		"/admin": "admin-secret-key-123456",
 	}))
 
+	require.NoError(t, parser.WriteFile(cfgPath, defaultLogicalConfig(app.cfg)))
 	require.NoError(t, app.Start(t.Context()))
 	t.Cleanup(func() {
 		_ = app.Stop(context.Background())
 	})
 
+	awaitApplied(t, app)
 	// Establish a known-good applied config (log_level=debug).
 	good := &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{
@@ -355,7 +348,7 @@ func getJSON(t *testing.T, url, apiKey string) (*http.Response, map[string]any) 
 	return resp, body
 }
 
-// TestClusteredReload proves the H8 fail-closed guard on the AWS composition
+// TestClusteredReload proves fail-closed guard on the AWS composition
 // root: a live reload of (or INTO) a CLUSTERED deployment is refused via the
 // existing reload-failure path (applyLogicalConfig returns an error, so
 // watchLoop keeps the last-good runtime and applyCommittedConfig surfaces
@@ -376,8 +369,10 @@ func TestClusteredReload(t *testing.T) {
 		}, WithParameterResolver(staticParameterResolver{
 			"/admin": "admin-secret-key-123456",
 		}))
+		require.NoError(t, parser.WriteFile(cfgPath, defaultLogicalConfig(app.cfg)))
 		require.NoError(t, app.Start(t.Context()))
 		t.Cleanup(func() { _ = app.Stop(context.Background()) })
+		awaitApplied(t, app)
 		return app
 	}
 

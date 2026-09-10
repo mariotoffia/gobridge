@@ -324,7 +324,7 @@ func dlqFullLifecycle(t *testing.T, store ports.DLQStore) {
 	}
 }
 
-// dlqEnvelopeIsolation proves the DLQStore clone boundary (finding #9):
+// dlqEnvelopeIsolation proves the DLQStore clone boundary:
 // the persisted envelope is independent of both the caller's input
 // reference and any returned snapshot, so no caller-side mutation can
 // corrupt stored state.

@@ -1,0 +1,245 @@
+# GoBridge Kubernetes profile — one bridge, run as a StatefulSet.
+#
+# Everything a pod needs is in this file: the bridge configuration (a
+# ConfigMap mounted as a volume, so a ConfigMap update reaches the running
+# process without a restart), the admin API key (a Secret, delivered through
+# the environment so the ConfigMap never carries it), a persistent volume for
+# the SQLite state, an init container that seeds the durable MQTT session's
+# managed-subscription baseline, and the probes. The broker is expected at the
+# Service name `mqtt-broker` in the same namespace — point `broker_url` at yours.
+#
+# Replace the two `image:` values with the digest you pushed (README.md), and
+# the Secret's key with a real one, before applying. deployment/kubernetes/README.md
+# walks through build, deploy, verify, reload and upgrade; the whole lifecycle
+# below is exercised by TestKubernetesProfile in tests/integration.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gobridge-config
+data:
+  bridge.yaml: |
+    bridge:
+      id: gobridge
+      # cmd/gobridge waits up to shutdown_timeout for the drain and then stops
+      # HTTP under a fresh shutdown_timeout, so the pod's grace below is above
+      # twice this value (docs/health-and-shutdown.md).
+      shutdown_timeout: 45s
+      drain_timeout: 30s
+
+    http:
+      admin_addr: ":8080"
+      monitor_addr: ":8081"
+      # admin_api_key and monitor_api_key are NOT set here: the process reads
+      # GOBRIDGE_ADMIN_API_KEY / GOBRIDGE_MONITOR_API_KEY from the Secret.
+
+    config_watch:
+      # A ConfigMap volume update is an atomic ..data symlink swap the notify
+      # watcher sees; the 30 s hash resync covers a missed event.
+      mode: notify
+
+    stores:
+      # A persistent MQTT session with subscriptions keeps the exact filters it
+      # installed on the broker here (ADR 0003). The init container seeds the
+      # baseline row before the first start; the path is on the state volume.
+      managed_subscriptions:
+        type: sqlite
+        options:
+          path: /var/lib/gobridge/state/managed-subscriptions.db
+      # Where a message the route gives up on is kept.
+      dlq:
+        type: sqlite
+        options:
+          path: /var/lib/gobridge/state/dlq.db
+
+    sessions:
+      - id: mqtt-conn
+        transport: mqtt
+        session_mode: persistent
+        options:
+          session:
+            broker_url: tcp://mqtt-broker:1883
+            # The effective client id is gobridge-<pod ordinal>: a StatefulSet
+            # keeps the pod hostname stable across restarts, which is what the
+            # assertion vouches for. Never run this on a Deployment.
+            client_id: gobridge
+            client_id_suffix: hostname
+            assert_stable_client_identity: true
+            clean_start: false
+            session_expiry_interval: 86400
+            keep_alive: 30
+
+    receivers:
+      - id: sensor-in
+        session_id: mqtt-conn
+        topics:
+          - topic: "sensors/#"
+            qos: 1
+
+    senders:
+      - id: sensor-out
+        session_id: mqtt-conn
+        options:
+          sender:
+            default_topic: archive/sensors
+            qos: 1
+
+    bindings:
+      - id: to-archive
+        sender_id: sensor-out
+        # Naming the session on the binding is what makes the bridge manage
+        # it: connect, subscribe, reconcile. An unmanaged session never subscribes.
+        session_id: mqtt-conn
+        address: archive/sensors
+
+    routes:
+      - id: forward
+        receiver_id: sensor-in
+        delivery_mode: direct_hold
+        dispatch_mode: single
+        bindings: [to-archive]
+        policy:
+          # One replica consumes this subscription (replicas: 1 above); a
+          # second would double-deliver. Scenario 8 shows fenced ownership.
+          allow_unfenced: true
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gobridge-api-keys
+type: Opaque
+stringData:
+  # At least 16 characters; the server refuses a shorter key at startup.
+  admin-api-key: change-me-to-a-real-admin-key
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: gobridge
+spec:
+  serviceName: gobridge-admin
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gobridge
+  template:
+    metadata:
+      labels:
+        app: gobridge
+    spec:
+      # The image runs as the distroless nonroot user; fsGroup hands it the
+      # state volume, whose SQLite store insists on an owner-controlled parent.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      # Above twice bridge.shutdown_timeout — see the ConfigMap comment.
+      terminationGracePeriodSeconds: 120
+      initContainers:
+        # Seeds the managed-subscription baseline of the durable session and
+        # exits. Idempotent: an established baseline is kept, so every pod
+        # start runs it. A bare session id attests a NEW broker identity with
+        # no subscriptions; to adopt an existing one, list its exact filters:
+        #   -seed-managed-subscriptions=mqtt-conn=sensors/#,$share/g/sensors/#
+        - name: seed-managed-subscriptions
+          image: registry.example.com/gobridge@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          args:
+            - -config
+            - /etc/gobridge/bridge.yaml
+            - -seed-managed-subscriptions
+            - mqtt-conn
+          volumeMounts:
+            - name: config
+              mountPath: /etc/gobridge
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/gobridge
+      containers:
+        - name: gobridge
+          image: registry.example.com/gobridge@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          args:
+            - -config
+            - /etc/gobridge/bridge.yaml
+            # A missing ConfigMap mount is a failed pod, not a bridge that
+            # quietly transports nothing.
+            - -start-empty=false
+          env:
+            - name: GOBRIDGE_ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gobridge-api-keys
+                  key: admin-api-key
+          ports:
+            - name: admin
+              containerPort: 8080
+            - name: monitor
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /api/v1/monitor/live
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            # subscribed: the broker has acknowledged every subscription, so
+            # the pod will not miss messages once it takes traffic.
+            httpGet:
+              path: /api/v1/monitor/ready?level=subscribed
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            # A volume, never a subPath: a subPath copy is not updated when the
+            # ConfigMap changes, so hot reload would never fire.
+            - name: config
+              mountPath: /etc/gobridge
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/gobridge
+      volumes:
+        - name: config
+          configMap:
+            name: gobridge-config
+  volumeClaimTemplates:
+    - metadata:
+        name: state
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+# The admin API must stay reachable while the pod is NOT ready (paused, or
+# waiting for its broker): a headless Service that publishes not-ready
+# addresses keeps it routable exactly when an operator needs it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: gobridge-admin
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: gobridge
+  ports:
+    - name: admin
+      port: 8080
+      targetPort: admin
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gobridge-monitor
+spec:
+  selector:
+    app: gobridge
+  ports:
+    - name: monitor
+      port: 8081
+      targetPort: monitor

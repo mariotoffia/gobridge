@@ -57,27 +57,27 @@ type RouteRunner struct {
 	idleMu               sync.Mutex
 	idleCh               chan struct{}
 
-	// HIGH-1/HIGH-4: bridge-owned retry ledger giving count-less sources a
+	// bridge-owned retry ledger giving count-less sources a
 	// stable attempt count so MaxReplayAttempts actually caps them.
 	replay *replayLedger
 
-	// HIGH-2: latched true once Run has closed its single-use receiver, so a
+	// latched true once Run has closed its single-use receiver, so a
 	// supervisor re-entry returns ErrRouteReceiverClosed (terminal) instead of
 	// re-running the dead receiver.
 	receiverClosed atomic.Bool
 
-	// HIGH-3/HIGH-4: terminal wedge. Once set, the Run callback refuses new
+	// terminal wedge. Once set, the Run callback refuses new
 	// deliveries and Run returns wedgeErr, which superviseRoute escalates.
 	wedgeOnce sync.Once
 	wedged    atomic.Bool
 	wedgeErr  atomic.Value // wedgeBox
 
-	// HIGH-3: per-binding parked-send latch capping leaked send goroutines to
+	// per-binding parked-send latch capping leaked send goroutines to
 	// one per binding.
 	hungMu   sync.Mutex
 	hungBind map[string]bool
 
-	// HIGH-4: count of processor goroutines abandoned after ProcessorTimeout.
+	// count of processor goroutines abandoned after ProcessorTimeout.
 	// When it crosses maxAbandonedProcessors the route wedges (circuit break).
 	abandonedProc atomic.Int64
 }
@@ -91,7 +91,7 @@ type RouteRunnerConfig struct {
 	// canonical PluginConfig.Kind). It drives the ingress redelivery-count strip
 	// (stripForeignReceiveCounts): the receiving transport keeps only its own
 	// native count header and drops any foreign one an untrusted producer forged
-	// (F3). Empty disables the strip (legacy behaviour for callers that construct
+	// Empty disables the strip (legacy behaviour for callers that construct
 	// a runner without a declared source transport). Optional.
 	SourceTransport      string
 	Receiver             ports.Receiver
@@ -167,7 +167,7 @@ func newRouteRunner(cfg RouteRunnerConfig) *RouteRunner {
 		dc = outbox.NewDepthCache(cfg.DepthCacheTTL, cfg.Clock)
 	}
 
-	// Finding 3: a delivery hook is a passive observer (ports/hooks.go) and MUST
+	// A delivery hook is a passive observer (ports/hooks.go) and MUST
 	// NOT alter settlement. Wrap any real hook so a panic in OnAttempt/OnSettled
 	// is contained here instead of unwinding into the delivery goroutine, where
 	// the Run-loop recover would see an unsettled delivery (a hook can panic
@@ -277,7 +277,7 @@ func (h *recoveringHook) recover(method string) {
 func (r *RouteRunner) Run(ctx context.Context) error {
 	r.startedOnce.Do(func() { close(r.started) })
 
-	// HIGH-2: RouteRunner.Run ALWAYS closes its (single-use) receiver on exit
+	// RouteRunner.Run ALWAYS closes its (single-use) receiver on exit
 	// (closeReceiver below). A supervisor that restarts this SAME runner would
 	// re-run a dead receiver and flap at the backoff cap forever behind green
 	// liveness. AddRoute stores built receiver/sender/session INSTANCES, not
@@ -285,7 +285,7 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 	// here to rebuild the receiver — a restart against a closed receiver is
 	// TERMINAL. Return the sentinel superviseRoute escalates (ErrRouteTerminal)
 	// instead of silently flapping. A route that latched a wedge on a prior run
-	// (HIGH-3/HIGH-4) is likewise terminal on re-entry.
+	// is likewise terminal on re-entry.
 	if r.receiverClosed.Load() {
 		return ErrRouteReceiverClosed
 	}
@@ -299,7 +299,7 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 		closed bool
 	)
 
-	// Finding 5 (Wave A) + Finding 4 (Wave B): bounded, at-most-once receiver
+	// Bounded, at-most-once receiver
 	// Close that PRESERVES drain-then-close on graceful shutdown. Historically
 	// Close ran only AFTER receiver.Run returned, so a receiver blocked inside a
 	// broker client that needs Close to unblock its Run loop wedged shutdown
@@ -325,7 +325,7 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.receiverCloseTimeout)
 			defer cancel()
 			_ = closer.Close(closeCtx)
-			// HIGH-2: latch that this single-use receiver has been closed so a
+			// latch that this single-use receiver has been closed so a
 			// supervisor re-entry returns ErrRouteReceiverClosed rather than
 			// re-running the dead instance.
 			r.receiverClosed.Store(true)
@@ -356,7 +356,7 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 	}()
 
 	err := r.receiver.Run(ctx, func(ctx context.Context, del ports.Delivery) error {
-		// HIGH-3/HIGH-4: a hung sender or a run of abandoned-processor timeouts
+		// a hung sender or a run of abandoned-processor timeouts
 		// wedged the route. STOP accepting new deliveries and surface the wedge so
 		// the receiver stops and Run returns it (superviseRoute escalates via
 		// ErrRouteTerminal) rather than spawning more doomed work — and leaking
@@ -380,12 +380,12 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 		}
 		wg.Add(1)
 		mu.Unlock()
-		// Finding 16: count in-flight BEFORE spawning the goroutine. If we
+		// Count in-flight BEFORE spawning the goroutine. If we
 		// incremented inside the goroutine, WaitQuiescent could snapshot 0
 		// between "emit accepted the delivery" and "goroutine started",
 		// reporting quiescence with an accepted-but-unstarted delivery.
 		r.inFlight.Add(1)
-		// Finding 18: wrap the delivery so terminal settlement (Ack/Retry) is
+		// Wrap the delivery so terminal settlement (Ack/Retry) is
 		// observable from the panic-recovery path — a panic AFTER settlement
 		// must not trigger a duplicate retry on an already-settled delivery.
 		tracked := &settleTrackingDelivery{Delivery: del}
@@ -421,7 +421,7 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 						r.metrics.Counter(shared.MetricDeliveryPanics, 1,
 							shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID},
 						)
-						// Finding 18: a panic AFTER the delivery already reached a
+						// A panic AFTER the delivery already reached a
 						// terminal state (e.g. in a tracer/metric/hook call fired
 						// after ACK) must not re-settle it — retrying an acked
 						// delivery is duplicate noise.
@@ -432,19 +432,30 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 							}
 							return
 						}
-						// Propagate caller ctx for trace/correlation values and to
-						// honour any deadline the caller already set. If the caller
-						// ctx is cancelled, strip cancellation but keep values so
-						// the retry (ack/nack to the source) can still complete.
-						var retryParent context.Context
+						// A panic while the BRIDGE is cancelling this delivery —
+						// shutdown, a reconfiguration swap, a route restart — is
+						// not evidence that the message is bad; the dependency the
+						// panicking code touched is most likely the one being torn
+						// down. Leave the delivery UNSETTLED so the source
+						// redelivers it, exactly as every recoverable dispatch
+						// branch does (abandonIfCancelled). Recovering it here
+						// would instead run the replay-cap decision, which reports
+						// "already at the cap" on the FIRST occurrence for an
+						// adapter-generated identity and would DLQ the message —
+						// or discard it under on_permanent_failure=drop or with no
+						// DLQ store.
 						if ctx.Err() != nil {
-							retryParent = context.WithoutCancel(ctx)
-						} else {
-							retryParent = ctx
+							if r.logger != nil {
+								r.logger.Warn("panic while the delivery context was cancelled; leaving the delivery unsettled for redelivery",
+									"route", r.routeID, "cause", rec)
+							}
+							return
 						}
-						retryCtx, retryCancel := context.WithTimeout(retryParent, r.panicRetryTimeout)
+						// Propagate caller ctx for trace/correlation values and to
+						// honour any deadline the caller already set.
+						retryCtx, retryCancel := context.WithTimeout(ctx, r.panicRetryTimeout)
 						defer retryCancel()
-						// Finding 2: panics outside RunChain (resolver, hooks,
+						// Panics outside RunChain (resolver, hooks,
 						// tracer, metrics) reach here. Route the recovery through
 						// the SAME receive-count poison gate the send path uses so
 						// a deterministically-panicking resolver cannot spin an
@@ -474,7 +485,7 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 	// the sole Close.
 	closeReceiver()
 
-	// HIGH-3/HIGH-4: if the route wedged (a hung sender / abandoned-processor
+	// if the route wedged (a hung sender / abandoned-processor
 	// ceiling), surface the terminal wedge error regardless of how receiver.Run
 	// returned (it may have returned nil on a cooperative stop) so superviseRoute
 	// escalates instead of treating the exit as a clean stop.
@@ -614,7 +625,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 		}
 	}
 
-	// Finding 15: count every delivery that ENTERS the pipeline here — the sole
+	// Count every delivery that ENTERS the pipeline here — the sole
 	// choke point shared by both the Run receive loop and Runtime.Inject
 	// (HandleDelivery). Previously only the Run callback emitted it, so injected
 	// deliveries were invisible to the conservation law even though they emit
@@ -640,7 +651,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 	// re-stamp below remains the only path that (re)introduces one. (W3C trace
 	// context — traceparent/tracestate — is not x-bridge.*-prefixed, is never
 	// stripped by StripReservedHeaders, and survives in BOTH modes.)
-	// MQTT-CORE-1: the adapter-stamped generated-identity marker is INTERNAL-ONLY
+	// the adapter-stamped generated-identity marker is INTERNAL-ONLY
 	// (reserved), so both strip branches below would drop it. Preserve it across the
 	// defensive strip: it is adapter truth (the source supplied no stable identity)
 	// and drives the replay-cap termination for an uncountable redelivery. Any
@@ -655,7 +666,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 	if hadGeneratedID {
 		env.SetHeader(messaging.HeaderGeneratedID, generatedID)
 	}
-	// Ingress redelivery-count sanitization (F3). The transport-namespaced count
+	// Ingress redelivery-count sanitization. The transport-namespaced count
 	// keys (sqs.ApproximateReceiveCount, asb.delivery-count, amqp10.delivery-count)
 	// are NOT x-bridge.*-reserved, so the strip above leaves them in place. An
 	// untrusted producer on a count-less source (MQTT copies arbitrary user
@@ -711,7 +722,7 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 
 	// Join the upstream trace before creating this hop's span: Extract
 	// parents the runtime span on the remote span carried by W3C
-	// traceparent, so the bridge appears as a child of the caller (K1).
+	// traceparent, so the bridge appears as a child of the caller.
 	ctx = r.tracer.Extract(ctx, env.Headers())
 
 	ctx, span := r.tracer.StartSpan(ctx, "bridge.handleDelivery", attrs...)
@@ -857,7 +868,7 @@ func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *m
 	}
 
 	// resolvePlans now guarantees len(plans) >= 1 — the fail-closed zero-plan
-	// guard (HIGH-1) lives at that single choke point (shared by shared_outbox)
+	// guard lives at that single choke point (shared by shared_outbox)
 	// and routes an empty resolve through handleResolveError's replay-cap gate,
 	// so the previous zero-delay retryOrFallback guard here was redundant and
 	// divergent (no cap); it has been removed to keep one coherent behaviour.
@@ -885,7 +896,7 @@ func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *m
 
 // recoverDelivery settles a delivery whose processing goroutine panicked
 // OUTSIDE the processor chain (resolver, hooks, tracer, metrics — RunChain has
-// its own recovery). Finding 2 / B2: it routes the poison decision through the
+// its own recovery). It routes the poison decision through the
 // SAME native-or-ledger cap the send path uses (replayCapReached), NOT the raw
 // native receive count. A count-less source (MQTT/AMQP091/HTTP, receiveCount
 // always 0) with a deterministically-panicking resolver/hook/tracer would
@@ -902,7 +913,7 @@ func (r *RouteRunner) recoverDelivery(ctx context.Context, del ports.Delivery, c
 	attempts := rc + 1
 
 	if over {
-		// MQTT-CORE-1: an UNCOUNTABLE source reaching this sink below the numeric cap
+		// an UNCOUNTABLE source reaching this sink below the numeric cap
 		// gets an honest "unstable_identity" reason/category (via replayCapPoison)
 		// instead of a "receive count 0 >= max" comparison that never held.
 		poisonErr, category := r.replayCapPoison(env, rc, cause, "panic")
@@ -942,11 +953,11 @@ func (r *RouteRunner) recoverDelivery(ctx context.Context, del ports.Delivery, c
 
 // settleTrackingDelivery wraps a ports.Delivery to record terminal settlement.
 // A delivery is "settled" once Ack or Retry has succeeded. The panic-recovery
-// path consults Settled() so a panic AFTER settlement (finding 18) does not
+// path consults Settled() so a panic AFTER settlement does not
 // re-settle an already-terminal delivery. Extend is a visibility operation, not
 // a settlement, so it is not tracked.
 //
-// HAZARD (F10): embedding ports.Delivery promotes every current and FUTURE
+// HAZARD: embedding ports.Delivery promotes every current and FUTURE
 // method of the wrapped Delivery, but a wrapper is opaque to interface probing —
 // a caller doing `del.(SomeOptionalCap)` sees THIS concrete type, not the inner
 // delivery, so any optional capability the underlying Delivery grows is silently

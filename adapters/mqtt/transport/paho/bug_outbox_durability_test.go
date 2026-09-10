@@ -1,4 +1,4 @@
-// F-3 (egress durability model). Autopaho keeps outbound QoS 1/2 packet state
+// (egress durability model). Autopaho keeps outbound QoS 1/2 packet state
 // IN MEMORY, so a publish in flight at process death is lost and QoS 2 is not
 // exactly-once across a restart. The old adapter surfaced this as a blanket
 // per-session WARN at every QoS 1/2 sender build. That advisory was imprecise:

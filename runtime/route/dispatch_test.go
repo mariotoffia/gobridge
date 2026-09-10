@@ -9,7 +9,7 @@ import (
 // TestReceiveCount_TransportBases pins the per-transport normalization of
 // receiveCount: SQS and ASB counts are already 1-based, while the amqp10 raw
 // AMQP delivery-count is 0-based and must be incremented. Regression for
-// E5 (asb) / E5-AMQP10 — before the fix only the SQS header was read, so ASB
+// (asb) / — before the fix only the SQS header was read, so ASB
 // and amqp10 sources always reported 0 and MaxReplayAttempts never fired.
 func TestReceiveCount_TransportBases(t *testing.T) {
 	tests := []struct {
@@ -67,7 +67,7 @@ func TestReceiveCount_NoHeaders(t *testing.T) {
 	}
 }
 
-// TestStripInboundReceiveCounts pins the E5-FU1 egress chokepoint helper: it
+// TestStripInboundReceiveCounts pins egress chokepoint helper: it
 // must delete EVERY transport redelivery-count header so a stale upstream count
 // cannot ride a bridge-to-bridge hop, while leaving all other headers untouched.
 func TestStripInboundReceiveCounts(t *testing.T) {
@@ -91,7 +91,7 @@ func TestStripInboundReceiveCounts(t *testing.T) {
 			},
 		})
 
-		stripInboundReceiveCounts(env)
+		StripInboundReceiveCounts(env)
 
 		for _, k := range []string{headerSQSReceiveCount, headerASBDeliveryCount, headerAMQP10DeliveryCount} {
 			if _, ok := env.Headers()[k]; ok {
@@ -119,7 +119,7 @@ func TestStripInboundReceiveCounts(t *testing.T) {
 		if got := receiveCount(env); got != 9 {
 			t.Fatalf("receiveCount before strip = %d, want 9 (stale upstream count wins)", got)
 		}
-		stripInboundReceiveCounts(env)
+		StripInboundReceiveCounts(env)
 		if got := receiveCount(env); got != 0 {
 			t.Fatalf("receiveCount after strip = %d, want 0 (stale count no longer rides the hop)", got)
 		}
@@ -129,6 +129,6 @@ func TestStripInboundReceiveCounts(t *testing.T) {
 		// WHY: DeleteHeader is nil-safe; a first-delivery envelope built without
 		// headers must strip cleanly rather than panic.
 		env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "x", Payload: []byte("p")})
-		stripInboundReceiveCounts(env) // must not panic
+		StripInboundReceiveCounts(env) // must not panic
 	})
 }

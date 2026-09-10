@@ -62,9 +62,9 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	outbound := env.Clone()
 	// Drop the source transport's stale redelivery-count headers from the
 	// outbound clone so they cannot ride this bridge-to-bridge hop and be
-	// misread as the downstream bridge's own receiveCount (E5-FU1). The source
+	// misread as the downstream bridge's own receiveCount. The source
 	// env is left intact: receiveCount(env) is re-read from it on retry/poison.
-	stripInboundReceiveCounts(outbound)
+	StripInboundReceiveCounts(outbound)
 	if plan.Headers != nil {
 		outbound.StampHeaders(messaging.MergeHeaders(outbound.Headers(), plan.Headers, true))
 	}
@@ -83,9 +83,9 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	defer sendCancel()
 
 	rc := r.effectiveAttempt(env)
-	// E5-FU3: a redelivery-count header that is present but uninterpretable makes
+	// a redelivery-count header that is present but uninterpretable makes
 	// receiveCount fail open to a first delivery (native rc==0) so a good message
-	// is never DLQ'd on a parse error. HIGH-1: effectiveAttempt then falls back to
+	// is never DLQ'd on a parse error. effectiveAttempt then falls back to
 	// the bridge-owned replay ledger, so the recoverable-retry path below is now
 	// CAPPED even for a count-less / unparseable source instead of retrying a
 	// permanently-failing send unbounded. Surface the unparseable condition as a
@@ -123,7 +123,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	// active span onto the PERSISTED envelope at outbox-build time
 	// (buildOutboxRecords) — symmetric with this hop — so a drained record still
 	// propagates this bridge hop downstream rather than the bare upstream
-	// traceparent the clone carried (OTEL-N3).
+	// traceparent the clone carried (OTEL).
 	if injected := r.tracer.Inject(sendCtx, map[string]any{}); len(injected) > 0 {
 		outbound.DeleteHeader(messaging.HeaderTraceParent)
 		outbound.DeleteHeader(messaging.HeaderTraceState)
@@ -170,10 +170,13 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	}
 
 	if shared.IsRecoverableError(sendErr) {
+		if abandoned := r.abandonIfCancelled(ctx, env, "send", sendErr); abandoned != nil {
+			return abandoned
+		}
 		r.metrics.Counter(shared.MetricRouteErrors, 1,
 			shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
 
-		// HIGH-1 / MQTT-CORE-1: route the terminal decision through the single gate
+		// route the terminal decision through the single gate
 		// so a count-less source is capped by the bridge-owned ledger AND an
 		// uncountable adapter-generated identity (which the ledger cannot count) is
 		// sinked terminally on its first failure instead of recycling the source
@@ -198,10 +201,11 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 			} else {
 				if dlqErr := r.dlq.Route(ctx, outbound, r.routeID, plan.BindingID, plan.Address,
 					r.sessionIDForBinding(plan.BindingID), "", poisonErr, rc); dlqErr != nil {
-					return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
+					return r.retryOrFallbackUncharged(ctx, del, env, RetryDelay(r.policy, r.effectiveAttempt(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 				}
 				r.emitDLQ(category)
 			}
+			r.noteTerminalFailure(del, poisonErr)
 			r.hook.OnSettled(ctx, ports.DeliveryOutcome{
 				Direction:   ports.DirectionEgress,
 				RouteID:     r.routeID,
@@ -216,7 +220,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 			return r.ackDelivery(ctx, del)
 		}
 
-		return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, sendErr), sendErr)
+		return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, r.effectiveAttempt(env)+1, sendErr), sendErr)
 	}
 
 	if r.dropOnPermanentFailure() {
@@ -231,7 +235,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		r.emitDrop("permanent")
 	} else {
 		if dlqErr := r.dlq.Route(ctx, outbound, r.routeID, plan.BindingID, plan.Address, r.sessionIDForBinding(plan.BindingID), "", sendErr, 0); dlqErr != nil {
-			return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
+			return r.retryOrFallbackUncharged(ctx, del, env, RetryDelay(r.policy, r.effectiveAttempt(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 		}
 		if logging.DebugEnabled(r.logger) {
 			r.logger.Log(ctx, logging.LevelDebug, "routed to DLQ",
@@ -243,6 +247,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		}
 		r.emitDLQ("permanent")
 	}
+	r.noteTerminalFailure(del, sendErr)
 	r.hook.OnSettled(ctx, ports.DeliveryOutcome{
 		Direction:   ports.DirectionEgress,
 		RouteID:     r.routeID,
@@ -291,7 +296,7 @@ func (r *RouteRunner) dropOnPermanentFailure() bool {
 // SendTimeout deadline and INDEPENDENT of parent-ctx cancellation: ctx (already
 // the SendTimeout-bounded sendCtx) is still passed to Send so a COOPERATIVE sender
 // aborts promptly AT SendTimeout and reports through done even mid-shutdown, and
-// because the ceiling is later it always wins that race (B4 — a bare SendTimeout
+// because the ceiling is later it always wins that race (a bare SendTimeout
 // ceiling raced the cooperative abort and flaky-wedged healthy routes). A sender
 // that ignores ctx entirely gets the full wedge ceiling to return before we
 // unblock. Deriving the ceiling from a timer rather than ctx.Done() is what lets
@@ -308,7 +313,7 @@ func (r *RouteRunner) dropOnPermanentFailure() bool {
 // LARGER than SendTimeout — SendTimeout + min(SendTimeout, 5s) — so a COOPERATIVE
 // sender that aborts AT SendTimeout via its ctx always returns through `done` and
 // wins the ceiling race; only a send still parked WELL PAST SendTimeout (having
-// ignored ctx the whole time) trips the wedge (B4). Conflating the two — a bare
+// ignored ctx the whole time) trips the wedge. Conflating the two — a bare
 // SendTimeout ceiling equal to the sendCtx deadline — flaky-wedges a healthy route
 // whenever a cooperative sender legitimately hits SendTimeout under load, turning
 // ordinary transient slowness into a false pod restart. The per-send TRANSIENT
@@ -332,7 +337,7 @@ func (r *RouteRunner) sendWedgeCeiling() time.Duration {
 const sendWedgeCeilingMargin = 5 * time.Second
 
 func (r *RouteRunner) boundedSend(ctx context.Context, sender ports.Sender, msg ports.OutboundMessage, binding string) error {
-	// HIGH-3: cap parked (leaked) send goroutines to at most ONE per binding. A
+	// cap parked (leaked) send goroutines to at most ONE per binding. A
 	// prior send to this binding already timed out and left its goroutine parked
 	// ignoring ctx (Go cannot kill it); refuse to spawn a second rather than leak
 	// another goroutine per timed-out delivery. The delivery is reported as a
@@ -361,19 +366,27 @@ func (r *RouteRunner) boundedSend(ctx context.Context, sender ports.Sender, msg 
 
 	// Injected clock (never time.NewTimer): the production timing audit forbids a
 	// real timer in this layer, and it keeps the ceiling deterministically
-	// drivable from tests via a fake clock. B4: the ceiling is the WEDGE bound
+	// drivable from tests via a fake clock. The ceiling is the WEDGE bound
 	// (SendTimeout + margin), strictly LARGER than the sendCtx SendTimeout deadline
 	// so a cooperative sender aborting at SendTimeout returns via `done` and wins
 	// this race — only a genuinely-parked (ctx-ignoring) send reaches the ceiling.
-	ceiling := r.clk.NewTimer(r.sendWedgeCeiling())
-	defer ceiling.Stop()
+	// A zero ceiling means NO bound (SendTimeout disabled): await completion.
+	// Arming a timer with it would fire IMMEDIATELY and wedge the route on its
+	// very first send, the exact inverse of the contract. Leaving the channel nil
+	// blocks that arm of the select forever, which is what "no bound" means.
+	var ceilingC <-chan time.Time
+	if d := r.sendWedgeCeiling(); d > 0 {
+		ceiling := r.clk.NewTimer(d)
+		defer ceiling.Stop()
+		ceilingC = ceiling.C()
+	}
 	select {
 	case res := <-done:
 		if res.rec != nil {
 			panic(res.rec)
 		}
 		return res.err
-	case <-ceiling.C():
+	case <-ceilingC:
 		// Prefer a result that landed in the same tick as the ceiling: a send
 		// that actually completed must win over the timeout so we never retry an
 		// already-delivered message (duplicate).
@@ -385,7 +398,7 @@ func (r *RouteRunner) boundedSend(ctx context.Context, sender ports.Sender, msg 
 			return res.err
 		default:
 		}
-		// HIGH-3: the send goroutine is now parked ignoring ctx (the deliberate
+		// the send goroutine is now parked ignoring ctx (the deliberate
 		// ceiling). Latch the binding so a second CONSECUTIVE send is refused
 		// before spawning, and WEDGE the route so the Run callback stops accepting
 		// new deliveries and superviseRoute escalates — rather than the route
@@ -458,7 +471,7 @@ func (r *RouteRunner) ackDelivery(ctx context.Context, del ports.Delivery) error
 	err := del.Ack(settleCtx)
 	r.invokeOnAck(del.Envelope(), err)
 	if err == nil {
-		// HIGH-1 / B3: ack is the single convergence point for every TERMINAL
+		// ack is the single convergence point for every TERMINAL
 		// outcome (success, poison/DLQ, drop) — a retried delivery uses del.Retry,
 		// not this path. Evicting the message from the bridge-owned replay ledger
 		// here keeps the ledger holding only keys for count-less messages still in
@@ -469,7 +482,7 @@ func (r *RouteRunner) ackDelivery(ctx context.Context, del ports.Delivery) error
 		// returns via the chain's done hook), so a terminal settle must not zero it —
 		// a genuine leak that persists across settles must stay counted.
 		//
-		// B3: eviction happens ONLY after del.Ack SUCCEEDS. If the terminal Ack fails
+		// eviction happens ONLY after del.Ack SUCCEEDS. If the terminal Ack fails
 		// (a broker hiccup at settle) the source redelivers a message we already
 		// DLQ'd; forgetting it first would let the redelivery re-enter at count 0,
 		// earn a fresh MaxReplayAttempts budget, and write a SECOND DLQ entry
@@ -483,7 +496,7 @@ func (r *RouteRunner) ackDelivery(ctx context.Context, del ports.Delivery) error
 // storeOpContext bounds a single outbox-store operation (QueryPending, Persist)
 // so a black-holed store call — an endpoint that accepts the connection then
 // never responds after a mid-exchange black-hole — cannot pin route in-flight
-// capacity indefinitely (STORE-1). The bound reuses SendTimeout: an outbox
+// capacity indefinitely. The bound reuses SendTimeout: an outbox
 // Query/Persist is a dependency call of the same class as a send, and a resulting
 // context.DeadlineExceeded flows through the existing transient retryOrFallback
 // path so it is retried/supervised rather than hanging forever. The caller MUST
@@ -536,7 +549,7 @@ func (r *RouteRunner) handleExpired(ctx context.Context, del ports.Delivery, env
 	// counter there would be a false signal; drop-with-metric instead.
 	if r.policy.OnExpired == routing.ExpiredDLQ && r.dlq.HasStore() {
 		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", shared.ErrMessageExpired, 0); dlqErr != nil {
-			return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
+			return r.retryOrFallbackUncharged(ctx, del, env, RetryDelay(r.policy, r.effectiveAttempt(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 		}
 		r.emitDLQ("expired")
 		return r.settleTerminal(ctx, del, env, shared.ErrMessageExpired, attempts)
@@ -563,7 +576,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 		// observable (metric + terminal hook).
 		if r.policy.OnFiltered == routing.FilteredDLQ && r.dlq.HasStore() {
 			if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", err, 0); dlqErr != nil {
-				return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
+				return r.retryOrFallbackUncharged(ctx, del, env, RetryDelay(r.policy, r.effectiveAttempt(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 			}
 			// Counted as DLQEntries{category=filtered}; do NOT also emit
 			// MessagesFiltered — the conservation law counts each message once.
@@ -578,6 +591,9 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 		return r.settleTerminal(ctx, del, env, err, attempts)
 	}
 	if shared.IsRecoverableError(err) {
+		if abandoned := r.abandonIfCancelled(ctx, env, "processor chain", err); abandoned != nil {
+			return abandoned
+		}
 		r.metrics.Counter(shared.MetricRouteErrors, 1,
 			shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
 
@@ -586,7 +602,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 		// payload, a catastrophic regex, or a hung transform — would otherwise
 		// retry forever, each attempt holding a concurrency slot for the full
 		// ProcessorTimeout and eventually wedging the route semaphore on brokers
-		// without a native redrive cap. HIGH-1/HIGH-4: replayCapReached uses the
+		// without a native redrive cap. replayCapReached uses the
 		// bridge-owned ledger for count-less sources so this cap applies to MQTT /
 		// AMQP 0-9-1 too, not only to count-bearing transports. At or above
 		// MaxReplayAttempts, poison to the DLQ (or drop-with-metric under
@@ -607,7 +623,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 		return r.settleTerminal(ctx, del, env, err, attempts)
 	}
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", err, 0); dlqErr != nil {
-		return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
+		return r.retryOrFallbackUncharged(ctx, del, env, RetryDelay(r.policy, r.effectiveAttempt(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 	}
 	r.emitDLQ("permanent")
 	return r.settleTerminal(ctx, del, env, err, attempts)
@@ -625,7 +641,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 // replayCapPoison builds the poison BridgeError and the drop/DLQ metric category
 // for a message reaching a terminal replay decision. A numeric cap hit keeps the
 // caller's category and a "receive count N >= max" reason. An UNCOUNTABLE
-// redelivery (MQTT-CORE-1) — reached below the numeric cap because its
+// redelivery — reached below the numeric cap because its
 // adapter-generated identity cannot be counted — is retagged "unstable_identity"
 // with an honest reason, so the DLQ record and metric never claim a receive-count
 // comparison that never held. Shared by every replay-cap sink so the two message
@@ -654,7 +670,7 @@ func (r *RouteRunner) poisonReplayCapExceeded(ctx context.Context, del ports.Del
 		return r.settleTerminal(ctx, del, env, poisonErr, attempts)
 	}
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", poisonErr, rc); dlqErr != nil {
-		return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write poison dlq: %w", dlqErr))
+		return r.retryOrFallbackUncharged(ctx, del, env, RetryDelay(r.policy, r.effectiveAttempt(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write poison dlq: %w", dlqErr))
 	}
 	r.emitDLQ(category)
 	return r.settleTerminal(ctx, del, env, poisonErr, attempts)
@@ -677,7 +693,7 @@ func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery
 			return r.settleTerminal(ctx, del, env, err, attempts)
 		}
 		if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", err, 0); dlqErr != nil {
-			return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, receiveCount(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
+			return r.retryOrFallbackUncharged(ctx, del, env, RetryDelay(r.policy, r.effectiveAttempt(env)+1, dlqErr), fmt.Errorf("runtime: route-runner: write dlq: %w", dlqErr))
 		}
 		r.emitDLQ("rejected")
 		return r.settleTerminal(ctx, del, env, err, attempts)
@@ -686,26 +702,92 @@ func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery
 	// replay-cap gate as handleProcessorError: a deterministically-failing
 	// resolver (e.g. a persistently unreachable locator) would otherwise retry
 	// forever, and previously re-dispatched with ZERO delay — an immediate hot
-	// loop. HIGH-1: the cap now applies to count-less sources via the ledger too.
+	// loop. The cap now applies to count-less sources via the ledger too.
 	// At or above MaxReplayAttempts, poison terminally; below the cap, retry with
 	// the policy's bounded backoff instead of zero.
+	if abandoned := r.abandonIfCancelled(ctx, env, "resolve destination", err); abandoned != nil {
+		return abandoned
+	}
 	if rc, over := r.replayCapReached(env); over {
 		return r.poisonReplayCapExceeded(ctx, del, env, rc, err, "max_retries")
 	}
 	return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, r.effectiveAttempt(env)+1, err), err)
 }
 
-// retryOrFallback attempts del.Retry; if the source transport does not
+// errDeliveryAbandoned marks a delivery the runtime stopped working on because
+// the BRIDGE killed its own delivery context — a SIGTERM, a reconfiguration
+// swap that outran the drain budget, or a receiver cancelling its route. The
+// message never got a complete attempt, so it is left UNSETTLED and the source
+// redelivers it.
+var errDeliveryAbandoned = errors.New("delivery abandoned: the bridge cancelled its own delivery context")
+
+// abandonIfCancelled is the guard every RECOVERABLE dispatch branch runs first.
+// It returns a non-nil error — which the caller must return immediately,
+// settling nothing — when the delivery was aborted by the bridge cancelling
+// itself rather than by anything wrong with the message.
+//
+// Why it must exist: cancellation arrives as a plain (non-BridgeError) error, so
+// it classifies as recoverable and reaches the replay-cap gate. For the common
+// MQTT publish — an adapter-generated identity the replay ledger cannot count —
+// that gate reports "already at the cap" on the FIRST failure, and under
+// on_permanent_failure=drop (or with no DLQ store) the message is dropped and
+// ACKed. A rolling restart would then discard every in-flight message. The
+// bridge cancelling itself is never evidence that a message is bad.
+//
+// The check is deliberately narrow. The DELIVERY context dying (either cause)
+// is the bridge's own doing; a send that merely exceeded its own SendTimeout
+// while the delivery context stayed live is a genuine target failure and keeps
+// its terminal behaviour. No RouteErrors counter is emitted here either — every
+// in-flight delivery would raise one on each shutdown, which is noise, not a
+// delivery stall.
+func (r *RouteRunner) abandonIfCancelled(ctx context.Context, env *messaging.Envelope, phase string, cause error) error {
+	if ctx.Err() == nil && !errors.Is(cause, context.Canceled) {
+		return nil
+	}
+	if r.logger != nil {
+		r.logger.Warn("delivery left unsettled: the bridge cancelled the delivery context",
+			"route", r.routeID,
+			"envelope_id", env.ID(),
+			"phase", phase,
+			"cause", cause,
+		)
+	}
+	// The returned error always carries the CANCELLATION, not just the phase
+	// error: a build/persist failure that happened to coincide with the
+	// cancellation still reports why the delivery was abandoned.
+	cancelled := ctx.Err()
+	if cancelled == nil {
+		cancelled = context.Canceled
+	}
+	return fmt.Errorf("runtime: route-runner: %s failed with %v; %w: %w",
+		phase, cause, errDeliveryAbandoned, cancelled)
+}
+
+// retryOrFallback is retryOrFallbackUncharged plus one CHARGED attempt against
+// the bridge-owned replay ledger. Use it when the MESSAGE itself failed — a
+// refused send, a failing processor, an unresolvable destination — so the cap
+// climbs on each redelivery for a count-less source (a count-bearing source
+// self-caps via its native header and is skipped inside recordReplayAttempt).
+// Every message-failure path converges here before redelivering, so this is the
+// single increment point; the terminal poison/drop paths do NOT reach it (they
+// settleTerminal), so a capped message is never re-counted.
+func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, env *messaging.Envelope, after time.Duration, reason error) error {
+	r.recordReplayAttempt(env)
+	return r.retryOrFallbackUncharged(ctx, del, env, after, reason)
+}
+
+// retryOrFallbackUncharged attempts del.Retry; if the source transport does not
 // support retry (ErrNotSupported), it falls back to DLQ routing with
 // category "retry_unsupported" so the message is not silently lost.
-func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, env *messaging.Envelope, after time.Duration, reason error) error {
-	// HIGH-1: record one more attempt for a COUNT-LESS source BEFORE the retry so
-	// the bridge-owned cap climbs on each redelivery (a count-bearing source
-	// self-caps via its native header and is skipped inside recordReplayAttempt).
-	// Every transient-failure path converges here before redelivering, so this is
-	// the single increment point; the terminal poison/drop paths do NOT reach
-	// here (they settleTerminal), so a capped message is never re-counted.
-	r.recordReplayAttempt(env)
+//
+// It does NOT spend the message's replay budget. Use it for a retry the message
+// did not cause: a full outbox partition, an outbox depth query that failed, or
+// a DLQ store that could not accept the record. Charging those would let
+// infrastructure trouble exhaust the budget of a message that was never
+// attempted, so the first genuine transient error afterwards finds the cap
+// already reached and poisons — DLQ'd, or DROPPED under
+// on_permanent_failure=drop — a message that never failed.
+func (r *RouteRunner) retryOrFallbackUncharged(ctx context.Context, del ports.Delivery, env *messaging.Envelope, after time.Duration, reason error) error {
 	retryErr := r.retryDelivery(ctx, del, after, reason)
 	if retryErr == nil || !errors.Is(retryErr, shared.ErrNotSupported) {
 		return retryErr
@@ -797,7 +879,7 @@ func receiveCount(env *messaging.Envelope) int {
 // scanning in the same precedence order receiveCount uses. It returns a key ONLY
 // when no equal-or-higher-precedence header supplied a usable count — i.e.
 // exactly the case where receiveCount fails open to 0 (first delivery) and
-// MaxReplayAttempts is silently uncapped (E5-FU3). A cleanly parsed count (even a
+// MaxReplayAttempts is silently uncapped. A cleanly parsed count (even a
 // literal 0) or a merely absent header yields "" (no signal), so a valid
 // fallback count never produces a false positive. Callers use the non-empty key
 // only to emit an observability signal; the fail-open value from receiveCount is
@@ -822,15 +904,21 @@ func unparseableReceiveCountKey(env *messaging.Envelope) string {
 	return firstBad
 }
 
-// stripInboundReceiveCounts removes every source-transport redelivery-count
+// StripInboundReceiveCounts removes every source-transport redelivery-count
 // header from env. It is applied to the OUTBOUND (cloned) envelope at each
 // egress chokepoint so a stale upstream count cannot ride a bridge-to-bridge
-// hop and be misread as the downstream bridge's own receiveCount (E5-FU1).
+// hop and be misread as the downstream bridge's own receiveCount.
 // The downstream bridge re-establishes the count from its own transport's
 // redelivery header (or treats the message as a first delivery). Never call
-// this on a source envelope: receiveCount is re-read from the source on the
-// retry/poison paths. DeleteHeader is nil-safe.
-func stripInboundReceiveCounts(env *messaging.Envelope) {
+// this on a source envelope of a LIVE delivery: receiveCount is re-read from
+// the source on the retry/poison paths.
+//
+// It is exported for one other caller: a DLQ redrive re-issues a message as a
+// FRESH, operator-issued delivery attempt, so it must carry no redelivery
+// history — the counter that exhausted the replay cap in the first place is
+// still on the DLQ'd envelope, and inheriting it would put the redrive over the
+// cap before its first attempt. DeleteHeader is nil-safe.
+func StripInboundReceiveCounts(env *messaging.Envelope) {
 	env.DeleteHeader(headerSQSReceiveCount)
 	env.DeleteHeader(headerASBDeliveryCount)
 	env.DeleteHeader(headerAMQP10DeliveryCount)
@@ -866,7 +954,7 @@ var receiveCountAliases = map[string]string{
 // A transport the runtime does not recognize (including a source registered under
 // a wholly custom operator-chosen name) returns ("", false): the conservative
 // choice, since trusting a foreign count is the ingress-forgery vulnerability
-// (F3) this table closes.
+// this table closes.
 func nativeReceiveCountKey(sourceTransport string) (string, bool) {
 	key, ok := receiveCountAliases[strings.ToLower(strings.TrimSpace(sourceTransport))]
 	return key, ok
@@ -874,7 +962,7 @@ func nativeReceiveCountKey(sourceTransport string) (string, bool) {
 
 // stripForeignReceiveCounts removes, on INGRESS, every transport
 // redelivery-count header that the SOURCE transport does not itself stamp,
-// closing the ingress redelivery-count forgery vector (F3): an untrusted producer
+// closing the ingress redelivery-count forgery vector: an untrusted producer
 // on a count-less source (e.g. an MQTT device that copies arbitrary user
 // properties straight into envelope headers) could otherwise inject
 // sqs.ApproximateReceiveCount: 999 and have its FIRST delivery read as over the
@@ -989,12 +1077,41 @@ func (r *RouteRunner) emitExpired() {
 		shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
 }
 
+// terminalFailureRecorder is the out-of-band, trusted channel a runtime-internal
+// SYNTHETIC delivery uses to learn that its message was settled TERMINALLY
+// without ever being delivered — dropped by policy, filtered, expired, or
+// written to the DLQ. Only deliveries constructed inside the runtime
+// (Runtime.Inject / InjectRedrive) implement it; a transport delivery never
+// does, because its source already learns the outcome from the Ack itself.
+//
+// It exists because a synthetic Ack ALWAYS succeeds. Without this signal an
+// admin DLQ redrive whose replay was dropped or re-DLQ'd reads as a successful
+// delivery, so the original DLQ entry is deleted and the message and its
+// failure evidence are both gone.
+type terminalFailureRecorder interface {
+	// RecordTerminalFailure reports the cause of a terminal settle that did not
+	// deliver the message.
+	RecordTerminalFailure(cause error)
+}
+
+// noteTerminalFailure reports a non-delivering terminal settle to a delivery
+// that asked to hear about it. It is a no-op for every transport delivery.
+func (r *RouteRunner) noteTerminalFailure(del ports.Delivery, cause error) {
+	if cause == nil {
+		return
+	}
+	if tf, ok := del.(terminalFailureRecorder); ok {
+		tf.RecordTerminalFailure(cause)
+	}
+}
+
 // settleTerminal records exactly one terminal outcome for an ingress delivery:
 // it fires a single OnSettled (Terminal=true) and ACKs the source. It is the
 // convergence point for ingress terminal drop/DLQ paths so the "exactly once
 // per terminal state" contract is enforced structurally rather than by
 // repeating the OnSettled+ack pair at every call site.
 func (r *RouteRunner) settleTerminal(ctx context.Context, del ports.Delivery, env *messaging.Envelope, cause error, attempts int) error {
+	r.noteTerminalFailure(del, cause)
 	r.hook.OnSettled(ctx, ports.DeliveryOutcome{
 		Direction:   ports.DirectionIngress,
 		RouteID:     r.routeID,
@@ -1052,7 +1169,15 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 	}
 
 	if r.outboxStore == nil {
-		return r.retryOrFallback(ctx, del, env, time.Second, fmt.Errorf("shared_outbox route %q: no OutboxStore configured", r.routeID))
+		// A shared_outbox route without an OutboxStore is a WIRING defect, not a
+		// message fault: no redelivery can supply the missing store, and this
+		// branch bypasses the replay cap (retryOrFallback never consults it), so
+		// retrying turned every message into an unbounded one-second loop behind
+		// green liveness. Wedge terminally instead — the supervisor escalates and
+		// the delivery is left unsettled, so nothing is acked or dropped.
+		// Startup validation blocks this shape; only direct library composition
+		// (route.NewRouteRunner) can reach it.
+		return r.wedge(fmt.Errorf("shared_outbox route %q: no OutboxStore configured", r.routeID))
 	}
 
 	// Depth check is advisory: concurrent goroutines may each see under-capacity
@@ -1060,12 +1185,12 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 	// outbox drainer will eventually process excess entries, and QueryPending
 	// errors now fail the delivery (fail-closed) rather than silently bypassing.
 	//
-	// L3: a fan-out writes one record per plan, each into its own outbox
+	// a fan-out writes one record per plan, each into its own outbox
 	// partition, so the check consults EVERY distinct target partition (not just
 	// plans[0]'s). Backpressure applies if ANY leg's partition is at capacity — a
 	// full partition must not accept another record regardless of which leg
 	// targets it. Single-binding routes (the common case) iterate exactly once,
-	// identical to the pre-L3 behavior. Per-partition logic is unchanged: a fresh
+	// identical to the pre-behavior. Per-partition logic is unchanged: a fresh
 	// under-capacity cache entry skips the query; unknown/stale/at-capacity query.
 	if r.policy.MaxOutboxDepth > 0 && r.depthCache != nil {
 		for _, partitionKey := range r.distinctOutboxPartitions(plans) {
@@ -1076,22 +1201,37 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 			pending, qErr := r.outboxStore.QueryPending(qctx, partitionKey, r.policy.MaxOutboxDepth+1)
 			qcancel()
 			if qErr != nil {
-				return r.retryOrFallback(ctx, del, env, time.Second, fmt.Errorf("runtime: route-runner: query outbox depth: %w", qErr))
+				if abandoned := r.abandonIfCancelled(ctx, env, "query outbox depth", qErr); abandoned != nil {
+					return abandoned
+				}
+				return r.retryOrFallbackUncharged(ctx, del, env, time.Second, fmt.Errorf("runtime: route-runner: query outbox depth: %w", qErr))
 			}
 			atCapacity := len(pending) >= r.policy.MaxOutboxDepth
 			r.depthCache.Update(partitionKey, atCapacity)
 			if atCapacity {
-				return r.retryOrFallback(ctx, del, env, 5*time.Second, fmt.Errorf("outbox partition %q at capacity (%d pending)", partitionKey, len(pending)))
+				full := fmt.Errorf("outbox partition %q at capacity (%d pending)", partitionKey, len(pending))
+				// A backpressure retry is still a retry, and on a source that
+				// cannot defer a delivery (MQTT, HTTP) a retry falls through to
+				// the terminal drop/DLQ fallback. Under a cancelled delivery
+				// context that discards a message the bridge simply had no room
+				// for yet, so abandon it for redelivery instead.
+				if abandoned := r.abandonIfCancelled(ctx, env, "outbox at capacity", full); abandoned != nil {
+					return abandoned
+				}
+				return r.retryOrFallbackUncharged(ctx, del, env, 5*time.Second, full)
 			}
 		}
 	}
 
 	records, buildErr := r.buildOutboxRecords(ctx, env, plans)
 	if buildErr != nil {
+		if abandoned := r.abandonIfCancelled(ctx, env, "build outbox record", buildErr); abandoned != nil {
+			return abandoned
+		}
 		// Replay-cap gate (mirrors handleProcessorError). A permanently-failing
 		// record build — a resolver emitting a BindingID absent from the route's
 		// bindings, or the store rejecting an oversized record (helpers.go) — would
-		// otherwise retry indefinitely. HIGH-1: replayCapReached uses the source's
+		// otherwise retry indefinitely. replayCapReached uses the source's
 		// native redelivery count when present (SQS, ASB, AMQP 1.0) and the
 		// bridge-owned ledger for COUNT-LESS sources (MQTT, AMQP 0-9-1, HTTP), so
 		// the cap now applies uniformly instead of never firing for count-less
@@ -1108,9 +1248,22 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 	pcancel()
 	if persistErr != nil {
 		if errors.Is(persistErr, shared.ErrDuplicateRecord) {
+			// The record is already durable, so settling the source loses nothing —
+			// for a redelivery. The runtime cannot distinguish that from a producer
+			// reusing an envelope ID for a different message, where the same ack
+			// discards a real one. Count the suppression so a colliding identity
+			// namespace is visible on the route rather than inferred from missing
+			// messages; ingress ownership of that namespace is a transport contract
+			// (ports.Receiver "Envelope identity").
+			r.metrics.Counter(shared.MetricOutboxDuplicateSuppressed, 1,
+				shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID},
+			)
 			return r.ackDelivery(ctx, del)
 		}
-		// STORE-1 × MQTT-CORE-1: a DeadlineExceeded from the bounded store-op
+		if abandoned := r.abandonIfCancelled(ctx, env, "persist outbox record", persistErr); abandoned != nil {
+			return abandoned
+		}
+		// ×: a DeadlineExceeded from the bounded store-op
 		// context is an INFRASTRUCTURE timeout (a slow-but-healthy store), not a
 		// message-poison signal. It must NOT reach the replay-cap gate below, which
 		// would terminally DLQ/drop an UNCOUNTABLE (adapter-generated-identity) source
@@ -1118,10 +1271,10 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 		// even though the write is retryable. Route it to the transient path so the
 		// record is persisted when the store recovers (the source redelivers).
 		if errors.Is(persistErr, context.DeadlineExceeded) {
-			return r.retryOrFallback(ctx, del, env, RetryDelay(r.policy, r.effectiveAttempt(env)+1, persistErr), persistErr)
+			return r.retryOrFallbackUncharged(ctx, del, env, RetryDelay(r.policy, r.effectiveAttempt(env)+1, persistErr), persistErr)
 		}
 		// Replay-cap gate (mirrors handleProcessorError). A permanently-failing
-		// outbox persist would otherwise retry indefinitely. HIGH-1: the cap reads
+		// outbox persist would otherwise retry indefinitely. The cap reads
 		// the native redelivery count for count-bearing sources (SQS, ASB, AMQP
 		// 1.0) and the bridge-owned ledger for count-less ones (MQTT, AMQP 0-9-1),
 		// so it now fires for both. At or above the cap, poison terminally; below

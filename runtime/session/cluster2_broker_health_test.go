@@ -24,8 +24,9 @@ func TestCluster2_BrokerHealthStepDownDue(t *testing.T) {
 		t.Fatal("must not be due before the first convergence (activation, not an outage)")
 	}
 
-	// First connect + reconcile: converged.
-	m.connectedOnce.Store(true)
+	// First connect + reconcile: converged. markConverged is the ONE place that
+	// arms the gate, whether it was reached from a SessionConnected event or
+	// from a completed post-acquire activation.
 	m.markConverged()
 	if m.brokerHealthStepDownDue() {
 		t.Fatal("converged owner must never be due")
@@ -65,7 +66,6 @@ func TestCluster2_BrokerHealthStepDownDue(t *testing.T) {
 func TestCluster2_DisabledByDefault(t *testing.T) {
 	fake := clocktest.NewAt(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	m := &Manager{brokerHealthStepDown: 0, clk: clock.Clock(fake)}
-	m.connectedOnce.Store(true)
 	m.markConverged()
 	m.markNonConverged()
 	fake.Advance(time.Hour)

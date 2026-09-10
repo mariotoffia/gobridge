@@ -1,0 +1,77 @@
+# syntax=docker/dockerfile:1
+
+# GoBridge Kubernetes profile image.
+#
+# Builds the reference composition root (cmd/gobridge) with MQTT and native
+# memory/SQLite stores selected by GO_BUILD_TAGS, plus the always-available
+# file:// credentials and in-process HTTP API, as a fully
+# static, CGO-free executable and ships it on distroless/static as the
+# non-root user. There is no shell, curl or wget in the image: kubelet probes
+# the monitor port over HTTP (deployment/kubernetes/gobridge.yaml).
+#
+# Build from the REPOSITORY ROOT. The build regenerates go.work from the
+# copied source so every selected plugin family uses the same checkout as
+# the core, rather than mixing local code with older published adapters:
+#
+#   docker build -f deployment/kubernetes/Dockerfile -t <registry>/gobridge:<tag> .
+#
+# Select other supported plugin families with GO_BUILD_TAGS. For custom wiring
+# outside those families, point BINARY_MODULE at the custom root's module.
+#
+# Base images are pinned to the same multi-platform OCI index digests as the
+# root Dockerfile; refresh them only through the review in DEVELOPMENT.md
+# ("Base image digests").
+
+ARG BINARY_MODULE=cmd/gobridge
+
+# ---- build stage ------------------------------------------------------------
+FROM golang:1.25-bookworm@sha256:ea341baa9bd5ba6784f6d7161ace70544349a6242d54d34a0fbfd2c4d51c9d58 AS build
+ARG BINARY_MODULE
+ARG GO_BUILD_TAGS="gobridge_mqtt,gobridge_native"
+ARG INITIAL_CONFIG_FILE=""
+ARG VERSION=dev
+ARG GIT_SHA=unknown
+
+WORKDIR /src
+COPY . .
+
+ENV CGO_ENABLED=0
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    set -eu; \
+    make dev; \
+    build_dir="$(mktemp -d)"; \
+    trap 'rm -f "$build_dir/overlay.json" "$build_dir/initial-config.base64"; rmdir "$build_dir"' EXIT; \
+    overlay=""; \
+    if [ -n "$INITIAL_CONFIG_FILE" ]; then \
+      case "$INITIAL_CONFIG_FILE" in /*|../*|*/../*|*/..) echo "INITIAL_CONFIG_FILE must stay inside the build context" >&2; exit 2;; esac; \
+      initial_config="/src/$INITIAL_CONFIG_FILE"; \
+      GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" \
+        go run /src/scripts/buildconfig/main.go "$initial_config" "/src/$BINARY_MODULE" "$build_dir"; \
+      overlay="$build_dir/overlay.json"; \
+    fi; \
+    cd "${BINARY_MODULE}"; \
+    go build -overlay="$overlay" -tags "$GO_BUILD_TAGS" -trimpath \
+      -ldflags "-s -w -X main.version=$VERSION -X main.gitSHA=$GIT_SHA" -o /out/gobridge .; \
+    if [ -n "$INITIAL_CONFIG_FILE" ]; then \
+      expected_digest="$(sha256sum "$initial_config" | cut -d ' ' -f 1)"; \
+      actual_digest="$(/out/gobridge -initial-config-digest)"; \
+      test "$actual_digest" = "$expected_digest"; \
+    fi; \
+    mkdir -p /out/state
+
+# ---- runtime stage ----------------------------------------------------------
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b AS runtime
+
+COPY --from=build /out/gobridge /usr/local/bin/gobridge
+
+# The state mount point exists in the image and is owned by the runtime user,
+# so an empty volume mounted there inherits that ownership: the SQLite
+# managed-subscription store insists on an owner-controlled 0700 parent and
+# refuses to start on a root-owned directory.
+COPY --from=build --chown=65532:65532 /out/state /var/lib/gobridge
+
+USER 65532:65532
+WORKDIR /var/lib/gobridge
+
+ENTRYPOINT ["/usr/local/bin/gobridge"]

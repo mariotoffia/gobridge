@@ -18,7 +18,7 @@
 # mapping regression will not catch a future broadening.
 #
 # In addition to the (component, package) MAPPING assertions, this
-# script enforces NEGATIVE fixtures (M-24): a set of forbidden
+# script enforces NEGATIVE fixtures: a set of forbidden
 # dependency EDGES (domain->ports, ports->HTTP/DB/SDK, adapter->sibling
 # adapter, runtime-leaf->forbidden parent/sibling, adapter->config) that
 # fail the test if they ever appear in production code -- a
@@ -89,8 +89,8 @@ expect adapter_cluster_native        /adapters/native/cluster
 expect adapter_cluster_aws           /adapters/aws/cluster/ecs
 
 # Inner ring sanity. The domain layer is decomposed by bounded context
-# (FIX-004 Phase 5); each context has its own sentinel so the YAML
-# cannot quietly re-absorb a sub-package into a catch-all.
+# (see DDD.md); each context has its own sentinel so the YAML cannot
+# quietly re-absorb a sub-package into a catch-all.
 expect domain_shared       /domain/shared
 expect domain_messaging    /domain/messaging
 expect domain_persistence  /domain/persistence
@@ -131,7 +131,7 @@ expect cmd         /cmd
 expect deployment  /deployment
 
 # ============================================================================
-# Negative fixtures: forbidden dependency EDGES (M-24)
+# Negative fixtures: forbidden dependency EDGES
 #
 # The `expect` assertions above prove package -> component MAPPING. They
 # do NOT prove that forbidden EDGES stay absent: a future edit could

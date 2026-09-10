@@ -35,7 +35,7 @@ evidence, guarding against removing subscriptions the plan still wants.
 - **Ack-and-drop past grace.** Once the grace window elapses, an unmatched
   publish is acked and dropped. The topic is recorded as evidence of a live
   orphan subscription so the adapter can act on fact, not on the config diff
-  alone. **This was later refined (HIGH-1): past-grace handling now splits by
+  alone. **This was later refined: past-grace handling now splits by
   whether the current plan still covers the topic — a covered topic is retained,
   not dropped. See the [2026-07-10 addendum](#addendum-2026-07-10-covered-qos-1-and-2-retention-past-grace).**
 
@@ -58,7 +58,7 @@ evidence, guarding against removing subscriptions the plan still wants.
   the new plan is empty and the last successfully applied plan held
   subscriptions, reconcile intentionally UNSUBSCRIBEs every managed subscription
   it established (`session_reconcile.go`;
-  `TestC7_Reconcile_EmptyPlanRemovesManagedSubs`), so the broker stops delivering
+  `TestReconcile_EmptyPlanRemovesManagedSubs`), so the broker stops delivering
   on stale filters the router would otherwise ack-drop as orphans forever. Only a
   genuinely sender-only transition — an empty plan re-affirming an applied plan
   that itself held no subscriptions, with no broker-observed grants and no managed
@@ -88,7 +88,13 @@ evidence, guarding against removing subscriptions the plan still wants.
   successful `UNSUBSCRIBE` of that exact filter, a verified managed-migration
   drain, a clean start / session deletion, session expiry, a **changed** client
   ID (which abandons the old broker state rather than proving it was cleaned up),
-  or broker administration.
+  or broker administration. The adapter REPORTS this rather than glossing it: an
+  `UNSUBACK` of `0x11` (*no subscription existed*) proves the filter was not the
+  concrete topic, so `unsubscribeOrphan` logs a warning naming the remaining work
+  — enable managed subscriptions, whose exact durable history converges the
+  filter on the next reconcile, or remove it at the broker — instead of the
+  Debug-level "unsubscribed orphan topic" it used to log for a removal that never
+  happened.
 - `UNSUBSCRIBE` is best-effort and **not** retried within the process. A
   `cm.Unsubscribe` failure leaves the dedup mark set, so the exact topic is not
   re-attempted for the life of the process; the only re-attempt path is the
@@ -123,7 +129,7 @@ commit 9d8effb (2026-07-10). The date above is the addendum's commit date.
 
 The original **Ack-and-drop past grace** decision above described an
 *unconditional* ack-and-drop once the grace window elapses. That is no longer
-accurate. A later hardening (HIGH-1) split the past-grace path by whether the
+accurate. A later hardening split the past-grace path by whether the
 current routing plan still **covers** the publish's topic:
 
 - **Covered topic, handler registered late.** The publish is **retained
@@ -163,5 +169,5 @@ QoS 1/2 delivery was redistributed. Brokers may pin it to the persistent
 ClientID. GoBridge now retains history through reconnect verification; a matching
 replay is held unacknowledged and causes terminal fail-closed migration. Operators
 must restore the exact old identity/configuration and handler, drain the replay,
-and retry. See the [MQTT transport reference](../transports/mqtt.md#removing-filters-restore-drain-retry)
+and retry. See the [MQTT transport reference](../transports/mqtt-durable-sessions.md#removing-filters-restore-drain-retry)
 and [migration runbook](../runbooks/mqtt-managed-subscription-migration.md).

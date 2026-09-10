@@ -16,13 +16,13 @@ const defaultMaxKeyCache = 100_000
 // ID to its base-table (PK, SK). It exists purely so Complete can address a
 // record directly instead of resolving through the eventually consistent
 // RecordIDIndex GSI (which can lag and report not-found, reopening the
-// duplicate-delivery window J2/J3 close). Because a miss merely falls back to
+// duplicate-delivery window close). Because a miss merely falls back to
 // that bounded GSI resolve, evicting any entry is always correctness-safe.
 //
 // Entries are added on Claim and removed on terminal Complete. Records this
 // instance claimed but never completes — e.g. after a lease transfer hands
 // the partition to another owner — are never removed by Complete, so under
-// lease churn a plain map grew without bound (J-N1). The LRU cap fixes that:
+// lease churn a plain map grew without bound (J). The LRU cap fixes that:
 // it evicts the OLDEST (dead) entries first and retains the hot,
 // recently-claimed keys a Complete is about to need, so bounding the cache
 // does not reopen the GSI-lag duplicate window on live records.

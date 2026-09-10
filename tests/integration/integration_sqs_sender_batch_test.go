@@ -14,11 +14,11 @@ import (
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
+	"github.com/mariotoffia/gobridge/testutil/flocilocal"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SQS Sender batch integration tests with ElasticMQ
+// SQS Sender batch integration tests against the local AWS emulator
 //
 // Validates SendBatch behaviour against a real SQS-compatible endpoint.
 //
@@ -33,14 +33,14 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════
 
 // TestIntegration_SQS_SendBatch_25Messages sends 25 envelopes through
-// SendBatch and verifies all 25 arrive in the ElasticMQ queue.
+// SendBatch and verifies all 25 arrive in the emulated queue.
 func TestIntegration_SQS_SendBatch_25Messages(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	client := sqslocal.Client(t)
-	queueURL := sqslocal.CreateQueue(t, client, sqslocal.UniqueQueue("ib1"))
+	client := newSQSClient(t)
+	queueURL := createSQSQueue(t, client, uniqueQueueName("ib1"))
 
 	sender := newBatchSender(t, queueURL)
 
@@ -99,8 +99,8 @@ func TestIntegration_SQS_SendBatch_VerifyBatchBoundaries(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	client := sqslocal.Client(t)
-	queueURL := sqslocal.CreateQueue(t, client, sqslocal.UniqueQueue("ib2"))
+	client := newSQSClient(t)
+	queueURL := createSQSQueue(t, client, uniqueQueueName("ib2"))
 
 	sender := newBatchSender(t, queueURL)
 
@@ -163,8 +163,8 @@ func TestIntegration_SQS_SendBatch_LargeWithHeaders(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	client := sqslocal.Client(t)
-	queueURL := sqslocal.CreateQueue(t, client, sqslocal.UniqueQueue("ib3"))
+	client := newSQSClient(t)
+	queueURL := createSQSQueue(t, client, uniqueQueueName("ib3"))
 
 	sender := newBatchSender(t, queueURL)
 
@@ -228,12 +228,12 @@ func TestIntegration_SQS_SendBatch_LargeWithHeaders(t *testing.T) {
 
 func newBatchSender(t *testing.T, queueURL string) *sqsadapter.Sender {
 	t.Helper()
-	// NewSender builds its own AWS SDK client. ElasticMQ ignores credentials,
+	// NewSender builds its own AWS SDK client. The emulator ignores credentials,
 	// but the SDK still requires a provider and must not fall through to host
 	// profile/metadata discovery.
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-	ep := sqslocal.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	s, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueURL: queueURL,
 		Endpoint: ep,

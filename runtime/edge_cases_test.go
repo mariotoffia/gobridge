@@ -323,7 +323,7 @@ func TestEdge_ExpiredOutboxEntryDuringDrain(t *testing.T) {
 
 	// The drainer should detect expiry and route to DLQ. The first drain
 	// hit the blocked sender (transient), so the record was released for
-	// retry and the next drain is spaced by the A4 transient backoff floor
+	// retry and the next drain is spaced by the transient backoff floor
 	// (~5s); wait past it for the expiry-detection drain.
 	waitFor(t, 8*time.Second, "DLQ from drain", func() bool { return dlq.Count() >= 1 })
 }
@@ -339,14 +339,12 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 	lease := NewFakeLeaseStore()
 	dlq := NewFakeDLQStore()
 
-	// WP-REPLAY-BUDGET: poisoning now requires the record to spend its
-	// wall-clock ReplayBudget (measured from FirstAttemptedAt) in addition to
-	// exhausting MaxReplayAttempts; poisonMinAge is only the legacy fallback for
-	// zero-first-attempt records. This real-time test cannot wait the 15m
-	// production budget, so the route policy below shrinks ReplayBudget to
-	// effectively-immediate. The poisonMinAge option is likewise shrunk so the
-	// legacy fallback stays fast too.
-	rt := newTestRuntime("bridge-poison", outbox, lease, dlq, goruntime.WithOutboxPoisonMinAge(time.Millisecond))
+	// WP-REPLAY-BUDGET: poisoning requires the record to spend its wall-clock
+	// ReplayBudget (measured from FirstAttemptedAt) in addition to exhausting
+	// MaxReplayAttempts. This real-time test cannot wait the 15m production
+	// budget, so the route policy below shrinks ReplayBudget to
+	// effectively-immediate.
+	rt := newTestRuntime("bridge-poison", outbox, lease, dlq)
 
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
@@ -358,7 +356,7 @@ func TestEdge_PoisonMessageDLQ(t *testing.T) {
 		ID: "poison-route",
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliverySharedOutbox,
-			// One replay attempt: under the A4 transient backoff floor each
+			// One replay attempt: under the transient backoff floor each
 			// retry is spaced ~5s, so a small cap keeps the poison path fast
 			// (poison after the first 5s retry) while still exercising the
 			// MaxReplayAttempts → PoisonMessage DLQ transition.

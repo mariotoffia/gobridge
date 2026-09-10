@@ -54,7 +54,7 @@ func TestAnaSession_HealthBeforeStart_ReportsDisconnected(t *testing.T) {
 		t.Error("Connected should be false before Start")
 	}
 	if h.ReceiveMaximum != DefaultReceiveMaximum {
-		t.Errorf("ReceiveMaximum default = %d, want %d (lowered default, M-5)", h.ReceiveMaximum, DefaultReceiveMaximum)
+		t.Errorf("ReceiveMaximum default = %d, want %d (lowered default)", h.ReceiveMaximum, DefaultReceiveMaximum)
 	}
 }
 

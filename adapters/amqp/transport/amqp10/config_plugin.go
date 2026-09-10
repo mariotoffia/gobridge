@@ -85,7 +85,7 @@ func (c Config) Validate() error {
 	if c.Session.Address != "" {
 		// A pending credentials_uri may still supply SASL EXTERNAL client
 		// certificate material at resolution time, so defer that one check
-		// (F10 deferred path). ApplyCredentials re-runs it post-resolution.
+		// (the deferred path). ApplyCredentials re-runs it post-resolution.
 		if err := c.Session.validate(c.CredentialsURIRef != ""); err != nil {
 			return err
 		}
@@ -123,7 +123,7 @@ func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 	}
 	c.CredentialsURIRef = ""
 
-	// F10 (deferred path): the parse-time SASL EXTERNAL cert-material
+	// (deferred path): the parse-time SASL EXTERNAL cert-material
 	// check is skipped while credentials_uri is unresolved. Now that the
 	// resolved set has (or has not) populated client certificate material,
 	// re-run it so a misconfiguration fails fast here rather than as an
@@ -133,7 +133,7 @@ func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 			"amqp10: SASL EXTERNAL requires client certificate material but the resolved credentials supplied none")
 	}
 
-	// c7-plain-plaintext (deferred path): a resolved username may now
+	// Plaintext-credential gate, deferred path: a resolved username may now
 	// select inferred SASL PLAIN that the parse-time gate could not yet
 	// see (the username arrived with the credentials). Re-run the
 	// cleartext-credentials gate so PLAIN over a non-TLS scheme still

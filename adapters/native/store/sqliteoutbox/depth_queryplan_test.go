@@ -32,7 +32,7 @@ func explainPlan(t *testing.T, s *Store, query string, args ...any) string {
 	return b.String()
 }
 
-// TestCountPendingQueryPlansAreIndexed pins the F2 CountPending bounded-cost
+// TestCountPendingQueryPlansAreIndexed pins CountPending bounded-cost
 // contract on BOTH depth paths: the pending COUNT that backs
 // ports.OutboxDepthReporter must be served by an index whose size is bounded by
 // the pending backlog, never a full covering/table SCAN of every outbox row —

@@ -19,7 +19,6 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
 
 const (
@@ -99,7 +98,7 @@ func newCrashSQSReceiver(t *testing.T, queueURL string) *sqsadapter.Receiver {
 	t.Helper()
 	receiver, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          queueURL,
-		Client:            sqslocal.Client(t),
+		Client:            newSQSClient(t),
 		MaxMessages:       1,
 		WaitTimeSeconds:   1,
 		VisibilityTimeout: 5,

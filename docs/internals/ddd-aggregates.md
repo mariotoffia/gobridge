@@ -1,0 +1,383 @@
+# Aggregates, entities and value objects per context
+
+### 3.1 `domain/shared` — Shared Kernel
+
+```mermaid
+classDiagram
+    class BridgeError {
+        +Code: ErrorCode
+        +Class: ErrorClass
+        +Message: string
+        +Cause: error
+        +RetryAfter: time.Duration
+        +Context: map~string,any~
+        +Error() string
+        +Unwrap() error
+        +Is(target) bool
+        +With(k,v) BridgeError
+        +WithMessage(m) BridgeError
+        +Wrap(err) BridgeError
+        +WithRetryAfter(d) BridgeError
+    }
+    class ErrorClass {
+        <<value object / enum>>
+        transient | permanent | expired | rejected
+    }
+    class ErrorCode {
+        <<value object / enum>>
+        TIMEOUT, NOT_AUTHORIZED, ...
+    }
+    class Tag {
+        <<value object>>
+        +Key: string
+        +Value: string
+    }
+    BridgeError --> ErrorClass
+    BridgeError --> ErrorCode
+```
+
+- **`BridgeError`** — structured error carrying classification (`Class`) and identity (`Code`). Treated as a copy-on-write value: `With*` methods return a clone. Used by every adapter and runtime component to drive retry / DLQ / drop decisions.
+- **`ErrorClass`** — drives pipeline routing:
+  `transient` → retry, `permanent` → DLQ, `expired` → expired-action policy, `rejected` → drop.
+- **`ErrorCode`** — sentinel identity for `errors.Is` comparisons.
+- Metric and tag-key constants — single source of truth for the metric taxonomy.
+
+### 3.2 `domain/messaging` — Core (the canonical message)
+
+```mermaid
+classDiagram
+    class Envelope {
+        <<aggregate root>>
+        +ID: string
+        +Subject: string
+        +Payload: []byte
+        +Headers: map~string,any~
+        +CreatedAt: time.Time
+        +ExpiresAt: time.Time
+        +HasExpiry() bool
+        +IsExpired(clk) bool
+        +RemainingTTL(clk) Duration
+        +Clone() *Envelope
+    }
+    class TraceContext {
+        <<value object>>
+        +TraceID, SpanID, State: string
+        +Flags: byte
+    }
+    class Headers {
+        <<utilities>>
+        IsReservedHeader(k)
+        StripReservedHeaders(h)
+        MergeHeaders(base, overlay, protectReserved)
+        Get/SetHeader(...)
+    }
+    Envelope --> Headers : reserved-prefix invariants
+    Envelope --> TraceContext : Extract/Inject via headers
+```
+
+- **`Envelope`** — aggregate root for the messaging context. Invariants:
+  - `Clone()` recursively copies mutable `Headers` but shares immutable `Payload` backing. `Payload()` copies on exposure, and `SetPayload` installs a new backing for transformations. `NewEnvelope` still clones caller input at the trust boundary; only the explicitly trusted `NewEnvelopeFromImmutablePayload` SDK path may adopt backing whose lifetime and immutability are guaranteed.
+  - Expiry checks must take a `Clock` (no implicit `time.Now()`).
+  - `Subject` is the **logical event subject**. It is producer-supplied (or ingress-mapped from a transport-native subject field, e.g. `Message.Properties.Subject`, the `gobridge.subject` carrier on MQTT/AMQP 0-9-1, or the HTTP JSON `subject`). The runtime never assigns a transport destination to `Subject`; per-message destinations travel on `ports.OutboundMessage.Address` (see § 3.4).
+- **Reserved header invariant** — keys with prefix `x-bridge.` are bridge-internal. `IsReservedHeader` is case-insensitive; transport adapters must `StripReservedHeaders` at ingress to prevent injection. `MergeHeaders(..., protectReserved=true)` denies overlay overrides of reserved keys already in base.
+- **`TraceContext`** — W3C Trace Context VO. `ParseTraceparent` rejects non-`00` versions, all-zero IDs, wrong lengths, non-lowercase hex.
+
+### 3.3 `domain/persistence` — Core (reliable egress + cluster fencing)
+
+```mermaid
+classDiagram
+    class OutboxRecord {
+        <<aggregate root>>
+        +ID, RouteID, EnvelopeID, BindingID, SessionID, Address: string
+        +Envelope: messaging.Envelope
+        +DispatchHeaders: map
+        +Status: OutboxStatus
+        +ClaimedBy: string
+        +ClaimedAt, CreatedAt, ExpiresAt, CompletedAt: time.Time
+        +ClaimVersion: uint64
+        +ReplayCount: int
+    }
+    class OutboxStatus {
+        <<state>>
+        pending → claimed → completed
+                       ↘ expired
+    }
+    class LeaseInfo {
+        <<read-only snapshot / value object>>
+        +LeaseID, Owner: string
+        +Version: uint64
+        +ExpiresAt: time.Time
+        +Endpoints: map~string,string~
+    }
+    class LeaseToken {
+        <<value object / fencing>>
+        +Version: uint64
+        +Owner: string
+    }
+    class PeerInfo {
+        <<value object>>
+        +InstanceID: string
+        +Endpoints: map
+    }
+    class DrainStrategy {
+        <<domain service / policy>>
+        NextInterval(recordsFound) Duration
+    }
+    class FixedPoll
+    class AdaptiveBackoff
+    DrainStrategy <|.. FixedPoll
+    DrainStrategy <|.. AdaptiveBackoff
+    OutboxRecord --> OutboxStatus
+    LeaseInfo ..> LeaseToken : returned alongside
+```
+
+**Invariants:**
+
+- `OutboxRecord.Status` follows the state machine `pending → claimed → completed | expired`. Only the lease holder identified by `LeaseToken{Owner, Version}` may claim; `ClaimVersion` enforces fencing on optimistic update.
+- `OutboxPartitionKey(sessionID, bindingID)` is the canonical key — `SESSION#<id>` if session is set, else `BINDING#<id>`.
+- `LeaseInfo` is a read-only snapshot DTO with no behavior; `LeaseStore` owns the lease lifecycle and fencing invariants, enforcing them via conditional (compare-and-set) writes keyed on `LeaseToken.Version`. `LeaseStore` keeps `Version` monotonic and returns `shared.ErrCodeStaleFencingToken` on stale-token writes.
+- `DrainStrategy.NextInterval` is the **only** way the drainer learns its next wait. `FixedPoll` returns a constant ±25 % jitter; `AdaptiveBackoff` resets to `MinInterval` when records were found, else multiplies up to `MaxInterval`. `AdaptiveBackoff` is single-goroutine.
+
+### 3.4 `domain/routing` — Core (route decisions + DLQ)
+
+```mermaid
+classDiagram
+    direction TB
+    class RoutePolicy {
+        <<aggregate root>>
+        +MaxInFlight, MaxReplayAttempts, MaxOutboxDepth: int
+        +Backoff: BackoffPolicy
+        +OnExpired: ExpiredAction
+        +OnPermanentFailure: FailureAction
+        +DeliveryMode: DeliveryMode
+        +DispatchMode: DispatchMode
+        +AckAfter: AckBoundary
+        +AllowUnfenced, AllowRetryDrop: bool
+        +SendTimeout, DepthCacheTTL, ProcessorTimeout: Duration
+        +WithDefaults() RoutePolicy
+    }
+    class BackoffPolicy {
+        <<value object>>
+        +InitialInterval, MaxInterval: Duration
+        +Multiplier: float64
+    }
+    class DestinationBinding {
+        <<entity>>
+        +ID, Transport, SessionID, SenderID, Address: string
+        +Config: any
+        +Headers: map
+    }
+    class DispatchPlan {
+        <<value object>>
+        +BindingID, Address: string
+        +Headers: map
+    }
+    class DLQEntry {
+        <<entity>>
+        +ID, RouteID, BindingID, SessionID, SourceID,
+         CorrelationID, Reason, Category, ErrorCode, LastError: string
+        +Envelope: messaging.Envelope
+        +Attempts: int
+        +FailedAt: time.Time
+    }
+    class DLQFilter {
+        <<value object>>
+        +RouteID, Category: string
+        +Since, Before: Time
+        +Limit: int
+    }
+    RoutePolicy --> BackoffPolicy
+    RoutePolicy --> DeliveryMode
+    RoutePolicy --> DispatchMode
+    RoutePolicy --> AckBoundary
+    RoutePolicy --> ExpiredAction
+    RoutePolicy --> FailureAction
+    DispatchPlan --> DestinationBinding
+    DLQEntry --> DestinationBinding
+    DLQFilter ..> DLQEntry
+```
+
+**Invariants:**
+
+- `RoutePolicy.WithDefaults()` is the single canonical normalization step — every zero-or-invalid field collapses to a documented default (`DefaultMaxInFlight`, `DefaultSendTimeout`, …). Callers should not hand-fill defaults elsewhere.
+- `DeliveryMode` (`direct_hold` | `shared_outbox`), `DispatchMode` (`single` | `fan_out`), `AckBoundary` (`target_accept` | `outbox_persist`) are exhaustive enums.
+- `DLQEntry.Envelope` is the immutable snapshot of the envelope at failure; `Attempts` and `FailedAt` describe the failure event.
+- `DispatchPlan.Address` is the transport destination for one envelope (publish topic, routing key, queue URL, ...). It is passed to the sender via the `ports.OutboundMessage{Envelope, Address}` port type and is **never** written back into `Envelope.Subject`. The shared-outbox store records `OutboxRecord.Address` alongside the embedded envelope so drainers reconstruct the same `OutboundMessage` shape.
+
+### 3.5 `domain/connectivity` — Supporting (auth + reconciliation shape)
+
+```mermaid
+classDiagram
+    class CredentialSet {
+        <<aggregate root>>
+        +Password: *PasswordCredential
+        +TLS: *TLSMaterial
+        +Equal(other) bool
+    }
+    class PasswordCredential {
+        <<value object>>
+        +Username, Password: string
+        +String() "REDACTED"
+    }
+    class TLSMaterial {
+        <<value object>>
+        +CertPEM, KeyPEM: string
+        +CAPEMs: []string
+        +InsecureSkipVerify: bool
+        +String() "REDACTED"
+    }
+    class CredentialKind {
+        <<enum>>
+        password | tls
+    }
+    class SessionPlan {
+        <<aggregate root>>
+        +Subscriptions: []SubscriptionPlan
+        +Publishers: []PublisherPlan
+    }
+    class SubscriptionPlan {
+        <<value object>>
+        +Topic: string
+        +QoS: int
+        +Config: any
+    }
+    class PublisherPlan {
+        <<value object>>
+        +Topic: string
+        +QoS: int
+        +Config: any
+    }
+    class SessionMode {
+        <<enum>>
+        ephemeral | persistent | exclusive
+    }
+    CredentialSet o-- PasswordCredential
+    CredentialSet o-- TLSMaterial
+    SessionPlan o-- SubscriptionPlan
+    SessionPlan o-- PublisherPlan
+```
+
+**Invariants:**
+
+- Credential types redact in `String()` / `GoString()` — the `%v` / `%+v` of a credential **never** discloses material.
+- `CredentialSet.Equal` is a deep value comparison; push-credential adapters use it to dedup rotation events so no-change resolves do not emit.
+- `SessionPlan` is the **desired** state of a transport session — adapters reconcile actual subscriptions/publishers toward this plan.
+
+### 3.6 `domain/clock` — Generic (time abstraction)
+
+```mermaid
+classDiagram
+    class Clock {
+        <<port>>
+        +Now() Time
+        +Since(t) Duration
+        +NewTimer(d) Timer
+        +NewTicker(d) Ticker
+        +After(d) chan Time
+    }
+    class Timer {
+        +C() chan Time
+        +Reset(d) bool
+        +Stop() bool
+    }
+    class Ticker {
+        +C() chan Time
+        +Reset(d)
+        +Stop()
+    }
+    class System {
+        <<singleton>>
+        wraps stdlib time
+    }
+    Clock <|.. System
+```
+
+**Invariant:** `Clock` exposes no `Sleep`. Every wait must be expressed as
+`select { case <-ctx.Done(): case <-clk.After(d): }` so cancellability is enforced at the type level. Tests use `domain/clock/clocktest` (excluded from arch lint).
+
+### 3.7 Blueprint / Configuration — Supporting (Layer 2)
+
+Lives in `ports/blueprint*.go` (schema-tagged DTOs — yaml/json struct tags, no yaml/json runtime dep) and `config/`
+(YAML/JSON parser, validator, merger, on-disk store). Not a Layer-1
+domain context — it is the *application-layer* description of what a
+bridge looks like before `bridge.Builder` materialises it into running
+adapters.
+
+```mermaid
+classDiagram
+    class BridgeConfig {
+        <<aggregate root>>
+        +Version int
+        +Bridge BridgeSettings
+        +ConfigWatch *ConfigWatchDef
+        +Stores StoresConfig
+        +Sessions []SessionDef
+        +Receivers []ReceiverDef
+        +Senders []SenderDef
+        +Bindings []BindingDef
+        +Routes []RouteDef
+        +HTTP *HTTPConfig
+    }
+    class BridgeSettings {
+        +ID string
+        +InstanceID string
+        +DeploymentMode string
+        +ShutdownTimeout string
+        +DrainTimeout string
+        +Cluster *ClusterConfig
+    }
+    class SessionDef {
+        +ID string
+        +Transport string
+        +Mode SessionMode
+        +Config any  %% typed PluginConfig
+    }
+    class BindingDef {
+        +ID string
+        +Transport string
+        +SessionID string
+        +SenderID string
+        +Address string
+        +Config any  %% typed PluginConfig
+    }
+    class RouteDef {
+        +ID string
+        +ReceiverID string
+        +DeliveryMode DeliveryMode
+        +DispatchMode DispatchMode
+        +Bindings []string
+        +Policy RoutePolicy
+    }
+    class BlueprintValidationError {
+        +Errors []string
+        +Warnings []string
+        +Add(msg)
+        +Addf(fmt, args)
+        +Warnf(fmt, args)
+        +HasErrors() bool
+    }
+    class ConfigStore {
+        <<port>>
+        +Load() *BridgeConfig
+        +Save(*BridgeConfig) error
+        +Validate(*BridgeConfig) (warnings, error)
+        +Merge(base, overlay) *BridgeConfig
+    }
+
+    BridgeConfig "1" --> "1" BridgeSettings
+    BridgeConfig "1" --> "*" SessionDef
+    BridgeConfig "1" --> "*" BindingDef
+    BridgeConfig "1" --> "*" RouteDef
+    ConfigStore ..> BridgeConfig : load / save / merge
+    ConfigStore ..> BlueprintValidationError : validate
+```
+
+**Invariants:**
+
+- `BridgeConfig` is the aggregate root of the blueprint. `bridge.Builder` consumes it whole; partial / mutated copies are not valid inputs.
+- The blueprint is **dependency-neutral, not tag-free** — the `ports/` blueprint structs carry yaml/json struct *tags* (they are schema-tagged DTOs by design), but the `ports` package itself has no yaml/json/mapstructure runtime *dependency*, so the inner ring stays dependency-neutral. The `config/` package owns parsing, defaulting, merging and on-disk transactions; `httpapi` interacts with it only through the `ConfigStore` port.
+- `BlueprintValidationError` separates hard `Errors` (block startup / commit) from advisory `Warnings` (surface in admin UI but allow). The admin layer consumes both without depending on the parser package.
+- Plugin-specific configuration (transport options, store driver options, processor params) is carried as typed `ports.PluginConfig` values inside `SessionDef.Config`, `BindingDef.Config`, `StoreConfig.Config`, etc. — never as `map[string]any`. See [PLUGIN.md §Typed Plugin Config](../../PLUGIN.md#typed-plugin-config) and `cfgshape` enforcement.
+- `BridgeConfig.Version` is an optimistic-concurrency counter; `ConfigStore.Save` must perform a check-and-set against the version the transaction was started with (so concurrent operators on a shared file/DB cannot silently overwrite).
+
+---

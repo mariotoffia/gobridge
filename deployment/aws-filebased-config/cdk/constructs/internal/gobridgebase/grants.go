@@ -1,6 +1,7 @@
 package gobridgebase
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
@@ -9,7 +10,6 @@ import (
 	"github.com/aws/jsii-runtime-go"
 
 	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
-	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/grants"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
@@ -20,6 +20,9 @@ import (
 // (RW for control, RO for worker) using the helpers from
 // constructs/internal/grants.
 func applyEfsGrants(p *Props, role awsiam.IRole) {
+	if p.EfsConfig == nil {
+		return
+	}
 	fs := p.EfsConfig.FileSystem()
 	switch p.Mode {
 	case ModeControl:
@@ -33,7 +36,7 @@ func applyEfsGrants(p *Props, role awsiam.IRole) {
 // encrypted with a customer-managed key. AWS-managed keys need no
 // explicit grant.
 func applyKmsGrant(p *Props, role awsiam.IRole) {
-	if p.EfsKmsKey == nil {
+	if p.EfsConfig == nil || p.EfsKmsKey == nil {
 		return
 	}
 	grants.GrantKMSEfsCmkUse(role, p.EfsKmsKey)
@@ -65,28 +68,8 @@ func applyAdapterGrants(scope constructs.Construct, p *Props, role awsiam.IRole,
 	}
 	cfg := mat.Config
 
-	// SQS receivers (consumers) and senders (producers).
-	for i := range cfg.Receivers {
-		r := &cfg.Receivers[i]
-		if !sqsadapter.IsKind(r.Transport) {
-			continue
-		}
-		name := sqsQueueName(r.Config, r.Raw())
-		if name == "" || p.QueueRegistry == nil || !p.QueueRegistry.Has(name) {
-			continue
-		}
-		grants.GrantSQSReceiver(role, p.QueueRegistry.Ref(name).Queue(), false)
-	}
-	for i := range cfg.Senders {
-		s := &cfg.Senders[i]
-		if !sqsadapter.IsKind(s.Transport) {
-			continue
-		}
-		name := sqsQueueName(s.Config, s.Raw())
-		if name == "" || p.QueueRegistry == nil || !p.QueueRegistry.Has(name) {
-			continue
-		}
-		grants.GrantSQSSender(role, p.QueueRegistry.Ref(name).Queue())
+	if err := grants.GrantSQSConfig(scope, role, cfg, p.QueueRegistry); err != nil {
+		panic(fmt.Sprintf("gobridgebase: SQS grants: %v", err))
 	}
 
 	// SSM parameters: bootstrap-level admin/monitor + receiver/sender
@@ -135,23 +118,6 @@ func isKind(have string, want ...string) bool {
 		}
 	}
 	return false
-}
-
-// sqsQueueName extracts the logical queue_name from the typed SQS config,
-// with a raw-config fallback for defensive compatibility. Returns "" when the field is
-// missing or unparseable; the caller treats that as "skip".
-func sqsQueueName(config ports.PluginConfig, raw ports.RawConfig) string {
-	if typed, ok := config.(*sqsadapter.Config); ok && typed != nil {
-		return typed.QueueName
-	}
-	if raw == nil {
-		return ""
-	}
-	var probe struct {
-		QueueName string `yaml:"queue_name" json:"queue_name" mapstructure:"queue_name"`
-	}
-	_ = raw.Decode(&probe)
-	return probe.QueueName
 }
 
 // dynamoTableName extracts the DynamoDB table name from a store

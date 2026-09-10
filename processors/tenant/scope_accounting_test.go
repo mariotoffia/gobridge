@@ -45,7 +45,7 @@ func (t *liveInFlightTracker) Usage(_ context.Context, _ string) (ports.TenantUs
 
 func (t *liveInFlightTracker) current() int64 { return t.inFlight.Load() }
 
-// TestProcess_InFlightAccountingSpansDelivery_ViaScope is the F3 fix proof. It
+// TestProcess_InFlightAccountingSpansDelivery_ViaScope is the fix proof. It
 // reproduces the runtime's delivery lifecycle: a fresh ports.DeliveryScope is
 // installed per delivery and released only AFTER the (simulated) send — mirroring
 // runtime doHandleDelivery, where the tenant is the last processor and the send

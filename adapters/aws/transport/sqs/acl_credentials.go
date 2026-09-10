@@ -15,7 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// SetAuthFailureCallback wires the reactive-recovery hook (HIGH-3) on the
+// SetAuthFailureCallback wires the reactive-recovery hook on the
 // Sender, satisfying the bridge.AuthFailureReporter capability (matched
 // structurally by the CredentialRefresher in another module). A nil callback
 // clears it.
@@ -42,7 +42,7 @@ func (s *Sender) reportAuthFailure(err error) {
 }
 
 // classify maps a live send error through the bounded auth-grace and reports a
-// permanent authorization failure to the reactive-recovery hook (HIGH-3). It is
+// permanent authorization failure to the reactive-recovery hook. It is
 // the single chokepoint for both the single-send and batch-send paths.
 func (s *Sender) classify(err error) *shared.BridgeError {
 	be := s.authGrace.classify(err)
@@ -50,7 +50,7 @@ func (s *Sender) classify(err error) *shared.BridgeError {
 	return be
 }
 
-// SetAuthFailureCallback wires the reactive-recovery hook (HIGH-3) on the
+// SetAuthFailureCallback wires the reactive-recovery hook on the
 // Receiver. See Sender.SetAuthFailureCallback.
 func (r *Receiver) SetAuthFailureCallback(cb func(error)) {
 	if cb == nil {
@@ -71,7 +71,7 @@ func (r *Receiver) reportAuthFailure(err error) {
 }
 
 // classify maps a live receive error through the bounded auth-grace and reports
-// a permanent authorization failure to the reactive-recovery hook (HIGH-3).
+// a permanent authorization failure to the reactive-recovery hook.
 func (r *Receiver) classify(err error) *shared.BridgeError {
 	be := r.authGrace.classify(err)
 	r.reportAuthFailure(be)
@@ -86,7 +86,7 @@ func (r *Receiver) classify(err error) *shared.BridgeError {
 // would produce a client that fails every request with
 // InvalidClientTokenId, so rotation would *degrade* a previously working
 // ambient-role client. The adapter rejects the material up front and
-// leaves the existing client in place instead (Finding 6). Surface it as
+// leaves the existing client in place instead. Surface it as
 // shared.ErrNotAuthorized so callers classify it consistently.
 var ErrTemporaryCredentialsUnsupported = errors.New(
 	"sqs: temporary/STS credentials (ASIA-prefixed access key) are unsupported; " +

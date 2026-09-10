@@ -2,7 +2,7 @@
 // registered into the CDK plugin registry has matching CDK helpers in
 // the deployment/aws-filebased-config/cdk tree.
 //
-// For each AWS-deployable canonical kind it asserts:
+// For each AWS-deployable canonical kind it asserts that
 //
 //   - A bridgecfg builder symbol exists with prefix "With<Kind>*"
 //     under deployment/aws-filebased-config/cdk/bridgecfg/.

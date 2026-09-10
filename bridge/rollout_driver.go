@@ -12,7 +12,7 @@ import (
 
 // The coordinated cluster-rollout barrier is hosted on a RUNTIME, not baked into
 // one. The Supervisor is one host; the shipped file-based bootstrap.App is the
-// other (design Phase 6 "ship step"). The seam between them is the ports.RolloutHost
+// other. The seam between them is the ports.RolloutHost
 // port — the whole of what the barrier drive needs from its host — so ONE barrier
 // implementation serves both without either duplicating the ~600-line drive or
 // migrating to the other's swap machinery.
@@ -63,21 +63,33 @@ func (d *ClusterRolloutDriver) Coordinated(cfg *ports.BridgeConfig) bool {
 
 // Start launches the barrier drive — one goroutine running the applier on every
 // tick and the coordinator half whenever this member holds the lease — and returns
-// a stop function that cancels it and waits for the goroutine to exit. It returns
-// nil when the deployment is not coordinated, so the drive is opt-in exactly like
-// the barrier. clk and metrics are supplied here (not at construction) because a
-// composition root finalises them after wiring the barrier.
-func (d *ClusterRolloutDriver) Start(ctx context.Context, clk clock.Clock, metrics ports.MetricsExporter) func() {
+// a stop function that cancels it and waits for the goroutine to exit UNDER THE
+// CALLER'S SHUTDOWN BUDGET. It returns nil when the deployment is not
+// coordinated, so the drive is opt-in exactly like the barrier. clk and metrics
+// are supplied here (not at construction) because a composition root finalises
+// them after wiring the barrier.
+//
+// The stop function takes a context because the drive is the FIRST thing a
+// process shutdown waits on: a barrier store call that never returns would
+// otherwise hold SIGTERM ahead of the runtime drain and the HTTP shutdown until
+// the platform SIGKILLed the process mid-drain. The wait is abandoned when the
+// context ends; the drive goroutine is already cancelled and unwinds on its own.
+// Stop is idempotent.
+func (d *ClusterRolloutDriver) Start(ctx context.Context, clk clock.Clock, metrics ports.MetricsExporter) func(context.Context) {
 	if !coordinatedRollout(d.host.Config()) {
 		return nil
 	}
 	if clk == nil {
 		clk = clock.System
 	}
-	obs := &rolloutObserver{metrics: metrics}
+	obs := newRolloutObserver(metrics, clk, d.barrier.pollInterval, d.barrier.memberID)
 	d.mu.Lock()
 	d.obs = obs
 	d.mu.Unlock()
+	// Remote-call outcomes reach metrics and deep health through the same observer
+	// the row observations do, so an operator reads "why is this status stale"
+	// beside the status itself.
+	d.barrier.ops.setObserver(obs)
 
 	applier := &rolloutApplier{
 		host:     d.host,
@@ -91,34 +103,43 @@ func (d *ClusterRolloutDriver) Start(ctx context.Context, clk clock.Clock, metri
 		Store: d.barrier.store,
 		Lease: d.barrier.lease,
 		// The coordinator's live membership and the proposer's frozen epoch MUST
-		// come from the same source or decideRollout reads a membership change (F6)
+		// come from the same source or decideRollout reads a membership change
 		// on every rollout. Both read bridge.cluster.members off the running config.
 		Membership: func() []string { return rolloutMembers(d.host.Config()) },
 		Clock:      clk,
 		MemberID:   d.barrier.memberID,
 		LeaseTTL:   d.barrier.leaseTTL,
 		Logger:     d.host.RolloutLogger(),
+		Ops:        d.barrier.ops,
 	})
 
 	loopCtx, cancel := context.WithCancel(ctx)
-	var wg sync.WaitGroup
-	wg.Go(func() {
+	driveDone := make(chan struct{})
+	go func() {
+		defer close(driveDone)
 		d.drive(loopCtx, clk, applier, coord)
-	})
-	return func() {
+	}()
+	return func(stopCtx context.Context) {
 		cancel()
-		wg.Wait()
+		if stopCtx == nil {
+			<-driveDone
+			return
+		}
+		select {
+		case <-driveDone:
+		case <-stopCtx.Done():
+		}
 	}
 }
 
 // drive is the drive loop. It never returns an error: every failure is a store
-// outage (F9) or a lost election, both retried on the next tick while the running
+// outage or a lost election, both retried on the next tick while the running
 // config keeps serving.
 func (d *ClusterRolloutDriver) drive(ctx context.Context, clk clock.Clock, applier *rolloutApplier, coord *rolloutCoordinator) {
 	ticker := clk.NewTicker(d.barrier.pollInterval)
 	defer ticker.Stop()
 	// Release the coordinator lease on the way out so a successor does not wait out
-	// the full TTL after an orderly shutdown (F3 is the crash path; an orderly stop
+	// the full TTL after an orderly shutdown (a crash is what the TTL is for; an orderly stop
 	// should not pay it). Detached from the cancelled loop ctx, bounded by the TTL.
 	defer coord.resign(context.WithoutCancel(ctx))
 
@@ -128,8 +149,11 @@ func (d *ClusterRolloutDriver) drive(ctx context.Context, clk clock.Clock, appli
 		case <-ctx.Done():
 			return
 		case <-ticker.C():
-			if err := applier.step(ctx); err != nil && logger != nil {
-				// F9: the rollout resolves (or deadline-aborts) when the store
+			// tick, not step: the applier's LOCAL safety work — the confirm-window
+			// deadman and the outstanding revert — runs first, off state this member
+			// already holds, so a store that has stopped answering cannot suppress it.
+			if err := applier.tick(ctx); err != nil && logger != nil {
+				// the rollout resolves (deadline-aborts) when the store
 				// returns; nothing flipped, and this member keeps serving.
 				logger.Warn("cluster rollout: applier observation failed; retrying", "error", err)
 			}
@@ -140,10 +164,16 @@ func (d *ClusterRolloutDriver) drive(ctx context.Context, clk clock.Clock, appli
 	}
 }
 
-// Status returns this member's last observation of the barrier, and false before
-// Start has taken its first observation or when no barrier runs. It is safe for
-// concurrent use and never blocks on a store call — health probes read the last
-// observation, they do not trigger a new one.
+// Status returns this member's last observation of the barrier, and false when no
+// barrier runs. It is safe for concurrent use and never blocks on a store call —
+// health probes read the last observation, they do not trigger a new one.
+//
+// Between Start and the drive's first successful read it reports a snapshot with
+// no rollout in it, and that is deliberate rather than a gap: the member is
+// identified, ObservedAt is zero (so deep health omits it), and the freshness is
+// measured from when the drive began — so a member whose store has never answered
+// reads as stale with a reason, not as a cohort with no rollout. Returning false
+// there would hide exactly the case an operator needs to see.
 func (d *ClusterRolloutDriver) Status() (RolloutStatus, bool) {
 	d.mu.RLock()
 	obs := d.obs
@@ -179,14 +209,14 @@ func (h supervisorRolloutHost) ApplyCommitted(ctx context.Context, cfg *ports.Br
 func (h supervisorRolloutHost) MarkDegraded(reason string) { h.s.markDegraded(reason) }
 
 // Converged reports whether the Supervisor's active runtime has reached the
-// post-swap readiness level the convergence watch uses (MQTT-R1). It is the same
-// signal watchPostSwapConvergence samples, read on demand for the confirm window.
-func (h supervisorRolloutHost) Converged(ctx context.Context) bool {
+// post-swap readiness level, and whether that answer rests on a session it
+// actually observed (ports.RolloutConvergence).
+func (h supervisorRolloutHost) Converged(ctx context.Context) (bool, bool) {
 	rt := h.s.Runtime()
 	if rt == nil {
-		return false
+		return false, false
 	}
-	return rt.ReadinessLevel(ctx) >= convergenceReadyLevel
+	return ports.RolloutConvergence(rt.DeepHealth(ctx))
 }
 
 func (h supervisorRolloutHost) RolloutLogger() *slog.Logger { return h.s.logger }
@@ -204,7 +234,7 @@ func (s *Supervisor) resolveCoordinatedBoot(ctx context.Context, cfg *ports.Brid
 
 // startRolloutDrive delegates to the rollout driver, passing the Supervisor's
 // finalised clock and metrics. It returns nil when no barrier is wired.
-func (s *Supervisor) startRolloutDrive(ctx context.Context) func() {
+func (s *Supervisor) startRolloutDrive(ctx context.Context) func(context.Context) {
 	if s.rolloutDriver == nil {
 		return nil
 	}

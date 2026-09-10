@@ -1,7 +1,6 @@
 package httpapi_test
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,13 +18,12 @@ func testRuntimeForMonitor() *runtime.Runtime {
 	return runtime.New(runtime.WithInstanceID("test-instance"))
 }
 
+// TestHandleReady_RoleStandalone proves the legacy probe reports the instance
+// role once the bridge is actually ready. It needs a runtime that CARRIES a
+// route: an instance with no routes and no sessions bridges nothing and is
+// capped below the LevelFull the legacy probe gates on.
 func TestHandleReady_RoleStandalone(t *testing.T) {
-	rt := testRuntimeForMonitor()
-	ctx := context.Background()
-	require.NoError(t, rt.Start(ctx))
-	t.Cleanup(func() {
-		_ = rt.Stop(context.Background())
-	})
+	rt := newBridgingRuntime(t, "test-instance")
 
 	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: shared.NewSecret("key-0123456789abcdef")})
 

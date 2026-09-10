@@ -20,11 +20,11 @@ import (
 // ---------------------------------------------------------------------------
 // WP-REPLAY-BUDGET: age-based outbox replay budget
 //
-// The poison decision is now a hard AND-gate: a record is DLQ'd only when its
+// The poison decision is a hard AND-gate: a record is DLQ'd only when its
 // ReplayCount exceeds MaxReplayAttempts AND wall-clock time since its first
 // attempt (FirstAttemptedAt) has reached ReplayBudget (replayBudgetExhausted).
-// Records with a zero FirstAttemptedAt (pre-budget schema) fall back
-// bit-for-bit to the legacy CreatedAt/poisonMinAge age gate.
+// A record claimed WITHOUT a first-attempt stamp reports its budget unspent and
+// is never poisoned — see TestDrainer_ZeroFirstAttempt_NeverPoisons.
 //
 // White-box: drainBatch is exercised directly with an injected clock so the
 // budget decision is deterministic — no wall-clock waits. The store fake
@@ -58,16 +58,16 @@ func budgetSnapshot(id string, replayCount int, firstAttempted, createdAt time.T
 }
 
 // budgetDrainer builds a Drainer over the production route defaults
-// (MaxReplayAttempts=5, ReplayBudget=15m, SendTimeout=30s → poisonMinAge
-// fallback 2m30s) with an injected clock, metrics and logger. It returns the
-// resolved policy so tests can assert against the same defaults.
+// (MaxReplayAttempts=5, ReplayBudget=15m, SendTimeout=30s) with an injected
+// clock, metrics and logger. It returns the resolved policy so tests can assert
+// against the same defaults.
 func budgetDrainer(store *deferredFakeStore, sender ports.Sender, clk *clocktest.Fake, metrics ports.MetricsExporter, logger *slog.Logger) (*Drainer, routing.RoutePolicy) {
 	policy := routing.RoutePolicy{}.WithDefaults()
 	d := New(Config{
 		OutboxStore: store,
 		Sender:      sender,
 		// A real (fake) DLQ store so HasStore() is true: WithDefaults() sets
-		// OnPermanentFailure=FailureDLQ, and H3 now routes poison/permanent to the
+		// OnPermanentFailure=FailureDLQ, and now routes poison/permanent to the
 		// DROP path when no store is configured. These tests assert the DLQ path
 		// (emitDLQ → DLQEntries), so they must run with a store behind the router.
 		DLQ:          dlq.New(&fakeDLQStore{}),
@@ -85,12 +85,12 @@ func budgetDrainer(store *deferredFakeStore, sender ports.Sender, clk *clocktest
 // TestDrainer_TransientOutageWithinBudget_NeverPoisons is the HEADLINE test.
 // A record that has exhausted its replay COUNT during a transient outage but is
 // still WITHIN the wall-clock ReplayBudget must never be poisoned: it is
-// released back to pending for retry. CreatedAt is deliberately old enough that
-// the LEGACY poisonMinAge gate WOULD fire, proving the budget — not CreatedAt —
-// now decides.
+// released back to pending for retry. CreatedAt is deliberately far older than
+// the budget, so a gate that measured record AGE rather than time since the
+// first attempt would poison it — proving the budget is what decides.
 //
-// Probe: reverting the criterion in processRecord to d.poisonAgeReached(rec)
-// makes this test fail (the record would be DLQ'd), which is exactly the A4-R1
+// Probe: measuring from CreatedAt instead of FirstAttemptedAt makes this test
+// fail (the record would be DLQ'd), which is exactly the
 // premature-DLQ-from-outage defect this work package fixes.
 func TestDrainer_TransientOutageWithinBudget_NeverPoisons(t *testing.T) {
 	clk := clocktest.NewAt(budgetBase)
@@ -216,43 +216,37 @@ func TestDrainer_BudgetNotCheckedBelowAttemptFloor(t *testing.T) {
 	}
 }
 
-// TestDrainer_LegacyZeroFirstAttempt_FallsBackToCreatedAtGate pins that a
-// record with a zero FirstAttemptedAt (persisted before the replay-budget
-// schema) is decided BIT-FOR-BIT by the legacy CreatedAt/poisonMinAge gate: old
-// enough poisons, young enough does not.
-func TestDrainer_LegacyZeroFirstAttempt_FallsBackToCreatedAtGate(t *testing.T) {
-	cases := []struct {
-		name         string
-		createdAt    time.Time
-		wantPoison   int
-		wantReleased bool
-	}{
-		{"created older than poisonMinAge -> poison", budgetBase.Add(-30 * time.Minute), 1, false},
-		{"created younger than poisonMinAge -> no poison", budgetBase.Add(-1 * time.Minute), 0, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			clk := clocktest.NewAt(budgetBase)
-			rec := persistence.RehydrateFromSnapshot(budgetSnapshot("rec-legacy", 6,
-				time.Time{}, tc.createdAt))
-			store := &deferredFakeStore{claimable: []*persistence.OutboxRecord{rec}}
-			sender := &fnSender{send: func(context.Context, ports.OutboundMessage) error {
-				return shared.NewBridgeError("OUTAGE", shared.ErrorTransient, "egress down")
-			}}
-			metrics := newDLQCountingExporter()
-			d, _ := budgetDrainer(store, sender, clk, metrics, nil)
+// TestDrainer_ZeroFirstAttempt_NeverPoisons pins the fail-safe: every backend
+// stamps FirstAttemptedAt on the first claim, so a claimed record reaching the
+// poison gate without one means the store broke that contract. Poisoning routes
+// the message to the dead-letter queue — or drops it outright under
+// FailureDrop — so the budget is reported UNSPENT and the record keeps being
+// retried. A store bug must not be able to destroy messages, and guessing an age
+// from CreatedAt would let it.
+//
+// Mutation this kills: returning true (or falling back to a CreatedAt age gate)
+// for a zero FirstAttemptedAt poisons the record → wantPoison 0 FAILs.
+func TestDrainer_ZeroFirstAttempt_NeverPoisons(t *testing.T) {
+	clk := clocktest.NewAt(budgetBase)
+	// Replay count far past the cap and created long ago: only the missing
+	// first-attempt stamp stands between this record and the DLQ.
+	rec := persistence.RehydrateFromSnapshot(budgetSnapshot("rec-unstamped", 6,
+		time.Time{}, budgetBase.Add(-30*time.Minute)))
+	store := &deferredFakeStore{claimable: []*persistence.OutboxRecord{rec}}
+	sender := &fnSender{send: func(context.Context, ports.OutboundMessage) error {
+		return shared.NewBridgeError("OUTAGE", shared.ErrorTransient, "egress down")
+	}}
+	metrics := newDLQCountingExporter()
+	d, _ := budgetDrainer(store, sender, clk, metrics, nil)
 
-			if _, _, err := d.drainBatch(context.Background(), deferredTestToken()); err != nil {
-				t.Fatalf("drainBatch err = %v, want nil", err)
-			}
-			if got := metrics.count("poison"); got != tc.wantPoison {
-				t.Errorf("poison DLQ = %d, want %d", got, tc.wantPoison)
-			}
-			released := len(store.releasedIDs()) == 1
-			if released != tc.wantReleased {
-				t.Errorf("released = %v, want %v", released, tc.wantReleased)
-			}
-		})
+	if _, _, err := d.drainBatch(context.Background(), deferredTestToken()); err != nil {
+		t.Fatalf("drainBatch: %v", err)
+	}
+	if got := metrics.count("poison"); got != 0 {
+		t.Fatalf("an unstamped record must never be poisoned, got %d poison DLQ entries", got)
+	}
+	if got := store.releasedIDs(); len(got) != 1 || got[0] != "rec-unstamped" {
+		t.Fatalf("the record must be released for retry, got %v", got)
 	}
 }
 
@@ -389,4 +383,84 @@ func (h *budgetLogRecorder) messages() []string {
 		out[i] = e.msg
 	}
 	return out
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Production contract: an "attempt" is a CLAIM, not a transport invocation.
+//
+// The stores increment ReplayCount when a record is CLAIMED (SQLite:
+// acl_query.go claim transaction), so work that was claimed and then deferred —
+// a batch deadline expiring before its send launched — burns the same budget as
+// work that actually reached the sender. A record can therefore be poisoned
+// having NEVER been handed to a transport.
+//
+// That is accepted, bounded-backlog policy, not a defect: the count half of the
+// poison AND-gate is deliberately cheap to spend, and the wall-clock
+// ReplayBudget is what bounds the resulting loss. This test pins BOTH halves so
+// the semantics cannot drift silently — within the budget an unsent record
+// still gets its send; past it the record is terminalized without one.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// TestDrainer_ClaimCountedAttemptsBoundedByBudget_ProductionContract drives a
+// record whose ReplayCount was spent entirely by claims that never reached the
+// sender.
+func TestDrainer_ClaimCountedAttemptsBoundedByBudget_ProductionContract(t *testing.T) {
+	cases := []struct {
+		name         string
+		firstAttempt time.Duration // age of FirstAttemptedAt at drain time
+		wantSends    int32
+		wantPoison   int
+	}{
+		{
+			// Count spent by claims alone, budget NOT yet reached: the record must
+			// still get a real transport attempt. Claim-counting must never
+			// terminalize work early.
+			name:         "within budget: unsent record still gets its send",
+			firstAttempt: 14 * time.Minute,
+			wantSends:    1,
+			wantPoison:   0,
+		},
+		{
+			// Budget reached: the record is poisoned WITHOUT a send, because the
+			// attempts it consumed were claims. This is the documented loss.
+			name:         "budget exhausted: poisoned without ever being sent",
+			firstAttempt: 16 * time.Minute,
+			wantSends:    0,
+			wantPoison:   1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clk := clocktest.NewAt(budgetBase)
+			// ReplayCount 6 > MaxReplayAttempts 5, accumulated purely by claims:
+			// the record was claimed and deferred on every prior cycle.
+			rec := persistence.RehydrateFromSnapshot(budgetSnapshot("rec-never-sent", 6,
+				budgetBase.Add(-tc.firstAttempt), budgetBase.Add(-tc.firstAttempt)))
+			store := &deferredFakeStore{claimable: []*persistence.OutboxRecord{rec}}
+
+			var sent int32
+			sender := &fnSender{send: func(context.Context, ports.OutboundMessage) error {
+				atomic.AddInt32(&sent, 1)
+				return nil
+			}}
+			metrics := newDLQCountingExporter()
+			d, policy := budgetDrainer(store, sender, clk, metrics, nil)
+
+			if policy.MaxReplayAttempts >= 6 {
+				t.Fatalf("precondition: the record's claim count (6) must exceed MaxReplayAttempts, got %d",
+					policy.MaxReplayAttempts)
+			}
+			if _, _, err := d.drainBatch(context.Background(), deferredTestToken()); err != nil {
+				t.Fatalf("drainBatch err = %v, want nil", err)
+			}
+
+			if n := atomic.LoadInt32(&sent); n != tc.wantSends {
+				t.Errorf("sender calls = %d, want %d", n, tc.wantSends)
+			}
+			if got := metrics.count("poison"); got != tc.wantPoison {
+				t.Errorf("poison DLQ entries = %d, want %d", got, tc.wantPoison)
+			}
+		})
+	}
 }

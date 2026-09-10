@@ -8,12 +8,12 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
-// --- terminal / wedge supervision signals (HIGH-2, HIGH-3, HIGH-4) ----------
+// --- terminal / wedge supervision signals ----------
 
 // ErrRouteTerminal marks a PERMANENT route condition that the supervisor MUST
 // escalate (RouteDead / pod restart) rather than restart in place: there is no
 // in-process recovery reachable from the runner. Both the single-use-receiver
-// re-entry guard (HIGH-2) and the hung sender/processor wedge (HIGH-3/HIGH-4)
+// re-entry guard and the hung sender/processor wedge
 // wrap it, so superviseRoute needs exactly ONE predicate —
 // errors.Is(err, route.ErrRouteTerminal) — to decide escalation. This is the one
 // coherent "rebuild-or-escalate" supervision decision the findings share; since
@@ -23,7 +23,7 @@ import (
 var ErrRouteTerminal = errors.New("route: terminal route condition; supervisor must escalate")
 
 // ErrRouteReceiverClosed is returned when RouteRunner.Run is re-entered against a
-// receiver a prior Run already closed (HIGH-2). RouteRunner.Run always closes its
+// receiver a prior Run already closed. RouteRunner.Run always closes its
 // (single-use) receiver on exit; re-running the now-closed instance would flap at
 // the backoff cap forever behind green liveness. Escalating instead gives an
 // orchestrator an actionable signal.
@@ -43,7 +43,7 @@ var (
 type wedgeBox struct{ err error }
 
 // wedge latches a terminal route condition (a hung sender whose bounded goroutine
-// leaked — HIGH-3; too many abandoned processor goroutines — HIGH-4) and returns
+// leaked —; too many abandoned processor goroutines) and returns
 // the wrapped error. Once wedged, the Run receive callback refuses new deliveries
 // and Run returns the wedge error, which superviseRoute escalates via
 // ErrRouteTerminal. Idempotent: the FIRST cause wins so a burst of hung sends
@@ -75,7 +75,7 @@ func (r *RouteRunner) wedgeError() error {
 	return ErrRouteTerminal
 }
 
-// --- per-binding hung-send latch (HIGH-3) -----------------------------------
+// --- per-binding hung-send latch -----------------------------------
 
 // sendHung reports whether binding already has a parked (leaked) send goroutine
 // from a prior timed-out send. A second CONSECUTIVE send to the same binding is
@@ -98,7 +98,7 @@ func (r *RouteRunner) markSendHung(binding string) {
 	r.hungMu.Unlock()
 }
 
-// --- route-level abandoned-processor circuit breaker (HIGH-4) ---------------
+// --- route-level abandoned-processor circuit breaker ---------------
 
 // maxAbandonedProcessors is the number of concurrently-OUTSTANDING processor
 // goroutines abandoned on a genuine timeout that trips the route circuit breaker.
@@ -136,7 +136,7 @@ func (r *RouteRunner) onProcessorReturnedFromAbandon() {
 	r.abandonedProc.Add(-1)
 }
 
-// --- bridge-owned replay ledger for count-less sources (HIGH-1) -------------
+// --- bridge-owned replay ledger for count-less sources -------------
 
 // replayLedgerMaxKeys caps the bridge-owned retry ledger's in-memory footprint.
 // The ledger only ever holds keys for COUNT-LESS-source messages that have
@@ -149,7 +149,7 @@ func (r *RouteRunner) onProcessorReturnedFromAbandon() {
 //
 // ponytail: the named ceiling is 100k CONCURRENTLY-LIVE unique-identity FAILING
 // count-less messages. Below it the ledger is exact; at or above it FIFO eviction
-// can drop a still-retrying counter and that message restarts at attempt 0 (N2) —
+// can drop a still-retrying counter and that message restarts at attempt 0 —
 // so the worst case degrades to "extra MaxReplayAttempts tries per evicted
 // message", never to "infinite retry". Upgrade path when a single instance's cap
 // is too small, when the 100k-concurrent-failing regime is realistic, or when the
@@ -163,7 +163,7 @@ const replayLedgerMaxKeys = 100_000
 // per-message identity. It gives count-less sources (MQTT, AMQP 0-9-1, HTTP —
 // anything without a native receive-count header) a bridge-owned retry count so
 // the route policy's MaxReplayAttempts cap actually applies instead of letting a
-// deterministically-failing message loop forever (HIGH-1, HIGH-4).
+// deterministically-failing message loop forever.
 type replayLedger struct {
 	mu       sync.Mutex
 	max      int
@@ -273,19 +273,19 @@ func replayKey(env *messaging.Envelope) string {
 // for count-less sources — a FIRST delivery reads 0, exactly as the historical
 // receiveCount(env)==0 did — so a genuine first-delivery transient error still
 // retries under a MaxReplayAttempts=1 policy instead of poisoning before a single
-// real attempt (the F3 forged-count contract; chunk10_test.go pins that a
+// real attempt (the forged-count contract; address_render_test.go pins that a
 // count-less MQTT source reads 0 on first delivery so it "still gets its
 // retries"). The ledger then climbs one per redelivery (recordReplayAttempt in
 // retryOrFallback), so the cap fires after MaxReplayAttempts redeliveries —
 // bounded, where a count-less source previously looped forever.
 //
-// N1 — deliberate off-by-one vs native counts: a NATIVE receive count is 1-based
+// deliberate off-by-one vs native counts: a NATIVE receive count is 1-based
 // (the source stamps 1 on first receive), so a count-bearing source is DLQ'd
 // after exactly MaxReplayAttempts deliveries; a count-less source is 0-based here
 // and is DLQ'd after MaxReplayAttempts+1 deliveries (one extra try). The +1 is
 // KEPT on purpose: making it 1-based (attemptsFor(key)+1 >= MaxReplayAttempts)
 // would poison a first-delivery transient with ZERO real retries under a
-// MaxReplayAttempts=1 policy, breaking F3's "retry at least once". One extra
+// MaxReplayAttempts=1 policy, breaking the "retry at least once". One extra
 // delivery for count-less sources is the accepted cost of preserving that
 // first-attempt guarantee.
 //
@@ -302,12 +302,12 @@ func (r *RouteRunner) effectiveAttempt(env *messaging.Envelope) int {
 }
 
 // replayCapReached is the SINGLE gate every transient-failure poison decision
-// routes through (HIGH-1). It returns the effective attempt count and whether the
+// routes through. It returns the effective attempt count and whether the
 // route policy's MaxReplayAttempts cap has been reached, so a count-less source
 // is capped by the bridge-owned ledger exactly as a count-bearing source is
 // capped by its native header.
 //
-// MQTT-CORE-1: a count-less source whose identity is ADAPTER-GENERATED (marked
+// a count-less source whose identity is ADAPTER-GENERATED (marked
 // messaging.HeaderGeneratedID) mints a fresh envelope id on every broker
 // redelivery, so the ledger count resets each time and the cap can never fire —
 // a deterministically-failing message would recycle the source session forever.
@@ -326,7 +326,7 @@ func (r *RouteRunner) replayCapReached(env *messaging.Envelope) (int, bool) {
 // (messaging.HeaderGeneratedID) but no stable per-message key (dedup id /
 // idempotency key) and no native receive count. For such a message every broker
 // redelivery arrives with a fresh envelope id, so the ledger cannot accumulate
-// attempts and MaxReplayAttempts never fires (MQTT-CORE-1). Only enforced when a
+// attempts and MaxReplayAttempts never fires. Only enforced when a
 // finite cap is configured: MaxReplayAttempts<=0 means the operator explicitly
 // opted into unbounded retry, so it is honoured. A count-bearing source, or one
 // carrying a stable dedup/idempotency key, is countable and never matches.

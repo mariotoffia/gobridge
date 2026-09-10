@@ -1,5 +1,5 @@
-//go:build integration_aws
-// +build integration_aws
+//go:build integration_aws || integration_local
+// +build integration_aws integration_local
 
 package integration
 
@@ -14,7 +14,6 @@ import (
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	elbv2 "github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssns"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
@@ -34,19 +33,34 @@ import (
 )
 
 const (
-	haLeaseID           = "mqtt-ha"
+	haLeaseID = "mqtt-ha"
+	// haReceiverID and haProbeTopic name the one ingress the HA fixture wires.
+	// A proof that changes the subscription list has to address it by the same
+	// names the fixture deploys it under, so they are constants rather than two
+	// string literals that can drift apart.
+	haReceiverID        = "mqtt-in"
+	haProbeTopic        = "gobridge/ha/probe"
 	haFailoverObjective = 120 * time.Second
 )
 
 type haSandbox struct {
 	SandboxEnv
-	Image               string
+	Image               gobridgecdk.BridgeImageSource
 	BrokerURL           string
 	MQTTClientID        string
 	MQTTCredentialParam string
 	AdminParam          string
 	ProbeCIDR           string
 	Samples             int
+	// Empty preserves the credentialed and existing local file-source fixtures.
+	ConfigSource string
+
+	// PlaintextBroker opts the session into sending its credentials in the clear.
+	// The credentialed sandbox never sets it — its broker speaks TLS. A local
+	// run's broker is an anonymous container on a private per-run network with
+	// no TLS listener, so the guard has nothing to protect there and would only
+	// stop the cohort from starting.
+	PlaintextBroker bool
 }
 
 type haFixture struct {
@@ -64,7 +78,7 @@ func requireHAFailoverSandbox(t *testing.T) haSandbox {
 		t.Fatalf("GOBRIDGE_INT_HA=1 requires at least two private subnet IDs in distinct Availability Zones")
 	}
 	required := map[string]string{
-		"GOBRIDGE_INT_IMAGE":                    os.Getenv("GOBRIDGE_INT_IMAGE"),
+		"GOBRIDGE_INT_VERSION":                  os.Getenv("GOBRIDGE_INT_VERSION"),
 		"GOBRIDGE_INT_HA_MQTT_BROKER_URL":       os.Getenv("GOBRIDGE_INT_HA_MQTT_BROKER_URL"),
 		"GOBRIDGE_INT_HA_MQTT_CLIENT_ID":        os.Getenv("GOBRIDGE_INT_HA_MQTT_CLIENT_ID"),
 		"GOBRIDGE_INT_HA_MQTT_CREDENTIAL_PARAM": os.Getenv("GOBRIDGE_INT_HA_MQTT_CREDENTIAL_PARAM"),
@@ -91,7 +105,7 @@ func requireHAFailoverSandbox(t *testing.T) haSandbox {
 	}
 	return haSandbox{
 		SandboxEnv:          base,
-		Image:               required["GOBRIDGE_INT_IMAGE"],
+		Image:               credentialedRuntimeImageSource(),
 		BrokerURL:           required["GOBRIDGE_INT_HA_MQTT_BROKER_URL"],
 		MQTTClientID:        required["GOBRIDGE_INT_HA_MQTT_CLIENT_ID"],
 		MQTTCredentialParam: required["GOBRIDGE_INT_HA_MQTT_CREDENTIAL_PARAM"],
@@ -101,10 +115,15 @@ func requireHAFailoverSandbox(t *testing.T) haSandbox {
 	}
 }
 
-func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox) haFixture {
+// newHAFixture builds the credentialed HA stack. A non-nil slots opts the facade
+// into the static member-slot profile: the roster is written into the shared
+// config and the deployment provisions one single-task service per member, which
+// is the only shape that can host the coordinated rollout barrier.
+func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox, slots *ha.MemberSlots) haFixture {
 	t.Helper()
 	vpc := lookupVpc(stack, env.SandboxEnv)
 	outbound := awssqs.NewQueue(stack, jsii.String("HAOutbound"), &awssqs.QueueProps{
+		QueueName:     jsii.String(*stack.StackName() + "-ha-outbound"),
 		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
 	})
 	queues := registry.NewQueueRegistry()
@@ -122,30 +141,35 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox) haFixture {
 
 	mqttConfig := &paho.Config{
 		Session: paho.SessionOptions{
-			BrokerURLs:            []string{env.BrokerURL},
-			ClientID:              env.MQTTClientID,
-			KeepAlive:             30,
-			ConnectTimeout:        5 * time.Second,
-			ReconnectTimeout:      5 * time.Second,
-			ReconcileTimeout:      5 * time.Second,
-			ReconnectDelay:        time.Second,
-			ReconnectMaxDelay:     5 * time.Second,
-			UnmatchedGrace:        time.Second,
-			CleanStart:            false,
-			SessionExpiryInterval: 3600,
+			BrokerURLs:                []string{env.BrokerURL},
+			ClientID:                  env.MQTTClientID,
+			KeepAlive:                 30,
+			ConnectTimeout:            5 * time.Second,
+			ReconnectTimeout:          5 * time.Second,
+			ReconcileTimeout:          5 * time.Second,
+			ReconnectDelay:            time.Second,
+			ReconnectMaxDelay:         5 * time.Second,
+			UnmatchedGrace:            time.Second,
+			CleanStart:                false,
+			SessionExpiryInterval:     3600,
+			AllowPlaintextCredentials: env.PlaintextBroker,
 		},
 		CredentialsURIRef: parameterURI(env.MQTTCredentialParam),
 	}
 	sqsConfig := sqsadapter.DefaultConfig()
-	sqsConfig.QueueName = "ha-outbound"
+	sqsConfig.QueueName = *stack.StackName() + "-ha-outbound"
 	sqsConfig.Region = env.Region
 
 	leaseStore := &ports.StoreConfig{Type: awsstore.DynamoDBKind}
 	leaseStore.SetDecoded(&awsstore.DynamoDBConfig{TableName: awsstore.DefaultDynamoDBLeaseTableName}, nil)
 	outboxStore := &ports.StoreConfig{Type: awsstore.DynamoDBKind}
 	outboxStore.SetDecoded(&awsstore.DynamoDBConfig{
-		TableName:          awsstore.DefaultDynamoDBOutboxTableName,
-		StaleClaimDuration: 20 * time.Second,
+		TableName: awsstore.DefaultDynamoDBOutboxTableName,
+		// Must exceed the route's send timeout, which this fixture leaves at its
+		// default: at or below it another owner reclaims and re-sends a record
+		// whose first delivery has not even timed out yet, and the construct
+		// refuses the stack at synth.
+		StaleClaimDuration: 60 * time.Second,
 		CompactionGrace:    24 * time.Hour,
 	}, nil)
 	historyStore := &ports.StoreConfig{Type: awsstore.DynamoDBKind}
@@ -154,56 +178,96 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox) haFixture {
 	session := ports.SessionDef{ID: haLeaseID, Transport: "mqtt", SessionMode: "exclusive"}
 	session.SetDecoded(mqttConfig, nil)
 	receiver := ports.ReceiverDef{
-		ID: "mqtt-in", Transport: "mqtt", SessionID: haLeaseID,
-		Topics: []ports.SubscriptionDef{{Topic: "gobridge/ha/probe", QoS: 1}},
+		ID: haReceiverID, Transport: "mqtt", SessionID: haLeaseID,
+		Topics: []ports.SubscriptionDef{{Topic: haProbeTopic, QoS: 1}},
 	}
 	receiver.SetDecoded(&paho.Config{}, nil)
 	sender := ports.SenderDef{ID: "sqs-out", Transport: "sqs"}
 	sender.SetDecoded(&sqsConfig, nil)
-	binding := ports.BindingDef{ID: "sqs-out-binding", SenderID: "sqs-out", Address: "ha-outbound"}
+	binding := ports.BindingDef{ID: "sqs-out-binding", SenderID: "sqs-out", Address: sqsConfig.QueueName}
 	binding.SetDecoded(&sqsConfig, nil)
 
+	bridgeSettings := ports.BridgeSettings{
+		ID: "gobridge-ha-integration", DeploymentMode: "clustered",
+		ShutdownTimeout: "45s", PerRecordDrainTimeout: "2s", MaxDrainTimeout: "20s",
+	}
+	if env.ConfigSource == infra.ConfigSourceDynamoDB {
+		// Local mirrors outlive a stack. Isolate this fixture's rollout baseline
+		// from the file proof and from repeated deployments in the same process.
+		bridgeSettings.ID = *stack.StackName()
+	}
+	if slots != nil {
+		// The roster must name exactly the slots the deployment provisions; the
+		// construct rejects the stack at synth otherwise. The confirm window makes
+		// every commit provisional, so a member that cannot converge reverts the
+		// whole cohort rather than leaving it split.
+		bridgeSettings.Cluster = &ports.ClusterConfig{
+			Rollout:       "coordinated",
+			Members:       haMemberIDs(slots),
+			ConfirmWindow: "90s",
+		}
+	}
 	cfg := &ports.BridgeConfig{
-		Bridge: ports.BridgeSettings{
-			ID: "gobridge-ha-integration", DeploymentMode: "clustered",
-			ShutdownTimeout: "45s", PerRecordDrainTimeout: "2s", MaxDrainTimeout: "20s",
-		},
+		Bridge:    bridgeSettings,
 		Stores:    ports.StoresConfig{Lease: leaseStore, Outbox: outboxStore, ManagedSubscriptions: historyStore},
 		Sessions:  []ports.SessionDef{session},
 		Receivers: []ports.ReceiverDef{receiver},
 		Senders:   []ports.SenderDef{sender},
 		Bindings:  []ports.BindingDef{binding},
 		Routes: []ports.RouteDef{{
-			ID: "mqtt-ha-route", ReceiverID: "mqtt-in", DeliveryMode: "shared_outbox",
+			ID: "mqtt-ha-route", ReceiverID: haReceiverID, DeliveryMode: "shared_outbox",
 			Bindings: []string{"sqs-out-binding"},
-			Policy:   ports.PolicyDef{AckAfter: "outbox_persist", MaxInFlight: 10, MaxOutboxDepth: 1000},
+			// This profile provisions no DLQ table, so the route must say what it
+			// does with a failure rather than name a store that is not there:
+			// without these three the runtime refuses to start rather than drop
+			// messages silently.
+			Policy: ports.PolicyDef{
+				AckAfter: "outbox_persist", MaxInFlight: 10, MaxOutboxDepth: 1000,
+				OnExpired: "drop", OnPermanentFailure: "drop", AllowRetryDrop: true,
+			},
 			Session: &ports.RouteSessionDef{
 				SessionID: haLeaseID, SenderID: "sqs-out",
 				LeaseTTL: "10s", RenewInterval: "2s", RenewJitter: "500ms",
 				MaxRenewFails: 3, StepDownGrace: "2s", AcquirePollInterval: "1s",
 				RenewCallTimeout: "1s", FailoverSLO: haFailoverObjective.String(), StartupAllowance: "30s",
 				DrainInterval: "500ms", DrainBatchSize: 10,
+				// A declared objective must state what a node-local broker outage
+				// does, and this cohort records that it accepts one. The reason is
+				// the rollout proof itself: its confirm-window phase deliberately
+				// leaves every member unable to satisfy its subscriptions, which a
+				// positive threshold would read as an outage and answer by ending
+				// the process — taking down the cohort the phase is observing. The
+				// broker-path step-down is proved instead where it can be isolated,
+				// by the long-running broker-path test.
+				BrokerHealthStepDown: "off",
 			},
 		}},
 	}
 
 	src := gobridgecdk.BridgeYamlInline(cfg)
 	bootstrap := infra.BootstrapConfig{
-		BridgeID:         "gobridge-ha-integration",
+		BridgeID:         bridgeSettings.ID,
 		ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",
 		AdminAPIKeyParam: env.AdminParam,
 		AWSRegion:        env.Region,
 		MetricsExporter:  infra.MetricsExporterCloudWatch,
 	}
+	if env.ConfigSource != "" {
+		bootstrap.ConfigSource = env.ConfigSource
+	}
+	if env.ConfigSource == infra.ConfigSourceDynamoDB {
+		bootstrap.ConfigFilePath = ""
+	}
 	bridge := ha.NewGoBridgeDynamoDBHA(stack, jsii.String("DynamoDBHA"), &ha.DynamoDBHAProps{
 		Vpc:                          vpc,
 		VpcSubnets:                   subnetSelection(env.SandboxEnv),
-		Image:                        awsecs.ContainerImage_FromRegistry(jsii.String(env.Image), nil),
+		Image:                        env.Image,
 		Bootstrap:                    bootstrap,
 		BridgeConfig:                 src,
 		ManagedSubscriptionBaselines: map[string][]string{haLeaseID: {}},
 		QueueRegistry:                queues,
 		SsmParamRegistry:             params,
+		MemberSlots:                  slots,
 	})
 
 	// Credentialed proof runs from an operator-controlled address with VPC
@@ -211,6 +275,12 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox) haFixture {
 	probePeer := awsec2.Peer_Ipv4(jsii.String(env.ProbeCIDR))
 	bridge.ControlSecurityGroup().AddIngressRule(probePeer, awsec2.Port_Tcp(jsii.Number(8081)), jsii.String("credentialed HA exact-task monitor probe"), jsii.Bool(false))
 	bridge.WorkerSecurityGroup().AddIngressRule(probePeer, awsec2.Port_Tcp(jsii.Number(8081)), jsii.String("credentialed HA exact-task monitor probe"), jsii.Bool(false))
+	if slots != nil {
+		// The rollout proof drives a config transaction against the control task's
+		// admin listener, and reads each slot's own /deephealth. Fixture-only
+		// ingress from the operator CIDR; the production facade is unchanged.
+		bridge.ControlSecurityGroup().AddIngressRule(probePeer, awsec2.Port_Tcp(jsii.Number(8080)), jsii.String("credentialed static-slot rollout admin probe"), jsii.Bool(false))
+	}
 
 	alb := elbv2.NewApplicationLoadBalancer(stack, jsii.String("HAALB"), &elbv2.ApplicationLoadBalancerProps{
 		Vpc: vpc, InternetFacing: jsii.Bool(true),
@@ -221,7 +291,7 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox) haFixture {
 		DefaultAction: elbv2.ListenerAction_FixedResponse(jsii.Number(404), nil),
 	})
 	attachment := gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("HAAttachment"), &gobridgealbattachment.AttachmentProps{
-		DynamoDBHA: bridge, Listener: listener, Vpc: vpc, BridgeConfig: src,
+		DynamoDBHA: bridge, Listener: listener, ListenerScheme: "http", Vpc: vpc, BridgeConfig: src,
 	}).WithCfnOutputs("")
 	topic := awssns.NewTopic(stack, jsii.String("HAAlarmTopic"), nil)
 	gobridgealarms.NewGoBridgeAlarms(stack, jsii.String("HAAlarms"), &gobridgealarms.AlarmsProps{
@@ -232,10 +302,21 @@ func newHAFixture(t *testing.T, stack awscdk.Stack, env haSandbox) haFixture {
 		"ClusterArn":                    bridge.Cluster().ClusterArn(),
 		"ControlServiceName":            bridge.ControlService().ServiceName(),
 		"WorkerServiceName":             bridge.WorkerService().ServiceName(),
+		"WorkerServiceNames":            jsii.String(strings.Join(workerServiceNames(bridge), ",")),
 		"LeaseTableName":                bridge.Data().LeaseTableName(),
 		"LeaseID":                       jsii.String(haLeaseID),
 		"MetricsNamespace":              jsii.String(bridge.MetricsNamespace()),
 		"FailoverObjectiveMilliseconds": jsii.String(strconv.FormatInt(bridge.FailoverObjective().Milliseconds(), 10)),
+	}
+	if slots != nil {
+		// Only the static member-slot profile has a roster and a rollout table.
+		// CloudFormation rejects an Output whose Value is an empty string, so these
+		// must not be emitted on the autoscaled path at all.
+		outputs["MemberSlotIDs"] = jsii.String(strings.Join(bridge.MemberSlotIDs(), ","))
+		outputs["RolloutTableName"] = jsii.String(bridge.RolloutTableName())
+	}
+	if table := bridge.ConfigTable(); table != nil {
+		outputs["ConfigTableName"] = table.TableName()
 	}
 	for name, value := range outputs {
 		out := awscdk.NewCfnOutput(stack, jsii.String(name), &awscdk.CfnOutputProps{Value: value})
@@ -259,4 +340,23 @@ func missingHAOutput(outputs StackOutputs, names ...string) error {
 		return fmt.Errorf("credentialed HA stack outputs missing: %s", strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+// MemberIDs is the full roster the deployment provisions: the control slot and
+// every worker slot. It is what bridge.cluster.members must contain.
+func haMemberIDs(slots *ha.MemberSlots) []string {
+	if slots == nil {
+		return nil
+	}
+	return append([]string{slots.ControlMemberID}, slots.WorkerMemberIDs...)
+}
+
+// workerServiceNames returns the ECS service name of every worker-side service,
+// so the rollout proof can address one slot at a time.
+func workerServiceNames(bridge *ha.GoBridgeDynamoDBHA) []string {
+	names := make([]string, 0)
+	for _, svc := range bridge.WorkerServices() {
+		names = append(names, *svc.ServiceName())
+	}
+	return names
 }

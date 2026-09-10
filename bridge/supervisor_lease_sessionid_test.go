@@ -12,7 +12,7 @@ import (
 // TestLeaseSessionIDChanged covers the pure config-comparison logic that refuses
 // a live reload changing a lease-bearing exclusive route's session_id — the
 // lease identity that a per-process reload cannot roll safely across a cluster
-// (finding HIGH-2). Reverting the check makes the "changed" case return nil and
+// Reverting the check makes the "changed" case return nil and
 // fail.
 func TestLeaseSessionIDChanged(t *testing.T) {
 	t.Parallel()
@@ -65,7 +65,7 @@ func TestLeaseSessionIDChanged(t *testing.T) {
 	// Shared-session vector: the route's exclusive lease-bearing session comes
 	// from a shared sessions: block via receiver -> ReceiverDef.SessionID ->
 	// SessionDef(session_mode: exclusive), NOT an inline route session. This is
-	// the H2 coverage-gap the inline-only check missed.
+	// the coverage-gap the inline-only check missed.
 	shared := func(routeID, receiverID, sessionID, mode string) *ports.BridgeConfig {
 		return &ports.BridgeConfig{
 			Sessions:  []ports.SessionDef{{ID: sessionID, Transport: "mqtt", SessionMode: mode}},

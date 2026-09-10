@@ -4,7 +4,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -34,11 +33,11 @@ func TestHeaderClassificationExhaustive(t *testing.T) {
 		"HeaderPrefix": {},
 	}
 
-	root := repoRoot(t)
-	path := filepath.Join(root, "domain", "messaging", "headers.go")
-
+	// go test runs a package's binary with the working directory set to
+	// the package directory, so headers.go is right here — no repo-root
+	// walk needed.
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	f, err := parser.ParseFile(fset, "headers.go", nil, parser.SkipObjectResolution)
 	if err != nil {
 		t.Fatalf("parse headers.go: %v", err)
 	}

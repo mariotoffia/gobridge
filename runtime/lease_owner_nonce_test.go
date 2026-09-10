@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Finding C3-HIGH: two replicas that share the SAME instance_id (a mis-set env
+// Finding: two replicas that share the SAME instance_id (a mis-set env
 // var, a cloned deployment) must NOT derive the same lease ownerID. If they did,
 // the lease store's same-owner fast path would let each instantly counter-seize
 // the other's lease — a permanent ping-pong that resets every standby's

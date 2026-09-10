@@ -18,7 +18,7 @@ import (
 // TestBridgeError_Is_MatchesByCodeOnly). If one code carried two classes, the
 // runtime's transient/permanent/expired/rejected routing decision for that code
 // would depend on which construction site produced the error — a latent, order-
-// dependent classification bug. The specific regression this pins: the routing
+// dependent classification bug. The specific regression this pins that the routing
 // policy validators (invalidEnum / invalidDuration) once minted
 // ErrCodeInvalidPayload with class Permanent while the ErrInvalidPayload
 // sentinel is Rejected; they now use the dedicated ErrCodeInvalidConfig.

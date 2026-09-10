@@ -35,7 +35,7 @@ func requireNoReport(t *testing.T, ch <-chan error) {
 	}
 }
 
-// HIGH-3: a live Send that maps to shared.ErrNotAuthorized (SAS/AAD
+// a live Send that maps to shared.ErrNotAuthorized (SAS/AAD
 // revocation) invokes the injected reactive-recovery callback, forcing an
 // immediate re-resolve. Reverting the s.reportAuthFailure(err) call in
 // Sender.Send makes this fail.
@@ -65,7 +65,7 @@ func TestSender_SendAuthFailure_ForcesReactiveReResolve(t *testing.T) {
 	}
 }
 
-// HIGH-3: a non-auth Send error must NOT trigger a reactive re-resolve.
+// a non-auth Send error must NOT trigger a reactive re-resolve.
 func TestSender_SendNonAuthError_DoesNotReport(t *testing.T) {
 	mock := &mockSenderAPI{
 		sendMessageFn: func(context.Context, *azservicebus.Message, *azservicebus.SendMessageOptions) error {
@@ -86,7 +86,7 @@ func TestSender_SendNonAuthError_DoesNotReport(t *testing.T) {
 	requireNoReport(t, reported)
 }
 
-// HIGH-3: a batch-ONLY sender (no single-Send, no receive path) must still
+// a batch-ONLY sender (no single-Send, no receive path) must still
 // fire the reactive-recovery report when a live SendBatch maps to
 // shared.ErrNotAuthorized — the aggregated per-message results are its sole
 // live-op signal of a credential revocation. Reverting the ErrNotAuthorized
@@ -132,7 +132,7 @@ func TestSender_SendBatchAuthFailure_ForcesReactiveReResolve(t *testing.T) {
 	requireNoReport(t, reported)
 }
 
-// HIGH-3: a non-auth SendBatch error must NOT trigger a reactive re-resolve.
+// a non-auth SendBatch error must NOT trigger a reactive re-resolve.
 func TestSender_SendBatchNonAuthError_DoesNotReport(t *testing.T) {
 	mock := &mockSenderAPI{
 		newMessageBatchFn: func(context.Context, *azservicebus.MessageBatchOptions) (*azservicebus.MessageBatch, error) {
@@ -189,7 +189,7 @@ func TestReceiver_PollAuthFailure_ForcesReactiveReResolve(t *testing.T) {
 	<-done
 }
 
-// HIGH-3: a non-auth receive error must NOT trigger a reactive re-resolve.
+// a non-auth receive error must NOT trigger a reactive re-resolve.
 func TestReceiver_PollNonAuthError_DoesNotReport(t *testing.T) {
 	mock := &mockASBClient{
 		ReceiveMessagesFn: func(context.Context, int, *azservicebus.ReceiveMessagesOptions) ([]*azservicebus.ReceivedMessage, error) {

@@ -14,7 +14,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// A-3 (MEDIUM): a reconcile whose SUBACK belongs to a PRIOR connection must not
+// (MEDIUM): a reconcile whose SUBACK belongs to a PRIOR connection must not
 // write activeSubs after a reconnect has reset it — otherwise an ephemeral
 // (clean_start) session silently loses subscriptions.
 //
@@ -129,6 +129,6 @@ func TestBug_Reconcile_ReconnectMidFlight_SkipsStaleActiveSubsWriteBack(t *testi
 
 	require.Greater(t, epoch, uint64(1), "the mid-flight reconnect bumped the connection epoch")
 	require.False(t, hasA,
-		"A-3: a SUBACK from a prior connection must NOT be written into the fresh activeSubs — "+
+		"a SUBACK from a prior connection must NOT be written into the fresh activeSubs — "+
 			"the reconnect reconcile must see an empty set and re-subscribe in full, not skip an empty delta")
 }

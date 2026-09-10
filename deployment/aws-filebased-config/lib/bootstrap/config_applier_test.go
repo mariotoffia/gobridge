@@ -15,7 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestApp_ConfigApplierAppliesCommitInBand is the FIX 2 regression: the
+// TestApp_ConfigApplierAppliesCommitInBand is the regression: the
 // filebased bootstrap must wire httpapi's ConfigApplier hook so a config
 // committed through the admin transactions API converges the running runtime
 // in-band, instead of leaving the committed_not_applied / errConfigApplyFailed
@@ -49,6 +49,7 @@ func TestApp_ConfigApplierAppliesCommitInBand(t *testing.T) {
 		_ = app.Stop(context.Background())
 	})
 
+	awaitApplied(t, app)
 	require.Equal(t, "info", app.CurrentAppliedConfig().Bridge.LogLevel)
 
 	const key = "admin-secret-key-123456"
@@ -94,11 +95,13 @@ func TestApplyCommittedConfig_ReusesReloadPath(t *testing.T) {
 		"/admin": "admin-secret-key-123456",
 	}))
 
+	require.NoError(t, parser.WriteFile(cfgPath, defaultLogicalConfig(app.cfg)))
 	require.NoError(t, app.Start(t.Context()))
 	t.Cleanup(func() {
 		_ = app.Stop(context.Background())
 	})
 
+	awaitApplied(t, app)
 	// A valid committed config converges the runtime immediately.
 	require.NoError(t, app.applyCommittedConfig(t.Context(), &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{

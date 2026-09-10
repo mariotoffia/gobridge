@@ -84,8 +84,42 @@ func TestValidator_DirectHold_RejectsExclusiveSession(t *testing.T) {
 	}
 }
 
-// TestValidator_DirectHold_RejectsMissingVisibilityExtension verifies direct_hold requires visibility extension on the source.
-func TestValidator_DirectHold_RejectsMissingVisibilityExtension(t *testing.T) {
+// TestValidator_DirectHold_RejectsASourceThatCannotRedeliver pins the mode's real
+// precondition. direct_hold settles the source only after the destination has
+// accepted, so what it needs is a source that hands the message back when the
+// process dies mid-flight. A window it can extend is one way to get that and not
+// the requirement — a source that offers the window and never redelivers leaves
+// the crash gap the mode exists to close.
+func TestValidator_DirectHold_RejectsASourceThatCannotRedeliver(t *testing.T) {
+	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
+	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+	cfg.SourceCapabilities = []ports.Capability{ports.CapVisibilityExtension}
+	cfg.SourceRedeliveryRefusal = "subscription \"sensors/#\" is QoS 0"
+
+	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rt.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected validation error for a source that cannot redeliver")
+	}
+	if !strings.Contains(err.Error(), "direct_hold invalid: the source does not redeliver an unsettled message") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "is QoS 0") {
+		t.Fatalf("the refusal must carry the transport's own reason so an operator knows which "+
+			"precondition failed: %v", err)
+	}
+}
+
+// TestValidator_DirectHold_AcceptsARedeliveringSourceWithNoWindow is the other
+// direction, and the one that was refused before: a source with no visibility
+// window at all is admissible when it redelivers what it was never told to
+// settle. MQTT on a durable session is exactly that, and forcing it through an
+// outbox added a store, a lease and a failure domain for a crash window that is
+// identical either way.
+func TestValidator_DirectHold_AcceptsARedeliveringSourceWithNoWindow(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
 	cfg.SourceCapabilities = []ports.Capability{ports.CapSourceRedelivery}
@@ -94,13 +128,12 @@ func TestValidator_DirectHold_RejectsMissingVisibilityExtension(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := rt.Start(context.Background())
-	if err == nil {
-		t.Fatal("expected validation error for missing visibility extension")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("expected no validation error for a redelivering source, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "direct_hold invalid: source does not support visibility extension") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	_ = rt.Stop(context.Background())
 }
 
 // TestValidator_DirectHold_RejectsMultipleBindings verifies more than one binding is rejected for direct_hold.
@@ -149,8 +182,8 @@ func TestValidator_DirectHold_CollectsMultipleErrors(t *testing.T) {
 	if !strings.Contains(errMsg, "lease handoff") {
 		t.Error("missing lease handoff error")
 	}
-	if !strings.Contains(errMsg, "visibility extension") {
-		t.Error("missing visibility extension error")
+	if !strings.Contains(errMsg, "does not redeliver an unsettled message") {
+		t.Error("missing source-redelivery error")
 	}
 }
 
@@ -207,7 +240,7 @@ func TestValidator_SharedOutbox_Valid(t *testing.T) {
 
 // TestValidator_SharedOutbox_RejectsZeroPlanStaticResolver verifies a
 // shared_outbox route whose StaticResolver is fixed at ZERO plans is rejected at
-// registration (HIGH-1). Such a resolver would persist zero outbox records for
+// registration. Such a resolver would persist zero outbox records for
 // every message and then ACK the source with no delivery — silent loss. Because
 // the cardinality is statically knowable, the misconfiguration must fail fast at
 // Start, mirroring the direct_hold PlanCount()>1 rejection.
@@ -307,7 +340,7 @@ func TestValidator_DirectHold_DefaultDeliveryMode(t *testing.T) {
 	cfg := runtime.RouteConfig{
 		ID:                 "default-mode",
 		Policy:             routing.RoutePolicy{},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 
 	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), nil, nil); err != nil {
@@ -332,7 +365,7 @@ func TestValidator_MultipleRouteErrors(t *testing.T) {
 			DeliveryMode: routing.DeliveryDirectHold,
 			DispatchMode: routing.DispatchFanOut,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	cfg2 := runtime.RouteConfig{
 		ID: "bad-route-2",
@@ -596,7 +629,9 @@ func TestValidator_SharedOutbox_FanOutAtLimit(t *testing.T) {
 }
 
 // TestValidator_DirectHold_HTTPSourceAccepted verifies that HTTP sources
-// (CapHTTPEndpoint) are accepted in direct_hold without CapVisibilityExtension.
+// (CapHTTPEndpoint) are accepted in direct_hold without CapSourceRedelivery: the
+// caller is still holding the request, so nothing has been settled and the retry
+// is theirs to make.
 func TestValidator_DirectHold_HTTPSourceAccepted(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
@@ -617,7 +652,7 @@ func TestValidator_DirectHold_HTTPSourceAccepted(t *testing.T) {
 
 // TestValidator_TerminalFailureSink_PermanentDLQNoStore_Rejected verifies that a
 // route whose effective on_permanent_failure routes to the DLQ is rejected when
-// no DLQ store is configured (A5: terminal failures must not be silently dropped).
+// no DLQ store is configured (terminal failures must not be silently dropped).
 func TestValidator_TerminalFailureSink_PermanentDLQNoStore_Rejected(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
@@ -639,7 +674,7 @@ func TestValidator_TerminalFailureSink_PermanentDLQNoStore_Rejected(t *testing.T
 
 // TestValidator_TerminalFailureSink_ExpiredDLQNoStore_Rejected verifies that a
 // route whose effective on_expired routes to the DLQ is rejected when no DLQ
-// store is configured (A5).
+// store is configured.
 func TestValidator_TerminalFailureSink_ExpiredDLQNoStore_Rejected(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
 	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
@@ -720,7 +755,7 @@ func TestValidator_SharedOutbox_RejectsZeroBindingsNoResolver(t *testing.T) {
 // TestValidator_SharedOutbox_CrossInstanceIngressOnly_Validates locks in the
 // no-false-positive contract: an ingress-only instance whose binding targets a
 // non-empty session that has NO drainer in THIS runtime must still validate.
-// This is the core cross-instance handoff (T11) — a different instance owns the
+// This is the core cross-instance handoff — a different instance owns the
 // session lease and drains the shared outbox. Local drainer absence is not proof
 // of orphaning, so the per-instance validator must not reject it.
 func TestValidator_SharedOutbox_CrossInstanceIngressOnly_Validates(t *testing.T) {
@@ -756,7 +791,7 @@ func TestValidator_SharedOutbox_CrossInstanceIngressOnly_Validates(t *testing.T)
 
 // TestValidator_SharedOutbox_RejectsExplicitTargetAccept verifies that an
 // explicit ack_after=target_accept on a shared_outbox route is rejected because
-// the outbox persist — not the downstream accept — is the durability boundary (A2).
+// the outbox persist — not the downstream accept — is the durability boundary.
 func TestValidator_SharedOutbox_RejectsExplicitTargetAccept(t *testing.T) {
 	rt := runtime.New(
 		runtime.WithInstanceID("test-bridge"),
@@ -791,7 +826,7 @@ func TestValidator_SharedOutbox_RejectsExplicitTargetAccept(t *testing.T) {
 
 // TestValidator_SharedOutbox_RejectsOrphanBinding asserts that a shared_outbox
 // route with no route session and a binding that omits its session_id is
-// rejected at Start. With no session to inherit (the A1 fixup needs a route
+// rejected at Start. With no session to inherit (the fixup needs a route
 // session) and an empty binding session, the outbox record would persist under
 // a BINDING#<id> partition that no drainer ever polls — the source is ACKed
 // after persist and the record is silently lost. Validation must fail closed.
@@ -828,7 +863,7 @@ func TestValidator_SharedOutbox_RejectsOrphanBinding(t *testing.T) {
 
 // TestValidator_SharedOutbox_BindingInheritsRouteSession asserts the inverse of
 // the orphan case: an empty binding session is fine when the route has a
-// session for it to inherit (A1), so validation passes.
+// session for it to inherit, so validation passes.
 func TestValidator_SharedOutbox_BindingInheritsRouteSession(t *testing.T) {
 	rt := runtime.New(
 		runtime.WithInstanceID("test-bridge"),
@@ -858,4 +893,47 @@ func TestValidator_SharedOutbox_BindingInheritsRouteSession(t *testing.T) {
 		t.Fatalf("expected route to validate (binding inherits route session): %v", err)
 	}
 	_ = rt.Stop(context.Background())
+}
+
+// TestValidator_RejectsBackoffMultiplierBelowOne pins the runtime start
+// boundary to the same rule the config boundary enforces. A multiplier in (0,1)
+// survives WithDefaults (which fills only ZERO fields) and turns "exponential
+// backoff" into accelerating retry: every attempt fires sooner than the last
+// until the delay underflows, so a failing target is hammered hardest exactly
+// when it is least able to recover.
+func TestValidator_RejectsBackoffMultiplierBelowOne(t *testing.T) {
+	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
+	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+	cfg.Policy.Backoff.Multiplier = 0.5
+
+	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rt.Start(context.Background())
+	if err == nil {
+		t.Fatal("a decaying retry multiplier must fail start validation")
+	}
+	if !strings.Contains(err.Error(), "Multiplier") {
+		t.Fatalf("error must name the offending field: %v", err)
+	}
+}
+
+// TestValidator_AcceptsBackoffMultiplierOne is the negative control: a fixed
+// retry interval (multiplier exactly 1) is a legitimate policy, so the rule is
+// `>= 1`, not `> 1`.
+func TestValidator_AcceptsBackoffMultiplierOne(t *testing.T) {
+	rt := runtime.New(runtime.WithInstanceID("test-bridge"))
+	cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+	cfg.Policy.Backoff.Multiplier = 1.0
+
+	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := rt.Start(ctx); err != nil && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("multiplier 1.0 is a legal fixed retry interval: %v", err)
+	}
 }

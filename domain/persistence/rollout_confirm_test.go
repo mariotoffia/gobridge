@@ -9,7 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// The confirm window (design §8.1) layers a NETCONF/NSO "provisional apply with
+// The confirm window (cluster-config-rollout-protocol.md §8.1) layers a NETCONF/NSO "provisional apply with
 // deadman timer" on top of the base barrier. These tests pin the aggregate's
 // half: a windowed Commit is NON-terminal, members Converge, a fenced Confirm
 // (all converged) or Revert makes it terminal, and the base protocol
@@ -111,7 +111,7 @@ func TestRolloutState_IsTerminal_InherentStates(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// WithConverged (I6: at-most-once, member-in-epoch, only while windowed-committed)
+// WithConverged (at-most-once, member-in-epoch, only while windowed-committed)
 // ─────────────────────────────────────────────────────────────────────────
 
 func TestRollout_Converged_Records(t *testing.T) {
@@ -164,7 +164,7 @@ func TestRollout_Converged_Rejections(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// WithConfirm (I7: all converged; I3: fencing; terminal → Confirmed)
+// WithConfirm (all converged;: fencing; terminal → Confirmed)
 // ─────────────────────────────────────────────────────────────────────────
 
 func mustConfirmed(t *testing.T) persistence.Rollout {
@@ -243,7 +243,7 @@ func TestRollout_Confirm_OnRevertedRejected(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// WithRevert (deadman outcome; I3: fencing; terminal → Reverted)
+// WithRevert (deadman outcome;: fencing; terminal → Reverted)
 // ─────────────────────────────────────────────────────────────────────────
 
 func mustReverted(t *testing.T) persistence.Rollout {

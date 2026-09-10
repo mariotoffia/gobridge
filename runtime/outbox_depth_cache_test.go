@@ -17,7 +17,7 @@ import (
 // Outbox Depth Cache
 //
 // Tests verifying that the outbox depth cache reduces QueryPending
-// calls on the hot path (P7).
+// calls on the hot path.
 //
 // Summary:
 // ┌──────┬──────────────────────────────────────────────┬──────────┐

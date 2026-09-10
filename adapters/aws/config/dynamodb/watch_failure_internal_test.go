@@ -18,19 +18,15 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
-// waitUntil spins (yielding the scheduler, no time.Sleep) until cond
-// returns true or the deadline passes.
+// waitUntil blocks until cond returns true or the deadline passes. It delegates
+// to testutil/wait, which backs off and parks the waiting goroutine instead of
+// spinning against the watcher goroutine it is waiting for.
 func waitUntil(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		runtimeYield()
-	}
+	wait.Until(t, 2*time.Second, what, cond)
 }
 
 // syncBuffer is a mutex-guarded bytes.Buffer safe for use as an slog

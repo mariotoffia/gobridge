@@ -24,9 +24,9 @@ import (
 //
 // commitMu serializes the whole commit pipeline so the second commit cannot
 // write until the first has fully applied or rolled back. Here the first
-// commit's apply fails and rolls back to v7, so the second commit observes a
+// commit's apply fails and restores the previous content at v9, so the second commit observes a
 // version conflict against its now-stale base (8) and writes nothing — disk
-// stays at the rolled-back v7 instead of a clobbered-away newer version.
+// stays at the restored v9 instead of a clobbered-away newer config.
 func TestConfigTxnCommit_ConcurrentCommitDuringApply_NoClobber(t *testing.T) {
 	good := sampleBridgeConfig()
 	good.Version = 7
@@ -70,7 +70,7 @@ func TestConfigTxnCommit_ConcurrentCommitDuringApply_NoClobber(t *testing.T) {
 
 	// txn2 begins now and reads disk v8 as its base, then commits. With commitMu
 	// its Commit blocks until txn1 finishes; without it, txn2 would write v9 into
-	// the apply window and txn1's rollback would clobber it back to v7.
+	// the apply window and txn1's rollback would clobber its content.
 	txn2, err := mgr.Begin(ctx, time.Minute)
 	require.NoError(t, err)
 	wg.Add(1)
@@ -79,21 +79,21 @@ func TestConfigTxnCommit_ConcurrentCommitDuringApply_NoClobber(t *testing.T) {
 		v2, err2 = mgr.Commit(ctx, txn2.ID)
 	}()
 
-	close(releaseApply) // let txn1's apply fail and roll back to v7
+	close(releaseApply) // let txn1's apply fail and restore the previous content at v9
 	wg.Wait()
 
-	// txn1 rolled back to the previous good version.
+	// txn1 restored the previous good content under a fresh version.
 	assert.ErrorIs(t, err1, errConfigRolledBack)
 	assert.ErrorIs(t, err1, firstApplyErr)
-	assert.Equal(t, 7, v1, "txn1 reports the restored (previous) version")
+	assert.Equal(t, 9, v1, "txn1 reports the compensating write's version")
 
 	// txn2 must NOT have silently committed on top of the rolled-back txn1; its
-	// stale base (8) no longer matches disk (7), so it conflicts and writes
+	// stale base (8) no longer matches disk (9), so it conflicts and writes
 	// nothing.
 	assert.ErrorIs(t, err2, errVersionConflict)
 	assert.Equal(t, 0, v2)
 
 	onDisk, err := store.Load(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 7, onDisk.Version, "disk must remain at the rolled-back previous version, not a clobbered newer one")
+	assert.Equal(t, 9, onDisk.Version, "disk must retain the compensating write, not a clobbered newer config")
 }

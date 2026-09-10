@@ -209,6 +209,8 @@ type FakeSession struct {
 	mu                      sync.Mutex
 	Started                 bool
 	Closed                  bool
+	startCount              int
+	closeCount              int
 	Plans                   []connectivity.SessionPlan
 	events                  chan ports.SessionEvent
 	closeOnce               sync.Once
@@ -228,6 +230,14 @@ func (s *FakeSession) SetIngressQuiescenceWaiter(waiter func(context.Context) er
 	s.mu.Unlock()
 }
 
+// HasIngressQuiescenceWaiter reports whether the runtime installed the
+// settlement barrier a stateful session consults before recycling a connection.
+func (s *FakeSession) HasIngressQuiescenceWaiter() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.IngressQuiescenceWaiter != nil
+}
+
 func (s *FakeSession) WaitIngressQuiescent(ctx context.Context) error {
 	s.mu.Lock()
 	waiter := s.IngressQuiescenceWaiter
@@ -242,7 +252,24 @@ func (s *FakeSession) Start(_ context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Started = true
+	s.startCount++
 	return s.StartErr
+}
+
+// StartCount reports how many times Start was called: every session manager
+// starts the session it runs, so two managers on one session show up here.
+func (s *FakeSession) StartCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startCount
+}
+
+// CloseCount reports how many times Close was called, so a test can tell a
+// session closed by its manager from one the runtime swept a second time.
+func (s *FakeSession) CloseCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closeCount
 }
 
 func (s *FakeSession) Reconcile(_ context.Context, plan connectivity.SessionPlan) error {
@@ -264,6 +291,7 @@ func (s *FakeSession) Close(_ context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Closed = true
+	s.closeCount++
 	s.closeOnce.Do(func() { close(s.events) })
 	return s.CloseErr
 }
@@ -274,6 +302,13 @@ func (s *FakeSession) PushEvent(ev ports.SessionEvent) {
 
 // IsClosed reports whether Close has been called, under the fake's lock so
 // callers can assert from any goroutine without racing Close.
+// ReconciledPlans returns a copy of every plan Reconcile received.
+func (s *FakeSession) ReconciledPlans() []connectivity.SessionPlan {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]connectivity.SessionPlan(nil), s.Plans...)
+}
+
 func (s *FakeSession) IsClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -542,7 +577,7 @@ func (s *FakeOutboxStore) Complete(ctx context.Context, recordIDs []string, toke
 }
 
 // Release implements the optional ports.OutboxReleaser capability so the
-// fake exercises the drainer's A4 transient-failure fast path. Fencing is
+// fake exercises the drainer's transient-failure fast path. Fencing is
 // owner+version+status, identical to the real memory/SQLite stores: a
 // record is returned to pending only when it is currently claimed by
 // token.Owner at token.Version; any mismatch yields ErrStaleFencingToken.
@@ -565,13 +600,13 @@ func (s *FakeOutboxStore) Release(_ context.Context, recordIDs []string, token p
 	return nil
 }
 
-func (s *FakeOutboxStore) Expire(_ context.Context, before time.Time, partition string) (int, error) {
+func (s *FakeOutboxStore) Expire(_ context.Context, before time.Time, partition string, _ persistence.LeaseToken) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	count := 0
 	for _, rec := range s.records {
-		// Partition-scoped (M1): mirror the production stores so a sweep only
+		// Partition-scoped: mirror the production stores so a sweep only
 		// touches records in the supplied partition.
 		if persistence.OutboxPartitionKey(rec.SessionID(), rec.BindingID()) != partition {
 			continue

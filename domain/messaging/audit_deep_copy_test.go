@@ -9,8 +9,7 @@ import (
 // ═══════════════════════════════════════════════════════════════════
 // Envelope Deep Copy Audit Tests
 //
-// Validates deepCopyValue completeness for typed map/slice types
-// identified by SEC-007, GO-011, QA-003:
+// Validates deepCopyValue completeness for typed map/slice types:
 //   - map[string]string not handled → shared backing map
 //   - []int not handled → shared backing array
 //   - []float64 not handled → shared backing array

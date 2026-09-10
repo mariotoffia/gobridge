@@ -58,7 +58,7 @@ func newCaptureStore(c *captureClient) *Store {
 	return &Store{client: c, tableName: "leases-test", clk: clock.System}
 }
 
-// Regression for J1: fencing-counter rows must never carry a TTL
+// Regression: fencing-counter rows must never carry a TTL
 // attribute, otherwise DynamoDB TTL deletion of a released lease resets
 // the version counter to 1 and breaks fencing-token monotonicity.
 func TestLeaseWrites_CarryNoTTLAttribute(t *testing.T) {
@@ -213,7 +213,7 @@ func staleLeaseRow(owner string, version int, ttlEpoch int64) map[string]ddbtype
 	}
 }
 
-// MF-1 true-regression: a lease row carrying a stale legacy `ttl` (as an old
+// true-regression: a lease row carrying a stale legacy `ttl` (as an old
 // build stamped) must have that attribute STRIPPED the first time the new
 // code mutates it. Without `REMOVE #ttl` a TTL reaper would delete the
 // actively-held row and reset its fencing version to 1.

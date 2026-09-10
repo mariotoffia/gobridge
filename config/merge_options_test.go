@@ -169,3 +169,70 @@ func TestDefaultMerge_HTTPTLSFields(t *testing.T) {
 	assert.Equal(t, "/etc/cert.pem", merged.HTTP.TLSCertFile)
 	assert.Equal(t, "/etc/key.pem", merged.HTTP.TLSKeyFile)
 }
+
+// A receiver's subscription list is replaced wholesale by an overlay — that is
+// how a topic is removed — but a topic that SURVIVES the change keeps the typed
+// options it already carried. They live only in the typed Config, which the wire
+// form drops, so taking the overlay entry verbatim would persist a document with
+// the survivor's options erased for good. This is the CRITICAL config-corruption
+// class, one level deeper than the receiver itself.
+func TestDefaultMerge_TopicListPatchPreservesSurvivingSubscriptionOptions(t *testing.T) {
+	base := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "b1"}}
+	kept := ports.SubscriptionDef{Topic: "kept", QoS: 1}
+	kept.SetDecoded(fakePluginConfig{kind: "mqtt"}, fakeRawConfig(map[string]any{"no_local": true}))
+	dropped := ports.SubscriptionDef{Topic: "dropped"}
+	dropped.SetDecoded(fakePluginConfig{kind: "mqtt"}, nil)
+	baseRx := ports.ReceiverDef{ID: "rx-1", Transport: "mqtt", Topics: []ports.SubscriptionDef{kept, dropped}}
+	baseRx.SetDecoded(fakePluginConfig{kind: "mqtt"}, nil)
+	base.Receivers = []ports.ReceiverDef{baseRx}
+
+	// The overlay an operator can express through the admin API: the topic list
+	// they want, with no options on any entry.
+	overlay := &ports.BridgeConfig{
+		Receivers: []ports.ReceiverDef{{
+			ID:     "rx-1",
+			Topics: []ports.SubscriptionDef{{Topic: "kept"}, {Topic: "added"}},
+		}},
+	}
+
+	merged, err := DefaultMerge(base, overlay)
+	require.NoError(t, err)
+	require.Len(t, merged.Receivers, 1)
+	topics := merged.Receivers[0].Topics
+	require.Len(t, topics, 2, "the overlay decides WHICH topics the receiver subscribes to")
+
+	assert.Equal(t, "kept", topics[0].Topic)
+	require.NotNil(t, topics[0].Config, "a surviving topic keeps its typed options")
+	assert.Equal(t, "mqtt", topics[0].Config.Kind())
+	require.NotNil(t, topics[0].Raw(), "a surviving topic keeps its raw options")
+	assert.Equal(t, 1, topics[0].QoS, "an omitted qos means 'leave it alone', not 'downgrade to 0'")
+
+	assert.Equal(t, "added", topics[1].Topic)
+	assert.Nil(t, topics[1].Config, "a topic the base never had has nothing to carry forward")
+}
+
+// The overlay still WINS where it says something: a topic it re-declares with
+// its own qos takes that qos, and a topic the overlay omits is gone.
+func TestDefaultMerge_TopicListPatchIsAuthoritative(t *testing.T) {
+	base := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "b1"}}
+	kept := ports.SubscriptionDef{Topic: "kept", QoS: 1}
+	kept.SetDecoded(fakePluginConfig{kind: "mqtt"}, nil)
+	baseRx := ports.ReceiverDef{ID: "rx-1", Transport: "mqtt", Topics: []ports.SubscriptionDef{
+		kept, {Topic: "removed"},
+	}}
+	base.Receivers = []ports.ReceiverDef{baseRx}
+
+	overlay := &ports.BridgeConfig{
+		Receivers: []ports.ReceiverDef{{
+			ID:     "rx-1",
+			Topics: []ports.SubscriptionDef{{Topic: "kept", QoS: 2}},
+		}},
+	}
+
+	merged, err := DefaultMerge(base, overlay)
+	require.NoError(t, err)
+	topics := merged.Receivers[0].Topics
+	require.Len(t, topics, 1, "a topic the overlay omits is unsubscribed")
+	assert.Equal(t, "kept", topics[0].Topic)
+	assert.Equal(t, 2, topics[0].QoS, "an overlay that states a qos wins")
+}

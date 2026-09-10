@@ -23,8 +23,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/testutil/flocilocal"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
 
 // =========================================================================
@@ -172,7 +172,7 @@ func TestUC39_AckAfterOutboxPersist(t *testing.T) {
 
 	// Poll SQS-IN to detect when it becomes empty (all acked).
 	var sqsEmptyTime atomic.Int64
-	checkClient := sqslocal.Client(t)
+	checkClient := newSQSClient(t)
 	go func() {
 		for {
 			select {
@@ -342,9 +342,9 @@ func TestUC41_IdempotentOutbox_Persist(t *testing.T) {
 		pollTimeout = 120 * time.Second
 	)
 
-	sqsInClient := sqslocal.Client(t)
-	sqsInName := sqslocal.UniqueQueue("uc41-in")
-	sqsInURL := sqslocal.CreateQueueWithAttrs(t, sqsInClient, sqsInName,
+	sqsInClient := newSQSClient(t)
+	sqsInName := uniqueQueueName("uc41-in")
+	sqsInURL := createSQSQueueWithAttrs(t, sqsInClient, sqsInName,
 		map[string]string{"VisibilityTimeout": "3"})
 
 	sqsOutURL, sqsOutClient := setupSQSQueue(t, "uc41-out")
@@ -355,7 +355,7 @@ func TestUC41_IdempotentOutbox_Persist(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ep := sqslocal.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	sqsRx, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          sqsInURL,
 		Endpoint:          ep,

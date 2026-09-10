@@ -16,7 +16,7 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
 
-// TestFactoryPreflightSchemaValidation is the H3 regression: building a store
+// TestFactoryPreflightSchemaValidation is the regression: building a store
 // through the factory against a real DynamoDB table with the WRONG key schema
 // must FAIL the factory build with a precise shared.ErrInvalidConfig naming the
 // table, and building against a table with the CORRECT schema (provisioned by

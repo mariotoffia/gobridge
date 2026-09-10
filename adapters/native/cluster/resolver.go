@@ -14,7 +14,7 @@ import (
 // externally-reachable one; when that ambiguity is detected the resolver logs a
 // WARN (when a logger is configured via WithLogger) so operators can pin the
 // address with WithStaticHost. Reliable cross-platform default-route selection is
-// intentionally out of scope (finding F8). For testing, use WithStaticHost to
+// intentionally out of scope. For testing, use WithStaticHost to
 // override discovery.
 type NativeEndpointResolver struct {
 	staticHost string
@@ -73,7 +73,7 @@ func (r *NativeEndpointResolver) Resolve(ctx context.Context, listenAddr string)
 // for backward compatibility, but a WARN is emitted because it may not be the
 // externally-reachable interface — operators should pin the address with
 // WithStaticHost. Reliable cross-platform default-route detection is out of
-// scope (finding F8).
+// scope.
 func (r *NativeEndpointResolver) discoverHost(ctx context.Context) (string, error) {
 	// Guard a zero-value resolver constructed without NewNativeEndpointResolver
 	// (same-package only). Read into a local — never mutate the field — so a

@@ -14,7 +14,7 @@ import (
 // built ConnectionManager on a failed/abandoned Start path. These teardowns
 // previously used context.Background(), so a disconnect could block forever if
 // the SDK ignored cancellation of its already-cancelled connection-manager root
-// (MQTT-RES-3). The bound is ReconnectTimeout (a single network op), falling back
+// The bound is ReconnectTimeout (a single network op), falling back
 // to ConnectTimeout and then the default. The caller MUST invoke the returned
 // cancel.
 func (s *Session) discardDisconnectContext() (context.Context, context.CancelFunc) {
@@ -34,7 +34,7 @@ func (s *Session) discardDisconnectContext() (context.Context, context.CancelFun
 // pointer; port-side code MUST NOT call it. It is retained solely for
 // tests that need to reach the raw CM; production egress now publishes
 // through the SDK-free pahoConnection.PublishEnvelope seam via
-// Session.connection() (F-2), so the Sender no longer depends on it.
+// Session.connection(), so the Sender no longer depends on it.
 // Tests that swap in a stub assign Session.cm directly with a
 // pahoConnection (typically a *pahoConn wrapping a sentinel
 // autopaho.ConnectionManager).
@@ -65,13 +65,13 @@ func (s *Session) ConnectionManager() *autopaho.ConnectionManager {
 //
 // Two protocol hazards ARE handled here:
 //
-//   - Short SUBACK (c4-short-suback): a broker that returns FEWER reason
+//   - Short SUBACK: a broker that returns FEWER reason
 //     codes than requested subscriptions leaves the tail topics
 //     unconfirmed. Those topics have no broker proof of subscription, so
 //     they are treated as a FAILURE (not silently assumed accepted) —
 //     otherwise the health would report Full while a subscription was
 //     never established and silently never delivers.
-//   - Granted QoS (c4-qos-downgrade): a success reason code (0x00/0x01/
+//   - Granted QoS: a success reason code (0x00/0x01/
 //     0x02) IS the QoS the broker granted, which may be LOWER than the
 //     requested QoS. The succeeded spec carries the GRANTED QoS so the caller
 //     can retain broker-observed state for cleanup while keeping that topic out
@@ -84,7 +84,7 @@ func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
 		if i >= len(reasons) {
 			// Short SUBACK: no reason code for this topic ⇒ no broker
 			// confirmation. Treat it as a failure rather than assuming
-			// acceptance (c4-short-suback); do NOT mark it active.
+			// acceptance; do NOT mark it active.
 			if firstErr == nil {
 				firstErr = shared.ErrProtocolError.WithMessage(
 					"mqtt: SUBACK returned fewer reason codes than requested subscriptions")
@@ -174,7 +174,7 @@ func (s *Session) Start(ctx context.Context) error {
 	s.connectionUpErr = nil
 	connectionUpDone := s.connectionUpDone
 	if s.eventsClosed {
-		// F-1: a prior Reload-failure closed s.events to signal terminal
+		// a prior Reload-failure closed s.events to signal terminal
 		// death and trigger this supervisor re-Start. Re-materialise a
 		// fresh events channel (same capacity) BEFORE dialing so the
 		// reconnect's SessionConnected/SessionReconnecting events land in

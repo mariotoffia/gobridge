@@ -7,15 +7,17 @@ loss tolerance.**
 ## Running
 
 ```bash
-# Requires Docker for ElasticMQ, Mosquitto, DynamoDB Local
+# Requires Docker for Floci, Mosquitto, DynamoDB Local
 make test-long-running
 
 # Single test
-go test -race -timeout 1200s -v -tags=longrunning -run TestUC1 ./tests/longrunning/...
+go test -race -timeout 1200s -v -tags=longrunning -run TestUC1./tests/longrunning/...
 
-# With environment overrides (skip container auto-start)
+# With environment overrides (skip container auto-start).
+# Note: tests that call withFreshInfra force a fresh container per test and
+# ignore these, so the overrides apply only to tests that do not.
 DYNAMODB_ENDPOINT=http://127.0.0.1:8000 \
-SQS_ENDPOINT=http://127.0.0.1:9324 \
+FLOCI_ENDPOINT=http://127.0.0.1:4566 \
 MQTT_BROKER_URL=tcp://127.0.0.1:1883 \
   go test -race -timeout 1200s -v -tags=longrunning ./tests/longrunning/...
 ```
@@ -56,20 +58,20 @@ This prevents the broker from dropping messages under load.
 tests/longrunning/
   longrunning_test.go            # TestMain + shared helpers (SQS/MQTT/DDB setup)
   longrunning_helpers_test.go    # Reusable processors and wrapper senders
-  uc1_sqs_mqtt_sqs_test.go       # UC1:  Clustered SQS -> MQTT -> SQS
-  uc2_mqtt_fanout_sqs_test.go    # UC2:  Content-routed fan-out
-  uc3_cluster_failover_test.go   # UC3:  3-instance cascading failover
-  uc4_bidirectional_test.go      # UC4:  Bidirectional SQS <-> MQTT
-  uc5_pipeline_chain_test.go     # UC5:  4-stage pipeline chain
-  uc6_burst_backpressure_test.go # UC6:  Burst + poison -> DLQ
-  uc7_transport_combos_test.go   # UC7-11: Transport combinations
-  uc12_cluster_lease_test.go     # UC12-16: Cluster & lease coordination
-  uc17_message_shape_test.go     # UC17-21: Message size & shape
+  uc1_sqs_mqtt_sqs_test.go # UC1: Clustered SQS -> MQTT -> SQS
+  uc2_mqtt_fanout_sqs_test.go # UC2: Content-routed fan-out
+  uc3_cluster_failover_test.go # UC3: 3-instance cascading failover
+  uc4_bidirectional_test.go # UC4: Bidirectional SQS <-> MQTT
+  uc5_pipeline_chain_test.go # UC5: 4-stage pipeline chain
+  uc6_burst_backpressure_test.go # UC6: Burst + poison -> DLQ
+  uc7_transport_combos_test.go # UC7-11: Transport combinations
+  uc12_cluster_lease_test.go # UC12-16: Cluster & lease coordination
+  uc17_message_shape_test.go # UC17-21: Message size & shape
   uc22_routing_filtering_test.go # UC22-26: Routing & filtering
-  uc27_failure_recovery_test.go  # UC27-29: Failure & recovery (part A)
+  uc27_failure_recovery_test.go # UC27-29: Failure & recovery (part A)
   uc27_failure_recovery_b_test.go# UC30-32: Failure & recovery (part B)
-  uc33_backpressure_test.go      # UC33-37: Backpressure & concurrency
-  uc38_outbox_modes_test.go      # UC38-41: Outbox delivery modes
+  uc33_backpressure_test.go # UC33-37: Backpressure & concurrency
+  uc38_outbox_modes_test.go # UC38-41: Outbox delivery modes
 ```
 
 ---
@@ -78,12 +80,12 @@ tests/longrunning/
 
 | Test | Description | Volume | Key Assertion |
 |------|-------------|--------|---------------|
-| UC1 | Clustered SQS->MQTT->SQS (5 bridges) | 5,000 | Each output queue gets 5,000. No dupes. |
+| UC1 | Clustered SQS->MQTT->SQS (5 bridges) | 1,000 | Each output queue gets 1,000. No dupes. |
 | UC7 | SQS FIFO ordering through MQTT | 3,000 | 3,000 in SQS-OUT. Soft per-group ordering. |
 | UC8 | Multi-protocol fan-out (2 MQTT + 1 SQS) | 2,000 | All 3 targets get 2,000. |
 | UC9 | MQTT QoS 2 stress | 5,000 | 5,000 unique. Zero duplicates. |
 | UC10 | HTTP Inject API to MQTT | 1,000 | 1,000 with stage_inject header. |
-| UC11 | SQS to SQS direct (no MQTT) | 5,000 | 5,000 in SQS-OUT. |
+| UC11 | SQS to SQS direct (no MQTT) | 3,000 | 3,000 in SQS-OUT. |
 
 ---
 
@@ -99,6 +101,22 @@ tests/longrunning/
 | UC16 | Multi-session cluster (2 independent leases) | 2,000 | Alpha=1,000, Beta=1,000. No cross-contamination. |
 
 ---
+
+### The release gate
+
+`make test-release-gate` runs only the proofs a release is gated on, named test
+by test in `RELEASE_LONGRUNNING_TESTS`, plus the finite-cgroup memory proof.
+Two of them exist for that gate specifically:
+
+| Test | What it gates | Exercised |
+|------|---------------|-----------|
+| `TestUC3PublishedProfileFailover` | The failover objective on the lease profile operators deploy (`session.HAConfig`, 45 s TTL), not on compressed timing | Real SIGKILL of the owner OS process; ceiling 90 s to `ServiceLevelFull`; fencing version must strictly advance |
+| `TestGAP_ReleaseVolumeConservation` | Message conservation and duplicate accounting at a volume derived from the receive window rather than a round number | Receive window (192) x 25 refills = 4,800 messages, with a broker restart mid-stream |
+
+Delivery is at-least-once, so the conservation proof REPORTS duplicates rather
+than forbidding them: a proof that forbade them would assert a guarantee this
+bridge does not make, and one that ignored them would hide a redelivery storm
+behind a green tick.
 
 ## C. Message Size & Shape (UC17-UC21)
 
@@ -117,7 +135,7 @@ tests/longrunning/
 | Test | Description | Volume | Key Assertion |
 |------|-------------|--------|---------------|
 | UC2 | MQTT content-routed fan-out to 3 SQS | 3,000 | 1,000 per factory queue. |
-| UC22 | 10-rule MatchRule routing | 5,000 | 500 per rule, all accounted. |
+| UC22 | 10-rule MatchRule routing | 1,000 | 100 per rule, all accounted. |
 | UC23 | Subject prefix routing (3 prefixes) | 3,000 | Correct routing per prefix. |
 | UC24 | Dynamic address templates ({tenant}/{region}) | 3,000 | 1,000 per combo delivered correctly. |
 | UC25 | Filter processor (90% drop) | 10,000 | 1,000 passed + 9,000 DLQ = 10,000. |
@@ -190,7 +208,7 @@ Tests use per-test `mqttlocal.BrokerInstance` containers with custom configs.
 | UC52 | Visibility timeout expiry (no auto-extend) | 50 | unique >= 50, total > 50 (duplicates). |
 | UC53 | Auto-extend under sustained load | 200 | unique >= 200, fewer duplicates than UC52. |
 | UC54 | FIFO deduplication window | 500+500 | Collector = exactly 500. |
-| UC55 | FIFO ordering preservation (5 groups) | 1,000 | Per-group monotonically increasing. |
+| UC55 | FIFO ordering preservation (5 groups) | 200 | Per-group monotonically increasing. |
 | UC56 | Batch mixed success/failure | 1,000 | 800 delivered + 200 DLQ = 1,000. |
 
 ---
@@ -201,10 +219,10 @@ Tests use per-test `mqttlocal.BrokerInstance` containers with custom configs.
 |------|-------------|--------|---------------|
 | UC57 | Stale claim recovery after crash | 1,000 | Bridge-B recovers all. DLQ empty. |
 | UC58 | Double-drain prevention (fencing) | 2,000 | >= 2,000 unique. Only 1 active at each sample. |
-| UC59 | Partition hotspot (single partition) | 5,000 | All delivered. Throughput logged. |
+| UC59 | Partition hotspot (single partition) | 3,000 | All delivered. Throughput logged. |
 | UC60 | Outbox + broker down (AckAfterOutboxPersist) | 2,000 | SQS-IN empty. Collector = 2,000 after restart. |
 | UC61 | MaxReplayAttempts with intermittent failures | 500 | All delivered (sender fails first 3, succeeds 4th). |
-| UC62 | Lease renewal under high load | 10,000 | All delivered. DLQ empty. |
+| UC62 | Lease renewal under high load | 3,000 | All delivered. DLQ empty. |
 
 ---
 
@@ -213,11 +231,11 @@ Tests use per-test `mqttlocal.BrokerInstance` containers with custom configs.
 | Test | Description | Volume | Key Assertion |
 |------|-------------|--------|---------------|
 | UC63 | Memory stability | 10,000 | Final heap < 2× initial. Max < 500MB. |
-| UC64 | Latency percentiles | 10,000 | P50 < 500ms, P95 < 2s, P99 < 5s. |
+| UC64 | Latency percentiles | 10,000 | < 500ms, < 2s, < 5s. |
 | UC65 | Throughput ceiling (4 batches) | 6,500 | All delivered. Max msgs/sec logged. |
 | UC66 | Multi-tenant isolation (10 tenants) | 5,000 | Tenants 1-9 < 30s each. Tenant 0 < 120s. |
 | UC67 | Concurrent Reconcile during flow | 3,000 | >= 3,000 unique. No races. |
-| UC68 | 5-minute soak (100 msgs/sec) | ~30,000 | >= 95% delivered. Heap < 2×. Goroutines stable. |
+| UC68 | Soak (100 msgs/sec; 5 min default, 60 min via `make test-soak`) | ~30,000 short / ~360,000 published | >= 95% delivered. Heap < 2×. Goroutines stable. |
 
 ---
 
@@ -241,7 +259,6 @@ Tests use per-test `mqttlocal.BrokerInstance` containers with custom configs.
 | UC75 | Wildcard subscription overlap | 500 | Documents dedup vs double-delivery. |
 | UC76 | MQTT QoS 0 fire-and-forget | 5,000 | No bridge errors. Collector > 0. Loss % logged. |
 | UC77 | QoS 2 under broker restart | 1,000 | >= 1,000 unique. Zero duplicates. |
-| UC78 | HTTP/SSE client disconnect | — | SKIP (needs HTTP factory infrastructure). |
 | UC79 | SQS FIFO multi-group concurrent | 1,000 | Per-group ordering preserved. |
 
 ---
@@ -282,7 +299,7 @@ Defined in `longrunning_perf_helpers_test.go`:
 
 | Type | Kind | Purpose |
 |------|------|---------|
-| `latencyRecorder` | processor | Records per-message latency, provides P50/P95/P99 |
+| `latencyRecorder` | processor | Records per-message latency, provides |
 | `heapSampler` | sampler | Background goroutine sampling runtime.ReadMemStats |
 | `tenantSlowProcessor` | processor | Adds delay for a specific tenant (by header) |
 

@@ -21,15 +21,38 @@ Routes define the message flow from a receiver through processors to bindings.
 | `resolver` | object | no | -- | Content-based binding resolver (see [Resolver](#routesresolver----content-based-resolver)) |
 | `session` | object | no | -- | Route session management (for exclusive sessions) |
 
-**Delivery modes:**
+### Delivery modes
+
+`direct_hold` settles the source only once the destination has accepted, so its
+precondition is that the source **redelivers a message it was never told to
+settle** -- that is what makes the crash window between the send and the settle
+recoverable. Sources that provide it: SQS, Azure Service Bus in PeekLock, AMQP
+0-9-1, AMQP 1.0, and MQTT on a route whose session survives the process and whose
+subscriptions are QoS 1 or 2 (see
+[capabilities](transport-configuration.md#transport-capabilities-matrix)). An HTTP ingress is
+admitted on the other argument -- the caller is still holding the request, so
+nothing has been settled and the retry is theirs. A route the runtime turns down
+is named at config load with the precondition it failed.
+
+An MQTT route that meets it needs no outbox, no lease and no outbox partition; it
+holds the broker delivery instead of copying it into a store. Reaching for
+`shared_outbox` there adds a second durable hop in series for the same crash
+window, and moves the durable copy out of the broker into a store the operator
+now has to run. The ingress session needs no `session` block and no binding
+naming it either: the receiver's own binding to the session is what connects it
+and reconciles its subscriptions, with no lease and no partition. What a durable
+session still needs is `stores.managed_subscriptions` -- the exact record of the
+filters it installed on the broker -- with its baseline seeded before the first
+start (see [MQTT durable sessions](transports/mqtt-durable-sessions.md#managed-subscription-history)).
+
 - **`direct_hold`** -- Source held open until egress completes. No inter-instance fencing; destinations must handle duplicates idempotently in clustered mode. When a `resolver` is configured, multiple bindings are allowed -- the resolver selects one per message. **Rejected at config load for a clustered exclusive route whose ingress is the HTTP transport:** a request forwarded to an owner that has just stepped down can be sent by the old owner while the new owner handles a retry (forwarded HTTP requests skip the ownership re-check, and `direct_hold` carries no fencing token at the sender boundary), a bounded duplicate-send window across failover. Use `shared_outbox` for that class. Non-clustered or non-HTTP-exclusive `direct_hold` routes are unaffected.
 - **`shared_outbox`** -- Source acknowledged after persisting to outbox. Outbox drainer delivers asynchronously. Requires `stores.outbox`.
 
-**Dispatch modes:**
+### Dispatch modes
 - **`single`** -- Send to first matching binding (or resolver-selected binding).
 - **`fan_out`** -- Send to all bindings.
 
-**Trusting bridge-to-bridge headers (`trust_bridge_headers`):**
+### Trusting bridge-to-bridge headers (`trust_bridge_headers`)
 
 By default every route strips all reserved `x-bridge.*` headers from an inbound
 delivery at ingress, so an external producer can never inject bridge metadata
@@ -54,11 +77,13 @@ it on a receiver reachable by untrusted producers would let them spoof
 |-------|------|----------|---------|-------------|
 | `max_in_flight` | int | no | 100 | Max concurrent messages in this route |
 | `ack_after` | string | no | `target_accept` | `target_accept` or `outbox_persist` |
-| `max_replay_attempts` | int | no | 5 | Max times a record may be claimed before it is eligible for poison (claims include deferrals/reclaims; poisoning also requires `poison_min_age`) |
+| `max_replay_attempts` | int | no | 5 | Max times a record may be claimed before it is eligible for poison (claims include deferrals/reclaims; poisoning also requires the wall-clock `replay_budget` to be spent) |
+| `replay_budget` | duration | no | `15m` | Wall-clock ceiling, measured from a record's FIRST attempt, on how long the outbox drainer keeps redelivering it. It is the **age** half of the poison gate and applies **AND**-ed with `max_replay_attempts`: a record is poisoned to the DLQ only once **both** the attempt count and this budget are spent, so raising one alone changes nothing. Negative is rejected at config load; `0` takes the default. |
 | `max_outbox_depth` | int | no | 10000 | Max pending outbox records before backpressure |
 | `on_expired` | string | no | `dlq` | `drop` or `dlq` |
 | `on_permanent_failure` | string | no | `dlq` | `drop` or `dlq` |
 | `on_filtered` | string | no | `drop` | `drop` or `dlq` |
+| `backoff` | object | no | -- | Retry backoff ladder for this route (see [Retry Backoff](#routespolicybackoff----retry-backoff)) |
 | `send_timeout` | duration | no | `30s` | Timeout for individual send operations |
 | `depth_cache_ttl` | duration | no | `1s` | How long outbox depth counts are cached |
 | `allow_unfenced` | bool | no | false | Allow direct_hold with shared consumer sources (risk: no fencing) |
@@ -81,9 +106,42 @@ the permanent-failure sink. The default changed in this release -- see the
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `initial_interval` | duration | no | `1s` | First retry delay |
-| `max_interval` | duration | no | `30s` | Maximum retry delay |
-| `multiplier` | float | no | 2.0 | Exponential backoff multiplier |
+| `initial_interval` | duration | no | `1s` | First retry delay. Must not be negative |
+| `max_interval` | duration | no | `30s` | Maximum retry delay. Must not be negative |
+| `multiplier` | float | no | 2.0 | Exponential backoff multiplier. Must be **>= 1**: a value below 1 shrinks each delay, so retries accelerate instead of backing off. `1` is a fixed retry interval |
+| `jitter` | float | no | `0.2` | Equal-jitter fraction in `[0,1]` applied to each computed delay: `delay = d*(1-jitter) + rand[0, d*jitter)`. De-correlates retries across replicas so a whole fleet does not re-attempt a failed target on the same tick. **Omitting the field takes the `0.2` default; an explicit `jitter: 0` opts out** and keeps the deterministic exponential delay |
+
+Every field above is checked before a config change is written, so a bad retry
+policy is refused at the point you submit it rather than failing later, at the
+next apply or restart.
+
+#### What counts as a retry attempt
+
+Two separate things are counted, and only some events count towards either.
+
+**The attempt number that drives the backoff ladder** is the source transport's
+own redelivery count when the transport supplies one (SQS, Azure Service Bus,
+AMQP 1.0), and the bridge's own per-message attempt count when it does not
+(MQTT, AMQP 0-9-1, HTTP). Both climb on each redelivery, so the delay grows for
+every source. A source with no redelivery counter is no longer stuck retrying at
+`initial_interval` forever.
+
+**The replay budget** -- the count `max_replay_attempts` compares against -- is
+spent only by a failure of the MESSAGE itself: a refused send, a failing
+processor, a destination that cannot be resolved. It is deliberately NOT spent
+by:
+
+| Event | Why it does not count |
+|---|---|
+| The outbox partition is at capacity, or its depth query failed | The message queued behind a slow drainer. It was never attempted, so it must not arrive at the cap already exhausted and be poisoned on its first real failure |
+| The outbox write exceeded the store-operation deadline | The store was slow. The same message is written the moment it recovers |
+| The DLQ store refused the record | The DLQ backend is unhealthy. The message is redelivered so the evidence can be written, but the message did not fail again |
+| The bridge cancelled the delivery -- shutdown, a reconfiguration swap, a route restart, including a panic that happened while it was being torn down | The bridge stopped its own work. Nothing was learned about the message |
+
+A cancelled delivery is left **unsettled**: it is never acknowledged, dropped or
+written to the DLQ, so the source redelivers it after the restart. This holds
+even under `on_permanent_failure: drop`, and it is the reason a rolling restart
+does not discard in-flight messages.
 
 ### `routes[].session` -- Route Session Management
 
@@ -105,8 +163,9 @@ For routes targeting exclusive sessions. Manages lease acquisition and outbox dr
 | `drain_strategy` | object | no | -- | Advanced drain polling strategy |
 | `connect_after_lease` | bool | no | `true` | Defer the source transport connect until this instance wins the lease. Omitted resolves to `true` -- the safe default for the exclusive single-owner session a route source always is, since it stops a booting standby from resuming a broker-persisted subscription and consuming without the lease. Set `false` to opt out. |
 | `renew_call_timeout` | duration | no | derived | Bounds a single lease-renew store call, so a hung backend cannot stretch step-down and takeover unboundedly. Folded into the failover-safety invariant below. Empty derives `min(renew_interval/2, 5s)` (floor 1s). |
-| `acquire_poll_interval` | duration | no | derived | How often a standby retries acquiring the lease while another instance owns it. Empty derives `min(renew_interval, lease_ttl/4, 5s)` (floor 1ms). Declared SLO validation budgets two independent `max(1ms, ceil(1.25 × interval))` boundaries for positive jitter. |
-| `failover_slo` | duration | no | undeclared | Optional failure-detection-to-`ServiceLevelFull` objective. Must be positive when present. If timing capability or any budget term is unknown, startup fails closed. |
+| `acquire_poll_interval` | duration | no | derived | How often a standby retries acquiring the lease while another instance owns it. Empty derives `min(renew_interval, lease_ttl/4, 5s)`. Rejected below the `250ms` cadence floor. Declared SLO validation budgets two independent `max(1ms, ceil(1.25 × interval))` boundaries for positive jitter. |
+| `broker_health_step_down` | duration or `off` | cond. | undeclared | How long an active owner may stay non-converged on its broker path (disconnected, or connected but not re-subscribed) before it releases the lease so a healthy standby takes over. `off` is the explicit decision not to fail over on a node-local broker outage. **Required when `failover_slo` is declared** -- omitted, the objective would silently exclude that failure mode. See [Failover budget](failover-budget.md#the-broker-path-decision). |
+| `failover_slo` | duration | no | undeclared | Optional failure-detection-to-`ServiceLevelFull` objective, admitted against **both** failure modes. Must be positive when present. If timing capability or any budget term is unknown, startup fails closed. |
 | `startup_allowance` | duration | no | `0s` | Explicit nonnegative process-start allowance added to a declared failover budget. Maximum `10m`. |
 
 When `renew_interval` is set explicitly, cross-field validation requires
@@ -116,36 +175,48 @@ guard). The per-call `renew_call_timeout` is part of the span because the renew
 loop resets its timer only **after** each renew call returns, so a hung backend
 that burns the full timeout on every attempt widens the real detection window.
 When `renew_interval` is left empty the interval, jitter, and call timeout are
-all derived and this check is skipped.
+all derived and this cross-field check is skipped -- the derived values satisfy
+it by construction.
+
+**Resolved-cadence rules.** Blueprint validation additionally resolves the
+cadence exactly as the session manager does -- through the same domain code, so
+the rejection lands at commit rather than after the durable write -- defaults, derivation, then the expiry-margin
+clamp -- and rejects an exclusive session on either of two grounds.
+
+*The clamp had to cut the renew interval or the per-call timeout.* This is what
+guards the **derived** path, which the cross-field check above cannot see because
+that check only runs on a pinned `renew_interval`. A large `max_renew_fails`
+against a modest `lease_ttl` leaves no per-attempt budget: `lease_ttl: 5s` with
+`max_renew_fails: 5`, or `lease_ttl: 45s` with `max_renew_fails: 50`, both
+collapse to a 1ms renew interval and a 1ms standby poll. The owner then renews
+back to back while every standby issues a full claim round per millisecond; the
+store throttles, and those throttling errors are counted as transient renew
+failures -- a self-inflicted overload that ends in an ownership change. Lower
+`max_renew_fails`, raise `lease_ttl`, or pin a shorter `renew_interval`. A clamp
+that only sheds `lease_renew_jitter` is **not** rejected: jitter exists to spread
+renewal load, the clamp trims it first by design, and what remains is a healthy
+cadence (the session manager logs a warning).
+
+*The resolved `renew_interval` or `acquire_poll_interval` is below `250ms`.* In
+practice this binds on explicitly pinned values -- a derived cadence that is
+below the floor has always been clamped first, so the rule above catches it. The
+floor is the cadence below which the lease store, not the timing model, decides
+ownership.
 
 **Declared failover budget.** When `failover_slo` is present, preflight requires
-`lease_ttl + 2 × max(1ms, ceil(1.25 × acquire_poll_interval)) +
-(1 + ceil(lease_ttl / min_jittered_poll)) × renew_call_timeout + complete
-post-takeover transport activation + startup_allowance <= failover_slo` using
-checked duration arithmetic. The exact boundary passes. Validation runs before
-stores and transports are opened. It is necessary admission control, not evidence
-of an achieved SLO; publish claims only after warm and cold measurements in the
-target deployment. The transport activation capability is one aggregate bound;
-connect, cleanup/replay, recycle/reconnect, grace, and final reconcile phases are
-not added separately. `session.HAConfig` is a lease-renewal cadence, not an
-end-to-end preset.
+that BOTH failure modes fit it -- owner death, anchored on `lease_ttl`, and a
+node-local broker-path outage, anchored on `broker_health_step_down` -- using
+checked duration arithmetic, before stores and transports are opened. The exact
+boundary passes. Shared session IDs are first-wins at runtime, so preflight
+canonicalizes every route/binding manager input per session and rejects any
+divergence, which makes route order irrelevant.
 
-Shared session IDs are first-wins at runtime, so preflight canonicalizes every
-route/binding manager input per session and rejects any divergence in lease
-cadence, SLO, startup, or transport activation before resources are opened. This
-makes route order irrelevant.
+A session that declares NO `failover_slo` still gets its computed budget logged
+at every build, so the number is on record before an incident.
 
-The first poll establishes the post-response monotonic baseline. A later poll
-quantizes threshold crossing and immediately attempts takeover, so both jittered
-poll boundaries are budgeted. Call latency after each successful observation CAS is excluded from persisted
-elapsed, and the manager waits only after each Acquire call. The budget therefore
-counts the baseline call plus every possible observation round at
-`min_jittered_poll = max(1ms, poll - (poll/2)/2)`: call count is
-`1 + ceil(lease_ttl / min_jittered_poll)`. Each complete Acquire shares one
-`renew_call_timeout` across its internal Dynamo operations. A successful CAS
-winner proceeds to takeover in that same threshold attempt; a losing observer
-retries without double-counting. Backend
-failure or unresolved contention belongs to measured error-budget evidence.
+Both formulas, both shipped lease profiles evaluated at their defaults, and what
+to measure before making a latency claim: [Failover budget](failover-budget.md).
+`session.HAConfig` is a lease-renewal cadence, not an end-to-end preset.
 
 ### `routes[].session.drain_strategy` -- Drain Polling Strategy
 
@@ -319,6 +390,18 @@ When using a `rules` resolver with `direct_hold` delivery mode, each binding may
 | `tls_cert_file` | string | no | -- | Path to the PEM server certificate (with any intermediate chain). Enables in-process TLS on both listeners when paired with `tls_key_file`. |
 | `tls_key_file` | string | no | -- | Path to the PEM private key for `tls_cert_file`. |
 
+> **Restart required.** The admin and monitor servers are bound once, when the
+> process starts, from the configuration it booted with. Changing
+> `admin_addr`, `monitor_addr`, `cors_origins`, `tls_cert_file` or
+> `tls_key_file` through a reload (file or admin config API) is accepted and
+> stored durably, but the running listeners keep their original settings until
+> the process is restarted. Adding an `http` block to a process that started
+> without one likewise creates no servers. The API keys are the exception --
+> a deployment that resolves them through a secret provider picks up a rotation
+> on the next request. Where the composition root can see the divergence it
+> reports it in the `restart_required` field of the `/deephealth`
+> `config_watch` projection.
+
 TLS is opt-in and both-or-none: when `tls_cert_file` and `tls_key_file` are both
 set, the admin and monitor servers serve HTTPS with that pair; when either is
 empty the servers stay plaintext (the historical default, assuming an external
@@ -353,150 +436,10 @@ graph LR
 
 Solid arrows are required references. Dashed arrows are optional. The validator rejects configs with broken references.
 
-## Delivery Hooks (Programmatic API)
+## Programmatic API
 
-Delivery hooks are registered programmatically via the builder or runtime options -- they are not configured in YAML. A hook observes message lifecycle events; it cannot modify the message or change the settlement outcome (the callbacks have no return value the runtime acts on). It is not free: hooks run **synchronously on the delivery goroutine**, so a slow or blocking hook directly adds delivery latency and can stall the route. A panic in `OnAttempt`/`OnSettled` is contained by an internal recover (counted on the delivery-panic metric with `reason=hook` and logged) so it never alters settlement or produces a duplicate -- but keep hooks fast and non-blocking rather than relying on that.
-
-### Registration
-
-```go
-hook := &myAuditHook{}
-
-rt, err := bridge.NewBuilder(cfg, bridge.WithLogger(logger)).
-    RegisterTransportFactory("mqtt", paho.NewFactory(logger)).
-    RegisterStoreFactory("memory", nativestore.NewMemoryStoreFactory()).
-    RegisterDeliveryHook(hook).
-    Build(ctx)
-```
-
-Or at the runtime level:
-
-```go
-rt := runtime.New(
-    runtime.WithDeliveryHook(hook),
-    // ... other options
-)
-```
-
-### Interface
-
-```go
-type DeliveryHook interface {
-    OnAttempt(ctx context.Context, evt DeliveryAttempt)
-    OnSettled(ctx context.Context, evt DeliveryOutcome)
-}
-```
-
-### When hooks fire
-
-| Event | Direction | When | Fields |
-|-------|-----------|------|--------|
-| `OnAttempt` | `ingress` | Every time a message is received from a source transport | `RouteID`, `Envelope`, `Attempt=1` |
-| `OnAttempt` | `egress` | Every send attempt (DirectHold) or drain attempt (SharedOutbox) | `RouteID`, `BindingID`, `Envelope`, `Attempt`, `MaxAttempts`, `Err` |
-| `OnSettled` | `egress` | Delivered successfully (DirectHold send or SharedOutbox drain) | `Err=nil`, `Terminal=true` |
-| `OnSettled` | `egress` | DirectHold send or SharedOutbox drain failed permanently -- DLQ/drop | `Err` set, `Terminal=true` |
-| `OnSettled` | `egress` | DirectHold send or SharedOutbox drain hit the replay cap (poison) -- DLQ/drop | `Err` set, `Terminal=true` |
-| `OnSettled` | `ingress` | Permanent processor/resolve failure -- DLQ/drop | `Err` set, `Terminal=true` |
-| `OnSettled` | `ingress` | Replay cap reached on the processor/resolve/outbox-build path (poison) -- DLQ/drop | `Err` set, `Terminal=true` |
-| `OnSettled` | `ingress` | Message filtered by a processor -- drop/DLQ | `Err=ErrMessageFiltered`, `Terminal=true` |
-| `OnSettled` | `ingress` | Message dropped (retry unsupported, no DLQ) | `Err` set, `Terminal=true` |
-| `OnSettled` | `ingress` | Message expired before send | `Err=ErrMessageExpired`, `Terminal=true` |
-
-Terminal `Direction` reflects where the message settled. Outcomes on the send path -- a successful send, or a DirectHold send or SharedOutbox drain that failed permanently or hit the replay cap -- are stamped `egress`. Outcomes that settle at the source boundary before or without a successful egress hop -- expired, filtered, a permanent processor/resolve error, a retry-unsupported drop, or a replay-cap poison on the processor/resolve/outbox-build path -- converge through the runtime's `settleTerminal` and are stamped `ingress`. Dashboards and audit rules that key on `Direction` must expect `ingress` for these, not `egress`.
-
-`OnAttempt` fires on **every** attempt including retries. `OnSettled` fires after the message reaches a terminal state — for the SharedOutbox path, after the terminal store transition Completes. A failed Complete re-claims the record and defers the hook to the successful retry, so `OnSettled` never double-fires; conversely a crash in the window between a durable Complete and the hook can skip it for that one record (the settlement itself stays durable). Treat it as **at-most-once per completed record**, not exactly once.
-
-### Event structs
-
-- `DeliveryAttempt.Attempt` -- 1-based attempt number. For DirectHold this is `receiveCount + 1`; for SharedOutbox this is `replayCount + 1`.
-- `DeliveryAttempt.MaxAttempts` -- from the route policy `max_replay_attempts`. Zero means unknown.
-- `DeliveryAttempt.Err` -- nil on successful attempt, non-nil on failure.
-- `DeliveryOutcome.Terminal` -- always `true` (distinguishes settled events from attempt events in shared logging code).
-
-### Thread safety
-
-Hook methods may be called concurrently from multiple delivery goroutines. Implementations must be safe for concurrent use. Hooks are called synchronously on the delivery goroutine -- a slow hook directly increases delivery latency.
-
-### Hooks vs Processors
-
-Hooks and processors serve different purposes:
-
-| Concern | Processor | Hook |
-|---------|-----------|------|
-| Can mutate the envelope | Yes | No |
-| Can short-circuit the pipeline | Yes | No |
-| Called per attempt or per message | Per message (before send) | Per attempt and on final outcome |
-| Registration | Config YAML (`processors:`) | Programmatic (`RegisterDeliveryHook`) |
-| Use case | Filtering, transformation, enrichment | Audit logging, observability, external notification |
-
-### Example: audit logging hook
-
-```go
-type auditHook struct {
-    logger *slog.Logger
-}
-
-func (h *auditHook) OnAttempt(ctx context.Context, evt ports.DeliveryAttempt) {
-    if evt.Direction == ports.DirectionEgress && evt.Err != nil {
-        h.logger.Warn("egress attempt failed",
-            "route", evt.RouteID,
-            "binding", evt.BindingID,
-            "envelope_id", evt.Envelope.ID,
-            "attempt", evt.Attempt,
-            "max_attempts", evt.MaxAttempts,
-            "error", evt.Err,
-        )
-    }
-}
-
-func (h *auditHook) OnSettled(ctx context.Context, evt ports.DeliveryOutcome) {
-    level := slog.LevelInfo
-    if evt.Err != nil {
-        level = slog.LevelError
-    }
-    h.logger.Log(ctx, level, "delivery settled",
-        "route", evt.RouteID,
-        "binding", evt.BindingID,
-        "envelope_id", evt.Envelope.ID,
-        "attempts", evt.Attempt,
-        "error", evt.Err,
-    )
-}
-```
-
-## Programmatic Builder & Lifecycle Notes
-
-These affect the Go composition root (`bridge.Builder` / `bridge.Supervisor`),
-not the YAML shape, but they change *when* and *how* config errors surface:
-
-- **Route validation runs at Build time.** `Builder.Build` runs the runtime's
-  static route validation (`Runtime.ValidateRoutes`) during construction --
-  while any previous runtime is still serving -- so a statically-rejectable
-  config fails at `Build(ctx)` rather than later at `Start`. `Start` re-runs the
-  same checks as a backstop. *(Breaking: errors that previously surfaced at
-  `Start` now surface at `Build`.)*
-- **Removed supervisor knobs.** `WithDefaultPerRecordDrainTimeout` and
-  `WithDefaultMaxDrainTimeout` were removed (they had no effect). The scaled
-  drain formula is configured through the blueprint's
-  `bridge.per_record_drain_timeout` / `bridge.max_drain_timeout` instead.
-- **Observability wiring.** Inject exporters via `bridge.WithMetrics`,
-  `bridge.WithTracer`, and `bridge.WithAuditLogger` on the `Builder` (or the
-  `WithSupervisor*` equivalents on the `Supervisor`, which forward to every
-  `Builder`/`Runtime` it creates). Without them a config-driven deployment runs
-  the no-op exporters and emits nothing.
-- **Supervisor health.** `Supervisor.Degraded() (bool, string)` reports whether
-  the last reconfiguration failed (with a reason) while the previous runtime
-  keeps serving; `Supervisor.Terminal() bool` reports an unrecoverable state.
-- **Outbox poison quarantine.** `runtime.WithOutboxPoisonMinAge` sets the minimum
-  wall-clock age a record must reach *before* replay-count exhaustion may poison
-  it to the DLQ, so a transient egress outage cannot burn the replay budget and
-  poison healthy records in seconds. Zero (default) lets each drainer fall back
-  to `max(5×send_timeout, 2m)`. This is a Go runtime option, not a YAML key.
-  Note that a record's replay count increments on every *claim* — including
-  batch-deadline deferrals and stale-claim reclaims where no send ever failed —
-  so `max_replay_attempts` counts claims, not failed sends, and replay
-  exhaustion alone is never sufficient to poison a record: the age gate is a hard
-  AND-condition.
+Delivery hooks, the programmatic builder and runtime lifecycle notes are in
+[Programmatic API](programmatic-api.md).
 
 ## Validation Rules Summary
 

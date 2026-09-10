@@ -21,12 +21,10 @@ import (
 )
 
 // newStack spins a throwaway App+Stack to host the construct scope
-// Phase 2 attaches Annotations to. jsii.Close on Cleanup keeps the
-// jsii subprocess from leaking across tests.
+// Phase 2 attaches Annotations to.
 func newStack(t *testing.T) awscdk.Stack {
 	t.Helper()
 	app := awscdk.NewApp(nil)
-	t.Cleanup(jsii.Close)
 	return awscdk.NewStack(app, jsii.String("TestStack"), nil)
 }
 

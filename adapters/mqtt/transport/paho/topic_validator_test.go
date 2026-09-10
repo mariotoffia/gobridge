@@ -8,7 +8,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────
 // MQTT topic validator tests — moved here from runtime/ as part of the
-// AP-005 promotion of address validation to a transport capability.
+// promotion of address validation to a transport capability.
 // The runtime no longer owns MQTT topic semantics; the paho factory
 // exposes the validator via NewAddressValidator() and the runtime
 // dispatches generically per binding.
@@ -81,7 +81,7 @@ func TestValidateMQTTTopicFilter(t *testing.T) {
 	}
 }
 
-// TestValidateMQTTTopic_EmptySegment pins A-13: empty topic levels are
+// TestValidateMQTTTopic_EmptySegment pins that empty topic levels are
 // spec-legal for a publish Topic Name (MQTT 5.0 §4.7.1.1 — only the whole
 // name must be non-empty) and must be accepted. Real devices emit "a//b" and
 // a mirror route re-publishing such a source topic must not DLQ it.
@@ -94,7 +94,7 @@ func TestValidateMQTTTopic_EmptySegment(t *testing.T) {
 	}
 }
 
-// TestValidateMQTTTopic_LeadingSlash pins A-13: a leading empty level
+// TestValidateMQTTTopic_LeadingSlash pins that a leading empty level
 // ("/devices/data") is a distinct, legal MQTT topic and must be accepted.
 func TestValidateMQTTTopic_LeadingSlash(t *testing.T) {
 	if err := ValidateMQTTTopic("/devices/data"); err != nil {
@@ -102,7 +102,7 @@ func TestValidateMQTTTopic_LeadingSlash(t *testing.T) {
 	}
 }
 
-// TestValidateMQTTTopic_TrailingSlash pins A-13: a trailing empty level
+// TestValidateMQTTTopic_TrailingSlash pins that a trailing empty level
 // ("devices/data/") is a distinct, legal MQTT topic and must be accepted.
 func TestValidateMQTTTopic_TrailingSlash(t *testing.T) {
 	if err := ValidateMQTTTopic("devices/data/"); err != nil {
@@ -131,17 +131,26 @@ func TestValidateMQTTTopic_ExactMaxLength(t *testing.T) {
 	}
 }
 
-// TestValidateMQTTTopic_DollarPrefix validates the $-prefix reserved
-// topic guard (MQTT v5 §4.7.2).
-func TestValidateMQTTTopic_DollarPrefix(t *testing.T) {
+// TestValidateMQTTTopic_DollarNamespaces pins which $-prefixed publish topics
+// are structurally rejected. MQTT v5 §4.7.2 reserves the $ prefix for the
+// SERVER to define; it does not make publishing to one a syntax error, and
+// real brokers define legal write namespaces there — AWS IoT's $aws/rules/…
+// republish target is the canonical one. Rejecting the whole prefix
+// terminalized those messages inside the bridge before the broker ever saw
+// them, so only $share/ — a filter-only construct that can never name a
+// publish destination — stays rejected. Everything else is the broker's
+// authorization decision, and its denial comes back as a PUBACK reason code.
+func TestValidateMQTTTopic_DollarNamespaces(t *testing.T) {
 	tests := []struct {
 		name    string
 		topic   string
 		wantErr bool
 	}{
-		{"$SYS prefix", "$SYS/broker/load", true},
+		{"aws iot rules republish", "$aws/rules/myrule", false},
+		{"aws iot shadow update", "$aws/things/sensor-1/shadow/update", false},
+		{"$SYS prefix", "$SYS/broker/load", false},
+		{"$ alone", "$", false},
 		{"$share prefix", "$share/group/topic", true},
-		{"$ alone", "$", true},
 		{"dollar mid-topic", "devices/$status", false},
 		{"normal topic", "devices/sensor/temp", false},
 	}
@@ -169,7 +178,7 @@ func TestValidateMQTTTopic_ExistingValidation(t *testing.T) {
 		{"wildcard +", "devices/+/temp", true},
 		{"wildcard #", "devices/#", true},
 		{"null byte", "devices/\x00/temp", true},
-		{"empty segment (A-13: spec-legal)", "devices//temp", false},
+		{"empty segment (spec-legal)", "devices//temp", false},
 		{"valid", "devices/sensor/temp", false},
 		{"single segment", "topic", false},
 	}

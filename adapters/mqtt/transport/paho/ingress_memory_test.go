@@ -177,7 +177,7 @@ func TestRouterIngressMemory_OversizePayloadAckDroppedWithoutTerminal(t *testing
 	terminalErr := session.terminalErr
 	session.mu.Unlock()
 	require.NoError(t, terminalErr,
-		"a broker-forwardable cap violation must be acked-and-dropped, never terminal (MQTT-L1)")
+		"a broker-forwardable cap violation must be acked-and-dropped, never terminal")
 }
 
 func TestRouterIngressMemory_MetadataCapAckDropsEveryPoisonBeforeEnqueue(t *testing.T) {
@@ -214,7 +214,7 @@ func TestRouterIngressMemory_MetadataCapAckDropsEveryPoisonBeforeEnqueue(t *test
 	session.mu.Lock()
 	terminalErr := session.terminalErr
 	session.mu.Unlock()
-	require.NoError(t, terminalErr, "poison must never latch terminal (MQTT-L1)")
+	require.NoError(t, terminalErr, "poison must never latch terminal")
 }
 
 func TestRouterIngressMemory_MetadataExactBoundaryAcceptsAndOneByteExcessAckDrops(t *testing.T) {
@@ -261,7 +261,7 @@ func TestRouterIngressMemory_MetadataExactBoundaryAcceptsAndOneByteExcessAckDrop
 	rejectedTerminal := rejected.terminalErr
 	rejected.mu.Unlock()
 	require.NoError(t, rejectedTerminal,
-		"one byte over the metadata cap is broker-forwardable and must ack-drop, not terminate (MQTT-L1)")
+		"one byte over the metadata cap is broker-forwardable and must ack-drop, not terminate")
 }
 
 func TestRouterIngressMemory_AcceptedPacketRetainsImmutableCallbackBacking(t *testing.T) {

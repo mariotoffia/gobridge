@@ -60,7 +60,7 @@ func NewSource(path string, registry *ports.Registry, opts ...SourceOption) *Sou
 }
 
 // Load reads and parses the configuration file. A cancelled ctx short-circuits
-// before any filesystem work (I6); a missing file maps to shared.ErrNotFound
+// before any filesystem work; a missing file maps to shared.ErrNotFound
 // so callers can classify it, while parse errors pass through from the parser.
 //
 // Load reads the file itself (rather than delegating to parser.ParseFile) so it
@@ -74,10 +74,7 @@ func (s *Source) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 
 	data, err := os.ReadFile(s.path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, shared.ErrNotFound.WithMessage("config file not found").Wrap(err)
-		}
-		return nil, fmt.Errorf("config: read %s: %w", s.path, err)
+		return nil, classifyReadError(s.path, err)
 	}
 
 	format := s.format
@@ -87,7 +84,7 @@ func (s *Source) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 
 	cfg, err := parser.Parse(bytes.NewReader(data), format, s.registry)
 	if err != nil {
-		return nil, err //nolint:wrapcheck // parser already annotates with stage context.
+		return nil, shared.ErrInvalidConfig.WithMessage("config document could not be decoded").Wrap(err)
 	}
 
 	sum := sha256.Sum256(data)
@@ -117,4 +114,14 @@ func detectSourceFormat(path string) parser.Format {
 		return parser.FormatJSON
 	}
 	return parser.FormatYAML
+}
+
+func classifyReadError(path string, err error) error {
+	if errors.Is(err, os.ErrNotExist) {
+		_, entryErr := os.Lstat(path)
+		if _, parentErr := os.Stat(filepath.Dir(path)); parentErr == nil && errors.Is(entryErr, os.ErrNotExist) {
+			return shared.ErrNotFound.WithMessage("config file not found").Wrap(err)
+		}
+	}
+	return fmt.Errorf("config: read %s: %w", path, err)
 }

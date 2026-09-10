@@ -14,33 +14,15 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
-// ═══════════════════════════════════════════════════════════════════════════
-// BUG M6: SQS auto-extend ticker interval never updates
-//
-// When Extend() updates visibilityTimeout, the auto-extend loop continued
-// ticking at the original interval because the ticker was never Reset().
-// The fix recomputes the interval after each successful extend and calls
-// ticker.Reset if it changed.
-// ═══════════════════════════════════════════════════════════════════════════
-
 // TestBugM6_AutoExtend_TickerResetsAfterVisibilityChange verifies that
 // when Extend() changes the stored visibilityTimeout, the auto-extend
 // loop adjusts its tick interval accordingly.
 //
-// The test uses a clocktest.Fake so the auto-extend ticker fires
-// deterministically when time is advanced, with no wall-clock sleeps.
-//
-//  1. Start with visibility=2s → auto-extend ticks every 1s.
-//  2. Advance 1s → the ticker fires and exactly one auto-extend call is
-//     observed on the mock.
-//  3. Call Extend(20s) — the call itself performs one synchronous
-//     ChangeMessageVisibility. The auto-extend loop must reset its
-//     ticker to 10s on the next tick.
-//  4. Advance 1s to drive one more tick so the loop observes the new
-//     visibilityTimeout and resets the ticker to 10s.
-//  5. Advance 3s. If the ticker was NOT reset, 3 extra calls would fire.
-//     With the fix, zero extra calls fire within 3s of the reset (the
-//     next tick is now 10s away in fake time).
+// Visibility starts at 2s (the cadence floor is 1s), then changes to 20s
+// (cadence 20s/3). Clock advances must follow completed tick handling:
+// the SDK call occurs BEFORE Reset, while MetricSQSAutoExtends occurs AFTER
+// it. Advancing on the call count alone can queue an old-cadence tick which
+// the fake clock correctly preserves through Reset.
 func TestBugM6_AutoExtend_TickerResetsAfterVisibilityChange(t *testing.T) {
 	var extendCount atomic.Int32
 
@@ -52,12 +34,17 @@ func TestBugM6_AutoExtend_TickerResetsAfterVisibilityChange(t *testing.T) {
 	}
 
 	rec := &ports.RecordingExporter{}
-	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-m6"})
-	fake := clocktest.New()
+	fake := clocktest.NewAt(time.Unix(0, 0))
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "visibility-change", CreatedAt: fake.Now()})
 
 	d := newDelivery(
-		context.Background(), env, mock, "q", "rh", 2, true, nil, nil, rec, fake,
+		t.Context(), env, mock, "q", "rh", 2, true, nil, nil, rec, fake,
 	)
+	t.Cleanup(func() {
+		d.stopAutoExtend()
+		d.cleanupContext()
+		wait.Until(t, time.Second, "auto-extend ticker stopped", func() bool { return fake.TickerCount() == 0 })
+	})
 
 	// Wait for the auto-extend goroutine to register its ticker with
 	// the fake clock before we advance time — otherwise Advance runs
@@ -66,51 +53,62 @@ func TestBugM6_AutoExtend_TickerResetsAfterVisibilityChange(t *testing.T) {
 		return fake.TickerCount() >= 1
 	})
 
-	// Advance 1s → ticker fires once; autoExtendLoop issues one
-	// ChangeMessageVisibility call. Wait for the async goroutine to
-	// deliver the call to the mock.
+	// Wait through the first handler's clock read/window update before
+	// calling Extend or advancing the fake clock again.
 	fake.Advance(1 * time.Second)
-	wait.Until(t, time.Second, "first auto-extend tick", func() bool {
-		return extendCount.Load() >= 1
+	wait.Until(t, time.Second, "first auto-extend tick handled", func() bool {
+		return len(rec.FindEntries(MetricSQSAutoExtends)) == 1
 	})
 
 	// Change visibility to 20s via Extend -- this itself issues one
 	// ChangeMessageVisibility synchronously and updates the stored
 	// visibilityTimeout atomically.
-	if err := d.Extend(context.Background(), time.Now().Add(20*time.Second)); err != nil {
+	if err := d.Extend(t.Context(), fake.Now().Add(20*time.Second)); err != nil {
 		t.Fatalf("Extend failed: %v", err)
 	}
-	wait.Until(t, time.Second, "extend sync call observed", func() bool {
-		return extendCount.Load() >= 2
-	})
+	if got := d.visibilityTimeout.Load(); got != 20 {
+		t.Fatalf("stored visibility = %ds, want 20s", got)
+	}
+	if got := extendCount.Load(); got != 2 {
+		t.Fatalf("calls after one tick and explicit Extend = %d, want 2", got)
+	}
 
 	// Advance 1s more at the old 1s interval — this tick is the one
 	// that lets autoExtendLoop observe the new visibilityTimeout and
-	// call ticker.Reset(10s).
+	// call ticker.Reset(20s/3). Observe the completed reset before advancing.
+	const newInterval = 20 * time.Second / 3
 	fake.Advance(1 * time.Second)
-	wait.Until(t, time.Second, "reset tick observed", func() bool {
-		return extendCount.Load() >= 3
+	wait.Until(t, time.Second, "reset tick fully handled", func() bool {
+		periods := fake.TickerPeriods()
+		return fake.TickerResets() == 1 &&
+			len(periods) == 1 && periods[0] == newInterval &&
+			len(rec.FindEntries(MetricSQSAutoExtends)) == 2
 	})
 	countAfterReset := extendCount.Load()
+	if countAfterReset != 3 {
+		t.Fatalf("calls after the reset tick = %d, want 3", countAfterReset)
+	}
 
-	// Advance 3 more seconds. At the new 10s interval, zero ticks fire.
-	// At the old (unreset) 1s interval, 3 ticks would fire.
+	// Three seconds is shorter than the new interval, so no call may fire.
 	fake.Advance(3 * time.Second)
 
-	// Small settle window: if any extra tick were going to be delivered
-	// it would be visible to the mock within a handful of scheduler
-	// hops. Use wait.StableFor to assert the extend counter stays at
-	// its post-reset value for a brief window (i.e. no late tick leaks
-	// through).
+	// Retain the original zero-extra-call assertion and observation window.
 	stable := wait.StableFor(t, extendCount.Load, 50*time.Millisecond, 500*time.Millisecond)
 	newCalls := stable - countAfterReset
 	if newCalls != 0 {
 		t.Fatalf("expected 0 auto-extend calls in 3s after visibility "+
-			"change to 20s (10s interval), got %d new calls", newCalls)
+			"change to 20s (20s/3 interval), got %d new calls", newCalls)
 	}
 
-	d.stopAutoExtend()
-	d.cleanupContext()
+	// Also prove the loop continues at the new cadence, rather than merely
+	// going quiet or stopping after the reset.
+	fake.Advance(newInterval - 3*time.Second)
+	wait.Until(t, time.Second, "next tick at the new cadence", func() bool {
+		return len(rec.FindEntries(MetricSQSAutoExtends)) == 3
+	})
+	if got := extendCount.Load(); got != 4 {
+		t.Fatalf("calls at the new cadence = %d, want 4", got)
+	}
 }
 
 // TestBugM6_AutoExtend_SameTimeout_NoReset verifies that when the
@@ -127,29 +125,35 @@ func TestBugM6_AutoExtend_SameTimeout_NoReset(t *testing.T) {
 		},
 	}
 
-	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-m6b"})
-	fake := clocktest.New()
+	rec := &ports.RecordingExporter{}
+	fake := clocktest.NewAt(time.Unix(0, 0))
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "unchanged-visibility", CreatedAt: fake.Now()})
 	d := newDelivery(
-		context.Background(), env, mock, "q", "rh", 2, true, nil, nil, nil, fake,
+		t.Context(), env, mock, "q", "rh", 2, true, nil, nil, rec, fake,
 	)
+	t.Cleanup(func() {
+		d.stopAutoExtend()
+		d.cleanupContext()
+		wait.Until(t, time.Second, "auto-extend ticker stopped", func() bool { return fake.TickerCount() == 0 })
+	})
 
 	wait.Until(t, time.Second, "ticker registered", func() bool {
 		return fake.TickerCount() >= 1
 	})
 
 	fake.Advance(1 * time.Second)
-	wait.Until(t, time.Second, "first tick", func() bool {
-		return extendCount.Load() >= 1
+	wait.Until(t, time.Second, "first tick handled", func() bool {
+		return len(rec.FindEntries(MetricSQSAutoExtends)) == 1
 	})
 	fake.Advance(1 * time.Second)
-	wait.Until(t, time.Second, "second tick", func() bool {
-		return extendCount.Load() >= 2
+	wait.Until(t, time.Second, "second tick handled", func() bool {
+		return len(rec.FindEntries(MetricSQSAutoExtends)) == 2
 	})
 
-	d.stopAutoExtend()
-	d.cleanupContext()
-
-	if got := extendCount.Load(); got < 2 {
-		t.Fatalf("expected at least 2 auto-extend calls at 1s interval, got %d", got)
+	if got := extendCount.Load(); got != 2 {
+		t.Fatalf("expected exactly 2 auto-extend calls at 1s interval, got %d", got)
+	}
+	if got := fake.TickerResets(); got != 0 {
+		t.Fatalf("unchanged visibility reset the ticker %d times", got)
 	}
 }

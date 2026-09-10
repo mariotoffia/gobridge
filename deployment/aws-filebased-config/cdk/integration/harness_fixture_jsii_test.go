@@ -11,7 +11,6 @@ import (
 )
 
 func TestLookupVpc_ExplicitAttributesProduceCompleteAssembly(t *testing.T) {
-	defer jsii.Close()
 	values := completeSandboxValues()
 	env, err := sandboxEnvFrom(func(name string) string { return values[name] })
 	if err != nil {

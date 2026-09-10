@@ -37,9 +37,9 @@ import (
 // It reports whether fn COMPLETED (returned, with or without its own error)
 // within the ceiling. completed is false ONLY when the ceiling fired while fn was
 // still parked (fn ignored ctx) — the caller then knows the operation did NOT
-// actually finish and can refuse to proceed as if it had (B1: a source Close that
+// actually finish and can refuse to proceed as if it had (a source Close that
 // never returned has NOT stopped the subscription, so the lease must not be
-// handed off; B5: a Reconcile that never returned is unrecoverable in-process and
+// handed off;: a Reconcile that never returned is unrecoverable in-process and
 // must escalate to terminal rather than restart-and-leak). A cooperative fn that
 // returns its own error is completed==true: the operation ran to conclusion, it
 // just failed.
@@ -88,7 +88,7 @@ func (m *Manager) boundedCallResult(ctx context.Context, ceiling time.Duration, 
 }
 
 // boundedReconcile runs a reconnect-driven Reconcile behind the goroutine-raced
-// hard ceiling (HIGH-6). handleSessionEvent previously called Reconcile
+// hard ceiling. handleSessionEvent previously called Reconcile
 // SYNCHRONOUSLY, so a broker SDK call that ignores ctx would block the renew
 // select loop: the renewal timer case is never serviced, the local lease
 // expires, and a standby seizes it while this session stays subscribed —
@@ -96,7 +96,7 @@ func (m *Manager) boundedCallResult(ctx context.Context, ceiling time.Duration, 
 // eventReconcileTimeout ceiling keeps the renew loop's timer serviceable
 // regardless of a wedged adapter; on the ceiling the error propagates on the
 // existing session-failure path (afterRenewLoopExit), which now CLOSES the
-// source session (CRITICAL-1) before releasing the lease, so the wedged session
+// source session before releasing the lease, so the wedged session
 // is not left subscribed.
 //
 // The caller still passes an eventReconcileContext-bounded ctx: a COOPERATIVE
@@ -104,21 +104,21 @@ func (m *Manager) boundedCallResult(ctx context.Context, ceiling time.Duration, 
 // unchanged; the injected-clock ceiling here is the independent backstop for a
 // ctx-ignoring adapter.
 //
-// B5 — bounded parked-Reconcile goroutines: unlike boundedSend (which has a
+// bounded parked-Reconcile goroutines: unlike boundedSend (which has a
 // pre-spawn in-flight latch capping parked senders at ≤1 per binding),
 // boundedCallResult spawns a fresh goroutine on every reconnect and cannot
 // forcibly kill a ctx-ignoring Reconcile. If a ceiling-fire merely restarted the
 // session in place, a flapping broker would spawn one parked Reconcile goroutine
 // per flap, unbounded. So a ceiling-fire (completed == false: the adapter ignored
 // ctx and Reconcile is STILL parked) is treated as unrecoverable in-process — the
-// SAME class as B1's wedged Close — and escalated to a terminal
+// SAME class as the wedged Close — and escalated to a terminal
 // ErrSessionUnrecoverable. superviseSession flips the runtime terminal and the
 // pod restart forcibly tears the wedged transport down at the OS level (socket
 // close on process exit), capping parked Reconcile goroutines at ONE across the
 // process lifetime. A COOPERATIVE Reconcile that merely FAILED (completed == true:
 // it returned an error within the ceiling) is a genuine transient and keeps its
 // isolated-restart semantics — its error is returned unchanged so the
-// session-failure path restarts the one session (C7-N2), not the whole pod.
+// session-failure path restarts the one session, not the whole pod.
 func (m *Manager) boundedReconcile(ctx context.Context, plan connectivity.SessionPlan) error {
 	err, completed := m.boundedCallResult(ctx, m.eventReconcileTimeout(), "reconnect reconcile", func(c context.Context) error {
 		return m.session.Reconcile(c, plan)
@@ -135,24 +135,74 @@ func (m *Manager) boundedReconcile(ctx context.Context, plan connectivity.Sessio
 
 // closeSourceBounded closes the source session under the goroutine-raced hard
 // ceiling so a wedged Close cannot hang the manager. It is used on the
-// session-failure recovery path (CRITICAL-1) to STOP the old owner consuming
+// session-failure recovery path to STOP the old owner consuming
 // BEFORE the lease is released and a standby can seize it. The context is
 // detached (WithoutCancel) so the close still runs during shutdown, mirroring
 // releaseOwnedLeaseBestEffort; the bound reuses releaseTimeout — the same
 // bounded-teardown budget the lease Release uses.
 //
-// It returns whether Close actually COMPLETED within the ceiling. A false return
-// means the ceiling fired while Close was still parked (the adapter ignored ctx):
-// the source is STILL subscribed, so the caller MUST NOT release the lease — a
-// wedged-but-subscribed session cannot be safely handed off to a standby (B1).
-func (m *Manager) closeSourceBounded(ctx context.Context, reason string) bool {
-	closeCtx := context.WithoutCancel(ctx)
-	err, completed := m.boundedCallResult(closeCtx, m.releaseTimeout(), "source session close", func(c context.Context) error {
+// The DEADLINE on that context is load-bearing, not decoration. The ceiling
+// below only decides how long the MANAGER waits; it cannot stop the adapter. A
+// cooperative adapter needs a deadline of its own to abort on — without one, a
+// slow but well-behaved disconnect keeps running past the ceiling, is
+// classified as a wedge (completed == false), terminalizes the process, and
+// extends the outage to the lease TTL. Passing the same bound as the ceiling
+// means a cooperative Close always aborts and returns THROUGH the race, so only
+// a genuinely ctx-ignoring adapter is ever judged wedged; the ceiling remains
+// the backstop for exactly that adapter. The deadline is set closeAbortMargin
+// EARLIER than the ceiling: both are armed within microseconds of each other,
+// so without the margin an adapter that aborts exactly at its deadline still
+// has to unwind faster than the ceiling timer — a coin flip whose losing side
+// is a false wedge.
+//
+// It returns Close's error (nil when the transport closed cleanly) and whether
+// Close actually COMPLETED within the ceiling.
+//
+// The hand-off gate is COMPLETION, not the error, and the property it stands for
+// is "has this source stopped consuming". A Close that RETURNS has stopped
+// ingress — the adapters shut their inbound router down first, before any
+// disconnect or bounded drain — so the caller may hand the lease to a standby
+// even when that Close reports an error. What such an error reports is that
+// deliveries the pipeline ALREADY accepted were still settling, and those are
+// version-fenced on outbox Complete and Claim: a straggler can duplicate at the
+// destination but can never double-commit, the same at-least-once window every
+// failover already has. Retaining the lease on every slow settle would instead
+// extend an outage to the full lease TTL on the very paths that exist to recover
+// from one.
+//
+// A false completion is the case where that property is UNKNOWN: the ceiling
+// fired while Close was still parked, so the adapter never reached its own
+// teardown and the source may still be subscribed. The caller MUST NOT release
+// the lease then — a still-consuming old owner cannot be handed off.
+//
+// ceiling is the caller's budget. Internal recovery paths pass releaseTimeout();
+// Manager.Close passes the remaining time its caller allowed, because
+// Runtime.Stop closes every managed session sequentially under ONE deadline and
+// a per-manager budget of our own would let n sessions overrun it n-fold.
+//
+// Only Manager.Close propagates the error, because it is the one caller whose
+// own return value is the process's teardown result.
+func (m *Manager) closeSourceBounded(ctx context.Context, ceiling time.Duration, reason string) (error, bool) {
+	abortAfter := ceiling - closeAbortMargin
+	if abortAfter <= 0 {
+		abortAfter = ceiling / 2
+	}
+	closeCtx, cancelClose := context.WithTimeout(context.WithoutCancel(ctx), abortAfter)
+	defer cancelClose()
+	err, completed := m.boundedCallResult(closeCtx, ceiling, "source session close", func(c context.Context) error {
 		return m.session.Close(c)
 	})
 	if err != nil {
-		m.log(ctx, slog.LevelWarn, "source session close during session-failure recovery failed or timed out",
+		m.log(ctx, slog.LevelWarn, "bounded source session close failed or timed out",
 			"reason", reason, "error", err, "completed", completed)
 	}
-	return completed
+	return err, completed
 }
+
+// closeAbortMargin is how much earlier than the manager's hard ceiling the
+// source Close is told to give up, leaving it room to unwind and return through
+// the race. It mirrors the route dispatcher's send-wedge margin: the cooperative
+// abort must always beat the wedge verdict, or ordinary slowness is punished as
+// a hang. A ceiling at or below the margin (a very short configured step-down
+// grace) halves instead, keeping the same ordering at any scale.
+const closeAbortMargin = 500 * time.Millisecond

@@ -46,11 +46,11 @@ func (s *captureSender) last() (ports.OutboundMessage, bool) {
 	return s.msgs[len(s.msgs)-1], true
 }
 
-// TestT03_DirectHold_DoesNotMutateSourceEnvelopeSubject is the T03 acceptance
+// TestDirectHold_DoesNotMutateSourceEnvelopeSubject is the acceptance
 // test: direct-hold dispatch must not overwrite the source delivery
 // envelope's Subject with the destination Address. The Address travels via
 // OutboundMessage.Address, while the envelope's logical Subject is preserved.
-func TestT03_DirectHold_DoesNotMutateSourceEnvelopeSubject(t *testing.T) {
+func TestDirectHold_DoesNotMutateSourceEnvelopeSubject(t *testing.T) {
 	const (
 		logicalSubject = "logical.event.subject"
 		destAddress    = "destination/topic"

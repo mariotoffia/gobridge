@@ -1,0 +1,196 @@
+package runtime_test
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/ports"
+	goruntime "github.com/mariotoffia/gobridge/runtime"
+)
+
+// ═══════════════════════════════════════════════════════════════════════
+// T8: Panic Recovery in startBackground Tests
+//
+// Validates that the runtime catches panics in background goroutines,
+// logs the error, marks the component unhealthy, and does not crash.
+//
+//   ┌────────────┐  panic!   ┌────────────┐
+//   │ Background │──────────▶│  recover() │──▶ unhealthy + cancel
+//   │ goroutine  │           │  defer     │
+//   └────────────┘           └────────────┘
+// ═══════════════════════════════════════════════════════════════════════
+
+// TestRuntime_PanicRecovery_MarksUnhealthy validates that a panicking
+// background component does not crash the process, is caught by
+// recover(), and marks the runtime unhealthy.
+//
+// Scenario:
+// ───────────────────────────────────────────────
+//
+//	Receiver.Run panics → startBackground recovers →
+//	componentErrors populated → healthy=false
+//
+// ───────────────────────────────────────────────
+//
+// Assertions:
+//   - Runtime does not crash (test completes)
+//   - Runtime.Healthy() returns false
+//   - ComponentErrors contains the panicking component
+//   - Error message contains the panic value
+func TestRuntime_PanicRecovery_MarksUnhealthy(t *testing.T) {
+	rt := goruntime.New(
+		goruntime.WithInstanceID("panic-test"),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
+	)
+
+	panicReceiver := &PanickingReceiver{}
+	sender := NewFakeSender()
+
+	cfg := goruntime.RouteConfig{
+		ID:                 "panic-route",
+		Policy:             routing.RoutePolicy{}.WithDefaults(),
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
+	}
+
+	if err := rt.AddRoute(cfg, panicReceiver, sender, nil, nil); err != nil {
+		t.Fatalf("AddRoute failed: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, "runtime marked unhealthy after panic", func() bool {
+		return !rt.Healthy()
+	})
+
+	if rt.Healthy() {
+		t.Fatal("runtime should be unhealthy after background panic")
+	}
+
+	if !rt.Terminal() {
+		t.Fatal("runtime should be terminal after background panic " +
+			"(liveness must fail so the orchestrator restarts the process)")
+	}
+
+	errs := rt.ComponentErrors()
+	if len(errs) == 0 {
+		t.Fatal("expected component errors after panic")
+	}
+
+	found := false
+	for name, err := range errs {
+		if err != nil {
+			errMsg := err.Error()
+			if !strings.Contains(errMsg, "test panic in receiver") {
+				t.Fatalf("expected panic message to contain %q, got %q", "test panic in receiver", errMsg)
+			}
+			if !strings.Contains(errMsg, "panic in") {
+				t.Fatalf("expected error to indicate panic origin, got %q", errMsg)
+			}
+			t.Logf("component %q error: %v", name, err)
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected at least one component error")
+	}
+
+	stopCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	_ = rt.Stop(stopCtx)
+}
+
+// TestRuntime_PanicRecovery_DoesNotCrash validates that the test
+// process itself does not crash when a background goroutine panics.
+func TestRuntime_PanicRecovery_DoesNotCrash(t *testing.T) {
+	rt := goruntime.New(
+		goruntime.WithInstanceID("no-crash"),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
+	)
+
+	panicReceiver := &PanickingReceiver{PanicMsg: "deliberate test panic"}
+	cfg := goruntime.RouteConfig{
+		ID:                 "no-crash-route",
+		Policy:             routing.RoutePolicy{}.WithDefaults(),
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
+	}
+
+	_ = rt.AddRoute(cfg, panicReceiver, NewFakeSender(), nil, nil)
+	_ = rt.Start(context.Background())
+
+	waitFor(t, 2*time.Second, "runtime detects panic", func() bool {
+		return !rt.Healthy()
+	})
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = rt.Stop(stopCtx)
+}
+
+// TestRuntime_FatalComponentError_IsTerminal validates that a background
+// component returning a fatal (non-recoverable, non-stale-fencing) error drives
+// the runtime into the terminal state — the signal the liveness probe uses so
+// the orchestrator restarts the process. This is the path a single-use source
+// session takes on lease re-acquire (ensureConnected -> Start -> ErrUnavailable).
+// It also confirms a freshly built runtime is not terminal, so the flag means
+// "failed", not "young".
+func TestRuntime_FatalComponentError_IsTerminal(t *testing.T) {
+	rt := goruntime.New(
+		goruntime.WithInstanceID("fatal-error"),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
+	)
+
+	if rt.Terminal() {
+		t.Fatal("a freshly built runtime must not be terminal")
+	}
+
+	recv := NewFakeReceiver()
+	recv.RunErr = errors.New("fatal source failure")
+	cfg := goruntime.RouteConfig{
+		ID:                 "fatal-route",
+		Policy:             routing.RoutePolicy{}.WithDefaults(),
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
+	}
+	if err := rt.AddRoute(cfg, recv, NewFakeSender(), nil, nil); err != nil {
+		t.Fatalf("AddRoute failed: %v", err)
+	}
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, "runtime terminal after fatal component error", func() bool {
+		return rt.Terminal()
+	})
+
+	if rt.Healthy() {
+		t.Fatal("runtime should be unhealthy after a fatal background component error")
+	}
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = rt.Stop(stopCtx)
+}
+
+// ---------------------------------------------------------------------------
+// PanickingReceiver
+// ---------------------------------------------------------------------------
+
+// PanickingReceiver implements ports.Receiver and panics immediately on Run.
+type PanickingReceiver struct {
+	PanicMsg string
+}
+
+func (r *PanickingReceiver) Run(_ context.Context, _ func(context.Context, ports.Delivery) error) error {
+	msg := r.PanicMsg
+	if msg == "" {
+		msg = "test panic in receiver"
+	}
+	panic(msg)
+}

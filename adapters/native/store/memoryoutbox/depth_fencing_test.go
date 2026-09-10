@@ -24,7 +24,7 @@ var invalidTokens = []struct {
 	{"zero_version", persistence.LeaseToken{Owner: "owner-A"}},
 }
 
-// TestClaim_RejectsInvalidTokenAndDoesNotMutate is the F1 fencing guard on
+// TestClaim_RejectsInvalidTokenAndDoesNotMutate is the fencing guard on
 // Claim: an invalid token is rejected with shared.ErrStaleFencingToken, claims
 // zero records, and leaves the pending record untouched so a subsequent VALID
 // token still wins it. Mutation-verify: delete the guard in Store.Claim and
@@ -54,7 +54,7 @@ func TestClaim_RejectsInvalidTokenAndDoesNotMutate(t *testing.T) {
 	}
 }
 
-// TestComplete_RejectsInvalidTokenAndDoesNotMutate is the F1 fencing guard on
+// TestComplete_RejectsInvalidTokenAndDoesNotMutate is the fencing guard on
 // Complete: an invalid token is rejected with shared.ErrStaleFencingToken and
 // leaves the record claimed so its rightful owner can still complete it.
 func TestComplete_RejectsInvalidTokenAndDoesNotMutate(t *testing.T) {
@@ -80,7 +80,7 @@ func TestComplete_RejectsInvalidTokenAndDoesNotMutate(t *testing.T) {
 	}
 }
 
-// TestRelease_RejectsInvalidTokenAndDoesNotMutate is the F1 fencing guard on
+// TestRelease_RejectsInvalidTokenAndDoesNotMutate is the fencing guard on
 // Release: an invalid token is rejected with shared.ErrStaleFencingToken and
 // leaves the record claimed (still not pending) so the rightful owner can act.
 func TestRelease_RejectsInvalidTokenAndDoesNotMutate(t *testing.T) {

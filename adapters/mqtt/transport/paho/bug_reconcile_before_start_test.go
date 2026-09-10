@@ -18,7 +18,7 @@ import (
 // "session not started") → Start → manager-driven Reconcile on
 // SessionConnected.
 //
-// Per finding C7 the runtime session manager is the SINGLE owner of
+// Per finding the runtime session manager is the SINGLE owner of
 // reconnect reconciliation: handleConnectionUp only resets activeSubs and
 // signals SessionConnected, and the manager reacts by driving Reconcile,
 // which re-establishes the previously stashed plan and emits
@@ -57,7 +57,7 @@ func TestBugA_Integration_ReconcileBeforeStart(t *testing.T) {
 	}
 	defer func() { _ = sess.Close(ctx) }()
 
-	// Emulate the runtime session manager (finding C7: it is the single
+	// Emulate the runtime session manager (it is the single
 	// owner of reconnect reconciliation). On SessionConnected the manager
 	// drives Reconcile, which re-establishes the stashed plan and emits
 	// SessionReconciled.

@@ -13,7 +13,7 @@ import (
 
 // ═══════════════════════════════════════════════════════════════════════════
 // blocking-#3: runtime credential rotation (Session.ApplyCredentials) is the
-// hole the static/deferred HIGH-4 gates miss. A tcp:// (plaintext) session that
+// hole the static/deferred gates miss. A tcp:// (plaintext) session that
 // started WITHOUT credentials could have username/password injected at rotation
 // and sent in cleartext on the next CONNECT. The rotation MUST re-run the same
 // plaintext-credentials gate BEFORE mutating liveCreds/opts, and a dial-time
@@ -43,7 +43,7 @@ func TestBug_ApplyCredentials_PlaintextGate_RuntimeRotation(t *testing.T) {
 		require.Contains(t, err.Error(), "cleartext")
 		be, ok := shared.AsBridgeError(err)
 		require.True(t, ok)
-		require.Equal(t, shared.ErrCodeInvalidPayload, be.Code)
+		require.Equal(t, shared.ErrCodeInvalidConfig, be.Code)
 
 		// The rejected rotation must NOT have mutated any credential state.
 		s.mu.Lock()

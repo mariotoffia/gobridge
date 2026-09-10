@@ -1,12 +1,11 @@
-//go:build integration_aws
-// +build integration_aws
+//go:build integration_aws || integration_local
+// +build integration_aws integration_local
 
 package integration
 
 import (
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	elbv2 "github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2"
 	awssqs "github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
 	"github.com/aws/jsii-runtime-go"
@@ -75,9 +74,11 @@ func newSingleFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	vpc := lookupVpc(stack, env)
 
 	inbound := awssqs.NewQueue(stack, jsii.String("InboundQ"), &awssqs.QueueProps{
+		QueueName:     jsii.String(*stack.StackName() + "-inbound"),
 		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
 	})
 	outbound := awssqs.NewQueue(stack, jsii.String("OutboundQ"), &awssqs.QueueProps{
+		QueueName:     jsii.String(*stack.StackName() + "-outbound"),
 		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
 	})
 
@@ -109,7 +110,7 @@ func newSingleFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	single := gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Single"), &gobridgesingle.SingleProps{
 		Vpc:           vpc,
 		VpcSubnets:    subnetSelection(env),
-		Image:         awsecs.ContainerImage_FromRegistry(jsii.String("ghcr.io/mariotoffia/gobridge:latest"), nil),
+		Image:         credentialedRuntimeImageSource(),
 		Bootstrap:     bootstrap,
 		BridgeConfig:  src,
 		QueueRegistry: qr,
@@ -128,10 +129,11 @@ func newSingleFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	})
 
 	att := gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Attach"), &gobridgealbattachment.AttachmentProps{
-		Single:       single,
-		Listener:     listener,
-		Vpc:          vpc,
-		BridgeConfig: gobridgecdk.BridgeYamlInline(cfg),
+		Single:         single,
+		Listener:       listener,
+		ListenerScheme: "http",
+		Vpc:            vpc,
+		BridgeConfig:   gobridgecdk.BridgeYamlInline(cfg),
 	}).WithCfnOutputs("")
 
 	return integrationFixture{
@@ -150,9 +152,11 @@ func newClusterFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	vpc := lookupVpc(stack, env)
 
 	inbound := awssqs.NewQueue(stack, jsii.String("InboundQ"), &awssqs.QueueProps{
+		QueueName:     jsii.String(*stack.StackName() + "-inbound"),
 		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
 	})
 	outbound := awssqs.NewQueue(stack, jsii.String("OutboundQ"), &awssqs.QueueProps{
+		QueueName:     jsii.String(*stack.StackName() + "-outbound"),
 		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
 	})
 
@@ -185,7 +189,7 @@ func newClusterFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	cluster := gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Cluster"), &gobridgecluster.ClusterProps{
 		Vpc:                vpc,
 		VpcSubnets:         subnetSelection(env),
-		Image:              awsecs.ContainerImage_FromRegistry(jsii.String("ghcr.io/mariotoffia/gobridge:latest"), nil),
+		Image:              credentialedRuntimeImageSource(),
 		Bootstrap:          bootstrap,
 		BridgeConfig:       src,
 		QueueRegistry:      qr,
@@ -205,10 +209,11 @@ func newClusterFixture(stack awscdk.Stack, env SandboxEnv) integrationFixture {
 	})
 
 	att := gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Attach"), &gobridgealbattachment.AttachmentProps{
-		Cluster:      cluster,
-		Listener:     listener,
-		Vpc:          vpc,
-		BridgeConfig: gobridgecdk.BridgeYamlInline(cfg),
+		Cluster:        cluster,
+		Listener:       listener,
+		ListenerScheme: "http",
+		Vpc:            vpc,
+		BridgeConfig:   gobridgecdk.BridgeYamlInline(cfg),
 	}).WithCfnOutputs("")
 
 	// Also surface the worker service name as a CFN output so the

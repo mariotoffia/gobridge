@@ -325,8 +325,8 @@ func TestValidateBlueprintGraph_NilOnEmpty(t *testing.T) {
 	}
 }
 
-// TestValidateBlueprintGraph_ReceiverSessionTransport covers the
-// ADV-F1-P2 guard: a receiver whose explicit transport differs from
+// TestValidateBlueprintGraph_ReceiverSessionTransport verifies that
+// a receiver whose explicit transport differs from
 // its session's transport fails validation, while a matching pair — or
 // a receiver that inherits the session transport — passes.
 func TestValidateBlueprintGraph_ReceiverSessionTransport(t *testing.T) {

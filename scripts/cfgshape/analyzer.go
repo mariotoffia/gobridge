@@ -1,6 +1,6 @@
-// cfgshape implements the typed-pluggable-config rules from
-// FIX-003. It enforces four properties, each scoped to a different
-// part of the workspace:
+// cfgshape implements the typed-pluggable-config rules described in
+// docs/typed-plugin-config.adoc. It enforces four properties, each
+// scoped to a different part of the workspace:
 //
 //  1. Inner-ring (ports/, domain/) carriers: exported struct fields,
 //     function parameters, and named return values whose name is in

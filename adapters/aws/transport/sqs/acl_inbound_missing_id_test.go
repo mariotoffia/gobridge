@@ -35,7 +35,7 @@ func TestSQSMissingID_PopulatedPreserved(t *testing.T) {
 
 // TestSQSMissingID_EmptyTriggersFallbackUnique pins the
 // generateEnvelopeID fallback for empty MessageId. 100 empty-ID
-// messages MUST get distinct envelope IDs (the H-3 root regression
+// messages MUST get distinct envelope IDs (the root regression
 // was that all collapsed to one literal "test-envelope").
 func TestSQSMissingID_EmptyTriggersFallbackUnique(t *testing.T) {
 	r := receiverForTest(t, false)
@@ -131,7 +131,7 @@ func TestSQSPollAndConvert_DropsMalformedMessage(t *testing.T) {
 }
 
 // TestSQSConvertMessage_StaticSignature locks the convertMessage
-// triple-return shape introduced by H-3. A regression that drops the
+// triple-return shape introduced. A regression that drops the
 // error return — re-introducing the silent MustEnvelope masking — will
 // fail to compile here.
 func TestSQSConvertMessage_StaticSignature(t *testing.T) {

@@ -16,7 +16,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-// K3 true-regression: metric export failures are surfaced via the error
+// true-regression: metric export failures are surfaced via the error
 // handler instead of being silently swallowed.
 func TestObservedMetricExporter_ReportsExportError(t *testing.T) {
 	t.Parallel()
@@ -41,7 +41,7 @@ func TestObservedMetricExporter_NilHandlerNoPanic(t *testing.T) {
 	assert.Error(t, obs.Export(context.Background(), &metricdata.ResourceMetrics{}))
 }
 
-// K9 true-regression: once the instrument cache is full, further dynamic
+// true-regression: once the instrument cache is full, further dynamic
 // metric names are rejected and surfaced via the error handler rather
 // than growing the cache without bound.
 func TestInstrumentLimit_RejectsDynamicNames(t *testing.T) {
@@ -77,7 +77,7 @@ func TestInstrumentLimit_RejectsDynamicNames(t *testing.T) {
 	assert.Equal(t, 1, errsSeen, "cached instrument re-emit must not error")
 }
 
-// N4 regression: once the instrument cache is full, a concurrent flood of
+// regression: once the instrument cache is full, a concurrent flood of
 // NEW (rejected) dynamic names must not (a) flood the error handler nor
 // (b) serialize the hot path on the write Lock. Rejection reporting is
 // throttled to one report per rejectReportInterval, and the rejected fast
@@ -146,7 +146,7 @@ func (failingMetricExporter) Export(context.Context, *metricdata.ResourceMetrics
 	return errors.New("boom")
 }
 
-// K7: env endpoint / service name suppress the hardcoded defaults.
+// env endpoint / service name suppress the hardcoded defaults.
 func TestApplyDefaults_HonorsEnvEndpoint(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.internal:4318")
 	t.Setenv("OTEL_SERVICE_NAME", "")

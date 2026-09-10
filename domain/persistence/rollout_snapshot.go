@@ -26,7 +26,7 @@ type RolloutSnapshot struct {
 	Reason             string
 	Deadline           time.Time
 	CoordinatorVersion uint64
-	// Confirm window (design §8.1). ConfirmWindow is frozen at Propose;
+	// Confirm window (ADR 0014). ConfirmWindow is frozen at Propose;
 	// ConfirmDeadline is stamped at a provisional commit (zero otherwise);
 	// Converged records post-swap convergence keyed by member id.
 	ConfirmWindow   time.Duration
@@ -62,8 +62,8 @@ func (r Rollout) Snapshot() RolloutSnapshot {
 // never act on a malformed row. The guards mirror the domain invariants:
 //   - generation > 0 and a known lifecycle state;
 //   - a non-empty, member-valid, duplicate-free membership epoch (I-epoch);
-//   - every ack/nack references an epoch member (invariant I5);
-//   - terminal state iff a coordinator fencing version is recorded (I3/I4);
+//   - every ack/nack references an epoch member;
+//   - terminal state iff a coordinator fencing version is recorded;
 //   - Proposed carries no acks and Staging carries at least one (the first ack
 //     is what advances Proposed -> Staging).
 //
@@ -145,7 +145,7 @@ func RehydrateRollout(s RolloutSnapshot) (Rollout, *shared.BridgeError) {
 				WithMessage("rollout convergence from a non-member").With("member", m)
 		}
 	}
-	// Confirm-window coherence (design §8.1): convergence and a confirm deadline
+	// Confirm-window coherence (ADR 0014): convergence and a confirm deadline
 	// only exist post-commit; a Confirmed rollout must carry whole-epoch
 	// convergence.
 	postCommit := s.State == RolloutCommitted || s.State == RolloutConfirmed || s.State == RolloutReverted
@@ -166,7 +166,7 @@ func RehydrateRollout(s RolloutSnapshot) (Rollout, *shared.BridgeError) {
 	// confirmDeadline (IsTerminal), so a windowed commit MUST carry a deadline and a
 	// base commit MUST NOT. A corrupt/dropped deadline that left confirmWindow > 0
 	// would otherwise rehydrate as a terminal final commit — silently skipping the
-	// whole confirm barrier — so fail closed on the mismatch (design §8.1).
+	// whole confirm barrier — so fail closed on the mismatch (ADR 0014).
 	if s.State == RolloutCommitted && (s.ConfirmWindow > 0) != !s.ConfirmDeadline.IsZero() {
 		return Rollout{}, shared.ErrInvalidRolloutProposal.
 			WithMessage("committed rollout confirm window and confirm deadline disagree").

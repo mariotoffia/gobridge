@@ -10,7 +10,7 @@ diagnosing why leadership churns.
 
 - Leadership bounces between instances; `LeaseTransfers` / `LeaseExpiries` climb.
 - The `Lease Acquire Failures` alarm fires (`LeaseAcquireFailures` > 3)
-  ([monitoring.md#cloudwatch-alarms](../aws-deployment/monitoring.md#cloudwatch-alarms)).
+  ([alarms.md](../aws-deployment/alarms.md)).
 - Logs show `STALE_FENCING_TOKEN` or `NO_ROUTE_OWNER`.
 - You suspect two instances are both acting as owner (duplicate deliveries).
 
@@ -19,7 +19,7 @@ diagnosing why leadership churns.
 1. Check each instance's role. `/api/v1/monitor/topology` (authenticated) reports
    running state and the compact route list; `/api/v1/monitor/ready` returns the
    failover `role` — `active`, `standby`, or `standalone`
-   ([http-api.md#monitor-api-endpoints](../http-api.md#monitor-api-endpoints)).
+   ([http-api-monitor.md](../http-api-monitor.md)).
    Exactly one active owner per exclusive session is correct; two is the
    split-brain you are looking for.
 
@@ -40,7 +40,7 @@ diagnosing why leadership churns.
 4. Rule out a shared transport identity. `MQTTSessionTakeover` means two
    instances connected with the same `client_id` and are kicking each other —
    a different failure that looks like flapping
-   ([troubleshooting.md#adapter--runtime-diagnostic-metrics](../troubleshooting.md#adapter--runtime-diagnostic-metrics)).
+   ([troubleshooting.md#adapter--runtime-diagnostic-metrics](../adapter-diagnostic-metrics.md)).
 
 ## Action
 
@@ -54,7 +54,7 @@ diagnosing why leadership churns.
 - **Stuck / stale lease records**: inspect the `LeaseStore` (DynamoDB) directly
   and verify every instance reads the same store
   ([troubleshooting.md#no_route_owner](../troubleshooting.md#no_route_owner)).
-- Background and invariants: [ARCHITECTURE.md §16 — Clustered Deployment](../../ARCHITECTURE.md#16-clustered-deployment).
+- Background and invariants: [ARCHITECTURE.md §16 — Clustered Deployment](../internals/architecture-contracts-and-clustering.md#16-clustered-deployment).
 
 ## Standalone multi-replica split brain (no distributed lease store)
 

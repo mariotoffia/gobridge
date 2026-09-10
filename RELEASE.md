@@ -1,5 +1,7 @@
 # Releasing GoBridge
 
+## Overview
+
 How to version, tag, and publish the multi-module workspace so external consumers
 can use `go get` and `go install`. Development-side rules live in
 [DEVELOPMENT.md — Module versioning & references](DEVELOPMENT.md#module-versioning--references).
@@ -32,32 +34,47 @@ make release-modules RELEASE_FORMAT=tsv
 make release-modules RELEASE_LAYER=1
 ```
 
-The repository currently has **33 published modules**:
+The repository currently has **34 published modules**:
 
 | Layer | Count | Contents |
 |---|---:|---|
 | 0 | 1 | Root module |
 | 1 | 27 | Direct-root adapter/processor leaf modules, plus `deployment/aws-filebased-config/infra` |
 | 2 | 3 | `adapters/aws/store`, `adapters/native/store`, and `httpapi` |
-| 3 | 1 | `deployment/aws-filebased-config/cdk` |
+| 3 | 2 | `deployment/aws-filebased-config/cdk` and `deployment/aws-filebased-config/lib` |
 | 4 | 1 | `cmd/gobridge` |
 
 The published set is the root module, every module under `adapters/` and
-`processors/`, `httpapi`, `cmd/gobridge`, and the two CDK modules
-`deployment/aws-filebased-config/infra` and
-`deployment/aws-filebased-config/cdk`. Everything else under `tests/`,
-`testutil/`, `scripts/`, and `deployment/` — including
-`deployment/aws-filebased-config/lib`, which is internal wiring for the shipped
-image — is internal-only and is never tagged. The manifest declares only the
-test-helper modules required to compile published-module tests as
-pseudo-version bootstrap exceptions; that does not make them tagged releases.
+`processors/`, `httpapi`, `cmd/gobridge`, and the three AWS deployment-profile
+modules `deployment/aws-filebased-config/{infra,lib,cdk}`. Everything else
+under `tests/`, `testutil/`, `scripts/`, and `deployment/` is internal-only and
+is never tagged. The manifest declares only the test-helper modules required to
+compile published-module tests as pseudo-version bootstrap exceptions; that
+does not make them tagged releases.
 
-The two CDK modules are published because an external CDK app writes its own
-stack against the constructs, and those constructs take `infra` types as
-arguments. Both must resolve from the proxy or the documented quickstart in
-`docs/scenarios/cdk/` cannot compile outside this repository. `cdk` sits above
-the layer-2 store aggregates it requires, which is why `cmd/gobridge` moved to
-layer 4 — the final module must be alone on the highest layer.
+The deployment-profile modules are published because an external CDK app writes
+its own stack against the constructs, those constructs take `infra` types as
+arguments, and the default `ImageFromGoBuild` image source builds the profile
+command out of `lib` from the module proxy at the train version. All three must
+resolve publicly or the documented quickstart in `docs/scenarios/cdk/` cannot
+compile — and cannot build its image — outside this repository. `cdk` and `lib`
+both sit above the layer-2 store aggregates they require, which is why
+`cmd/gobridge` moved to layer 4 — the final module must be alone on the highest
+layer.
+
+Optional profile-family wiring must still be available for any family a bridge
+config requests; a published `lib` tag does not by itself imply support for
+every family. See
+[CDK image sources](docs/aws-deployment/cdk-constructs.md#runtime-image-source).
+
+**Pre-existing profile tags are not a usable train.** `infra` and `cdk` joined
+the train at `v0.3.4` and carry real tags — `infra` `v0.3.4`-`v0.3.6`, `cdk`
+`v0.3.4` and `v0.3.6` (no `v0.3.5`). `lib` has never been tagged at any version,
+so no `v0.3.x` names a complete profile set. Those tags also predate the sealed
+image sources by two weeks: `ImageFromGoBuild` does not exist in `cdk/v0.3.6`. They stay in place — policy 7 forbids moving or
+deleting a tag — and they must not be referenced from documentation or consumer
+instructions. The first usable profile version is the first train published
+after this change.
 
 ## Policy
 
@@ -254,9 +271,9 @@ failed on propagation alone must not cost an entire new version train. A
 genuine defect still fails twice and stops the train.
 
 No layer can start until every tag in the layer below it is green and visible,
-so the final `cmd/gobridge` tag is reached only after
-`deployment/aws-filebased-config/cdk`, which in turn waits on all three layer-2
-tags. If a tagged workflow fails, stop. Do not retag; diagnose and start a new
+so the final `cmd/gobridge` tag is reached only after both layer-3 modules,
+`deployment/aws-filebased-config/cdk` and `deployment/aws-filebased-config/lib`,
+which in turn wait on all three layer-2 tags. If a tagged workflow fails, stop. Do not retag; diagnose and start a new
 patch train.
 
 ### 5. Final public proof
@@ -272,31 +289,46 @@ The tool first retries a **proxy-only** pass with
 `GOPROXY=https://proxy.golang.org` for bounded tag propagation, then repeats a
 separate **direct-only** pass with `GOPROXY=direct`. Every attempt has a fresh
 `HOME`, `GOPATH`, module/build cache, and `GOBIN`; system/global Git config is
-disabled. Both passes retain checksum-database verification, bind Paho, both
-CDK modules, and `cmd/gobridge` `Origin.Hash` to their exact local tag commits,
-and run:
+disabled. Both passes retain checksum-database verification, bind Paho, all
+three deployment-profile modules, and `cmd/gobridge` `Origin.Hash` to their
+exact local tag commits, and run:
 
 ```text
 go mod init example.com/gobridge-release-smoke
 go get github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho@vX.Y.Z
 go list github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho
+go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk@vX.Y.Z
+go build github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk
 go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle@vX.Y.Z
 go build github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle
+go install github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/cmd/gobridge-filebased@vX.Y.Z
 go install github.com/mariotoffia/gobridge/cmd/gobridge@vX.Y.Z
 ```
 
 It rejects every `replace` or `exclude` directive in resolved module manifests
 and in the generated consumer go.mod.
 
-The CDK step **builds** rather than lists. `cdk` is not in `cmd/gobridge`'s
+The `lib` module is resolved *and* its command is installed. Nothing a consumer
+writes imports it, so resolution proves only that the tag exists and that its
+published manifest carries no `replace`. What a consumer actually runs is a
+`go build` of `lib/cmd/gobridge-filebased` inside the `ImageFromGoBuild` Docker
+build at deploy time — after a stack update has begun. The strict per-module
+gate compiles that tree from the staged manifest, but only this install
+compiles it from the published module zip, which is the artifact the consumer
+gets. It runs in module-agnostic mode, so it needs no `go.sum` entry in the
+generated consumer manifest.
+
+The CDK steps **build** rather than list. `cdk` is not in `cmd/gobridge`'s
 dependency graph, so nothing else in the train compiles it from outside the
 repository, and resolution alone would not catch a published manifest that no
-longer satisfies the constructs' own imports. Building
-`constructs/gobridgesingle` reaches `gobridgecdk`, `bridgecfg`, `registry`, the
-shared constructs, and the `infra` types they take as arguments in one command,
-which is the same surface the quickstart in `docs/scenarios/cdk/` uses.
+longer satisfies the constructs' own imports. `gobridgecdk` imports
+`gobridgealbattachment` and `ssmexports` and reaches every facade transitively,
+so building it alone already compiles the whole public surface.
+`constructs/gobridgesingle` is built as well because it is the import path a
+consumer's stack actually names, and a broken direct fetch of that path is the
+first thing a reader would hit.
 
-The CDK step fetches the **package** path, not the module path. `go get
+The CDK steps fetch the **package** path, not the module path. `go get
 module@version` records the requirement but not the `go.sum` entries for what
 that module's own code imports, so the build that follows fails on every
 missing sum. The Paho pair avoids this because `go list` needs no build
@@ -305,6 +337,26 @@ dependencies and `go install pkg@version` resolves in module-agnostic mode.
 The pre-1.0 root-only tags `v0.1.0` and `v0.2.0` predate this policy and have no
 nested module tags; they are not consumable and this proof does not apply to
 them. `v0.3.0` is the first complete train.
+
+## Initial configuration artifacts
+
+The runtime binary can embed its initial configuration; there is no maintained
+configuration-seeder image, publication job, image pin, or update command.
+The previously published Docker Hub artifact is not deleted by this change,
+but current deployments have no runtime dependency on it.
+
+Consumer builds may embed YAML or JSON with `INITIAL_CONFIG_FILE`. Treat the
+resulting binary, image, build context, and cache as copies of that document.
+Literal credentials are permitted; Base64 does not conceal them. A shared
+public runtime image should not be confused with a consumer's configured image.
+See [initial configuration](docs/aws-deployment/config-initialization.md).
+
+Both command packages must publish the fixed `initial-config.base64` file,
+empty by default, and consume it with `go:embed`. Config-bearing CDK builds
+download the requested package through Go tooling, copy its owning module to
+a writable directory, fill the embed file, then build and verify its digest.
+No Git checkout or payload-bearing flags/environment are used. Local Make and
+Docker builds use the standard-library `scripts/buildconfig` overlay instead.
 
 ## Image publication
 
@@ -369,7 +421,12 @@ Production approval is a separate post-merge, credentialed gate. Deploy the AWS
 DynamoDB HA fixture in the protected target environment, stop the verified
 leaseholder, collect the required warm/cold failure-to-Full samples, and retain
 the CloudWatch evidence described in
-`deployment/aws-filebased-config/README.md`. The source-tag workflow cannot
+[the credentialed proof](docs/aws-deployment/topologies.md#credentialed-failover-proof).
+Set `GOBRIDGE_INT_VERSION` to a profile `lib` version from a published train.
+No released train has published `lib` yet.
+The fixtures build per-fixture embedded images through `ImageFromGoBuild`;
+registry-image overrides are not accepted. Record each built image digest with
+its module version and the proof evidence. The source-tag workflow cannot
 supply that repository-specific AWS account, VPC, broker, secrets, or release
 role. Do not describe or promote the published image as production-approved
 until this external proof and the remaining controls in the production-readiness

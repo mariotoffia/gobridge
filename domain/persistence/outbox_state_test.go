@@ -253,7 +253,7 @@ func TestOutboxRecord_Complete(t *testing.T) {
 // TestOutboxRecord_Release validates that Release returns a Claimed
 // record to Pending — clearing claim ownership and timestamp but leaving
 // replayCount untouched — and is rejected from every non-Claimed state.
-// This is the aggregate side of the A4 transient-failure fast path: the
+// This is the aggregate side of the transient-failure fast path: the
 // same owner can re-claim the released record without a fencing-version
 // bump.
 func TestOutboxRecord_Release(t *testing.T) {

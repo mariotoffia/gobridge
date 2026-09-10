@@ -101,7 +101,7 @@ func mapAMQPCondition(amqpErr *amqp.Error) *shared.BridgeError {
 	case "amqp:resource-limit-exceeded":
 		return shared.ErrThrottled.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	case "amqp:resource-deleted":
-		// F13: the broker deleted the target (queue/address/subscription).
+		// the broker deleted the target (queue/address/subscription).
 		// This is PERMANENT — retrying re-attaches to a resource that no
 		// longer exists and loops forever. Surface it so an operator
 		// recreates the resource or fixes the address.
@@ -121,7 +121,7 @@ func mapAMQPCondition(amqpErr *amqp.Error) *shared.BridgeError {
 	case "amqp:link:detach-forced":
 		return shared.ErrConnectionLost.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	case "amqp:link:stolen":
-		// F13: a competing client attached to the same durable
+		// a competing client attached to the same durable
 		// subscription / exclusive address and STOLE this link. Retrying
 		// re-attaches and re-steals it back, ping-ponging the
 		// subscription between replicas forever, so classify it PERMANENT.

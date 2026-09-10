@@ -15,7 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// Finding L12 (per-route supervision): a permanently-failing route must be
+// Finding (per-route supervision): a permanently-failing route must be
 // isolated with jittered capped backoff and restarted in place. It must NEVER
 // flip the global terminal/healthy flags (which would CrashLoopBackOff the whole
 // pod and kill every healthy co-tenant route), and it must stay observable via

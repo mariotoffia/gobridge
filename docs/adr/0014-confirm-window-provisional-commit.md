@@ -11,7 +11,7 @@ rollout barrier)
 ADR 0013's coordinated commit is final the moment every member has **built** the
 candidate (its Ack). One of 0013's stated consequences is "Commit ≠ converged": a
 committed config can still fail to converge against the real broker on a node
-(MQTT-R1) and is *alarmed, not rolled back*. That is the right default — most
+and is *alarmed, not rolled back*. That is the right default — most
 changes should not pay a rollback — but for some changes a syntactically-valid
 config that cannot reach its broker (an ACL-denied topic, rotated-away credentials,
 an unreachable endpoint) staying active is worse than a second reconnect, and the
@@ -30,7 +30,7 @@ duration; empty/`0` is the base ADR 0013 protocol). When set, a coordinated comm
 is **provisional**:
 
 - Every member swaps the candidate **provisionally** and arms a local deadman timer.
-- A member records `Converge` once its post-swap readiness check (MQTT-R1 — every
+- A member records `Converge` once its post-swap readiness check (every
   non-standby session connected and subscribed) passes.
 - The lease-elected, fencing-protected coordinator writes `Confirmed` only when the
   **whole epoch** has converged **and** the window is still open. Confirmation must
@@ -65,13 +65,37 @@ mixed-version cohort (revert is whole-cohort, not per-member).
   member alone on an unconfirmed generation.
 - **Strict whole-cohort revert:** the cohort reverts together; no member is fenced
   out of serving while others run the new generation.
+- **A revert is not finished when it is decided, and a member that cannot finish it
+  is replaced.** The swap back to generation N−1 can fail the same way any apply
+  can (a broker refusing the reconnect, a store briefly unopenable), so it is
+  retried under a bounded backoff and marked done only once the member is verifiably
+  running N−1 again. A member that exhausts the bound is still serving the config
+  the cohort rejected and cannot repair itself: it marks itself degraded, publishes
+  the generation it could not get back to (`rollout.terminal_generation` in deep
+  health, the `ClusterRolloutTerminal` metric), and stops retrying. Replacing it IS
+  the repair — it reboots onto the last confirmed generation.
+
+  The mirror-image failure is deliberately NOT treated the same way. A member that
+  applied a committed generation but cannot durably record the committed-config
+  artifact is running the CORRECT config and only its boot state is stale, so
+  replacing it is the one action that would put it on an older generation. It keeps
+  retrying at a capped backoff under the same alarm, and retracts it if the store
+  comes back. The alarm is shared; the operator action is not, and the reason text
+  says which.
+- **The local deadman does not depend on the rollout store.** It fires from a
+  deadline cached at the provisional swap and runs before the store observation on
+  every drive tick, because "no coordinator decided" and "the store stopped
+  answering" are the same outage from a member's point of view. Every barrier store
+  call is individually bounded and abandoned if it does not return, so a
+  black-holed store delays the deadman by at most one tick instead of suppressing
+  it.
 
 ## Rejected alternatives
 
 - **Kafka-style "commit centrally, fence non-converged members out of serving"**
-  (design Q4) — deferred, not adopted. Strict whole-cohort revert is simpler and
+  (design) — deferred, not adopted. Strict whole-cohort revert is simpler and
   matches the operator contract for cohorts ≤ ~10; the confirm window is merely the
-  first mechanism that makes converged-vs-acked distinguishable, so Q4 is revisitable
+  first mechanism that makes converged-vs-acked distinguishable, so is revisitable
   when cohorts grow, not resolved here.
 - **Confirm without a deadman (wait indefinitely for convergence)** — a coordinator
   or member death would wedge the cohort on an unconfirmed generation forever;

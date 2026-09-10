@@ -131,6 +131,7 @@ func TestApp_CoordinatedRollout_CommitsAndSwaps(t *testing.T) {
 
 	require.NoError(t, app.Start(t.Context()))
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	awaitApplied(t, app)
 	require.Equal(t, 1, app.CurrentAppliedConfig().Version, "booted on the coordinated v1")
 
 	// Reload a live-safe delta the way production does — write it to the config
@@ -140,8 +141,8 @@ func TestApp_CoordinatedRollout_CommitsAndSwaps(t *testing.T) {
 	// makes the manager reconcile assertion below meaningful.
 	require.NoError(t, os.WriteFile(cfgPath, []byte(coordinatedConfigYAML(2, "debug")), 0o644))
 
-	wait.Until(t, 10*time.Second, "the barrier commits the file reload and this member applies it", func() bool {
-		return app.CurrentAppliedConfig().Version == 2
+	wait.Until(t, 10*time.Second, "the barrier applies the file reload and reconciles manager health", func() bool {
+		return app.CurrentAppliedConfig().Version == 2 && !app.manager.ReconfigurePending()
 	})
 	assert.Equal(t, "debug", app.CurrentAppliedConfig().Bridge.LogLevel,
 		"the committed generation really swapped")
@@ -203,4 +204,81 @@ func TestApp_NonCoordinatedClusteredReload_StillRefuses(t *testing.T) {
 	require.Error(t, err, "a non-coordinated clustered reload must fail closed (ADR 0012)")
 	assert.Contains(t, err.Error(), "clustered")
 	assert.NotErrorIs(t, err, errRolloutDeferred, "it is refused, not deferred to a barrier")
+}
+
+// ---------------------------------------------------------------------------
+// Deployment safety switch: an interchangeable, autoscaled worker can
+// never host the coordinated rollout barrier. ECS assigns each replacement task
+// a fresh id, so no worker carries the restart-stable member_id the barrier
+// counts acknowledgements against. These are the runtime half of the switch; the
+// CDK facade rejects the same shape at synth time.
+// ---------------------------------------------------------------------------
+
+// TestApp_ClusterReload_InterchangeableWorkerRefusesCoordinatedBoot proves an
+// autoscaled worker (no bootstrap member_id) refuses to START on a coordinated
+// config instead of booting a half-wired barrier that can never commit.
+func TestApp_ClusterReload_InterchangeableWorkerRefusesCoordinatedBoot(t *testing.T) {
+	cfgPath := t.TempDir() + "/bridge.yaml"
+	require.NoError(t, os.WriteFile(cfgPath, []byte(coordinatedConfigYAML(1, "info")), 0o644))
+
+	bcfg := coordinatedBootstrapCfg(t)
+	bcfg.ConfigFilePath = cfgPath
+	bcfg.MemberID = "" // interchangeable ECS worker: no restart-stable identity
+	app := NewApp(bcfg,
+		WithDynamoDBClient(nil),
+		WithClusterRolloutStores(memoryrollout.NewStore(), memorylease.NewStore(memorylease.WithAcknowledgeSingleReplica(true))),
+		WithParameterResolver(staticParameterResolver{"/admin": "admin-secret-key-123456"}),
+	)
+	require.NoError(t, app.Start(t.Context()))
+	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	wait.Until(t, time.Second, "unwired cohort rejected", func() bool { return app.observationError.Load() != nil })
+	require.Nil(t, app.CurrentRuntime())
+
+}
+
+// TestApp_ClusterReload_RefusesEnablingCoordinatedRolloutLive proves a running
+// clustered member cannot be talked into the coordinated barrier by a config
+// edit: enabling bridge.cluster.rollout live would leave some members driving the
+// barrier and others refusing, so it keeps the ADR 0012 whole-cohort refusal and
+// nothing swaps.
+func TestApp_ClusterReload_RefusesEnablingCoordinatedRolloutLive(t *testing.T) {
+	app := NewApp(coordinatedBootstrapCfg(t),
+		WithDynamoDBClient(nil),
+		WithClusterRolloutStores(memoryrollout.NewStore(), memorylease.NewStore(memorylease.WithAcknowledgeSingleReplica(true))),
+		WithParameterResolver(staticParameterResolver{"/admin": "admin-secret-key-123456"}),
+	)
+	require.NoError(t, app.buildRolloutDriver(context.Background()))
+
+	base := coordinatedLogicalCfg(1)
+	base.Bridge.Cluster.Rollout = "" // running: clustered, not coordinated
+	app.appliedRef.Set(base)
+
+	delta := coordinatedLogicalCfg(2) // proposed: coordinated
+	err := app.applyLogicalConfig(context.Background(), delta, false)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ports.ErrApplyInFlight,
+		"a refusal is definitive; it must not be reported as committed-not-applied")
+	assert.Same(t, base, app.appliedRef.Get(), "nothing swaps on a refused reload")
+}
+
+// TestApp_ClusterReload_CoordinatedWithoutBarrierNamesMemberID proves the
+// defensive branch is actionable: a coordinated cohort whose process has no
+// barrier wired must say WHY (no stable member_id / no rollout store), not just
+// that a barrier is missing.
+func TestApp_ClusterReload_CoordinatedWithoutBarrierNamesMemberID(t *testing.T) {
+	app := NewApp(coordinatedBootstrapCfg(t),
+		WithDynamoDBClient(nil),
+		WithParameterResolver(staticParameterResolver{"/admin": "admin-secret-key-123456"}),
+	)
+	require.Nil(t, app.rolloutDriver, "no coordination stores wired → no driver")
+
+	app.appliedRef.Set(coordinatedLogicalCfg(1))
+	delta := coordinatedLogicalCfg(2)
+	delta.Bridge.LogLevel = "debug" // live-safe: classifies as coordinated
+
+	err := app.applyLogicalConfig(context.Background(), delta, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "member_id",
+		"the operator must learn the missing member identity is why the barrier is absent")
+	assert.Contains(t, err.Error(), "whole-cohort replacement")
 }

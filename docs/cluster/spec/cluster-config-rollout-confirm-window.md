@@ -112,7 +112,7 @@ the last **confirmed** generation (N−1) when its deadline passes.
   the `Confirmed` observation. `Reverted` observation ensures the member is running
   N−1.
 - **Convergence signal:** `RolloutHost.Converged(ctx) (bool, error)` — "this member
-  has provisionally swapped the committed gen AND its post-swap MQTT-R1 watch is not
+  has provisionally swapped the committed gen AND its post-swap convergence watch is not
   degraded". Implemented by the Supervisor and `bootstrap.App`. Ack proves
   validated+built; Converge proves converged-against-the-real-broker — the whole
   point of the window (research §4 Model A vs B).

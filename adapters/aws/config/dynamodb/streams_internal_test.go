@@ -3,7 +3,6 @@ package dynamodb
 import (
 	"context"
 	"encoding/json"
-	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // fakeDDB implements the ddbAPI surface used by the loader's Load path.
@@ -344,14 +344,9 @@ func TestStreamLoopIgnoresUnrelatedRecords(t *testing.T) {
 	// Wait until the goroutine has consumed the batch (GetRecords>=1)
 	// and then armed the inter-poll timer (TimerCount>=1) — at that
 	// point the unrelated record has been evaluated and discarded.
-	deadline := time.Now().Add(1 * time.Second)
-	for streams.getRecordsCalls.Load() < 1 || fc.TimerCount() < 1 {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for streamLoop to consume batch (GetRecords=%d, timers=%d)",
-				streams.getRecordsCalls.Load(), fc.TimerCount())
-		}
-		runtimeYield()
-	}
+	wait.Until(t, 2*time.Second, "streamLoop consumes the batch and arms its inter-poll timer", func() bool {
+		return streams.getRecordsCalls.Load() >= 1 && fc.TimerCount() >= 1
+	})
 
 	select {
 	case got, ok := <-ch:
@@ -361,11 +356,4 @@ func TestStreamLoopIgnoresUnrelatedRecords(t *testing.T) {
 	default:
 		// expected: no emission
 	}
-}
-
-// runtimeYield gives the scheduler a chance to run other goroutines
-// without performing a real time.Sleep (audit-test-timings forbids new
-// time.Sleep calls in tests).
-func runtimeYield() {
-	runtime.Gosched()
 }

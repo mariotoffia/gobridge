@@ -100,7 +100,7 @@ func TestMonitorHandleReady_NotRunning(t *testing.T) {
 }
 
 // TestHandleTopology_ConfigVersion validates the fleet-convergence field
-// (A6-R1): GET /topology surfaces the running config_version when a
+// GET /topology surfaces the running config_version when a
 // ConfigProvider is wired, and omits it entirely when none is configured so
 // a missing provider is never confused with config version 0.
 func TestHandleTopology_ConfigVersion(t *testing.T) {

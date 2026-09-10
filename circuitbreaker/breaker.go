@@ -33,7 +33,7 @@ type Breaker struct {
 	legacyOutstanding int
 	// nextProbeID assigns each admitted half-open probe slot a unique id so
 	// AfterRequestToken releases and counts ONLY the token's own live slot
-	// (CB-1). Without per-slot identity, a reclaimed probe's late outcome
+	// Without per-slot identity, a reclaimed probe's late outcome
 	// released the oldest remaining slot — which by then belonged to a newer
 	// probe — letting the breaker exceed HalfOpenMaxProbes. Monotonic, never
 	// reset; starts at 1 so a zero Token.slotID means "no specific slot"
@@ -75,7 +75,7 @@ type Breaker struct {
 // consistent).
 type probeSlot struct {
 	// id uniquely identifies this admission for the lifetime of the slot so a
-	// token releases exactly its own slot (CB-1). 0 is never assigned.
+	// token releases exactly its own slot. 0 is never assigned.
 	id       uint64
 	deadline time.Time
 	legacy   bool
@@ -95,7 +95,7 @@ type Token struct {
 	probe bool
 	// slotID identifies the exact probe slot this admission took, so
 	// AfterRequestToken releases and counts ONLY that slot and a reclaimed
-	// probe's late outcome cannot free a newer probe's slot (CB-1). 0 on a
+	// probe's late outcome cannot free a newer probe's slot. 0 on a
 	// closed-era admission or the token-less legacy surface.
 	slotID uint64
 }
@@ -282,7 +282,7 @@ func (b *Breaker) tryHalfOpenProbeLocked(legacy bool) (Token, error) {
 // probe (with HalfOpenMaxProbes>1) keeps its slot and its outcome still counts.
 // An outcome that arrives AFTER its OWN slot was reclaimed is, by contrast,
 // stale evidence about an abandoned probe: AfterRequestToken matches on the
-// per-slot id (CB-1), finds the slot gone, and discards the outcome rather than
+// per-slot id, finds the slot gone, and discards the outcome rather than
 // counting it or releasing whatever slot is now oldest. Reclaim frees the slot
 // for concurrency; the slot-id match is what keeps a late outcome from voting in
 // or perturbing a newer probe's epoch. Must be called with b.mu held.
@@ -335,7 +335,7 @@ func (b *Breaker) releaseProbeLocked() {
 // whether it was found. It returns false when the slot is no longer live —
 // already released, or reclaimed by reclaimExpiredProbesLocked after the probe
 // exceeded its deadline — so a reclaimed probe's late outcome releases NOTHING
-// (never a newer probe's slot) and is treated as stale by the caller (CB-1).
+// (never a newer probe's slot) and is treated as stale by the caller.
 // Must be called with b.mu held.
 func (b *Breaker) releaseProbeByIDLocked(id uint64) bool {
 	for i := range b.halfOpenProbes {
@@ -421,7 +421,7 @@ func (b *Breaker) AfterRequestToken(tok Token, err error) {
 	}
 	if tok.probe {
 		if tok.slotID != 0 {
-			// Token surface (CB-1): release and count ONLY this token's own live
+			// Token surface: release and count ONLY this token's own live
 			// slot. If releaseProbeByIDLocked reports the slot is gone, the probe
 			// exceeded its deadline and was reclaimed as abandoned — its late
 			// outcome is stale evidence about a slot that no longer exists, so

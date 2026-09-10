@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,19 +17,39 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
-// waitUntil spins (Gosched, no sleep) until cond is true or the guard
-// duration elapses; fails the test on timeout.
+// waitUntil blocks until cond is true or the guard duration elapses; fails the
+// test on timeout. It delegates to testutil/wait, which backs off and parks the
+// waiting goroutine. A Gosched spin loop here was actively harmful: it stays
+// runnable at all times, so under -race it competes for CPU with the very
+// background goroutine whose progress it is waiting for.
 func waitUntil(t *testing.T, guard time.Duration, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(guard)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatal(msg)
+	wait.Until(t, guard, msg, cond)
+}
+
+// driveFakeClockFor advances fake time past any armed timer until done yields a
+// value, and returns it. Backoff waits inside the code under test only complete
+// when the fake clock crosses them, so the test has to keep time moving; the
+// pacing comes from testutil/wait rather than a spin loop.
+func driveFakeClockFor[T any](t *testing.T, fake *clocktest.Fake, done <-chan T, guard time.Duration, msg string) T {
+	t.Helper()
+	var got T
+	wait.Until(t, guard, msg, func() bool {
+		select {
+		case v := <-done:
+			got = v
+			return true
+		default:
 		}
-		runtime.Gosched()
-	}
+		if fake.TimerCount() > 0 {
+			fake.Advance(pollBackoffMax + 10*time.Second)
+		}
+		return false
+	})
+	return got
 }
 
 // --- Finding: credential rotation nil-panics the receiver poll loop --------
@@ -253,25 +272,10 @@ func TestAcceptSessionWithRetry_RetriesLockContention(t *testing.T) {
 
 	// Drive the fake clock through the backoff waits until the accept
 	// loop finishes; the max jittered delay per step is 37.5s.
-	guard := time.Now().Add(5 * time.Second)
-	for {
-		select {
-		case res := <-done:
-			require.NoError(t, res.err)
-			require.Same(t, mock, res.seam)
-			require.Equal(t, int32(3), attempts.Load())
-			return
-		default:
-		}
-		if time.Now().After(guard) {
-			t.Fatal("acceptSessionWithRetry did not finish")
-		}
-		if fake.TimerCount() > 0 {
-			fake.Advance(pollBackoffMax + 10*time.Second)
-		} else {
-			runtime.Gosched()
-		}
-	}
+	res := driveFakeClockFor(t, fake, done, 5*time.Second, "acceptSessionWithRetry did not finish")
+	require.NoError(t, res.err)
+	require.Same(t, mock, res.seam)
+	require.Equal(t, int32(3), attempts.Load())
 }
 
 // Permanent accept failures (unauthorized, not found) must fail on the
@@ -306,24 +310,9 @@ func TestAcceptSessionWithRetry_ExhaustsAttempts(t *testing.T) {
 		done <- err
 	}()
 
-	guard := time.Now().Add(5 * time.Second)
-	for {
-		select {
-		case err := <-done:
-			require.Error(t, err)
-			require.Equal(t, int32(sessionAcceptMaxAttempts), attempts.Load())
-			return
-		default:
-		}
-		if time.Now().After(guard) {
-			t.Fatal("acceptSessionWithRetry did not finish")
-		}
-		if fake.TimerCount() > 0 {
-			fake.Advance(pollBackoffMax + 10*time.Second)
-		} else {
-			runtime.Gosched()
-		}
-	}
+	err := driveFakeClockFor(t, fake, done, 5*time.Second, "acceptSessionWithRetry did not finish")
+	require.Error(t, err)
+	require.Equal(t, int32(sessionAcceptMaxAttempts), attempts.Load())
 }
 
 // --- Finding: session gaps ---------------------------------------------
@@ -503,9 +492,12 @@ func TestAutoExtend_MaxLockRenewalCap(t *testing.T) {
 		deliveryCancel, nil, rec, fake)
 	defer d.stop()
 
-	for fake.TickerCount() == 0 {
-		runtime.Gosched()
-	}
+	// newDelivery spawns the auto-extend loop, which registers its ticker from a
+	// background goroutine. Advancing before that registration lands would move
+	// fake time past the first tick and it would never fire.
+	wait.Until(t, 5*time.Second, "auto-extend loop registers its ticker", func() bool {
+		return fake.TickerCount() > 0
+	})
 
 	// interval = 1s; deadline = start + 3s. Ticks at 1s and 2s renew.
 	fake.Advance(1100 * time.Millisecond)

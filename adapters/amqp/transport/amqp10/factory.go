@@ -98,7 +98,7 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, sessio
 		Session:          amqpSession,
 	}
 	if rc.DurabilityMode > 0 {
-		// HIGH-1: a durable subscription's broker identity is
+		// a durable subscription's broker identity is
 		// container-id + link name. An auto-generated container-id is
 		// stable across reconnects but CHANGES on process restart, so the
 		// broker sees a NEW subscription after a restart and orphans every
@@ -125,7 +125,7 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, sessio
 	if err != nil {
 		return nil, err
 	}
-	// HIGH-3: enforce the dedicated-session contract at build time so a
+	// enforce the dedicated-session contract at build time so a
 	// durable receiver's session-wide teardown blast radius cannot reach
 	// unrelated sibling links.
 	if err := amqpSession.reserveLink(rc.DurabilityMode > 0); err != nil {
@@ -172,7 +172,7 @@ func (f *Factory) NewSender(_ context.Context, spec ports.SenderSpec, session po
 	if err != nil {
 		return nil, err
 	}
-	// HIGH-3: a sender may not share a session with a durable receiver —
+	// a sender may not share a session with a durable receiver —
 	// the durable receiver's close forces a full connection teardown that
 	// would move this sender's in-flight publishes into unknown/duplicate
 	// territory. Reserve the link so a shared-session topology fails closed

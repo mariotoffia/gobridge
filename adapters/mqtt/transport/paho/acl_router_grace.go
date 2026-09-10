@@ -20,21 +20,16 @@ import (
 func (r *router) beginGrace() {
 	r.mu.Lock()
 	r.graceDeadline = r.clk.Now().Add(r.graceWindow)
-	// Advance the connection generation. Entries buffered from here on are
-	// stamped with this epoch (bufferLocked); on the RECONNECT path below,
-	// entries stamped with a prior epoch are purged (A-1).
-	r.connEpoch++
-	r.clearUnsettledLocked()
-	// Replacement ingress may be buffered while global quiescence remains.
-	r.discarding = false
+	if r.generationOpenedByClient {
+		// The replacement connection's first packet already opened this
+		// generation (it reached the callback before autopaho got here).
+		// Advancing again would purge the entries that packet just buffered and
+		// erase its unsettled bookkeeping — the loss this ordering prevents.
+		r.generationOpenedByClient = false
+	} else {
+		r.advanceGenerationLocked()
+	}
 	if r.graceStarted {
-		// Reconnect. A clean_start=false broker replays every un-acked QoS 1/2
-		// from the prior connection with FRESH packet IDs, so any entry still
-		// buffered under a previous epoch is a stale twin whose ack died with
-		// the old connection. Purge them: keeping them lets a redelivered copy
-		// accumulate beside its ghost until the count cap (== receive_maximum)
-		// ack-drops a LIVE message as a bogus overflow, breaking at-least-once.
-		r.purgeStalePendingLocked()
 		if r.graceTimer != nil {
 			r.graceTimer.Reset(r.graceWindow)
 		}
@@ -112,7 +107,7 @@ func (r *router) graceLoop(timerC <-chan time.Time, unsubCh <-chan string) {
 // Timer.Reset from another goroutine; if that timer had ALREADY fired, a stale
 // tick is left sitting in the timer channel and the worker would act on it
 // immediately after the re-arm — sweeping BEFORE the new deadline, ack-dropping
-// orphans and firing retention metrics ahead of the configured grace (A-12).
+// orphans and firing retention metrics ahead of the configured grace.
 // graceDeadline is advanced under r.mu on every arm, so comparing it against
 // now distinguishes a genuine expiry from a stale tick: a premature tick re-arms
 // the timer for the remaining window and skips the sweep. Runs on the grace
@@ -137,7 +132,7 @@ func (r *router) sweepIfExpired() {
 // COVERED by a subscription the session wants (a receiver whose handler has not
 // registered yet) is RETAINED in place — un-acked — so at-least-once holds
 // until the handler registers (RegisterFiltered flushes it) or the broker
-// redelivers on reconnect (HIGH-1); ack-dropping it would be acknowledged
+// redelivers on reconnect; ack-dropping it would be acknowledged
 // live-route loss. Only a true ORPHAN (a topic no subscription still wants) is
 // acked, dropped, and (deduped) unsubscribed. Runs on the grace worker. The
 // covered entries it retains ARE counted on MetricMQTTRouterCoveredRetained
@@ -271,7 +266,7 @@ func (r *router) enqueueUnsub(topic string) {
 		r.mu.Unlock()
 		if r.logger != nil {
 			r.logger.Warn("mqtt: unmatched publish past startup grace — orphan broker subscription; "+
-				"acking, dropping, and unsubscribing to converge broker state",
+				"acking, dropping, and attempting to unsubscribe its exact topic",
 				"topic", topic,
 			)
 		}
@@ -288,7 +283,7 @@ func (r *router) enqueueUnsub(topic string) {
 //
 // COVERED topics are NEVER routed here: a still-desired subscription whose
 // receiver handler registered late is RETAINED un-acked instead
-// (settleUnmatched → retainCovered, HIGH-1), because ack-dropping it would
+// (settleUnmatched → retainCovered), because ack-dropping it would
 // convert startup slowness into acknowledged live-route loss and break
 // at-least-once. Orphan classification is done by the caller with r.mu
 // released (covered() takes the session mutex).
@@ -309,7 +304,7 @@ func (r *router) dropOrphan(pub *pahov5.Publish, ack func() error) {
 // settleUnmatched handles a publish that matched NO registered handler AFTER
 // the startup grace window. It NEVER ack-drops a still-covered topic — doing so
 // would convert startup slowness into acknowledged live-route loss and break
-// at-least-once (HIGH-1). A covered publish is RETAINED un-acked in the pending
+// at-least-once. A covered publish is RETAINED un-acked in the pending
 // buffer (bounded by receive_maximum) so a late RegisterFiltered flushes it, or
 // the broker redelivers it on reconnect. Only a true orphan (a topic no
 // subscription still wants) is acked, dropped, and unsubscribed. covered() MUST
@@ -327,7 +322,7 @@ func (r *router) settleUnmatched(pub *pahov5.Publish, ack func() error) {
 // retainCovered keeps a still-covered publish that matched no handler past the
 // grace window UN-ACKED in the pending buffer, so at-least-once holds until the
 // receiver handler registers (RegisterFiltered flushes it) or the broker
-// redelivers it on reconnect (HIGH-1). It first re-scans handlers under r.mu to
+// redelivers it on reconnect. It first re-scans handlers under r.mu to
 // close the TOCTOU where a handler registered between the dispatch miss and
 // here (dispatching to it directly). On a buffer refusal the fallback preserves
 // the QoS contract: QoS 1/2 (reachable only when a broker exceeds the granted
@@ -377,7 +372,11 @@ func (r *router) retainCovered(pub *pahov5.Publish, ack func() error) {
 		return
 	}
 	// Covered QoS 0 the buffer cannot hold: best-effort drop (no redelivery
-	// contract). Counted on the covered-drop metric for visibility.
+	// contract). Counted on the covered-drop metric for visibility. The
+	// reservation MUST be returned here: this branch is reachable on every
+	// byte-ceiling refusal, so holding it would retire one unit of the shared
+	// dispatch budget per drop until nothing could be admitted at all.
+	r.releaseQueueReservation(pub)
 	r.coveredDropped.Add(1)
 	r.metrics.Counter(MetricMQTTRouterCoveredDropped, 1, r.sessionTag()...)
 	if ack != nil {
@@ -395,7 +394,7 @@ func (r *router) retainCovered(pub *pahov5.Publish, ack func() error) {
 }
 
 // noteCoveredRetained records n covered publishes on topic retained un-acked
-// past the grace window (HIGH-1): it always bumps the counter and metric, and
+// past the grace window: it always bumps the counter and metric, and
 // WARN-logs ONCE per topic (deduped via coveredWarned) so a high-throughput
 // covered backlog does not spam the log while every retention is still counted.
 func (r *router) noteCoveredRetained(topic string, n int) {
@@ -453,18 +452,28 @@ func (r *router) overflowAckDrop(pub *pahov5.Publish, ack func() error) {
 	}
 }
 
-// dropQoS0Overflow drops a QoS 0 publish the pending buffer refused during the
-// startup grace window. QoS 0 carries no delivery contract and no ack, so the
-// drop is best-effort and counted only on the generic drop metric. Caller must
-// hold NEITHER r.mu.
-func (r *router) dropQoS0Overflow(pub *pahov5.Publish) {
+// dropQoS0 drops a QoS 0 publish no admission path could hold. QoS 0 carries no
+// delivery contract and no ack, so the drop is best-effort and counted only on
+// the generic drop metric. reason names WHICH bound refused it, because the
+// operator remedy differs: a full pending buffer means a receiver has not
+// registered (or has stalled), while an exhausted dispatch budget means
+// receive_maximum is too small for the offered load. Caller must hold NEITHER
+// r.mu.
+func (r *router) dropQoS0(pub *pahov5.Publish, reason string) {
 	r.releaseQueueReservation(pub)
 	r.dropCount.Add(1)
 	r.metrics.Counter(MetricMQTTRouterDropped, 1, r.sessionTag()...)
 	if r.logger != nil {
-		r.logger.Warn("mqtt: dropped QoS 0 publish (pending buffer full during startup grace)",
+		r.logger.Warn("mqtt: dropped QoS 0 publish ("+reason+")",
 			"topic", pub.Topic,
 			"qos", pub.QoS,
 		)
 	}
 }
+
+// Reasons a QoS 0 publish is shed, as reported by dropQoS0.
+const (
+	dropReasonPendingFull     = "pending buffer full during startup grace"
+	dropReasonBudgetExhausted = "dispatch budget exhausted"
+	dropReasonSessionClosing  = "session is closing"
+)

@@ -53,7 +53,7 @@
 //     best-effort drop (MetricMQTTRouterCoveredDropped). Before the FIRST
 //     Reconcile of a process lifetime EVERY topic is treated as covered,
 //     so a broker backlog replayed on CONNACK ahead of the first plan can
-//     never be misclassified as orphan traffic (MQTT-L2).
+//     never be misclassified as orphan traffic.
 //
 //     ORPHAN (no subscription still wants the topic — a route removed
 //     from config whose subscription survives on the resumed
@@ -82,10 +82,15 @@
 //     loss. Terminating the session instead would hand any authorized
 //     publisher a permanent kill switch: the un-acked packet would be
 //     redelivered on every clean_start=false resume and re-latch the
-//     session terminal forever (MQTT-L1). Only violations a compliant
+//     session terminal forever. Only violations a compliant
 //     broker can never forward (malformed packets, total size above the
 //     advertised maximum) fail the session closed, at the raw pre-decode
-//     guard (ingress_conn.go).
+//     guard (ingress_conn.go). The same guard bounds the one cap whose
+//     decode cost the wire does not: a User Property list longer than one
+//     entry above the cap is cut to that length on the raw bytes
+//     (MetricMQTTIngressUserPropertiesTruncated) before the SDK decodes
+//     it, so a legal packet cannot cost tens of thousands of decoded
+//     properties before the callback refuses it.
 //
 //   - Per-receiver topic filtering: each Receiver registers the MQTT topic
 //     filters of its subscriptions (wildcards + and # supported); a

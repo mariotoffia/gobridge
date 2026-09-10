@@ -252,8 +252,7 @@ func (f *HTTPForwarder) Forward(
 	// envelopes run concurrently through this one breaker, and the token-less
 	// BeforeRequest/AfterRequest pair would account an outcome arriving after
 	// a breaker state transition against the current generation (a stale
-	// half-open probe release or spurious re-open — same defect class as
-	// MQTT-O3). The settle callback pins the admission generation instead.
+	// half-open probe release or spurious re-open). The settle callback pins the admission generation instead.
 	settle := func(error) {}
 	if f.cfg.Breaker != nil {
 		admitted, err := ports.AdmitCircuitBreaker(f.cfg.Breaker)

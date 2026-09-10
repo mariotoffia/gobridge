@@ -16,8 +16,8 @@ import (
 // ═══════════════════════════════════════════════════════════════════
 // Outbox Drainer Concurrency & Adaptive Batch Sizing
 //
-// Tests verifying parallel record processing within drainBatch (P1)
-// and adaptive batch sizing during burst/idle transitions (P2).
+// Tests verifying parallel record processing within drainBatch
+// and adaptive batch sizing during burst/idle transitions.
 //
 // Summary:
 // ┌──────┬──────────────────────────────────────────────┬──────────┐

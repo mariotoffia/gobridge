@@ -9,7 +9,7 @@ import (
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
+	"github.com/mariotoffia/gobridge/testutil/flocilocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
@@ -17,18 +17,18 @@ import (
 // Group 5: Real Transport Reconfiguration
 //
 // Validates that DynamoDB config changes produce actual transport
-// reconfiguration using Docker-based SQS (ElasticMQ).
+// reconfiguration using Docker-based SQS (the local AWS emulator).
 //
 // Infrastructure:
 //   ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-//   │  DynamoDB    │     │  ElasticMQ   │     │ config.Mgr  │
+//   │  DynamoDB    │     │  SQS (local) │     │ config.Mgr  │
 //   │  Local       │────▶│  (SQS)      │◀────│ + Supervisor│
 //   └─────────────┘     └─────────────┘     └─────────────┘
 // ===============================================================
 
 // setTestAWSCredentials sets dummy AWS credentials for the SQS
 // BridgeFactory which uses buildAWSConfig → LoadDefaultConfig.
-// ElasticMQ does not validate credentials but the SDK requires them.
+// The emulator does not validate credentials but the SDK requires them.
 func setTestAWSCredentials(t *testing.T) {
 	t.Helper()
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
@@ -70,12 +70,12 @@ func sqsSenderOpts(queueURL, endpoint string) sqsadapter.Config {
 // -----------------------------------------------
 func TestDDBTransport_SQS_ConfigChangeSwapsQueue(t *testing.T) {
 	setTestAWSCredentials(t)
-	sqsEP := sqslocal.Endpoint(t)
-	sqsClient := sqslocal.Client(t)
+	sqsEP := flocilocal.Endpoint(t)
+	sqsClient := newSQSClient(t)
 
-	queueA := sqslocal.CreateQueue(t, sqsClient, sqslocal.UniqueQueue("cfgsqs-a"))
-	queueB := sqslocal.CreateQueue(t, sqsClient, sqslocal.UniqueQueue("cfgsqs-b"))
-	queueC := sqslocal.CreateQueue(t, sqsClient, sqslocal.UniqueQueue("cfgsqs-c"))
+	queueA := createSQSQueue(t, sqsClient, uniqueQueueName("cfgsqs-a"))
+	queueB := createSQSQueue(t, sqsClient, uniqueQueueName("cfgsqs-b"))
+	queueC := createSQSQueue(t, sqsClient, uniqueQueueName("cfgsqs-c"))
 
 	loader := ddbConfigLoader(t, "tsqs-swap")
 	ctx := context.Background()
@@ -222,13 +222,13 @@ func TestDDBTransport_SQS_ConfigChangeSwapsQueue(t *testing.T) {
 // -----------------------------------------------
 func TestDDBTransport_SQS_NewRouteAdded(t *testing.T) {
 	setTestAWSCredentials(t)
-	sqsEP := sqslocal.Endpoint(t)
-	sqsClient := sqslocal.Client(t)
+	sqsEP := flocilocal.Endpoint(t)
+	sqsClient := newSQSClient(t)
 
-	queueA := sqslocal.CreateQueue(t, sqsClient, sqslocal.UniqueQueue("cfgsqs2-a"))
-	queueB := sqslocal.CreateQueue(t, sqsClient, sqslocal.UniqueQueue("cfgsqs2-b"))
-	queueC := sqslocal.CreateQueue(t, sqsClient, sqslocal.UniqueQueue("cfgsqs2-c"))
-	queueD := sqslocal.CreateQueue(t, sqsClient, sqslocal.UniqueQueue("cfgsqs2-d"))
+	queueA := createSQSQueue(t, sqsClient, uniqueQueueName("cfgsqs2-a"))
+	queueB := createSQSQueue(t, sqsClient, uniqueQueueName("cfgsqs2-b"))
+	queueC := createSQSQueue(t, sqsClient, uniqueQueueName("cfgsqs2-c"))
+	queueD := createSQSQueue(t, sqsClient, uniqueQueueName("cfgsqs2-d"))
 
 	loader := ddbConfigLoader(t, "tsqs-add")
 	ctx := context.Background()
@@ -375,13 +375,13 @@ func TestDDBTransport_SQS_NewRouteAdded(t *testing.T) {
 // -----------------------------------------------
 func TestDDBTransport_ConfigRemovesRoute(t *testing.T) {
 	setTestAWSCredentials(t)
-	sqsEP := sqslocal.Endpoint(t)
-	sqsClient := sqslocal.Client(t)
+	sqsEP := flocilocal.Endpoint(t)
+	sqsClient := newSQSClient(t)
 
-	queueA := sqslocal.CreateQueue(t, sqsClient, sqslocal.UniqueQueue("cfgsqs3-a"))
-	queueB := sqslocal.CreateQueue(t, sqsClient, sqslocal.UniqueQueue("cfgsqs3-b"))
-	queueC := sqslocal.CreateQueue(t, sqsClient, sqslocal.UniqueQueue("cfgsqs3-c"))
-	queueD := sqslocal.CreateQueue(t, sqsClient, sqslocal.UniqueQueue("cfgsqs3-d"))
+	queueA := createSQSQueue(t, sqsClient, uniqueQueueName("cfgsqs3-a"))
+	queueB := createSQSQueue(t, sqsClient, uniqueQueueName("cfgsqs3-b"))
+	queueC := createSQSQueue(t, sqsClient, uniqueQueueName("cfgsqs3-c"))
+	queueD := createSQSQueue(t, sqsClient, uniqueQueueName("cfgsqs3-d"))
 
 	loader := ddbConfigLoader(t, "tsqs-remove")
 	ctx := context.Background()

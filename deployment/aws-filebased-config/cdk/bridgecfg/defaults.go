@@ -48,9 +48,8 @@ const DefaultMQTTConnectTimeout = 30 * time.Second
 // (ports.HTTPConfig): the admin key is mandatory, the monitor key
 // optional (admin key reused when empty).
 //
-// Either AdminAPIKey or AdminAPIKeyURI must be set when the resulting
-// HTTP block is emitted; the secret scanner enforces that an inline
-// AdminAPIKey is a credential URI and rejects literal values.
+// Consumers choose literal key values or credential references. The runtime
+// enforces its existing key-presence and key-strength requirements.
 type HTTPAdminAPIOptions struct {
 	// AdminAddr is the listen address for the admin server.
 	AdminAddr string
@@ -60,12 +59,11 @@ type HTTPAdminAPIOptions struct {
 	MonitorAddr string
 
 	// AdminAPIKey is written verbatim to BridgeConfig.HTTP.AdminAPIKey.
-	// MUST be a credential URI (e.g. pms://<path>) — plaintext
-	// values are rejected by the secret scanner.
+	// It may be a literal key or a credential reference (e.g. pms://<path>).
 	AdminAPIKey string
 
 	// MonitorAPIKey is written verbatim to BridgeConfig.HTTP.MonitorAPIKey
-	// when non-empty. Same credential-URI rule applies.
+	// when non-empty. It may also be a literal key or a credential reference.
 	MonitorAPIKey string
 
 	// CORSOrigins is written verbatim to BridgeConfig.HTTP.CORSOrigins.
@@ -79,7 +77,7 @@ type HTTPAdminAPIOptions struct {
 //
 // The returned value is the canonical starting point for
 // builder.WithHTTPAdminAPI(bridgecfg.AdminAPIDefaults().With...).
-// Operators MUST set AdminAPIKey to a credential URI before Build —
+// Operators must supply AdminAPIKey as a key or credential reference —
 // the runtime HTTP server refuses to start without an API key.
 func AdminAPIDefaults() HTTPAdminAPIOptions {
 	return HTTPAdminAPIOptions{

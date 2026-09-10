@@ -17,7 +17,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════
-// S13-gap: RouteRunner Child Goroutine Panic Recovery
+// RouteRunner Child Goroutine Panic Recovery
 //
 // Validates that panics in delivery-processing goroutines are recovered
 // without crashing the process, that the delivery is retried, metrics

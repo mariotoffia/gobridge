@@ -9,7 +9,6 @@ import (
 	"github.com/aws/constructs-go/constructs/v10"
 	"github.com/aws/jsii-runtime-go"
 
-	"github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -54,42 +53,9 @@ func RunPhase2(scope constructs.Construct, in Phase2Input) {
 	emit := func(msg string) {
 		awscdk.Annotations_Of(scope).AddError(jsii.String(msg))
 	}
-	checkSQS(in.Cfg, in.QueueRegistry, emit)
+	checkSQS(scope, in.Cfg, in.QueueRegistry, emit)
 	checkSSM(in.Cfg, in.SsmParamRegistry, emit)
 	checkEndpoints(in.Cfg, emit)
-}
-
-// checkSQS extracts the logical queue names referenced by SQS
-// receivers/senders, deduplicates them, and verifies each is present
-// in the registry. When the registry is nil but SQS refs exist, a
-// single "QueueRegistry prop is required" error is emitted naming
-// every offending queue so the operator can wire up the registry in
-// one go.
-func checkSQS(cfg *ports.BridgeConfig, reg *registry.QueueRegistry, emit func(string)) {
-	names := collectSQSQueueNames(cfg)
-	if len(names) == 0 {
-		return
-	}
-	if reg == nil {
-		emit(fmt.Sprintf(
-			"yaml references SQS queue(s) %s via the SQS transport, but no QueueRegistry was supplied. "+
-				"Expected: a *registry.QueueRegistry passed via the construct's QueueRegistry prop. "+
-				"Fix: construct registry.NewQueueRegistry(), call AddQueue(name, queue) for each of %s, and pass it as QueueRegistry on the construct props.",
-			quoteList(names), quoteList(names),
-		))
-		return
-	}
-	for _, name := range names {
-		if reg.Has(name) {
-			continue
-		}
-		emit(fmt.Sprintf(
-			"yaml references SQS queue %q but no such entry in QueueRegistry. "+
-				"Expected: an AddQueue(%q, queue) call before the GoBridge construct is synthesised. "+
-				"Fix: registry.AddQueue(%q, queue) on the QueueRegistry passed via the construct's QueueRegistry prop.",
-			name, name, name,
-		))
-	}
 }
 
 // checkSSM extracts every pms:// credential URI referenced by the config,
@@ -144,39 +110,6 @@ func checkEndpoints(cfg *ports.BridgeConfig, emit func(string)) {
 			emit(formatEndpointError(e))
 		}
 	}
-}
-
-// collectSQSQueueNames walks Receivers and Senders, deduplicates the
-// non-empty QueueName values from SQS-typed configs, and returns them
-// in sorted order. Defs that supply QueueURL directly are skipped:
-// an explicit URL bypasses the registry by design.
-func collectSQSQueueNames(cfg *ports.BridgeConfig) []string {
-	seen := map[string]struct{}{}
-	add := func(name string) {
-		if name == "" {
-			return
-		}
-		seen[name] = struct{}{}
-	}
-	for i := range cfg.Receivers {
-		r := &cfg.Receivers[i]
-		if !sqs.IsKind(r.Transport) {
-			continue
-		}
-		if c, ok := r.Config.(*sqs.Config); ok && c != nil && c.QueueURL == "" {
-			add(c.QueueName)
-		}
-	}
-	for i := range cfg.Senders {
-		s := &cfg.Senders[i]
-		if !sqs.IsKind(s.Transport) {
-			continue
-		}
-		if c, ok := s.Config.(*sqs.Config); ok && c != nil && c.QueueURL == "" {
-			add(c.QueueName)
-		}
-	}
-	return sortedKeys(seen)
 }
 
 // collectSSMURIs walks every plugin payload that may carry a

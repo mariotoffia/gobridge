@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -34,9 +35,16 @@ type RouteHealth struct {
 	InFlight     int  // currently-processing delivery count
 	// RouteDead reports a route that has restarted K consecutive times without
 	// ever reaching its stability window — a steady-state flap wedged at the
-	// supervisor backoff cap (e.g. a single-use receiver whose Run cannot be
-	// re-entered). Per-route supervision keeps global liveness green by design, so
-	// ops must alert on this STATE rather than on the restart rate alone.
+	// supervisor backoff cap (a source that keeps failing immediately, such as a
+	// deleted queue or a revoked credential). Per-route supervision keeps global
+	// liveness green by design, so ops must alert on this STATE rather than on
+	// the restart rate alone.
+	//
+	// It latches only for sources the route runner can re-enter — those whose
+	// broker client belongs to the session, not the receiver. A receiver the
+	// runner closes on exit is single-use, so its route escalates to a terminal
+	// runtime (process restart) instead of flapping, and never reaches this
+	// state.
 	RouteDead bool
 }
 
@@ -72,6 +80,13 @@ type DeepHealth struct {
 	Sessions        []SessionHealthDetail
 	ReadyForTraffic bool         // All sessions connected + runtime healthy
 	ServiceLevel    ServiceLevel // Minimum service level across all sessions
+	// Empty reports that this instance carries no routes and no sessions, so
+	// nothing can be bridged through it. It is the observable form of the
+	// start-empty state (a missing or route-less configuration). Every
+	// "all X are ready" aggregate above is vacuously true over empty sets, so
+	// without this flag a bridge that carries nothing would advertise itself as
+	// fully ready for traffic.
+	Empty bool
 }
 
 // ReadinessLevel describes the highest operational level the runtime
@@ -149,12 +164,21 @@ func ParseReadinessLevel(s string) (ReadinessLevel, bool) {
 	}
 }
 
-// readinessRoleStandby is the DeepHealth.Role value for an instance that has
-// exclusive sessions configured but holds no lease — ready-but-not-primary.
-// It mirrors the runtime's role vocabulary (runtime.roleStandby) as it appears
-// on the read-side wire; kept here so ReadinessLevelFromDeepHealth stays a pure
-// function of the snapshot without importing the runtime.
-const readinessRoleStandby = "standby"
+// Role values reported by Runtime.Role, the bare /ready probe and
+// DeepHealth.Role. They classify an instance by EXCLUSIVE-session lease
+// ownership only: a non-exclusive session never acquires a lease and takes no
+// part in failover, so it never makes an instance look like a standby.
+const (
+	// RoleActive: at least one exclusive session holds a lease — this instance
+	// is the primary dispatcher for its exclusive routes.
+	RoleActive = "active"
+	// RoleStandby: exclusive sessions are configured but none currently holds a
+	// lease — ready but not serving as primary. Readiness is capped at
+	// LevelSubscribed so a failover router never treats it as a dispatch target.
+	RoleStandby = "standby"
+	// RoleStandalone: no exclusive sessions configured — no failover role.
+	RoleStandalone = "standalone"
+)
 
 // ReadinessLevelFromDeepHealth derives the achieved ReadinessLevel from a
 // SINGLE DeepHealth snapshot, so a caller that already holds one (e.g. the
@@ -175,8 +199,15 @@ func ReadinessLevelFromDeepHealth(dh DeepHealth) ReadinessLevel {
 	if !dh.Running || !dh.Healthy {
 		return LevelLive
 	}
+	// An instance that carries nothing is running and nothing more. Every level
+	// above LevelRunning is a claim about sessions and routes it does not have,
+	// and LevelFull in particular is the gate a deployment opens traffic on, so
+	// a bridge with no configuration must never reach it.
+	if dh.Empty {
+		return LevelRunning
+	}
 	level := readinessLevelFromSessions(dh)
-	if dh.Role == readinessRoleStandby && level > LevelSubscribed {
+	if dh.Role == RoleStandby && level > LevelSubscribed {
 		return LevelSubscribed
 	}
 	return level
@@ -233,7 +264,7 @@ func readinessLevelFromSessions(dh DeepHealth) ReadinessLevel {
 	// Full requires every route runner to be Ready (handler registered). A route
 	// that is not ready OR latched dead (RouteDead — wedged flapping at the
 	// supervisor cap) cannot dispatch, so the instance is not Full even though
-	// every session is subscribed (HIGH-2). This keeps LevelFull an honest
+	// every session is subscribed. This keeps LevelFull an honest
 	// "every route ready to serve" signal that the legacy /ready default relies on.
 	for _, rh := range dh.Routes {
 		if !rh.Ready || rh.RouteDead {
@@ -327,14 +358,37 @@ type RuntimeCommand interface {
 	// expired ctx still runs the cancel-and-return fallback promptly.
 	Stop(ctx context.Context) error
 	// Inject sends a synthetic envelope through the named route's
-	// delivery pipeline. Returns shared.ErrNotFound when the route
-	// does not exist.
+	// delivery pipeline. A nil error means the message was DELIVERED.
+	//
+	// An error wrapping ErrInjectNotDelivered means the route processed the
+	// message and settled it WITHOUT delivering it. Any other error is a
+	// genuine injection failure.
+	// Returns shared.ErrNotFound when the route does not exist, and a
+	// non-nil error when the route settled the message terminally without
+	// delivering it — dropped by policy, filtered, expired, or written to
+	// the DLQ. An injected message is settled through a synthetic delivery
+	// whose acknowledgement always succeeds, so without that distinction a
+	// discarded message would be indistinguishable from a delivered one.
 	Inject(ctx context.Context, routeID string, env *messaging.Envelope) error
 	// DLQAdmin returns the configured DLQ admin port, or nil when no
 	// DLQ is wired. It carries the destructive dead-letter operations
 	// (write, delete, delete-by-filter, purge) kept off the read port.
 	DLQAdmin() DLQAdmin
 }
+
+// ErrInjectNotDelivered marks the outcome of an Inject whose message the route
+// PROCESSED but did not DELIVER: it was dropped by the route's failure policy,
+// discarded by a filter processor, already expired, or written to the dead-letter
+// queue. The message never reached a destination, so it is not a success — but
+// the route did exactly what it was configured to do, so it is not a fault of
+// the caller or of the bridge either.
+//
+// It exists because an injected message is settled through a synthetic delivery
+// whose acknowledgement always succeeds. Without this distinction a discarded
+// message is indistinguishable from a delivered one, and the admin DLQ redrive
+// deletes the entry — the message's last copy — after a replay that went
+// nowhere. Implementations wrap it around the settling cause.
+var ErrInjectNotDelivered = errors.New("ports: injected message was settled without being delivered")
 
 // Runtime aggregates the read- and write-side runtime ports for
 // driving adapters that need both. Most adapters should depend on

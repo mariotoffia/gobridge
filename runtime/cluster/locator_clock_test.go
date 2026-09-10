@@ -74,7 +74,7 @@ func TestLocator_CacheTTL_FakeClock(t *testing.T) {
 		Owner:   "instance-remote",
 		Version: 1,
 		// A live lease always carries a future ExpiresAt (both real stores set
-		// it); required so the fresh-read expiry bound (finding F3) treats this
+		// it); required so the fresh-read expiry bound treats this
 		// as a live row rather than an expired corpse.
 		ExpiresAt: fake.Now().Add(time.Hour),
 		Endpoints: map[string]string{"http": "http://remote:8080"},
@@ -124,7 +124,7 @@ func TestLocator_CacheTTL_FakeClock(t *testing.T) {
 // TestLocator_CircuitCooldown_FakeClock verifies that after MaxFailures
 // consecutive Current() errors the circuit opens and Locate short-circuits
 // (without hitting the lease store) until CooldownPeriod advances on the fake
-// clock. With the default fail-CLOSED posture (finding M7) the open breaker
+// clock. With the default fail-CLOSED posture the open breaker
 // surfaces an error and never processes locally, so a non-owner cannot act on
 // an exclusive route during a store outage.
 func TestLocator_CircuitCooldown_FakeClock(t *testing.T) {
@@ -204,7 +204,7 @@ func TestLocator_CircuitCooldown_FakeClock(t *testing.T) {
 // TestLocator_CircuitCooldown_FailOpen verifies the opt-in fail-OPEN posture
 // (LocatorConfig.FailOpen = true): an open breaker processes locally
 // (local=true, no error) instead of failing closed, trading exclusivity for
-// availability (finding M7).
+// availability.
 func TestLocator_CircuitCooldown_FailOpen(t *testing.T) {
 	fake := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 	store := &stubLeaseStore{}
@@ -246,7 +246,7 @@ func TestLocator_CircuitCooldown_FailOpen(t *testing.T) {
 	}
 }
 
-// TestLocator_NotFoundDoesNotTripBreaker pins finding M7's primary fix: a
+// TestLocator_NotFoundDoesNotTripBreaker pins the primary fix: a
 // not-found lease (the lease is momentarily unowned during an ordinary
 // transfer) is NOT a store failure and must never advance the breaker toward
 // opening, no matter how many transfers occur. Each such Locate fails closed

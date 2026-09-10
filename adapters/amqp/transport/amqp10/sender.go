@@ -46,21 +46,20 @@ type Sender struct {
 	// closed is set by Close under mu. Once closed, createLink refuses to
 	// re-attach a link (and thus re-register the sender in session
 	// health), so a late Send/SendBatch returns a permanent
-	// transport-closed error instead of silently resurrecting the sender
-	// (finding F14).
+	// transport-closed error instead of silently resurrecting the sender.
 	closed bool
 
 	// attach creates a new sender link on the current session connection.
 	// It defaults to defaultAttach (session-backed); tests may override it
 	// to exercise the attach path — notably the SendBatch attach timeout
-	// (finding 4) — without a live broker.
+	// — without a live broker.
 	attach func(ctx context.Context) (senderLinkAPI, amqpConn, error)
 }
 
 // NewSender creates an AMQP 1.0 Sender.
 //
 // LOW-LEVEL constructor. It does NOT enforce the dedicated-session contract
-// (HIGH-3) — Factory.NewSender reserves the link so a sender cannot share a
+// Factory.NewSender reserves the link so a sender cannot share a
 // session with a durable receiver. Production builds every link through the
 // ports.TransportFactory interface (Factory.NewSender); this constructor
 // stays permissive for tests. Use Factory.NewSender in production.
@@ -191,7 +190,7 @@ func (s *Sender) handleSendFailure(ctx context.Context, failed senderLinkAPI, fa
 		}
 		closeLinkAsync(failed, timeout)
 		// The link is down until Send re-establishes it: reflect that in
-		// Session.Health and record the cause (finding 9).
+		// Session.Health and record the cause.
 		if s.session != nil {
 			s.session.markSenderLink(s, false)
 			s.session.noteLinkError(err)
@@ -228,7 +227,7 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([
 
 	// Bound the initial link attach the same way Send bounds its own
 	// attach: without this, a broker that accepts TCP but never answers
-	// the attach hangs the batch caller indefinitely (finding 4). Only
+	// the attach hangs the batch caller indefinitely. Only
 	// the attach is bounded here — each per-message Send below applies
 	// its own cfg.Timeout.
 	attachCtx, cancel := s.applyTimeout(ctx)
@@ -257,7 +256,7 @@ func (s *Sender) ensureLink(ctx context.Context) error {
 }
 
 func (s *Sender) createLink(ctx context.Context) error {
-	// F14: createLink is the single choke point for link attach (called
+	// createLink is the single choke point for link attach (called
 	// under s.mu from Send and ensureLink). Refuse once closed so a late
 	// Send cannot re-attach a link and re-enter session health.
 	if s.closed {
@@ -279,7 +278,7 @@ func (s *Sender) createLink(ctx context.Context) error {
 	s.linkConn = conn
 
 	// Register this sender's link for health reporting: a subsequent
-	// failure marks it down and degrades Session.Health (finding 9).
+	// failure marks it down and degrades Session.Health.
 	if s.session != nil {
 		s.session.registerSender(s)
 	}
@@ -299,7 +298,7 @@ func (s *Sender) createLink(ctx context.Context) error {
 //
 // (ireturn allow-list category 5): defaultAttach must return the
 // senderLinkAPI interface so unit tests can inject a fake attach that
-// exercises the SendBatch attach timeout (finding 4) without a broker.
+// exercises the SendBatch attach timeout without a broker.
 //
 //nolint:ireturn // senderLinkAPI is an adapter-internal mock seam
 func (s *Sender) defaultAttach(ctx context.Context) (senderLinkAPI, amqpConn, error) {

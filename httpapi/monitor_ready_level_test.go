@@ -20,9 +20,7 @@ import (
 // level= query parameter was added. Operators with existing tooling
 // must keep working.
 func TestHandleReady_LegacyShape_BackwardsCompat(t *testing.T) {
-	rt := runtime.New(runtime.WithInstanceID("legacy"))
-	require.NoError(t, rt.Start(context.Background()))
-	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
+	rt := newBridgingRuntime(t, "legacy")
 	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: shared.NewSecret("key-0123456789abcdef")})
 
 	rec := httptest.NewRecorder()
@@ -41,9 +39,7 @@ func TestHandleReady_LegacyShape_BackwardsCompat(t *testing.T) {
 // /ready?level=running returns the new structured response with level
 // + requested fields.
 func TestHandleReady_WithLevel_ReturnsStructuredResponse(t *testing.T) {
-	rt := runtime.New(runtime.WithInstanceID("structured"))
-	require.NoError(t, rt.Start(context.Background()))
-	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
+	rt := newBridgingRuntime(t, "structured")
 	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: shared.NewSecret("key-0123456789abcdef")})
 
 	rec := httptest.NewRecorder()
@@ -54,7 +50,6 @@ func TestHandleReady_WithLevel_ReturnsStructuredResponse(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 	assert.Equal(t, "ready", body["status"])
 	assert.Equal(t, "running", body["requested"])
-	// A running standalone runtime has no sessions/routes — Full is achievable.
 	assert.Contains(t, []any{"running", "connected", "subscribed", "full"}, body["level"])
 }
 
@@ -87,23 +82,41 @@ func TestHandleReady_InvalidLevel_Returns400(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-// TestRuntime_ReadinessLevel_StatesProgression verifies the level
-// progression for a runtime with no sessions/routes (degenerate but
-// covers the LevelLive → LevelFull edge).
-func TestRuntime_ReadinessLevel_StatesProgression(t *testing.T) {
+// TestRuntime_ReadinessLevel_EmptyRuntimeStopsAtRunning pins the two ends of
+// the progression for a runtime that carries NOTHING — the start-empty state, a
+// process booted without a usable configuration. Before Start it is only Live;
+// after Start it is Running and goes no further. It must never reach LevelFull:
+// "every route is ready" is vacuously true over zero routes, and a deployment
+// that gates traffic on Full would otherwise open the gate for an instance
+// through which not one message can pass.
+func TestRuntime_ReadinessLevel_EmptyRuntimeStopsAtRunning(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("levels"))
 
-	// Before Start: bridge not running → LevelLive.
 	got := rt.ReadinessLevel(context.Background())
 	assert.Equal(t, runtime.LevelLive, got, "before Start, level must be Live")
 
 	require.NoError(t, rt.Start(context.Background()))
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 
-	// After Start with no routes/sessions: should reach LevelFull
-	// (no sessions to be disconnected, no routes to be unready).
 	got = rt.ReadinessLevel(context.Background())
-	assert.Equal(t, runtime.LevelFull, got, "started runtime with no sessions/routes is Full")
+	assert.Equal(t, runtime.LevelRunning, got,
+		"a started runtime that carries no routes and no sessions bridges nothing and must stop at Running")
+}
+
+// TestHandleReady_EmptyRuntimeShedsTraffic proves the same contract through the
+// probe an orchestrator actually calls: the legacy no-level /ready gates on
+// LevelFull, so a bridge started with a missing or route-less config sheds
+// traffic instead of advertising itself as a working member of the pool.
+func TestHandleReady_EmptyRuntimeShedsTraffic(t *testing.T) {
+	rt := runtime.New(runtime.WithInstanceID("empty"))
+	require.NoError(t, rt.Start(context.Background()))
+	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
+	s := httpapi.New(rt, httpapi.Config{AdminAPIKey: shared.NewSecret("key-0123456789abcdef")})
+
+	rec := httptest.NewRecorder()
+	s.MonitorMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/monitor/ready", nil))
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
 
 // TestParseReadinessLevel verifies all level strings round-trip.

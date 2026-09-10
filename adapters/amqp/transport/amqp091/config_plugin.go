@@ -94,8 +94,8 @@ type SenderParams struct {
 
 // SubscriptionParams describes per-topic broker setup performed when
 // declaring an inbound subscription. These values previously lived in
-// SubscriptionPlan.Options; PHASE2 carries them through the typed
-// Config attached to SubscriptionPlan.Config.
+// SubscriptionPlan.Options as an untyped map; they now travel through
+// the typed Config attached to SubscriptionPlan.Config.
 type SubscriptionParams struct {
 	Exchange     string `mapstructure:"exchange" yaml:"exchange" json:"exchange"`
 	RoutingKey   string `mapstructure:"routing_key" yaml:"routing_key" json:"routing_key"`

@@ -11,7 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestEmitParsed_CoalescesLatestWins is the I4 regression: when the one-slot
+// TestEmitParsed_CoalescesLatestWins is the regression: when the one-slot
 // consumer channel is full, a newly parsed reload must supersede the queued
 // one (latest-wins) instead of being silently dropped. Pre-fix the second
 // reload hit the default branch and was discarded, leaving the consumer stuck
@@ -83,7 +83,7 @@ func TestEmitParsed_NoCoalesceWhenConsumerKeepsUp(t *testing.T) {
 	}
 }
 
-// TestSource_Load_RespectsContextCancellation is the I6 regression for the
+// TestSource_Load_RespectsContextCancellation is the regression for the
 // config source: a cancelled context short-circuits before parsing.
 func TestSource_Load_RespectsContextCancellation(t *testing.T) {
 	dir := t.TempDir()
@@ -100,7 +100,7 @@ func TestSource_Load_RespectsContextCancellation(t *testing.T) {
 }
 
 // TestSource_Load_MissingFileMapsNotFound verifies a missing config file
-// surfaces as the classified shared.ErrNotFound (I6 error mapping).
+// surfaces as the classified shared.ErrNotFound (error mapping).
 func TestSource_Load_MissingFileMapsNotFound(t *testing.T) {
 	src := NewSource(filepath.Join(t.TempDir(), "does-not-exist.yaml"), newTestRegistry(t))
 

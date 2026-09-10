@@ -13,7 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestSender_UsesOutboundAddressNotSubject pins the T05 contract:
+// TestSender_UsesOutboundAddressNotSubject pins the contract:
 // Sender.Send selects the publish topic from msg.Address (or
 // SenderOptions.DefaultTopic when Address is empty); it never reads
 // msg.Envelope.Subject() for topic selection. The logical subject is
@@ -33,7 +33,7 @@ func TestSender_UsesOutboundAddressNotSubject(t *testing.T) {
 		// Sender.Send resolves topic = msg.Address ("topic/from/address")
 		// then calls PublishFromEnvelope with that topic. We verify the
 		// resulting on-the-wire packet directly.
-		pub := PublishFromEnvelope(env, "topic/from/address", SenderOptions{QoS: 1}, nil)
+		pub := mustPublishFromEnvelope(t, env, "topic/from/address", SenderOptions{QoS: 1}, nil)
 
 		if pub.Topic != "topic/from/address" {
 			t.Errorf("pub.Topic = %q, want %q", pub.Topic, "topic/from/address")
@@ -65,7 +65,7 @@ func TestSender_UsesOutboundAddressNotSubject(t *testing.T) {
 		if topic == "" {
 			topic = opts.DefaultTopic
 		}
-		pub := PublishFromEnvelope(env, topic, opts, nil)
+		pub := mustPublishFromEnvelope(t, env, topic, opts, nil)
 		if pub.Topic != "default/topic" {
 			t.Errorf("pub.Topic = %q, want %q", pub.Topic, "default/topic")
 		}
@@ -102,7 +102,7 @@ func TestSender_UsesOutboundAddressNotSubject(t *testing.T) {
 }
 
 // TestMQTTRoundTrip_PreservesLogicalSubjectAndRecordsTopic verifies the
-// T05 acceptance criterion: an MQTT round-trip preserves the logical
+// acceptance criterion: an MQTT round-trip preserves the logical
 // Envelope.Subject (carried via HeaderGobridgeSubject) and records the
 // publish topic separately under HeaderMQTTTopic.
 func TestMQTTRoundTrip_PreservesLogicalSubjectAndRecordsTopic(t *testing.T) {
@@ -112,7 +112,7 @@ func TestMQTTRoundTrip_PreservesLogicalSubjectAndRecordsTopic(t *testing.T) {
 		Payload: []byte("data"),
 	})
 
-	pub := PublishFromEnvelope(original, "topic/orders/v1", SenderOptions{QoS: 1}, nil)
+	pub := mustPublishFromEnvelope(t, original, "topic/orders/v1", SenderOptions{QoS: 1}, nil)
 	if pub.Topic != "topic/orders/v1" {
 		t.Fatalf("pub.Topic = %q, want %q", pub.Topic, "topic/orders/v1")
 	}
@@ -133,7 +133,7 @@ func TestMQTTRoundTrip_PreservesLogicalSubjectAndRecordsTopic(t *testing.T) {
 // that when a publish carries no HeaderGobridgeSubject user property,
 // Envelope.Subject is left empty (no longer populated from pub.Topic).
 func TestEnvelopeFromPublish_NoGobridgeSubjectLeavesSubjectEmpty(t *testing.T) {
-	pub := PublishFromEnvelope(
+	pub := mustPublishFromEnvelope(t,
 		messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte("p")}), // Subject empty → no user property emitted
 		"transport/only/topic",
 		SenderOptions{QoS: 0},

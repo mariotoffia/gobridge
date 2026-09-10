@@ -91,7 +91,7 @@ type Session struct {
 	// goroutines (closeConnAsync). Under a sustained outage every reconnect
 	// attempt discards a connection whose Close can itself wedge on
 	// connection.close-ok; without a cap each attempt would park another
-	// close goroutine forever (review #3). maxConcurrentCloses is the ceiling.
+	// close goroutine forever. maxConcurrentCloses is the ceiling.
 	activeCloses atomic.Int64
 
 	// eventSubs holds per-subscriber channels for fan-out delivery of
@@ -109,7 +109,7 @@ type Session struct {
 	// (they just fail auth and retry).
 	liveCreds amqpCredentials
 
-	// authFailureCB is the reactive-recovery hook (HIGH-3). The
+	// authFailureCB is the reactive-recovery hook. The
 	// CredentialRefresher injects a URI-bound callback via
 	// SetAuthFailureCallback; reportAuthFailure invokes it when a live reconnect
 	// dial maps a broker error to shared.ErrNotAuthorized (403 access-refused),
@@ -166,7 +166,7 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 }
 
 // warnEmbeddedBrokerURLCredentials warns that broker_url embeds userinfo
-// which the explicit/rotated credentials override (F8): the embedded
+// which the explicit/rotated credentials override: the embedded
 // values are never sent to the broker, so they should be removed from
 // the URL. Emitted once at construction (config conflict) and once per
 // credential rotation (rotation over a stale embedded secret). Only the
@@ -519,7 +519,7 @@ func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan conne
 	// FAILED reconcile drop the last-known-good view, and (b) — combined with
 	// the in-goroutine write this refactor removed — let a timed-out plan-A
 	// declare that later unwinds clobber a newer plan-B's subscriptions
-	// (review #5). On failure activeSubs keeps its last-known-good value.
+	// On failure activeSubs keeps its last-known-good value.
 
 	// Topology declaration is bounded by ctx: the amqp091-go declare calls
 	// (Channel/ExchangeDeclare/QueueDeclare/QueueBind — see acl_session.go)
@@ -539,7 +539,7 @@ func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan conne
 	// reconcile's connection is still the installed one (generation guard). The
 	// commit happens HERE — never inside the declare goroutine — so a plan-A
 	// declare that timed out and later unwinds cannot write stale subscriptions
-	// over the connection a newer plan-B installed (review #5).
+	// over the connection a newer plan-B installed.
 	s.mu.Lock()
 	if s.conn == conn {
 		next := make(map[string]bool, len(declaredQueues))
@@ -571,7 +571,7 @@ func (s *Session) reconcile(ctx context.Context, conn amqpConnection, plan conne
 // can deposit its result and exit without blocking — and, crucially, WITHOUT
 // mutating session state. activeSubs is committed by reconcile from these
 // returned names under a generation guard, so a timed-out plan-A declare that
-// later unwinds cannot write stale subscriptions over a newer plan-B (review #5).
+// later unwinds cannot write stale subscriptions over a newer plan-B.
 type declareOutcome struct {
 	queues []string
 	err    error
@@ -621,7 +621,7 @@ func (s *Session) declareTopologyWithin(ctx context.Context, conn amqpConnection
 // declared so far are returned alongside it (reconcile discards them on error).
 // Publisher-exchange declares are BEST-EFFORT (see the inline rationale). It
 // runs on the goroutine declareTopologyWithin spawns so the ctx-less SDK calls
-// can be abandoned on the deadline; it MUST NOT mutate session state (review #5).
+// can be abandoned on the deadline; it MUST NOT mutate session state.
 func (s *Session) declareTopology(conn amqpConnection, plan connectivity.SessionPlan) ([]string, error) {
 	queues := make([]string, 0, len(plan.Subscriptions))
 	for _, sub := range plan.Subscriptions {
@@ -637,7 +637,7 @@ func (s *Session) declareTopology(conn amqpConnection, plan connectivity.Session
 			// Publisher-exchange auto-declare is BEST-EFFORT, unlike
 			// subscription declare above (which is fatal — you cannot consume
 			// from a queue that cannot be declared). The sender never declared
-			// its exchange before F1-P3; publishing to an externally-managed or
+			// its exchange before; publishing to an externally-managed or
 			// least-privilege exchange worked without it. An active re-declare
 			// of such an exchange legitimately fails (PRECONDITION_FAILED on a
 			// topology mismatch, ACCESS_REFUSED without configure permission),
@@ -645,7 +645,7 @@ func (s *Session) declareTopology(conn amqpConnection, plan connectivity.Session
 			// take a previously-working publish route DOWN. So warn + meter and
 			// continue: a genuinely-absent exchange the bridge cannot create
 			// still fails visibly at publish time (404 -> retry/DLQ), exactly as
-			// it did before this auto-declare existed (ADV-F1-P3).
+			// it did before this auto-declare existed (ADV).
 			s.metrics.Counter(MetricAMQP091PublisherDeclareFailed, 1,
 				shared.Tag{Key: shared.TagKeyEntity, Value: pub.Topic})
 			if s.logger != nil {
@@ -666,11 +666,11 @@ func (s *Session) declareTopology(conn amqpConnection, plan connectivity.Session
 // and topology-declaration give-up. The close is detached and deadline-bounded:
 // its only job is to unwedge any in-flight SDK call and free the socket.
 //
-// It is also CAPPED (review #3): under a sustained outage every reconnect
+// It is also CAPPED: under a sustained outage every reconnect
 // attempt discards a connection whose Close can itself wedge waiting for
 // connection.close-ok. A plain fire-and-forget go conn.Close() would park a new
 // goroutine on every attempt and leak unboundedly — the exact outage-shape leak
-// HIGH-2 fixed, reintroduced on the close side. Two bounds apply: each close
+// fixed, reintroduced on the close side. Two bounds apply: each close
 // runs under conn.CloseDeadline so it cannot park past the dial timeout even if
 // the broker never answers, and at most maxConcurrentCloses close goroutines
 // run at once — beyond that the connection is dropped without an explicit close
@@ -699,7 +699,7 @@ func (s *Session) closeConnAsync(conn amqpConnection) {
 // in the same plan, since AMQP closes the channel on any soft error. It does
 // NOT mutate activeSubs — reconcile commits the returned name under a
 // generation guard so an abandoned declare goroutine cannot write stale
-// state (review #5).
+// state.
 func (s *Session) declareSubscription(conn amqpConnection, sub connectivity.SubscriptionPlan) (string, error) {
 	queueName := sub.Topic
 	decl := subscriptionParams(sub)
@@ -1008,7 +1008,7 @@ const (
 	// connection-close goroutines (closeConnAsync). Under a sustained outage
 	// every reconnect attempt discards a connection whose Close can itself
 	// wedge waiting for connection.close-ok; capping the close goroutines keeps
-	// that from leaking one goroutine per attempt (review #3). A small constant
+	// that from leaking one goroutine per attempt. A small constant
 	// is plenty: closes are transient and CloseDeadline-bounded, so the queue
 	// drains as fast as the dial timeout.
 	maxConcurrentCloses = 4
@@ -1110,7 +1110,7 @@ func (s *Session) reconnectLoop(ctx context.Context) {
 			case <-s.reconnected:
 			case <-s.forceReconnect:
 				// Credential/TLS rotation dropped the live connection and asked
-				// for an immediate reconnect (review #4). s.conn is already nil
+				// for an immediate reconnect. s.conn is already nil
 				// (ApplyCredentials cleared it under the lock), so redial now
 				// rather than waiting for the stale connection's async Close to
 				// fire NotifyClose — which never happens if that Close wedges on
@@ -1216,7 +1216,7 @@ func (s *Session) doReconnect(ctx context.Context) {
 		connectCancel()
 
 		if err != nil {
-			// HIGH-3 reactive-recovery chokepoint: every reconnect attempt
+			// reactive-recovery chokepoint: every reconnect attempt
 			// redials here, and a hard rotation that revoked the old
 			// credentials fails the dial with 403 access-refused, which
 			// MapError classifies as shared.ErrNotAuthorized. Report it so the

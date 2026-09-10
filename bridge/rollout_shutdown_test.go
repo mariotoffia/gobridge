@@ -128,6 +128,6 @@ func TestStartRolloutDrive_StopIsIdempotent(t *testing.T) {
 	stop := s.startRolloutDrive(ctx)
 	require.NotNil(t, stop)
 
-	stop()
-	stop() // must not hang or panic
+	stop(context.Background())
+	stop(context.Background()) // must not hang or panic
 }

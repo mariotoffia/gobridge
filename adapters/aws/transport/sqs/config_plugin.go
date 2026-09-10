@@ -2,6 +2,7 @@ package sqs
 
 import (
 	"errors"
+	"maps"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
@@ -21,9 +22,14 @@ type Config struct {
 	// Common
 	QueueURL  string `mapstructure:"queue_url" yaml:"queue_url" json:"queue_url"`
 	QueueName string `mapstructure:"queue_name" yaml:"queue_name" json:"queue_name"`
-	Region    string `mapstructure:"region" yaml:"region" json:"region"`
-	Endpoint  string `mapstructure:"endpoint" yaml:"endpoint" json:"endpoint"`
-	Profile   string `mapstructure:"profile" yaml:"profile" json:"profile"`
+	// QueueTags selects exactly one queue by all required AWS resource tags.
+	// It is an alternative to QueueURL/QueueName, not an additional filter.
+	QueueTags map[string]string `mapstructure:"queue_tags" yaml:"queue_tags,omitempty" json:"queue_tags,omitempty"`
+	// QueueNamePrefix optionally narrows the tag discovery scan.
+	QueueNamePrefix string `mapstructure:"queue_name_prefix" yaml:"queue_name_prefix,omitempty" json:"queue_name_prefix,omitempty"`
+	Region          string `mapstructure:"region" yaml:"region" json:"region"`
+	Endpoint        string `mapstructure:"endpoint" yaml:"endpoint" json:"endpoint"`
+	Profile         string `mapstructure:"profile" yaml:"profile" json:"profile"`
 
 	// CredentialsURIRef is the optional URI consulted by the bridge's
 	// credential store at build time. The resolved material is
@@ -58,7 +64,7 @@ type Config struct {
 	// Receiver resilience tuning. These map directly to the
 	// ReceiverConfig backoff/init knobs that previously had no plugin
 	// surface, so outage/failover behaviour could not be tuned from
-	// deployment config (Finding 10). Durations decode from strings such
+	// deployment config. Durations decode from strings such
 	// as "30s" via the config parser's StringToTimeDuration hook. Zero /
 	// omitted values fall back to the ReceiverConfig defaults.
 	InitTimeout           time.Duration `mapstructure:"init_timeout" yaml:"init_timeout,omitempty" json:"init_timeout,omitempty"`
@@ -76,11 +82,12 @@ type Config struct {
 	// MaxMessageBytes surfaces the sender's message-size ceiling (body +
 	// attributes) to config-driven (YAML) deployments — mirroring the
 	// PollBackoff* knobs that likewise had no plugin surface. 0/omitted keeps
-	// the 262144 (256 KiB) default; raise it only to match a queue whose
-	// MaximumMessageSize has been provisioned above 256 KiB. Without this an
-	// operator who raises a queue's limit via YAML cannot lift the ceiling, so
-	// a body over 256 KiB silently drops ALL egress attributes — including the
-	// rank-0 x-bridge.idempotency-key / traceparent headers (Finding 4).
+	// the 1048576 (1 MiB) default, which is the service's own default
+	// MaximumMessageSize; set it to match a queue provisioned below that.
+	// Without this an operator whose queue differs from the default cannot
+	// move the ceiling from YAML, and a body over it silently drops ALL egress
+	// attributes — including the rank-0 x-bridge.idempotency-key / traceparent
+	// headers.
 	MaxMessageBytes int `mapstructure:"max_message_bytes" yaml:"max_message_bytes,omitempty" json:"max_message_bytes,omitempty"`
 
 	// resolvedCreds holds the static credential material resolved from
@@ -88,7 +95,7 @@ type Config struct {
 	// into ReceiverConfig/SenderConfig.InitialCredentials so the INITIAL
 	// SQS client is built with it — previously ApplyCredentials discarded
 	// the material and the first client always fell back to the ambient
-	// SDK chain (Finding 3/HIGH). It is unexported and never decoded from
+	// SDK chain. It is unexported and never decoded from
 	// config; the redaction-safe PasswordCredential keeps it log-safe.
 	resolvedCreds *connectivity.PasswordCredential
 }
@@ -98,6 +105,7 @@ type Config struct {
 // replaces the pointer on the frozen copy.
 func (c Config) FreezePluginConfig() ports.PluginConfig {
 	frozen := c
+	frozen.QueueTags = maps.Clone(c.QueueTags)
 	if c.AutoExtend != nil {
 		autoExtend := *c.AutoExtend
 		frozen.AutoExtend = &autoExtend
@@ -120,12 +128,12 @@ func (c *Config) CredentialsURI() string {
 // into the initial SQS client via toReceiverConfig/toSenderConfig →
 // ensureClient, so a `credentials_uri` actually changes the identity of
 // the first client instead of being silently dropped in favour of the
-// ambient SDK chain (Finding 3). The URI is then cleared to mark
+// ambient SDK chain. The URI is then cleared to mark
 // resolution done so it is not re-resolved on subsequent passes.
 //
 // Temporary/STS material (ASIA-prefixed access key) is rejected up front
 // (fail the build) rather than producing a client that would fail every
-// request — see ErrTemporaryCredentialsUnsupported (Finding 6).
+// request — see ErrTemporaryCredentialsUnsupported.
 func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 	if c == nil {
 		return errors.New("sqs: nil config")
@@ -150,8 +158,8 @@ func (Config) Kind() string { return QualifiedKind }
 // (10). The registry decoder (register.go) decodes into this value so an
 // OMITTED key keeps the default while an EXPLICIT `wait_time_seconds: 0`
 // (or `max_messages: 0`) survives decode as 0 and is rejected with a
-// clear error instead of being silently coerced back to the default
-// (Finding 12). Mirrors paho.DefaultConfig().
+// clear error instead of being silently coerced back to the default.
+// Mirrors paho.DefaultConfig().
 func DefaultConfig() Config {
 	return Config{
 		MaxMessages:     10,
@@ -164,9 +172,12 @@ func DefaultConfig() Config {
 // (receiver, sender, binding override), so it deliberately does not
 // require a queue reference: a binding carries only overrides and a
 // receiver/sender may leave the queue to its own spec. Completeness
-// (queue_url or queue_name) is enforced by ValidateQueue at the
+// (queue_url, queue_name or queue_tags) is enforced by ValidateQueue at the
 // points that actually build a Receiver/Sender.
 func (c Config) Validate() error {
+	if err := validateQueueReference(c.QueueURL, c.QueueName, c.QueueTags, c.QueueNamePrefix, false); err != nil {
+		return err
+	}
 	if c.MaxMessages < 0 || c.MaxMessages > 10 {
 		return errors.New("sqs: max_messages must be in [1,10]")
 	}
@@ -194,8 +205,8 @@ func (c Config) Validate() error {
 	if c.PollBackoffInitial > 0 && c.PollBackoffMax > 0 && c.PollBackoffMax < c.PollBackoffInitial {
 		return errors.New("sqs: poll_backoff_max must be >= poll_backoff_initial")
 	}
-	// poison_max_receives is an adapter-enforced backstop for poison messages
-	// (Chunk 13 HIGH-2): 0 disables it (rely on native redrive), any positive
+	// poison_max_receives is an adapter-enforced backstop for poison messages:
+	// 0 disables it (rely on native redrive), any positive
 	// value bounds the redelivery hot loop. Its destructive delete must not
 	// preempt a native DLQ, so poison_max_receives == 1 (drop on first receive)
 	// requires the explicit poison_drop_without_dlq opt-in; the queue-aware
@@ -212,10 +223,7 @@ func (c Config) Validate() error {
 // (factory, CDK bridgecfg builder) — not from Validate, which also
 // runs on binding overrides that legitimately omit the queue.
 func (c Config) ValidateQueue() error {
-	if c.QueueURL == "" && c.QueueName == "" {
-		return errors.New("sqs: either queue_url or queue_name is required")
-	}
-	return nil
+	return validateQueueReference(c.QueueURL, c.QueueName, c.QueueTags, c.QueueNamePrefix, true)
 }
 
 // toReceiverConfig projects the unified Config onto the internal
@@ -224,6 +232,8 @@ func (c Config) toReceiverConfig() ReceiverConfig {
 	return ReceiverConfig{
 		QueueURL:              c.QueueURL,
 		QueueName:             c.QueueName,
+		QueueTags:             maps.Clone(c.QueueTags),
+		QueueNamePrefix:       c.QueueNamePrefix,
 		Region:                c.Region,
 		Endpoint:              c.Endpoint,
 		Profile:               c.Profile,
@@ -248,7 +258,7 @@ func (c Config) toReceiverConfig() ReceiverConfig {
 // ports.VisibilityTimeoutConfig, so the builder threads this per-route
 // value into the runtime validator's SourceVisibilityTimeout in
 // preference to the hardcoded Factory.VisibilityTimeout() constant
-// (Finding 2, wired in bridge/builder_complete.go, Phase 1b).
+// (wired in bridge/builder_complete.go, Phase 1b).
 func (c Config) EffectiveVisibilityTimeout() time.Duration {
 	if c.VisibilityTimeout > 0 {
 		return time.Duration(c.VisibilityTimeout) * time.Second
@@ -265,7 +275,7 @@ func (c Config) EffectiveVisibilityTimeout() time.Duration {
 // Below the floor the runtime runs a fixed, non-renewed window, so the
 // validator must still enforce the finite SendTimeout-vs-window check to
 // prevent source redelivery mid-send. It satisfies
-// ports.VisibilityTimeoutConfig (Finding 2 / D2).
+// ports.VisibilityTimeoutConfig.
 func (c Config) AutoExtendEnabled() bool {
 	flag := c.AutoExtend == nil || *c.AutoExtend
 	effSecs := c.VisibilityTimeout
@@ -281,6 +291,8 @@ func (c Config) toSenderConfig() SenderConfig {
 	return SenderConfig{
 		QueueURL:           c.QueueURL,
 		QueueName:          c.QueueName,
+		QueueTags:          maps.Clone(c.QueueTags),
+		QueueNamePrefix:    c.QueueNamePrefix,
 		Region:             c.Region,
 		Endpoint:           c.Endpoint,
 		Profile:            c.Profile,

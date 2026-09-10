@@ -39,7 +39,7 @@ func TestApplyCredentials_ConcurrentWithStart_NoRace(t *testing.T) {
 		// The point of this test is the -race window on the s.opts mutation;
 		// opt in to the plaintext gate so the rotation ACTUALLY mutates (a
 		// gate-rejected rotation would leave s.opts unchanged and make the
-		// race window vacuous). HIGH-4 itself is covered elsewhere.
+		// race window vacuous). The gate itself is covered elsewhere.
 		AllowPlaintextCredentials: true,
 		TLS: &TLSConfig{
 			Enable:  true,

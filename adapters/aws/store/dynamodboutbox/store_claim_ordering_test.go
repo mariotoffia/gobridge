@@ -10,7 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 )
 
-// TestClaimDeepBacklogSelectsOldestByAge is the H1 regression: under a backlog
+// TestClaimDeepBacklogSelectsOldestByAge is the regression: under a backlog
 // deeper than the former 3×limit candidate window, Claim MUST return the
 // oldest-by-age records first even when their envelope IDs sort AFTER the newer
 // records in DynamoDB's SK order (OUTBOX#<envelope_id>#…, lexicographic by

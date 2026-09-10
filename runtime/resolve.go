@@ -93,7 +93,7 @@ func (r *StaticResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]ro
 // lets pre-start validation statically reject a StaticResolver that would emit
 // more than one plan on a route that can only dispatch a single leg
 // (direct_hold / DispatchSingle), where the extra plans would otherwise be
-// silently discarded at runtime (finding 4).
+// silently discarded at runtime.
 func (r *StaticResolver) PlanCount() int { return len(r.plans) }
 
 // MatchByHeader returns a MatchFunc that selects a binding when the envelope

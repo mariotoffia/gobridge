@@ -1,12 +1,28 @@
-# Scenario 5: Durable Delivery with SharedOutbox
+# Scenario 5: Fan-out and Back-pressure with SharedOutbox
 
-Guarantee zero message loss across bridge crashes by decoupling ingress from egress with a persistent outbox.
+Decouple ingress from egress with a persistent outbox, and keep per-destination
+progress across a crash when one message has several destinations.
+
+> **An outbox is not crash protection.** Read the next three lines before
+> reaching for one.
+
+## What the outbox does NOT do
+
+An outbox does not protect you from a crash. The bridge only tells the source a
+message is handled once the work is finished, so if it dies the source simply
+sends the message again — and that is just as true when it dies before writing
+to the outbox as when it dies before reaching the destination. All the outbox
+changes is where the message waits, and it adds one more system that has to be
+working for anything to get through.
 
 ## Use Case
 
-IoT sensor data arrives on MQTT and must reach an SQS queue for downstream processing. If the bridge crashes between receiving an MQTT message and sending it to SQS, the message must not be lost. The default `direct_hold` mode holds the source delivery open during send, but if the process dies mid-flight, the message is gone -- the MQTT broker already delivered it, and the SQS send never completed.
-
-The `shared_outbox` delivery mode solves this by persisting messages to a durable store before acknowledging the source. A background drainer then reads from the outbox and delivers to the target. If the bridge crashes, the drainer picks up persisted records on restart.
+What the outbox is actually for is below, and this scenario is built on the
+first of them: IoT sensor data arrives on MQTT and must reach **several**
+destinations, and a crash after three of five have accepted must not replay all
+five. Source redelivery cannot express partial progress — the outbox records it
+per destination. The same store then absorbs a destination outage without
+holding the source open for its duration.
 
 ## Architecture
 
@@ -19,59 +35,80 @@ flowchart LR
     subgraph GoBridge
         R[Receiver\nmqtt-in]
         Route[Route\nsensor-ingest\ndelivery: shared_outbox]
-        OB[(Outbox Store)]
+        OB[(Outbox Store\none record per destination)]
         DR[Outbox Drainer]
-        S[Sender\nsqs-out]
+        S[Sender\nmqtt-out]
     end
 
-    subgraph AWS
-        Q["SQS Queue\nsensor-events"]
+    subgraph Destinations
+        Q1["events/sensors"]
+        Q2["audit/sensors"]
+        Q3["analytics/sensors"]
     end
 
     T -->|subscribe| R
-    R -->|1. receive| Route
-    Route -->|2. persist| OB
+    R -->|1. receive once| Route
+    Route -->|2. persist 3 records| OB
     OB -->|3. ACK source| R
-    DR -->|4. claim records| OB
-    DR -->|5. send| S
-    S -->|6. SendMessage| Q
-    DR -->|7. complete| OB
+    DR -->|4. claim| OB
+    DR --> S --> Q1
+    S --> Q2
+    S --> Q3
+    DR -->|5. complete each\nindependently| OB
 
     style Route fill:#f96,stroke:#333
     style OB fill:#fcf,stroke:#333
     style DR fill:#cff,stroke:#333
 ```
 
+One message in, three destinations out. The outbox holds a record per
+destination, so each is completed on its own: a destination that has to be
+retried does not replay the two that already accepted. The three destinations
+are three addresses of **one** sender -- a shared-outbox route drains through
+the sender named in its `session` block, so fan-out under the outbox is to
+several addresses of that sender (here three topics on the same broker).
+Destinations on different senders each need a route of their own.
+
 ## Direct Hold vs Shared Outbox
 
-The two delivery modes represent different trade-offs.
+Both modes survive a crash the same way: the source was never told the message
+was handled, so it sends it again. The difference shows up only when there is
+more than one destination.
 
 ```mermaid
 flowchart TD
-    subgraph "direct_hold"
-        DH1[Receive message] --> DH2[Send to target]
-        DH2 --> DH3{Success?}
-        DH3 -->|Yes| DH4[ACK source]
-        DH3 -->|No| DH5[Retry or\nreject source]
-        DH6["Crash window"] -.->|Process dies here\nMessage lost| DH2
+    subgraph "direct_hold — one destination"
+        DH1[Receive] --> DH2[Send]
+        DH2 --> DH3{Accepted?}
+        DH3 -->|Yes| DH4[Tell the source it is handled]
+        DH3 -->|No| DH5[Retry, then reject]
+        DH6["Crash anywhere before DH4"] -.->|Source was never told\nSo it sends it again| DH1
     end
 
-    subgraph "shared_outbox"
-        SO1[Receive message] --> SO2[Persist to outbox]
-        SO2 --> SO3[ACK source]
-        SO3 --> SO4[Drainer claims record]
-        SO4 --> SO5[Send to target]
-        SO5 --> SO6[Complete record]
-        SO7["Crash window"] -.->|Process dies here\nOutbox survives| SO4
+    subgraph "direct_hold — three destinations"
+        M1[Receive] --> M2[Send to A ok]
+        M2 --> M3[Send to B ok]
+        M3 --> M4["Crash before C"]
+        M4 -.->|Source sends it again\nA and B get a duplicate| M1
     end
 
-    style DH6 fill:#fcc,stroke:#c33
+    subgraph "shared_outbox — three destinations"
+        SO1[Receive] --> SO2[Write one record per destination]
+        SO2 --> SO3[Tell the source it is handled]
+        SO3 --> SO4[A done] --> SO5[B done] --> SO6["Crash before C"]
+        SO6 -.->|Restart: A and B already done\nOnly C is sent| SO7[C done]
+        SO8["Crash before SO2"] -.->|Source was never told\nSo it sends it again| SO1
+    end
+
+    style DH6 fill:#ffd,stroke:#cc3
+    style SO8 fill:#ffd,stroke:#cc3
+    style M4 fill:#fcc,stroke:#c33
     style SO7 fill:#cfc,stroke:#3c3
 ```
 
-With `direct_hold`, the source delivery stays open while the target send runs. Fast and simple, but a crash between receive and ACK means the message is in limbo. MQTT QoS 1 will redeliver, but there is a window where the broker may consider the message delivered if the TCP connection was already clean.
-
-With `shared_outbox`, the message is persisted before the source is acknowledged. The outbox survives crashes. After restart, the drainer finds pending records and delivers them.
+Read the two yellow boxes together: they are the same crash, with the same
+recovery, in both modes. The outbox earns its place in the red box — replaying
+every destination because one of them had not been reached yet.
 
 ## Configuration
 
@@ -94,12 +131,18 @@ stores:
     options:
       path: /var/lib/gobridge/outbox.db
   lease:
-    type: memory # single-instance example; use dynamodb for multi-instance (see stores.lease)
+    # A crash-durable outbox REQUIRES a crash-durable lease. The outbox
+    # persists a per-partition fencing high-water-mark; an in-memory lease
+    # renumbers its fencing versions from zero on every restart and would then
+    # claim below that mark and be fenced out forever. The bridge rejects that
+    # pairing at startup, so a durable outbox pairs with dynamodb.
+    type: dynamodb
     options:
-      # The in-memory lease keeps ownership per-process and cannot coordinate
-      # across replicas, so single-replica operation must be acknowledged
-      # explicitly before it will build. Use dynamodb for multi-instance.
-      acknowledge_single_replica: true
+      table_name: gobridge-leases
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/dlq.db
 
 receivers:
   - id: mqtt-in
@@ -109,24 +152,34 @@ receivers:
         qos: 1
 
 senders:
-  - id: sqs-out
-    transport: sqs
+  # One sender, three destinations. A shared-outbox route has one drainer,
+  # wired with the sender its session block names; every binding is an
+  # address on that sender. A destination on a different sender needs a route
+  # of its own.
+  - id: mqtt-out
+    session_id: mqtt-conn
     options:
-      queue_url: https://sqs.us-west-1.amazonaws.com/123456789/sensor-events
-      region: us-west-1
-      batch_size: 10
+      sender:
+        qos: 1
 
 bindings:
-  - id: to-sqs
-    sender_id: sqs-out
-    address: sensor-events
+  - id: to-events
+    sender_id: mqtt-out
+    address: events/sensors
+  - id: to-audit
+    sender_id: mqtt-out
+    address: audit/sensors
+  - id: to-analytics
+    sender_id: mqtt-out
+    address: analytics/sensors
 
 routes:
   - id: sensor-ingest
     receiver_id: mqtt-in
     delivery_mode: shared_outbox
-    dispatch_mode: single
-    bindings: [to-sqs]
+    # One message, three destinations, each completed on its own.
+    dispatch_mode: fan_out
+    bindings: [to-events, to-audit, to-analytics]
     policy:
       ack_after: outbox_persist
       max_in_flight: 100
@@ -136,150 +189,14 @@ routes:
       on_permanent_failure: dlq
     session:
       session_id: mqtt-conn
-      sender_id: sqs-out
+      sender_id: mqtt-out
       drain_interval: 1s
       drain_batch_size: 50
 ```
 
 > **Note on the SQS binding `address`.** The SQS sender is pinned to one queue via its `queue_url` or `queue_name`. The binding `address` may be the bare queue name (as here, `sensor-events`) or the full queue URL -- either form is matched to that bound queue rather than routing per message.
 
-## Config Walkthrough
-
-### `delivery_mode: shared_outbox`
-
-Switches the route from synchronous hold to asynchronous outbox-based delivery. The route pipeline persists the envelope into the outbox store instead of sending directly to the target. A background drainer process handles actual delivery.
-
-Config validation (`ValidateBlueprintGraph`, run on every load) enforces two rules for a `shared_outbox` route:
-
-- `stores.outbox` must be configured.
-- If the route binds to an **exclusive** session, `stores.lease` must be configured -- exclusive drain needs a lease to fence single ownership.
-
-Outbox delivery is at-least-once, so design the downstream for deduplication: give each envelope a stable `Envelope.ID` (from the source) or stamp one with an idempotency-key processor. This is a design expectation, not a load-time check.
-
-### `ack_after` -- When to Acknowledge the Source
-
-For a `shared_outbox` route the acknowledgement boundary is fixed: the source is
-ACKed once the outbox write succeeds. The durable outbox record IS the guarantee,
-so there is nothing stronger to wait for.
-
-| Value | Behavior | Notes |
-|-------|----------|-------|
-| `outbox_persist` | ACK the source as soon as the outbox write succeeds | The default, and the only accepted value, for `shared_outbox`. Fast ACK; the message survives a crash once it is in the outbox. |
-| `target_accept` | ACK only after the target sender confirms delivery | **Rejected on a `shared_outbox` route** -- the runtime fails validation at startup (`runtime/validator.go:278-286`). It is the `direct_hold` default, where there is no outbox to persist to. |
-
-With `outbox_persist`, the MQTT PUBACK is sent the moment the outbox store confirms
-the write. The message is durable in the outbox but has not yet reached SQS. This
-keeps ingress latency low and is the boundary `shared_outbox` is built around.
-
-Setting `ack_after: target_accept` on a `shared_outbox` route is a startup error,
-not a stronger guarantee -- the drainer sends to the target asynchronously, so the
-source ACK can never be deferred to the target. If you need the source held open
-until the target accepts, use `delivery_mode: direct_hold` instead; that trades the
-outbox's crash durability for end-to-end confirmation before ACK. Omitting
-`ack_after` on a `shared_outbox` route is the safe choice: it defaults to
-`outbox_persist`.
-
-### `stores.outbox`
-
-The outbox store must be configured when using `shared_outbox` delivery mode.
-
-```yaml
-stores:
-  outbox:
-    type: sqlite
-    options:
-      path: /var/lib/gobridge/outbox.db
-```
-
-The `type` field selects the store backend:
-
-| Type | Durability | Use Case |
-|------|-----------|----------|
-| `memory` | Process lifetime only | Development, testing, low-risk workloads |
-| `sqlite` | Disk-persistent | Single-instance production without external DB |
-| `dynamodb` | Cloud-durable | Multi-instance production, high availability |
-
-For true crash survival, use `sqlite` or `dynamodb` -- this scenario's examples default to `sqlite` for exactly that reason. The `memory` store is development-only: it loses all pending records on process restart, which would violate the zero-loss guarantee this scenario promises.
-
-### `stores.lease`
-
-The lease store coordinates outbox ownership in multi-instance deployments. The drainer acquires a lease before claiming outbox records, preventing duplicate delivery when multiple bridge instances share the same outbox store.
-
-For single-instance deployments, `memory` is sufficient. For multi-instance, use `dynamodb` to ensure only one instance drains at a time.
-
-### `max_outbox_depth`
-
-```yaml
-policy:
-  max_outbox_depth: 10000
-```
-
-Limits the number of pending records in the outbox. When the depth reaches this limit, the route applies backpressure -- new messages from the receiver are blocked until the drainer reduces the queue. The default is 10,000 records.
-
-This protects against unbounded memory growth when the target is down. The receiver pauses accepting deliveries, which in turn applies backpressure to the MQTT broker via QoS flow control.
-
-### `max_replay_attempts`
-
-```yaml
-policy:
-  max_replay_attempts: 5
-```
-
-The minimum number of times the drainer must claim an outbox record before it becomes eligible for poison after a **transient** send failure. Reaching this count is not sufficient to poison a record: the drainer routes it to the DLQ only once all three conditions hold -- the replay count has passed `max_replay_attempts`, the record has a recorded first delivery attempt, and the wall-clock since that first attempt has reached `replay_budget` (default 15m; see below). `max_replay_attempts` is the minimum-attempts floor; `replay_budget` is the wall-clock that bounds total delivery time. Together they stop a transient egress outage -- a broker restart, node replacement, or deploy rollover -- from poisoning otherwise-healthy messages before the budget runs out. A record persisted before the first-attempt schema (no recorded first attempt) falls back to the older age gate measured from `CreatedAt`, so an upgrade never poisons a backlog. A **permanent** (non-transient) send error skips the budget and is DLQ'd on the spot. The drainer is the only component that poisons an outbox record. The default is 5 attempts.
-
-### `replay_budget`
-
-```yaml
-policy:
-  replay_budget: 15m
-```
-
-The wall-clock budget, measured from a record's first delivery attempt, that bounds how long the drainer keeps retrying a **transient** failure before it poisons the record to the DLQ. It sizes for the outages a healthy target recovers from -- a broker restart, node replacement, or deploy rollover -- so those never DLQ a good message before it drains. `max_replay_attempts` sets the attempt floor; this sets the time. Legacy records with no recorded first attempt fall back to the older `CreatedAt` age gate. The default is 15m.
-
-### Outbox Drainer
-
-The drainer is a background goroutine that runs the following loop:
-
-1. **Claim** -- Query the outbox store for pending records, marking them as claimed by this instance
-2. **Send** -- Deliver each claimed record to the target sender
-3. **Complete** -- Mark successfully sent records as completed
-4. **Retry** -- Failed records are released back to pending with an incremented replay count
-5. **Wait** -- Sleep for `drain_interval` before the next cycle
-
-#### One drainer per session partition -- align policy or split sessions
-
-A session partition has **exactly one** drainer: the first `shared_outbox` route that references a given session builds it, and every other route that drains the same session shares it. That single drainer applies **one** set of drain-relevant policy to every record in the partition, regardless of which route persisted the record. The drain-relevant policy is `send_timeout`, `max_replay_attempts`, `replay_budget`, `on_expired`, and `on_permanent_failure`.
-
-Because a record is source-ACKed the moment it is persisted, a record persisted by one route may later be drained -- and terminally settled -- under another route's policy. If those policies diverged, that record would be settled under the wrong terminal behavior: for example, a record persisted by an `on_permanent_failure: dlq` route but drained under an `on_permanent_failure: drop` route would be dropped with **no DLQ evidence** after the source was already acknowledged -- silent message loss.
-
-To close that hazard, the runtime **fails closed at validation**: if two or more `shared_outbox` routes drain the same session partition with divergent drain-relevant policy, `ValidateRoutes`/`Start` reject the configuration and name both routes and the shared session. Give the routes their own sessions, or align their drain-relevant policy. Routes that differ only on ingress-side fields (for example `max_in_flight`) may still share a session -- only the drain-relevant policy must match.
-
-### `drain_interval` and `drain_strategy`
-
-The `session.drain_interval` field sets a fixed polling interval:
-
-```yaml
-session:
-  drain_interval: 1s
-```
-
-For more sophisticated polling, use `drain_strategy`:
-
-```yaml
-session:
-  drain_strategy:
-    type: adaptive_backoff
-    min_interval: 100ms
-    max_interval: 30s
-    multiplier: 2.0
-```
-
-The `adaptive_backoff` strategy reduces polling frequency when the outbox is empty (saving resources) and increases it immediately when records are found (reducing latency). When `drain_strategy` is set, it takes precedence over `drain_interval`.
-
-| Strategy | Behavior |
-|----------|----------|
-| `fixed_poll` | Always waits the configured interval between drain cycles |
-| `adaptive_backoff` | Starts at `min_interval`, backs off by `multiplier` when empty, resets to `min_interval` when records are found |
+The field-by-field walkthrough of the configuration above is on its own page: [Durable shared outbox — config walkthrough](05-durable-shared-outbox-walkthrough.md).
 
 ## Crash Recovery
 
@@ -336,27 +253,36 @@ Two distinct paths return a claimed record to `pending`:
 |-----------|--------------|-----------------|
 | Simplicity | Simple, no stores needed | Requires outbox + lease stores |
 | Latency | Low (synchronous send) | Higher (persist + drain cycle) |
-| Crash safety | Message may be lost on crash | Message survives in outbox |
+| Crash safety | No loss -- the source is not acknowledged until the target accepts, so it redelivers | No loss, but for the same reason: the source is not acknowledged until the outbox write completes. The outbox adds nothing here |
+| Per-destination progress | A crash replays every destination | Recorded per destination; a crash replays only what had not been accepted |
 | Throughput | Bounded by target latency | Ingress decoupled from egress |
-| Multi-instance | Works independently | Requires lease coordination |
-| Resource usage | Minimal | Outbox storage + drainer goroutine |
+| Multi-instance | No fencing token at the sender boundary | Fenced by the owning session |
+| Resource usage | Minimal | Outbox storage + drainer goroutine, and one more system in series |
 
-**Use `direct_hold` when:**
-- Messages are non-critical or the source has its own redelivery (e.g., SQS visibility timeout)
-- Simplicity is preferred over durability
-- Latency is the primary concern
+**Use `direct_hold` for any single-destination route.** The source delivery is
+held open until the egress succeeds, so a crash means the source redelivers --
+an SQS visibility window, or an unsent MQTT PUBACK, both work. The source is
+already the durable buffer, and an outbox in front of it does not add a copy:
+with `ack_after: outbox_persist` the source is settled the moment the record is
+persisted, so the outbox **moves** the durable copy from the source into a
+store you operate, and makes the route depend on three systems instead of two.
 
 **Use `shared_outbox` when:**
-- Zero message loss is a hard requirement
-- The target may be temporarily unavailable (outbox buffers during outages)
+- One message fans out to several destinations and a partial success must survive a crash -- source redelivery cannot express "three of five accepted"
+- The target may be unavailable long enough that holding the source open is not viable, and you would rather own the buffer than let the source's redelivery window expire
 - You need to decouple ingress throughput from egress latency
-- Running multiple bridge instances that must coordinate delivery
+- Several instances share an exclusive session and the duplicate-send window across failover must be fenced
+
+Note that none of these is "so a crash does not lose the message". That is
+already true without an outbox, on any source the bridge can withhold
+acknowledgement from.
 
 ## Variations
 
 ### SQLite Outbox for Disk Persistence
 
-Replace the in-memory outbox with SQLite for single-instance crash survival:
+Replace the in-memory outbox with SQLite for single-instance crash survival.
+The lease must be durable too — see the pairing rule below:
 
 ```yaml
 stores:
@@ -365,9 +291,9 @@ stores:
     options:
       path: /var/lib/gobridge/outbox.db
   lease:
-    type: memory
+    type: dynamodb
     options:
-      acknowledge_single_replica: true
+      table_name: gobridge-leases
 ```
 
 On crash and restart, the drainer finds all pending records and resumes
@@ -383,13 +309,24 @@ from `step_down_grace`, or set explicitly) lets it be re-claimed once the claim
 goes stale. The native SQLite outbox now honours `stale_claim_duration` for this
 fallback, matching the DynamoDB backend.
 
-> **Note on `lease: memory`.** The in-memory lease store resets its fencing
-> version on restart, so it cannot guarantee version continuity across a crash.
-> For a single instance whose lease returns to the same version this is safe and
-> the stale-claim fallback above still recovers stranded work; for
-> multi-instance or strict crash-recovery guarantees use a durable lease store
-> (DynamoDB). `memory` lease and outbox remain development/test grade — see the
-> store readiness notes in [config-stores](../config-stores.md).
+> **Pairing rule: a volatile lease may not back a durable outbox.** The
+> in-memory lease store numbers fencing versions from a per-process counter that
+> restarts at zero, while the SQLite and DynamoDB outboxes persist a
+> per-partition fencing high-water-mark and reject every claim below it. After a
+> restart — once the durable mark has passed 1, which one prior re-acquire is
+> enough to do — the new owner claims below the mark, is rejected as stale, and
+> the partition never drains again while ingress keeps acknowledging into it.
+> The builder therefore REJECTS `lease: memory` with a `sqlite` or `dynamodb`
+> outbox at startup. The two supported postures are a durable lease with a
+> durable outbox (production), and an in-memory lease with an in-memory outbox
+> (development, and only with `acknowledge_volatile: true` — see the store
+> reference in [processors-and-stores](../processors-and-stores.md)).
+>
+> **A SQLite outbox with a DynamoDB lease is still single-replica.** The lease
+> is cluster-wide but the database file is node-local, so a second replica
+> ingests into its OWN outbox file and cannot drain it until it happens to win
+> the lease. Run exactly one replica on this pairing; for real multi-instance
+> operation both stores must be DynamoDB (next section).
 
 ### DynamoDB Outbox for Multi-Instance
 
@@ -406,7 +343,6 @@ stores:
     type: dynamodb
     options:
       table_name: gobridge-leases
-      region: us-west-1
 ```
 
 **Standby readiness.** Only the lease holder drains; standby instances hold their drainers idle until they win the lease. The active drainer also gates each cycle on egress-transport readiness -- when the target session is disconnected, it skips the drain instead of running failing Claim+Send cycles. This keeps a broker outage from silently burning the replay budget and poisoning healthy records while the target is simply unreachable.
@@ -444,7 +380,8 @@ routes:
   - id: sensor-ingest
     receiver_id: mqtt-in
     delivery_mode: shared_outbox
-    bindings: [to-sqs]
+    dispatch_mode: fan_out
+    bindings: [to-events, to-audit, to-analytics]
     policy:
       max_replay_attempts: 3
       on_permanent_failure: dlq
@@ -460,7 +397,7 @@ routes:
 For `shared_outbox` the strongest source guarantee IS `outbox_persist` -- the
 source is ACKed only after the message is durable in the outbox, so a crash never
 loses it. There is no "wait for the target" variant on this delivery mode:
-`ack_after: target_accept` is rejected at startup (`runtime/validator.go:278-286`),
+`ack_after: target_accept` is rejected at startup (`runtime/validator.go`),
 because the drainer delivers to the target asynchronously and the source ACK cannot
 be deferred that far.
 
@@ -474,19 +411,26 @@ routes:
   - id: sensor-ingest
     receiver_id: mqtt-in
     delivery_mode: direct_hold
-    bindings: [to-sqs]
+    dispatch_mode: single
+    bindings: [to-events]
     policy:
       ack_after: target_accept   # direct_hold default; the source is held open until the target accepts
       max_in_flight: 50
 ```
 
-`direct_hold` trades the outbox's crash durability (a process death mid-send loses
-the in-flight message) for end-to-end confirmation before ACK. Pick one boundary:
-outbox durability with `shared_outbox`, or target confirmation with `direct_hold`.
+This gives up nothing in crash safety — the source is still not acknowledged
+until the destination accepts, so a crash still means redelivery — and it gives
+up the outbox store, its lease and a hop. What it costs is the two things the
+outbox is for: there is no per-destination progress to resume from, so it suits
+one destination, and there is no buffer, so a destination outage holds the
+source open until its own redelivery window runs out.
 
 ### Combined: Durable Fan-Out
 
-Combine `shared_outbox` with `fan_out` dispatch. Each binding gets its own outbox record, and the drainer delivers independently:
+This is the shape the main configuration above already uses, restated on its
+own: each binding gets its own outbox record and the drainer completes them
+independently, so a destination that was already accepted is not replayed when
+another one has to be retried.
 
 ```yaml
 routes:
@@ -494,7 +438,7 @@ routes:
     receiver_id: mqtt-in
     delivery_mode: shared_outbox
     dispatch_mode: fan_out
-    bindings: [to-sqs, to-archive]
+    bindings: [to-events, to-audit, to-analytics]
     policy:
       ack_after: outbox_persist
       max_outbox_depth: 5000

@@ -25,15 +25,15 @@ import (
 // is what keeps the cohort from running mixed versions.
 //
 // Every member proposes the delta it received from its own config source; the
-// first Propose wins the conditional create (I1) and the rest join the same
+// first Propose wins the conditional create and the rest join the same
 // generation. The digest recorded in the rollout row is the cross-member
 // agreement check: a member whose config source handed it different bytes
-// computes a different digest, cannot verify the proposal, and Nacks (F10) —
+// computes a different digest, cannot verify the proposal, and Nacks —
 // so a divergent config aborts the rollout instead of splitting the cohort.
 
 const (
 	// defaultRolloutTTL bounds how long a proposed rollout may stay unresolved
-	// before the coordinator aborts it (F1). The design's sizing (§13 Q2) is
+	// before the coordinator aborts it. The design's sizing (§13 Q2) is
 	// 2 × convergence budget floor + member build budget ≈ 5 minutes; NETCONF's
 	// confirmed-commit default (600 s) is the same order of magnitude.
 	defaultRolloutTTL = 5 * time.Minute
@@ -61,7 +61,7 @@ type ClusterRolloutConfig struct {
 	MemberID string
 
 	// Lease elects the rollout coordinator on a well-known lease id, and its
-	// LeaseToken is the fencing token passed to Commit/Abort (I3). Required: a
+	// LeaseToken is the fencing token passed to Commit/Abort. Required: a
 	// cohort with no coordinator never decides, so every rollout would sit until
 	// its TTL and expire. It may be the same LeaseStore the deployment already
 	// uses for exclusive routes — the lease id is distinct.
@@ -80,8 +80,19 @@ type ClusterRolloutConfig struct {
 	// Zero selects defaultRolloutPollInterval.
 	PollInterval time.Duration
 
+	// StoreCallTimeout bounds EVERY individual rollout-store and coordinator-lease
+	// call the barrier makes. Zero selects defaultRolloutStoreCallTimeout.
+	//
+	// It exists because the barrier drive is one goroutine: without a bound, a
+	// single store call that does not return stops commit, abort, confirm, revert,
+	// observation freshness, the local confirm-window deadman and the process
+	// shutdown that waits on the drive. Keep it well under LeaseTTL — a tick makes
+	// several calls, and their sum must stay inside the TTL or a coordinator can
+	// lose its lease while waiting on its own renewal.
+	StoreCallTimeout time.Duration
+
 	// Encode and Decode round-trip a *ports.BridgeConfig through the durable
-	// last-committed config artifact (design Phase-4 residual): Encode on commit
+	// last-committed config artifact: Encode on commit
 	// (to persist the committed bytes), Decode on boot / reconcile (to rebuild the
 	// committed config a member boots on or converges to). They are INJECTED
 	// because bridge must not import config/parser (arch-lint): the composition
@@ -117,12 +128,17 @@ type rolloutBarrier struct {
 	encode func(*ports.BridgeConfig) ([]byte, error)
 	decode func([]byte) (*ports.BridgeConfig, error)
 
+	// ops bounds and meters every remote call the barrier makes — the proposer's,
+	// the applier's and the coordinator's alike, so a store that has stopped
+	// answering is refused for all of them at once (rollout_ops.go).
+	ops *rolloutOps
+
 	// candMu guards the staged candidate below.
 	candMu sync.Mutex
 	// cand holds the candidate this node's OWN config source delivered, staged
-	// for the applier by digest (design §5, transport option (b) — see the
+	// for the applier by digest (ADR 0013, transport option (b) — see the
 	// candidate-transport note at the top of rollout_applier.go). Only one
-	// rollout is active at a time (I1), so one slot is enough; a newer candidate
+	// rollout is active at a time, so one slot is enough; a newer candidate
 	// overwrites the older one, which by then belongs to a rollout that has
 	// already resolved or is about to deadline-abort.
 	cand stagedCandidate
@@ -159,7 +175,7 @@ func (b *rolloutBarrier) stage(digest string, frozen, source *ports.BridgeConfig
 // candidate returns the staged candidate for digest, or ok=false when this node
 // has not (yet) seen that candidate through its own config source. Not-staged is
 // the normal state for a member whose watcher is lagging: it simply does not
-// vote yet, and the rollout deadline (F1) bounds the wait.
+// vote yet, and the rollout deadline bounds the wait.
 func (b *rolloutBarrier) candidate(digest string) (stagedCandidate, bool) {
 	b.candMu.Lock()
 	defer b.candMu.Unlock()
@@ -170,7 +186,7 @@ func (b *rolloutBarrier) candidate(digest string) (stagedCandidate, bool) {
 }
 
 // writeCommittedArtifact durably records the config the cohort committed at
-// generation gen as the last-committed artifact (design Phase-4 residual). It is
+// generation gen as the last-committed artifact. It is
 // idempotent across the cohort — every adopting member writes the same
 // (generation, digest) pair, and the store treats a matching re-write as a no-op
 // — and a no-op when no codec is wired. The recorded digest is the CANONICAL
@@ -188,11 +204,13 @@ func (b *rolloutBarrier) writeCommittedArtifact(ctx context.Context, gen uint64,
 	if !ok {
 		return fmt.Errorf("bridge: cannot compute the committed config digest for the durable rollout artifact")
 	}
-	return b.committedStore.PutCommittedConfig(ctx, persistence.CommittedRolloutConfig{
-		Generation:    gen,
-		ConfigVersion: version,
-		ConfigBytes:   raw,
-		Digest:        digest,
+	return b.ops.run(ctx, rolloutOpArtifact, func(callCtx context.Context) error {
+		return b.committedStore.PutCommittedConfig(callCtx, persistence.CommittedRolloutConfig{
+			Generation:    gen,
+			ConfigVersion: version,
+			ConfigBytes:   raw,
+			Digest:        digest,
+		})
 	})
 }
 
@@ -212,6 +230,7 @@ func newRolloutBarrier(cfg ClusterRolloutConfig) *rolloutBarrier {
 		pollInterval: orDefault(cfg.PollInterval, defaultRolloutPollInterval),
 		encode:       cfg.Encode,
 		decode:       cfg.Decode,
+		ops:          newRolloutOps(cfg.StoreCallTimeout),
 	}
 	// The committed-config artifact is a separate small port; the same backing
 	// store usually implements it. Discover that capability rather than adding a
@@ -233,7 +252,7 @@ func orDefault(d, fallback time.Duration) time.Duration {
 // rolloutMembers resolves the membership epoch from the applied config's static
 // bridge.cluster.members roster. It is the ONE membership source: the proposer
 // freezes the epoch from it and the coordinator compares live membership against
-// it, so the two cannot disagree and report a spurious F6 membership change on
+// it, so the two cannot disagree and report a spurious membership change on
 // every rollout.
 //
 // It returns nil when the roster is absent — the caller MUST fail closed rather
@@ -250,7 +269,7 @@ func rolloutMembers(cfg *ports.BridgeConfig) []string {
 // sortedSet renders member ids as the canonical set the barrier compares on:
 // sorted and deduplicated. persistence.NewRollout stores the frozen epoch in
 // exactly this form, so every comparison against it — the coordinator's live
-// membership check (F6) and the replacement-required roster check — must
+// membership check and the replacement-required roster check — must
 // normalise the same way or a reorder reads as a membership change.
 func sortedSet(ids []string) []string {
 	out := slices.Clone(ids)
@@ -273,6 +292,22 @@ func sortedSet(ids []string) []string {
 // alongside the frozen candidate so the commit-time SwapEvent can echo it back
 // (see stagedCandidate.source).
 func (d *ClusterRolloutDriver) Propose(ctx context.Context, oldCfg, newCfg, sourceCfg *ports.BridgeConfig) error {
+	err := d.propose(ctx, oldCfg, newCfg, sourceCfg)
+	// A refusal is the one reason a member goes silent that the shared rollout row
+	// cannot show: this member's config source DID deliver the change, and its own
+	// barrier would not carry it. Publish it where the operator reads the barrier,
+	// so a cohort waiting on acks names the member and the reason rather than only
+	// the count.
+	d.mu.RLock()
+	obs := d.obs
+	d.mu.RUnlock()
+	if obs != nil {
+		obs.noteProposal(err)
+	}
+	return err
+}
+
+func (d *ClusterRolloutDriver) propose(ctx context.Context, oldCfg, newCfg, sourceCfg *ports.BridgeConfig) error {
 	b := d.barrier
 	members := rolloutMembers(oldCfg)
 	if len(members) == 0 {
@@ -303,7 +338,7 @@ func (d *ClusterRolloutDriver) Propose(ctx context.Context, oldCfg, newCfg, sour
 	return nil
 }
 
-// clusterConfirmWindow reads the coordinated-rollout confirm window (design §8.1)
+// clusterConfirmWindow reads the coordinated-rollout confirm window (ADR 0014)
 // from a config, or 0 when absent — the base protocol.
 func clusterConfirmWindow(cfg *ports.BridgeConfig) time.Duration {
 	if cfg == nil || cfg.Bridge.Cluster == nil {
@@ -322,13 +357,16 @@ func (b *rolloutBarrier) propose(ctx context.Context, newCfg, sourceCfg *ports.B
 	if !ok {
 		return fmt.Errorf("bridge: cannot compute the candidate config digest for a coordinated rollout")
 	}
-	_, err := b.store.Propose(ctx, persistence.RolloutProposal{
-		ProposerID:    b.memberID,
-		ConfigDigest:  digest,
-		ConfigVersion: newCfg.Version,
-		Members:       members,
-		TTL:           b.ttl,
-		ConfirmWindow: confirmWindow,
+	err := b.ops.run(ctx, rolloutOpPropose, func(callCtx context.Context) error {
+		_, perr := b.store.Propose(callCtx, persistence.RolloutProposal{
+			ProposerID:    b.memberID,
+			ConfigDigest:  digest,
+			ConfigVersion: newCfg.Version,
+			Members:       members,
+			TTL:           b.ttl,
+			ConfirmWindow: confirmWindow,
+		})
+		return perr
 	})
 	if err != nil {
 		if !errors.Is(err, shared.ErrAlreadyExists) {
@@ -347,7 +385,7 @@ func (b *rolloutBarrier) propose(ctx context.Context, newCfg, sourceCfg *ports.B
 }
 
 // joinActive resolves a Propose that lost to an already-active rollout. The
-// store's ErrAlreadyExists answers "a rollout is active" (invariant I1 is
+// store's ErrAlreadyExists answers "a rollout is active" (invariant is
 // per-store), NOT "your rollout is active" — so it MUST be disambiguated by
 // reading the active row back:
 //
@@ -359,16 +397,22 @@ func (b *rolloutBarrier) propose(ctx context.Context, newCfg, sourceCfg *ports.B
 //     rollback) and the delta then never applies on any member — a silent drop.
 //     Fail closed; the operator retries once the in-flight rollout resolves.
 func (b *rolloutBarrier) joinActive(ctx context.Context, digest string) error {
-	r, err := b.store.Current(ctx)
+	r, err := rolloutOpValue(ctx, b.ops, rolloutOpRead, b.store.Current)
 	if err != nil {
 		return fmt.Errorf("bridge: a cluster rollout is already active but it could not be read back to "+
 			"check whether it carries this delta, so the change cannot be safely deferred to it: %w", err)
 	}
 	if r.ConfigDigest() != digest {
+		// Both digests are named because the two cases an operator has to tell
+		// apart look identical without them: someone really is rolling a
+		// different change, or every member computed a different digest for the
+		// SAME change — in which case no member can ever join the proposer and
+		// the rollout deadline-aborts on one ack, however long anyone waits.
 		return fmt.Errorf("bridge: a DIFFERENT cluster config rollout is already in flight "+
-			"(generation=%d state=%q config_version=%d); one rollout at a time is the barrier's "+
-			"invariant, so this delta was NOT proposed. Wait for the in-flight rollout to commit or "+
-			"abort, then retry", r.Generation(), r.State(), r.ConfigVersion())
+			"(generation=%d state=%q config_version=%d in_flight_digest=%s this_delta_digest=%s); one "+
+			"rollout at a time is the barrier's invariant, so this delta was NOT proposed. Wait for the "+
+			"in-flight rollout to commit or abort, then retry",
+			r.Generation(), r.State(), r.ConfigVersion(), r.ConfigDigest(), digest)
 	}
 	if r.State() != persistence.RolloutProposed && r.State() != persistence.RolloutStaging {
 		// Already committed (provisionally or finally), confirmed, reverted, or

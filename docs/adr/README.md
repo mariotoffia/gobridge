@@ -1,11 +1,13 @@
 # Architecture Decision Records
 
-Records of decisions already made and shipped on `main`. Each ADR captures the
+## Overview
+
+Records of accepted decisions and their history. Each ADR captures the
 context, the decision, and its consequences, so the reasoning survives past the
 commit that carried the code.
 
-Format: MADR-style. Status is `accepted` for every record here — these document
-behavior that already ships, not proposals.
+Status distinguishes current decisions from superseded rules. A superseded
+record remains available and links to its replacement.
 
 | ADR | Title | Status |
 |-----|-------|--------|
@@ -14,8 +16,8 @@ behavior that already ships, not proposals.
 | [0003](0003-mqtt-persistent-session-hygiene.md) | MQTT persistent-session subscription hygiene | accepted |
 | [0004](0004-single-use-runtime-lifecycle.md) | Single-use runtime lifecycle and terminal wedge | accepted |
 | [0005](0005-outbox-partition-claim-design.md) | Outbox partition design: claim selection, fence rows, seq allocation | accepted |
-| [0006](0006-dlq-redrive-at-most-once.md) | DLQ redrive at-most-once | accepted |
-| [0007](0007-cluster-worker-seeding-adoptvalid.md) | Cluster worker seeding: AdoptValid default | superseded by 0012 |
+| [0006](0006-dlq-redrive-at-most-once.md) | DLQ redrive at-most-once | superseded by 0015 |
+| [0007](0007-cluster-worker-seeding-adoptvalid.md) | Cluster worker seeding: AdoptValid default | rollout superseded by 0012; startup replaced by [strict initialization](../aws-deployment/config-initialization.md) |
 | [0008](0008-cross-hop-identity-lift.md) | Cross-hop bridge-to-bridge identity lift | accepted |
 | [0009](0009-durable-outbound-mqtt-session-state.md) | Durable outbound MQTT session state: in-memory store, route-layer durability | accepted |
 | [0010](0010-mqtt-loop-prevention-contract.md) | MQTT bridge-to-bridge loop-prevention contract | accepted |
@@ -23,6 +25,7 @@ behavior that already ships, not proposals.
 | [0012](0012-cluster-config-whole-cohort-replacement.md) | Cluster config changes require whole-cohort replacement | superseded by 0013 (live-safe deltas) |
 | [0013](0013-coordinated-cluster-config-rollout.md) | Coordinated cluster config rollout for live-safe deltas | accepted |
 | [0014](0014-confirm-window-provisional-commit.md) | Confirm window: provisional commit with deadman revert | accepted |
+| [0015](0015-dlq-redrive-inject-then-delete.md) | DLQ redrive inject-then-delete (at-least-once) | accepted |
 
 ## Numbering
 

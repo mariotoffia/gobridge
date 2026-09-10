@@ -141,7 +141,7 @@ func (n *nodeProcess) token(prefix string) (string, bool) {
 }
 
 // awaitToken blocks until the child emits a token beginning with prefix,
-// returning the full token line (e.g. "NODE_FULL:uc3sp-A-123"). It fails the
+// returning the full token line (e.g. "NODE_FULL:uc3sp"). It fails the
 // test (with captured child output) on timeout.
 func (n *nodeProcess) awaitToken(t *testing.T, prefix string, timeout time.Duration) string {
 	t.Helper()

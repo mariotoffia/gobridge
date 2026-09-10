@@ -39,10 +39,19 @@ climb only as far as you need.
 |---|---|---|---|
 | **1. Standalone** | nothing (the default) | One process. Live config reloads apply immediately. | No high availability — if it dies, the bridge is down. |
 | **2. Clustered (default)** | `deployment_mode: clustered` | Several processes share the load and cover for each other. | **Every** config change needs a full stop-and-restart of all processes (downtime). |
-| **3. Coordinated** | `cluster.rollout: coordinated` + a roster + the DynamoDB config source | Safe config changes roll out across all processes with **no downtime**. | Needs the DynamoDB coordinated config store and a fixed list of members. |
-| **4. Confirm window** | add `cluster.confirm_window: 90s` | A change that applies but **can't actually reach its broker** is rolled back automatically, on all processes. | A failed change disconnects twice (apply, then undo). Off by default. |
+| **3. Independent** | `cluster.rollout: independent` | Safe config changes apply with **no downtime** and **nothing extra to run** — each process picks the change up and applies it itself, exactly as a standalone bridge does. | For a few seconds one process can be running the new config while another is still on the old one. A process that cannot run the change is a broken process to replace, not a veto. |
+| **4. Coordinated** | `cluster.rollout: coordinated` + a roster + the DynamoDB config source | Safe config changes roll out across all processes with **no downtime**, and a process that cannot build the change stops it reaching any of them. | Needs the DynamoDB coordinated config store and a fixed list of members. |
+| **5. Confirm window** | add `cluster.confirm_window: 90s` | A change that applies but **can't actually reach its broker** is rolled back automatically, on all processes. | A failed change disconnects twice (apply, then undo). Off by default. |
 
-Setups 2–4 all require a clustered deployment. Setups 3 and 4 build on setup 2.
+Setups 2–5 all require a clustered deployment. Setups 3, 4 and 5 build on setup 2;
+4 and 5 build on each other, 3 stands alone.
+
+**Choosing between 3 and 4.** Setup 3 is what most deployments want and is the
+cheaper thing to operate: nothing to provision, nothing to elect, nothing that can
+get stuck. Take setup 4 when a config that one process cannot build must not reach
+any of them — for example when the processes do not run identical images, or when
+a half-applied change would be worse than no change at all. Both refuse the same
+set of changes that cannot be applied live at all, and both name the reason.
 
 **On cost:** moving up the ladder barely changes your AWS bill — coordination is
 a control-plane mechanism (one small DynamoDB table, polled every few seconds),
@@ -89,28 +98,100 @@ here — you do not need anything below.
 
 ---
 
-## Setup 3 — Coordinated rollout (no-downtime changes)
+## Setup 3 — Independent (no downtime, nothing extra to run)
+
+If you want to change config without the outage and without running a
+coordination protocol, say so:
+
+<!-- docs-example: skip -->
+```yaml
+bridge:
+  deployment_mode: clustered
+  cluster:
+    rollout: independent
+```
+
+Now a safe change applies the way it does on a standalone bridge: whatever writes
+the config — the admin HTTP API, or an edit to the shared document — validates it
+once, and each process then picks it up and applies it itself. There is no shared
+store to provision, no coordinator to elect, no roster to keep in step, and
+nothing that can get stuck waiting for a process that is not answering.
+
+**What you are accepting.** The processes do not switch at the same instant. For a
+few seconds one can be running the new config while another is still on the old
+one — the same window a rolling Kubernetes ConfigMap update has. If a change would
+be harmful half-applied, use setup 4 instead.
+
+**A process that cannot run the change does not stop the others.** It fails to
+apply, keeps serving its previous config, and reports the failure on its health
+endpoint (`config_watch.degraded` with the reason). It is a process to replace,
+not a veto over the cohort. Watch for it the way you watch for any unhealthy
+process.
+
+**What is still refused.** A change that cannot be applied live on *any* single
+process — a durable session's identity, a store's target — is refused here too,
+with the same message a standalone bridge gives, and still needs the whole-cohort
+replacement from setup 2.
+
+**The cohort's own shape is still fixed.** `bridge.cluster.members`,
+`bridge.cluster.endpoints` and `bridge.cluster.rollout` describe the deployment,
+not what the cohort runs, so they are refused live in this mode as well. That is
+worth spelling out, because independent mode counts no acknowledgements and the
+roster looks unused — but the deployment reads it. The shipped AWS HA deployment
+records the shape it admitted, including the roster, and every process re-checks
+that record each time it boots; it also starts one process per roster entry, so
+the roster and the running processes have to name each other. A process that
+accepted a live roster edit there would apply it happily and then refuse to start
+the next time it restarted. Add or remove a process by redeploying the cohort,
+the way setup 2 describes.
+
+Reordering the roster, or repeating an id in it, names the same cohort and is not
+a change.
+
+---
+
+## Setup 4 — Coordinated rollout (no-downtime, nobody swaps alone)
 
 If you change config often and want to avoid the outage, turn on **coordinated
-mode**. Now a safe change is rolled out to the whole cohort atomically: it is
-proposed to a shared store, **every** process validates and prepares it, and
-only once all of them agree does a single elected process ("the coordinator")
-commit it — at which point they all swap together. If any process cannot accept
-the change, nothing swaps and the old config keeps running. No process ever runs
-a config the others have not agreed to ([ADR 0013](../adr/0013-coordinated-cluster-config-rollout.md)).
+mode**. A safe change is now *decided* atomically: it is proposed to a shared
+store, **every** process validates and prepares it, and only once all of them
+agree does a single elected process ("the coordinator") commit it. If any process
+cannot accept the change, nothing swaps and the old config keeps running. No
+process ever runs a config the others have not agreed to
+([ADR 0013](../adr/0013-coordinated-cluster-config-rollout.md)).
+
+The *decision* is atomic; the *swap* is per process. After the commit each member
+applies the change locally, and one of them can fail where the others succeed —
+so for a few seconds (and, if a member's broker or store is unhealthy, longer)
+the cohort can be running two generations. That window is bounded and visible,
+not hidden: the failing member retries, reports `applied: false` in deep health,
+and eventually declares itself unrepairable so you can replace it. Alarm on it —
+see [Watching it roll out](operating.md#watching-it-roll-out). If you cannot
+tolerate that window at all, use a [confirm window](#setup-5--confirm-window-auto-revert-on-failure), which
+reverts the whole cohort instead of leaving it split.
 
 ### What you need first
 
 Coordinated mode has three prerequisites — all of them, or it will not start:
 
-1. **The versioned DynamoDB config source.** The shared store that can hold the
-   config and version it (the `dynamodb_coordinated_ha` deployment profile). A
-   file- or EFS-based cohort cannot use coordinated mode.
+1. **A shared rollout store.** A DynamoDB table holding the current proposal, the
+   per-member acknowledgements, and the durable last-committed config artifact.
+   The `dynamodb_coordinated_ha` deployment profile provisions it; the config
+   document itself may still live on EFS.
 2. **A member roster** — the fixed list of process identities in the cohort.
 3. **A stable `member_id` per process** — each process announces an id that must
    appear in the roster and must survive restarts. This is set in the
    deployment/bootstrap config (`member_id`), not in the shared logical config,
    because every process shares one config document.
+
+Prerequisite 3 is what decides the deployment shape. A process needs an identity
+that is the same after a restart, so an autoscaled pool cannot host a cohort:
+every replacement task is a new task with a new id, so it can never re-enter the
+roster it left. The AWS profile therefore runs a coordinated cohort as **static
+member slots** — one single-task ECS service per roster member, each with its own
+`member_id` — and **rejects `rollout: coordinated` at synth time** on its
+autoscaled worker shape rather than deploying a stack that can only fail at boot.
+See [the AWS deployment configuration reference](../aws-deployment/configuration.md).
 
 ### What you set
 
@@ -125,12 +206,36 @@ bridge:
     members: [node-a, node-b, node-c]   # every process, by its member_id
 ```
 
-And in each process's deployment/bootstrap config, its own identity:
+And in each process's deployment/bootstrap config, its own identity. In the AWS
+file-based profile that config is the JSON document supplied through
+`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` — one per member, differing only in
+`member_id` and `node_role`:
 
 <!-- docs-example: skip -->
-```yaml
-member_id: node-a     # must be one of bridge.cluster.members; stable across restarts
+```json
+{
+  "bridge_id": "gobridge-prod",
+  "config_file_path": "/var/lib/gobridge/bridge.yaml",
+  "admin_api_key_param": "/gobridge/prod/admin-api-key",
+  "topology": "dynamodb_coordinated_ha",
+  "node_role": "worker",
+  "member_id": "node-a",
+  "dynamodb_ha_lease_table_name": "gobridge-prod-leases",
+  "dynamodb_ha_outbox_table_name": "gobridge-prod-outbox",
+  "dynamodb_ha_managed_subscriptions_table_name": "gobridge-prod-managed-subscriptions",
+  "dynamodb_ha_rollout_table_name": "gobridge-prod-rollouts",
+  "dynamodb_ha_config_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+  "dynamodb_ha_baseline_config_digest": "0000000000000000000000000000000000000000000000000000000000000000"
+}
 ```
+
+`member_id` must be one of `bridge.cluster.members` and must be stable across
+restarts; it and `node_role` are the only two values that differ between the
+members. Everything below them is deployment-owned identity the CDK construct
+computes and stamps for you — the two digests are SHA-256 hex values over the
+admitted config, not operator-chosen strings, so the zeros above are a shape
+placeholder. Each field is described in the
+[bootstrap field reference](../aws-deployment/configuration.md#field-reference).
 
 That is all. The shipped image performs the rollout itself — there is nothing to
 run per change beyond writing the new config. Post it to the config source and
@@ -152,7 +257,7 @@ See [which changes are live-safe](operating.md#which-changes-roll-live-and-which
 
 ---
 
-## Setup 4 — Confirm window (auto-revert on failure)
+## Setup 5 — Confirm window (auto-revert on failure)
 
 Coordinated mode commits a change once every process has **built** it — proved
 it is valid and can be prepared. But "valid" is not the same as "actually

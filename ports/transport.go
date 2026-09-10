@@ -163,6 +163,37 @@ type Delivery interface {
 //     behind the emit callback; a late emit is a Receiver bug (the
 //     runtime guards this defensively and rejects the delivery, which
 //     then falls back to transport redelivery).
+//
+// # Envelope identity (canonical contract)
+//
+// Envelope.ID is the key the runtime deduplicates and replays on: the outbox
+// stores one record per (partition, envelope ID, binding) and the replay ledger
+// caps redelivery per ID. Both properties below are NORMATIVE for every source
+// adapter, and ports/transporttest.RunSourceIdentityConformanceTests asserts
+// them.
+//
+//   - Redelivery stability, or declared instability. Every Delivery the
+//     transport produces for ONE source message MUST carry the same
+//     Envelope.ID, across redelivery, reconnect, failover and process restart.
+//     A transport that MINTS an ID because the message carries none, AND whose
+//     source can redeliver that same message, MUST stamp
+//     messaging.HeaderGeneratedID on the envelope: it tells the runtime the ID
+//     changes per redelivery, so the replay cap terminates the message instead
+//     of looping on a key that never accumulates. A transport with no source
+//     redelivery — where a failed Delivery ends the message and any client
+//     retry arrives as a NEW message — has no instability to declare and MUST
+//     NOT stamp it. Silently unstable IDs are the forbidden case: they defeat
+//     both dedup and the cap.
+//
+//   - Source-scoped uniqueness. Two DISTINCT source messages reaching one
+//     Receiver MUST NOT share an Envelope.ID. Uniqueness is required within the
+//     source, not globally: IDs from different sources reach different routes
+//     and bindings and are never compared. Where the ID is derived from a
+//     PRODUCER-supplied field rather than minted by the broker or the adapter,
+//     the adapter MUST document that whoever may publish to the source owns
+//     that ID namespace — a reused ID is one identity to the outbox, and the
+//     second message is suppressed (counted on
+//     shared.MetricOutboxDuplicateSuppressed) rather than delivered.
 type Receiver interface {
 	Run(ctx context.Context, emit func(context.Context, Delivery) error) error
 }
@@ -368,6 +399,14 @@ func (h SessionHealth) HasTopic(topic string) bool {
 
 // Session owns network identity and remote state for stateful transports.
 // Stateless transports do not require a Session.
+//
+// Events must emit SessionConnected on EVERY connect edge, not only the first.
+// A lease-managed exclusive session uses that edge to decide it has recovered
+// from a broker-path outage; a transport that reconnects silently leaves an
+// owner that is in fact healthy counted as still down, and a configured
+// broker_health_step_down then surrenders its lease and restarts the process.
+// The channel may drop its OLDEST unread event under a storm — the runtime
+// tolerates that — but it may not skip an edge.
 type Session interface {
 	Start(ctx context.Context) error
 	Reconcile(ctx context.Context, plan connectivity.SessionPlan) error
@@ -415,13 +454,15 @@ const (
 	// connectivity.SessionPlan (MQTT/paho, amqp091). For such a transport a
 	// receiver bound to a session that never gets a manager is silently inert:
 	// nothing reconciles its plan, so it subscribes to nothing. The bridge
-	// builder uses this capability to require a session manager for every
-	// plan-driven receiver and to FAIL the build otherwise (ADV-P4-FU1).
+	// builder uses this capability to give every plan-driven receiver's session
+	// a manager: through the route's session block or a binding when one names
+	// it, and otherwise through the receiver's own binding to the session, as an
+	// ingress session with no lease (see runtime.RegisterIngressSession).
 	//
 	// Self-establishing transports (amqp10, whose receivers attach links on
 	// start independently of the plan) and address-direct transports
 	// (SQS/Service Bus/HTTP, which poll or receive at an address and have no
-	// reconcile plan) do NOT advertise it, so the builder skips the check for
+	// reconcile plan) do NOT advertise it, so the builder wires nothing for
 	// them — a missing manager is not the same defect there.
 	CapPlanDrivenSubscriptions Capability = "plan_driven_subscriptions"
 )

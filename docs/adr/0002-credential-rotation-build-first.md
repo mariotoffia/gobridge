@@ -35,27 +35,27 @@ new material, then force a reconnect and let the retry loop reconverge.
 
 Reference implementation — Azure Service Bus rotation:
 
-- `ApplyCredentials` (`adapters/azure/transport/servicebus/credentials_refresh.go:180`)
+- `ApplyCredentials` (`adapters/azure/transport/servicebus/credentials_refresh.go`)
   takes the session-mode path that builds the new stack (`:224`) **before** it
   commits (`:233`). On a build failure, `cfg.Connection` is never touched and
   `rebuildPending` stays set, so the poll loop retries and the adapter
   self-heals rather than adopting broken config.
 
 - The session-mode commit is generation-fenced: `commitRebuild(gen, ...)`
-  installs the new stack and sets `r.cfg.Connection = conn` (`receiver.go:214`,
+  installs the new stack and sets `r.cfg.Connection = conn` (`receiver.go`,
   `:225`) **only if** `r.rebuildGen == gen` (`:217`). `beginSessionRebuild` bumps
-  `rebuildGen` (`receiver.go:194-195`), so a newer rotation that started while
+  `rebuildGen` (`receiver.go`), so a newer rotation that started while
   this one was building wins, and the stale build discards its result instead of
   overwriting fresher credentials.
 
 - The non-session path also builds first, then swaps via an **unfenced**
-  `commitStack` (`credentials_refresh.go:255-261`). No generation fence is needed
+  `commitStack` (`credentials_refresh.go`). No generation fence is needed
   there because no concurrent poll-loop rebuild exists on that path — the fence
   guards only the session-mode self-heal race.
 
 SQS follows the same build-first shape without sessions: `ApplyCredentials`
 rebuilds the SQS client with the new material and only then swaps it under the
-init lock (`adapters/aws/transport/sqs/acl_credentials.go:60-91`). A rebuild
+init lock (`adapters/aws/transport/sqs/acl_credentials.go`). A rebuild
 failure returns the error with the old client still live.
 
 ### Exclusive-connection reconnect-loop transports
@@ -66,10 +66,10 @@ reconnect:
 
 - paho `Session.ApplyCredentials` swaps `liveCreds` / `opts` under `s.mu`, then
   calls `cm.Disconnect`; autopaho's loop reconnects with the new material
-  (`adapters/mqtt/transport/paho/session_credentials.go:41-113`).
+  (`adapters/mqtt/transport/paho/session_credentials.go`).
 - amqp10 `Session.ApplyCredentials` swaps `liveCreds` / `opts`, then `conn.Close`
   triggers the monitor loop to redial
-  (`adapters/amqp/transport/amqp10/session_credentials.go:28-80`).
+  (`adapters/amqp/transport/amqp10/session_credentials.go`).
 
 Known failure mode: a bad rotation strands the session reconnect-looping on the
 new (broken) material. There is no rollback — the previous credentials are

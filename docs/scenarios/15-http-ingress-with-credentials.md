@@ -116,6 +116,8 @@ routes:
 stores:
   dlq:
     type: memory
+    options:
+      acknowledge_volatile: true
 
 http:
   admin_addr: ":8080"

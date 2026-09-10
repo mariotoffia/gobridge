@@ -1,5 +1,5 @@
 // Tests covering the subject/address separation contract for the
-// AMQP 0-9-1 adapter (T06):
+// AMQP 0-9-1 adapter:
 //
 //   - Sender uses OutboundMessage.Address first, then SenderConfig.RoutingKey.
 //   - Sender publishes the logical Envelope.Subject as a HeaderGobridgeSubject

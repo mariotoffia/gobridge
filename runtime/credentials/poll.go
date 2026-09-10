@@ -276,7 +276,7 @@ func (w *PollBasedWrapper) Watch(ctx context.Context, uri string) (<-chan *conne
 }
 
 // runWatch is the per-watch loop. It is structured so the seed resolve happens
-// immediately (so EmitOnStart and the F1 build-window rotation check work even
+// immediately (so EmitOnStart and the build-window rotation check work even
 // with a large PollInterval), after which polls happen on the cadence or
 // whenever Refresh nudges it. When the wrapped store exposes ResolveUncached,
 // every poll bypasses the store's cache — see UncachedPullCredentialStore.
@@ -347,7 +347,7 @@ func (w *PollBasedWrapper) runWatch(ctx context.Context, uri string, out chan *c
 // seed establishes the dedup baseline and performs the initial emission. It
 // returns the baseline CredentialSet (may be nil on a seed failure).
 //
-// For a caching pull store (UncachedPullCredentialStore) it closes the F1
+// For a caching pull store (UncachedPullCredentialStore) it closes
 // rebuild blind window: the baseline is read through the CACHE (what the
 // freshly built session actually holds) and compared against a FRESH uncached
 // read. If they differ a rotation landed in the build→watch window, so it is
@@ -384,7 +384,7 @@ func (w *PollBasedWrapper) seed(
 
 	switch {
 	case built != nil && !fresh.Equal(built):
-		// F1: a rotation landed between the cache-backed build resolve and this
+		// a rotation landed between the cache-backed build resolve and this
 		// watch seed. Surface it now so the new session is corrected off the
 		// rotated-out secret, regardless of EmitOnStart. Invalidate caches
 		// before publishing (mirrors the tick path).

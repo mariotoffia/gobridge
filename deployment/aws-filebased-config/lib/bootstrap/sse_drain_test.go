@@ -14,11 +14,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
+	"github.com/mariotoffia/gobridge/config/parser"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// These tests cover audit chunk C18 finding 1: the bootstrap composition root
+// These tests cover audit chunk finding 1: the bootstrap composition root
 // never drained the HTTP transport's SSE senders on config reload or shutdown.
 // adapters/http/transport.Factory.Close (invoked here via App.closeSupersededHTTP
 // on swap and via the Stop drain block) unblocks the long-lived SSE handlers so
@@ -86,10 +87,12 @@ func startAppWithSSE(t *testing.T, bridgeID string) *App {
 		AdminAPIKeyParam:  "/admin",
 	}, WithParameterResolver(staticParameterResolver{"/admin": "admin-secret-key-123456"}))
 
+	require.NoError(t, parser.WriteFile(cfgPath, defaultLogicalConfig(app.cfg)))
 	require.NoError(t, app.Start(t.Context()))
 	// Idempotent backstop: test 1 Stops explicitly; this no-ops afterward
 	// (Stop returns immediately once started=false).
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	awaitApplied(t, app)
 
 	reloadConfig(t, app, sseRouteConfig(bridgeID, "info"))
 	return app
@@ -240,7 +243,7 @@ func postEvent(t *testing.T, url, subject string) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
-// TestApp_StopDoesNotStallOnConnectedSSEClient is the primary C18-finding-1
+// TestApp_StopDoesNotStallOnConnectedSSEClient is the primary
 // regression: with a live SSE subscriber, App.Stop must NOT block waiting on the
 // SSE handler. Stop is called with a context budget far below the 30s shutdown
 // default; the fix drains the sender (unblocking the handler) BEFORE
@@ -273,7 +276,7 @@ func TestApp_StopDoesNotStallOnConnectedSSEClient(t *testing.T) {
 }
 
 // TestApp_ReloadKeepsSSEFlowingAndReleasesOldSender is the second
-// C18-finding-1 regression: a hot reload must NOT leave subscribers pinned to
+// regression: a hot reload must NOT leave subscribers pinned to
 // the orphaned old sender (which would keep sending heartbeats but never events,
 // and never reconnect because the socket looks alive) while the new sender
 // broadcasts to nobody. The fix drains the superseded registry's SSE senders on

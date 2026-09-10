@@ -161,7 +161,7 @@ func TestSessionOptionsFromMap_TLSStruct(t *testing.T) {
 	}
 }
 
-// verifies Config.PublisherTopic exposes the sender exchange (F1-P3) so the
+// verifies Config.PublisherTopic exposes the sender exchange so the
 // transport-neutral bridge can thread it into the session plan and have
 // declarePublisher auto-declare it. The compile-time assertion in
 // config_plugin.go (var _ ports.PublishingConfig = (*Config)(nil)) proves the

@@ -11,10 +11,9 @@ import (
 // supports a single admin/monitor pair so a "merge" semantics here
 // would mask operator mistakes.
 //
-// AdminAPIKey and MonitorAPIKey are written verbatim. The plaintext
-// scanner run from Build verifies the values are credential URIs
-// rather than literals, so callers cannot accidentally bake an
-// inline secret into the synthesized bridge.yaml.
+// AdminAPIKey and MonitorAPIKey may be literals or credential references.
+// Their values are preserved in the config's redacting shared.Secret fields.
+// Existing runtime key-presence and key-strength validation still applies.
 func (b *Builder) WithHTTPAdminAPI(opts HTTPAdminAPIOptions) *Builder {
 	b.cfg.HTTP = &ports.HTTPConfig{
 		AdminAddr:     opts.AdminAddr,

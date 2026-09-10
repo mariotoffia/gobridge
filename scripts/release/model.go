@@ -23,21 +23,33 @@ const (
 	finalModulePath      = "cmd/gobridge"
 	cdkModulePath        = "deployment/aws-filebased-config/cdk"
 	cdkInfraModulePath   = "deployment/aws-filebased-config/infra"
+	libModulePath        = "deployment/aws-filebased-config/lib"
 
-	// cdkSmokePackage is the facade an external stack instantiates. Building
-	// it reaches gobridgecdk, bridgecfg, registry, the shared constructs and
-	// the infra types in one command, so it stands in for the whole public
-	// CDK surface in the external consumer smoke.
-	cdkSmokePackage = "constructs/gobridgesingle"
+	// libCommandPackage is the profile binary the CDK's default image source
+	// compiles inside its Docker build. Nothing a consumer writes imports it,
+	// so only installing it from the proxy proves the published module zip
+	// still builds; a resolvable tag does not.
+	libCommandPackage = "cmd/gobridge-filebased"
 )
+
+// cdkSmokePackages are the CDK packages an external stack writes against.
+// gobridgesingle is the facade a stack instantiates; building it reaches
+// bridgecfg, registry, the shared constructs and the infra types. gobridgecdk
+// carries the image sources and the sealed BridgeImageSource those facades
+// take, and no facade imports it in non-test code, so it has to be built on
+// its own or the whole public image-source surface stays uncompiled.
+var cdkSmokePackages = []string{"gobridgecdk", "constructs/gobridgesingle"}
 
 // publishedDeploymentModules are the only modules under deployment/ that are
 // tagged and consumable. Everything else there is internal wiring for the
 // shipped image. An external CDK app writes its own stack against the
 // constructs, and those constructs take infra types (BootstrapConfig and
 // friends) as arguments, so both modules must resolve from the proxy or the
-// documented quickstart cannot compile outside this repository.
-var publishedDeploymentModules = []string{cdkModulePath, cdkInfraModulePath}
+// documented quickstart cannot compile outside this repository. The profile
+// lib module joins them because the default image source builds its command
+// from the module proxy at the train version: an unpublished lib makes that
+// build unreachable for anyone outside this checkout.
+var publishedDeploymentModules = []string{cdkModulePath, cdkInfraModulePath, libModulePath}
 
 var (
 	stableVersionPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)

@@ -19,7 +19,7 @@ import (
 // (finding: renew-write-fails / Current-read-succeeds). Every Renew fails with a
 // TRANSIENT error (write path partitioned), while Current keeps returning THIS
 // owner with a far-future ExpiresAt (read path healthy / stale). Without the
-// local-lease-deadline gate the renew loop's F7 authoritative-read mitigation
+// local-lease-deadline gate the renew loop's authoritative-read mitigation
 // would re-arm on every Current success and keep the owner "active" indefinitely
 // past its own expiry — the ~97s dual-consumer window. With the fix the owner
 // must step down once its local lease deadline (last successful acquire/renew +
@@ -121,7 +121,7 @@ func TestSessionManager_RenewFailReadSucceed_ForcesStepDownPastDeadline(t *testi
 	wait.Until(t, 2*time.Second, "renew timer registered", func() bool { return fake.TimerCount() >= 1 })
 
 	// One renew cycle BEFORE expiry: the write fails, MaxRenewFails is reached,
-	// and the F7 authoritative read (Current) still names us — so PRE-expiry the
+	// and the authoritative read (Current) still names us — so PRE-expiry the
 	// owner legitimately keeps the lease (proves the read path is succeeding).
 	fake.Advance(renewInterval)
 	wait.RequireReceive(t, renewCh, 2*time.Second)
@@ -134,7 +134,7 @@ func TestSessionManager_RenewFailReadSucceed_ForcesStepDownPastDeadline(t *testi
 		t.Fatal("pre-expiry: session must NOT be closed while still within its deadline")
 	default:
 	}
-	wait.Until(t, 2*time.Second, "renew timer reset after F7 no-op", func() bool { return fake.TimerCount() >= 1 })
+	wait.Until(t, 2*time.Second, "renew timer reset no-op", func() bool { return fake.TimerCount() >= 1 })
 
 	// Now cross the local lease deadline (last successful acquire at t0 + TTL).
 	// The write path is still partitioned and Current would STILL name us, but
@@ -192,11 +192,11 @@ func TestSessionManager_TransientBlipBeforeDeadline_NoStepDown(t *testing.T) {
 	wait.RequireReceive(t, renewCh, 2*time.Second)
 	wait.Until(t, 2*time.Second, "renew timer reset", func() bool { return fake.TimerCount() >= 1 })
 
-	// Renew #2 fails transiently -> F7 Current read still owner -> no step-down.
+	// Renew #2 fails transiently -> Current read still owner -> no step-down.
 	fake.Advance(renewInterval)
 	wait.RequireReceive(t, renewCh, 2*time.Second)
 	wait.RequireReceive(t, currentCh, 2*time.Second)
-	wait.Until(t, 2*time.Second, "renew timer reset after F7 no-op", func() bool { return fake.TimerCount() >= 1 })
+	wait.Until(t, 2*time.Second, "renew timer reset no-op", func() bool { return fake.TimerCount() >= 1 })
 
 	// Renew #3 recovers, all still within the (extended) deadline.
 	fake.Advance(renewInterval)

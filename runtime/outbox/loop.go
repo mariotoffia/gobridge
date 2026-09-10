@@ -59,7 +59,7 @@ func (d *Drainer) Run(ctx context.Context) error {
 		case <-timer.C():
 			token, hasLease := d.tokenFn()
 			if !hasLease {
-				// Finding 11: a non-exclusive session never acquires a lease, so
+				// A non-exclusive session never acquires a lease, so
 				// its shared_outbox drainer would skip EVERY cycle and never
 				// drain — previously a fully silent stall. Surface it: a counter
 				// on every skip and a rate-limited warning so the permanent
@@ -71,11 +71,20 @@ func (d *Drainer) Run(ctx context.Context) error {
 				timer.Reset(d.strategy.NextInterval(0))
 				continue
 			}
-			// Finding 19: sweep expired-but-unclaimed pending records to the
+			// Sweep expired-but-unclaimed pending records to the
 			// expired terminal state at a slow cadence. Runs under lease
 			// ownership (checked above) and independent of egress readiness —
 			// expiry is a durability-cleanup concern, not a send concern.
-			d.maybeExpire(ctx)
+			if expireErr := d.maybeExpire(ctx, token); errors.Is(expireErr, shared.ErrStaleFencingToken) {
+				// A successor owns this partition. On a drainer whose egress
+				// never becomes ready the readiness gate below returns before
+				// Claim, so this is the only place the takeover is ever
+				// observed — back off exactly as the claim path does instead of
+				// re-sweeping a partition we no longer own every interval.
+				d.log(ctx, slog.LevelWarn, "stale fencing token on expiry sweep, waiting for new lease")
+				timer.Reset(max(d.strategy.NextInterval(0), transientRetryFloor))
+				continue
+			}
 			if d.readyFn != nil && !d.readyFn(ctx) {
 				if logging.TraceEnabled(d.logger) {
 					d.logger.Log(ctx, logging.LevelTrace, "egress not ready, skipping drain cycle",
@@ -144,16 +153,11 @@ func (d *Drainer) finalDrain(parent context.Context) error {
 	if d.readyFn != nil && !d.readyFn(context.WithoutCancel(parent)) {
 		return nil
 	}
-	// Use the worst-case ceiling for the final drain because the batch
-	// size is only known after Claim. When the caller opted into the
-	// scaled formula this resolves to MaxDrainTimeout; otherwise it
-	// resolves to the legacy fixed DrainTimeout.
-	finalCeiling := d.drainTimeout
-	if d.useScaledTimeout {
-		finalCeiling = d.maxDrainTimeout
-		if finalCeiling <= 0 {
-			finalCeiling = defaultMaxDrainTimeout
-		}
+	// Use the worst-case ceiling for the final drain: the batch size is only
+	// known after Claim, so the scaled per-record term cannot be applied yet.
+	finalCeiling := d.maxDrainTimeout
+	if finalCeiling <= 0 {
+		finalCeiling = defaultMaxDrainTimeout
 	}
 	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), finalCeiling)
 	defer cancel()
@@ -165,15 +169,15 @@ func (d *Drainer) finalDrain(parent context.Context) error {
 
 // maybeExpire runs OutboxStore.Expire at most once per expireInterval, sweeping
 // this partition's pending records whose expires_at has passed into the expired
-// terminal state (finding 19). Without this the port's Expire method is dead
+// terminal state. Without this the port's Expire method is dead
 // code and expired records that were never claimed linger pending forever. The
 // caller has already confirmed lease ownership, so exactly one instance performs
 // the sweep per partition. Expire is pending-only (claimed records are reclaimed
 // via Claim, never expired out from under a live owner), so the sweep never
-// races an in-flight send; it is partition-scoped (M1) so a drainer holding one
+// races an in-flight send; it is partition-scoped so a drainer holding one
 // partition's lease can never expire another partition's records.
 //
-// H1: the bulk sweep is DEFERRED entirely for on_expired:dlq routes. The sweep
+// the bulk sweep is DEFERRED entirely for on_expired:dlq routes. The sweep
 // only transitions records to the terminal "expired" state with a counter — it
 // destroys the envelope without routing it — so under the default ExpiredDLQ
 // policy a broker outage would erase evidence the operator asked to preserve.
@@ -181,35 +185,56 @@ func (d *Drainer) finalDrain(parent context.Context) error {
 // (handleExpired) which routes the expired envelope to the DLQ. The sweep
 // therefore runs ONLY for drop-policy routes, where the record would be dropped
 // anyway so eager accounting loses no evidence.
-func (d *Drainer) maybeExpire(ctx context.Context) {
+// The sweep carries the drainer's live fencing token: it is a terminal,
+// destructive transition of records a successor could still deliver, so the
+// store — not this local lease check alone — is the authority that refuses a
+// preempted owner. The token also advances the partition's fencing
+// high-water-mark, which matters here because this runs BEFORE the
+// egress-readiness gate: on a partition whose egress never becomes ready, this
+// is the only fencing call the drainer ever makes.
+//
+// It returns the store error so the caller can act on it. A
+// shared.ErrStaleFencingToken here is the ONLY signal a preempted owner gets on
+// such a partition, since the readiness gate stops that drainer before Claim.
+func (d *Drainer) maybeExpire(ctx context.Context, token persistence.LeaseToken) error {
 	if d.outboxStore == nil {
-		return
+		return nil
 	}
 	if d.policy.OnExpired == routing.ExpiredDLQ {
 		// DLQ-policy expiry is handled per-record by handleExpired (which
 		// preserves the envelope by routing it to the DLQ), never by the
 		// evidence-destroying bulk sweep.
-		return
+		return nil
 	}
 	now := d.clk.Now()
 	if !d.lastExpire.IsZero() && now.Sub(d.lastExpire) < d.expireInterval {
-		return
+		return nil
 	}
 	d.lastExpire = now
-	n, err := d.outboxStore.Expire(ctx, now, d.partitionKey)
-	if err != nil {
-		d.log(ctx, slog.LevelWarn, "outbox expire sweep failed", "error", err)
-		return
-	}
+	// Bound the sweep like Claim: it holds the single drain goroutine for this
+	// partition, so a black-holed store would otherwise stop the send path too,
+	// not merely the housekeeping. A sweep truncated by that deadline (or
+	// aborted mid-way by a fence raise) reports what it DID expire alongside the
+	// error, so the count is emitted before the error is handled.
+	expireCtx, expireCancel := d.storeOpContext(ctx)
+	n, err := d.outboxStore.Expire(expireCtx, now, d.partitionKey, token)
+	expireCancel()
 	if n > 0 {
 		// Expired records were received but will never be sent — count them as
 		// expired so the conservation law (received = sent + dropped + filtered
-		// + expired + dlq + inflight) can close.
+		// + expired + dlq + inflight) can close. A partially completed sweep has
+		// already made those transitions durable, so dropping the count on the
+		// error path would silently break the law.
 		d.metrics.Counter(shared.MetricMessagesExpired, int64(n),
 			shared.Tag{Key: shared.TagKeySessionID, Value: d.partitionKey},
 			shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID})
 		d.log(ctx, slog.LevelInfo, "expired pending outbox records", "count", n)
 	}
+	if err != nil {
+		d.log(ctx, slog.LevelWarn, "outbox expire sweep failed", "error", err, "expired_before_failure", n)
+		return err
+	}
+	return nil
 }
 
 // emitDepth reports the outbox backlog for this partition on the drainer's own
@@ -249,6 +274,11 @@ func (d *Drainer) emitDepth(ctx context.Context, claimedThisCycle int) {
 	// Always emit the honest per-cycle claim/liveness gauge.
 	d.metrics.Gauge(shared.MetricOutboxClaimBatchSize, float64(claimedThisCycle), partitionTag)
 
+	// Stranded-work gauge: records CLAIMED but not yet terminal. CountPending
+	// excludes them, so without this a record left Claimed by a failed release
+	// or a dead owner is invisible — depth reads zero while messages wait.
+	d.emitClaimedDepth(ctx, partitionTag)
+
 	reporter, ok := d.outboxStore.(ports.OutboxDepthReporter)
 	if !ok {
 		// Store cannot report depth at all: saturating claimed-count fallback.
@@ -256,7 +286,14 @@ func (d *Drainer) emitDepth(ctx context.Context, claimedThisCycle int) {
 		return
 	}
 
-	n, err := reporter.CountPending(ctx, d.partitionKey)
+	// Bounded like Claim and the expiry sweep: this runs on every drain cycle
+	// purely to feed a gauge, so a store that never answers must not be able to
+	// hold the drain goroutine hostage for a metric. A DeadlineExceeded falls
+	// through to the default branch below and is reported as a real count
+	// failure, which is what it is.
+	countCtx, countCancel := d.storeOpContext(ctx)
+	n, err := reporter.CountPending(countCtx, d.partitionKey)
+	countCancel()
 	switch {
 	case err == nil:
 		// True backlog, every cycle including zero-claim.
@@ -275,21 +312,99 @@ func (d *Drainer) emitDepth(ctx context.Context, claimedThisCycle int) {
 	}
 }
 
-// storeOpContext bounds a single outbox-store operation (Claim) so a black-holed
-// store call cannot pin this drainer partition indefinitely (STORE-1). The bound
-// reuses the route's SendTimeout (falling back to the default), a dependency-call
-// bound of the same class; a DeadlineExceeded is treated like any transient store
-// error and the partition is re-polled on the next cycle. The caller MUST invoke
-// the returned cancel.
+// emitClaimedDepth reports how many records this partition currently holds in
+// the CLAIMED state, when the store implements the OPTIONAL
+// ports.OutboxClaimedDepthReporter capability. It is a no-op on stores that do
+// not, so no backend is forced to pay for a second count.
+//
+// There is deliberately NO fallback value: the claimed count cannot be
+// approximated from anything the drainer knows (the batch it just claimed says
+// nothing about work stranded by earlier cycles or other owners), and a wrong
+// stranded-work number is worse than none. The call is bounded like the depth
+// count so a black-holed store cannot park the drain goroutine for a metric.
+func (d *Drainer) emitClaimedDepth(ctx context.Context, partitionTag shared.Tag) {
+	reporter, ok := d.outboxStore.(ports.OutboxClaimedDepthReporter)
+	if !ok {
+		return
+	}
+	countCtx, countCancel := d.storeOpContext(ctx)
+	n, err := reporter.CountClaimed(countCtx, d.partitionKey)
+	countCancel()
+	switch {
+	case err == nil:
+		d.metrics.Gauge(shared.MetricOutboxClaimedDepth, float64(n), partitionTag)
+	case errors.Is(err, ports.ErrOutboxDepthUnsupported):
+		// Capability advertised but the inner store cannot answer: emit nothing.
+	default:
+		d.metrics.Counter(shared.MetricOutboxDepthFailures, 1, partitionTag)
+		d.log(ctx, slog.LevelError, "outbox claimed-depth query failed; skipping OutboxClaimedDepth this cycle",
+			"partition_key", d.partitionKey, "error", err.Error())
+	}
+}
+
+// storeOpContext bounds a single outbox-store housekeeping operation (the
+// expiry sweep, the depth count) so a black-holed store call cannot pin this
+// drainer partition indefinitely. The bound reuses the route's SendTimeout
+// (falling back to the default), a dependency-call bound of the same class; a
+// DeadlineExceeded is treated like any transient store error and the partition
+// is re-polled on the next cycle. The caller MUST invoke the returned cancel.
+//
+// Claim uses claimOpContext instead: its cost scales with the batch, this one's
+// does not.
 func (d *Drainer) storeOpContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	timeout := d.policy.SendTimeout
-	if timeout <= 0 {
-		timeout = routing.DefaultSendTimeout
+	return context.WithTimeout(ctx, d.sendTimeout())
+}
+
+func (d *Drainer) sendTimeout() time.Duration {
+	if d.policy.SendTimeout <= 0 {
+		return routing.DefaultSendTimeout
+	}
+	return d.policy.SendTimeout
+}
+
+const (
+	// perRecordClaimBudget is the allowance a claim gets for each record in the
+	// batch. A backend that claims one record per remote transaction (the
+	// DynamoDB outbox) pays `limit` round trips, so the claim bound has to scale
+	// with the batch or a large batch times out mid-loop on every cycle. The
+	// value is a generous ceiling for one conditional write, not a target.
+	perRecordClaimBudget = 100 * time.Millisecond
+
+	// maxClaimBudget caps the scaled bound. A claim that has not returned inside
+	// two minutes is not slow, it is broken, and the drain goroutine must be
+	// free to re-poll rather than wait for it.
+	maxClaimBudget = 2 * time.Minute
+)
+
+// claimOpContext bounds a single Claim. Unlike housekeeping calls, a Claim's
+// cost is proportional to `limit` on a backend that claims per record, so the
+// bound is max(SendTimeout, limit x perRecordClaimBudget), capped at
+// maxClaimBudget.
+//
+// Sizing this to SendTimeout alone was the defect: with a short send timeout and
+// a large batch, every cycle expired part-way through the claim loop. Records
+// already claimed are durably this owner's and hidden from the pending-depth
+// gauge, so each cycle stranded more of them and charged a replay attempt on
+// recovery — a healthy backlog could reach the replay cap and be poisoned to the
+// dead-letter queue without a single send. The caller MUST invoke the returned
+// cancel.
+func (d *Drainer) claimOpContext(ctx context.Context, limit int) (context.Context, context.CancelFunc) {
+	timeout := d.sendTimeout()
+	if scaled := time.Duration(limit) * perRecordClaimBudget; scaled > timeout {
+		timeout = scaled
+	}
+	// The multiplication above can overflow on a pathological limit; clamp on
+	// both the cap and a non-positive result.
+	if timeout > maxClaimBudget || timeout <= 0 {
+		timeout = maxClaimBudget
 	}
 	return context.WithTimeout(ctx, timeout)
 }
 
 func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) (int, int, error) {
+	if d.fenced.Load() {
+		return 0, 0, context.Canceled
+	}
 	start := d.clk.Now()
 	sessionTag := shared.Tag{Key: shared.TagKeySessionID, Value: d.partitionKey}
 	routeTag := shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID}
@@ -301,10 +416,10 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 		)
 	}
 
-	// STORE-1: bound the Claim so a black-holed store call cannot pin this
+	// bound the Claim so a black-holed store call cannot pin this
 	// drainer partition indefinitely. A DeadlineExceeded is returned like any
 	// other transient Claim error and the partition is re-polled next cycle.
-	claimCtx, claimCancel := d.storeOpContext(ctx)
+	claimCtx, claimCancel := d.claimOpContext(ctx, d.currentBatchSize)
 	records, err := d.outboxStore.Claim(claimCtx, d.partitionKey, token, d.currentBatchSize)
 	claimCancel()
 	if err != nil {
@@ -363,7 +478,7 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 	// send+complete operations even after the parent ctx is cancelled. The
 	// budget must never undercut a single record's SendTimeout + Complete
 	// margin and it scales with the number of sequential send "waves" the batch
-	// needs (finding 10). The previous min(1.5×SendTimeout, 10s-ceiling)
+	// needs. The previous min(1.5×SendTimeout, 10s-ceiling)
 	// silently capped any SendTimeout above ~6.7s (and any batch too large for
 	// the ceiling), killing in-flight sends every cycle and stranding/poisoning
 	// healthy records. The configured MaxDrainTimeout/DrainTimeout may only
@@ -381,7 +496,7 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 
 	// unlaunchedFrom records the first group index that was never launched
 	// because the batch deadline/cancel fired; those claimed-but-unattempted
-	// groups are released after wg.Wait (finding 9).
+	// groups are released after wg.Wait.
 	unlaunchedFrom := len(groups)
 
 loop:
@@ -418,7 +533,7 @@ loop:
 			for ri, rec := range group {
 				if ctx.Err() != nil || batchCtx.Err() != nil {
 					// Batch deadline fired before this record was attempted:
-					// release the unattempted tail (finding 9) so it retries
+					// release the unattempted tail so it retries
 					// next cycle instead of stranding claimed. Use a detached
 					// ctx since batchCtx is already done.
 					atomic.AddInt64(&deferredReleases, int64(len(group)-ri))
@@ -435,7 +550,7 @@ loop:
 						// processRecord already released THIS record; release the
 						// unsent tail too and count the whole run as deferred so
 						// the group is re-claimed and retried in order — never
-						// counted as success (finding 9).
+						// counted as success.
 						atomic.AddInt64(&deferredReleases, int64(len(group)-ri))
 						d.releaseRemainder(context.WithoutCancel(ctx), group[ri+1:], token)
 					case errors.Is(err, errReleasedForRetry):
@@ -451,7 +566,7 @@ loop:
 						d.releaseRemainder(batchCtx, group[ri+1:], token)
 					case errors.Is(err, errReleaseFailed):
 						// Transient egress failure whose Release ALSO failed with
-						// a store error (M4). The head stays durably Claimed. Stop
+						// a store error. The head stays durably Claimed. Stop
 						// the group WITHOUT counting a success and WITHOUT letting
 						// a later same-key record overtake the still-claimed head.
 						// Do NOT releaseRemainder: the store that just failed
@@ -460,7 +575,7 @@ loop:
 						// together. Drives the backoff floor via transientReleases.
 						atomic.AddInt64(&transientReleases, 1)
 					case errors.Is(err, errCompletionFenced):
-						// Post-send fence tripped (HIGH-2): the batch was abandoned
+						// Post-send fence tripped: the batch was abandoned
 						// by the watchdog (or cancelled) AFTER this record's Send
 						// returned, so this owner did NOT Complete it. The fence's
 						// lease check (checked FIRST) already passed, so the lease
@@ -496,7 +611,24 @@ loop:
 						d.log(batchCtx, slog.LevelWarn, "record processing failed",
 							"record_id", rec.ID(), "error", err)
 					default:
+						// An unclassified per-record failure: a DLQ-store write
+						// error, or a post-send Complete the store refused. The
+						// head keeps its claim — its Send may already have landed,
+						// so a re-drain is the accepted at-least-once duplicate —
+						// but group[ri+1:] was NEVER attempted. Leaving that tail
+						// Claimed hides it from the pending-depth gauge, makes it
+						// unreclaimable until the fencing version moves or the
+						// stale window elapses (never, on a version-only store),
+						// and charges a replay attempt on every recovery cycle,
+						// so a group behind one flaky record can be poisoned to
+						// the DLQ without ever having been sent. Release it, with
+						// a detached ctx because batchCtx may already be dead.
+						// releaseRemainder is token-fenced, so if this owner has
+						// since lost the partition the tail correctly stays
+						// claimed for its successor.
 						d.metrics.Counter(shared.MetricOutboxRecordFailures, 1, routeTag)
+						atomic.AddInt64(&deferredReleases, int64(len(group)-ri-1))
+						d.releaseRemainder(context.WithoutCancel(ctx), group[ri+1:], token)
 						d.log(batchCtx, slog.LevelWarn, "record processing failed",
 							"record_id", rec.ID(), "error", err)
 					}
@@ -521,7 +653,7 @@ loop:
 	workCancel()
 
 	// Release any groups never launched because the batch deadline/cancel
-	// fired — they were claimed this cycle but never attempted (finding 9).
+	// fired — they were claimed this cycle but never attempted.
 	for _, g := range groups[unlaunchedFrom:] {
 		atomic.AddInt64(&deferredReleases, int64(len(g)))
 		d.releaseRemainder(context.WithoutCancel(ctx), g, token)

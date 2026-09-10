@@ -20,7 +20,7 @@ import (
 // publisher, so it MUST NOT latch the session terminal: an un-acked poison
 // packet is redelivered on every clean_start=false resume and would re-latch
 // the session forever, a publisher-triggerable permanent kill switch
-// (MQTT-L1). The caller acks-and-drops it instead (dropPoisonIngress).
+// The caller acks-and-drops it instead (dropPoisonIngress).
 // Violations only a NON-compliant broker can produce (malformed structure,
 // total packet size above the advertised maximum) are rejected terminally by
 // the raw pre-decode guard (ingress_conn.go) and never reach this callback.
@@ -53,7 +53,7 @@ func (r *router) ingressCapViolation(pub *pahov5.Publish) (class string, violati
 }
 
 // dropPoisonIngress acks-and-drops one publish that violates a local
-// representational ingress cap (MQTT-L1). The ack is the escape hatch that
+// representational ingress cap. The ack is the escape hatch that
 // keeps a spec-legal-but-refused publish from becoming a session kill
 // switch: it frees the broker's Receive-Maximum in-flight slot and stops
 // redelivery, at the deliberate cost of acknowledged loss counted on

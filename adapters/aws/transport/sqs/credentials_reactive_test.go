@@ -19,7 +19,7 @@ import (
 const sqsAuthErr = "AccessDenied: User is not authorized to perform sqs:SendMessage"
 
 // TestSender_SetAuthFailureCallback_SendAuthFailure_ForcesReactiveReResolve
-// verifies the HIGH-3 wiring on the single-send path: a plain auth failure is
+// verifies the wiring on the single-send path: a plain auth failure is
 // held transient inside the bounded grace (no report), and once it escalates
 // past the window to permanent shared.ErrNotAuthorized the URI-bound callback
 // injected by the CredentialRefresher fires, forcing an immediate re-resolve.
@@ -145,7 +145,7 @@ func TestSender_SetAuthFailureCallback_NonAuthError_DoesNotReport(t *testing.T) 
 }
 
 // TestReceiver_SetAuthFailureCallback_ReceiveAuthFailure_ForcesReactiveReResolve
-// verifies the HIGH-3 wiring on the poll loop (receiver.go): a plain auth
+// verifies the wiring on the poll loop (receiver.go): a plain auth
 // failure is held transient inside the grace (loop keeps retrying, no report),
 // and once it escalates past the window to permanent shared.ErrNotAuthorized the
 // injected callback fires and the poll loop surfaces the terminal fault.

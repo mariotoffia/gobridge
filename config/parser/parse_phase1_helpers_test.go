@@ -7,7 +7,7 @@ import (
 // ─── Phase 1 test fakes ────────────────────────────────────────────
 //
 // These helpers exist only for the config package's own tests. They
-// stand in for the real adapter-side decoders that PHASE 2 will
+// stand in for the real adapter-side decoders that will
 // migrate. Each registered kind decodes to a passthrough config that
 // preserves the kind value and never errors on Validate.
 

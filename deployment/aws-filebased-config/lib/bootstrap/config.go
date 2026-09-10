@@ -2,12 +2,9 @@ package bootstrap
 
 import (
 	"bytes"
-	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 
@@ -15,8 +12,8 @@ import (
 	sqsadapter "github.com/mariotoffia/gobridge/adapters/aws/transport/sqs"
 	httptransport "github.com/mariotoffia/gobridge/adapters/http/transport"
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
-	fileconfig "github.com/mariotoffia/gobridge/adapters/native/config/file"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
+	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/config/parser"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/ports"
@@ -79,87 +76,6 @@ func LoadBootstrapConfigJSON(data []byte) (deployinfra.BootstrapConfig, error) {
 	return cfg, nil
 }
 
-type optionalFileSource struct {
-	path     string
-	registry *ports.Registry
-	fallback func() *ports.BridgeConfig
-	logger   *slog.Logger
-}
-
-func newOptionalFileSource(path string, registry *ports.Registry, logger *slog.Logger, fallback func() *ports.BridgeConfig) ports.Loader {
-	return &optionalFileSource{path: path, registry: registry, fallback: fallback, logger: logger}
-}
-
-func (s *optionalFileSource) Load(_ context.Context) (*ports.BridgeConfig, error) {
-	cfg, err := parser.ParseFile(s.path, parser.FormatAuto, s.registry)
-	if err == nil {
-		return cfg, nil
-	}
-	if errors.Is(err, os.ErrNotExist) || os.IsNotExist(err) {
-		// Loud fallback: a missing config file is almost always a
-		// misconfiguration (config_file_path not pointing at the seeded EFS
-		// target). The process would otherwise start, pass /health, and
-		// bridge nothing — so warn on every fallback rather than degrade
-		// silently.
-		if s.logger != nil {
-			s.logger.Warn(
-				"bootstrap: config file not found; falling back to empty default config "+
-					"(no routes will be bridged) — verify config_file_path matches the seeder EFS target",
-				"config_file_path", s.path,
-			)
-		}
-		return s.fallback(), nil
-	}
-	return nil, err
-}
-
-func newPollWatcher(ctx context.Context, cfg deployinfra.BootstrapConfig, registry *ports.Registry, logger *slog.Logger) ports.Watcher {
-	var opts []fileconfig.WatcherOption
-	opts = append(opts,
-		fileconfig.WithMode(fileconfig.ModePoll),
-		fileconfig.WithPollInterval(cfg.EffectivePollInterval()),
-	)
-	if logger != nil {
-		opts = append(opts, fileconfig.WithLogger(logger))
-	}
-	// Baseline the watcher's change detection from the config content as of now
-	// (before Watch starts), closing the window where an edit landing between
-	// the initial Load and Watch -- which here spans the runtime build and the
-	// transport/admin server starts -- would be absorbed into a Watch-time disk
-	// re-read and never emitted, silently running stale config. A throwaway
-	// file.Source computes the baseline via the same sha256(file-bytes) the
-	// watcher compares against, without disturbing the optionalFileSource
-	// fallback loader. An absent or unparseable file records no hash, so the
-	// watcher keeps its disk-read baseline (unchanged behavior).
-	if h, ok := baselineHash(ctx, cfg.ConfigFilePath, registry); ok {
-		opts = append(opts, fileconfig.WithBaselineHash(h))
-	}
-	return fileconfig.NewWatcher(cfg.ConfigFilePath, registry, opts...)
-}
-
-// baselineHash returns the sha256 content hash the poll watcher should adopt as
-// its change-detection baseline, by loading the file through a dedicated
-// file.Source. The second return is false when the file is missing or does not
-// parse, in which case the watcher falls back to its own Watch-time disk read.
-func baselineHash(ctx context.Context, path string, registry *ports.Registry) ([sha256.Size]byte, bool) {
-	src := fileconfig.NewSource(path, registry)
-	if _, err := src.Load(ctx); err != nil {
-		return [sha256.Size]byte{}, false
-	}
-	return src.LoadHash()
-}
-
-func defaultLogicalConfig(cfg deployinfra.BootstrapConfig) *ports.BridgeConfig {
-	return &ports.BridgeConfig{
-		Bridge: ports.BridgeSettings{
-			ID:              cfg.BridgeID,
-			DeploymentMode:  "standalone",
-			ShutdownTimeout: "30s",
-			DrainTimeout:    "30s",
-		},
-	}
-}
-
 // applyLogLevel updates the wired slog.LevelVar from bridge.log_level so a
 // hot-reloaded config can raise/lower log verbosity without a redeploy. It is
 // a no-op when no LevelVar was wired or when log_level is empty/unknown
@@ -168,31 +84,13 @@ func (a *App) applyLogLevel(logical *ports.BridgeConfig) {
 	if a.logLevelVar == nil || logical == nil {
 		return
 	}
-	lvl, ok := parseLogLevel(logical.Bridge.LogLevel)
+	lvl, ok := ports.ParseLogLevel(logical.Bridge.LogLevel)
 	if !ok {
 		return
 	}
 	if a.logLevelVar.Level() != lvl {
 		a.logLevelVar.Set(lvl)
 		a.logger.Info("bootstrap: applied bridge.log_level", "level", logical.Bridge.LogLevel)
-	}
-}
-
-// parseLogLevel maps a bridge.log_level string to a slog.Level. The bool is
-// false for empty or unrecognized input so callers can leave the level
-// unchanged.
-func parseLogLevel(s string) (slog.Level, bool) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "debug":
-		return slog.LevelDebug, true
-	case "info":
-		return slog.LevelInfo, true
-	case "warn", "warning":
-		return slog.LevelWarn, true
-	case "error":
-		return slog.LevelError, true
-	default:
-		return slog.LevelInfo, false
 	}
 }
 
@@ -311,12 +209,17 @@ func validateDynamoDBHAProfile(cfg deployinfra.BootstrapConfig, logical *ports.B
 		}
 	}
 
-	fingerprint, err := configFingerprint(logical)
-	if err != nil {
-		return err
-	}
-	if fingerprint != cfg.DynamoDBHAConfigFingerprint {
-		return fmt.Errorf("bootstrap: dynamodb_coordinated_ha logical config fingerprint does not match the deployment-owned admitted config")
+	// The IMMUTABLE deployment profile only (bridge.DeploymentProfileFingerprint):
+	// topology, cohort shape and the deployment-owned store identities. Hashing the
+	// whole logical config here used to reject every real config change after the
+	// cohort committed it, because an operator changing a route legitimately makes
+	// the running document differ from the one synth admitted. Operator content is
+	// gated by config.Validate and the reload preflight, not by this check.
+	if fingerprint := bridge.DeploymentProfileFingerprint(logical); fingerprint != cfg.DynamoDBHAConfigFingerprint {
+		return fmt.Errorf("bootstrap: dynamodb_coordinated_ha logical config does not match the " +
+			"deployment profile this deployment admitted (deployment_mode, bridge.cluster shape, or a " +
+			"deployment-owned store identity was changed); those fields are provisioned by the deployment " +
+			"and can only change through a redeploy")
 	}
 	return nil
 }

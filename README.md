@@ -31,33 +31,53 @@ Full documentation: **<https://mariotoffia.github.io/gobridge/>**
 
 ### Production (container image / composition root)
 
-The shipped **production** binary is the file-based composition root
-`deployment/aws-filebased-config/lib/cmd/gobridge-filebased`, which **will be
-published** as the container image **`ghcr.io/mariotoffia/gobridge`** once the
-first `cmd/gobridge/vX.Y.Z` command release is cut — the release workflow pushes
-the image **by digest** and records the verified digest in
-`gobridge-image-digest.txt` (see **[RELEASE.md](RELEASE.md)**). It registers the MQTT, AWS
-SQS and HTTP transports plus native (memory/SQLite) and DynamoDB stores, and is
-the binary the AWS ECS/EFS deployment profile runs. Start here for any real
-deployment: see the **[Deployment Guide](docs/deployment-guide.md)** and the
-**[AWS file-based profile](deployment/aws-filebased-config/README.md)**. For
-transports it does not bundle (Azure Service Bus, AMQP), build a custom
-composition root the same way — the demo binary below shows the two wiring
-sites.
+The shipped **production** image is **`ghcr.io/mariotoffia/gobridge`**, the
+AWS file-based composition root
+`deployment/aws-filebased-config/lib/cmd/gobridge-filebased`. Every stable
+`cmd/gobridge/vX.Y.Z` release pushes it **by digest** and attaches the verified
+digest to that release as `gobridge-image-digest.txt`; the one mutable tag,
+`latest`, is promoted from that same scanned digest only when the release is
+the highest stable one. Deploy from the digest, never from `latest` — see
+[Pin Images by Digest](docs/container-deployment.md#pin-images-by-digest) and
+**[RELEASE.md](RELEASE.md#image-publication)**. The image registers the MQTT,
+AWS SQS and HTTP transports plus native (memory/SQLite) and DynamoDB stores,
+resolves its secrets through SSM, and is the binary the AWS ECS/EFS profile
+runs: see the **[Deployment Guide](docs/deployment-guide.md)** and the
+**[AWS file-based profile](deployment/aws-filebased-config/README.md)**.
 
-### Local / demo
+**Kubernetes and other non-AWS platforms** run the maintained
+**[Kubernetes profile](deployment/kubernetes/README.md)**: a Dockerfile and one
+manifest around the reference binary below (MQTT transport, memory/SQLite
+stores, `file://` credentials, HTTP API keys from a Secret), tested end to end
+through probes, traffic, reload, SIGTERM and restart. Its Dockerfile defaults
+`GO_BUILD_TAGS` to `gobridge_mqtt,gobridge_native`. Select additional supported
+families, including Azure Service Bus and AMQP, with that build argument;
+no custom composition root is needed.
 
-`cmd/gobridge` is a **DEMO / reference** binary — it links **only** MQTT +
-native (memory/SQLite) stores and is **not** for production (a config using any
-other transport/store is rejected at startup). It forwards a single MQTT topic
-to another, walked through end to end (YAML config + Go bootstrap + variations)
-in **[Scenario 1: MQTT-to-MQTT Bridge](docs/scenarios/01-mqtt-to-mqtt.md)**.
+### Reference binary
+
+`cmd/gobridge` is a **blank root** when built without tags: no transports,
+stores or telemetry exporters are linked. File configuration, `file://`
+credentials and the admin/monitor HTTP API remain available. Build the
+MQTT + native (memory/SQLite) set from the repository root:
+
+```bash
+make build-gobridge GOBRIDGE_TAGS=gobridge_mqtt,gobridge_native
+./cmd/gobridge/gobridge.out -version
+```
+
+A config naming a transport or store outside the compiled families is rejected
+at startup. See the [family table](PLUGIN.md#binary-composition-build-tags) for
+other selections, or `gobridge_all` for every supported family. Forwarding one
+MQTT topic to another is walked through end to end (YAML config + Go bootstrap)
+in
+**[Scenario 1: MQTT-to-MQTT Bridge](docs/scenarios/01-mqtt-to-mqtt.md)**.
 
 For richer setups, see the [scenarios index](docs/scenarios/) (durable outbox, clustered exclusive sessions, multi-tenant routing, custom processors, …) or jump straight to the [Configuration Overview](docs/configuration-overview.md).
 
 ## Installation
 
-**One version for everything.** GoBridge publishes 33 modules from this
+**One version for everything.** GoBridge publishes 34 modules from this
 repository, and every one of them carries the *same* version. There is no
 compatibility matrix to consult and no per-module changelog to cross-check: pick
 a version, use it everywhere, and the pieces are guaranteed to be the set that
@@ -101,6 +121,29 @@ go get github.com/mariotoffia/gobridge/adapters/native/store
 # DynamoDB stores
 go get github.com/mariotoffia/gobridge/adapters/aws/store
 ```
+
+### Consuming from your own CDK app
+
+Deploying GoBridge on ECS from your own AWS CDK app needs no clone of this
+repository and no `replace` directive. Two modules of the AWS deployment
+profile are imported directly:
+
+```bash
+go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk@vX.Y.Z
+go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra@vX.Y.Z
+```
+
+`cdk` carries the facade constructs (`gobridgesingle`, `gobridgecluster`,
+`gobridgedynamodbha`) and the `gobridgecdk` image sources; `infra` carries
+`BootstrapConfig` and the other declaration types those constructs take. A
+third profile module, `.../lib`, is the bridge binary itself — you never import
+it, but `gobridgecdk.ImageFromGoBuild` builds it from the module proxy at the
+version you name, which is why it is published on the same train.
+
+Use one `vX.Y.Z` for both lines, and pick a version whose train includes the
+profile modules — the `v0.3.x` profile tags predate the train and are not a
+complete set ([RELEASE.md](RELEASE.md#canonical-release-graph)). Walkthrough:
+[CDK quickstart](docs/scenarios/cdk/01-quickstart-default-vpc.md).
 
 ## Documentation
 

@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"flag"
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,7 +16,38 @@ import (
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
+
+// TestBlankRoot_RejectsMQTTConfig verifies the command fails at decoding an
+// unavailable kind, before creating runtime resources or contacting a broker.
+func TestBlankRoot_RejectsMQTTConfig(t *testing.T) {
+	requireBlankBuild(t)
+	path := filepath.Join(t.TempDir(), "bridge.yaml")
+	if err := os.WriteFile(path, []byte("bridge:\n  id: blank\nstores:\n  dlq:\n    type: mqtt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestBlankRoot_CommandProcess$")
+	cmd.Env = append(os.Environ(), "GOBRIDGE_TEST_CONFIG="+path)
+	out, err := cmd.CombinedOutput()
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+		t.Fatalf("command error = %v, want exit 1; output: %s", err, out)
+	}
+	if !strings.Contains(string(out), `cannot read boot HTTP settings`) {
+		t.Fatalf("want boot decoder rejection; output: %s", out)
+	}
+}
+
+// TestBlankRoot_CommandProcess exercises run with isolated flags and stderr.
+func TestBlankRoot_CommandProcess(t *testing.T) {
+	path := os.Getenv("GOBRIDGE_TEST_CONFIG")
+	if path == "" {
+		return
+	}
+	os.Args = []string{os.Args[0], "-config", path, "-start-empty=false"}
+	flag.CommandLine = flag.NewFlagSet("gobridge", flag.ExitOnError)
+	os.Exit(run())
+}
 
 // TestWatchTerminal_ReturnsTrueWhenTerminalObserved proves the backstop keeps
 // polling and reports terminal once the predicate flips — not a one-shot check.
@@ -100,7 +133,7 @@ func runsWithin(d time.Duration, fn func()) bool {
 	}
 }
 
-// TestAwaitSupervisorShutdown_SkipsWaitWhenSupervisorAlreadyExited is the C3-FU5
+// TestAwaitSupervisorShutdown_SkipsWaitWhenSupervisorAlreadyExited is the
 // regression guard: once the primary select has consumed the supervisor's only
 // result, the shutdown wait must return immediately. Both channels here never
 // deliver, so a return can only come from the alreadyExited fast path — the old
@@ -219,17 +252,14 @@ func TestWaitForSupervisorRuntime_RuntimeAppearingAfterSlowInitialBuildSucceeds(
 	}
 }
 
-// waitForTimerCount spins until the fake clock has at least n active timers,
+// waitForTimerCount blocks until the fake clock has at least n active timers,
 // synchronising with a background goroutine that registers timers on startup
-// (the documented clocktest pattern) before the test advances time. Bounded by
-// a wall-clock deadline so a wiring regression fails fast instead of hanging.
+// (the documented clocktest pattern) before the test advances time. Paced by
+// testutil/wait rather than a spin loop, which would compete for CPU with the
+// goroutine whose registration it is waiting for.
 func waitForTimerCount(t *testing.T, f *clocktest.Fake, n int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for f.TimerCount() < n {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %d fake timers (have %d)", n, f.TimerCount())
-		}
-		runtime.Gosched()
-	}
+	wait.Until(t, 2*time.Second, "fake clock reaches the expected active timer count", func() bool {
+		return f.TimerCount() >= n
+	})
 }

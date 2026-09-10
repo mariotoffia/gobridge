@@ -10,8 +10,7 @@ import (
 
 // TestToSessionConfig_ClusteredHATiming proves that a clustered, lease-bearing
 // exclusive session with no explicit lease timing derives the fast-failover HA
-// baseline (LeaseTTL=45s) instead of DefaultConfig's ~6-minute LeaseTTL (finding
-// HIGH-3), that explicit operator timing wins, and that a non-clustered session
+// baseline (LeaseTTL=45s) instead of DefaultConfig's ~6-minute LeaseTTL, that explicit operator timing wins, and that a non-clustered session
 // keeps the DefaultConfig baseline. Reverting the HA wiring makes the clustered
 // case fall back to 360s and fail.
 func TestToSessionConfig_ClusteredHATiming(t *testing.T) {

@@ -17,7 +17,6 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
 
 // =========================================================================
@@ -64,7 +63,12 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 		connectivity.SessionExclusive, 65535, 5)
 	mqttSnd := setupMQTTSender(t, sess)
 	sqsRx := newSQSReceiver(t, sqsInURL)
-	sc := lrSessionConfig(sessionID)
+	// This route puts the STORE under sustained load, and the compressed
+	// lease profile bounds a renew call at one second — a bound the store
+	// misses under that load, which steps the owner down and cancels every
+	// delivery in flight for a reason this test is not about. The published
+	// high-availability preset is what a deployment under this load runs.
+	sc := lrLoadSurvivingSessionConfig(sessionID)
 
 	rt := goruntime.New(
 		goruntime.WithInstanceID("uc42-bridge"),
@@ -132,9 +136,14 @@ func TestUC42_BrokerKillRestart_SharedOutbox(t *testing.T) {
 	// Wait for all messages to arrive after recovery.
 	// EnvelopeFromPublish now sets Envelope.ID from mqtt.message-id,
 	// correlation-id, or a deterministic hash so countUnique works.
+	// Wait on the quantity the assertion below checks. Waiting on the raw
+	// delivery count would return as soon as N deliveries had landed, and a
+	// redelivery makes one of those a repeat of a message already seen while
+	// another has not arrived — a correct at-least-once outcome the assertion
+	// would then read as a lost message.
 	lrWaitFor(t, 180*time.Second,
-		fmt.Sprintf("collector >= %d after restart", msgCount),
-		func() bool { return collector.count() >= msgCount })
+		fmt.Sprintf("unique >= %d after restart", msgCount),
+		func() bool { return countUnique(collector) >= msgCount })
 
 	unique := countUnique(collector)
 	t.Logf("UC42: collector=%d, unique=%d, dlq=%d", collector.count(), unique, dlq.count())
@@ -172,9 +181,9 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 	brokerURL := broker.URL()
 
 	// SQS queue with short visibility timeout for faster redelivery.
-	sqsInClient := sqslocal.Client(t)
-	sqsInName := sqslocal.UniqueQueue("uc43-in")
-	sqsInURL := sqslocal.CreateQueueWithAttrs(t, sqsInClient, sqsInName,
+	sqsInClient := newSQSClient(t)
+	sqsInName := uniqueQueueName("uc43-in")
+	sqsInURL := createSQSQueueWithAttrs(t, sqsInClient, sqsInName,
 		map[string]string{"VisibilityTimeout": "10"})
 
 	dlq := &lrDLQStore{}
@@ -191,7 +200,7 @@ func TestUC43_BrokerKillRestart_DirectHold(t *testing.T) {
 
 	sqsRx, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          sqsInURL,
-		Client:            sqslocal.Client(t),
+		Client:            newSQSClient(t),
 		MaxMessages:       10,
 		WaitTimeSeconds:   1,
 		VisibilityTimeout: 10,
@@ -451,7 +460,7 @@ func TestUC45_BrokerQuota_SharedOutbox_vs_DirectHold(t *testing.T) {
 	uniqueB := countUnique(collectorB)
 	t.Logf("UC45: SharedOutbox: unique=%d, total=%d, dlq=%d",
 		uniqueA, collectorA.count(), dlqA.count())
-	t.Logf("UC45: DirectHold:   unique=%d, total=%d, dlq=%d",
+	t.Logf("UC45: DirectHold: unique=%d, total=%d, dlq=%d",
 		uniqueB, collectorB.count(), dlqB.count())
 
 	gap := msgCount - uniqueB

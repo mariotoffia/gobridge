@@ -53,7 +53,7 @@ type SessionOptions struct {
 	// non-TLS scheme. SASL PLAIN transmits the credentials in cleartext
 	// frames, so by default it is REJECTED at config validation on a
 	// plaintext "amqp://" (or schemeless) address — the username and
-	// password would travel on the wire in the clear (c7-plain-plaintext).
+	// password would travel on the wire in the clear.
 	// Set this to true to explicitly opt into that insecure path (e.g. a
 	// trusted private network or local development); it is a deliberate,
 	// auditable override, never the default. It has no effect on a TLS
@@ -94,7 +94,7 @@ type SessionOptions struct {
 	// new subscription and orphan everything retained for the old one. The
 	// factory consults it to fail-closed a durable receiver
 	// (durability_mode > 0) built without an explicit container_id
-	// (HIGH-1). Unexported internal bookkeeping: never decoded from, nor
+	// Unexported internal bookkeeping: never decoded from, nor
 	// marshalled to, config.
 	containerIDGenerated bool
 }
@@ -259,7 +259,7 @@ func DefaultSenderOptions() SenderConfig {
 // validate checks the session options. When credentialsPending is true
 // the caller has an unresolved credentials_uri whose resolved set may
 // still supply the SASL EXTERNAL client certificate, so the EXTERNAL
-// cert-material check is deferred to Config.ApplyCredentials (F10 deferred
+// cert-material check is deferred to Config.ApplyCredentials (deferred
 // path). Every other check still runs at parse time.
 func (o *SessionOptions) validate(credentialsPending bool) error {
 	if o.Address == "" {
@@ -273,7 +273,7 @@ func (o *SessionOptions) validate(credentialsPending bool) error {
 			"amqp10: invalid sasl_mechanism %q (want plain, external, or anonymous)", o.SASLMechanism))
 	}
 
-	// F1: tls.enable is a silent no-op unless the address scheme selects
+	// tls.enable is a silent no-op unless the address scheme selects
 	// TLS. go-amqp applies ConnOptions.TLSConfig only for the "amqps" and
 	// "amqp+ssl" schemes; on a plaintext "amqp" (or schemeless) address
 	// the dial — and any SASL PLAIN credentials — travel in CLEARTEXT
@@ -285,7 +285,7 @@ func (o *SessionOptions) validate(credentialsPending bool) error {
 				"use amqps:// or amqp+ssl:// (refusing to connect in cleartext)", o.Address))
 	}
 
-	// c7-plain-plaintext: SASL PLAIN (explicit sasl_mechanism=plain, or
+	// SASL PLAIN (explicit sasl_mechanism=plain, or
 	// the inferred default when a username is present) sends the
 	// credentials in cleartext. Over a non-TLS scheme that puts them on
 	// the wire in the clear, so reject unless allow_insecure_plain is set.
@@ -299,7 +299,7 @@ func (o *SessionOptions) validate(credentialsPending bool) error {
 		return err
 	}
 
-	// F10: SASL EXTERNAL authenticates via the mTLS client certificate.
+	// SASL EXTERNAL authenticates via the mTLS client certificate.
 	// Without enabled TLS and client key-pair material it surfaces only as
 	// an opaque broker SASL failure at dial; reject it up front. When
 	// credentialsPending, the certificate may still arrive via the
@@ -311,7 +311,7 @@ func (o *SessionOptions) validate(credentialsPending bool) error {
 				"(tls.enable with cert_file/key_file or cert_pem/key_pem)")
 	}
 
-	// F11: the AMQP 1.0 spec fixes the smallest permissible max-frame-size
+	// the AMQP 1.0 spec fixes the smallest permissible max-frame-size
 	// at 512 octets (MIN-MAX-FRAME-SIZE). A smaller positive value is
 	// rejected by the peer at open; catch it here. Zero means "unset" so
 	// applyDefaults can supply the default.
@@ -335,7 +335,7 @@ const amqpMinFrameSize = 512
 // drop that never FINs) goes undetected — no bytes arrive, the read
 // deadline fires, and the monitor reconnects.
 //
-// c7-idle-timeout: this is intentionally HA-oriented (<= 30s) so
+// This is intentionally HA-oriented (<= 30s) so
 // half-open detection meets the 30-60s failover target — a standby can
 // reattach well inside the window. The monitor ticker deliberately does
 // NOT probe a live connection (see ConnectionMonitorFallback), so this
@@ -380,7 +380,7 @@ func (o *SessionOptions) usesSASLPlain() bool {
 // validatePlainOverPlaintext fails closed when SASL PLAIN credentials
 // would travel over a non-TLS scheme. SASL PLAIN sends the
 // username/password in cleartext frames, so on a plaintext "amqp://" (or
-// schemeless) address they are exposed on the wire (c7-plain-plaintext).
+// schemeless) address they are exposed on the wire.
 // The only escape hatch is an explicit allow_insecure_plain opt-in, so
 // the insecure path is a deliberate, auditable operator decision rather
 // than a silent default. A TLS scheme (amqps:// / amqp+ssl://) already
@@ -509,7 +509,7 @@ func (o *SessionOptions) applyDefaults() {
 		o.ConnectionMonitorFallback = 30 * time.Second
 	}
 	if o.ContainerID == "" {
-		// Finding 16: an empty container-id must NOT fall through to the
+		// An empty container-id must NOT fall through to the
 		// SDK, which generates a NEW random container-id on every dial.
 		// Brokers key durable subscriptions on container-id + link name,
 		// so a per-dial identity orphans the subscription on every
@@ -519,7 +519,7 @@ func (o *SessionOptions) applyDefaults() {
 		// lifetime and unique per instance. It still changes across
 		// process restarts, so a durable receiver (durability_mode > 0)
 		// built through the factory without an explicit container_id is
-		// REJECTED at build time (HIGH-1); containerIDGenerated records
+		// REJECTED at build time; containerIDGenerated records
 		// that this id is synthesised so the factory can enforce that gate.
 		o.ContainerID = generateContainerID()
 		o.containerIDGenerated = true
@@ -639,8 +639,8 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 		tc.KeyFile, _ = optString(sub, "key_file")
 		// In-memory PEM material (documented ca_cert_pem/cert_pem/key_pem)
 		// was silently dropped by this map path, so programmatic callers
-		// that passed PEM bytes ended up with no client cert / CA at all
-		// (finding 8). Honor them here; BuildTLSConfig gives PEM precedence
+		// that passed PEM bytes ended up with no client cert / CA at all.
+		// Honor them here; BuildTLSConfig gives PEM precedence
 		// over the file fields.
 		if v, ok := optString(sub, "ca_cert_pem"); ok {
 			tc.CACertPEM = shared.NewSecret(v)

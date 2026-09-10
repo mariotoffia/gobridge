@@ -758,7 +758,7 @@ func TestRepository_Create_InvalidURI(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// HIGH-1: write round-trip guard — never persist an unreadable credential
+// write round-trip guard — never persist an unreadable credential
 // ---------------------------------------------------------------------------
 
 // TestSerialize_RejectsUnreadable proves the single Create/Update write path
@@ -766,7 +766,7 @@ func TestRepository_Create_InvalidURI(t *testing.T) {
 // own reader could not parse back. Without the round-trip guard each case below
 // serializes to a value that every later Get / rotation poll then rejects with
 // "invalid payload", turning one bad admin write into a persistent credential
-// outage (HIGH-1).
+// outage.
 //
 // Mutation reasoning: deleting the ensureReadable call in serializeCredentialSet
 // makes every case serialize without error, so the require.Error assertions fail.
@@ -792,7 +792,7 @@ func TestSerialize_RejectsUnreadable(t *testing.T) {
 
 // TestRepository_Create_RejectsUnreadableBeforePut proves an admin Create of an
 // unusable credential set is rejected BEFORE any PutParameter, so a bad write
-// can never reach SSM and become a value every later Get fails to parse (HIGH-1).
+// can never reach SSM and become a value every later Get fails to parse.
 func TestRepository_Create_RejectsUnreadableBeforePut(t *testing.T) {
 	putCalled := false
 	mock := &mockSSM{
@@ -809,7 +809,7 @@ func TestRepository_Create_RejectsUnreadableBeforePut(t *testing.T) {
 }
 
 // TestRepository_Update_RejectsUnreadableBeforePut is the Update counterpart of
-// the HIGH-1 guard: a torn-TLS set must not overwrite a live parameter with a
+// the guard: a torn-TLS set must not overwrite a live parameter with a
 // value the reader would reject on the next rotation poll.
 func TestRepository_Update_RejectsUnreadableBeforePut(t *testing.T) {
 	putCalled := false
@@ -828,7 +828,7 @@ func TestRepository_Update_RejectsUnreadableBeforePut(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// HIGH-2: opaque password-only credentials (e.g. Service Bus SAS strings)
+// opaque password-only credentials (e.g. Service Bus SAS strings)
 // ---------------------------------------------------------------------------
 
 // sasConnString is a representative Azure Service Bus SAS connection string —
@@ -838,7 +838,7 @@ const sasConnString = "Endpoint=sb://ns.servicebus.windows.net/;SharedAccessKeyN
 // TestParseCredentials_OpaqueSecret proves the explicit password-only "secret"
 // JSON shape parses into a PasswordCredential with an EMPTY username and the
 // whole value in the password — the runtime shape the Service Bus transport
-// consumes for a SAS connection string (HIGH-2).
+// consumes for a SAS connection string.
 //
 // Mutation reasoning: before the fix, declaredCapabilities knew only
 // password/tls, so a "secret"-typed document matched no capability and
@@ -923,7 +923,7 @@ func TestParseCredentials_OpaqueSecret_RejectsEmptyOrBlank(t *testing.T) {
 // TestSerializeAndParseRoundTrip_OpaqueSecret proves a password-only credential
 // (empty username) survives serialize→parse intact, so SSM can both store and
 // rotate a Service Bus SAS connection string in the documented runtime shape
-// (HIGH-2). It also confirms the HIGH-1 write guard accepts this legitimate
+// It also confirms the write guard accepts this legitimate
 // shape rather than rejecting it as username-less.
 func TestSerializeAndParseRoundTrip_OpaqueSecret(t *testing.T) {
 	original := connectivity.NewCredentialSet(pwCred("", sasConnString), nil)
@@ -939,7 +939,7 @@ func TestSerializeAndParseRoundTrip_OpaqueSecret(t *testing.T) {
 	assert.True(t, parsed.Equal(original), "opaque secret must round-trip to an equal credential set")
 }
 
-// TestRepository_OpaqueSecret_CreateGetRoundTrip proves the end-to-end HIGH-2
+// TestRepository_OpaqueSecret_CreateGetRoundTrip proves the end-to-end
 // guarantee against an in-memory SSM mock: an admin Create of a password-only
 // (opaque SAS) credential persists a value that Get reads back intact.
 func TestRepository_OpaqueSecret_CreateGetRoundTrip(t *testing.T) {
@@ -967,12 +967,12 @@ func TestRepository_OpaqueSecret_CreateGetRoundTrip(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// HIGH-3 (source-side support): Get is always uncached
+// (source-side support): Get is always uncached
 // ---------------------------------------------------------------------------
 
 // TestRepository_Get_NoInternalCache proves each Get fetches fresh from SSM
 // rather than serving a cached value. This is the source-side property the
-// reactive re-resolve path (HIGH-3) relies on: when a live transport reports a
+// reactive re-resolve path relies on: when a live transport reports a
 // broker auth failure and the refresher forces an out-of-band re-resolve
 // (runtime/credentials PollBasedWrapper.Refresh -> ResolveUncached ->
 // repository.Get), the repository must observe the rotated parameter, never a

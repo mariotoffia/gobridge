@@ -22,10 +22,18 @@ const (
 )
 
 const (
+	ConfigSourceFile     = deployinfra.ConfigSourceFile
+	ConfigSourceDynamoDB = deployinfra.ConfigSourceDynamoDB
+)
+
+type ConfigDynamoDBSettings = deployinfra.ConfigDynamoDBSettings
+
+const (
 	DefaultAdminAddr            = deployinfra.DefaultAdminAddr
 	DefaultMonitorAddr          = deployinfra.DefaultMonitorAddr
 	DefaultTransportHTTPAddr    = deployinfra.DefaultTransportHTTPAddr
 	DefaultPollInterval         = deployinfra.DefaultPollInterval
+	DefaultDynamoDBPollInterval = deployinfra.DefaultDynamoDBPollInterval
 	DefaultMountPath            = deployinfra.DefaultMountPath
 	DefaultContainerMemoryBytes = deployinfra.DefaultContainerMemoryBytes
 )

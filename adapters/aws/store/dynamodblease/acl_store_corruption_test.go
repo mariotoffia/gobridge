@@ -170,7 +170,7 @@ func TestAcquire_LegacyRowMayOmitOnlyObservationEvidence(t *testing.T) {
 		t.Fatalf("complete legacy base tuple without observation evidence: %v", err)
 	}
 	if !persistedObservationPresent(client) {
-		t.Fatal("legacy row did not initialize zero observation evidence")
+		t.Fatal("a row with no observation evidence yet did not initialize it to zero")
 	}
 	if elapsed := persistedObservationElapsed(t, client); elapsed != 0 {
 		t.Fatalf("legacy observation elapsed=%s want zero", elapsed)

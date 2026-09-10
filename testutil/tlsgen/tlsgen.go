@@ -26,6 +26,13 @@ type Options struct {
 	KeyType      string // "ecdsa" (default) or "rsa"
 	KeySize      int    // RSA only; default: 2048
 	IsCA         bool
+
+	// SignedBy, when set, issues the certificate from that authority instead
+	// of self-signing it. The result carries the issuer in CAPEM so a caller
+	// has the trust anchor to validate the chain with. Mutual TLS needs this:
+	// a client certificate and a server certificate that are each their own
+	// authority prove nothing about who vouched for whom.
+	SignedBy *Result
 }
 
 // Result holds generated PEM material.
@@ -91,7 +98,16 @@ func Generate(opts Options) (*Result, error) {
 		}
 	}
 
-	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, publicKey, privateKey)
+	issuer, issuerKey := &template, privateKey
+	if opts.SignedBy != nil {
+		parsed, parsedKey, parseErr := parseIssuer(opts.SignedBy)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		issuer, issuerKey = parsed, parsedKey
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, issuer, publicKey, issuerKey)
 	if err != nil {
 		return nil, fmt.Errorf("create certificate: %w", err)
 	}
@@ -107,11 +123,47 @@ func Generate(opts Options) (*Result, error) {
 		CertPEM: string(certPEM),
 		KeyPEM:  string(keyPEM),
 	}
-	if opts.IsCA {
+	switch {
+	case opts.SignedBy != nil:
+		result.CAPEM = opts.SignedBy.CertPEM
+	case opts.IsCA:
 		result.CAPEM = result.CertPEM
 	}
 
 	return result, nil
+}
+
+// parseIssuer recovers the signing certificate and private key from a
+// previously generated result.
+func parseIssuer(parent *Result) (*x509.Certificate, any, error) {
+	block, _ := pem.Decode([]byte(parent.CertPEM))
+	if block == nil {
+		return nil, nil, fmt.Errorf("issuer certificate is not PEM")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse issuer certificate: %w", err)
+	}
+	keyBlock, _ := pem.Decode([]byte(parent.KeyPEM))
+	if keyBlock == nil {
+		return nil, nil, fmt.Errorf("issuer key is not PEM")
+	}
+	switch keyBlock.Type {
+	case "EC PRIVATE KEY":
+		key, parseErr := x509.ParseECPrivateKey(keyBlock.Bytes)
+		if parseErr != nil {
+			return nil, nil, fmt.Errorf("parse issuer EC key: %w", parseErr)
+		}
+		return cert, key, nil
+	case "RSA PRIVATE KEY":
+		key, parseErr := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
+		if parseErr != nil {
+			return nil, nil, fmt.Errorf("parse issuer RSA key: %w", parseErr)
+		}
+		return cert, key, nil
+	default:
+		return nil, nil, fmt.Errorf("unsupported issuer key type %q", keyBlock.Type)
+	}
 }
 
 // MustGenerate calls Generate and panics on error.

@@ -45,16 +45,28 @@ type Session struct {
 	// non-nil presence.
 	cm       pahoConnection
 	cmCancel context.CancelFunc // cancels the CM's background context on Close
-	events   chan ports.SessionEvent
+	// publishAckBudget is the longest per-publish deadline any Sender bound to
+	// this session applies (SenderOptions.Timeout). Senders are constructed
+	// before the session dials, so packetTimeout can hand the SDK a per-packet
+	// budget long enough not to cut a configured publish short. Guarded by mu;
+	// only ever raised, never lowered, because one slow sender's budget must
+	// cover it without shortening any other's.
+	publishAckBudget time.Duration
+	events           chan ports.SessionEvent
 	// eventsClosed guards the single close of s.events. TWO paths close
 	// it — Close (terminal shutdown) and Reload's Start-failure signal
-	// (F-1: closing events routes the dead session into the runtime
+	// (closing events routes the dead session into the runtime
 	// manager's events-channel-close restart path). Both honor this flag
 	// under s.mu so a double-close cannot panic, and pushEvent checks it
 	// so no send can race the close. Start clears it (and re-materialises
 	// s.events) when the supervisor re-Starts a Reload-failed session.
 	eventsClosed bool
 	closed       bool
+	// closedCh is closed exactly once by Close, under mu together with the
+	// closed flag. It is the session-lifetime signal for waits that deliberately
+	// run on a detached context — the settlement-recovery cooldown — which
+	// would otherwise outlive the session by the whole rate-limit interval.
+	closedCh chan struct{}
 	// terminalErr latches a fail-closed generation whose ingress could not be
 	// quiesced safely. This Session instance must never reconnect in-process.
 	terminalErr error
@@ -62,8 +74,7 @@ type Session struct {
 	starting    bool // true while a Start() attempt is in flight
 	// startDone is closed when the in-flight Start attempt finishes
 	// (success or failure) so concurrent Start callers can wait for the
-	// outcome instead of returning a false success (finding: concurrent
-	// Start returned nil while the winner was still connecting).
+	// outcome instead of returning a false success.
 	// Replaced with a fresh channel each time a Start attempt begins.
 	startDone chan struct{}
 	// connectionGeneration identifies one ConnectionManager construction. Start
@@ -73,6 +84,17 @@ type Session struct {
 	connectionUpDone      chan struct{}
 	connectionUpCompleted bool
 	connectionUpErr       error
+
+	// brokerMaxPacketSize is the MQTT v5 Maximum Packet Size the broker granted
+	// in the CONNACK of the current connection; 0 means it granted none, which
+	// the spec defines as no limit beyond the protocol ceiling. Egress consults
+	// it before every PUBLISH reaches the socket. It is captured per connection
+	// edge because autopaho reconnects underneath the session and a resumed or
+	// relocated broker can grant a different ceiling. The last observed value is
+	// deliberately KEPT across a disconnect: it is a better estimate for the
+	// next connection to the same broker than "unlimited", and a fresh CONNACK
+	// always overwrites it. Guarded by mu.
+	brokerMaxPacketSize uint32
 
 	// takeoverStreak counts consecutive session-takeover disconnects
 	// (0x8E) without an intervening stable connection; connUpAt is when
@@ -86,7 +108,7 @@ type Session struct {
 	// takeoverStreak is still high. Without this, a RESOLVED storm's streak
 	// (only reset when a NEW takeover arrives post-stability) would make every
 	// later ordinary reconnect pay the stale penalty forever, busting the
-	// failover window (A-4). Guarded by mu.
+	// failover window. Guarded by mu.
 	lastTakeoverAt int64
 	// connUpAt is the unix-nanos timestamp of the LAST OnConnectionUp. It
 	// is set on every connect edge and never reset to 0 on disconnect: the
@@ -104,7 +126,7 @@ type Session struct {
 	// stale reconcile write its subscriptions into the FRESH, just-reset
 	// activeSubs, so the next connect-edge reconcile computes an empty delta and
 	// silently skips re-subscribing on an ephemeral (clean_start) session — a
-	// real, if narrow, subscription-loss window (A-3). Distinct from the
+	// real, if narrow, subscription-loss window. Distinct from the
 	// router's own connEpoch (different struct, different mutex). Guarded by mu.
 	connEpoch uint64
 
@@ -166,7 +188,7 @@ type Session struct {
 
 	// sharedSubWarned latches the one-time advisory that shared
 	// subscriptions ($share) are configured on a stable/shared-ClientID
-	// mode — the client_id-collision footgun for scale-out (HIGH-3). Guarded
+	// mode — the client_id-collision footgun for scale-out. Guarded
 	// by mu; deduplicated so the warning fires once per session lifetime, not
 	// on every reconcile.
 	sharedSubWarned bool
@@ -209,7 +231,7 @@ type Session struct {
 	// it nil. Guarded by mu when read or written.
 	reconcileSnapshotHook func()
 
-	// authFailureCB is the reactive-recovery hook (HIGH-3). The
+	// authFailureCB is the reactive-recovery hook. The
 	// CredentialRefresher injects a URI-bound callback via
 	// SetAuthFailureCallback; reportAuthFailure invokes it when a live CONNECT
 	// is rejected with an authorization failure (CONNACK 0x86/0x87 →
@@ -235,6 +257,28 @@ type Session struct {
 	recoveryErr                 error
 	lastRecoveryCompleted       time.Time
 	recoveryRecycleCount        uint64
+
+	// qosDowngradeConfirmed is the broker grant the current confirmation streak
+	// is counting, and qosDowngradeStreak how many consecutive reconciles have
+	// concluded it. A different grant, or a reconcile that converges without a
+	// downgrade, restarts the count. See noteQoSDowngrade. Guarded by mu.
+	qosDowngradeConfirmed qosDowngradeGrant
+	qosDowngradeStreak    int
+
+	// connectErr latches the mapped cause of the most recent failed CONNECT and
+	// is cleared when a connection comes up. MQTT authenticates only at CONNECT
+	// and autopaho then retries behind the scenes, so without the latch a
+	// session whose readiness has gone red carries no reason at all. Surfaced on
+	// SessionHealth.LastError. Guarded by mu.
+	connectErr error
+
+	// resumeLostErr latches the discontinuity of a persistent/exclusive connect
+	// that asked the broker to resume and got Session Present=false: the offline
+	// QoS 1/2 backlog and the broker-side subscriptions for this client id are
+	// gone. Re-subscribing succeeds, so nothing else would record it. Cleared by
+	// the next reconcile that converges the plan — the point at which the loss
+	// window closes. Guarded by mu.
+	resumeLostErr error
 }
 
 // mqttCredentials is the mutable subset of SessionOptions that can be
@@ -263,7 +307,7 @@ func (s *Session) SetIngressQuiescenceWaiter(waiter func(context.Context) error)
 // sessionEventsBuffer is the capacity of the session lifecycle-event
 // channel. It is a named constant so the Reload-failure re-Start
 // (acl_session.go) can re-materialise a channel with the SAME capacity
-// it was constructed with (F-1).
+// it was constructed with.
 const sessionEventsBuffer = 16
 
 // NewSession creates an MQTT Session from the given options.
@@ -310,7 +354,7 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 	// broker-side session (subscriptions AND queued offline QoS 1/2), so each
 	// process restart wipes the backlog the persistent mode exists to retain.
 	// The analogous SessionExpiryInterval=0 misconfiguration warns above;
-	// warn here too (MQTT-L6). Exclusive + clean_start=true is separately
+	// warn here too. Exclusive + clean_start=true is separately
 	// OVERRIDDEN to false at dial time (it would cause a takeover loop).
 	if mode == connectivity.SessionPersistent && opts.CleanStart && logger != nil {
 		logger.Warn("mqtt: clean_start=true on a persistent session DISCARDS the broker-side "+
@@ -327,6 +371,7 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		metrics:      m,
 		clk:          opts.Clock,
 		events:       make(chan ports.SessionEvent, sessionEventsBuffer),
+		closedCh:     make(chan struct{}),
 		reloadGate:   make(chan struct{}, 1),
 		observedSubs: make(map[string]subscriptionGrant),
 		activeSubs:   make(map[string]byte),
@@ -368,9 +413,9 @@ func (s *Session) clock() clock.Clock {
 // session is not connected). The Sender publishes through this
 // pahoConnection.PublishEnvelope seam rather than reaching for the raw
 // autopaho.ConnectionManager, so port-side egress stays inside the ACL
-// boundary (F-2). The snapshot is taken under mu because Reload/reconnect
+// boundary. The snapshot is taken under mu because Reload/reconnect
 // can swap s.cm; the returned value is used without the lock, exactly as
-// the pre-F-2 ConnectionManager() accessor was.
+// the ConnectionManager() accessor was.
 func (s *Session) connection() pahoConnection {
 	s.mu.Lock()
 	defer s.mu.Unlock()

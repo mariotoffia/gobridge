@@ -13,7 +13,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// R1–R10: Multi-client routing E2E tests
+// Multi-client routing E2E tests
 // ═══════════════════════════════════════════════════════════════════════════
 
 // verifies MatchAll fan-out: one SQS message reaches three MQTT clients with separate sessions, bindings, and topics via shared_outbox.

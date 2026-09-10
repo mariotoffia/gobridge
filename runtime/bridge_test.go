@@ -47,7 +47,7 @@ func TestRuntime_StartStop(t *testing.T) {
 			OnPermanentFailure: routing.FailureDrop,
 			OnExpired:          routing.ExpiredDrop,
 		}.WithDefaults(),
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 
 	if err := rt.AddRoute(cfg, receiver, sender, nil, nil); err != nil {
@@ -91,7 +91,7 @@ func TestRuntime_AddRouteWhileRunning(t *testing.T) {
 			OnPermanentFailure: routing.FailureDrop,
 			OnExpired:          routing.ExpiredDrop,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 
 	_ = rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), nil, nil)
@@ -120,7 +120,7 @@ func TestRuntime_DirectHoldEndToEnd(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliveryDirectHold,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 
 	_ = rt.AddRoute(cfg, receiver, sender, nil, nil)
@@ -162,7 +162,7 @@ func TestRuntime_Inject_HappyPath(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliveryDirectHold,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 
 	_ = rt.AddRoute(cfg, receiver, sender, nil, nil)
@@ -208,7 +208,7 @@ func TestRuntime_Inject_UnknownRoute(t *testing.T) {
 			OnPermanentFailure: routing.FailureDrop,
 			OnExpired:          routing.ExpiredDrop,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	_ = rt.AddRoute(cfg, receiver, sender, nil, nil)
 	_ = rt.Start(context.Background())
@@ -247,7 +247,7 @@ func TestRuntime_Inject_AssignsIDWhenEmpty(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliveryDirectHold,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	_ = rt.AddRoute(cfg, receiver, sender, nil, nil)
 	_ = rt.Start(context.Background())
@@ -291,7 +291,7 @@ func TestRuntime_Inject_DoesNotMutateOriginal(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliveryDirectHold,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	_ = rt.AddRoute(cfg, receiver, sender, nil, nil)
 	_ = rt.Start(context.Background())

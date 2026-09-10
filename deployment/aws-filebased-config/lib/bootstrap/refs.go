@@ -89,7 +89,7 @@ func (r *apiKeysRef) MonitorKey() string {
 // FRESH background budget stacked AFTER the app's own shutdown budget, so a
 // slow teardown could take shutdown_timeout + drain_timeout (> 60s worst
 // case) and blow through the Kubernetes termination grace period into a
-// SIGKILL mid-drain (MQTT-C4). Reload paths pass context.Background(): a
+// SIGKILL mid-drain. Reload paths pass context.Background(): a
 // hot-reload drain is not bounded by process shutdown. Delivery guarantees
 // survive either way (unsettled deliveries fall back to broker redelivery);
 // the single budget is what keeps the drained-shutdown intent honest.
@@ -106,4 +106,22 @@ func stopRuntime(ctx context.Context, rt *goruntime.Runtime, cfg *ports.BridgeCo
 	stopCtx, cancel := context.WithTimeout(ctx, drainTimeout)
 	defer cancel()
 	return rt.Stop(stopCtx)
+}
+
+// waitCtx runs wait on its own goroutine and reports whether it finished before
+// ctx ended. The abandoned goroutine is harmless: every caller has already
+// cancelled the work the wait is for, so it unwinds on its own — the point is
+// that a stuck unwind must not consume the process shutdown budget.
+func waitCtx(ctx context.Context, wait func()) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		wait()
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }

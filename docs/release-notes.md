@@ -8,21 +8,65 @@ operator must do about it. Entries link to an ADR where one records the decision
 Behavior changes from the production-readiness work. Review before upgrading —
 several are breaking at the wire or observable in operations.
 
+### Deployment
+
+- **Breaking for local builds: `cmd/gobridge` is blank without build tags.**
+  An untagged build links no transports, stores or telemetry exporters and
+  rejects configs naming those kinds. To retain the former MQTT and
+  memory/SQLite set, run
+  `make build-gobridge GOBRIDGE_TAGS=gobridge_mqtt,gobridge_native` or
+  `go -C cmd/gobridge build -tags gobridge_mqtt,gobridge_native -o gobridge.out .`.
+  Use `-version` to inspect the compiled families; see the
+  [family table](../PLUGIN.md#binary-composition-build-tags).
+  **Container defaults are unchanged:** the Kubernetes Dockerfile explicitly
+  defaults `GO_BUILD_TAGS` to those two tags, and the shipped
+  `ghcr.io/mariotoffia/gobridge` image remains the separate AWS file-based
+  profile. `go.mod` still requires all optional adapters; only the linked
+  binary is trimmed.
+- **A Kubernetes profile ships and is tested.** `deployment/kubernetes/` runs
+  the reference binary (MQTT transport, memory/SQLite stores, `file://`
+  credentials) as a StatefulSet. The published image `ghcr.io/mariotoffia/gobridge`
+  remains the AWS file-based profile: pushed by digest with every stable
+  `cmd/gobridge/vX.Y.Z` release, with `latest` promoted from that digest only
+  for the highest stable release — deploy from the digest in the release's
+  `gobridge-image-digest.txt`, never from the tag.
+- **A durable MQTT session's baseline can be seeded without the AWS profile.**
+  `gobridge -config bridge.yaml -seed-managed-subscriptions <session-id>`
+  (an empty baseline) or `<session-id>=<filter>,<filter>` (the exact existing
+  filters) writes the row the session loads before it connects; the Kubernetes
+  profile runs it from an init container. Idempotent.
+- **Copied examples build.** Every complete configuration in `docs/` passes the
+  real builder. The published MQTT examples changed shape accordingly: a
+  `direct_hold` route needs a persistent session (`clean_start: false`, QoS 1)
+  with `stores.managed_subscriptions`, the ingress session is named on the
+  route's binding (`session_id`) so the bridge manages it, and a single replica
+  sets `policy.allow_unfenced: true`.
+
+### Runtime
+
+- **A binding's `session_id` manages the session under `direct_hold` too.**
+  Previously only a shared-outbox route's binding session got a manager, so a
+  `direct_hold` MQTT route configured the way the builder recommends never
+  connected its session while `/ready` answered 200. Fixed, and such a session
+  now also waits for in-flight deliveries to settle before it recycles a
+  broker connection, as a route-primary session always did; no configuration
+  change is needed.
+
 ### Routing
 
 - **Filtered messages now default to `drop`, not the DLQ.** Silent
   behavior-change, observable in operations. A message a processor intentionally
   discards (`shared.ErrMessageFiltered` — e.g. a filter allow-list/deny-list
   drop) now has its own route policy `on_filtered`, which defaults to `drop`
-  (`domain/routing/policy.go:166-172`). Before this change a filtered message
+  (`domain/routing/policy.go`). Before this change a filtered message
   inherited the permanent-failure sink: `on_permanent_failure` defaults to
   `dlq`, so intentionally-filtered messages accumulated in the DLQ by default.
   After: filtered messages are dropped and counted in the `MessagesFiltered`
-  metric instead of landing in the DLQ (`runtime/route/dispatch.go:359-382`).
+  metric instead of landing in the DLQ (`runtime/route/dispatch.go`).
   Any route that relied on filtered messages being retained in the DLQ must now
   set `on_filtered: dlq` explicitly, and a DLQ store must be configured — the
   runtime validator rejects the config and startup fails when `on_filtered=dlq`
-  is set without one (`runtime/validator.go:308-311`). Otherwise filtered messages
+  is set without one (`runtime/validator.go`). Otherwise filtered messages
   are dropped;
   watch the `MessagesFiltered` metric to confirm expected filter volume. The
   decoupling is deliberate: a high-volume allow-list filter no longer floods the
@@ -34,23 +78,27 @@ several are breaking at the wire or observable in operations.
   `/dlq/messages` endpoints return entries by ascending `FailedAt` with the
   entry ID as a stable tiebreaker, so operators triage the oldest failures first
   and paginate (`since` / `before`) without entries shifting between calls.
-  Contract: `ports/stores.go:156-162`; enforced by every backend
-  (`adapters/native/store/memorydlq/store.go:125`,
-  `adapters/aws/store/dynamodbdlq/acl_store.go:373`). Tooling that assumed a
+  Contract: `ports/stores.go`; enforced by every backend
+  (`adapters/native/store/memorydlq/store.go`,
+  `adapters/aws/store/dynamodbdlq/acl_store.go`). Tooling that assumed a
   different or unspecified order must adjust.
 
 - **`/dlq/messages` reports `has_more`, not `total`.** The old `total` reported
   `min(matched, limit+offset)` and lied once the backlog exceeded the page
   window. The response now carries a truthful `has_more` boolean
-  (`httpapi/admin_dlq.go:211-262`). Clients paginating on `total` must switch to
+  (`httpapi/admin_dlq.go`). Clients paginating on `total` must switch to
   `has_more`.
 
-- **DLQ redrive is at-most-once and binding-scoped.** Redrive claims each entry
-  by deleting it before injecting, so retries and concurrent admin instances
-  never double-deliver; a crash in the delete→inject window loses the entry
-  rather than duplicating it. A fan-out route redrives only the binding that
-  failed, not the healthy N-1. A redrive returns HTTP 207 when any entry fails —
-  inspect the per-entry body. See [ADR 0006](adr/0006-dlq-redrive-at-most-once.md).
+- **DLQ redrive is at-least-once and binding-scoped.** Redrive injects each
+  entry first — under a fresh envelope ID with a causation link to the
+  original — and deletes it only after the inject is confirmed, so a failed or
+  refused inject never loses the message or its evidence; a crash between a
+  confirmed inject and the delete re-drives the entry on the next attempt (a
+  bounded duplicate, never a loss). A fan-out route redrives only the binding
+  that failed, not the healthy N-1. A redrive returns HTTP 207 when any entry
+  fails — inspect the per-entry body. See
+  [ADR 0015](adr/0015-dlq-redrive-inject-then-delete.md), which supersedes
+  ADR 0006.
 
 ### HTTP / SSE
 
@@ -58,8 +106,8 @@ several are breaking at the wire or observable in operations.
   `id:` made `EventSource` clients send `Last-Event-ID` on reconnect and expect a
   replay window the bridge does not provide (SSE egress is at-most-once). Frames
   now carry `event:` and `data:` only; the envelope ID stays in the JSON payload
-  (`adapters/http/transport/doc.go:146-148`,
-  `adapters/http/transport/sender_sse.go:439-442`). Clients relying on
+  (`adapters/http/transport/doc.go`,
+  `adapters/http/transport/sender_sse.go`). Clients relying on
   `Last-Event-ID` resume must stop — there was never a replay window to resume
   into.
 
@@ -69,13 +117,13 @@ several are breaking at the wire or observable in operations.
   auth-failure limiter keys on the transport peer (`RemoteAddr` host), never
   `X-Forwarded-For`, because XFF is client-spoofable and would let an attacker
   rotate values to evade the limiter or exhaust its tracked-client map
-  (`httpapi/admin.go:262-280`). Deployments behind a proxy will see the limiter
+  (`httpapi/admin.go`). Deployments behind a proxy will see the limiter
   key on the proxy's address unless per-client isolation is handled at the edge.
   XFF is still used for audit attribution only, never as a security control.
 
 - **`Retry-After` is derived from the auth-failure window.** A throttled client's
   `Retry-After` hint tracks `auth_failure_window` (rounded up, floored at 1s)
-  instead of a fixed constant (`httpapi/auththrottle.go:149-163`). Tuning
+  instead of a fixed constant (`httpapi/auththrottle.go`). Tuning
   `auth_failure_window` moves the advertised retry hint with it.
 
 ### Transports
@@ -94,12 +142,12 @@ several are breaking at the wire or observable in operations.
   whose client creation or queue-URL resolution fails returns `Run`'s error
   without closing `Started()`, so a readiness probe never briefly observes a
   ready route for a receiver that failed to start
-  (`adapters/aws/transport/sqs/receiver.go:105-108`, `:162`). A supervisor must
+  (`adapters/aws/transport/sqs/receiver.go`, `:162`). A supervisor must
   watch `Run`'s error, not select solely on `Started()`.
 
-### MQTT adversarial-review remediation (PROD_READY_ISSUES)
+### MQTT adversarial-review remediation
 
-- **Ingress cap violations no longer kill the session (MQTT-L1).** A publish
+- **Ingress cap violations no longer kill the session.** A publish
   violating a local representational cap (`max_payload_bytes`, metadata
   bytes, User Property count) while fitting the advertised Maximum Packet
   Size — which a compliant broker forwards from any authorized publisher —
@@ -110,12 +158,11 @@ several are breaking at the wire or observable in operations.
   new metric; see [the runbook](runbooks/mqtt-ingress-poison.md). Malformed
   packets and totals above the advertised maximum (broker bugs) remain
   session-terminal.
-- **Pre-first-reconcile backlog is retained, never orphan-dropped
-  (MQTT-L2).** Before the first `Reconcile` of a process lifetime every topic
+- **Pre-first-reconcile backlog is retained, never orphan-dropped.** Before the first `Reconcile` of a process lifetime every topic
   counts as covered, so a CONNACK backlog replayed ahead of the first plan
   can no longer be PUBACK-dropped and its live topic unsubscribed under a
   delayed startup. Genuine orphans converge one reconcile later.
-- **An emit error now requests bounded session recovery (MQTT-L3).** A
+- **An emit error now requests bounded session recovery.** A
   stranded un-acked delivery (route runner refused it; MQTT does not
   redeliver on a live connection) previously pinned Receive-Maximum slots
   until an unrelated teardown. Durable sessions now recycle via the same
@@ -123,36 +170,36 @@ several are breaking at the wire or observable in operations.
   `MQTTSessionRecoveryRecycle`); expect redelivery-duplicates for in-flight
   siblings on `direct_hold` routes.
 - **Two silent windows are now metered.** Recycle-window discards count on
-  `MQTTRouterStalePurged` (previously the router's only silent drop,
-  MQTT-L4); settlements whose connection cycled count on the new
-  `MQTTAckAfterReconnect` (each is a guaranteed broker redelivery, MQTT-L5).
-- **Reload success now has a convergence watchdog (MQTT-R1).** A committed
+  `MQTTRouterStalePurged` (previously the router's only silent drop); settlements whose connection cycled count on the new
+  `MQTTAckAfterReconnect` (each is a guaranteed broker redelivery).
+- **Reload success now has a convergence watchdog.** A committed
   reload whose sessions never reach the broker (ACL-denied topic, rotated
   credentials) flips `ConfigDegraded` to 1 with an `applied but ... not
   converged` deep-health reason after the transport's activation budget,
   clearing when sessions converge. Alert on `ConfigDegraded`; reload success
   alone no longer implies a working transport.
-- **Worst-case failover budget is disclosed at every build (MQTT-F2).**
+- **Worst-case failover budget is disclosed at every build.**
   Exclusive sessions without `failover_slo` log their computed budget
   (`≈336s` with HA-profile + MQTT defaults). See
   [failover timing](transports/mqtt.md#exclusive-mode-lease-store-and-failover-timing).
 - **New construction-time warnings.** `session_mode: persistent` +
-  `clean_start: true` (wipes the offline backlog every restart, MQTT-L6) and
+  `clean_start: true` (wipes the offline backlog every restart) and
   persistent + `client_id_suffix: hostname` (strands broker queues on every
-  Deployment/ECS rollout, MQTT-F3 — see
+  Deployment/ECS rollout — see
   [Deployment identity](transports/mqtt.md#deployment-identity)).
-- **Circuit-breaker outcomes are generation-safe under concurrency
-  (MQTT-O3).** The MQTT sender and HTTP forwarder admit requests through the
+- **Circuit-breaker outcomes are generation-safe under concurrency.** The MQTT sender and HTTP forwarder admit requests through the
   new `ports.CircuitBreakerAdmitter` surface, so an outcome landing after a
   breaker state transition is discarded as stale instead of releasing a
   half-open probe it never held.
-- **The SIGTERM drain shares the shutdown budget (MQTT-C4, AWS file-based
+- **The SIGTERM drain shares the shutdown budget (AWS file-based
   deployment).** The runtime drain now derives from the app shutdown context
   instead of stacking a second fresh budget after it, so worst-case shutdown
   fits the documented 60s termination grace.
 
 ## Upgrade checklist
 
+- Add explicit family tags to local `cmd/gobridge` build commands; use
+  `gobridge_mqtt,gobridge_native` to retain the previous plugin set.
 - Set `on_filtered: dlq` (and configure a DLQ store) on any route that must keep
   intentionally-filtered messages in the DLQ — the new default is `drop`.
 - Repoint any DLQ tooling from `total` to `has_more`, and expect oldest-first

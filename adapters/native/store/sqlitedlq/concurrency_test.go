@@ -14,11 +14,10 @@ import (
 )
 
 // Compile-time assertion that the SQLite DLQ store exposes io.Closer so a
-// lifecycle-aware composition root can release its file handle on stop/reload
-// (I5).
+// lifecycle-aware composition root can release its file handle on stop/reload.
 var _ io.Closer = (*sqlitedlq.Store)(nil)
 
-// TestConcurrentWrites_NoBusyNoLoss is the I2/I7 regression for the DLQ: many
+// TestConcurrentWrites_NoBusyNoLoss is the regression for the DLQ: many
 // goroutines writing distinct entries to a single file-backed store must all
 // succeed (no SQLITE_BUSY) and every entry must land. The single writer
 // connection plus busy_timeout are what make this hold.

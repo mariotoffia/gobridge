@@ -56,16 +56,36 @@ config_watch:
 sessions:
   - id: mqtt
     transport: mqtt
+    # direct_hold relies on the broker redelivering what a crashed process never
+    # acknowledged; only a persistent (or exclusive) session does that.
+    session_mode: persistent
     options:
       session:
         broker_url: tcp://localhost:1883
         client_id: dynamic-01
+        clean_start: false
+        session_expiry_interval: 3600
+
+stores:
+  # A persistent session keeps an exact record of the filters it installed on
+  # the broker (ADR 0003); seed the baseline once, before the first start:
+  #   gobridge -config bridge.yaml -seed-managed-subscriptions mqtt
+  managed_subscriptions:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/managed-subscriptions.db
+  # Where a message the route gives up on is kept.
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
 
 receivers:
   - id: in
     session_id: mqtt
     topics:
       - topic: "events/#"
+        qos: 1   # QoS 0 is at-most-once; direct_hold needs a redelivering source
 
 senders:
   - id: out
@@ -77,12 +97,19 @@ senders:
 bindings:
   - id: fwd
     sender_id: out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # connect, subscribe, reconcile. A session nobody manages never subscribes.
+    session_id: mqtt
     address: processed/events
 
 routes:
   - id: process
     receiver_id: in
     bindings: [fwd]
+    policy:
+      # Exactly one replica consumes this subscription; a second copy of this
+      # process would double-deliver. See Scenario 8 for fenced ownership.
+      allow_unfenced: true
 ```
 
 The `config_watch` block is the key addition. It tells the file watcher to use filesystem event notifications (`notify`) and coalesce rapid writes within a 200ms debounce window before signalling a change.
@@ -224,7 +251,7 @@ There is **no** supported *live* rollout for a clustered deployment: a live relo
 
 ### Clustered live reload is rejected, fail-closed
 
-A per-process live reload cannot roll a clustered cohort safely: there is no cluster-wide version barrier, no all-member readiness gate, and no coordinated rollback. So the runtime **refuses every non-no-op live reload of (or into) a clustered deployment wholesale** (finding H8), rather than adopting a split-inducing config.
+A per-process live reload cannot roll a clustered cohort safely: there is no cluster-wide version barrier, no all-member readiness gate, and no coordinated rollback. So the runtime **refuses every non-no-op live reload of (into) a clustered deployment wholesale**, rather than adopting a split-inducing config.
 
 The guard fires in both reload paths -- the `Supervisor` (`bridge.Supervisor.apply`) and the AWS file-based composition root (`bootstrap.App.applyLogicalConfig`) -- **after no-op detection but before any Plan/build/store query or stop**. It triggers when **either** the currently-applied **or** the proposed config is clustered (`deployment_mode: clustered`, or a static `cluster.endpoints` override), covering both *entering* and *leaving* a cohort via live reload. On refusal:
 
@@ -243,7 +270,7 @@ To operate safely:
 
 - **Validate config before deploy.** The `version` CAS field (`BridgeConfig.Version`) and the local applied-config reference tracking guard concurrent *commits* to a shared config file (e.g. on AWS EFS) and make per-process reloads idempotent; they are **not cluster consensus and not a version barrier**, do **not** gate the per-instance apply, and must **not** be relied on as resilient live reconfiguration across a cohort.
 - **Do not attempt a live/rolling reconfiguration of a clustered deployment.** It is rejected fail-closed; use the [Cluster Config Rollout runbook](../runbooks/cluster-config-rollout.md) for an externally coordinated whole-cohort replacement.
-- **Observe each instance's running `config_version`.** On each reconfiguration swap the Supervisor logs `config_version` -- always the version running *after* the swap; a failed swap keeps the old config running and additionally logs the rejected version as `attempted_config_version`. The same value is exposed on the authenticated monitor endpoint `GET /api/v1/monitor/topology` as the `config_version` field when a config provider is wired (`httpapi/monitor.go:186-211`), and programmatically via `Supervisor.Config().Version`. For fleet-wide convergence monitoring, scrape `config_version` from `/topology` across every instance rather than relying on swap logs alone (the initial config load is not logged with a version). Treat persistent version divergence across instances as an alertable condition. Note: after a swap that fails *and* whose recovery also fails, `config_version` still reports the intended old version while no runtime is live -- cross-check the `running` flag on `/topology` to distinguish that case.
+- **Observe each instance's running `config_version`.** On each reconfiguration swap the Supervisor logs `config_version` -- always the version running *after* the swap; a failed swap keeps the old config running and additionally logs the rejected version as `attempted_config_version`. The same value is exposed on the authenticated monitor endpoint `GET /api/v1/monitor/topology` as the `config_version` field when a config provider is wired (`httpapi/monitor.go`), and programmatically via `Supervisor.Config().Version`. For fleet-wide convergence monitoring, scrape `config_version` from `/topology` across every instance rather than relying on swap logs alone (the initial config load is not logged with a version). Treat persistent version divergence across instances as an alertable condition. Note: after a swap that fails *and* whose recovery also fails, `config_version` still reports the intended old version while no runtime is live -- cross-check the `running` flag on `/topology` to distinguish that case.
 
 ## ReconfigStrategy Comparison
 

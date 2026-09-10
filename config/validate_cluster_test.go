@@ -9,7 +9,7 @@ import (
 
 // clusteredEndpointsConfig returns an otherwise-valid clustered blueprint whose
 // only interesting axis is cluster.endpoints, so the cluster-endpoint validator
-// (finding HIGH-1) is what a test toggles.
+// is what a test toggles.
 func clusteredEndpointsConfig(endpoints map[string]string) *ports.BridgeConfig {
 	cfg := minimalValidBridgeConfig()
 	cfg.Bridge.DeploymentMode = "clustered"
@@ -21,7 +21,7 @@ func clusteredEndpointsConfig(endpoints map[string]string) *ports.BridgeConfig {
 
 // TestValidateClusterEndpoints_PeerMapRejected proves the copied-from-docs
 // peer-membership shape (instance-id keys, no "http" key) is rejected at load
-// time (HIGH-1). Reverting the validator makes this fail — the peer map would
+// time. Reverting the validator makes this fail — the peer map would
 // pass and later 502 at forward time.
 func TestValidateClusterEndpoints_PeerMapRejected(t *testing.T) {
 	cfg := clusteredEndpointsConfig(map[string]string{
@@ -94,7 +94,7 @@ func TestValidateClusterEndpoints_NonClusteredNoEndpointsPasses(t *testing.T) {
 // httpExclusiveRouteConfig returns an otherwise-valid blueprint with a single
 // exclusive route (inline session block) whose ingress is the HTTP transport.
 // clustered and delivery mode are set by the caller so the direct_hold rule
-// (finding HIGH-4) is the axis under test.
+// is the axis under test.
 func httpExclusiveRouteConfig(clustered bool, deliveryMode string) *ports.BridgeConfig {
 	cfg := &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "test"},
@@ -134,7 +134,7 @@ func errContains(err error, sub string) bool {
 	return err != nil && strings.Contains(err.Error(), sub)
 }
 
-// TestValidateClusteredExclusiveHTTPDirectHold covers the HIGH-4 rule:
+// TestValidateClusteredExclusiveHTTPDirectHold covers the rule:
 // clustered + exclusive + HTTP ingress must use shared_outbox, not direct_hold.
 func TestValidateClusteredExclusiveHTTPDirectHold(t *testing.T) {
 	tests := []struct {
@@ -159,7 +159,7 @@ func TestValidateClusteredExclusiveHTTPDirectHold(t *testing.T) {
 				}
 				return
 			}
-			// Must not be rejected for the HIGH-4 reason (other validation must
+			// Must not be rejected for the reason (other validation must
 			// also pass for these minimal configs).
 			if errContains(err, "not fencing-safe across failover") {
 				t.Fatalf("route should not be rejected by the direct_hold HTTP rule, got: %v", err)

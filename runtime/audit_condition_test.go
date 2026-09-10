@@ -10,7 +10,7 @@ import (
 // ═══════════════════════════════════════════════════════════════════
 // Condition Evaluator Audit Tests
 //
-// Validates edge cases identified by QA-015, QA-016, GO-005:
+// Validates these edge cases:
 //   - condToFloat64 missing unsigned integer types
 //   - numericCompare float64 precision loss for large int64
 //   - isIn with typed slices
@@ -118,10 +118,6 @@ func TestCondToFloat64_InvalidString(t *testing.T) {
 func TestNumericCompare_LargeInt64Precision(t *testing.T) {
 	v1 := int64(1<<53 + 1)
 	v2 := int64(1<<53 + 2)
-
-	if v1 == v2 {
-		t.Skip("test requires distinct int64 values")
-	}
 
 	eval := &conditionEval{
 		cond: MatchCondition{

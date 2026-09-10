@@ -39,12 +39,18 @@ non-compliant — fix or replace the broker; no bridge-side setting clears it.
   with `class` = `payload` | `user_properties` | `metadata`, plus `topic` and
   `payload_bytes`.
 - The session stays connected and `ready`; traffic on other topics flows.
+- `MQTTIngressUserPropertiesTruncated` is non-zero alongside `user_properties`
+  drops: the publisher sent more than 129 User Properties per packet and the
+  pre-decode guard cut the list to 129 before the SDK decoded it, so the Error
+  log's count reads 129 whatever was sent. The count on the wire is in the
+  session's Debug log (`wire_user_properties`).
 
 ## Diagnosis
 
 1. Read the Error log for the violation `class`, `topic`, and sizes. Repeated
    drops of the same class log at Debug — raise the log level temporarily if
-   you need per-message evidence.
+   you need per-message evidence, and for the real User Property count of a
+   truncated packet.
 2. Identify the publisher from the topic and broker-side logs/ACLs. The
    bridge cannot name the publisher — MQTT carries no producer identity.
 3. Decide whether the traffic is legitimate:

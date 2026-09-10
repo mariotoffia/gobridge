@@ -66,7 +66,7 @@ func TestSupervisorCoordinatedRollout_LiveSafeDeltaIsProposedToTheBarrier(t *tes
 // capability name and validated to carry an "http" key (config.validateClusterEndpoints)
 // — it is NOT a peer roster. Reading its keys as member ids would freeze every
 // cohort's epoch as ["http"]: a one-member barrier that commits on a single ack,
-// i.e. no barrier at all, which is the entire invariant (I2) this protocol exists
+// i.e. no barrier at all, which is the entire invariant this protocol exists
 // to provide. The roster therefore comes from bridge.cluster.members only.
 func TestRolloutMembers_RosterIsClusterMembersNotEndpoints(t *testing.T) {
 	cfg := supervisorTestConfig("r1")
@@ -168,7 +168,7 @@ func seedForeignRollout(t *testing.T, store *memoryrollout.Store, members ...str
 // TestSupervisorCoordinatedRollout_ForeignActiveRolloutFailsClosed proves the
 // proposer does not mistake ANY active rollout for "a peer already proposed MY
 // delta". Propose returns shared.ErrAlreadyExists whenever a rollout is active
-// (invariant I1) — including one carrying a DIFFERENT candidate config. Treating
+// including one carrying a DIFFERENT candidate config. Treating
 // that as success would defer this node's delta against a barrier that will
 // commit somebody else's config: the delta is reported committed-not-applied to
 // the admin API (ports.ErrApplyInFlight → no rollback) and then never applies by
@@ -251,7 +251,7 @@ func TestSupervisorCoordinatedRollout_PeerProposedSameDeltaJoins(t *testing.T) {
 // proposing. Such a node can never Ack (persistence.Rollout rejects a voter
 // outside the frozen epoch), so the barrier it opened could only ever
 // deadline-abort — a guaranteed-dead rollout that blocks every other proposal
-// for its whole TTL (invariant I1 allows one active rollout).
+// for its whole TTL (invariant allows one active rollout).
 //
 // Driven directly: the startup gate refuses this wiring outright
 // (TestSupervisorRun_RefusesAMemberIdOutsideTheRoster), so this pins the

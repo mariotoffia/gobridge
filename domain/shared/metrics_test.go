@@ -1,6 +1,10 @@
 package shared_test
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -86,55 +90,73 @@ func TestMetricNamespace_NonEmpty(t *testing.T) {
 	}
 }
 
-// TestMetricConstants_NonEmpty validates that all Metric* name constants are non-empty
-// and unique across the entire set.
+// TestMetricConstants_NonEmpty validates that every Metric* name
+// constant is non-empty and unique across the entire set.
+//
+// The constants are DISCOVERED from metrics.go's AST rather than
+// mirrored into a literal slice here. A hand-kept list has a silent
+// blind spot: adding `MetricFoo = "Foo"` and forgetting to extend the
+// slice leaves the set unchecked and nothing fails. (That is not
+// hypothetical — the literal this replaced had drifted to 34 of the 57
+// declared constants, so 23 were never checked for collisions.)
+//
+// go test runs a package's binary with the working directory set to the
+// package directory, so metrics.go is right here.
 func TestMetricConstants_NonEmpty(t *testing.T) {
-	metrics := []string{
-		shared.MetricLeaseAcquireLatency,
-		shared.MetricLeaseRenewLatency,
-		shared.MetricLeaseAcquireFailures,
-		shared.MetricLeaseExpiries,
-		shared.MetricLeaseTransfers,
-		shared.MetricOutboxPersistLatency,
-		shared.MetricOutboxDrainLatency,
-		shared.MetricOutboxDepth,
-		shared.MetricOutboxClaimBatchSize,
-		shared.MetricOutboxDepthFailures,
-		shared.MetricOutboxClaimRecoveries,
-		shared.MetricOutboxCompletions,
-		shared.MetricOutboxExpiredBeforeSend,
-		shared.MetricOutboxReplayCount,
-		shared.MetricOutboxRecordFailures,
-		shared.MetricOutboxDuplicateRisk,
-		shared.MetricOutboxClaimConflicts,
-		shared.MetricAckLatency,
-		shared.MetricVisibilityExtensions,
-		shared.MetricDeliveryE2ELatency,
-		shared.MetricDLQEntries,
-		shared.MetricDLQDepth,
-		shared.MetricDLQWriteFailures,
-		shared.MetricDeliveryPanics,
-		shared.MetricMessagesReceived,
-		shared.MetricMessagesSent,
-		shared.MetricMessagesDropped,
-		shared.MetricRouteErrors,
-		shared.MetricReceiveCountUnparseable,
-		shared.MetricProcessorPanics,
-		shared.MetricProcessorTimeouts,
-		shared.MetricMQTTReconnects,
-		shared.MetricReconcileFailures,
-		shared.MetricSessionRestarts,
+	// MetricNamespace is the CloudWatch namespace, not a metric name.
+	exempt := map[string]struct{}{"MetricNamespace": {}}
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "metrics.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse metrics.go: %v", err)
 	}
 
-	seen := make(map[string]bool, len(metrics))
-	for _, m := range metrics {
-		if m == "" {
-			t.Fatal("metric constant must not be empty")
+	seen := make(map[string]string) // value -> declaring constant
+	found := 0
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
 		}
-		if seen[m] {
-			t.Fatalf("duplicate metric constant: %q", m)
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok || len(vs.Names) != 1 || len(vs.Values) != 1 {
+				continue
+			}
+			name := vs.Names[0].Name
+			if !strings.HasPrefix(name, "Metric") {
+				continue
+			}
+			if _, skip := exempt[name]; skip {
+				continue
+			}
+			lit, ok := vs.Values[0].(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				continue
+			}
+			value, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				t.Fatalf("%s: unquote %s: %v", name, lit.Value, err)
+			}
+			found++
+
+			if value == "" {
+				t.Errorf("%s: metric constant must not be empty", name)
+			}
+			if prev, dup := seen[value]; dup {
+				t.Errorf("%s and %s both declare the metric name %q; "+
+					"colliding names merge into one series at the exporter", prev, name, value)
+			}
+			seen[value] = name
 		}
-		seen[m] = true
+	}
+
+	// Guard against the discovery itself silently breaking (a renamed
+	// file, a refactor to typed constants) and reporting a clean zero.
+	if found < 30 {
+		t.Fatalf("discovered only %d Metric* constants in metrics.go; "+
+			"the AST scan is probably no longer matching the declarations", found)
 	}
 }
 

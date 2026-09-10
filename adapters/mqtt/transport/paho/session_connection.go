@@ -14,10 +14,10 @@ import (
 // OnConnectionUp callback (registered in Start) on every (re)connect,
 // which calls this method.
 //
-// Ownership (finding C7): the runtime session manager is the SINGLE
+// Ownership: the runtime session manager is the SINGLE
 // owner of reconnect reconciliation. It reacts to the SessionConnected
 // event by calling Reconcile, whose outcome is authoritative and whose
-// failure propagates out of Manager.Run (finding S9). This method must
+// failure propagates out of Manager.Run. This method must
 // therefore NOT reconcile inline; it only resets local subscription
 // state and emits the event.
 //
@@ -29,9 +29,9 @@ import (
 // first, letting the manager's reconcile observe stale subscriptions,
 // compute an empty delta, and skip the re-subscribe — which, combined
 // with an inline reconcile that swallowed its own failure, could leave a
-// topic silently unsubscribed with no error surfaced (finding C7).
+// topic silently unsubscribed with no error surfaced.
 //
-// Lock discipline (finding C7-N4): this callback takes ONLY s.mu for the
+// Lock discipline: this callback takes ONLY s.mu for the
 // subscription-state reset and MUST NOT acquire reloadGate. autopaho invokes
 // OnConnectionUp synchronously on its sole connection-management goroutine and
 // documents that the callback "must not block" (autopaho.ClientConfig.
@@ -43,7 +43,7 @@ import (
 //
 // The TOCTOU a lock here would close — a prior-connection reconcile writing
 // stale subscription state AFTER this reset — is instead closed
-// WITHOUT any new lock by the connEpoch generation counter (A-3): this reset
+// WITHOUT any new lock by the connEpoch generation counter: this reset
 // bumps s.connEpoch, and reconcile skips any write-back whose captured epoch no
 // longer matches. That keeps activeSubs empty for the new connection, so the
 // authoritative reconnect reconcile issues a full re-subscribe rather than
@@ -92,6 +92,13 @@ func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint
 		s.recoverySessionPresentEpoch = nextEpoch
 		s.recoveryErr = nil
 	}
+	resumeLost := !sessionPresent && s.resumeExpectedLocked()
+	if resumeLost {
+		s.resumeLostErr = durableResumeLostError()
+	}
+	// The connection this CONNACK belongs to is up, so whatever rejected the
+	// previous CONNECT attempt is history.
+	s.connectErr = nil
 	s.connected = true
 	s.connUpAt = s.clock().Now().UnixNano()
 	s.observedSubs = make(map[string]subscriptionGrant)
@@ -103,6 +110,10 @@ func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint
 	// This reset is part of connection-up completion: Start/Reload must not
 	// return until the replacement router epoch is active.
 	s.router.beginGrace()
+
+	if resumeLost {
+		s.noteDurableResumeLost()
+	}
 
 	s.completeConnectionUpBarrier(generation, nil)
 	s.mu.Lock()
@@ -117,6 +128,27 @@ func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint
 		s.logger.Log(context.Background(), logging.LevelDebug, "mqtt: connection up",
 			"client_id", s.opts.ClientID)
 	}
+}
+
+// recordBrokerMaxPacketSize stores the Maximum Packet Size the broker granted
+// on this connection edge. The generation guard is the same one every other
+// connection callback uses: a CONNACK from a ConnectionManager that Reload or
+// recovery already discarded must never install its ceiling over the live one.
+func (s *Session) recordBrokerMaxPacketSize(generation uint64, maximumPacketSize uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if generation != s.connectionGeneration || s.closed {
+		return
+	}
+	s.brokerMaxPacketSize = maximumPacketSize
+}
+
+// brokerMaximumPacketSize returns the broker ceiling egress must respect, or 0
+// when no CONNACK has granted one.
+func (s *Session) brokerMaximumPacketSize() uint32 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.brokerMaxPacketSize
 }
 
 func (s *Session) completeConnectionUpBarrier(generation uint64, err error) {
@@ -165,6 +197,10 @@ func (s *Session) handleConnectionDownGeneration(generation uint64) bool {
 		}
 	}
 	s.mu.Unlock()
+	// autopaho raises this edge only after the client's workers have returned,
+	// and builds the replacement only afterwards, so it is the happens-after
+	// point that lets the router recognise the replacement's first packet.
+	s.router.noteConnectionTornDown()
 	s.pushEvent(ports.SessionDisconnected, nil)
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(context.Background(), logging.LevelDebug, "mqtt: connection down",
@@ -174,22 +210,64 @@ func (s *Session) handleConnectionDownGeneration(generation uint64) bool {
 }
 
 // quiesceForRecycle atomically stops new router callback acceptance, waits for
-// accepted callbacks to return, then waits for the runtime RouteRunner settlement
-// counters. The reconcile/session context is always honored; ReconcileTimeout is
-// an additional ceiling for direct callers that supplied no shorter deadline.
+// accepted callbacks to return, then waits for the runtime RouteRunner
+// settlement counters.
+//
+// The two phases have DIFFERENT owners and therefore different ceilings, and
+// conflating them is what turns a slow target into a restart loop:
+//
+//   - TEARDOWN (stopping acceptance and draining the callbacks already inside
+//     the router) is adapter work whose latency the adapter controls. It keeps
+//     ReconcileTimeout as an additional ceiling for direct callers that supplied
+//     no shorter deadline.
+//   - ACCEPTANCE (waiting for deliveries the runtime already took ownership of
+//     to settle) is runtime work. Its duration is bounded by the ROUTE — the
+//     send-wedge ceiling, the processor budget, the store and dead-letter call
+//     deadlines — and can legitimately exceed any adapter-local bound. It
+//     therefore runs under the CALLER's context only, so the recovery attempt
+//     budget is the outer bound and cooperative downstream slowness is never
+//     misread as an unrecoverable drain failure.
+//
+// The reconcile/session context is honored throughout both phases.
+//
+// quiesceForRecycle keeps ReconcileTimeout on BOTH phases: its callers are
+// reconcile-driven (managed-subscription cleanup, failed-reconcile teardown)
+// and several of them run on the session manager's Run context, which carries
+// no deadline of its own — an unbounded settlement wait there would park the
+// goroutine for the process lifetime while holding the session serialization
+// gate. Only settlement recovery, whose whole purpose is to tolerate a slow
+// settlement, uses quiesceForRecycleAwaitingSettlement below.
 func (s *Session) quiesceForRecycle(ctx context.Context) error {
+	bounded, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
+	defer cancel()
+	return s.quiesceRouter(bounded, bounded)
+}
+
+// quiesceForRecycleAwaitingSettlement is the settlement-recovery variant: the
+// adapter-owned teardown keeps ReconcileTimeout, while the wait for deliveries
+// the runtime already accepted runs under the CALLER's context only. Its
+// duration belongs to the routes — the send-wedge ceiling, the processor
+// budget, the store and dead-letter call deadlines — and an adapter-local bound
+// below those turns cooperative downstream slowness into an unrecoverable drain
+// failure, terminalizing the session and restarting every unrelated route. The
+// caller's recovery attempt budget is the outer bound.
+func (s *Session) quiesceForRecycleAwaitingSettlement(ctx context.Context) error {
+	teardownCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
+	defer cancel()
+	return s.quiesceRouter(teardownCtx, ctx)
+}
+
+func (s *Session) quiesceRouter(teardownCtx, settleCtx context.Context) error {
 	s.mu.Lock()
 	waiter := s.ingressQuiescenceWaiter
 	s.mu.Unlock()
 	if s.router == nil {
 		if waiter != nil {
-			return waiter(ctx)
+			return waiter(settleCtx)
 		}
 		return nil
 	}
-	quiesceCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
-	defer cancel()
-	return s.router.quiesceForRecycle(quiesceCtx, waiter)
+	return s.router.quiesceForRecycle(teardownCtx, settleCtx, waiter)
 }
 
 func terminalIngressQuiescenceError(cause error) error {
@@ -261,4 +339,5 @@ func (s *Session) disconnectGeneration(ctx context.Context) {
 	if cmCancel != nil {
 		cmCancel()
 	}
+	s.router.noteConnectionTornDown()
 }

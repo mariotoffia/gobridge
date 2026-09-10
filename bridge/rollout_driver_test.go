@@ -29,11 +29,27 @@ type fakeRolloutHost struct {
 	applied     []*ports.BridgeConfig
 	unbuildable map[int]string // config version -> nack reason
 	unconverged map[int]bool   // config version -> never reaches convergence (confirm window)
-	degraded    string
+	// unprovable models the member whose every session is a dormant
+	// lease-deferred one: ready, and over nothing observed.
+	unprovable bool
+	// refuse models a swap that FAILED and restored the previous config: applying
+	// the keyed version is a no-op for that many attempts (-1 = forever). It is how
+	// a test reproduces a member that cannot reach a generation — including the
+	// last confirmed one it has to revert to.
+	refuse   map[int]int
+	degraded string
+	// logger is what RolloutLogger hands the applier. Nil (the default) keeps the
+	// barrier silent, which is what most tests want.
+	logger *slog.Logger
 }
 
 func newFakeRolloutHost(initial *ports.BridgeConfig) *fakeRolloutHost {
-	return &fakeRolloutHost{cfg: initial, unbuildable: map[int]string{}, unconverged: map[int]bool{}}
+	return &fakeRolloutHost{
+		cfg:         initial,
+		unbuildable: map[int]string{},
+		unconverged: map[int]bool{},
+		refuse:      map[int]int{},
+	}
 }
 
 func (h *fakeRolloutHost) Config() *ports.BridgeConfig {
@@ -54,8 +70,28 @@ func (h *fakeRolloutHost) PlanCandidate(_ context.Context, cfg *ports.BridgeConf
 func (h *fakeRolloutHost) ApplyCommitted(_ context.Context, cfg *ports.BridgeConfig) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.cfg = cfg
 	h.applied = append(h.applied, cfg)
+	if n := h.refuse[cfg.Version]; n != 0 {
+		if n > 0 {
+			h.refuse[cfg.Version] = n - 1
+		}
+		return // the swap failed and the previous config was restored
+	}
+	h.cfg = cfg
+}
+
+// appliedCount reports how many swaps were attempted, refused ones included.
+func (h *fakeRolloutHost) appliedCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.applied)
+}
+
+// degradedReason reports the last MarkDegraded reason, or "".
+func (h *fakeRolloutHost) degradedReason() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.degraded
 }
 
 func (h *fakeRolloutHost) MarkDegraded(reason string) {
@@ -64,14 +100,28 @@ func (h *fakeRolloutHost) MarkDegraded(reason string) {
 	h.degraded = reason
 }
 
-func (h *fakeRolloutHost) RolloutLogger() *slog.Logger { return nil }
+func (h *fakeRolloutHost) RolloutLogger() *slog.Logger {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.logger
+}
+
+// allow clears a refusal, modelling the transient cause of a failed swap going
+// away — a broker that comes back, a store that stops throttling.
+func (h *fakeRolloutHost) allow(version int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.refuse, version)
+}
 
 // Converged reports the running config as converged unless the test marked its
 // version unconverged (the confirm-window failure a UC-CR9-style test injects).
-func (h *fakeRolloutHost) Converged(context.Context) bool {
+// It reports the answer as PROVABLE: this host has no dormant lease-deferred
+// session, so its readiness rests on something it observed.
+func (h *fakeRolloutHost) Converged(context.Context) (bool, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.cfg != nil && !h.unconverged[h.cfg.Version]
+	return h.cfg != nil && !h.unconverged[h.cfg.Version], !h.unprovable
 }
 
 var _ ports.RolloutHost = (*fakeRolloutHost)(nil)
@@ -105,7 +155,7 @@ func TestClusterRolloutDriver_DrivesCommitOverAFakeHost(t *testing.T) {
 	require.Equal(t, boot, resolved)
 
 	stop := d.Start(context.Background(), clock.System, nil)
-	defer stop()
+	defer stop(context.Background())
 
 	candidate := soloCohortConfig(7)
 	candidate.Bindings[0].Address = "addr/rolled"

@@ -157,7 +157,7 @@ func (f *Factory) AddressValidator() ports.AddressValidator { return nil }
 // A route configured with a LONGER lock only gains slack. A route with a
 // SHORTER lock (ASB allows down to 5 s) is threaded through instead via
 // Config.EffectiveVisibilityTimeout() (ports.VisibilityTimeoutConfig),
-// which the builder prefers over this constant (D2, Phase 1b), mirroring
+// which the builder prefers over this constant (Phase 1b), mirroring
 // the identical SQS boundary. This method remains the fallback when no
 // receiver config is available.
 func (f *Factory) VisibilityTimeout() time.Duration {

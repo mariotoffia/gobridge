@@ -20,7 +20,7 @@ import (
 // gated on whether the PRIOR PLAN held subscriptions (desired-state history),
 // not on the volatile activeSubs snapshot a reconnect may have just reset —
 // so a subscription resumed by a clean_start=false broker is torn down even
-// in the post-reconnect window (c4-remove-subs). Only a subless transition —
+// in the post-reconnect window. Only a subless transition —
 // an empty plan re-affirming a prior plan that had no subscriptions (a
 // sender-only session) — is a no-op, so a SessionManager that never had
 // subscriptions cannot churn the broker.
@@ -51,6 +51,17 @@ func (s *Session) reconcileUnderGate(
 	plan connectivity.SessionPlan,
 	recoveryGeneration uint64,
 ) (retErr error) {
+	// Registered first, so it runs LAST: the deferred recovery-completion and
+	// exclusive-disconnect handlers below can still turn a nil retErr into an
+	// error, and the durable-resume latch may only be cleared once the
+	// reconcile is FINALLY successful. Every success path passes through here,
+	// including the empty-plan no-op a sender-only session takes — which is the
+	// one shape that would otherwise latch the loss forever.
+	defer func() {
+		if retErr == nil {
+			s.clearResumeLost()
+		}
+	}()
 	defer func() {
 		if recoveryGeneration == 0 {
 			return
@@ -124,7 +135,7 @@ func (s *Session) reconcileUnderGate(
 	// convergence. Errors and reconnect generation changes leave it false.
 	s.subscriptionsSatisfied = false
 	// Shared-subscription scale-out on a stable/shared-ClientID mode is the
-	// client_id-collision footgun (HIGH-3): every replica MUST use a UNIQUE
+	// client_id-collision footgun: every replica MUST use a UNIQUE
 	// client_id, else they form a single broker session and take each other
 	// over instead of load-balancing. We cannot see the other replicas'
 	// ClientIDs from one process, so surface the requirement once. Ephemeral
@@ -166,7 +177,7 @@ func (s *Session) reconcileUnderGate(
 	// hot reconfig removed the last MQTT receiver): the managed subscriptions
 	// this session established MUST be UNSUBSCRIBED, else the broker keeps
 	// delivering on stale subscriptions the router then ack-drops as orphans
-	// forever (c4-remove-subs).
+	// forever.
 	//
 	// The teardown is gated on the last-APPLIED history (whether the plan we
 	// last SUCCESSFULLY reconciled held subscriptions), NOT on the volatile
@@ -266,7 +277,7 @@ func (s *Session) reconcileUnderGate(
 
 	// A reconcile actually ran and succeeded: the plan's subscriptions are
 	// (re)established on the broker. Signal SessionReconciled from this
-	// single owner. Per finding C7 the runtime session manager drives
+	// single owner. Per finding the runtime session manager drives
 	// Reconcile on every SessionConnected, so emitting here (rather than
 	// inline in OnConnectionUp) is what preserves the "all subscriptions
 	// re-established after reconnect" contract (ports.SessionReconciled)
@@ -286,7 +297,7 @@ func cloneSessionPlan(plan connectivity.SessionPlan) connectivity.SessionPlan {
 }
 
 // reconcileTimeout returns the adapter-owned deadline applied to EACH broker
-// SUBSCRIBE / UNSUBSCRIBE during reconciliation (HIGH-2). A non-positive
+// SUBSCRIBE / UNSUBSCRIBE during reconciliation. A non-positive
 // configured value is coerced to DefaultReconcileTimeout: this is a liveness
 // safety bound (a wedged broker whose SUBACK/UNSUBACK never arrives must not
 // hang the reconcile, nor the startup / hot-reload step awaiting it), so unlike
@@ -296,4 +307,61 @@ func (s *Session) reconcileTimeout() time.Duration {
 		return s.opts.ReconcileTimeout
 	}
 	return DefaultReconcileTimeout
+}
+
+// connectTimeout returns the deadline applied to the INITIAL connection await
+// in Start. A non-positive configured value is coerced to
+// DefaultConnectTimeout: zero means "unset", and a negative one that reached a
+// hand-built SessionOptions without passing Config.Validate would otherwise
+// produce an already-expired context, so every connect attempt would fail
+// before it was made.
+func (s *Session) connectTimeout() time.Duration {
+	if s.opts.ConnectTimeout > 0 {
+		return s.opts.ConnectTimeout
+	}
+	return DefaultConnectTimeout
+}
+
+// packetTimeout returns the per-packet acknowledgement budget handed to the
+// SDK (CONNACK, SUBACK, UNSUBACK, PUBACK / PUBCOMP).
+//
+// The SDK applies this budget INSIDE the caller's context, so the effective
+// deadline for any packet is the shorter of the two. Its own default is ten
+// seconds — shorter than every adapter-owned budget below — which silently
+// overrides them: a SUBACK the bridge was willing to wait thirty seconds for is
+// abandoned at ten, and the reconcile fails with a deadline error while the
+// broker was answering normally.
+//
+// The budget is therefore the LONGEST enclosing deadline it could pre-empt, so
+// the adapter-owned bound is always the one that governs. It is not a liveness
+// bound of its own: every packet operation already runs under a deadline of its
+// own (reconcile for SUBSCRIBE / UNSUBSCRIBE, the sender budget for PUBLISH,
+// the reconnect attempt for CONNECT), which is what actually bounds a wedged
+// broker.
+func (s *Session) packetTimeout() time.Duration {
+	s.mu.Lock()
+	publishBudget := s.publishAckBudget
+	s.mu.Unlock()
+	budget := max(
+		s.reconcileTimeout(),
+		s.connectTimeout(),
+		s.opts.ReconnectTimeout,
+		publishBudget,
+	)
+	// A session built directly, without a Config, carries no sender budget.
+	// The documented sender default is what such a sender will use.
+	return max(budget, DefaultSenderOptions().Timeout)
+}
+
+// notePublishAckBudget raises the session's record of the longest publish
+// deadline it serves. It only ever raises: a session shared by several senders
+// must not let the shortest of them shorten the SDK's packet budget for the
+// rest.
+func (s *Session) notePublishAckBudget(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.publishAckBudget = max(s.publishAckBudget, d)
 }

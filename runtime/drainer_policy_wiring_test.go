@@ -1,0 +1,428 @@
+package runtime_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
+	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
+	outboxpkg "github.com/mariotoffia/gobridge/runtime/outbox"
+	"github.com/mariotoffia/gobridge/runtime/route"
+)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Medium Fixes Part 1:
+//
+// Tests for depth cache eviction, DepthCacheTTL wiring,
+// drain config wiring, fail-closed depth check,
+// batch size clamping, and record failure metrics.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ---------------------------------------------------------------------------
+// T9: Depth cache eviction clears map on burst overflow
+// ---------------------------------------------------------------------------
+
+// varyingResolver returns a different BindingID (and thus partition key)
+// for each envelope, generating distinct cache entries to exercise eviction.
+type varyingResolver struct {
+	counter int32
+}
+
+func (r *varyingResolver) Resolve(_ context.Context, _ *messaging.Envelope) ([]routing.DispatchPlan, error) {
+	n := atomic.AddInt32(&r.counter, 1)
+	return []routing.DispatchPlan{{
+		BindingID: fmt.Sprintf("bind-%d", n),
+		Address:   "topic/test",
+	}}, nil
+}
+
+// TestDepthCache_EvictionClearsOnBurst validates that when more than
+// depthCacheMaxEntries (1000) distinct partition keys arrive within the
+// eviction window, the cache clears itself to prevent unbounded growth.
+//
+// Scenario:
+// ───────────────────────────────────────────────────────────────────────
+//
+//	Use a resolver that returns a unique BindingID per message.
+//	Each unique BindingID produces a unique partition key in the cache.
+//	After 1001 distinct keys, time-based eviction can't help (TTL=1m),
+//	so the cache clears the map entirely, keeping only the latest entry.
+//
+// ───────────────────────────────────────────────────────────────────────
+func TestDepthCache_EvictionClearsOnBurst(t *testing.T) {
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+	countingOutbox := NewQueryCountingOutboxStore()
+	resolver := &varyingResolver{}
+
+	// The resolver emits a distinct BindingID per message (bind-1, bind-2, …);
+	// each must map to a configured binding with its own session so the outbox
+	// partition key (SESSION#<sid>) is distinct per message. That is the
+	// production way to exercise >1000 distinct partition keys for cache
+	// eviction — an unmatched BindingID would instead orphan under BINDING#<id>.
+	bindings := make([]routing.DestinationBinding, 1100)
+	for i := range bindings {
+		bindings[i] = routing.DestinationBinding{
+			ID:        fmt.Sprintf("bind-%d", i+1),
+			SessionID: fmt.Sprintf("sess-%d", i+1),
+		}
+	}
+
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
+		RouteID:       "burst-route",
+		Policy:        routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox, MaxOutboxDepth: 100000},
+		Receiver:      receiver,
+		Sender:        sender,
+		OutboxStore:   countingOutbox,
+		Resolver:      resolver,
+		Bindings:      bindings,
+		DepthCacheTTL: time.Minute,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = runner.Run(ctx) }()
+	<-receiver.Ready()
+
+	for i := 0; i < 1050; i++ {
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{
+			ID:      fmt.Sprintf("burst-msg-%d", i),
+			Payload: []byte("x"),
+		})
+		del := NewFakeDelivery(env)
+		_ = receiver.Emit(ctx, del)
+		waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
+	}
+
+	qc := countingOutbox.GetQueryCount()
+	if qc < 1001 {
+		t.Errorf("expected at least 1001 QueryPending calls (one per distinct partition key), got %d", qc)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DepthCacheTTL wired from RoutePolicy
+// ---------------------------------------------------------------------------
+
+// TestDepthCacheTTL_WiredFromPolicy validates that DepthCacheTTL in
+// RoutePolicy is propagated to the RouteRunner's depth cache via
+// Runtime.Start, so the configured TTL takes effect.
+//
+// Scenario:
+// ───────────────────────────────────────────────────────────────────────
+//
+//	DepthCacheTTL = 50ms, send 2 messages 100ms apart
+//	Both trigger QueryPending (cache expired between sends)
+//
+// ───────────────────────────────────────────────────────────────────────
+func TestDepthCacheTTL_WiredFromPolicy(t *testing.T) {
+	countingOutbox := NewQueryCountingOutboxStore()
+	lease := NewFakeLeaseStore()
+
+	rt := goruntime.New(
+		goruntime.WithInstanceID("bridge-ttl-wire"),
+		goruntime.WithOutboxStore(countingOutbox),
+		goruntime.WithLeaseStore(lease),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
+	)
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+	sess := NewFakeSession()
+	sessCfg := fastSessionConfig("mqtt-ttlwire")
+
+	cfg := goruntime.RouteConfig{
+		ID: "ttlwire-route",
+		Policy: routing.RoutePolicy{
+			DeliveryMode:   routing.DeliverySharedOutbox,
+			MaxOutboxDepth: 10000,
+			DepthCacheTTL:  50 * time.Millisecond,
+		},
+		Bindings: []routing.DestinationBinding{
+			{ID: "b1", SessionID: "mqtt-ttlwire"},
+		},
+	}
+
+	_ = rt.AddRoute(cfg, receiver, sender, sess, &sessCfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = rt.Start(ctx)
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
+	})
+
+	env1 := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "ttlwire-1", Payload: []byte("x")})
+	del1 := NewFakeDelivery(env1)
+	_ = receiver.Emit(ctx, del1)
+	waitFor(t, time.Second, "first acked", func() bool { return del1.IsAcked() })
+
+	countAfterFirst := countingOutbox.GetQueryCount()
+
+	time.Sleep(100 * time.Millisecond) // FIXED: wait for DepthCacheTTL (50ms) to expire
+
+	env2 := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "ttlwire-2", Payload: []byte("x")})
+	del2 := NewFakeDelivery(env2)
+	_ = receiver.Emit(ctx, del2)
+	waitFor(t, time.Second, "second acked", func() bool { return del2.IsAcked() })
+
+	countAfterSecond := countingOutbox.GetQueryCount()
+	if countAfterSecond <= countAfterFirst {
+		t.Errorf("expected cache to expire (TTL=50ms, wait=100ms), QueryPending before=%d after=%d",
+			countAfterFirst, countAfterSecond)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DrainMaxBatchSize/DrainMaxConcurrency wired from config
+// ---------------------------------------------------------------------------
+
+// TestDrainConfig_WiredFromSessionConfig validates that DrainMaxBatchSize
+// and DrainMaxConcurrency values from SessionConfig are propagated to
+// the OutboxDrainer via Runtime.Start.
+func TestDrainConfig_WiredFromSessionConfig(t *testing.T) {
+	outbox := NewFakeOutboxStore()
+	lease := NewFakeLeaseStore()
+
+	rt := goruntime.New(
+		goruntime.WithInstanceID("bridge-drain-config"),
+		goruntime.WithOutboxStore(outbox),
+		goruntime.WithLeaseStore(lease),
+		goruntime.WithDLQStore(NewFakeDLQStore()),
+	)
+
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+	sess := NewFakeSession()
+	sessCfg := fastSessionConfig("mqtt-drainwire")
+	sessCfg.DrainMaxBatchSize = 2
+	sessCfg.DrainMaxConcurrency = 1
+
+	cfg := goruntime.RouteConfig{
+		ID: "drainwire-route",
+		Policy: routing.RoutePolicy{
+			DeliveryMode: routing.DeliverySharedOutbox,
+		},
+		Bindings: []routing.DestinationBinding{
+			{ID: "b1", SessionID: "mqtt-drainwire"},
+		},
+	}
+
+	if err := rt.AddRoute(cfg, receiver, sender, sess, &sessCfg); err != nil {
+		t.Fatalf("AddRoute failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	waitFor(t, 2*time.Second, "sess started", func() bool {
+		return sess.IsStarted()
+	})
+
+	for i := 0; i < 5; i++ {
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("drainwire-%d", i), Payload: []byte("x")})
+		del := NewFakeDelivery(env)
+		_ = receiver.Emit(ctx, del)
+		waitFor(t, time.Second, "acked", func() bool { return del.IsAcked() })
+	}
+
+	waitFor(t, 3*time.Second, "all records completed", func() bool {
+		return outbox.CompletedCount() >= 5
+	})
+
+	if sender.SentCount() < 5 {
+		t.Fatalf("expected at least 5 sends (wired config should process all), got %d", sender.SentCount())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// QueryPending error fails delivery (fail-closed)
+// ---------------------------------------------------------------------------
+
+// ErrorOutboxStore wraps FakeOutboxStore and injects QueryPending errors.
+type ErrorOutboxStore struct {
+	*FakeOutboxStore
+	queryErr error
+}
+
+func NewErrorOutboxStore(qErr error) *ErrorOutboxStore {
+	return &ErrorOutboxStore{
+		FakeOutboxStore: NewFakeOutboxStore(),
+		queryErr:        qErr,
+	}
+}
+
+func (s *ErrorOutboxStore) QueryPending(_ context.Context, _ string, _ int) ([]*persistence.OutboxRecord, error) {
+	if s.queryErr != nil {
+		return nil, s.queryErr
+	}
+	return nil, nil
+}
+
+// TestQueryPendingError_FailsClosed validates that when QueryPending
+// returns an error, the delivery is retried (fail-closed).
+func TestQueryPendingError_FailsClosed(t *testing.T) {
+	errOutbox := NewErrorOutboxStore(errors.New("db connection lost"))
+	receiver := NewFakeReceiver()
+	sender := NewFakeSender()
+
+	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
+		RouteID:     "failclosed-route",
+		Policy:      routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox, MaxOutboxDepth: 100},
+		Receiver:    receiver,
+		Sender:      sender,
+		OutboxStore: errOutbox,
+		Bindings:    []routing.DestinationBinding{{ID: "b1", SessionID: "failclosed-sess"}},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = runner.Run(ctx) }()
+	<-receiver.Ready()
+
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "failclosed-1", Payload: []byte("x")})
+	del := NewFakeDelivery(env)
+	_ = receiver.Emit(ctx, del)
+
+	waitFor(t, time.Second, "retried", func() bool { return del.IsRetried() })
+
+	if del.IsAcked() {
+		t.Fatal("expected delivery to be retried, not acked")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// absoluteMaxBatchSize clamps excessive MaxBatchSize
+// ---------------------------------------------------------------------------
+
+// TestAbsoluteMaxBatchSize_Clamps validates that MaxBatchSize values
+// exceeding absoluteMaxBatchSize (10000) are clamped.
+func TestAbsoluteMaxBatchSize_Clamps(t *testing.T) {
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
+	outbox := NewFakeOutboxStore()
+	sender := NewFakeSender()
+	lease := NewFakeLeaseStore()
+	pk := persistence.OutboxPartitionKey("sess-1", "")
+	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
+
+	drainer := outboxpkg.New(outboxpkg.Config{
+		OutboxStore:         outbox,
+		LeaseStore:          lease,
+		Sender:              sender,
+		DLQ:                 dlq.New(nil),
+		RouteID:             "clamp-route",
+		PartitionKey:        pk,
+		LeaseID:             "sess-1",
+		Policy:              routing.RoutePolicy{}.WithDefaults(),
+		Strategy:            persistence.NewFixedPoll(50 * time.Millisecond),
+		DrainBatchSize:      100,
+		DrainMaxBatchSize:   1<<31 - 1,
+		DrainMaxConcurrency: 10,
+		TokenFn: func() (persistence.LeaseToken, bool) {
+			return token, true
+		},
+	})
+
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
+			ID: fmt.Sprintf("clamp-%d", i), RouteID: "clamp-route",
+			EnvelopeID: fmt.Sprintf("env-clamp-%d", i), BindingID: "bind-1",
+			SessionID: "sess-1",
+			Envelope:  *messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("env-clamp-%d", i), Payload: []byte("data")}),
+			Status:    persistence.OutboxPending,
+		})
+		_ = outbox.Persist(ctx, []*persistence.OutboxRecord{rec})
+	}
+
+	drainCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	_ = drainer.Run(drainCtx)
+
+	if sender.SentCount() != 5 {
+		t.Fatalf("expected 5 sent (drainer should work with clamped batch size), got %d", sender.SentCount())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MetricOutboxRecordFailures emitted on failed records
+// ---------------------------------------------------------------------------
+
+// TestOutboxDrainer_EmitsRecordFailureMetric validates that when a
+// record fails to process (Complete returns a non-stale error),
+// MetricOutboxRecordFailures is emitted.
+func TestOutboxDrainer_EmitsRecordFailureMetric(t *testing.T) {
+	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
+	rec := &ports.RecordingExporter{}
+
+	outbox := NewFakeOutboxStore()
+	outbox.CompleteFn = func(_ []string, _ persistence.LeaseToken) error {
+		return errors.New("storage unavailable")
+	}
+	sender := NewFakeSender()
+
+	lease := NewFakeLeaseStore()
+	pk := persistence.OutboxPartitionKey("sess-1", "")
+	_, _ = lease.Acquire(context.Background(), "sess-1", token.Owner, 30*time.Second, nil)
+
+	drainer := outboxpkg.New(outboxpkg.Config{
+		OutboxStore:    outbox,
+		LeaseStore:     lease,
+		Sender:         sender,
+		DLQ:            dlq.New(nil),
+		RouteID:        "metric-route",
+		PartitionKey:   pk,
+		LeaseID:        "sess-1",
+		Policy:         routing.RoutePolicy{}.WithDefaults(),
+		Strategy:       persistence.NewFixedPoll(50 * time.Millisecond),
+		DrainBatchSize: 10,
+		Metrics:        rec,
+		TokenFn: func() (persistence.LeaseToken, bool) {
+			return token, true
+		},
+	})
+
+	ctx := context.Background()
+	outboxRec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
+		ID: "rec-fail", RouteID: "metric-route",
+		EnvelopeID: "env-fail", BindingID: "bind-1",
+		SessionID: "sess-1",
+		Envelope:  *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-fail", Payload: []byte("data")}),
+		Status:    persistence.OutboxPending,
+	})
+	_ = outbox.Persist(ctx, []*persistence.OutboxRecord{outboxRec})
+
+	drainCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer cancel()
+	_ = drainer.Run(drainCtx)
+
+	failures := rec.FindEntries(shared.MetricOutboxRecordFailures)
+	if len(failures) == 0 {
+		t.Fatal("expected MetricOutboxRecordFailures to be emitted on record processing failure")
+	}
+
+	found := false
+	for _, tag := range failures[0].Tags {
+		if tag.Key == shared.TagKeyRouteID && tag.Value == "metric-route" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected route_id tag on OutboxRecordFailures metric")
+	}
+}

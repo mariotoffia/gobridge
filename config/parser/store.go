@@ -2,8 +2,15 @@ package parser
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"math"
+	"os"
+	"path/filepath"
 
 	"github.com/mariotoffia/gobridge/config"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -22,24 +29,77 @@ type FileStore struct {
 
 var _ ports.ConfigStore = (*FileStore)(nil)
 
-// Load returns the parsed blueprint from Path. Returns a wrapped
-// fs.ErrNotExist when the file does not yet exist; the txn manager
-// uses errors.Is to detect first-write semantics. ctx is honoured for
-// cancellation before the (synchronous, local) read begins.
+// Load returns the parsed blueprint from Path. Only an absent final entry with
+// an existing parent maps to shared.ErrNotFound (wrapping fs.ErrNotExist).
+// Missing parents and dangling symlinks are not classified as document absence.
+// ctx is honoured before the synchronous filesystem read begins.
 func (s *FileStore) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return ParseFile(s.Path, FormatAuto, s.Registry)
+	cfg, err := ParseFile(s.Path, FormatAuto, s.Registry)
+	if errors.Is(err, fs.ErrNotExist) {
+		_, entryErr := os.Lstat(s.Path)
+		if _, parentErr := os.Stat(filepath.Dir(s.Path)); parentErr == nil && errors.Is(entryErr, fs.ErrNotExist) {
+			return nil, shared.ErrNotFound.WithMessage("config document missing").Wrap(err)
+		}
+	}
+	if errors.Is(err, shared.ErrNotFound) {
+		return nil, shared.ErrInvalidConfig.WithMessage("config document could not be decoded").Wrap(err)
+	}
+	return cfg, err
 }
 
-// Save writes cfg to Path atomically (via temp-file + rename). ctx is
-// honoured for cancellation before the write begins.
+// CreateIfAbsent publishes a complete version-1 document using a same-filesystem
+// hard link. The filesystem must support atomic no-clobber links and directory
+// sync; errors never fall back to an overwriting rename. cfg is not retained.
+func (s *FileStore) CreateIfAbsent(ctx context.Context, cfg *ports.BridgeConfig) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if cfg == nil {
+		return false, shared.ErrInvalidConfig
+	}
+	next := *cfg
+	next.Version = 1
+	created, err := writeFile(s.Path, &next, true)
+	if created && err == nil {
+		cfg.Version = 1
+	}
+	return created, err
+}
+
+var _ ports.ConfigInitializer = (*FileStore)(nil)
+
+// Save writes cfg atomically with the stored version plus one, then updates
+// cfg.Version. The read and write are not a CAS: callers must enforce a single
+// writer. ctx is honoured before filesystem work begins.
 func (s *FileStore) Save(ctx context.Context, cfg *ports.BridgeConfig) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return WriteFile(s.Path, cfg)
+	if cfg == nil {
+		return shared.ErrInvalidConfig.WithMessage("config save: config must not be nil")
+	}
+	current, err := s.Load(ctx)
+	var version int
+	switch {
+	case err == nil:
+		version = current.Version
+	case errors.Is(err, fs.ErrNotExist):
+	default:
+		return fmt.Errorf("config save: read current version: %w", err)
+	}
+	if version < 0 || version == math.MaxInt {
+		return shared.ErrInvalidConfig.WithMessage("config save: stored version cannot be incremented")
+	}
+	next := *cfg
+	next.Version = version + 1
+	if err := WriteFile(s.Path, &next); err != nil {
+		return err
+	}
+	cfg.Version = next.Version
+	return nil
 }
 
 // Validate runs the in-process validator against cfg.

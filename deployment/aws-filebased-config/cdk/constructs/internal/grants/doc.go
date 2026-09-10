@@ -1,5 +1,5 @@
 // Package grants holds per-adapter IAM grant derivation helpers used by
-// the GoBridge CDK construct facades (T10/T11/T12).
+// the GoBridge CDK construct facades.
 //
 // Each helper accepts a CDK [github.com/aws/aws-cdk-go/awscdk/v2/awsiam.IGrantable]
 // so callers may pass either an ECS task role, a Lambda role, an IAM
@@ -14,5 +14,5 @@
 //
 // File layout mirrors the adapter kind layout in the bridgecfg package:
 // each kind in *ports.Registry has a matching file here so a CI
-// check (T27) can verify drift-free coverage when new kinds are added.
+// check can verify drift-free coverage when new kinds are added.
 package grants

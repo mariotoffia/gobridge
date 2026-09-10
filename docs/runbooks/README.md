@@ -19,6 +19,7 @@ metric names ([monitoring](../aws-deployment/monitoring.md)), error codes
 | [Node down / failover](node-down-failover.md) | An instance/task died — confirm the standby took over. `LeaseTransfers` / `LeaseExpiries` advanced. |
 | [Config rollback](config-rollback.md) | A committed config change caused errors and must be reverted. |
 | [MQTT ingress poison](mqtt-ingress-poison.md) | `MQTTIngressPoisonDropped` non-zero — an authorized publisher sends packets the bridge is configured to refuse; each drop is acknowledged loss. |
+| [Stuck MQTT settlement](stuck-mqtt-settlement.md) | `MQTTOldestUnsettledAge` climbing and `MQTTReceiveWindowUtilization` near `1.0` — ingress slows or stops while the session stays connected and no route reports an error. |
 | [MQTT SUBACK rejection / QoS downgrade flap](mqtt-suback-rejection-flap.md) | `ReconcileFailures` climbs every ~30s and never converges; readiness stuck below Full; exclusive session churns its lease. |
 | [Orchestrator kill before shutdown drain](shutdown-timeout.md) | The task exited `137` (`SIGKILL`) or `2` before graceful drain finished; check for best-effort loss and redelivery duplicates. |
 
@@ -31,4 +32,4 @@ metric names ([monitoring](../aws-deployment/monitoring.md)), error codes
 | [Cluster config rollout (whole-cohort replacement)](cluster-config-rollout.md) | The manual stop-and-restart for a change that can't roll live — a replacement-required change, or any change in a non-coordinated / file-sourced cohort: stage, validate all, quiesce, drain/stop all, commit, start all, verify version/readiness barrier, whole-cohort rollback. Coordinated cohorts roll **live-safe** changes with no downtime — see the [cluster docs](../cluster/README.md). |
 | [Persistent MQTT managed-filter migration](mqtt-managed-subscription-migration.md) | Remove durable wildcard/shared filters safely; restore, drain, and retry when a broker pins an unacknowledged shared delivery. |
 | [External config writers must write atomically](external-config-atomic-writes.md) | An external tool writes the watched config file; ensure temp-file + rename, never truncate-in-place. |
-| [DynamoDB outbox GSI migration](dynamodb-outbox-gsi-migration.md) | Reshape an outbox table created by an earlier build. |
+| [DynamoDB outbox table schema](dynamodb-outbox-table-schema.md) | Required outbox table/index shape, why `ClaimIndex` must be `Projection: ALL`, and how to read a preflight rejection. |

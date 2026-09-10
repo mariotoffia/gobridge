@@ -13,7 +13,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// A-1 (HIGH): the pre-registration pending buffer is PURGED of stale entries on
+// (HIGH): the pre-registration pending buffer is PURGED of stale entries on
 // reconnect, so a broker-redelivered QoS 1/2 is never ack-dropped as a bogus
 // overflow — at-least-once survives a reconnect that races receiver startup.
 //
@@ -83,7 +83,7 @@ func TestBug_PendingEpochPurge_RedeliveredNotAckDroppedAsOverflow(t *testing.T) 
 	purgeEntries := rec.FindEntries(MetricMQTTRouterStalePurged)
 	require.Len(t, purgeEntries, 1, "the purge emits a single StalePurged metric for the batch")
 	require.Equal(t, int64(n), purgeEntries[0].IValue, "the StalePurged metric carries the purged count")
-	// (b') A-11: the loss metric carries the session_id tag for attribution.
+	// (b'): the loss metric carries the session_id tag for attribution.
 	require.Contains(t, purgeEntries[0].Tags, shared.Tag{Key: shared.TagKeySessionID, Value: sessionID},
 		"the stale-purge loss metric is tagged with the session id")
 	// (c) the purge did NOT invoke the dead connection-#1 acks.
@@ -103,7 +103,7 @@ func TestBug_PendingEpochPurge_RedeliveredNotAckDroppedAsOverflow(t *testing.T) 
 	// overflow, because the purge freed the cap.
 	require.Equal(t, n, r.PendingCount(), "the fresh redeliveries fit — the purge freed the count cap")
 	require.Equal(t, int64(0), r.OverflowDroppedCount(),
-		"a redelivered live message must NOT be ack-dropped as a bogus overflow (A-1)")
+		"a redelivered live message must NOT be ack-dropped as a bogus overflow")
 	require.Empty(t, rec.FindEntries(MetricMQTTRouterOverflowDropped), "no protocol-violation overflow occurred")
 	for i := 0; i < n; i++ {
 		require.Equal(t, int32(0), freshAcked[i].Load(), "a buffered redelivery stays un-acked until delivered")

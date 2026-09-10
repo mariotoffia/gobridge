@@ -47,19 +47,24 @@ func (s *ctxAwareSender) sentCount() int64 {
 	return s.sent
 }
 
-// TestComputeBatchDeadline_BackwardCompat verifies that when neither of
-// the new scaling fields is set, the helper returns the legacy
-// DrainTimeout verbatim so existing callers keep the pre-scaling
-// semantics (a single fixed batch deadline regardless of batch size).
-func TestComputeBatchDeadline_BackwardCompat(t *testing.T) {
-	cfg := outboxpkg.Config{
-		DrainTimeout: 7 * time.Second,
+// TestComputeBatchDeadline_UnconfiguredUsesDefaults pins the ceiling a
+// deployment that configures nothing actually gets: min(batchCount * 3s, 10s).
+// Both fields default independently, so a batch smaller than the cap scales and
+// anything from four records up sits at the 10s ceiling.
+func TestComputeBatchDeadline_UnconfiguredUsesDefaults(t *testing.T) {
+	cases := []struct {
+		batchCount int
+		want       time.Duration
+	}{
+		{0, 10 * time.Second}, // a zero batch cannot collapse the deadline
+		{1, 3 * time.Second},
+		{2, 6 * time.Second},
+		{4, 10 * time.Second}, // 12s scaled, capped
+		{100, 10 * time.Second},
 	}
-	for _, batchCount := range []int{0, 1, 5, 100} {
-		got := outboxpkg.ComputeBatchDeadline(batchCount, cfg)
-		if got != 7*time.Second {
-			t.Fatalf("batchCount=%d: expected 7s (legacy DrainTimeout), got %v",
-				batchCount, got)
+	for _, tc := range cases {
+		if got := outboxpkg.ComputeBatchDeadline(tc.batchCount, outboxpkg.Config{}); got != tc.want {
+			t.Fatalf("batchCount=%d: got %v, want %v", tc.batchCount, got, tc.want)
 		}
 	}
 }
@@ -201,9 +206,8 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 		DrainBatchSize:      recordCount,
 		DrainMaxBatchSize:   recordCount,
 		DrainMaxConcurrency: 1,
-		// Scaled timeout: 5 * 500ms = 2500ms, capped at 5s.
-		// Legacy DrainTimeout of 500ms would cancel mid-batch.
-		DrainTimeout:          500 * time.Millisecond,
+		// Batch ceiling: 5 * 500ms = 2500ms, capped at 5s — comfortably above
+		// the per-record budget, so the batch is not cancelled mid-flight.
 		PerRecordDrainTimeout: 500 * time.Millisecond,
 		MaxDrainTimeout:       5 * time.Second,
 		BatchTimeoutFloor:     2 * time.Second,
@@ -247,24 +251,23 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 	}
 }
 
-// TestOutboxDrainer_LegacyTimeout_SlowSenderWithinSendBudget_NotCancelled
-// verifies the finding-10 protection on the legacy-config path: when only
-// the fixed DrainTimeout is set (new scaling fields zero), the per-batch
-// work budget still scales with the send depth and can never be undercut
-// below one record's SendTimeout + Complete margin. A DrainTimeout set far
-// below the send budget (500ms vs a 30s default SendTimeout) therefore no
-// longer prematurely cancels an otherwise-healthy batch — all records
+// TestOutboxDrainer_SmallCeiling_SlowSenderWithinSendBudget_NotCancelled
+// verifies the finding-10 protection when the configured batch ceiling is far
+// SMALLER than one record's send budget: the per-batch work budget still scales
+// with the send depth and can never be undercut below one record's SendTimeout +
+// Complete margin. A 500ms ceiling against a 30s default SendTimeout therefore
+// no longer prematurely cancels an otherwise-healthy batch — all records
 // complete instead of stranding-and-poisoning every cycle.
 //
-// Before finding 10 the old formula min(max(1.5×SendTimeout, floor),
-// DrainTimeout) collapsed the batch budget to the 500ms DrainTimeout and
-// cancelled mid-batch; this test now proves that regression is closed even
-// for the backward-compatible legacy path.
+// Before finding 10 the old formula min(max(1.5×SendTimeout, floor), ceiling)
+// collapsed the batch budget to a 500ms ceiling and cancelled mid-batch; this
+// test proves that regression stays closed when the configured ceiling is far
+// SMALLER than one record's send budget.
 //
 // Assertions:
 //   - All recordCount records complete in the first batch (no premature
-//     cancellation by the too-small legacy DrainTimeout).
-func TestOutboxDrainer_LegacyTimeout_SlowSenderWithinSendBudget_NotCancelled(t *testing.T) {
+//     cancellation by the too-small ceiling).
+func TestOutboxDrainer_SmallCeiling_SlowSenderWithinSendBudget_NotCancelled(t *testing.T) {
 	token := persistence.LeaseToken{Version: 1, Owner: "bridge-1"}
 
 	const recordCount = 5
@@ -274,8 +277,8 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderWithinSendBudget_NotCancelled(t *
 	leaseStore := NewFakeLeaseStore()
 	dlqStore := NewFakeDLQStore()
 
-	pk := persistence.OutboxPartitionKey("sess-legacy", "")
-	if _, err := leaseStore.Acquire(context.Background(), "sess-legacy",
+	pk := persistence.OutboxPartitionKey("sess-tight-ceiling", "")
+	if _, err := leaseStore.Acquire(context.Background(), "sess-tight-ceiling",
 		token.Owner, 30*time.Second, nil); err != nil {
 		t.Fatalf("acquire lease: %v", err)
 	}
@@ -283,12 +286,12 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderWithinSendBudget_NotCancelled(t *
 	ctx := context.Background()
 	for i := range recordCount {
 		rec := persistence.RehydrateFromSnapshot(persistence.OutboxSnapshot{
-			ID:         fmt.Sprintf("rec-legacy-%d", i),
+			ID:         fmt.Sprintf("rec-tight-%d", i),
 			RouteID:    "route-1",
-			EnvelopeID: fmt.Sprintf("env-legacy-%d", i),
+			EnvelopeID: fmt.Sprintf("env-tight-%d", i),
 			BindingID:  "bind-1",
-			SessionID:  "sess-legacy",
-			Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("env-legacy-%d", i), Payload: []byte("payload")}),
+			SessionID:  "sess-tight-ceiling",
+			Envelope:   *messaging.MustEnvelope(messaging.EnvelopeInput{ID: fmt.Sprintf("env-tight-%d", i), Payload: []byte("payload")}),
 			Status:     persistence.OutboxPending,
 		})
 		if err := outbox.Persist(ctx, []*persistence.OutboxRecord{rec}); err != nil {
@@ -306,19 +309,18 @@ func TestOutboxDrainer_LegacyTimeout_SlowSenderWithinSendBudget_NotCancelled(t *
 		DLQ:                 dlq.New(dlqStore),
 		RouteID:             "route-1",
 		PartitionKey:        pk,
-		LeaseID:             "sess-legacy",
+		LeaseID:             "sess-tight-ceiling",
 		Policy:              routing.RoutePolicy{}.WithDefaults(),
 		Strategy:            persistence.NewFixedPoll(50 * time.Millisecond),
 		DrainBatchSize:      recordCount,
 		DrainMaxBatchSize:   recordCount,
 		DrainMaxConcurrency: 1,
-		// Legacy fixed DrainTimeout well below the serial-batch duration
-		// (5 * 250ms = 1250ms > 500ms) AND below one record's SendTimeout
-		// budget. Leaving the new scaling fields zero forces the
-		// backward-compat path. Under finding 10 this DrainTimeout may only
-		// RAISE the batch budget, never undercut a single send, so the batch
-		// is expected to complete all records rather than strand them.
-		DrainTimeout:      500 * time.Millisecond,
+		// A ceiling well below the serial-batch duration (5 * 250ms = 1250ms >
+		// 500ms) AND below one record's SendTimeout budget. Under finding 10 the
+		// ceiling may only RAISE the batch budget, never undercut a single send,
+		// so the batch is expected to complete all records rather than strand
+		// them.
+		MaxDrainTimeout:   500 * time.Millisecond,
 		BatchTimeoutFloor: 500 * time.Millisecond,
 		TokenFn: func() (persistence.LeaseToken, bool) {
 			return token, true

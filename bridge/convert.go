@@ -55,10 +55,18 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 		}
 		p.ReplayBudget = d
 	}
+	// The retry rules below mirror validate.ValidateBlueprintGraph exactly, so a
+	// route built directly through the library API cannot receive a policy the
+	// config path would refuse. A negative interval is the dangerous one: the
+	// exponential clamp is gated on `MaxInterval > 0`, so a negative cap never
+	// fires and the delay grows to +Inf.
 	if r.Policy.Backoff.InitialInterval != "" {
 		d, err := time.ParseDuration(r.Policy.Backoff.InitialInterval)
 		if err != nil {
 			return p, fmt.Errorf("invalid backoff initial_interval %q: %w", r.Policy.Backoff.InitialInterval, err)
+		}
+		if d < 0 {
+			return p, fmt.Errorf("invalid backoff initial_interval %q: must not be negative", r.Policy.Backoff.InitialInterval)
 		}
 		p.Backoff.InitialInterval = d
 	}
@@ -67,16 +75,30 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 		if err != nil {
 			return p, fmt.Errorf("invalid backoff max_interval %q: %w", r.Policy.Backoff.MaxInterval, err)
 		}
+		if d < 0 {
+			return p, fmt.Errorf("invalid backoff max_interval %q: must not be negative", r.Policy.Backoff.MaxInterval)
+		}
 		p.Backoff.MaxInterval = d
 	}
 	if r.Policy.Backoff.Multiplier != 0 {
+		if r.Policy.Backoff.Multiplier < 1 {
+			return p, fmt.Errorf("invalid backoff multiplier %v: must be >= 1 (below 1 accelerates retries instead of backing off)",
+				r.Policy.Backoff.Multiplier)
+		}
 		p.Backoff.Multiplier = r.Policy.Backoff.Multiplier
 	}
-	if r.Policy.Backoff.Jitter != 0 {
-		if r.Policy.Backoff.Jitter < 0 || r.Policy.Backoff.Jitter > 1 {
-			return p, fmt.Errorf("invalid backoff jitter %v: must be in [0,1]", r.Policy.Backoff.Jitter)
+	// Jitter is tri-state on the wire: omitted leaves JitterFactor zero so
+	// WithDefaults fills the recommended fraction (the same one a programmatic
+	// NewDefaultBackoffPolicy route gets); an explicit 0 is an operator opting
+	// OUT, which only routing.JitterDisabled can carry through defaulting.
+	if j := r.Policy.Backoff.Jitter; j != nil {
+		if *j < 0 || *j > 1 {
+			return p, fmt.Errorf("invalid backoff jitter %v: must be in [0,1]", *j)
 		}
-		p.Backoff.JitterFactor = r.Policy.Backoff.Jitter
+		p.Backoff.JitterFactor = *j
+		if *j == 0 {
+			p.Backoff.JitterFactor = routing.JitterDisabled
+		}
 	}
 	return p, nil
 }
@@ -86,9 +108,9 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 // override is present. A nil config is never clustered.
 //
 // It is the one definition used across the bridge: the HA-timing baseline for
-// lease-bearing sessions (finding HIGH-3, builder/failover/post-acquire callers)
+// lease-bearing sessions (builder/failover/post-acquire callers)
 // AND the fail-closed guard that refuses an uncoordinated per-process live
-// reload of (or into) a clustered cohort (finding H8, Supervisor.apply and the
+// reload of (into) a clustered cohort (Supervisor.apply and the
 // AWS composition root). The config layer mirrors it in
 // config.deploymentIsClustered so the two agree on exactly which deployments are
 // clustered.
@@ -125,7 +147,7 @@ func toSessionConfigE(rs *ports.RouteSessionDef, clustered bool) (*session.Confi
 		// would silently keep the 110s renew cadence regardless of a much shorter
 		// TTL. Reset it to zero and only override when the operator explicitly
 		// configures renew_interval, letting the session manager derive it from
-		// LeaseTTL otherwise (contract C3).
+		// LeaseTTL otherwise (contract).
 		sc.RenewInterval = 0
 		// DefaultConfig also pins RenewJitter (5s). The manager derives jitter only
 		// when BOTH RenewInterval and RenewJitter are zero (manager.go: derived
@@ -134,10 +156,10 @@ func toSessionConfigE(rs *ports.RouteSessionDef, clustered bool) (*session.Confi
 		// instead of the derived renew/4 -- and with a small lease_ttl the
 		// expiry-margin clamp then fires on every boot. Reset it to zero for the
 		// same reason as RenewInterval, overriding only when lease_renew_jitter is
-		// set explicitly (contract C3: the production path leaves both zero).
+		// set explicitly (contract: the production path leaves both zero).
 		sc.RenewJitter = 0
 	}
-	// F6: default connect_after_lease ON for a RouteSessionDef source. It is
+	// default connect_after_lease ON for a RouteSessionDef source. It is
 	// always an exclusive single-owner session; deferring connect until the lease
 	// is won stops a booting standby from resuming a broker-persisted subscription
 	// and consuming without the lease. nil (omitted in the blueprint) => true; an
@@ -183,7 +205,7 @@ func toSessionConfigE(rs *ports.RouteSessionDef, clustered bool) (*session.Confi
 		sc.AcquirePollInterval = d
 	}
 	// RenewCallTimeout is part of the failover-safety invariant (finding
-	// C3-HIGH): renewWorstCaseSpan folds it in, so exposing it lets a deployment
+	// renewWorstCaseSpan folds it in, so exposing it lets a deployment
 	// tune the safety margin. Zero (unset) keeps the manager's derived default.
 	if rs.RenewCallTimeout != "" {
 		d, err := time.ParseDuration(rs.RenewCallTimeout)
@@ -206,13 +228,16 @@ func toSessionConfigE(rs *ports.RouteSessionDef, clustered bool) (*session.Confi
 		}
 		sc.StartupAllowance = d
 	}
-	if rs.BrokerHealthStepDown != "" {
-		d, err := time.ParseDuration(rs.BrokerHealthStepDown)
-		if err != nil || d <= 0 {
-			return nil, fmt.Errorf("invalid broker_health_step_down %q: must be a positive duration", rs.BrokerHealthStepDown)
-		}
-		sc.BrokerHealthStepDown = d
+	// broker_health_step_down is TRI-state: empty leaves the broker-path decision
+	// unmade, "off" is an explicit decision not to fail over on it, and a
+	// positive duration enables it. Config.Validate requires one of the two
+	// explicit answers whenever failover_slo is declared.
+	brokerPath, err := routing.ParseBrokerPathPolicy(rs.BrokerHealthStepDown)
+	if err != nil {
+		return nil, err
 	}
+	sc.BrokerHealthStepDown = brokerPath.StepDown
+	sc.BrokerPathFailoverDeclared = brokerPath.Declared
 
 	ds, err := toDrainStrategyE(rs)
 	if err != nil {
@@ -239,11 +264,6 @@ func toSessionConfigE(rs *ports.RouteSessionDef, clustered bool) (*session.Confi
 func applyBridgeDrainDefaults(sc *session.Config, bs ports.BridgeSettings) {
 	if sc == nil {
 		return
-	}
-	if sc.DrainTimeout == 0 {
-		if d := bs.DrainTimeoutDuration(); d > 0 && bs.DrainTimeout != "" {
-			sc.DrainTimeout = d
-		}
 	}
 	if sc.PerRecordDrainTimeout == 0 {
 		sc.PerRecordDrainTimeout = bs.PerRecordDrainTimeoutDuration()

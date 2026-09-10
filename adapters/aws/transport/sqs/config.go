@@ -17,12 +17,19 @@ import (
 // (bridge max retries + 3) to avoid the SQS DLQ swallowing messages
 // that the bridge would otherwise handle.
 type ReceiverConfig struct {
-	// QueueURL is the fully qualified SQS queue URL. Either QueueURL or
-	// QueueName must be set.
+	// QueueURL is the fully qualified SQS queue URL. QueueURL, QueueName,
+	// or QueueTags must be set.
 	QueueURL string
 
-	// QueueName is the logical queue name, resolved to a URL on startup.
+	// QueueName is the physical queue name, resolved to a URL on startup.
 	QueueName string
+
+	// QueueTags selects one queue by all required AWS resource tags.
+	// It cannot be combined with QueueURL or QueueName.
+	QueueTags map[string]string
+
+	// QueueNamePrefix optionally narrows the QueueTags discovery scan.
+	QueueNamePrefix string
 
 	// Region is the AWS region. Empty uses the SDK default chain.
 	Region string
@@ -117,18 +124,25 @@ type ReceiverConfig struct {
 	// static credentials provider instead of the ambient SDK chain. It
 	// carries the material resolved from a plugin `credentials_uri` at
 	// build time (Config.ApplyCredentials → toReceiverConfig). Temporary
-	// (STS) material is rejected when the client is built (Finding 3/6).
+	// (STS) material is rejected when the client is built.
 	InitialCredentials *connectivity.PasswordCredential
 }
 
 // SenderConfig configures an SQS Sender.
 type SenderConfig struct {
-	// QueueURL is the fully qualified SQS queue URL. Either QueueURL or
-	// QueueName must be set.
+	// QueueURL is the fully qualified SQS queue URL. QueueURL, QueueName,
+	// or QueueTags must be set.
 	QueueURL string
 
-	// QueueName is the logical queue name, resolved to a URL on startup.
+	// QueueName is the physical queue name, resolved to a URL on first send.
 	QueueName string
+
+	// QueueTags selects one queue by all required AWS resource tags.
+	// It cannot be combined with QueueURL or QueueName.
+	QueueTags map[string]string
+
+	// QueueNamePrefix optionally narrows the QueueTags discovery scan.
+	QueueNamePrefix string
 
 	// Region is the AWS region. Empty uses the SDK default chain.
 	Region string
@@ -160,12 +174,13 @@ type SenderConfig struct {
 
 	// MaxMessageBytes overrides the SQS message-size ceiling (body plus
 	// attributes) the sender enforces when selecting egress attributes.
-	// Zero keeps the 262144 (256 KiB) default; raise it only to match a
-	// queue whose MaximumMessageSize has been provisioned above 256 KiB,
-	// otherwise a large body silently drops ALL attributes — including the
-	// rank-0 idempotency-key / traceparent headers (Finding 4). The factory
-	// projects it from the plugin Config and applies it via
-	// WithMaxMessageBytes.
+	// Zero keeps the 1048576 (1 MiB) default, which is the service's own
+	// default MaximumMessageSize; set it to match a queue provisioned below
+	// that, otherwise attributes are kept on a body the queue rejects
+	// outright. Set it too low instead and a large body silently drops ALL
+	// attributes — including the rank-0 idempotency-key / traceparent
+	// headers. The factory projects it from the plugin Config and applies it
+	// via WithMaxMessageBytes.
 	MaxMessageBytes int
 
 	// Client allows injecting a pre-built SQS client (for tests).
@@ -186,13 +201,13 @@ type SenderConfig struct {
 	// static credentials provider instead of the ambient SDK chain. It
 	// carries the material resolved from a plugin `credentials_uri` at
 	// build time (Config.ApplyCredentials → toSenderConfig). Temporary
-	// (STS) material is rejected when the client is built (Finding 3/6).
+	// (STS) material is rejected when the client is built.
 	InitialCredentials *connectivity.PasswordCredential
 }
 
 func (c *ReceiverConfig) validate() error {
-	if c.QueueURL == "" && c.QueueName == "" {
-		return errors.New("sqs: either QueueURL or QueueName is required")
+	if err := validateQueueReference(c.QueueURL, c.QueueName, c.QueueTags, c.QueueNamePrefix, true); err != nil {
+		return err
 	}
 	if err := validatePoisonBackstop(c.PoisonMaxReceives, c.PoisonDropWithoutDLQ); err != nil {
 		return err
@@ -230,7 +245,7 @@ func (c *ReceiverConfig) applyDefaults() {
 	if c.MaxMessages <= 0 || c.MaxMessages > 10 {
 		c.MaxMessages = 10
 	}
-	// FIFO ordering safety (Finding 5): the route runner dispatches
+	// FIFO ordering safety: the route runner dispatches
 	// deliveries concurrently, so a single ReceiveMessage returning
 	// several messages of one MessageGroupId could let them be reordered.
 	// SQS keeps a FIFO group locked to its in-flight message until that
@@ -276,8 +291,8 @@ func (c *ReceiverConfig) autoExtendEnabled() bool {
 }
 
 func (c *SenderConfig) validate() error {
-	if c.QueueURL == "" && c.QueueName == "" {
-		return errors.New("sqs: either QueueURL or QueueName is required")
+	if err := validateQueueReference(c.QueueURL, c.QueueName, c.QueueTags, c.QueueNamePrefix, true); err != nil {
+		return err
 	}
 	// FIFO fail-fast: a ".fifo" queue send without a MessageGroupId is a
 	// deterministic config fault SQS rejects at runtime with
@@ -295,7 +310,7 @@ func (c *SenderConfig) validate() error {
 	// FIFO + per-message DelaySeconds fail-fast: AWS rejects a non-zero
 	// DelaySeconds on a FIFO SendMessage/SendMessageBatch entry, so every
 	// send would DLQ at runtime as ErrInvalidPayload. Reject the
-	// combination at build instead (Finding 5), mirroring the FIFO
+	// combination at build instead, mirroring the FIFO
 	// message-group cross-validation above. FIFO is detected from the
 	// explicit flag, a default group, or the ".fifo" suffix.
 	if c.DelaySeconds > 0 && c.isFIFO() {

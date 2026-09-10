@@ -14,7 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// MF-2: NaN and ±Inf values are rejected at add() — CloudWatch rejects
+// NaN and ±Inf values are rejected at add() — CloudWatch rejects
 // them with InvalidParameterValue and PutMetricData is all-or-nothing,
 // so one poison datum would otherwise fail whole batches forever.
 func TestBatcher_RejectsNaNAndInf(t *testing.T) {
@@ -48,7 +48,7 @@ func TestBatcher_RejectsNaNAndInf(t *testing.T) {
 	}
 }
 
-// MF-1: the hard buffer cap drops new samples (counted) instead of
+// the hard buffer cap drops new samples (counted) instead of
 // growing memory without bound while flushing is stalled.
 func TestBatcher_HardCapDropsAndCounts(t *testing.T) {
 	b := newBatcher(Config{
@@ -80,7 +80,7 @@ func TestBatcher_HardCapDropsAndCounts(t *testing.T) {
 	}
 }
 
-// MF-1: existing aggregate series keep accumulating past the hard cap —
+// existing aggregate series keep accumulating past the hard cap —
 // only NEW series/samples are dropped, so no counts are lost for series
 // already being tracked.
 func TestBatcher_HardCapKeepsAggregatingExistingSeries(t *testing.T) {
@@ -105,7 +105,7 @@ func TestBatcher_HardCapKeepsAggregatingExistingSeries(t *testing.T) {
 	}
 }
 
-// MF-5: drop/reject totals are reported once per flush window through
+// drop/reject totals are reported once per flush window through
 // the exporter's own pipeline, as deltas.
 func TestBatcher_SelfMetricsReportDeltasOnce(t *testing.T) {
 	b := testBatcher(100)
@@ -136,7 +136,7 @@ func (e *smithyErr) ErrorCode() string             { return e.code }
 func (e *smithyErr) ErrorMessage() string          { return e.code }
 func (e *smithyErr) ErrorFault() smithy.ErrorFault { return e.fault }
 
-// MF-3: classification table for PutMetricData failures.
+// classification table for PutMetricData failures.
 func TestIsPermanentPutError(t *testing.T) {
 	tests := []struct {
 		name string
@@ -170,7 +170,7 @@ type wrapErr struct{ inner error }
 func (w wrapErr) Error() string { return "wrapped: " + w.inner.Error() }
 func (w wrapErr) Unwrap() error { return w.inner }
 
-// MF-3 regression: a validation-class rejection drops ONLY the offending
+// regression: a validation-class rejection drops ONLY the offending
 // batch — counted, not requeued — so a poison datum cannot black out the
 // pipeline by being requeued and failing every subsequent flush.
 func TestFlush_PermanentErrorDropsBatchNotRequeued(t *testing.T) {
@@ -212,7 +212,7 @@ func TestFlush_PermanentErrorDropsBatchNotRequeued(t *testing.T) {
 	}
 }
 
-// MF-3: a permanent rejection of one batch must not stop delivery of the
+// a permanent rejection of one batch must not stop delivery of the
 // remaining batches in the same flush.
 func TestFlush_PermanentErrorContinuesWithRemainingBatches(t *testing.T) {
 	b := testBatcher(1000)

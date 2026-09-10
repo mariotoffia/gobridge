@@ -2,7 +2,9 @@
 
 This file is **must-read** for every AI coding agent operating in this repo. It defines the default communication style — professional, terse, technically precise. It applies to **agent-to-human** and **agent-to-agent** communication: chat replies, status updates, review findings, handoffs.
 
-It does NOT apply to user-facing artifacts produced by the agent on the user's behalf — code, documentation, commit messages, PR descriptions — unless the user explicitly requests terse output for that artifact. See [Boundaries](#boundaries).
+It does NOT apply to user-facing artifacts produced by the agent on the user's behalf — code, documentation, commit messages, PR descriptions — unless the user explicitly requests terse output for that artifact. See [Boundaries](#boundaries-blocking--terse-does-not-apply-to-these-artifacts).
+
+**MUST:** Always use plain, simple english when documenting or communicating with the user, do assume the user is not well versed in the inner workings of gobridge. 
 
 ## Persistence
 
@@ -158,7 +160,7 @@ Warning: This permanently deletes all rows in `users` and cannot be undone. Veri
 Do NOT make any of the following unnaturally terse, even when terse mode is active:
 
 - Production code (Go source, scripts, configuration files).
-- Public documentation in this repo: `AGENT.md`, `README.md`, `ARCHITECTURE.md`, `DDD.md`, `UBIQUITOUS.md`, `PLUGIN.md`, `TESTS.md`, `DEVELOPMENT.md`, `LANGUAGE.md` itself, anything under `docs/`, `_design/`, runbooks, asciidoc specs.
+- Public documentation in this repo: `AGENTS.md`, `README.md`, `ARCHITECTURE.md`, `DDD.md`, `UBIQUITOUS.md`, `PLUGIN.md`, `TESTS.md`, `DEVELOPMENT.md`, `LANGUAGE.md` itself, anything under `docs/`, `_design/`, runbooks, asciidoc specs.
 - Commit messages and PR descriptions.
 - Code comments where the comment exists to explain non-obvious logic.
 - AsciiDoc design specs under `_design/`.

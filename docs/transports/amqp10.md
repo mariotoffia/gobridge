@@ -197,6 +197,20 @@ already in progress`), and a repeat call after the first attempt **failed**
 returns `ErrUnavailable` (`amqp10: delivery settlement previously failed`). A
 failed settlement is surfaced, not silently swallowed.
 
+## Envelope identity: publish a `message-id`
+
+A producer's `message-id` property becomes `Envelope.ID`. A message without one
+gets an identity minted at ingress, so the same message released or modified
+back to the broker is converted under a **new** identity on redelivery. The
+adapter marks such an envelope `x-bridge.generated-id` to say so.
+
+A message that carries a header section is still countable through its
+`delivery-count`, so it keeps the route's full `max_replay_attempts` budget. A
+message with neither a `message-id` nor a header section is uncountable: the
+runtime settles its first transient failure terminally (DLQ, or dropped per the
+route's `on_permanent_failure`) rather than redelivering on an identity that can
+never accumulate attempts.
+
 ## AMQP 1.0 vs AMQP 0-9-1
 
 | Aspect | AMQP 1.0 | AMQP 0-9-1 (RabbitMQ) |

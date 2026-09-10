@@ -31,7 +31,7 @@ type Receiver struct {
 	link     linkReceiver
 	linkConn amqpConn
 
-	// In-flight settlement tracking (finding: graceful shutdown).
+	// In-flight settlement tracking.
 	// inflightCount counts deliveries emitted to the pipeline whose
 	// settlement has not yet completed; inflightIdle is closed on every
 	// transition to zero so Close can wait event-driven (bounded by its
@@ -40,7 +40,7 @@ type Receiver struct {
 	inflightCount int
 	inflightIdle  chan struct{}
 
-	// Failed-settlement tracking (finding F2). Each failed settlement
+	// Failed-settlement tracking. Each failed settlement
 	// permanently consumes one link-credit slot (go-amqp replenishes
 	// credit only on a completed disposition), so once LinkCredit slots
 	// are gone the broker stops delivering and the receive loop blocks
@@ -54,7 +54,7 @@ type Receiver struct {
 	// in-flight delivery from a PRIOR link/connection (which can fire
 	// onSettleFailed AFTER createLink reset settleFailures for the new
 	// link) is not miscounted against the current link and cannot trip a
-	// spurious extra rebuild (FIX 4). Guarded by settleFailMu.
+	// spurious extra rebuild. Guarded by settleFailMu.
 	linkGeneration int
 }
 
@@ -62,7 +62,7 @@ type Receiver struct {
 //
 // LOW-LEVEL constructor. It builds and validates a Receiver but does NOT
 // enforce the durable-subscription safety gates — the explicit-container_id
-// requirement (HIGH-1) and the dedicated-session contract (HIGH-3) are
+// requirement and the dedicated-session contract are
 // enforced by Factory.NewReceiver, which is the ONLY path production uses
 // (bridge/runtime build every link through the ports.TransportFactory
 // interface; see Factory.NewReceiver). This constructor stays permissive so
@@ -134,7 +134,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 	}
 
 	if r.session != nil {
-		// Finding 4: register for health tracking so Session.Health can
+		// Register for health tracking so Session.Health can
 		// report Degraded if this receiver's link detaches while the
 		// session connection itself is still alive.
 		r.session.registerReceiver(r)
@@ -172,7 +172,7 @@ func (r *Receiver) Close(ctx context.Context) error {
 // trackDelivery registers del in the in-flight settlement count and
 // arms its onSettled hook to decrement on completion. It also arms the
 // onSettleFailed hook so a settlement failure feeds the leaked-credit
-// watchdog (finding F2).
+// watchdog.
 func (r *Receiver) trackDelivery(del *Delivery) {
 	r.inflightMu.Lock()
 	if r.inflightCount == 0 {
@@ -181,7 +181,7 @@ func (r *Receiver) trackDelivery(del *Delivery) {
 	r.inflightCount++
 	r.inflightMu.Unlock()
 	del.onSettled = r.settlementDone
-	// FIX 4: bind the failure hook to the link generation live at track
+	// bind the failure hook to the link generation live at track
 	// time so a settlement completing after a later rebuild is recognised
 	// as stale and not counted against the new link.
 	r.settleFailMu.Lock()
@@ -193,10 +193,10 @@ func (r *Receiver) trackDelivery(del *Delivery) {
 // settlementFailed is the Delivery.onSettleFailed hook. It records the
 // failure metric and, once accumulated failures on the current link
 // reach the credit-safety threshold, forces a link rebuild so the leaked
-// link credit is reclaimed before the receiver stalls (finding F2). gen
-// is the link generation captured when the delivery was tracked (FIX 4).
+// link credit is reclaimed before the receiver stalls. gen
+// is the link generation captured when the delivery was tracked.
 func (r *Receiver) settlementFailed(gen int, cause error) {
-	// FIX 3: a context.Canceled cause is a deliberate route teardown /
+	// a context.Canceled cause is a deliberate route teardown /
 	// reconfig, not a broker-health signal. Counting it could trip a
 	// spurious rebuild (the durable branch drops the WHOLE connection), so
 	// return before touching the counter or emitting the failure metric.
@@ -210,7 +210,7 @@ func (r *Receiver) settlementFailed(gen int, cause error) {
 		shared.Tag{Key: shared.TagKeyEntity, Value: r.cfg.Address})
 
 	r.settleFailMu.Lock()
-	// FIX 4: ignore failures from a superseded link generation. A stale
+	// ignore failures from a superseded link generation. A stale
 	// in-flight delivery from the previous link/connection must not be
 	// counted against the freshly rebuilt link (which would trip an
 	// immediate second rebuild). The metric above still fires so the stale
@@ -252,7 +252,7 @@ func (r *Receiver) settleFailureThreshold() int {
 // on the live session). A durable subscription link must NOT be closed —
 // go-amqp can only full-close it, which brokers read as UNSUBSCRIBE — so
 // the connection is dropped instead (the link dies with it and the
-// monitor reconnects with the subscription intact). Finding F2.
+// monitor reconnects with the subscription intact). Finding.
 func (r *Receiver) forceSettleRebuild(cause error) {
 	r.mu.Lock()
 	link := r.link
@@ -272,8 +272,8 @@ func (r *Receiver) forceSettleRebuild(cause error) {
 		)
 	}
 	if r.session != nil {
-		r.session.noteLinkError(cause)       // finding 9: surface cause in Health
-		r.session.markReceiverLink(r, false) // finding 4: link is down
+		r.session.noteLinkError(cause)       // Surface cause in Health
+		r.session.markReceiverLink(r, false) // Link is down
 	}
 
 	if r.cfg.DurabilityMode == 0 {
@@ -353,7 +353,7 @@ func (r *Receiver) closeLink() {
 	// (verified against Artemis: a closing detach deletes, a connection
 	// drop — a NON-closing detach — preserves the durable terminus).
 	//
-	// c7-durable-close: merely nil-ing r.link (the previous behaviour) is
+	// Merely nil-ing r.link (the previous behaviour) is
 	// NOT a teardown — the link stays ATTACHED on the broker, which keeps
 	// delivering up to link credit into an abandoned link whose messages
 	// then sit UNSETTLED until the connection eventually drops (possibly
@@ -371,7 +371,7 @@ func (r *Receiver) closeLink() {
 			)
 		}
 		if r.session != nil {
-			r.session.markReceiverLink(r, false) // finding 4: link is down
+			r.session.markReceiverLink(r, false) // Link is down
 			if failedConn != nil {
 				// notifyDisconnect closes failedConn, clears session
 				// connection state and wakes the monitor; it no-ops when
@@ -386,7 +386,7 @@ func (r *Receiver) closeLink() {
 		r.logger.Log(context.Background(), logging.LevelTrace, "amqp10: closing receiver link",
 			"address", redactURL(r.cfg.Address))
 	}
-	// Finding 3: bound the detach. closeLink runs from Close on
+	// Bound the detach. closeLink runs from Close on
 	// shutdown; an unbounded context.Background() could hang the
 	// caller forever on an unresponsive broker. We derive from
 	// Background (not a — by now cancelled — Run ctx) on purpose so
@@ -426,7 +426,7 @@ func (r *Receiver) ensureLink(ctx context.Context) error {
 }
 
 func (r *Receiver) createLink(ctx context.Context) error {
-	// Finding: capture the session link and its owning connection under
+	// Capture the session link and its owning connection under
 	// ONE session lock so the (link, conn) pair can never be mismatched
 	// by a concurrent reconnect between two separate getter calls. A
 	// stale pairing would make notifyDisconnect drop a later legitimate
@@ -451,15 +451,15 @@ func (r *Receiver) createLink(ctx context.Context) error {
 	r.link = recv
 	r.linkConn = conn
 	// A fresh link starts with full credit; clear any settlement-failure
-	// count carried from the previous link so the F2 watchdog counts only
+	// count carried from the previous link so the watchdog counts only
 	// failures on THIS link, and bump the link generation so stale
-	// in-flight settlements from the previous link are ignored (FIX 4).
+	// in-flight settlements from the previous link are ignored.
 	r.settleFailMu.Lock()
 	r.settleFailures = 0
 	r.linkGeneration++
 	r.settleFailMu.Unlock()
 	if r.session != nil {
-		r.session.markReceiverLink(r, true) // finding 4: link is up
+		r.session.markReceiverLink(r, true) // Link is up
 	}
 	r.startedOnce.Do(func() { close(r.started) })
 	return nil
@@ -491,7 +491,7 @@ func (r *Receiver) linkName() string {
 		// NewSession always have one. Production durable receivers built
 		// through the factory always carry an EXPLICIT container_id —
 		// Factory.NewReceiver rejects durability_mode > 0 on a session with
-		// a generated container-id (HIGH-1) — so this generated-identity
+		// a generated container-id — so this generated-identity
 		// fallback never anchors a real durable subscription.
 		return "gobridge:" + r.cfg.Address
 	}
@@ -628,8 +628,8 @@ func (r *Receiver) handleLinkError(err error) {
 	r.mu.Unlock()
 
 	if r.session != nil {
-		r.session.noteLinkError(err)         // finding 9: surface cause in Health
-		r.session.markReceiverLink(r, false) // finding 4: link is down
+		r.session.noteLinkError(err)         // Surface cause in Health
+		r.session.markReceiverLink(r, false) // Link is down
 	}
 
 	if r.cfg.DurabilityMode > 0 {
@@ -641,13 +641,13 @@ func (r *Receiver) handleLinkError(err error) {
 		// it on the same connection would collide with the still-attached
 		// link, and the credit the broker holds for any unsettled delivery
 		// on it could NEVER be reissued — e.g. a malformed message whose
-		// reject settlement FAILED (HIGH-2), which MapError classifies as a
+		// reject settlement FAILED, which MapError classifies as a
 		// transient ErrTimeout, NOT ConnectionLost/Unavailable, so the
 		// generic escalation below would leave the link stuck. The only
 		// recovery that PRESERVES the subscription is to drop the whole
 		// connection: the monitor reconnects, the link re-attaches cleanly,
 		// and a fresh link starts with full credit. Mirrors closeLink and
-		// forceSettleRebuild. HIGH-3 keeps a durable receiver alone on its
+		// forceSettleRebuild. A durable receiver is kept alone on its own
 		// session, so this teardown reaches no sibling link.
 		if r.session != nil && failedConn != nil {
 			r.session.notifyDisconnect(failedConn, err)
@@ -665,7 +665,7 @@ func (r *Receiver) handleLinkError(err error) {
 	}
 
 	if r.session != nil {
-		// Finding: a link-scoped fault (e.g. *amqp.LinkError on a live
+		// A link-scoped fault (e.g. *amqp.LinkError on a live
 		// session) must rebuild only THIS link — escalating it via
 		// notifyDisconnect would tear down the shared connection and
 		// disrupt every other link on the session.

@@ -22,12 +22,10 @@ type SQSSenderOption func(*sqs.Config)
 
 // WithSQSReceiver adds an SQS receiver under the given logical id.
 //
-// QueueURL is taken from ref.Queue().QueueUrl() when the registry
-// resolved a real CDK handle; otherwise QueueName falls back to
-// ref.Name() and Phase-2 validation surfaces the missing
-// registration. The builder itself never errors on an unresolved
-// ref — that decision lives in the construct so a single synth pass
-// can collect every miss.
+// Explicitly bound QueueTags take precedence; otherwise the known physical
+// QueueName is used. Generated names require BindQueueTags or an explicit
+// queue_url option for non-embedded consumers. An unresolved ref retains its
+// name so the construct's annotation pass can report missing registrations.
 //
 // AutoExtend is seeded with DefaultSQSAutoExtend() so the produced
 // bridge.yaml is self-describing rather than leaning on the adapter's
@@ -52,17 +50,17 @@ func (b *Builder) WithSQSReceiver(id string, ref registry.QueueRef, opts ...SQSR
 	// share the Config shape), so enforce it here where the ref is
 	// known to be a top-level receiver.
 	if err := cfg.ValidateQueue(); err != nil {
-		b.fail(fmt.Errorf("bridgecfg: receiver %q: %w", id, err))
+		b.fail(fmt.Errorf("bridgecfg: receiver %q: %w; use a stable physical QueueName or registry.BindQueueTags", id, err))
 		return b
 	}
 	def := ports.ReceiverDef{ID: id, Transport: sqsTransport}
-	def.SetDecoded(cfg, nil)
+	def.SetDecoded(cfg.FreezePluginConfig(), nil)
 	b.cfg.Receivers = append(b.cfg.Receivers, def)
 	return b
 }
 
-// WithSQSSender adds an SQS sender under the given logical id. URL
-// resolution semantics match WithSQSReceiver.
+// WithSQSSender adds an SQS sender under the given logical id. Queue
+// selection semantics match WithSQSReceiver.
 func (b *Builder) WithSQSSender(id string, ref registry.QueueRef, opts ...SQSSenderOption) *Builder {
 	if !b.reserveID(b.senderIDs, "sender", id) {
 		return b
@@ -79,13 +77,35 @@ func (b *Builder) WithSQSSender(id string, ref registry.QueueRef, opts ...SQSSen
 	}
 	// Same synth-time queue guard as WithSQSReceiver.
 	if err := cfg.ValidateQueue(); err != nil {
-		b.fail(fmt.Errorf("bridgecfg: sender %q: %w", id, err))
+		b.fail(fmt.Errorf("bridgecfg: sender %q: %w; use a stable physical QueueName or registry.BindQueueTags", id, err))
 		return b
 	}
 	def := ports.SenderDef{ID: id, Transport: sqsTransport}
-	def.SetDecoded(cfg, nil)
+	def.SetDecoded(cfg.FreezePluginConfig(), nil)
 	b.cfg.Senders = append(b.cfg.Senders, def)
+	// Keep the binding address consistent with the logical selector; a
+	// tag-selected queue has no physical name to serialize during synth.
+	b.senderAddresses[id] = sqsSenderAddress(cfg, ref)
 	return b
+}
+
+// sqsSenderAddress is the queue an SQS sender sends to, in the form a binding
+// address may carry it.
+//
+// Tag-selected senders use the adapter's configured-queue address. Direct
+// URLs take precedence over names, matching runtime resolution. Registry
+// aliases are used only for unresolved refs, which Phase 2 will reject.
+func sqsSenderAddress(cfg *sqs.Config, ref registry.QueueRef) string {
+	if cfg.QueueTags != nil {
+		return sqs.QueueAddress
+	}
+	if cfg.QueueURL != "" {
+		return cfg.QueueURL
+	}
+	if cfg.QueueName != "" {
+		return cfg.QueueName
+	}
+	return ref.Name()
 }
 
 // WithSQSRegion is the canonical option for steering the AWS region
@@ -107,12 +127,10 @@ func WithSQSSenderRegion(region string) SQSSenderOption {
 // scanner, and round-trip tests share a single source of truth.
 const sqsTransport = sqs.ShortKind
 
-// newSQSConfig builds a *sqs.Config seeded from a queue ref, choosing
-// QueueURL when the ref is resolved (CDK handle available at synth
-// time) and falling back to QueueName otherwise. ref.Name() may be
-// empty for the zero-value ref; that surfaces as a sqs.Validate error
-// when the option chain finishes, which the builder converts into a
-// receiver/sender-scoped Build error.
+// newSQSConfig never turns a registry alias into a physical queue name or
+// embeds an unresolved QueueUrl token. Unknown generated names need an
+// explicit selector binding. Options can still set QueueURL for consumers
+// that intentionally use a deploy-time-resolved config.
 //
 // The seed is sqs.DefaultConfig() (max_messages=10, wait_time_seconds=20),
 // not a bare Config{}: the canonical config the builder marshals is the
@@ -123,10 +141,13 @@ const sqsTransport = sqs.ShortKind
 func newSQSConfig(ref registry.QueueRef) *sqs.Config {
 	cfg := sqs.DefaultConfig()
 	if ref.IsResolved() {
-		if u := ref.Queue().QueueUrl(); u != nil {
-			cfg.QueueURL = *u
-			return &cfg
+		cfg.QueueTags = ref.QueueTags()
+		if cfg.QueueTags != nil {
+			cfg.QueueNamePrefix = ref.QueueNamePrefix()
+		} else {
+			cfg.QueueName = ref.PhysicalName()
 		}
+		return &cfg
 	}
 	cfg.QueueName = ref.Name()
 	return &cfg

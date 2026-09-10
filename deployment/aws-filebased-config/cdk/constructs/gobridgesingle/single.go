@@ -1,5 +1,5 @@
 // Package gobridgesingle exports the GoBridgeSingle facade construct
-// — one ECS Fargate task with RW EFS mount, no clustering, built on
+// — one ECS Fargate task with an optional RW EFS mount, no clustering, built on
 // top of the shared gobridgebase. Lives in its own sub-package
 // (rather than directly under cdk/constructs) to avoid the import
 // cycle constructs → gobridgebase → constructs (for GoBridgeEfsConfig
@@ -23,6 +23,7 @@ import (
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/gobridgebase"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/singleton"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/validation"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/imgsource"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
@@ -30,7 +31,7 @@ import (
 
 // SingleProps configures a [GoBridgeSingle] facade. It is the public
 // surface for consumers who want one ECS Fargate control task with
-// RW EFS mount and no clustering. All optional fields fall back to
+// an optional RW EFS mount and no clustering. All optional fields fall back to
 // the documented defaults; only the four required fields below MUST
 // be supplied.
 //
@@ -41,7 +42,7 @@ import (
 // SsmParamRegistry.
 type SingleProps struct {
 	// Vpc is the VPC the Fargate task and the EFS mount targets
-	// live in. Required (no default lookup at this stage — T11
+	// live in. Required (no default lookup at this stage
 	// keeps it explicit; the design's optional-VPC behaviour will
 	// land alongside the auto-lookup helper).
 	Vpc awsec2.IVpc
@@ -56,7 +57,8 @@ type SingleProps struct {
 	Cluster awsecs.ICluster
 
 	// EfsConfig provides the EFS filesystem and access points.
-	// When nil a default [GoBridgeEfsConfig] is created with
+	// Used only when file config or parsed store paths need a filesystem.
+	// When needed and nil, a default [GoBridgeEfsConfig] is created with
 	// always-on encryption, ELASTIC throughput and RETAIN policy.
 	EfsConfig *cdkconstructs.GoBridgeEfsConfig
 
@@ -66,8 +68,9 @@ type SingleProps struct {
 	// the runtime grant.
 	EfsKmsKey awskms.IKey
 
-	// Image is the gobridge runtime container image. Required.
-	Image awsecs.ContainerImage
+	// Image is the required sealed gobridgecdk.BridgeImageSource.
+	// Use ImageFromRegistry, ImageFromEcrRepository or ImageFromGoBuild.
+	Image imgsource.Source
 
 	// Bootstrap is the deployment-owned runtime configuration. Its
 	// NodeRole is forced to NodeRoleControl by this facade —
@@ -77,6 +80,17 @@ type SingleProps struct {
 	// BridgeConfig is the sealed source produced by
 	// gobridgecdk.BridgeYamlAsset / BridgeYamlInline. Required.
 	BridgeConfig source.Source
+
+	// ManagedSubscriptionBaselines attests, for every persistent or exclusive
+	// MQTT session that subscribes, the exact topic filters its broker identity
+	// already holds; an empty list attests a NEW identity with none. Such a
+	// session does not start without its baseline, and on this profile the
+	// store may live on the config mount, which only the task can write — so
+	// the facade stamps the attestation into the bootstrap document
+	// (managed_subscription_baselines) and the runtime seeds it at every boot,
+	// idempotently. Required for each such session; never attest empty for an
+	// identity that may still hold subscriptions.
+	ManagedSubscriptionBaselines map[string][]string
 
 	// QueueRegistry resolves SQS queue names referenced by the
 	// parsed bridge config. Conditionally required.
@@ -108,13 +122,6 @@ type SingleProps struct {
 	// groups.
 	LogRemovalPolicy awscdk.RemovalPolicy
 
-	// SeederImage overrides the pinned aws-cli seeder image.
-	SeederImage *string
-
-	// SeederMode overrides the control seeder MODE (default
-	// "SeedOnce").
-	SeederMode *string
-
 	// ServiceName overrides the auto-generated ECS service name.
 	ServiceName *string
 }
@@ -122,7 +129,7 @@ type SingleProps struct {
 // GoBridgeSingle is the L2 facade construct that deploys the
 // single-task control profile of gobridge: one Fargate task with RW
 // EFS mount, no worker, no clustering. It is a thin wrapper over
-// [gobridgebase] (T10) — all task-def, EFS, IAM, seeder and asset
+// [gobridgebase] — all task-def, EFS, IAM and image
 // machinery is owned by the shared base; this construct only adds
 // the surrounding ECS service, security group, EFS ingress rule and
 // runs the Phase 1 / Phase 2 tier-B validators on the resolved
@@ -152,7 +159,7 @@ type GoBridgeSingle struct {
 //  2. Materialize the BridgeConfig source once and run Phase 1
 //     fast-fail validation against it. On failure: panic.
 //  3. Build (or reuse) the EFS config and ECS cluster.
-//  4. Delegate task-def + IAM + asset + seeder construction to
+//  4. Delegate task-def + IAM + image construction to
 //     [gobridgebase.New] in CONTROL mode.
 //  5. Create the FargateService with DesiredCount=1 and a 0/100
 //     deployment strategy.
@@ -160,7 +167,7 @@ type GoBridgeSingle struct {
 //  7. Run Phase 2 aggregated validation via CDK Annotations so a
 //     single synth surfaces every missing registry reference.
 //
-// TODO(T13): synth-time scope scan to enforce singleton
+// TODO: synth-time scope scan to enforce singleton
 // constraint — error if multiple GoBridgeSingle / GoBridgeCluster
 // siblings exist in the same Stack tree.
 func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProps) *GoBridgeSingle {
@@ -173,7 +180,7 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 
 	// Force control role on the bootstrap copy — SingleProps never
 	// produces a worker.
-	bootstrap := props.Bootstrap
+	bootstrap := props.Bootstrap.Normalized()
 	bootstrap.NodeRole = infra.NodeRoleControl
 
 	// Phase 1 — fast-fail tier-B validation on the resolved config.
@@ -194,19 +201,35 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 		_ = mat.Close()
 		panic(fmt.Sprintf("GoBridgeSingle: Phase 1 validation failed: %v", err))
 	}
+	baselines, err := managedSubscriptionBaselines(mat.Config, props.ManagedSubscriptionBaselines)
+	if err != nil {
+		_ = mat.Close()
+		panic(fmt.Sprintf("GoBridgeSingle: %v", err))
+	}
+	needsEFS := validation.NeedsEFS(mat.Config, bootstrap)
+	bootstrap.ManagedSubscriptionBaselines = baselines
 	// Cleanup is best-effort; the base will materialize again from
-	// the same source for the asset upload.
+	// the same source for image construction.
 	_ = mat.Close()
 
-	// EFS config — auto-create when not supplied.
-	efsConfig := props.EfsConfig
-	if efsConfig == nil {
-		efsConfig = cdkconstructs.NewGoBridgeEfsConfig(c, jsii.String("Efs"), &cdkconstructs.GoBridgeEfsConfigProps{
-			Vpc:        props.Vpc,
-			VpcSubnets: props.VpcSubnets,
-			EfsKmsKey:  props.EfsKmsKey,
-		})
+	// EFS config — auto-create when not supplied. An auto-created config
+	// gets props.VpcSubnets verbatim, so its mount targets always cover the
+	// ECS placement; a SUPPLIED one may not, and a task in an AZ without a
+	// mount target fails at container start (matrix row 14).
+	var efsConfig *cdkconstructs.GoBridgeEfsConfig
+	if needsEFS {
+		efsConfig = props.EfsConfig
+		if efsConfig == nil {
+			efsConfig = cdkconstructs.NewGoBridgeEfsConfig(c, jsii.String("Efs"), &cdkconstructs.GoBridgeEfsConfigProps{
+				Vpc:        props.Vpc,
+				VpcSubnets: props.VpcSubnets,
+				EfsKmsKey:  props.EfsKmsKey,
+			})
+		} else {
+			cdkconstructs.AssertEfsSubnetParity("GoBridgeSingle", props.Vpc, props.VpcSubnets, efsConfig)
+		}
 	}
+	configTable := gobridgebase.NewConfigTable(c, bootstrap)
 
 	// ECS cluster — auto-create when not supplied.
 	cluster := props.Cluster
@@ -217,11 +240,12 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 		})
 	}
 
-	// Shared base (CONTROL mode → RW EFS mount, SeedOnce seeder).
+	// Shared base (CONTROL mode allows target initialization and updates).
 	built := gobridgebase.New(c, jsii.String("Base"), &gobridgebase.Props{
 		Mode:             gobridgebase.ModeControl,
 		Vpc:              props.Vpc,
 		EfsConfig:        efsConfig,
+		ConfigTable:      configTable,
 		EfsKmsKey:        props.EfsKmsKey,
 		Image:            props.Image,
 		Bootstrap:        bootstrap,
@@ -233,8 +257,6 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 		MountPath:        props.MountPath,
 		LogRetention:     props.LogRetention,
 		LogRemovalPolicy: props.LogRemovalPolicy,
-		SeederImage:      props.SeederImage,
-		SeederMode:       props.SeederMode,
 	})
 
 	// Security group for the task.
@@ -247,13 +269,15 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 	}
 
 	// Allow task → EFS NFS ingress when the EFS construct owns the SG.
-	if efsSG := efsConfig.SecurityGroup(); efsSG != nil {
-		efsSG.AddIngressRule(
-			sg,
-			awsec2.Port_Tcp(jsii.Number(2049)),
-			jsii.String("gobridge control task NFS access"),
-			jsii.Bool(false),
-		)
+	if efsConfig != nil {
+		if efsSG := efsConfig.SecurityGroup(); efsSG != nil {
+			efsSG.AddIngressRule(
+				sg,
+				awsec2.Port_Tcp(jsii.Number(2049)),
+				jsii.String("gobridge control task NFS access"),
+				jsii.Bool(false),
+			)
+		}
 	}
 
 	// Fargate service: DesiredCount=1 (hard-coded) + 0/100
@@ -325,7 +349,8 @@ func (g *GoBridgeSingle) TaskDefinition() awsecs.FargateTaskDefinition {
 func (g *GoBridgeSingle) Cluster() awsecs.ICluster { return g.cluster }
 
 // EfsConfig returns the EFS configuration used by the construct
-// (either the supplied one or the auto-created default).
+// (either the supplied one or the auto-created default), or nil when neither
+// the config source nor the parsed store paths require a filesystem.
 func (g *GoBridgeSingle) EfsConfig() *cdkconstructs.GoBridgeEfsConfig { return g.efsConfig }
 
 // SecurityGroup returns the security group attached to the Fargate

@@ -2,13 +2,10 @@ package sqs
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -20,7 +17,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// SQS message-attribute limits enforced on egress (Finding 11). SQS
+// SQS message-attribute limits enforced on egress. SQS
 // rejects an entire SendMessage / SendMessageBatch entry that violates
 // any of these, so the adapter caps deterministically instead of letting
 // a single oversized envelope fail every send.
@@ -32,19 +29,26 @@ const (
 	// sqsMaxAttributeNameLen is the maximum length of an attribute name.
 	sqsMaxAttributeNameLen = 256
 
-	// sqsMaxMessageBytes is the DEFAULT maximum SQS message size (256 KiB),
+	// sqsMaxMessageBytes is the DEFAULT maximum SQS message size (1 MiB),
 	// shared between the body and every attribute name, type and value.
-	// Used as a conservative ceiling so a pathological header set cannot
-	// build a request SQS would reject for size. Queues configured with a
-	// larger MaximumMessageSize can raise it via WithMaxMessageBytes so an
-	// oversized body does not silently drop all attributes (Finding 4).
-	sqsMaxMessageBytes = 262144
+	// Used as a ceiling so a pathological header set cannot build a request
+	// SQS would reject for size.
+	//
+	// It tracks the service default: SQS raised the maximum payload from
+	// 256 KiB to 1 MiB, and MaximumMessageSize on a queue created since then
+	// defaults to 1,048,576. A queue whose MaximumMessageSize is provisioned
+	// BELOW that — an older queue, or one deliberately capped — lowers the
+	// ceiling via WithMaxMessageBytes, which is now the direction the knob
+	// usually moves. Set too high, attributes are kept on a body the queue
+	// then rejects outright; set too low, a large body silently drops all
+	// attributes that would in fact have fit.
+	sqsMaxMessageBytes = 1048576
 
 	// sqsSubjectAttributeName is the reserved SQS message-attribute name
 	// carrying the envelope Subject. buildAttributes writes it from
 	// env.Subject(); headersToAttributes skips any same-named header so the
 	// reserved slot and a stray "Subject" header cannot double-charge the
-	// attribute budget (Finding 7).
+	// attribute budget.
 	sqsSubjectAttributeName = "Subject"
 )
 
@@ -63,8 +67,8 @@ func (s *Sender) sendOne(ctx context.Context, env *messaging.Envelope) error {
 		}
 		// Route through the auth grace so a transient static-key rotation /
 		// IAM-propagation window classifies temporary (retryable) instead of
-		// permanent (Finding: c8-auth-permanent). classify ALSO reports a
-		// permanent authorization failure to the reactive-recovery hook (HIGH-3)
+		// permanent. classify ALSO reports a
+		// permanent authorization failure to the reactive-recovery hook
 		// so a hard key revocation forces an immediate re-resolve.
 		return s.classify(err)
 	}
@@ -110,8 +114,8 @@ func (s *Sender) sendBatchChunk(
 
 	if err != nil {
 		// A whole-batch auth failure gets the same bounded grace as a
-		// single send (Finding: c8-auth-permanent) and reports a permanent
-		// authorization failure to the reactive-recovery hook (HIGH-3).
+		// single send, and reports a permanent
+		// authorization failure to the reactive-recovery hook.
 		e := s.classify(err)
 		for j := range results {
 			results[j].Err = e
@@ -148,7 +152,7 @@ func (s *Sender) sendBatchChunk(
 		// SenderFault verdict, so a per-entry retryable target outage (KMS
 		// grant still propagating, KMS/request throttling, a transient
 		// InternalError) stays retryable instead of becoming a terminal reject
-		// that costs the source its retry (Chunk 13 HIGH-1). A Code outside
+		// that costs the source its retry. A Code outside
 		// that set falls back to the SenderFault verdict: a request the caller
 		// malformed is rejected, anything else is treated as transient.
 		base, matched := classifyBatchEntryCode(derefStr(f.Code))
@@ -200,7 +204,7 @@ func (s *Sender) buildBatchEntry(idx int, env *messaging.Envelope) sqstypes.Send
 		entry.MessageAttributes = attrs
 	}
 
-	if s.cfg.isFIFO() {
+	if s.isFIFO() {
 		groupID, dedupID := extractFIFOFields(env.Headers())
 		if groupID == "" {
 			groupID = s.cfg.MessageGroupID
@@ -219,7 +223,7 @@ func (s *Sender) buildBatchEntry(idx int, env *messaging.Envelope) sqstypes.Send
 
 // buildAttributes converts envelope headers to SQS message attributes,
 // reserving a slot for the Subject attribute when present so the total
-// can never exceed sqsMaxMessageAttributes (Finding 11). Headers dropped
+// can never exceed sqsMaxMessageAttributes. Headers dropped
 // by the count/size caps are surfaced via a debug log and the
 // SQSDroppedAttributes counter so the loss is observable.
 func (s *Sender) buildAttributes(env *messaging.Envelope) map[string]sqstypes.MessageAttributeValue {
@@ -231,8 +235,8 @@ func (s *Sender) buildAttributes(env *messaging.Envelope) map[string]sqstypes.Me
 	budget := sqsMaxMessageAttributes
 	hasSubject := env.Subject() != ""
 	// Seed the size budget with the body AND — when a Subject attribute is
-	// reserved below — the Subject's own bytes, BEFORE attribute selection
-	// (Finding 4). The Subject is appended AFTER the budget loop, so a body
+	// reserved below — the Subject's own bytes, BEFORE attribute selection.
+	// The Subject is appended AFTER the budget loop, so a body
 	// just under the ceiling could otherwise be pushed over the real broker
 	// limit by the Subject bytes that were never charged.
 	seedBytes := len(env.Payload())
@@ -267,7 +271,7 @@ func (s *Sender) buildAttributes(env *messaging.Envelope) map[string]sqstypes.Me
 }
 
 func (s *Sender) applyFIFO(input *awssqs.SendMessageInput, env *messaging.Envelope) {
-	if !s.cfg.isFIFO() {
+	if !s.isFIFO() {
 		return
 	}
 
@@ -373,7 +377,7 @@ func headersToAttributes(headers map[string]any, maxAttrs int, seedBytes int, ma
 		// as a plain header by SQS->SQS ingress) must NOT also compete for a
 		// budget slot: it would double-charge the 10-attribute limit and the
 		// reserved write would overwrite it, dropping a real application
-		// header on a relay carrying >=10 headers (Finding 7).
+		// header on a relay carrying >=10 headers.
 		if k == sqsSubjectAttributeName {
 			continue
 		}
@@ -445,184 +449,9 @@ func headersToAttributes(headers map[string]any, maxAttrs int, seedBytes int, ma
 	return attrs, dropped
 }
 
-// subjectAttributeSize is the byte size the reserved "Subject" attribute
-// contributes to the SQS message-size budget: attribute name + "String"
-// data type + subject value, mirroring the name-inclusive accounting
-// headersToAttributes applies to every other candidate (Finding 4).
-func subjectAttributeSize(subject string) int {
-	return len(sqsSubjectAttributeName) + len("String") + len(subject)
-}
-
-// attributeValue builds the SQS MessageAttributeValue for a header value
-// and reports its approximate byte size (type name + value bytes). It
-// returns ok=false for value types SQS cannot carry as an attribute.
-func attributeValue(v any) (sqstypes.MessageAttributeValue, int, bool) {
-	switch val := v.(type) {
-	case string:
-		return sqstypes.MessageAttributeValue{
-			DataType:    aws.String("String"),
-			StringValue: aws.String(val),
-		}, len("String") + len(val), true
-	case []byte:
-		return sqstypes.MessageAttributeValue{
-			DataType:    aws.String("Binary"),
-			BinaryValue: val,
-		}, len("Binary") + len(val), true
-	case int, int32, int64, float32, float64:
-		s := fmt.Sprintf("%v", val)
-		return sqstypes.MessageAttributeValue{
-			DataType:    aws.String("Number"),
-			StringValue: aws.String(s),
-		}, len("Number") + len(s), true
-	case time.Time:
-		s := val.Format(time.RFC3339Nano)
-		return sqstypes.MessageAttributeValue{
-			DataType:    aws.String("String"),
-			StringValue: aws.String(s),
-		}, len("String") + len(s), true
-	case bool:
-		s := fmt.Sprintf("%t", val)
-		return sqstypes.MessageAttributeValue{
-			DataType:    aws.String("String"),
-			StringValue: aws.String(s),
-		}, len("String") + len(s), true
-	default:
-		return sqstypes.MessageAttributeValue{}, 0, false
-	}
-}
-
-// isValidSQSAttributeName reports whether name is a legal SQS message
-// attribute name: 1-256 chars from [A-Za-z0-9_.-], no AWS./Amazon.
-// (case-insensitive) reserved prefix, and no leading, trailing or
-// consecutive periods.
-func isValidSQSAttributeName(name string) bool {
-	if name == "" || len(name) > sqsMaxAttributeNameLen {
-		return false
-	}
-	if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") || strings.Contains(name, "..") {
-		return false
-	}
-	if hasFoldPrefix(name, "aws.") || hasFoldPrefix(name, "amazon.") {
-		return false
-	}
-	for _, r := range name {
-		switch {
-		case r >= 'A' && r <= 'Z',
-			r >= 'a' && r <= 'z',
-			r >= '0' && r <= '9',
-			r == '_', r == '-', r == '.':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-// hasFoldPrefix reports whether s starts with prefix, case-insensitively.
-func hasFoldPrefix(s, prefix string) bool {
-	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
-}
-
-// extractFIFOFields pulls MessageGroupId and MessageDeduplicationId from
-// envelope headers. Returns empty strings when not present.
-func extractFIFOFields(headers map[string]any) (groupID, dedupID string) {
-	if headers == nil {
-		return "", ""
-	}
-	if v, ok := headers[messaging.HeaderOrderingKey]; ok {
-		if s, ok := v.(string); ok {
-			groupID = s
-		}
-	}
-	if v, ok := headers[messaging.HeaderDeduplicationID]; ok {
-		if s, ok := v.(string); ok {
-			dedupID = s
-		}
-	}
-	return groupID, dedupID
-}
-
-// generateDeduplicationID derives a stable FIFO dedup id from the
-// envelope payload, subject and id. md5 is sufficient — SQS only uses
-// the value as an opaque key for dedup, not for security.
-//
-// T08 review: Subject is now a logical event subject (no longer
-// implicitly populated from the queue name/URL on receive) and may be
-// empty. Mixing it into the hash is benign: when env.ID is set it is
-// the primary disambiguator, so distinct logical messages do not
-// collide just because they share an empty Subject. Conversely, two
-// envelopes that share payload+id+subject deliberately collide so
-// SQS dedup treats them as duplicates. When env.ID is empty the
-// CreatedAt timestamp keeps each call unique. No semantic change is
-// required for T08.
-func generateDeduplicationID(env *messaging.Envelope) string {
-	h := md5.New()
-	h.Write(env.Payload())
-	h.Write([]byte(env.Subject()))
-	if env.ID() != "" {
-		h.Write([]byte(env.ID()))
-	} else {
-		h.Write([]byte(env.CreatedAt().String()))
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}
-
 func derefStr(s *string) string {
 	if s == nil {
 		return ""
 	}
 	return *s
-}
-
-// ensureClient lazily creates the SDK SQS client for the sender and
-// resolves the queue URL. Honours an injected fake (cfg.Client) when
-// present.
-func (s *Sender) ensureClient(ctx context.Context) error {
-	s.initMu.Lock()
-	defer s.initMu.Unlock()
-
-	client := s.loadClient()
-	if client != nil && s.queueURL != "" {
-		return nil
-	}
-
-	initCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
-	defer cancel()
-
-	if client == nil {
-		if s.cfg.Client != nil {
-			client = s.cfg.Client
-		} else if s.cfg.InitialCredentials != nil {
-			// A resolved `credentials_uri` builds the initial client with
-			// static material instead of the ambient SDK chain (Finding 3).
-			// Temporary (STS) material is rejected here (Finding 6).
-			c, err := rebuildSQSClient(initCtx, s.cfg.Region, s.cfg.Endpoint, s.cfg.Profile, s.cfg.InitialCredentials)
-			if err != nil {
-				return err
-			}
-			client = c
-		} else {
-			cfg, err := buildAWSConfig(initCtx, s.cfg.Region, s.cfg.Endpoint, s.cfg.Profile)
-			if err != nil {
-				return err
-			}
-			client = awssqs.NewFromConfig(cfg)
-		}
-		s.storeClient(client)
-	}
-
-	url, err := resolveQueueURL(initCtx, client, s.cfg.QueueURL, s.cfg.QueueName)
-	if err != nil {
-		return err
-	}
-	s.queueURL = url
-
-	if logging.DebugEnabled(s.logger) {
-		s.logger.Log(ctx, logging.LevelDebug, "sqs: sender initialized",
-			"queue_url", s.queueURL,
-			"region", s.cfg.Region,
-		)
-	}
-
-	return nil
 }

@@ -83,7 +83,7 @@ func TestMapError_ServiceBusCodeUnauthorizedAccess(t *testing.T) {
 	}
 }
 
-// F2: a deleted/unknown entity (CodeNotFound) must map to the PERMANENT
+// a deleted/unknown entity (CodeNotFound) must map to the PERMANENT
 // ErrNotFound (a settlement caller sees a non-recoverable class); pre-fix
 // this code fell through to the transient ErrUnavailable default. NOTE:
 // the receive poll loop still retries every error at the backoff cap
@@ -100,7 +100,7 @@ func TestMapError_ServiceBusCodeNotFound(t *testing.T) {
 	}
 }
 
-// F2: a closed local link/connection (CodeClosed) is a rebuildable local
+// a closed local link/connection (CodeClosed) is a rebuildable local
 // lifecycle condition, mapped TRANSIENT (ErrConnectionLost) so the poll
 // loop rebuilds. Judgment call documented in mapServiceBusError.
 func TestMapError_ServiceBusCodeClosed(t *testing.T) {

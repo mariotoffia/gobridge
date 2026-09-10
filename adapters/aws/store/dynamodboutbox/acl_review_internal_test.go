@@ -17,25 +17,20 @@ import (
 
 // projectionMismatchErr is the exact ValidationException DynamoDB raises when a
 // claim Query filters on the non-projected `status` attribute against a
-// KEYS_ONLY (or under-projected INCLUDE) ClaimIndex. It does NOT contain the
-// "specified index" substring the old isMissingIndex matched, so before the fix
-// it flowed to mapError and was mis-classified permanent (ErrInvalidPayload),
-// wedging every Claim fleet-wide (c13 review HIGH).
+// KEYS_ONLY (or under-projected INCLUDE) ClaimIndex.
 const projectionMismatchErr = "ValidationException: Secondary index ClaimIndex does not " +
 	"project one or more filter attributes: [status]"
 
-// TestClaim_ProjectionMismatch_FallsBackToScan is the c13-review-HIGH runtime
-// backstop: a correctly-KEYED but under-PROJECTED ClaimIndex makes the claim
-// Query fail with a projection-mismatch ValidationException. That MUST degrade
-// to the exhaustive scan fallback (exactly like a missing index) with one WARN,
-// NEVER surface as an error — otherwise mapError classifies it ErrInvalidPayload
-// (permanent) and outbox delivery wedges on every partition.
+// TestClaim_ProjectionMismatch_SurfacesTheProvisioningFault: a correctly-KEYED
+// but under-PROJECTED ClaimIndex fails every claim Query, because the filter
+// reads the non-projected `status` attribute. Preflight rejects that table at
+// startup; if a deployment ever reaches a claim with it, the failure must be
+// SURFACED, naming the index, not swallowed into a silent whole-partition scan
+// that turns an O(limit) drain into O(backlog) fleet-wide.
 //
-// Mutation this kills: narrowing claimIndexUnusableReason back to only matching
-// "specified index" (dropping the "does not project" branch) makes the
-// projection error surface as a (permanent) claim error → Claim returns non-nil
-// → this test FAILs at the "must fall back, not error" assertion.
-func TestClaim_ProjectionMismatch_FallsBackToScan(t *testing.T) {
+// Mutation this kills: re-introducing an "index unusable → scan" fallback makes
+// Claim return nil → this test FAILs.
+func TestClaim_ProjectionMismatch_SurfacesTheProvisioningFault(t *testing.T) {
 	const partition = "PART#misprojected"
 	f := newFakeDDB()
 	f.getItemFn = fenceGetItem("0")
@@ -43,33 +38,21 @@ func TestClaim_ProjectionMismatch_FallsBackToScan(t *testing.T) {
 		if in.IndexName != nil && *in.IndexName == claimIndexName {
 			return nil, errors.New(projectionMismatchErr)
 		}
-		return &dynamodb.QueryOutput{Items: []map[string]ddbtypes.AttributeValue{
-			pendingQueryItem(partition, "OUTBOX#env-1#bind-1", "rec-1"),
-		}}, nil
+		t.Fatal("an under-projected ClaimIndex must NOT silently fall back to the base-table scan")
+		return nil, nil
 	}
-	f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
-		return &dynamodb.TransactWriteItemsOutput{}, nil
-	}
-	logger, buf := warnBufLogger()
 	s := newFakeStore(f)
-	s.logger = logger
 
 	claimed, err := s.Claim(context.Background(), partition,
 		persistence.LeaseToken{Version: 1, Owner: "drainer"}, 10)
-	if err != nil {
-		t.Fatalf("projection-mismatch claim must fall back to scan, not error: %v", err)
+	if err == nil {
+		t.Fatal("an under-projected ClaimIndex must surface as an error")
 	}
-	if len(claimed) != 1 {
-		t.Fatalf("scan fallback must still claim the record, got %d", len(claimed))
+	if claimed != nil {
+		t.Fatalf("no records may be returned when the index query failed, got %d", len(claimed))
 	}
-	if !s.claimIndexAbsent.Load() {
-		t.Fatalf("a projection-mismatch ClaimIndex must be latched unusable so later Claims skip the GSI")
-	}
-	if got := f.queryCalls[""]; got == 0 {
-		t.Fatalf("Claim must fall back to the base-table scan on a projection mismatch")
-	}
-	if !strings.Contains(buf.String(), "not Projection: ALL") {
-		t.Fatalf("the fallback WARN must name the projection reason, got: %q", buf.String())
+	if !strings.Contains(err.Error(), claimIndexName) {
+		t.Fatalf("the error must name the offending index, got %v", err)
 	}
 }
 
@@ -185,7 +168,7 @@ func TestPreflight_ClaimIndexProjection(t *testing.T) {
 		}
 	})
 
-	t.Run("absent ClaimIndex stays valid (optional)", func(t *testing.T) {
+	t.Run("absent ClaimIndex is rejected", func(t *testing.T) {
 		f := newFakeDDB()
 		f.describeTableFn = func(*dynamodb.DescribeTableInput) (*dynamodb.DescribeTableOutput, error) {
 			return &dynamodb.DescribeTableOutput{
@@ -194,8 +177,16 @@ func TestPreflight_ClaimIndexProjection(t *testing.T) {
 		}
 		s := newFakeStore(f)
 
-		if err := s.Preflight(context.Background()); err != nil {
-			t.Fatalf("an absent (optional) ClaimIndex must not fail preflight, got %v", err)
+		err := s.Preflight(context.Background())
+		if err == nil {
+			t.Fatal("a table without ClaimIndex must fail preflight: the index is required, " +
+				"and tolerating its absence silently turns every claim into a whole-partition scan")
+		}
+		if !errors.Is(err, shared.ErrInvalidConfig) {
+			t.Fatalf("a missing required index is a provisioning fault, got %v", err)
+		}
+		if !strings.Contains(err.Error(), claimIndexName) {
+			t.Fatalf("the rejection must name the missing index, got %v", err)
 		}
 	})
 }
@@ -212,36 +203,35 @@ func seqCounterUpdateFn(counter *int64) func(*dynamodb.UpdateItemInput) (*dynamo
 	}
 }
 
-// TestPersist_CrossSchemeCollision_NotDropped is the c13-review-MEDIUM
-// (cross-scheme migration collision) regression. A NEW escaped SK can equal a
-// PRE-UPGRADE raw SK when a producer id literally contains "%23"/"%25" — e.g.
-// new sortKey("a#b","c") == old raw "OUTBOX#a%23b#c". If an old raw row still
-// occupies that key, the new DISTINCT record's attribute_not_exists(SK) fails.
-// Persist must NOT blind-count it a duplicate (which would ack and DROP the
-// distinct message); it reads the occupant and, on an envelope/binding
-// MISMATCH, surfaces a TRANSIENT error so the record is retried, never dropped.
+// TestPersist_ForeignSortKeyOccupant_NotDropped pins the silent-loss guard on
+// Persist. attribute_not_exists(SK) fails for BOTH a genuine redelivery and a
+// distinct record whose key is already occupied, and sortKey is injective, so
+// this store can only ever produce the first case. The second means a writer
+// that is not this store owns that key — blind-counting it a duplicate would ack
+// and DROP a distinct message. Persist reads the occupant strongly-consistently
+// and, on an envelope/binding MISMATCH, returns a TRANSIENT error so the record
+// is retried rather than lost.
 //
-// Mutation this kills: reverting Persist's conflict handling to the blind
-// `duplicates++; continue` makes the colliding record silently counted a
-// duplicate → the batch's other record persists → Persist returns nil (a silent
-// DROP) → this test FAILs at "must surface a transient error, not drop".
-func TestPersist_CrossSchemeCollision_NotDropped(t *testing.T) {
+// Mutation this kills: removing the verify-on-conflict readback and counting
+// every conflict a duplicate → Persist returns ErrDuplicateRecord → this test
+// FAILs on the transient-error assertion.
+func TestPersist_ForeignSortKeyOccupant_NotDropped(t *testing.T) {
 	f := newFakeDDB()
 	var counter int64
 	f.updateItemFn = seqCounterUpdateFn(&counter)
-	// The occupying row is a DIFFERENT record (a legacy raw-key alias): its
+	// The occupying row is a DIFFERENT record — a foreign writer owns the key: its
 	// envelope/binding differ from the record being persisted.
 	f.getItemFn = func(*dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
 		return &dynamodb.GetItemOutput{Item: map[string]ddbtypes.AttributeValue{
-			"envelope_id": &ddbtypes.AttributeValueMemberS{Value: "legacy-raw-env"},
-			"binding_id":  &ddbtypes.AttributeValueMemberS{Value: "legacy-raw-bind"},
+			"envelope_id": &ddbtypes.AttributeValueMemberS{Value: "foreign-env"},
+			"binding_id":  &ddbtypes.AttributeValueMemberS{Value: "foreign-bind"},
 		}}, nil
 	}
 	putCalls := 0
 	f.putItemFn = func(*dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
 		putCalls++
 		if putCalls == 1 {
-			// The new record's escaped SK collides with a legacy raw row.
+			// This record's SK is already occupied by a row it does not own.
 			return nil, &ddbtypes.ConditionalCheckFailedException{}
 		}
 		return &dynamodb.PutItemOutput{}, nil
@@ -260,10 +250,10 @@ func TestPersist_CrossSchemeCollision_NotDropped(t *testing.T) {
 	}
 	err := s.Persist(context.Background(), records)
 	if err == nil {
-		t.Fatalf("a cross-scheme key collision must surface a transient error, not drop the record")
+		t.Fatalf("a foreign occupant of this sort key must surface a transient error, not drop the record")
 	}
 	if !errors.Is(err, shared.ErrUnavailable) {
-		t.Fatalf("collision must be a transient ErrUnavailable (self-heals as the legacy row drains), got %v", err)
+		t.Fatalf("a foreign sort-key occupant must be a transient ErrUnavailable so the record is retried, got %v", err)
 	}
 	be, ok := shared.AsBridgeError(err)
 	if !ok || be.Class != shared.ErrorTransient {
@@ -294,59 +284,6 @@ func TestPersist_GenuineDuplicate_StillCollapses(t *testing.T) {
 	err := s.Persist(context.Background(), records)
 	if !errors.Is(err, shared.ErrDuplicateRecord) {
 		t.Fatalf("a genuine same-record redelivery must collapse to ErrDuplicateRecord, got %v", err)
-	}
-}
-
-// TestClaim_OldFormatRawSKRows_StillClaimable pins the c13-review-MEDIUM
-// migration constraint: rows written under the PRE-UPGRADE raw-concat SK
-// ("OUTBOX#order#eu#prod") must NOT be orphaned. The scan fallback finds them
-// via begins_with(SK, skPrefix), and claimOne/unmarshalRecord read the
-// authoritative envelope_id/binding_id ATTRIBUTES (never the SK), so a legacy
-// raw SK claims cleanly.
-//
-// Mutation this kills: bumping skPrefix (e.g. to "OUTBOX2#") — the naive
-// migration the review forbids — makes the scan's begins_with(:prefix) no
-// longer match legacy "OUTBOX#..." rows → the HasPrefix assertion below FAILs,
-// proving the record would be orphaned.
-func TestClaim_OldFormatRawSKRows_StillClaimable(t *testing.T) {
-	const (
-		partition = "PART#migrating"
-		oldRawSK  = "OUTBOX#order#eu#prod" // pre-upgrade raw concatenation
-	)
-	f := newFakeDDB()
-	f.getItemFn = fenceGetItem("0")
-	f.queryFn = func(in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
-		// The scan fallback filters live rows by begins_with(SK, :prefix). The
-		// legacy raw SK MUST still match that prefix or it is orphaned.
-		prefix := strAttr(in.ExpressionAttributeValues, ":prefix")
-		if !strings.HasPrefix(oldRawSK, prefix) {
-			t.Fatalf("legacy raw SK %q is orphaned: scan prefix %q no longer matches it", oldRawSK, prefix)
-		}
-		item := pendingQueryItem(partition, oldRawSK, "rec-legacy")
-		// A legacy row predates claim_sort; the scan path does not require it.
-		item["envelope_id"] = &ddbtypes.AttributeValueMemberS{Value: "order"}
-		item["binding_id"] = &ddbtypes.AttributeValueMemberS{Value: "eu#prod"}
-		return &dynamodb.QueryOutput{Items: []map[string]ddbtypes.AttributeValue{item}}, nil
-	}
-	f.transactFn = func(*dynamodb.TransactWriteItemsInput) (*dynamodb.TransactWriteItemsOutput, error) {
-		return &dynamodb.TransactWriteItemsOutput{}, nil
-	}
-	s := newFakeStore(f)
-	// Force the scan fallback: legacy rows carry no claim_sort, so they are
-	// invisible to the ClaimIndex fast path (documented migration step).
-	s.claimIndexAbsent.Store(true)
-
-	claimed, err := s.Claim(context.Background(), partition,
-		persistence.LeaseToken{Version: 1, Owner: "drainer"}, 10)
-	if err != nil {
-		t.Fatalf("claiming a legacy raw-SK row must not error: %v", err)
-	}
-	if len(claimed) != 1 || claimed[0].ID() != "rec-legacy" {
-		t.Fatalf("legacy raw-SK pending row must be claimable, got %v", claimed)
-	}
-	if claimed[0].EnvelopeID() != "order" || claimed[0].BindingID() != "eu#prod" {
-		t.Fatalf("legacy row identity must come from its attributes, got env=%q bind=%q",
-			claimed[0].EnvelopeID(), claimed[0].BindingID())
 	}
 }
 

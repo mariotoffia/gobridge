@@ -23,7 +23,7 @@ import (
 //
 // preparedBuild is unexported on purpose: the only supported public
 // entry points are Builder.Build (single-shot) and Builder.Plan +
-// BuildPlan.Commit (explicit two-phase). See M-3 / W-7.
+// BuildPlan.Commit (explicit two-phase).
 type preparedBuild struct {
 	cfg    *ports.BridgeConfig
 	stores *storeResult
@@ -60,7 +60,7 @@ type BuildPlan struct {
 	// consumed is set the instant Commit is invoked — BEFORE complete runs — so
 	// the plan is one-shot regardless of outcome. complete()'s failure defers
 	// close the prep-opened store handles, so a retried Commit would build a
-	// runtime over already-closed handles (HIGH-4); marking consumed up front
+	// runtime over already-closed handles; marking consumed up front
 	// makes a second Commit fail instead.
 	consumed bool
 	// closed records that Close/Abort has released the prep-opened stores of a
@@ -100,7 +100,7 @@ func (b *Builder) Plan(ctx context.Context) (*BuildPlan, error) {
 // returns an error, whether the FIRST call succeeded OR failed. The
 // plan is marked consumed BEFORE complete runs: complete()'s failure
 // path closes the prep-opened store handles, so a retried Commit would
-// otherwise build a runtime over already-closed stores (HIGH-4). A
+// otherwise build a runtime over already-closed stores. A
 // caller that wants to retry a failed reload must Plan again.
 func (p *BuildPlan) Commit(ctx context.Context) (*runtime.Runtime, error) {
 	if p == nil {
@@ -130,7 +130,7 @@ func (p *BuildPlan) Commit(ctx context.Context) (*runtime.Runtime, error) {
 // Close releases the transport-independent store handles a Plan opened but never
 // committed into a runtime. It is the abort path for a caller that prepares a
 // plan and then decides not to Commit it: without it the opened SQLite/DynamoDB
-// store handles leak for the plan's lifetime (HIGH-4). Close is idempotent and
+// store handles leak for the plan's lifetime. Close is idempotent and
 // safe on a nil plan.
 //
 // Close is a deliberate NO-OP once Commit has been invoked: on Commit success
@@ -163,12 +163,17 @@ func (p *BuildPlan) Abort() { p.Close() }
 // It is unexported to enforce that callers cannot construct an
 // invalid prepare/complete sequence — the public surface is Build
 // (single-shot) or Plan/Commit (explicit two-phase).
-func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
+// Preflight validates a blueprint and capabilities without opening stores or
+// constructing sessions, receivers, senders, or credential refreshers.
+func (b *Builder) Preflight(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Surface deferred registration errors (e.g. a duplicate processor name)
 	// before doing any work, so a name collision fails the Build loudly rather
 	// than silently dropping a processor referenced by a route.
 	if len(b.regErrs) > 0 {
-		return nil, errors.Join(b.regErrs...)
+		return errors.Join(b.regErrs...)
 	}
 
 	// Build against a bridge-owned structural copy. Plugin configs advertising
@@ -179,31 +184,39 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 	var err error
 	b.cfg, err = cloneConfigForBuild(b.cfg)
 	if err != nil {
-		return nil, fmt.Errorf("bridge: freeze config for build: %w", err)
+		return fmt.Errorf("bridge: freeze config for build: %w", err)
 	}
 
 	if err := runtime.CheckRandSource(); err != nil {
-		return nil, fmt.Errorf("bridge: entropy source unavailable: %w", err)
+		return fmt.Errorf("bridge: entropy source unavailable: %w", err)
 	}
 
 	if b.validator != nil {
 		if err := b.validator(b.cfg); err != nil {
-			return nil, fmt.Errorf("bridge: config validation: %w", err)
+			return fmt.Errorf("bridge: config validation: %w", err)
 		}
 	}
 	if err := b.validatePostAcquireActivationTimings(); err != nil {
-		return nil, err
+		return err
 	}
 	if err := b.validateFailoverBudgets(); err != nil {
-		return nil, err
+		return err
 	}
 	// Cardinality is a pure capability-based preflight. It must run before
 	// buildStores or complete creates any store, session, receiver, sender, or
 	// runtime resource: a rejected topology must leave the live system untouched.
 	if err := b.validateDedicatedIngressSessions(); err != nil {
-		return nil, err
+		return err
 	}
 	if err := b.validateIngressMemory(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
+	if err := b.Preflight(ctx); err != nil {
 		return nil, err
 	}
 
@@ -217,6 +230,19 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 		runtime.WithOutboxStore(stores.outbox),
 		runtime.WithDLQStore(stores.dlq),
 		runtime.WithManagedSubscriptionStore(stores.managedSubscriptions),
+		// bridge.drain_timeout is the ceiling the supervisor puts on
+		// Runtime.Stop (stopCurrent / stopAbandoned / every swap). Give the
+		// runtime the SAME ceiling so the two agree: without it the runtime fell
+		// back to an internal 5s budget, so whichever Stop won the SIGTERM race
+		// clamped the close phase to 5s while the supervisor still held a 30s
+		// drain open — the configured budget governed nothing, and the
+		// store-close grace clamped to zero mid-drain.
+		//
+		// The pre-cancel settle phase keeps its own default ceiling
+		// (WithStopQuiesce unset): it is already bounded by this same Stop
+		// context, and pinning it to the full drain would leave nothing of the
+		// budget for closing sessions, stores and telemetry.
+		runtime.WithShutdownTimeout(b.cfg.Bridge.DrainTimeoutDuration()),
 	}
 	if b.cfg.Bridge.InstanceID != "" {
 		rtOpts = append(rtOpts, runtime.WithInstanceID(b.cfg.Bridge.InstanceID))
@@ -228,8 +254,8 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 		rtOpts = append(rtOpts, runtime.WithDeliveryHook(b.hook))
 	}
 	// Forward observability into the runtime so a config-driven deployment
-	// exports real metrics/traces/audit instead of the Noop defaults
-	// (Finding 15). The Builder/Supervisor previously had no seam to pass
+	// exports real metrics/traces/audit instead of the Noop defaults.
+	// The Builder/Supervisor previously had no seam to pass
 	// these through despite runtime.WithMetrics/WithTracer/WithAuditLogger
 	// existing.
 	if b.metrics != nil {
@@ -246,7 +272,7 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 	if err != nil {
 		// buildStores already opened handles; a failure here (e.g. clustered
 		// endpoint resolution) must release them rather than leak on every
-		// failed reload (builder_prepare.go:229, Chunk 3).
+		// failed reload (builder_prepare.go:229).
 		b.closeStoreHandles(stores)
 		return nil, err
 	}
@@ -286,6 +312,9 @@ type storeResult struct {
 	leaseDist                bool
 	outboxDist               bool
 	dlqDist                  bool
+	leaseDurable             bool
+	outboxDurable            bool
+	dlqDurable               bool
 	managedSubscriptions     ports.ManagedSubscriptionStore
 	managedSubscriptionsDist bool
 }
@@ -322,12 +351,13 @@ func hasExclusiveSessions(cfg *ports.BridgeConfig) bool {
 
 func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error) {
 	res := &storeResult{}
+	var err error
 
 	// Any failure AFTER a store was opened (a later store's factory error, the
 	// nil-store guard, or the clustered-distribution rejection below) must not
 	// leak the handles already created — a watcher-driven reload that keeps
 	// failing would otherwise leak a SQLite handle / network client every cycle
-	// (builder_prepare.go:229, Chunk 3). closeStoreHandles is best-effort and
+	// (builder_prepare.go:229). closeStoreHandles is best-effort and
 	// skips in-memory stores (no io.Closer), mirroring runtime.Stop teardown.
 	defer func() {
 		if retErr != nil {
@@ -349,6 +379,7 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 		}
 		res.lease = s
 		res.leaseDist = isDistributedFactory(sf)
+		res.leaseDurable = isCrashDurableFactory(sf)
 	}
 	if sc := b.cfg.Stores.Outbox; sc != nil {
 		sf, ok := b.storeFactories[sc.Type]
@@ -368,25 +399,11 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 		}
 		res.outbox = s
 		res.outboxDist = isDistributedFactory(sf)
+		res.outboxDurable = isCrashDurableFactory(sf)
 	}
-	if sc := b.cfg.Stores.ManagedSubscriptions; sc != nil {
-		sf, ok := b.storeFactories[sc.Type]
-		if !ok {
-			return nil, fmt.Errorf("bridge: no store factory registered for managed_subscriptions type %q", sc.Type)
-		}
-		mf, ok := sf.(ports.ManagedSubscriptionStoreFactory)
-		if !ok {
-			return nil, fmt.Errorf("bridge: store factory %q does not support managed subscriptions", sc.Type)
-		}
-		store, err := mf.NewManagedSubscriptionStore(ctx, sc.Config)
-		if err != nil {
-			return nil, fmt.Errorf("bridge: create managed subscription store: %w", err)
-		}
-		if store == nil {
-			return nil, fmt.Errorf("bridge: store factory %q returned nil managed subscription store without error", sc.Type)
-		}
-		res.managedSubscriptions = store
-		res.managedSubscriptionsDist = isDistributedFactory(sf)
+	res.managedSubscriptions, res.managedSubscriptionsDist, err = b.newManagedSubscriptionStore(ctx)
+	if err != nil {
+		return nil, err
 	}
 	if requiresManagedSubscriptionStore(b.cfg) && res.managedSubscriptions == nil {
 		return nil, fmt.Errorf("bridge: persistent/exclusive MQTT sessions with desired subscriptions require stores.managed_subscriptions")
@@ -405,10 +422,11 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 		}
 		res.dlq = s
 		res.dlqDist = isDistributedFactory(sf)
+		res.dlqDurable = isCrashDurableFactory(sf)
 	}
 
 	// Clustered posture is implied by configured cluster endpoints even when
-	// deployment_mode is unset (cluster finding 11): forwarding between
+	// deployment_mode is unset: forwarding between
 	// instances with a process-local lease/outbox/DLQ store silently breaks
 	// exclusivity and durability, so the store-distribution guard keys on
 	// either signal.
@@ -455,9 +473,13 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 			"remediation", "set replicas=1, or use a distributed lease store")
 	}
 
+	if err := b.enforceStoreDurability(res); err != nil {
+		return nil, err
+	}
+
 	// Wrap stores with metrics decorators when an exporter is configured so
 	// lease/outbox latency and failure metrics are actually emitted for
-	// config-driven deployments (Finding 15). Wrapping happens AFTER the
+	// config-driven deployments. Wrapping happens AFTER the
 	// distributed-store validation so leaseDist/outboxDist reflect the real
 	// backing factory, not the decorator. A nil clock defaults to the system
 	// clock inside the decorator. No DLQ decorator exists in the runtime, so
@@ -488,11 +510,39 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 	return res, nil
 }
 
+// newManagedSubscriptionStore opens the configured stores.managed_subscriptions
+// store, reporting whether its factory is distributed. A blueprint without one
+// yields (nil, false, nil); whether that is acceptable is the caller's rule.
+// Shared by buildStores and SeedManagedSubscriptionBaselines so both open the
+// store through the same factory checks.
+func (b *Builder) newManagedSubscriptionStore(ctx context.Context) (ports.ManagedSubscriptionStore, bool, error) { //nolint:ireturn // the role port is what every caller consumes
+	sc := b.cfg.Stores.ManagedSubscriptions
+	if sc == nil {
+		return nil, false, nil
+	}
+	sf, ok := b.storeFactories[sc.Type]
+	if !ok {
+		return nil, false, fmt.Errorf("bridge: no store factory registered for managed_subscriptions type %q", sc.Type)
+	}
+	mf, ok := sf.(ports.ManagedSubscriptionStoreFactory)
+	if !ok {
+		return nil, false, fmt.Errorf("bridge: store factory %q does not support managed subscriptions", sc.Type)
+	}
+	store, err := mf.NewManagedSubscriptionStore(ctx, sc.Config)
+	if err != nil {
+		return nil, false, fmt.Errorf("bridge: create managed subscription store: %w", err)
+	}
+	if store == nil {
+		return nil, false, fmt.Errorf("bridge: store factory %q returned nil managed subscription store without error", sc.Type)
+	}
+	return store, isDistributedFactory(sf), nil
+}
+
 // resolveClusterEndpoints returns the endpoints that identify this instance
 // to its cluster peers. Explicitly configured cluster.endpoints win; otherwise
 // a registered EndpointResolver is consulted.
 //
-// Posture on resolution failure (cluster finding C11): in a clustered
+// Posture on resolution failure (cluster): in a clustered
 // deployment (deployment_mode: clustered) a failed resolution is a STARTUP
 // ERROR — continuing with nil endpoints would silently disable cluster
 // forwarding for the whole process lifetime, leaving peers unable to forward

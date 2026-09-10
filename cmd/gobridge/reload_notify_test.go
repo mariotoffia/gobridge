@@ -11,7 +11,7 @@ import (
 )
 
 // fakeApplyNotifier records NotifyApplyResult calls so the test can assert the
-// exact config pointer and error the pipeline forwarded (XCUT-A).
+// exact config pointer and error the pipeline forwarded.
 type fakeApplyNotifier struct {
 	calls []notifyCall
 }
@@ -25,7 +25,7 @@ func (f *fakeApplyNotifier) NotifyApplyResult(cfg *ports.BridgeConfig, err error
 	f.calls = append(f.calls, notifyCall{cfg: cfg, err: err})
 }
 
-// XCUT-A: the composition root must report DEFINITIVE reconfiguration outcomes
+// the composition root must report DEFINITIVE reconfiguration outcomes
 // back to the desired-config manager, passing the EXACT ev.NewConfig pointer
 // (the manager correlates by pointer identity) and the swap error verbatim so
 // desired-vs-running divergence clears on success and is raised on failure.
@@ -93,7 +93,7 @@ type chanWatcher struct{ ch <-chan *ports.BridgeConfig }
 
 func (w chanWatcher) Watch(context.Context) (<-chan *ports.BridgeConfig, error) { return w.ch, nil }
 
-// FIX 3 (XCUT-A): after an admin in-band commit applies cfgA, the file watcher
+// after an admin in-band commit applies cfgA, the file watcher
 // re-emits the identical content. The config.Manager records THAT re-emit
 // pointer as its desiredConfig, so if the pipeline skips the redundant swap
 // WITHOUT acking, ReconfigurePending stays true forever for a config the runtime

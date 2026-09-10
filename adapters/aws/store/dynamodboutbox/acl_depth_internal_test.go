@@ -26,12 +26,12 @@ func TestCountPending_BoundedCount_SinglePage(t *testing.T) {
 		if in.Select != ddbtypes.SelectCount {
 			t.Fatalf("CountPending must use Select=COUNT (no record materialisation), got %v", in.Select)
 		}
-		if in.FilterExpression == nil || *in.FilterExpression != "#st = :pending" {
-			t.Fatalf("CountPending must filter on pending status, got %v", in.FilterExpression)
+		if in.FilterExpression == nil || *in.FilterExpression != "#st = :st" {
+			t.Fatalf("CountPending must filter on status, got %v", in.FilterExpression)
 		}
-		if v, ok := in.ExpressionAttributeValues[":pending"].(*ddbtypes.AttributeValueMemberS); !ok ||
+		if v, ok := in.ExpressionAttributeValues[":st"].(*ddbtypes.AttributeValueMemberS); !ok ||
 			v.Value != string(persistence.OutboxPending) {
-			t.Fatalf("CountPending pending filter value = %v; want %q", in.ExpressionAttributeValues[":pending"], persistence.OutboxPending)
+			t.Fatalf("CountPending status filter value = %v; want %q", in.ExpressionAttributeValues[":st"], persistence.OutboxPending)
 		}
 		return &dynamodb.QueryOutput{Count: 7}, nil
 	}
@@ -115,41 +115,16 @@ func TestCountPending_AllPartitions_Unsupported(t *testing.T) {
 	}
 }
 
-// TestCountPending_IndexAlreadyLatched_Unsupported: once the Claim fast path has
-// latched the ClaimIndex unusable, a bounded count is impossible, so CountPending
-// READS that shared latch and reports the capability unavailable without issuing
-// any query — rather than falling back to a full-partition scan. (CountPending
-// only READS the latch here; it never WRITES it — see
-// TestCountPending_MissingIndex_DoesNotLatchClaimPath.)
-func TestCountPending_IndexAlreadyLatched_Unsupported(t *testing.T) {
-	f := newFakeDDB()
-	f.queryFn = func(*dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
-		t.Fatalf("CountPending must not query when the ClaimIndex is latched unusable")
-		return nil, nil
-	}
-	s := newFakeStore(f)
-	s.claimIndexAbsent.Store(true)
-
-	n, err := s.CountPending(context.Background(), "SESSION#s1")
-	if !errors.Is(err, ports.ErrOutboxDepthUnsupported) {
-		t.Fatalf("CountPending(latched): got err %v; want ports.ErrOutboxDepthUnsupported", err)
-	}
-	if n != 0 {
-		t.Fatalf("CountPending(latched) = %d; want 0", n)
-	}
-	// Reading the latch must leave it set (CountPending neither clears nor
-	// depends on clearing it).
-	if !s.claimIndexAbsent.Load() {
-		t.Fatalf("CountPending must not clear a Claim-set latch")
-	}
-}
-
-// TestCountPending_MissingIndex_DegradesToUnsupported: an un-migrated /
-// misprojected table surfaces a missing-index ValidationException on the COUNT
-// query. CountPending classifies it (via the shared claimIndexUnusableReason
-// helper) and returns ports.ErrOutboxDepthUnsupported — a benign "cannot report
-// depth", NOT a real fault — so the drainer keeps its saturating fallback.
-func TestCountPending_MissingIndex_DegradesToUnsupported(t *testing.T) {
+// TestCountPending_MissingIndex_IsARealFailure: ClaimIndex is REQUIRED —
+// CreateTable provisions it and Preflight rejects a table without it — so a
+// missing-index ValidationException on the COUNT query is a provisioning fault,
+// not a capability the store lacks. Reporting it as
+// ports.ErrOutboxDepthUnsupported would hand the drainer a benign saturating
+// fallback and hide a broken table behind a plausible-looking gauge forever.
+//
+// Mutation this kills: re-introducing an "unusable index → unsupported" branch
+// makes the error match the sentinel → this test FAILs.
+func TestCountPending_MissingIndex_IsARealFailure(t *testing.T) {
 	f := newFakeDDB()
 	f.queryFn = func(*dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
 		return nil, errors.New("ValidationException: The table does not have the specified index: ClaimIndex")
@@ -157,42 +132,14 @@ func TestCountPending_MissingIndex_DegradesToUnsupported(t *testing.T) {
 	s := newFakeStore(f)
 
 	n, err := s.CountPending(context.Background(), "SESSION#s1")
-	if !errors.Is(err, ports.ErrOutboxDepthUnsupported) {
-		t.Fatalf("CountPending(missing index): got err %v; want ports.ErrOutboxDepthUnsupported", err)
+	if err == nil {
+		t.Fatal("CountPending(missing index): expected a real error, got nil")
+	}
+	if errors.Is(err, ports.ErrOutboxDepthUnsupported) {
+		t.Fatalf("a missing required index is a fault, not an unsupported capability, got %v", err)
 	}
 	if n != 0 {
 		t.Fatalf("CountPending(missing index) = %d; want 0", n)
-	}
-}
-
-// TestCountPending_MissingIndex_DoesNotLatchClaimPath is the cross-path
-// side-effect regression: CountPending is a READ-ONLY depth reporter, so a
-// depth/metrics probe that hits a missing/mis-projected ClaimIndex must NOT
-// mutate the shared claimIndexAbsent latch that the Claim fast path reads.
-// Otherwise a single depth cycle would silently force EVERY subsequent Claim in
-// this process onto the exhaustive base-table scan — a read degrading the write
-// path. The latch must be observably UNCHANGED across the CountPending call.
-//
-// Mutation-verify: re-introduce s.markClaimIndexUnusable(...) in CountPending's
-// unusable-index branch and this test FAILS; remove it and it PASSES.
-func TestCountPending_MissingIndex_DoesNotLatchClaimPath(t *testing.T) {
-	f := newFakeDDB()
-	f.queryFn = func(*dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
-		return nil, errors.New("ValidationException: The table does not have the specified index: ClaimIndex")
-	}
-	s := newFakeStore(f)
-
-	if s.claimIndexAbsent.Load() {
-		t.Fatalf("precondition: Claim latch must start unset")
-	}
-
-	_, err := s.CountPending(context.Background(), "SESSION#s1")
-	if !errors.Is(err, ports.ErrOutboxDepthUnsupported) {
-		t.Fatalf("CountPending(missing index): got err %v; want ports.ErrOutboxDepthUnsupported", err)
-	}
-
-	if s.claimIndexAbsent.Load() {
-		t.Fatalf("CountPending latched claimIndexAbsent on a missing index; a read-only depth probe must NOT degrade the Claim write path")
 	}
 }
 
@@ -241,8 +188,5 @@ func TestCountPending_RealError_Returned(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("CountPending on error = %d; want 0", n)
-	}
-	if s.claimIndexAbsent.Load() {
-		t.Fatalf("a real (non-index) error must not latch the ClaimIndex as unusable")
 	}
 }

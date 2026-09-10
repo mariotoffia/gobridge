@@ -15,7 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
-// Confirm window (design §8.1) orchestration tests: the coordinator's post-commit
+// Confirm window (cluster-config-rollout-protocol.md §8.1) orchestration tests: the coordinator's post-commit
 // decision logic (pure) and the whole drive over the controllable fake host, where
 // convergence is injectable so the deadman-revert path is deterministic.
 
@@ -97,7 +97,7 @@ func TestClusterRolloutDriver_ConfirmWindow_HappyPath(t *testing.T) {
 	require.NotNil(t, d)
 
 	stop := d.Start(context.Background(), clock.System, nil)
-	defer stop()
+	defer stop(context.Background())
 
 	candidate := soloWindowConfig(7, 5*time.Second)
 	candidate.Bindings[0].Address = "addr/confirmed"
@@ -111,11 +111,20 @@ func TestClusterRolloutDriver_ConfirmWindow_HappyPath(t *testing.T) {
 	assert.Equal(t, "addr/confirmed", host.Config().Bindings[0].Address)
 
 	// The durable committed artifact advanced to the confirmed generation, so a
-	// reboot now boots on it (not the provisional one).
-	cs, ok := store.CommittedConfig(context.Background())
-	require.NoError(t, ok)
-	assert.Equal(t, uint64(1), cs.Generation)
-	assert.Equal(t, 7, cs.ConfigVersion)
+	// reboot now boots on it (not the provisional one). The artifact is written
+	// by the driver AFTER it publishes the Confirmed state, so it is waited for
+	// rather than read on the heels of the state transition above.
+	var committed persistence.CommittedRolloutConfig
+	wait.Until(t, 5*time.Second, "the committed artifact advances to the confirmed generation", func() bool {
+		cs, err := store.CommittedConfig(context.Background())
+		if err != nil {
+			return false
+		}
+		committed = cs
+		return cs.Generation == 1
+	})
+	assert.Equal(t, uint64(1), committed.Generation)
+	assert.Equal(t, 7, committed.ConfigVersion)
 }
 
 // TestClusterRolloutDriver_ConfirmWindow_DeadmanRevert is UC-CR9 in-process: a
@@ -137,7 +146,7 @@ func TestClusterRolloutDriver_ConfirmWindow_DeadmanRevert(t *testing.T) {
 	require.NotNil(t, d)
 
 	stop := d.Start(context.Background(), clock.System, nil)
-	defer stop()
+	defer stop(context.Background())
 
 	candidate := soloWindowConfig(7, 60*time.Millisecond)
 	candidate.Bindings[0].Address = "addr/never-converges"

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -61,14 +62,26 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // handleLive reports process liveness. It returns 200 while the process is
 // alive and able to recover — including during runtime swap windows when the
 // runtime is temporarily nil, AND after a deliberate admin stop (a clean pause
-// leaves the runtime non-terminal) — and 503 only when the runtime is terminal:
-// an unrecoverable component failure that cancelled the runtime. Kubernetes uses
-// this probe to restart the container, so failing closed on a terminal runtime
-// is what turns a dead-but-running process into an automatic restart, while a
-// deliberate pause must NOT be mistaken for death (CRITICAL 1 / CRITICAL 3).
+// leaves the runtime non-terminal) — and 503 only when the process is terminal:
+// an unrecoverable component failure that cancelled the runtime, or a wedged
+// composition root reported through TerminalProvider. Kubernetes uses this probe
+// to restart the container, so failing closed is what turns a dead-but-running
+// process into an automatic restart, while a deliberate pause must NOT be
+// mistaken for death.
+//
+// The TerminalProvider check is what covers a WEDGED supervisor: it has no
+// active runtime, so a runtime-only check sees the same "nothing here" a healthy
+// swap window produces and keeps answering 200 for a process that routes
+// nothing.
 func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, max-age=0")
-	if rt := s.currentRuntime(); rt != nil && rt.Terminal() {
+	terminal := s.cfg.TerminalProvider != nil && s.cfg.TerminalProvider()
+	if !terminal {
+		if rt := s.currentRuntime(); rt != nil && rt.Terminal() {
+			terminal = true
+		}
+	}
+	if terminal {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "terminal"})
 		return
 	}
@@ -84,8 +97,8 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 //	?level=full        — all routes have handler registered (ServiceLevelFull)
 //
 // Operators map probes to levels:
-//   - K8s liveness:   /live (200 while recoverable, 503 once terminal)
-//   - K8s readiness:  /ready?level=connected (tolerates intermittent broker hiccups)
+//   - K8s liveness: /live (200 while recoverable, 503 once terminal)
+//   - K8s readiness: /ready?level=connected (tolerates intermittent broker hiccups)
 //   - Pre-traffic:    /ready?level=full (strict, every route ready to dispatch)
 //
 // When ?level= is absent, the legacy contract applies: 200 with
@@ -94,7 +107,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 // structured form {status, role, level, requested}, returning 503 when
 // have<want.
 //
-// HIGH-3: the legacy (no ?level=) default now requires LevelFull — every
+// the legacy (no ?level=) default now requires LevelFull — every
 // session subscribed AND every route ready to dispatch — rather than the old
 // running+healthy check. running+healthy stayed green while an ISOLATED route or
 // session was permanently faulting (superviseRoute/superviseSession record
@@ -122,7 +135,7 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	rawLevel := r.URL.Query().Get("level")
 	if rawLevel == "" {
 		// Legacy path: preserve historical {status,role} / {error} shape, but
-		// gate on the achieved readiness level (HIGH-3) so an isolated route or
+		// gate on the achieved readiness level so an isolated route or
 		// session fault sheds traffic instead of advertising a false green.
 		if rt.ReadinessLevel(r.Context()) < ports.LevelFull {
 			writeErr(w, http.StatusServiceUnavailable, "not ready")
@@ -252,15 +265,20 @@ func (s *Server) handleMonitorRoutes(w http.ResponseWriter, r *http.Request) {
 // deepHealthResponse is the JSON-serializable representation of a deep
 // health check. It mirrors ports.DeepHealth with explicit JSON tags.
 type deepHealthResponse struct {
-	Running         bool                        `json:"running"`
-	Healthy         bool                        `json:"healthy"`
-	InstanceID      string                      `json:"instance_id"`
-	Role            string                      `json:"role"`
-	ReadyForTraffic bool                        `json:"ready_for_traffic"`
-	ServiceLevel    string                      `json:"service_level"`
-	Level           string                      `json:"level"` // current ReadinessLevel
-	Sessions        []deepHealthSessionResponse `json:"sessions"`
-	Routes          []deepHealthRouteResponse   `json:"routes"`
+	Running         bool   `json:"running"`
+	Healthy         bool   `json:"healthy"`
+	InstanceID      string `json:"instance_id"`
+	Role            string `json:"role"`
+	ReadyForTraffic bool   `json:"ready_for_traffic"`
+	// Empty reports an instance that carries no routes and no sessions, so it
+	// bridges nothing. It is what distinguishes a bridge started without a
+	// configuration from one whose routes are merely still coming up: both are
+	// not ready for traffic, only one will ever become ready on its own.
+	Empty        bool                        `json:"empty"`
+	ServiceLevel string                      `json:"service_level"`
+	Level        string                      `json:"level"` // current ReadinessLevel
+	Sessions     []deepHealthSessionResponse `json:"sessions"`
+	Routes       []deepHealthRouteResponse   `json:"routes"`
 	// ConfigWatch surfaces live-reconfiguration health so operators can see a
 	// bridge running blind on its last good config (degraded config-watch was
 	// previously invisible outside the logs). Omitted when no DegradedProvider
@@ -270,12 +288,23 @@ type deepHealthResponse struct {
 
 // ConfigWatchHealth is the deep-health projection of live-reconfiguration state.
 type ConfigWatchHealth struct {
+	// StartupPending marks an ordinary initial wait or retryable startup fault,
+	// never a rejected configuration or terminal lifecycle. It does not imply
+	// readiness and must not suppress failures after first activation.
+	StartupPending     bool   `json:"startup_pending,omitempty"`
 	Degraded           bool   `json:"degraded"`
 	Reason             string `json:"reason,omitempty"`
 	ReconfigurePending bool   `json:"reconfigure_pending"`
 	DesiredVersion     *int   `json:"desired_version,omitempty"`
 	RunningVersion     *int   `json:"running_version,omitempty"`
 	LastApplyError     string `json:"last_apply_error,omitempty"`
+	// RestartRequired names a part of the desired configuration that this
+	// process has accepted and durably stored but CANNOT apply while running,
+	// so the change is inert until an operator restarts it. The HTTP block is
+	// the case that exists today: admin and monitor listeners are bound once, at
+	// startup, from the boot configuration. Empty when the running process
+	// matches its desired configuration in every such field.
+	RestartRequired string `json:"restart_required,omitempty"`
 	// Rollout surfaces the coordinated cluster rollout barrier as this member
 	// last observed it. Omitted entirely unless the deployment runs one
 	// (bridge.cluster.rollout: coordinated with a barrier wired). It answers the
@@ -293,6 +322,12 @@ type ClusterRolloutHealth struct {
 	// no rollout has ever been proposed in this cohort.
 	Generation uint64 `json:"generation"`
 	State      string `json:"state,omitempty"`
+	// ConfirmPending reports that a "committed" state is PROVISIONAL: a confirm
+	// window is open, so the cohort has not decided and reverts if the window
+	// expires before every member converges. It is the difference between "this
+	// member is behind the cohort" (page) and "the cohort is still making up its
+	// mind" (wait), so read it before acting on applied=false.
+	ConfirmPending bool `json:"confirm_pending,omitempty"`
 	// ConfigVersion is the config version the rollout carries.
 	ConfigVersion int `json:"config_version"`
 	// Epoch is the frozen membership epoch; Acked and Nacked are who has voted.
@@ -300,18 +335,61 @@ type ClusterRolloutHealth struct {
 	Epoch  []string `json:"epoch,omitempty"`
 	Acked  []string `json:"acked,omitempty"`
 	Nacked []string `json:"nacked,omitempty"`
+	// Converged lists the members that recorded post-swap convergence during an
+	// active confirm window. Epoch minus Converged is who the confirm barrier is
+	// waiting for before it can confirm; the ones still missing when the window
+	// expires are why the cohort reverts.
+	Converged []string `json:"converged,omitempty"`
 	// Reason carries the abort reason or nack aggregation when present.
 	Reason string `json:"reason,omitempty"`
 	// CandidateStaged reports whether THIS member has received the candidate
 	// config from its own config source. False on a long-staging rollout
 	// identifies this member as the one holding the cohort up.
 	CandidateStaged bool `json:"candidate_staged"`
+	// NotVoting says WHY this member has not voted on the observed rollout, and
+	// is absent once it has. candidate_staged reports only that the candidate is
+	// missing, which is the benign, deadline-bounded case; this is what names the
+	// other one — a member whose config source DID deliver the change and whose
+	// own barrier refused to carry it, which nothing in the shared rollout row
+	// can show.
+	NotVoting string `json:"not_voting,omitempty"`
 	// Applied reports whether this member is actually RUNNING the generation.
 	// Meaningful once State is "committed", where it is the signal that
 	// separates a healthy cohort from a split one: the rollout row reads
 	// committed on every member, but a member whose local swap failed is still
 	// on the previous generation. Alert on state=committed AND applied=false.
 	Applied bool `json:"applied"`
+	// ObservedAt is when this member last successfully read the rollout row, and
+	// Stale reports that the observation has outrun the barrier's poll cadence.
+	// ObservationAgeMS is how long ago that read was — or, for a member that has
+	// never managed one (ObservedAt absent), how long the drive has been trying.
+	// Read these FIRST: every other field here is a projection of that
+	// observation, so a stale block describes the cohort as it WAS, not as it is.
+	// The absolute instant is what makes two MEMBERS' blocks comparable — each
+	// one's age is measured at its own read, so ages alone cannot say whose view
+	// is older. Omitted entirely when this member has never managed a read.
+	// LastError says why it stopped being able to look.
+	ObservedAt       time.Time `json:"observed_at,omitzero"`
+	ObservationAgeMS int64     `json:"observation_age_ms"`
+	Stale            bool      `json:"stale"`
+	LastError        string    `json:"last_error,omitempty"`
+	// ArtifactGeneration is the generation whose durable last-committed config
+	// artifact this member has verified as written — what it would boot on. Below
+	// Generation while a write is still being retried.
+	ArtifactGeneration uint64 `json:"artifact_generation"`
+	// BaselineGeneration and BaselineDigest are the durable committed artifact this
+	// member VERIFIED at startup: the config a restart of this member would recover
+	// to before any rollout of this process lifetime. BaselineDigest is empty when
+	// the deployment stamped no admitted baseline document, which means the member
+	// falls back to its own config source on restart.
+	BaselineGeneration uint64 `json:"baseline_generation"`
+	BaselineDigest     string `json:"baseline_digest,omitempty"`
+	// TerminalGeneration is a generation whose SAFE state this member could not
+	// reach: a committed config it could not durably record, or a provisional one
+	// it could not revert. Non-zero means this member cannot repair itself and
+	// must be replaced; TerminalReason says which.
+	TerminalGeneration uint64 `json:"terminal_generation,omitempty"`
+	TerminalReason     string `json:"terminal_reason,omitempty"`
 }
 
 type deepHealthSessionResponse struct {
@@ -334,13 +412,24 @@ type deepHealthRouteResponse struct {
 	DeliveryMode string `json:"delivery_mode"`
 	Ready        bool   `json:"ready"`      // route runner started + receiver started
 	InFlight     int    `json:"in_flight"`  // currently-processing delivery count
-	RouteDead    bool   `json:"route_dead"` // route wedged flapping at the supervisor backoff cap (F5)
+	RouteDead    bool   `json:"route_dead"` // route wedged flapping at the supervisor backoff cap
 }
 
 func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 	rt := s.currentRuntime()
 	if rt == nil {
-		writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+		if s.cfg.ConfigWatchProvider == nil {
+			writeErr(w, http.StatusServiceUnavailable, "runtime not available")
+			return
+		}
+		// Control-plane health exists before a data-plane runtime. Preserve the
+		// old error field while exposing whether startup is waiting or rejected.
+		body := map[string]any{"error": "runtime not available", "running": false,
+			"healthy": false, "empty": true, "ready_for_traffic": false, "level": ports.LevelLive.String()}
+		if s.cfg.ConfigWatchProvider != nil {
+			body["config_watch"] = s.cfg.ConfigWatchProvider()
+		}
+		writeJSON(w, http.StatusServiceUnavailable, body)
 		return
 	}
 	dh := rt.DeepHealth(r.Context())
@@ -351,6 +440,7 @@ func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 		InstanceID:      dh.InstanceID,
 		Role:            dh.Role,
 		ReadyForTraffic: dh.ReadyForTraffic,
+		Empty:           dh.Empty,
 		ServiceLevel:    string(dh.ServiceLevel),
 		// Derive the readiness level from the SAME snapshot rather than calling
 		// rt.ReadinessLevel (which takes a second, independent DeepHealth sweep):

@@ -33,8 +33,8 @@ type rawInbound struct {
 //
 // The client is passed in (not re-loaded here) so the receive uses the SAME
 // snapshot the caller binds to every resulting delivery's settlement
-// (Finding: c8-settle-client): a credential rotation between receive and
-// settle must not split the batch across two principals.
+// — a credential rotation between receive and settle must not split the
+// batch across two principals.
 func (r *Receiver) pollAndConvert(
 	ctx context.Context,
 	client sqsAPI,
@@ -51,7 +51,7 @@ func (r *Receiver) pollAndConvert(
 		VisibilityTimeout:     r.cfg.VisibilityTimeout,
 		MessageAttributeNames: []string{"All"},
 		// MessageSystemAttributeNames replaces the deprecated
-		// AttributeNames field (Finding 9). It requests every system
+		// AttributeNames field. It requests every system
 		// attribute — including ApproximateReceiveCount, which the runtime
 		// retry cap reads (attributesToHeaders → "sqs.ApproximateReceiveCount")
 		// and the FIFO dedup/ordering lift below relies on.
@@ -98,7 +98,7 @@ func (r *Receiver) pollAndConvert(
 
 			recvCount := approximateReceiveCount(msg.Attributes)
 
-			// Adapter-enforced poison backstop (Chunk 13 HIGH-2). When
+			// Adapter-enforced poison backstop. When
 			// poison_max_receives is configured and this malformed message has
 			// resurfaced at least that many times, DELETE it to break an
 			// otherwise-unbounded redelivery hot loop on a source queue with no
@@ -121,8 +121,8 @@ func (r *Receiver) pollAndConvert(
 				// strategy relies entirely on the queue's redrive policy to
 				// stop the loop, so a high receive count is a strong signal
 				// that NO redrive policy is configured and the message will
-				// otherwise return every visibility timeout forever
-				// (Finding 6). Settlement behaviour is deliberately
+				// otherwise return every visibility timeout forever.
+				// Settlement behaviour is deliberately
 				// unchanged — only the operator signal is escalated.
 				if recvCount >= poisonReceiveCountThreshold {
 					r.logger.Error("sqs: poison message repeatedly redelivered; "+
@@ -150,7 +150,7 @@ func (r *Receiver) pollAndConvert(
 
 // dropPoisonMessage deletes a malformed ("poison") message the receiver
 // cannot convert, as the adapter-enforced backstop once poison_max_receives is
-// reached (Chunk 13 HIGH-2). It is a controlled, observable drop that breaks an
+// reached. It is a controlled, observable drop that breaks an
 // otherwise-unbounded redelivery hot loop on a source queue with no native
 // redrive policy. Best effort and bounded by the settlement timeout: a failed
 // delete counts a settlement error and lets the message redeliver (the loop
@@ -158,7 +158,7 @@ func (r *Receiver) pollAndConvert(
 // poll loop for the TCP RTO.
 //
 // The delete uses the SAME client snapshot the poll bound to the batch
-// (Finding: c8-settle-client), so a credential rotation between receive and
+// so a credential rotation between receive and
 // this settlement cannot split them across two principals.
 //
 // ponytail: the ceiling is a local delete (a controlled drop) rather than a
@@ -210,8 +210,7 @@ func (r *Receiver) dropPoisonMessage(
 
 // checkRedrivePolicy performs a best-effort startup check of the source
 // queue's native redrive policy (maxReceiveCount -> DLQ) and reconciles it
-// with the adapter poison backstop (Chunk 13 HIGH-2 + destructive-preemption
-// follow-up).
+// with the adapter poison backstop.
 //
 // It NEVER fails startup for a permission or availability reason: a
 // GetQueueAttributes error (commonly a missing sqs:GetQueueAttributes grant)
@@ -356,7 +355,7 @@ func parseMaxReceiveCount(policy string) (int, bool) {
 
 // poisonReceiveCountThreshold is the ApproximateReceiveCount at or above
 // which a repeatedly-redelivered malformed ("poison") message is escalated
-// from a Warn to an Error log (Finding 6). Malformed messages are dropped
+// from a Warn to an Error log. Malformed messages are dropped
 // WITHOUT a Delete so the queue's own maxReceiveCount redrive policy can
 // move them to a DLQ; with NO redrive policy the message reappears every
 // visibility timeout forever, so crossing this bound strongly indicates a
@@ -438,7 +437,7 @@ func (r *Receiver) convertMessage(
 
 	headers := attributesToHeaders(msg.MessageAttributes, msg.Attributes)
 
-	// T08: no fallback to the configured queue name/URL. Subject comes
+	// no fallback to the configured queue name/URL. Subject comes
 	// only from an explicit "Subject" message attribute (or the inner
 	// SNS Subject when SNSUnwrap is enabled); otherwise it is empty.
 	subject := ""
@@ -466,13 +465,14 @@ func (r *Receiver) convertMessage(
 	}
 
 	id := aws.ToString(msg.MessageId)
-	if id == "" {
+	generatedID := id == ""
+	if generatedID {
 		id = generateEnvelopeID()
 	}
 
 	// Headers go through EnvelopeInput so NewEnvelope's
 	// StripReservedHeaders is the single chokepoint for reserved-prefix
-	// sanitation — see I4 in the round-1 reviewer notes.
+	// sanitation.
 	//
 	// CreatedAt prefers the broker's SentTimestamp (parsed into the
 	// sqs.SentTimestamp header by attributesToHeaders) over the bridge
@@ -496,6 +496,15 @@ func (r *Receiver) convertMessage(
 	if err != nil {
 		return nil, receiptHandle, wrapEnvelopeErr(err)
 	}
+	if generatedID {
+		// SQS always supplies a MessageId, so this is the defensive path for a
+		// message that arrives without one. Such a message is converted under a
+		// FRESH identity on every redelivery; declare that instability
+		// (ports.Receiver "Envelope identity") rather than presenting it as a
+		// stable key to dedup. SetHeader is the trusted per-key setter — the
+		// reserved key would be stripped from EnvelopeInput.Headers.
+		env.SetHeader(messaging.HeaderGeneratedID, "true")
+	}
 
 	if logging.TraceEnabled(r.logger) {
 		r.logger.Log(ctx, logging.LevelTrace, "sqs: converting",
@@ -513,8 +522,8 @@ func (r *Receiver) convertMessage(
 // consistent with messaging.IsReservedHeader and the amqp10 adapter's
 // bridgeHeaderString). Returns "" when absent or not a plain String attribute.
 //
-// An exact-case match is preferred before the case-insensitive fold scan
-// (Finding 12): egress always emits the canonical lower-case key, so when a
+// An exact-case match is preferred before the case-insensitive fold scan:
+// egress always emits the canonical lower-case key, so when a
 // message carries BOTH the canonical key and a case-variant of it, the lift
 // is deterministic instead of picking a random winner from Go's randomised
 // map iteration. When only case-variants exist the smallest key (byte order)
@@ -612,7 +621,7 @@ type snsPayload struct {
 // the sns_unwrap option, not enforceable here.) The original SNS
 // metadata is preserved in headers under sns.* keys. When the SNS
 // notification has no Subject field, snsPayload.subject is empty and
-// hasSubject=false so callers leave Envelope.Subject untouched (T08: no
+// hasSubject=false so callers leave Envelope.Subject untouched (no
 // fallback to TopicArn or queue name).
 func trySNSUnwrap(body string, headers map[string]any) (snsPayload, bool) {
 	var raw struct {
@@ -653,8 +662,8 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 	}
 
 	// A resolved `credentials_uri` builds the initial client with static
-	// material instead of the ambient SDK chain (Finding 3). Temporary
-	// (STS) material is rejected by rebuildSQSClient (Finding 6).
+	// material instead of the ambient SDK chain. Temporary
+	// (STS) material is rejected by rebuildSQSClient.
 	if r.cfg.InitialCredentials != nil {
 		client, err := rebuildSQSClient(ctx, r.cfg.Region, r.cfg.Endpoint, r.cfg.Profile, r.cfg.InitialCredentials)
 		if err != nil {

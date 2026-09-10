@@ -7,8 +7,8 @@ import "github.com/mariotoffia/gobridge/domain/shared"
 // (or the pre-rollout baseline seed), plus the generation and version that
 // produced them. It exists to answer, durably and independent of whatever
 // volatile candidate the config source's `current` slot may hold, "what config
-// should a member actually run?" — the missing piece flagged in the rollout
-// design's Phase-4 residual.
+// should a member actually run?" — which neither the candidate slot nor the
+// per-member applied state can answer on their own.
 //
 // It is the artifact behind option (a): a member fetches these BYTES rather than
 // re-deriving them, so a member that (re)joins after a restart boots on the
@@ -16,7 +16,7 @@ import "github.com/mariotoffia/gobridge/domain/shared"
 // residuals), and a member that missed a commit reconciles to it (closing the
 // commit-overwritten window). Generation is monotonic — 0 is the baseline seed,
 // a real commit uses the rollout generation — and Digest lets a reader verify
-// the bytes it fetched (it recomputes the digest and compares, F10-style).
+// the bytes it fetched (it recomputes the digest and compares).
 //
 // It is a flat data-transfer value (like RolloutSnapshot), not an aggregate: the
 // store owns how it maps to durable attributes; Validate is the shared

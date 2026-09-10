@@ -1,9 +1,8 @@
 package paho
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"io"
+	"encoding/base64"
+	"math"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -23,7 +22,15 @@ const headerMQTTResponseTopic = "mqtt.response-topic"
 // mqtt.message-id / correlation data). It never crosses the wire: it is added
 // only to the in-memory callback copy before fan-out, and EnvelopeFromPublish
 // consumes it into messaging.HeaderGeneratedID rather than emitting it as an
-// application header (MQTT-CORE-1).
+// application header.
+//
+// Provenance is ingress-owned, never publisher-supplied. publishWithIdentity
+// removes every inbound occurrence of this key before deciding whether to mint,
+// so the marker on a dispatched publish is always the adapter's own. Without
+// that strip a publisher could pair a stable mqtt.message-id with this marker
+// and have its own countable identity classified as adapter-minted — the
+// runtime then treats each redelivery as uncountable and terminalizes the first
+// transient failure (DLQ or drop) instead of retrying a healthy message.
 const headerMQTTGeneratedID = "mqtt.generated-id"
 
 // HeaderMessageID is the user-property key used to round-trip the
@@ -72,8 +79,8 @@ const maxHeaderValueLen = 256
 // UTF-8 with no control characters. MQTT v5 user properties, ContentType,
 // ResponseTopic and CorrelationData are UTF-8 strings by spec, so this
 // admits legal non-ASCII values (e.g. "Malmö") that the previous
-// printable-ASCII-only filter dropped silently (M-2). Control characters
-// (including NUL, newline, and C1 controls) are still rejected to prevent
+// printable-ASCII-only filter dropped silently. Control characters
+// (including NUL, newline, and controls) are still rejected to prevent
 // log/header injection; invalid UTF-8 (arbitrary binary, e.g. non-text
 // CorrelationData) is rejected because it cannot round-trip as a header.
 func isSafeHeaderValue(s string) bool {
@@ -100,8 +107,18 @@ func isSafeHeaderValue(s string) bool {
 //
 // Envelope.ID is resolved in priority order:
 //  1. mqtt.message-id user property (set by PublishFromEnvelope)
-//  2. x-bridge.correlation-id from CorrelationData
+//  2. CorrelationData — the textual value when it is a safe header string,
+//     otherwise a stable encoded form of the raw bytes (mqtt-bin:<base64>), so
+//     a producer that identifies its message with binary Correlation Data keeps
+//     one identity across broker redelivery
 //  3. A random UUIDv4 generated for this received publish
+//
+// Cases 1 and 2 are PRODUCER-OWNED: whoever may publish to the subscribed
+// topics owns that source's envelope-ID namespace. Two publishes reusing one ID
+// are one identity to the outbox, so the second is suppressed as a duplicate
+// (counted on the runtime's duplicate-suppression metric). The namespace is
+// scoped to the source: distinct sources reach distinct routes and bindings, so
+// an ID is only ever compared with IDs from the same source.
 //
 // The *pahov5.Publish parameter is the SDK boundary input this ACL
 // helper exists to translate; its only callers are ACL files
@@ -110,7 +127,7 @@ func isSafeHeaderValue(s string) bool {
 // An optional MetricsExporter (variadic, mirroring PublishFromEnvelope)
 // counts application/bridge user properties dropped by the safety filter
 // (unsafe key/value or over-length) on MetricMQTTIngressHeaderDropped, so
-// the otherwise-silent ingress drop is observable (M-2). Reserved and
+// the otherwise-silent ingress drop is observable. Reserved and
 // adapter-controlled keys stripped by policy are NOT counted. When no
 // exporter is supplied the drop is still applied, just uncounted
 // (test/legacy call sites).
@@ -134,22 +151,28 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 	// headerMQTTGeneratedID marker publishWithIdentity stamps before fan-out, or
 	// by the direct-caller fallback below. It flows to the runtime as
 	// messaging.HeaderGeneratedID so the replay cap can terminate an uncountable
-	// redelivery loop (MQTT-CORE-1).
+	// redelivery loop.
 	generatedIdentity := false
 	// droppedHeaders counts every inbound header that fails the length/safety
 	// filter — both MQTT v5 properties (correlation data, content type, response
 	// topic) and arbitrary user properties. It feeds MetricMQTTIngressHeaderDropped
-	// so a correlation-id loss is observable rather than silent (A-14).
+	// so a correlation-id loss is observable rather than silent.
 	droppedHeaders := 0
 
 	if pub.Properties != nil {
-		if pub.Properties.CorrelationData != nil {
-			corr := string(pub.Properties.CorrelationData)
-			if len(corr) <= maxHeaderValueLen && isSafeHeaderValue(corr) {
-				headers[messaging.HeaderCorrelationID] = corr
-			} else {
-				droppedHeaders++
-			}
+		switch raw := pub.Properties.CorrelationData; classifyCorrelationData(raw) {
+		case correlationText:
+			headers[messaging.HeaderCorrelationID] = string(raw)
+		case correlationBinary:
+			// Legal binary Correlation Data. Retain the exact bytes encoded so the
+			// identity derived from them is stable across redelivery and the egress
+			// hop can reproduce them byte for byte. The key is reserved, so an
+			// inbound user property of that name was already dropped by the
+			// reserved-prefix filter below and cannot displace these bytes.
+			headers[messaging.HeaderCorrelationData] = encodeCorrelationData(raw)
+		case correlationUnusable:
+			droppedHeaders++
+		case correlationAbsent:
 		}
 		if pub.Properties.ContentType != "" {
 			ct := pub.Properties.ContentType
@@ -188,7 +211,8 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 			if u.Key == HeaderMQTTTopic || u.Key == HeaderMQTTRetained || u.Key == HeaderMQTTQoS {
 				// Adapter-controlled: never let an inbound user property
 				// override the recorded transport-level topic, retained
-				// flag, or delivery QoS.
+				// flag, or delivery QoS. (The retained correlation bytes are
+				// protected by the reserved-prefix filter below instead.)
 				continue
 			}
 			if u.Key == HeaderMessageID {
@@ -227,7 +251,7 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 	}
 
 	// Record an adapter-minted identity so the runtime replay cap can terminate a
-	// count-less redelivery loop (MQTT-CORE-1). StampHeaders is the trusted setter,
+	// count-less redelivery loop. StampHeaders is the trusted setter,
 	// so this reserved internal-only key is preserved; it is stripped again at
 	// egress by PublishFromEnvelope's IsInternalOnlyHeader filter.
 	if generatedIdentity {
@@ -284,17 +308,23 @@ func EnvelopeFromPublish(pub *pahov5.Publish, clk clock.Clock, metrics ...ports.
 // The returned *pahov5.Publish is the SDK boundary output this ACL helper
 // exists to produce; it is consumed by the pahoConn ACL seam
 // (acl_client.go PublishEnvelope), which is the single production egress
-// path since the Sender was routed through the seam (F-2).
+// path since the Sender was routed through the seam.
 //
 // An optional MetricsExporter (variadic, mirroring NewSession) is used to
 // count bridge-to-bridge / application headers dropped because their value
-// is not a string (MQTT-N1): such a value cannot become an MQTT user
+// is not a string: such a value cannot become an MQTT user
 // property, so the drop is recorded via MetricMQTTNonStringHeaderDropped
 // instead of vanishing silently. When no exporter is supplied the drop is
 // still applied, just uncounted (test/legacy call sites).
 //
+// Construction FAILS (nil publish, shared.ErrPayloadTooLarge) when any
+// length-prefixed field exceeds the MQTT v5 65,535-byte ceiling. Paho would
+// otherwise slice the value and write the shortened form without an error, so
+// the broker would acknowledge metadata that differs from the source; see
+// validatePublishFieldLimits.
+//
 //aclcheck:allow-export
-func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptions, clk clock.Clock, metrics ...ports.MetricsExporter) *pahov5.Publish {
+func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptions, clk clock.Clock, metrics ...ports.MetricsExporter) (*pahov5.Publish, error) {
 	if clk == nil {
 		clk = clock.System
 	}
@@ -325,19 +355,51 @@ func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptio
 	}
 
 	if env.HasExpiry() {
-		remaining := env.RemainingTTL(clk)
-		if remaining > 0 {
-			secs := uint32(remaining.Seconds())
-			if secs == 0 {
-				secs = 1
+		// An envelope with an expiry ALWAYS carries a Message Expiry Interval.
+		// The route decides whether to send; by the time the packet is built the
+		// remaining TTL can already have run out, and omitting the property then
+		// is the strictly worse outcome — the broker keeps the message for a
+		// queued subscriber with no expiry at all. MQTT v5 encodes the interval
+		// as whole seconds with no "already expired" value (zero means "no
+		// expiry"), so a non-positive or sub-second remainder clamps to one
+		// second and the broker discards it at the next opportunity.
+		secs := uint32(1)
+		if remaining := env.RemainingTTL(clk); remaining >= time.Second {
+			if seconds := uint64(remaining / time.Second); seconds < math.MaxUint32 {
+				secs = uint32(seconds)
+			} else {
+				secs = math.MaxUint32
 			}
-			props.MessageExpiry = &secs
-			hasProps = true
 		}
+		props.MessageExpiry = &secs
+		hasProps = true
 	}
 
 	if env.Headers() != nil {
-		if v, ok := messaging.GetHeaderString(env.Headers(), messaging.HeaderCorrelationID); ok {
+		// Correlation Data is binary on the wire. The retained bytes win when
+		// present: they are the producer's actual Correlation Data for this
+		// message, whereas x-bridge.correlation-id is the bridge's own logical
+		// correlation value and is SYNTHESIZED for every envelope that arrives
+		// without one (RouteRunner.injectHeaders). Preferring the string would
+		// therefore replace a binary producer's identity bytes with a random
+		// bridge id on every hop. A retention header that no longer decodes cannot
+		// become wire bytes — it is counted as a dropped header rather than
+		// silently vanishing, and the textual value still serves.
+		binaryCorrelation, hasBinary := messaging.GetHeaderString(env.Headers(), messaging.HeaderCorrelationData)
+		if hasBinary {
+			raw, err := base64.RawURLEncoding.DecodeString(binaryCorrelation)
+			switch {
+			case err != nil || len(raw) == 0:
+				// Never written this way by ingress. Do not let an undecodable or
+				// empty value suppress the textual correlation id below.
+				droppedNonString++
+				hasBinary = false
+			default:
+				props.CorrelationData = raw
+				hasProps = true
+			}
+		}
+		if v, ok := messaging.GetHeaderString(env.Headers(), messaging.HeaderCorrelationID); ok && !hasBinary {
 			props.CorrelationData = []byte(v)
 			hasProps = true
 		}
@@ -371,7 +433,7 @@ func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptio
 			if !ok {
 				// A bridge-to-bridge / application header with a non-string
 				// value cannot be serialised as an MQTT user property.
-				// Count the drop (finding MQTT-N1) so a lost idempotency-key
+				// Count the drop so a lost idempotency-key
 				// or tenant-id is observable rather than silent.
 				droppedNonString++
 				continue
@@ -389,76 +451,11 @@ func PublishFromEnvelope(env *messaging.Envelope, topic string, opts SenderOptio
 		pub.Properties = props
 	}
 
-	return pub
-}
+	// Last gate before the packet leaves this constructor: a field the SDK
+	// would silently truncate must fail the publish, not corrupt it.
+	if err := validatePublishFieldLimits(pub); err != nil {
+		return nil, err
+	}
 
-// publishIdentity returns the producer identity carried by pub, preserving
-// the ingress precedence used by EnvelopeFromPublish. Invalid or unsafe values
-// are ignored exactly as they are during header extraction.
-func publishIdentity(pub *pahov5.Publish) string {
-	if pub == nil || pub.Properties == nil {
-		return ""
-	}
-	var messageID string
-	for _, property := range pub.Properties.User {
-		if property.Key == HeaderMessageID && len(property.Value) <= maxHeaderValueLen && isSafeHeaderValue(property.Value) {
-			messageID = property.Value
-		}
-	}
-	if messageID != "" {
-		return messageID
-	}
-	correlationID := string(pub.Properties.CorrelationData)
-	if len(correlationID) <= maxHeaderValueLen && isSafeHeaderValue(correlationID) {
-		return correlationID
-	}
-	return ""
-}
-
-// publishWithIdentity returns pub unchanged when it already carries an
-// identity. Otherwise it creates a shallow immutable wrapper and copies only
-// the bounded UserProperty slice needed to append one generated identity;
-// payload/string backing remains shared with Paho's callback packet.
-func publishWithIdentity(pub *pahov5.Publish) *pahov5.Publish {
-	if pub == nil || publishIdentity(pub) != "" {
-		return pub
-	}
-	owned := *pub
-	var properties pahov5.PublishProperties
-	if pub.Properties != nil {
-		properties = *pub.Properties
-		properties.User = append(pahov5.UserProperties(nil), pub.Properties.User...)
-	}
-	properties.User = append(properties.User,
-		pahov5.UserProperty{Key: HeaderMessageID, Value: newIngressEnvelopeID()},
-		// Marker so EnvelopeFromPublish records the identity as adapter-minted
-		// (MQTT-CORE-1). Consumed there; never emitted as a header or sent to a peer.
-		pahov5.UserProperty{Key: headerMQTTGeneratedID, Value: "1"},
-	)
-	owned.Properties = &properties
-	return &owned
-}
-
-// newIngressEnvelopeID returns an RFC 4122 UUIDv4 using the standard-library
-// cryptographic random source. Entropy failure is unrecoverable: continuing
-// without a unique identity can silently collapse a distinct outbox event.
-func newIngressEnvelopeID() string {
-	var raw [16]byte
-	if _, err := io.ReadFull(rand.Reader, raw[:]); err != nil {
-		panic("paho: crypto/rand unavailable generating MQTT ingress identity: " + err.Error())
-	}
-	raw[6] = (raw[6] & 0x0f) | 0x40
-	raw[8] = (raw[8] & 0x3f) | 0x80
-
-	var id [36]byte
-	hex.Encode(id[0:8], raw[0:4])
-	id[8] = '-'
-	hex.Encode(id[9:13], raw[4:6])
-	id[13] = '-'
-	hex.Encode(id[14:18], raw[6:8])
-	id[18] = '-'
-	hex.Encode(id[19:23], raw[8:10])
-	id[23] = '-'
-	hex.Encode(id[24:36], raw[10:16])
-	return string(id[:])
+	return pub, nil
 }

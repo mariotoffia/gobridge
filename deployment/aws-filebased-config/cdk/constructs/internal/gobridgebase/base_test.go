@@ -3,78 +3,24 @@
 package gobridgebase_test
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/assertions"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslogs"
 	"github.com/aws/jsii-runtime-go"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/imgsource"
 
-	cdkconstructs "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/gobridgebase"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 )
 
-const sampleYAML = `
-bridge:
-  id: test-bridge
-`
-
-func writeTempYAML(t *testing.T, body string) string {
-	t.Helper()
-	dir := t.TempDir()
-	p := filepath.Join(dir, "bridge.yaml")
-	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
-	return p
-}
-
-func bootstrap() infra.BootstrapConfig {
-	return infra.BootstrapConfig{
-		BridgeID:         "bridge-1",
-		ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",
-		AdminAPIKeyParam: "/test/admin",
-	}
-}
-
-func newScope(t *testing.T) (awscdk.Stack, awsec2.IVpc, *cdkconstructs.GoBridgeEfsConfig) {
-	t.Helper()
-	app := awscdk.NewApp(nil)
-	stack := awscdk.NewStack(app, jsii.String("TestStack"), nil)
-	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), nil)
-	efs := cdkconstructs.NewGoBridgeEfsConfig(stack, jsii.String("Efs"),
-		&cdkconstructs.GoBridgeEfsConfigProps{Vpc: vpc})
-	return stack, vpc, efs
-}
-
-func newBuilt(t *testing.T, mode gobridgebase.Mode, yaml string) (awscdk.Stack, *gobridgebase.Built) {
-	t.Helper()
-	stack, vpc, efs := newScope(t)
-	src := source.NewAsset(writeTempYAML(t, yaml))
-	b := gobridgebase.New(stack, jsii.String("Bridge"), &gobridgebase.Props{
-		Mode:      mode,
-		Vpc:       vpc,
-		EfsConfig: efs,
-		Image:     awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:latest"), nil),
-		Bootstrap: bootstrap(),
-		Source:    src,
-	})
-	return stack, b
-}
-
-func TestNew_Control_TaskDefHasMainAndSeederContainers(t *testing.T) {
+func TestNew_Control_TaskDefHasOnlyMainContainer(t *testing.T) {
 	stack, _ := newBuilt(t, gobridgebase.ModeControl, sampleYAML)
 	tpl := assertions.Template_FromStack(stack, nil)
 
 	tpl.ResourceCountIs(jsii.String("AWS::ECS::TaskDefinition"), jsii.Number(1))
-	// 1 task def with 2 containers — assert by walking ContainerDefinitions.
 	tds := tpl.FindResources(jsii.String("AWS::ECS::TaskDefinition"), nil)
 	if tds == nil || len(*tds) != 1 {
 		t.Fatalf("expected exactly 1 task def, got %v", tds)
@@ -82,24 +28,15 @@ func TestNew_Control_TaskDefHasMainAndSeederContainers(t *testing.T) {
 	for _, raw := range *tds {
 		props := (*raw)["Properties"].(map[string]any)
 		cds := props["ContainerDefinitions"].([]any)
-		if len(cds) != 2 {
-			t.Fatalf("expected 2 containers, got %d", len(cds))
+		if len(cds) != 1 {
+			t.Fatalf("expected 1 container, got %d", len(cds))
 		}
 		var names []string
 		for _, cd := range cds {
 			names = append(names, cd.(map[string]any)["Name"].(string))
 		}
-		gotMain, gotSeeder := false, false
-		for _, n := range names {
-			if n == "gobridge" {
-				gotMain = true
-			}
-			if n == "seeder" {
-				gotSeeder = true
-			}
-		}
-		if !gotMain || !gotSeeder {
-			t.Fatalf("expected gobridge+seeder containers, got %v", names)
+		if names[0] != "gobridge" {
+			t.Fatalf("expected gobridge container, got %v", names)
 		}
 	}
 }
@@ -139,51 +76,18 @@ func TestNew_Control_MainMountIsRW_WorkerMountIsRO(t *testing.T) {
 	}
 }
 
-func TestNew_Seeder_EnvAndDependency(t *testing.T) {
+func TestNew_MainHasNoInitContainerDependency(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		mode     gobridgebase.Mode
-		wantMode string
+		name string
+		mode gobridgebase.Mode
 	}{
-		{"control", gobridgebase.ModeControl, "SeedOnce"},
-		{"worker", gobridgebase.ModeWorker, "AdoptValid"},
+		{"control", gobridgebase.ModeControl},
+		{"worker", gobridgebase.ModeWorker},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stack, _ := newBuilt(t, tc.mode, sampleYAML)
-			tpl := assertions.Template_FromStack(stack, nil)
-			tds := tpl.FindResources(jsii.String("AWS::ECS::TaskDefinition"), nil)
-			for _, raw := range *tds {
-				props := (*raw)["Properties"].(map[string]any)
-				cds := props["ContainerDefinitions"].([]any)
-				for _, cd := range cds {
-					m := cd.(map[string]any)
-					switch m["Name"] {
-					case "seeder":
-						if ess, _ := m["Essential"].(bool); ess {
-							t.Fatalf("seeder must be Essential=false")
-						}
-						envs := m["Environment"].([]any)
-						gotMode := envFor(envs, "MODE")
-						if gotMode != tc.wantMode {
-							t.Fatalf("MODE = %q, want %q", gotMode, tc.wantMode)
-						}
-						if envFor(envs, "EXPECTED_HASH") == "" {
-							t.Fatalf("EXPECTED_HASH must be non-empty")
-						}
-						if envFor(envs, "EFS_TARGET_PATH") != "/var/lib/gobridge/bridge.yaml" {
-							t.Fatalf("EFS_TARGET_PATH wrong: %q", envFor(envs, "EFS_TARGET_PATH"))
-						}
-					case "gobridge":
-						deps, _ := m["DependsOn"].([]any)
-						if len(deps) != 1 {
-							t.Fatalf("main must depend on 1 container, got %v", deps)
-						}
-						dep := deps[0].(map[string]any)
-						if dep["Condition"] != "SUCCESS" || dep["ContainerName"] != "seeder" {
-							t.Fatalf("dep wrong: %v", dep)
-						}
-					}
-				}
+			if deps := mainContainer(t, stack)["DependsOn"]; deps != nil {
+				t.Fatalf("main must not depend on an initialization container: %v", deps)
 			}
 		})
 	}
@@ -237,30 +141,27 @@ func mapPorts(p []gobridgebase.PortMapping) map[int]bool {
 func TestNew_LogGroup_PrefixAndDefaultRetainPolicy(t *testing.T) {
 	stack, _ := newBuilt(t, gobridgebase.ModeControl, sampleYAML)
 	tpl := assertions.Template_FromStack(stack, nil)
-	tpl.ResourceCountIs(jsii.String("AWS::Logs::LogGroup"), jsii.Number(2))
+	tpl.ResourceCountIs(jsii.String("AWS::Logs::LogGroup"), jsii.Number(1))
 
 	groups := tpl.FindResources(jsii.String("AWS::Logs::LogGroup"), nil)
-	var gotMain, gotSeeder bool
+	var gotMain bool
 	for _, raw := range *groups {
 		entry := (*raw)
 		props := entry["Properties"].(map[string]any)
 		name := props["LogGroupName"].(string)
-		if !strings.HasPrefix(name, "/gobridge/Bridge/") {
+		if !strings.HasPrefix(name, "/gobridge/TestStack/Bridge/") {
 			t.Fatalf("log group name does not match prefix scheme: %s", name)
 		}
 		if strings.HasSuffix(name, "/gobridge") {
 			gotMain = true
-		}
-		if strings.HasSuffix(name, "/seeder") {
-			gotSeeder = true
 		}
 		if entry["DeletionPolicy"] != "Retain" || entry["UpdateReplacePolicy"] != "Retain" {
 			t.Fatalf("log group %s default removal policy must be Retain (got %v / %v)",
 				name, entry["DeletionPolicy"], entry["UpdateReplacePolicy"])
 		}
 	}
-	if !gotMain || !gotSeeder {
-		t.Fatalf("expected main+seeder log groups, got main=%v seeder=%v", gotMain, gotSeeder)
+	if !gotMain {
+		t.Fatal("expected the main log group")
 	}
 }
 
@@ -271,7 +172,7 @@ func TestNew_LogGroup_RemovalPolicyOverride(t *testing.T) {
 		Mode:             gobridgebase.ModeControl,
 		Vpc:              vpc,
 		EfsConfig:        efs,
-		Image:            awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:latest"), nil),
+		Image:            imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap:        bootstrap(),
 		Source:           src,
 		LogRemovalPolicy: awscdk.RemovalPolicy_DESTROY,
@@ -287,20 +188,9 @@ func TestNew_LogGroup_RemovalPolicyOverride(t *testing.T) {
 	}
 }
 
-func TestNew_IAMStatementsPresentForEfsAndS3Asset(t *testing.T) {
+func TestNew_IAMStatementsPresentForEfs(t *testing.T) {
 	stack, _ := newBuilt(t, gobridgebase.ModeControl, sampleYAML)
 	tpl := assertions.Template_FromStack(stack, nil)
-
-	// Asset GrantRead on the task role becomes an s3:GetObject statement.
-	tpl.HasResourceProperties(jsii.String("AWS::IAM::Policy"), map[string]any{
-		"PolicyDocument": assertions.Match_ObjectLike(&map[string]any{
-			"Statement": assertions.Match_ArrayWith(&[]any{
-				assertions.Match_ObjectLike(&map[string]any{
-					"Action": assertions.Match_ArrayWith(&[]any{"s3:GetObject*"}),
-				}),
-			}),
-		}),
-	})
 
 	// EFS ClientMount + ClientWrite for control mode.
 	tpl.HasResourceProperties(jsii.String("AWS::IAM::Policy"), map[string]any{
@@ -373,7 +263,7 @@ func TestNew_PanicsOnInvalidProps(t *testing.T) {
 				Mode:      gobridgebase.ModeControl,
 				Vpc:       vpc,
 				EfsConfig: efs,
-				Image:     awsecs.ContainerImage_FromRegistry(jsii.String("img:latest"), nil),
+				Image:     imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 				Bootstrap: bootstrap(),
 				Source:    src,
 			}
@@ -452,7 +342,7 @@ func TestNew_Main_HealthCheckDisabled(t *testing.T) {
 		Mode:               gobridgebase.ModeControl,
 		Vpc:                vpc,
 		EfsConfig:          efs,
-		Image:              awsecs.ContainerImage_FromRegistry(jsii.String("img:latest"), nil),
+		Image:              imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap:          bootstrap(),
 		Source:             src,
 		DisableHealthCheck: jsii.Bool(true),
@@ -460,52 +350,6 @@ func TestNew_Main_HealthCheckDisabled(t *testing.T) {
 	m := mainContainer(t, stack)
 	if _, ok := m["HealthCheck"]; ok {
 		t.Fatalf("expected no HealthCheck when DisableHealthCheck=true, got %v", m["HealthCheck"])
-	}
-}
-
-// TestNew_PanicsOnPlaceholderSeederDigest verifies the synth-time guard: a
-// SeederImage override pinned to the all-zeros placeholder digest (or an
-// unpinned ref) must panic rather than synth a dead-on-arrival task whose main
-// container waits forever on a seeder that can never be pulled.
-func TestNew_PanicsOnPlaceholderSeederDigest(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		ref     string
-		wantSub string
-	}{
-		{
-			name:    "all-zeros",
-			ref:     "public.ecr.aws/aws-cli/aws-cli:2@sha256:" + strings.Repeat("0", 64),
-			wantSub: "all-zeros",
-		},
-		{
-			name:    "unpinned",
-			ref:     "public.ecr.aws/aws-cli/aws-cli:2",
-			wantSub: "fully-pinned",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			stack, vpc, efs := newScope(t)
-			src := source.NewAsset(writeTempYAML(t, sampleYAML))
-			defer func() {
-				r := recover()
-				if r == nil {
-					t.Fatal("expected panic on invalid seeder digest")
-				}
-				if !strings.Contains(asString(r), tc.wantSub) {
-					t.Fatalf("panic %q does not mention %q", asString(r), tc.wantSub)
-				}
-			}()
-			gobridgebase.New(stack, jsii.String("X"), &gobridgebase.Props{
-				Mode:        gobridgebase.ModeControl,
-				Vpc:         vpc,
-				EfsConfig:   efs,
-				Image:       awsecs.ContainerImage_FromRegistry(jsii.String("img:latest"), nil),
-				Bootstrap:   bootstrap(),
-				Source:      src,
-				SeederImage: jsii.String(tc.ref),
-			})
-		})
 	}
 }
 

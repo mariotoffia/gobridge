@@ -18,7 +18,8 @@ import (
 )
 
 // UC-CR — coordinated cluster rollout across REAL separate OS processes, real
-// DynamoDB, and the real config codec (design §10 / Phase 5). Each node is a
+// DynamoDB, and the real config codec (cluster-config-rollout-protocol.md §10).
+// Each node is a
 // bridge.Supervisor in its own process (rollout_node_child_test.go), coordinating
 // only through the shared DynamoDB config source + rollout store + lease store.
 // Barriers are stdout tokens and store rows — never sleeps.
@@ -37,7 +38,7 @@ type rolloutTestbed struct {
 	rolloutStore  *dynamodbrollout.Store
 	loader        *ddbconfig.Loader
 	ttl           string // optional GOBRIDGE_ROLLOUT_TTL for the children (e.g. "4s")
-	confirmWindow string // optional bridge.cluster.confirm_window (design §8.1), e.g. "3s"
+	confirmWindow string // optional bridge.cluster.confirm_window (cluster-config-rollout-protocol.md §8.1), e.g. "3s"
 	version       int    // the document version last written (base = 1)
 }
 
@@ -48,8 +49,8 @@ func newRolloutTestbed(t *testing.T, members []string, baseAddress string) *roll
 	return newRolloutTestbedWindow(t, members, baseAddress, "")
 }
 
-// newRolloutTestbedWindow is newRolloutTestbed with the confirm window (design
-// §8.1) baked into the seeded config, so a member reads it off its running config
+// newRolloutTestbedWindow is newRolloutTestbed with the confirm window
+// (cluster-config-rollout-protocol.md §8.1) baked into the seeded config, so a member reads it off its running config
 // when a later change is proposed.
 func newRolloutTestbedWindow(t *testing.T, members []string, baseAddress, confirmWindow string) *rolloutTestbed {
 	t.Helper()
@@ -172,12 +173,12 @@ func TestUCCR1_HappyPathCommitsAcrossProcesses(t *testing.T) {
 	require.Equal(t, version, r.ConfigVersion())
 	require.Len(t, r.Acks(), 3, "all three members must have acked")
 
-	t.Logf("UC-CR1 Q2 sizing: N=3 staging duration (propose->all-committed) = %s "+
+	t.Logf("rollout sizing: N=3 staging duration (propose->all-committed) = %s "+
 		"(defaultRolloutTTL=5m has ample margin)", staging.Round(time.Millisecond))
 }
 
 // TestUCCR9_ConfirmWindowConfirmsAcrossProcesses is the Phase-7 confirm window
-// (design §8.1) across REAL separate processes: three bridge processes open a
+// (cluster-config-rollout-protocol.md §8.1) across REAL separate processes: three bridge processes open a
 // confirm window, each provisionally swaps the candidate, records convergence
 // against its OWN runtime, and the fenced coordinator writes Confirmed once the
 // whole cohort converged — after which the durable committed artifact advances to

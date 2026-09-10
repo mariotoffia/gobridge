@@ -17,7 +17,6 @@ import (
 func newStack(t *testing.T) awscdk.Stack {
 	t.Helper()
 	app := awscdk.NewApp(nil)
-	t.Cleanup(jsii.Close)
 	return awscdk.NewStack(app, jsii.String("TestStack"), nil)
 }
 

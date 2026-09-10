@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"runtime"
 	"testing"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 func TestMain(m *testing.M) {
@@ -246,19 +246,12 @@ func TestWatchNoDuplicates(t *testing.T) {
 		t.Fatalf("expected poll ticker to be registered synchronously, got %d", got)
 	}
 
-	// Fire 5 poll cycles; no new version means no emission.
+	// Fire 5 poll cycles; no new version means no emission. A single scheduler
+	// yield proved nothing here: the poll goroutine may not have run at all, so
+	// the check passed whether or not the loader emitted. Hold the channel
+	// silent for a window instead, which fails on an emission that arrives late.
 	fc.Advance(500 * time.Millisecond)
-	// Yield so the goroutine can drain pending ticks.
-	runtime.Gosched()
-
-	select {
-	case got := <-ch:
-		if got != nil {
-			t.Fatal("expected no config emission when version unchanged")
-		}
-	default:
-		// expected: nothing emitted
-	}
+	wait.Silent(t, ch, 100*time.Millisecond)
 }
 
 // Verifies repeated Save calls advance the stored version so the latest fields are visible on Load.

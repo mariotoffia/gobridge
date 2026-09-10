@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -68,6 +69,20 @@ func BenchmarkCandidateConfigDigest(b *testing.B) {
 // majority of ticks in a real deployment's lifetime. It must stay a cheap store
 // read plus bookkeeping: no config marshalling, no build.
 func BenchmarkRolloutApplierStep_SteadyState(b *testing.B) {
+	applier, ctx := benchCommittedApplier(b)
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := applier.step(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// benchCommittedApplier builds an applier that has already adopted a committed
+// (base-protocol) generation, primed so the caller measures the STEADY state
+// rather than the one-off adoption.
+func benchCommittedApplier(b *testing.B) (*rolloutApplier, context.Context) {
+	b.Helper()
 	store := memoryrollout.NewStore()
 	sup := NewSupervisor()
 	sup.rollout = newRolloutBarrier(ClusterRolloutConfig{
@@ -96,13 +111,24 @@ func BenchmarkRolloutApplierStep_SteadyState(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	applier := &rolloutApplier{host: supervisorRolloutHost{sup}, barrier: sup.rollout, store: store, memberID: "node-a", obs: &rolloutObserver{}}
-	// Prime the gate exactly as the first post-commit observation would, so the
-	// loop below measures the STEADY state rather than the one-off adoption.
+	applier := &rolloutApplier{
+		host: supervisorRolloutHost{sup}, barrier: sup.rollout, store: store,
+		memberID: "node-a", obs: &rolloutObserver{}, clk: clock.System,
+	}
 	if err := applier.step(ctx); err != nil {
 		b.Fatal(err)
 	}
+	return applier, ctx
+}
 
+// BenchmarkRolloutApplierStep_ConfirmWindowSteadyState measures the steady-state
+// per-poll cost of the confirm-window (cluster-config-rollout-protocol.md §8.1) applier path: a member that has
+// provisionally swapped and converged re-reads the row every poll and re-checks the
+// deadman. It is the confirm-window twin of the base steady-state benchmark, so a
+// regression in the provisional/converge/deadman path is visible, not just the base
+// committed path.
+func BenchmarkRolloutApplierStep_ConfirmWindowSteadyState(b *testing.B) {
+	applier, ctx := benchWindowedApplier(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		if err := applier.step(ctx); err != nil {
@@ -111,13 +137,10 @@ func BenchmarkRolloutApplierStep_SteadyState(b *testing.B) {
 	}
 }
 
-// BenchmarkRolloutApplierStep_ConfirmWindowSteadyState measures the steady-state
-// per-poll cost of the confirm-window (design §8.1) applier path: a member that has
-// provisionally swapped and converged re-reads the row every poll and re-checks the
-// deadman. It is the confirm-window twin of the base steady-state benchmark, so a
-// regression in the provisional/converge/deadman path is visible, not just the base
-// committed path.
-func BenchmarkRolloutApplierStep_ConfirmWindowSteadyState(b *testing.B) {
+// benchWindowedApplier builds an applier that has provisionally swapped inside a
+// confirm window and converged, with its local deadman armed.
+func benchWindowedApplier(b *testing.B) (*rolloutApplier, context.Context) {
+	b.Helper()
 	store := memoryrollout.NewStore()
 	// A long window so the rollout stays provisionally-committed for the whole run
 	// (the deadman never fires and no coordinator confirms it here).
@@ -153,18 +176,12 @@ func BenchmarkRolloutApplierStep_ConfirmWindowSteadyState(b *testing.B) {
 		host: host, barrier: barrier, store: store, memberID: "node-a",
 		obs: &rolloutObserver{}, clk: clock.System,
 	}
-	// Prime: provisional swap + the one-off Converge, so the loop measures the
+	// Prime: provisional swap + the one-off Converge, so the caller measures the
 	// converged steady state, not adoption.
 	if err := applier.step(ctx); err != nil {
 		b.Fatal(err)
 	}
-
-	b.ReportAllocs()
-	for b.Loop() {
-		if err := applier.step(ctx); err != nil {
-			b.Fatal(err)
-		}
-	}
+	return applier, ctx
 }
 
 // BenchmarkRolloutApplierVote measures the one-off cost of a member evaluating a
@@ -186,5 +203,184 @@ func BenchmarkRolloutApplierVote(b *testing.B) {
 		if reason := evaluateProposal(oldCfg, candidate, raw, digest); reason != "" {
 			b.Fatalf("unexpected nack: %s", reason)
 		}
+	}
+}
+
+// BenchmarkRolloutApplierTick_SteadyState measures what a member ACTUALLY pays
+// per poll now that the drive runs tick() rather than step(): the bounded store
+// read plus the local safety work — the confirm-window deadman check, the
+// outstanding-repair check and the freshness gauge — that runs before it.
+//
+// The delta against BenchmarkRolloutApplierStep_SteadyState is the price of the
+// bound. It is not free: a bounded call runs its store call on its own goroutine
+// so a context-ignoring store can be abandoned rather than owning the drive. That
+// is one goroutine per store call every two seconds on a control plane, and this
+// benchmark is what keeps it from silently becoming more than that.
+func BenchmarkRolloutApplierTick_SteadyState(b *testing.B) {
+	applier, ctx := benchCommittedApplier(b)
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := applier.tick(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkRolloutApplierTick_ConfirmWindowDeadmanArmed measures the steady-state
+// tick of a member sitting inside a confirm window: the deadman is armed (a
+// cached deadline in the future is compared every tick) and a provisional
+// generation is applied. This is the shape a cohort holds for the whole window,
+// so it is where an accidental per-tick cost would live.
+func BenchmarkRolloutApplierTick_ConfirmWindowDeadmanArmed(b *testing.B) {
+	applier, ctx := benchWindowedApplier(b)
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := applier.tick(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkRolloutOps_BoundedCall isolates the bounding wrapper from the store
+// behind it: how much one rollout store call costs beyond the call itself.
+func BenchmarkRolloutOps_BoundedCall(b *testing.B) {
+	ops := newRolloutOps(time.Minute)
+	ctx := context.Background()
+	noop := func(context.Context) error { return nil }
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := ops.run(ctx, rolloutOpRead, noop); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkDeploymentProfileFingerprint measures the deployment-admission
+// identity every member recomputes before it votes on a candidate and again
+// before it applies one — twice per config change per member, plus once per boot.
+//
+// It is benchmarked against config size on purpose: the whole reason the profile
+// is a PROJECTION rather than a hash of the document is that it must not scale
+// with operator content. A regression that started hashing the routes would show
+// here as growth across the sizes, long before it showed up as latency on a
+// cohort's config change.
+func BenchmarkDeploymentProfileFingerprint(b *testing.B) {
+	for _, routes := range []int{1, 10, 100} {
+		cfg := benchConfig(routes)
+		b.Run(fmt.Sprintf("routes=%d", routes), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if DeploymentProfileFingerprint(cfg) == "" {
+					b.Fatal("fingerprint must not be empty")
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkSeedBaseline measures the boot-time generation-zero seed: one encode,
+// one conditional write, one verifying read. It runs once per process start, so
+// what matters is that it stays a constant handful of store calls rather than
+// growing with the cohort or the config — a seed that became expensive would be
+// paid on every task replacement during a rolling deploy.
+func BenchmarkSeedBaseline(b *testing.B) {
+	codec := newConfigCodecFake()
+	rc := testRolloutConfig(memoryrollout.NewStore(), "node-a")
+	rc.Encode, rc.Decode = codec.encode, codec.decode
+	d := NewClusterRolloutDriver(newFakeRolloutHost(nil), rc)
+	cfg := benchConfig(10)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, _, err := d.SeedBaseline(context.Background(), cfg); err != nil {
+			b.Fatalf("SeedBaseline: %v", err)
+		}
+	}
+}
+
+// BenchmarkRolloutObserverStatus is the health-probe read path: every
+// /deephealth request projects the last observation, and a load balancer plus a
+// dashboard plus an operator can hit that concurrently with the drive writing
+// the next observation. It is the one rollout path whose cost is driven by
+// something other than the poll cadence, so it is worth pinning separately.
+func BenchmarkRolloutObserverStatus(b *testing.B) {
+	store := memoryrollout.NewStore()
+	ctx := context.Background()
+	r, err := store.Propose(ctx, persistence.RolloutProposal{
+		ProposerID: "node-a", ConfigDigest: "d", ConfigVersion: 3,
+		Members: []string{"node-a", "node-b", "node-c"}, TTL: time.Hour,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	obs := newRolloutObserver(nil, clock.System, time.Second, "node-a")
+	obs.observe(r, "node-a", true, false)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if st := obs.status(); st.MemberID == "" {
+			b.Fatal("empty status")
+		}
+	}
+}
+
+// BenchmarkRolloutObserverObserve measures the write half — one observation,
+// including the divergence gauge and the one-hot state gauges. The drive pays it
+// once per poll on every member, so a per-observation allocation regression here
+// is a fleet-wide one.
+func BenchmarkRolloutObserverObserve(b *testing.B) {
+	store := memoryrollout.NewStore()
+	ctx := context.Background()
+	r, err := store.Propose(ctx, persistence.RolloutProposal{
+		ProposerID: "node-a", ConfigDigest: "d", ConfigVersion: 3,
+		Members: []string{"node-a", "node-b", "node-c"}, TTL: time.Hour,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	obs := newRolloutObserver(&ports.RecordingExporter{}, clock.System, time.Second, "node-a")
+
+	b.ReportAllocs()
+	for b.Loop() {
+		obs.observe(r, "node-a", true, false)
+	}
+}
+
+// BenchmarkClassifyClusterReload measures the apply-path guard's whole decision:
+// the classification every clustered reload runs before anything is built, and
+// that a member also runs at boot when its config differs from the committed one.
+//
+// It is a third control-plane cost worth pinning for the reason above the file:
+// the classifier walks the store, session and cohort-shape predicates over the
+// full config, so it grows with config size, and it sits in front of the build
+// rather than beside it. The two sub-benchmarks are the two outcomes — a
+// live-safe delta, which walks every predicate before returning, and a roster
+// change, which is the cohort-shape refusal.
+func BenchmarkClassifyClusterReload(b *testing.B) {
+	for _, routes := range []int{1, 10, 100} {
+		oldCfg := benchConfig(routes)
+
+		liveSafe := benchConfig(routes)
+		liveSafe.Version = oldCfg.Version + 1
+		b.Run("livesafe/routes"+itoa(routes), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if disposition, _ := classifyClusterReload(oldCfg, liveSafe); disposition != clusterReloadCoordinated {
+					b.Fatalf("expected the barrier route, got %v", disposition)
+				}
+			}
+		})
+
+		rosterChange := benchConfig(routes)
+		rosterChange.Bridge.Cluster.Members = []string{"node-a", "node-b", "node-c"}
+		b.Run("rosterchange/routes"+itoa(routes), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if disposition, _ := classifyClusterReload(oldCfg, rosterChange); disposition != clusterReloadRefuse {
+					b.Fatalf("expected the cohort-shape refusal, got %v", disposition)
+				}
+			}
+		})
 	}
 }

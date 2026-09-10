@@ -22,7 +22,7 @@ import (
 // [ValidationError] describing every problem found, or nil when all routes are
 // valid. It is idempotent and side-effect-free (it never mutates route entries
 // or runtime state), so it is safe to call repeatedly and BEFORE Start — the
-// builder's complete() calls it at the end of construction (C2). Start invokes
+// builder's complete() calls it at the end of construction. Start invokes
 // the same validation internally, so a runtime that fails ValidateRoutes also
 // fails Start.
 func (rt *Runtime) ValidateRoutes() error {
@@ -35,8 +35,7 @@ func (rt *Runtime) ValidateRoutes() error {
 // standing dead-letter-queue backlog (shared.MetricDLQDepth). Unlike OutboxDepth
 // — sampled every drain cycle by the drainer loop — the DLQ has no loop of its
 // own, so without this periodic sampler a stale post-burst backlog (writes
-// stopped, nothing redriven) is invisible until a manual storage scan (XCUT-B /
-// H-OBS DLQ-1). 30s aligns with the 30–60s operational alarm cadence; it is a
+// stopped, nothing redriven) is invisible until a manual storage scan. 30s aligns with the 30–60s operational alarm cadence; it is a
 // const, not a config knob, since no DLQ-sampling knob exists in the blueprint.
 const dlqDepthSampleInterval = 30 * time.Second
 
@@ -44,17 +43,20 @@ const dlqDepthSampleInterval = 30 * time.Second
 // drainers, then spawns background goroutines. It returns immediately;
 // use Stop to shut down gracefully.
 func (rt *Runtime) Start(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
-	if rt.terminal || rt.stopped {
-		// Finding 3: Stop closes the outbox/DLQ/lease stores and cancels every
+	if rt.terminal || rt.stopped || rt.fenced {
+		// Stop closes the outbox/DLQ/lease stores and cancels every
 		// drainer/manager, but the drainers/managers/entries are never rebuilt.
 		// A restart would append fresh drainers over CLOSED stores and duplicate
 		// work. The runtime is single-use — for BOTH a clean deliberate Stop
 		// (rt.stopped) and an unrecoverable component failure (rt.terminal):
 		// reject a restart with a clear error. "Resume" after a deliberate stop
-		// means the supervisor builds a NEW runtime (CRITICAL 1).
+		// means the supervisor builds a NEW runtime.
 		return errors.New("runtime: cannot start a stopped runtime (single-use lifecycle); build a new runtime")
 	}
 
@@ -73,7 +75,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		return err
 	}
 
-	// Finding: shared_outbox drainer config bleed. Exactly one drainer exists per
+	// Shared_outbox drainer config bleed. Exactly one drainer exists per
 	// outbox session partition, so if two DIFFERENT routes resolve to the same
 	// session with divergent sender or drain/replay/DLQ policy, one route's
 	// records would silently drain under the other's configuration. Detect that
@@ -88,31 +90,58 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		rt.logger.Log(ctx, logging.LevelDebug, "runtime starting",
 			"instance_id", rt.instanceID,
 			"route_count", len(rt.entries),
-			"session_count", len(rt.sessionMgrs)+len(rt.sessionSenders),
+			"session_count", len(rt.sessionMgrs)+len(rt.sessionSenders)+len(rt.ingressSessions),
 		)
 	}
 
-	ctx, rt.cancel = context.WithCancel(ctx)
+	// Routes, receivers, senders, session managers and drainers all derive their
+	// context from the one built here. It is DETACHED from the caller's context
+	// (values preserved, cancellation dropped) so Stop is the ONLY thing that can
+	// cancel in-flight work.
+	//
+	// Both shipped binaries cancel the context they passed to Start when they
+	// receive SIGTERM, and only then ask the supervisor/app to stop the runtime.
+	// While the work context was derived from the caller's, that cancel reached
+	// every in-flight send/persist/processor first, so Stop's "settle accepted
+	// deliveries before cancelling" phase never ran: sends aborted, sources
+	// redelivered, and every rolling restart produced duplicates (or, under a
+	// drop policy, loss). Detaching moves teardown entirely onto Stop, which is
+	// bounded by the configured drain budget.
+	//
+	// Cancelling the Start context is still a valid way to shut a runtime down —
+	// the watcher below turns it into a Stop.
+	stopSignal := ctx.Done()
+	ctx, rt.cancel = context.WithCancel(context.WithoutCancel(ctx))
 
 	// Watch the caller-supplied Start context. If it is cancelled WITHOUT a Stop
 	// (the caller cancels the ctx it passed to Start, rather than calling Stop),
-	// every background goroutine exits on the derived ctx — but running/healthy
-	// stay advertised, leaving a dead runtime that still reports healthy on /live
-	// and ready on /ready (finding L9). Drive Stop so resources are released and
-	// health flips. A Stop that itself cancelled the ctx already set terminal, so
-	// this observes terminal and does nothing (no double teardown). The watcher
-	// is deliberately NOT in rt.wg (Stop waits on rt.wg, so enrolling it would
-	// deadlock); it always terminates because ctx is cancelled by either Stop or
-	// the caller.
-	watchCtx := ctx
+	// nothing tears the runtime down on its own any more — the work context is
+	// detached — so running/healthy would stay advertised on a runtime nobody is
+	// going to stop. Drive Stop so resources are released and health flips. A
+	// Stop already under way sets stopped/terminal, which this observes so there
+	// is no double teardown. The watcher is deliberately NOT in rt.wg (Stop waits
+	// on rt.wg, so enrolling it would deadlock); it always terminates, because
+	// either the caller's context ends or rt.cancel closes the work context, and
+	// whichever comes first releases the select.
+	watchDone := ctx.Done()
 	go func() {
-		<-watchCtx.Done()
+		select {
+		case <-stopSignal:
+		case <-watchDone:
+			// Stop (or a component-failure trip) cancelled the work context: the
+			// teardown is already owned by that caller.
+			return
+		}
 		rt.mu.Lock()
 		stopping := rt.terminal || !rt.running
 		rt.mu.Unlock()
 		if stopping {
 			return
 		}
+		// The budget the builder derives from bridge.drain_timeout — the same
+		// ceiling the supervisor gives its own stopCurrent, so whichever of the
+		// two wins the race performs an identically-bounded teardown. The 5s
+		// fallback applies only to a hand-wired runtime that set no budget.
 		stopBudget := rt.shutdownTimeout
 		if stopBudget <= 0 {
 			stopBudget = 5 * time.Second
@@ -146,9 +175,9 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	dlqRouter := dlq.NewFromConfig(dlq.Config{
 		Store:            rt.dlqStore,
 		Clock:            rt.clk,
-		WriteTimeout:     5 * time.Second,
-		WriteMaxAttempts: 2,
-		// H2: wire Metrics/Logger so MetricDLQWriteFailures reaches the real
+		WriteTimeout:     dlq.RuntimeWriteTimeout,
+		WriteMaxAttempts: dlq.RuntimeWriteMaxAttempts,
+		// wire Metrics/Logger so MetricDLQWriteFailures reaches the real
 		// exporter (not a NoopExporter) and router write errors are logged.
 		// Without these the production DLQ router was blind.
 		Metrics: m,
@@ -160,7 +189,12 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	}
 
 	if rt.leaseStore != nil {
-		rt.locator = cluster.NewLocator(rt.leaseOwnerID, rt.leaseStore, cluster.DefaultLocatorConfig(), rt.clk)
+		locatorCfg := cluster.DefaultLocatorConfig()
+		// Ownership-unknown decisions are advisory (no token is minted), so the
+		// reason-tagged counter is the ONLY trace of fleet clock skew or a
+		// cold-takeover window behind a 502/503.
+		locatorCfg.Metrics = m
+		rt.locator = cluster.NewLocator(rt.leaseOwnerID, rt.leaseStore, locatorCfg, rt.clk)
 	}
 
 	// drainerOwner maps a session ID to the route whose configuration
@@ -173,8 +207,8 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	drainerOwner := make(map[string]string)
 	// Source route settlement barriers are installed on sessions after every
 	// RouteRunner exists and before any background goroutine starts.
-	ingressSessions := make(map[string]ports.Session)
-	ingressRoutes := make(map[string][]string)
+	settlementSessions := make(map[string]ports.Session)
+	settlementRoutes := make(map[string][]string)
 	warnDrainerConfigBleed := func(sid, owner, routeID string) {
 		if owner == routeID || rt.logger == nil {
 			return
@@ -187,7 +221,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	}
 
 	for _, entry := range rt.entries {
-		// A1: For shared_outbox routes with a primary session, bindings that
+		// For shared_outbox routes with a primary session, bindings that
 		// omit their own SessionID inherit the route session. This keeps each
 		// outbox record's partition (SESSION#<routeSession>) aligned with the
 		// drainer that polls it; without this, records persist under
@@ -235,8 +269,8 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 		if entry.session != nil && entry.sessCfg != nil {
 			sid := entry.sessCfg.SessionID
-			ingressSessions[sid] = entry.session
-			ingressRoutes[sid] = append(ingressRoutes[sid], entry.config.ID)
+			settlementSessions[sid] = entry.session
+			settlementRoutes[sid] = append(settlementRoutes[sid], entry.config.ID)
 			if _, exists := rt.sessionMgrs[sid]; !exists {
 				mgr := session.NewWithMetrics(*entry.sessCfg, entry.session, rt.leaseStore, rt.leaseOwnerID, rt.logger, m, rt.clk)
 				mgr.SetAudit(rt.audit)
@@ -268,10 +302,8 @@ func (rt *Runtime) Start(ctx context.Context) error {
 						DrainBatchSize:        entry.sessCfg.DrainBatchSize,
 						DrainMaxBatchSize:     entry.sessCfg.DrainMaxBatchSize,
 						DrainMaxConcurrency:   entry.sessCfg.DrainMaxConcurrency,
-						DrainTimeout:          entry.sessCfg.DrainTimeout,
 						PerRecordDrainTimeout: entry.sessCfg.PerRecordDrainTimeout,
 						MaxDrainTimeout:       entry.sessCfg.MaxDrainTimeout,
-						PoisonMinAge:          rt.outboxPoisonMinAge,
 						Metrics:               m,
 						Hook:                  rt.hook,
 						Logger:                rt.logger,
@@ -282,7 +314,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 						},
 					})
 					rt.drainers = append(rt.drainers, drainer)
-					// F9: let step-down early-complete its grace when this
+					// let step-down early-complete its grace when this
 					// session's outbox has no in-flight records to settle.
 					mgr.SetDrainIdleCheck(func() bool { _, idle := drainer.IdleSince(); return idle })
 				}
@@ -331,10 +363,8 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					DrainBatchSize:        sse.config.DrainBatchSize,
 					DrainMaxBatchSize:     sse.config.DrainMaxBatchSize,
 					DrainMaxConcurrency:   sse.config.DrainMaxConcurrency,
-					DrainTimeout:          sse.config.DrainTimeout,
 					PerRecordDrainTimeout: sse.config.PerRecordDrainTimeout,
 					MaxDrainTimeout:       sse.config.MaxDrainTimeout,
-					PoisonMinAge:          rt.outboxPoisonMinAge,
 					Metrics:               m,
 					Hook:                  rt.hook,
 					Logger:                rt.logger,
@@ -345,19 +375,54 @@ func (rt *Runtime) Start(ctx context.Context) error {
 					},
 				})
 				rt.drainers = append(rt.drainers, drainer)
-				// F9: let step-down early-complete its grace when this session's
+				// let step-down early-complete its grace when this session's
 				// outbox has no in-flight records to settle.
 				mgr.SetDrainIdleCheck(func() bool { _, idle := drainer.IdleSince(); return idle })
 			}
 		}
 	}
 
-	for sid, sess := range ingressSessions {
+	// Every registered session sender gets a manager, whatever delivery mode
+	// the routes that reach it use. The shared-outbox wiring above creates one
+	// because it needs a drainer; a direct_hold route that names the session on
+	// a binding needs one just as much — a plan-driven session (MQTT, AMQP
+	// 0-9-1) connects and subscribes only when a manager reconciles its plan,
+	// and the builder admits that binding precisely as the way to get one. A
+	// session sender left without a manager is a session that never connects,
+	// a receiver that never subscribes, and a bridge that reports ready while
+	// transporting nothing. Such a session is also the INGRESS of every route
+	// whose receiver rides on it, so it joins settlementSessions below and
+	// gets the same settlement barrier a route-primary session gets before it
+	// recycles a broker connection.
+	for sid, sse := range rt.sessionSenders {
+		if _, exists := rt.sessionMgrs[sid]; !exists {
+			mgr := session.NewWithMetrics(sse.config, sse.session, rt.leaseStore, rt.leaseOwnerID, rt.logger, m, rt.clk)
+			mgr.SetAudit(rt.audit)
+			mgr.SetEndpoints(rt.clusterEndpoints)
+			rt.sessionMgrs[sid] = mgr
+		}
+		for _, entry := range rt.entries {
+			ridesOn := entry.config.SourceSessionID == sid ||
+				(entry.sessCfg == nil && entry.session == sse.session)
+			if !ridesOn {
+				continue
+			}
+			settlementSessions[sid] = sse.session
+			settlementRoutes[sid] = append(settlementRoutes[sid], entry.config.ID)
+		}
+	}
+
+	// An ingress session carries only its receivers' subscriptions: it gets a
+	// plain manager (no lease, no drainer) and the settlement barrier for the
+	// routes riding on it.
+	rt.attachIngressSessions(m, settlementSessions, settlementRoutes)
+
+	for sid, sess := range settlementSessions {
 		configurer, ok := sess.(ports.IngressQuiescenceConfigurer)
 		if !ok {
 			continue
 		}
-		routes := append([]string(nil), ingressRoutes[sid]...)
+		routes := append([]string(nil), settlementRoutes[sid]...)
 		configurer.SetIngressQuiescenceWaiter(func(waitCtx context.Context) error {
 			return rt.WaitQuiescent(waitCtx, QuiescenceOptions{
 				Routes: routes,
@@ -368,7 +433,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		})
 	}
 
-	// Finding 12: DLQ writes are fenced PER OWNING SESSION, not by an
+	// DLQ writes are fenced PER OWNING SESSION, not by an
 	// instance-global "any lease held" gate. Build the set of exclusive
 	// sessions (only they carry a lease) so the router can decide per DLQ entry:
 	//   - empty sessionID (ingress failure with no owning session): allow — no
@@ -417,7 +482,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	// MetricSessionRestarts + per-session readiness. This supersedes the old
 	// "reconcile blip terminates the whole bridge" behaviour, so no extra
 	// in-manager reconcile retry is added: it would duplicate this isolation and
-	// risk masking a permanent failure behind another retry layer (C7-N1).
+	// risk masking a permanent failure behind another retry layer.
 	for sid, mgr := range rt.sessionMgrs {
 		rt.startBackground(ctx, "session:"+sid, rt.superviseSession(sid, mgr.Run))
 	}
@@ -445,7 +510,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	// (its source queue deleted, its credential revoked, a protocol mismatch on
 	// that link) is NOT a global fault: crashing the whole pod would punish every
 	// healthy co-tenant route and, since the fault is permanent, just
-	// CrashLoopBackOff without fixing anything (findings C1-MED, C2-HIGH). This
+	// CrashLoopBackOff without fixing anything. This
 	// supersedes the former REV-3-routeiso fail-fast rationale (which assumed
 	// every receiver error is global-and-unrecoverable); superviseRoute isolates
 	// the failing route with jittered capped backoff, keeps global healthy/
@@ -457,7 +522,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		rt.startBackground(ctx, "route:"+entry.config.ID, rt.superviseRoute(entry.config.ID, entry.runner.Run))
 	}
 
-	// DLQ-depth sampler (XCUT-B): periodically emit the standing DLQ backlog as
+	// DLQ-depth sampler: periodically emit the standing DLQ backlog as
 	// shared.MetricDLQDepth so operators can alarm on records sitting in the DLQ
 	// after traffic stops. Unlike OutboxDepth (sampled every drain cycle by the
 	// drainer loop) the DLQ has no loop of its own. The goroutine probes the
@@ -516,7 +581,6 @@ type drainerFingerprint struct {
 	drainBatchSize        int
 	drainMaxBatchSize     int
 	drainMaxConcurrency   int
-	drainTimeout          time.Duration
 	perRecordDrainTimeout time.Duration
 	maxDrainTimeout       time.Duration
 }
@@ -561,7 +625,6 @@ func drainFingerprint(p routing.RoutePolicy, sc session.Config) drainerFingerpri
 		drainBatchSize:        batch,
 		drainMaxBatchSize:     normalizeDrainMaxBatchSize(sc.DrainMaxBatchSize, batch),
 		drainMaxConcurrency:   normalizeDrainMaxConcurrency(sc.DrainMaxConcurrency),
-		drainTimeout:          normalizeDrainTimeout(sc.DrainTimeout),
 		perRecordDrainTimeout: per,
 		maxDrainTimeout:       maxT,
 	}
@@ -619,13 +682,6 @@ func normalizeDrainMaxBatchSize(v, batch int) int {
 func normalizeDrainMaxConcurrency(v int) int {
 	if v <= 0 {
 		return 10
-	}
-	return v
-}
-
-func normalizeDrainTimeout(v time.Duration) time.Duration {
-	if v <= 0 {
-		return 10 * time.Second
 	}
 	return v
 }

@@ -1,8 +1,15 @@
 # CDK Scenario 2: Custom VPC & Existing Infrastructure
 
+## Overview
+
 Add GoBridge to an established AWS environment with an existing VPC, ALB, and
 ECS cluster. Instead of creating all resources from scratch, this scenario
 imports shared infrastructure and layers the GoBridge Fargate service on top.
+
+Use a consumer-built image with embedded initial config, or provide an existing
+target. Registry images are not changed by CDK. Missing config keeps the data
+plane idle; only control can initialize it. See
+[initial configuration](../../aws-deployment/config-initialization.md).
 
 ## Use Case
 
@@ -53,8 +60,8 @@ flowchart TD
 
     Client([Internal Clients]) --> ALB
 
-    style T1 fill:#f96,stroke:#333
-    style T2 fill:#f96,stroke:#333
+    style fill:#f96,stroke:#333
+    style fill:#f96,stroke:#333
     style Other fill:#6bf,stroke:#333
 ```
 
@@ -130,7 +137,7 @@ port. The platform team provides the ALB ARN and the HTTPS listener ARN.
 
 Import the existing HTTPS listener using `ApplicationListener_FromLookup` with
 the load balancer tags and port 443. The full import is shown in the
-[Complete CDK Code](#complete-cdk-code) section below.
+[Complete CDK Code](02-custom-vpc-stack.md) section below.
 
 ### Admin Target Group (with Sticky Sessions)
 
@@ -208,7 +215,7 @@ transportTg := elbv2.NewApplicationTargetGroup(stack, jsii.String("TransportTG")
 Attach path-based routing rules to the shared HTTPS listener. Each target group
 gets a priority-ordered rule matching its API path prefix (`/api/v1/admin/*`,
 `/api/v1/monitor/*`, `/api/v1/transport/*`). The full listener rule setup is
-shown in the [Complete CDK Code](#complete-cdk-code) section.
+shown in the [Complete CDK Code](02-custom-vpc-stack.md) section.
 
 ## Security Groups
 
@@ -272,119 +279,7 @@ This produces three security group relationships:
 | Task SG | EFS SG | 2049 | NFS config mount |
 | Task SG | VPC CIDR | all | Outbound to internal services |
 
-## Complete CDK Code
-
-The full stack wires the imported VPC and ECS cluster into the
-`gobridgecluster.NewGoBridgeCluster` facade (control + worker tasks sharing one
-EFS filesystem, chosen here because we want more than one replica), then binds
-it to the shared ALB listener with the `gobridgealbattachment` construct — the
-attachment owns the target groups and listener rules, so you do not wire them by
-hand.
-
-```go
-package main
-
-import (
-    "github.com/aws/aws-cdk-go/awscdk/v2"
-    "github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-    "github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
-    elbv2 "github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2"
-    "github.com/aws/constructs-go/constructs/v10"
-    "github.com/aws/jsii-runtime-go"
-
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgealbattachment"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgecluster"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
-)
-
-func NewCustomVpcStack(scope constructs.Construct, id string) awscdk.Stack {
-    stack := awscdk.NewStack(scope, &id, &awscdk.StackProps{
-        Env: &awscdk.Environment{
-            Account: jsii.String("123456789012"),
-            Region:  jsii.String("eu-west-1"),
-        },
-    })
-
-    // --- Import existing infrastructure ---
-
-    vpc := awsec2.Vpc_FromLookup(stack, jsii.String("Vpc"), &awsec2.VpcLookupOptions{
-        VpcId: jsii.String("vpc-0abc1234def56789a"),
-    })
-
-    cluster := awsecs.Cluster_FromClusterAttributes(stack, jsii.String("Cluster"),
-        &awsecs.ClusterAttributes{
-            ClusterName:    jsii.String("platform-ecs"),
-            Vpc:            vpc,
-            SecurityGroups: &[]awsec2.ISecurityGroup{},
-        },
-    )
-
-    // --- GoBridge cluster facade (control + workers, shared EFS) ---
-
-    src := gobridgecdk.BridgeYamlAsset("bridge.yaml")
-    workers := float64(2)
-
-    bridge := gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Bridge"),
-        &gobridgecluster.ClusterProps{
-            Vpc:     vpc,
-            Cluster: cluster, // reuse the imported ECS cluster
-            Image: awsecs.ContainerImage_FromRegistry(
-                jsii.String("123456789012.dkr.ecr.eu-west-1.amazonaws.com/gobridge:latest"),
-                nil,
-            ),
-            Bootstrap: infra.BootstrapConfig{
-                BridgeID:         "gobridge-mqtt",
-                ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",
-                AdminAPIKeyParam: "/gobridge/prod/admin-api-key",
-                Topology:         infra.TopologyFilesystemReplicated,
-            },
-            BridgeConfig:       src,
-            CPU:                jsii.Number(1024),
-            MemoryMiB:          jsii.Number(2048),
-            WorkerDesiredCount: &workers,
-            // Autoscaling is opt-in and applies to the worker service only.
-            AutoScaling: &gobridgecluster.AutoScalingProps{
-                Min:       2,
-                Max:       6,
-                TargetCPU: 65,
-            },
-        },
-    )
-
-    // --- Bind to the shared ALB listener ---
-
-    listener := elbv2.ApplicationListener_FromLookup(stack, jsii.String("Listener"),
-        &elbv2.ApplicationListenerLookupOptions{
-            LoadBalancerTags: &map[string]string{"purpose": "internal-services"},
-            ListenerPort:     jsii.Number(443),
-        },
-    )
-
-    gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Attach"),
-        &gobridgealbattachment.AttachmentProps{
-            Cluster:      bridge,
-            Listener:     listener,
-            Vpc:          vpc,
-            BridgeConfig: src,
-        },
-    )
-
-    return stack
-}
-
-func main() {
-    app := awscdk.NewApp(nil)
-    NewCustomVpcStack(app, "GoBridgeCustomVpc")
-    app.Synth(nil)
-}
-```
-
-The cluster facade handles task definitions, EFS volume mounts, IAM policies,
-security groups for EFS access, container port mappings, the config seeder, and
-(when `AutoScaling` is set) worker CPU target-tracking. The attachment construct
-creates the admin/monitor/transport target groups and listener rules against the
-shared ALB. Exactly one of `Single` or `Cluster` is set on the attachment.
+The full stack listing for this scenario is on its own page: [Custom VPC — complete CDK stack](02-custom-vpc-stack.md).
 
 ## EFS in a Shared VPC
 

@@ -46,8 +46,9 @@ func retryDelay(policy routing.RoutePolicy, attempt int, sendErr error, randFloa
 
 // applyJitter applies equal-jitter to the computed delay d (nanoseconds
 // as float64): delay = d*(1-jf) + rand[0, d*jf), clamped to
-// [0, MaxInterval]. JitterFactor <= 0 returns d unchanged so callers
-// that opt out keep the deterministic exponential delay.
+// [0, MaxInterval]. JitterFactor <= 0 returns d unchanged, which is how
+// routing.JitterDisabled — the explicit opt-out a defaulted policy carries —
+// keeps the deterministic exponential delay.
 func applyJitter(d float64, bp routing.BackoffPolicy, randFloat func() float64) time.Duration {
 	jf := bp.JitterFactor
 	if jf <= 0 {

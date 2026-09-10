@@ -162,6 +162,8 @@ Bullet list of links to the canonical docs and other scenarios this
 scenario builds on or sets up. Avoid repeating their content; this
 section is purely navigational. [REQUIRED]
 
+```markdown
   * [ARCHITECTURE.md §<n> — <section>](../../ARCHITECTURE.md)
   * [Scenario M: <name>](./MM-<slug>.md)
   * [Configuration Reference](../configuration-reference.md)
+```

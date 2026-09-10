@@ -1,15 +1,52 @@
 package bootstrap
 
 import (
+	"context"
+	"github.com/mariotoffia/gobridge/testutil/wait"
+	"net/http"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+// TestApp_DynamoDBSource_LoadErrorStopsStartup verifies source failures propagate
+// before a runtime or listener is installed, rather than falling back to a file.
+func TestApp_DynamoDBSource_LoadErrorKeepsControlPlane(t *testing.T) {
+	cfg := deployinfra.BootstrapConfig{
+		BridgeID:         "bridge-config",
+		AdminAPIKeyParam: "/admin",
+		ConfigSource:     deployinfra.ConfigSourceDynamoDB,
+		ConfigDynamoDB:   &deployinfra.ConfigDynamoDBSettings{TableName: "config"},
+	}.Normalized()
+	require.NoError(t, cfg.Validate(), "the bootstrap schema admits DynamoDB")
+	var calls atomic.Int32
+	client := configDynamoDBClient(t, func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		assert.Equal(t, "DynamoDB_20120810.GetItem", req.Header.Get("X-Amz-Target"))
+		return nil, shared.ErrUnavailable
+	})
+	cfg.AdminAddr, cfg.MonitorAddr, cfg.TransportHTTPAddr = ":0", ":0", ":0"
+	app := NewApp(cfg, WithDynamoDBClient(client),
+		WithCredentialStore(&fakePullStore{}), WithParameterResolver(staticParameterResolver{"/admin": "admin-secret-key-123456"}))
+	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+
+	require.NoError(t, app.Start(t.Context()))
+	wait.Until(t, time.Second, "source fault reported", func() bool { return app.observationError.Load() != nil })
+	assert.Positive(t, calls.Load())
+	assert.Nil(t, app.CurrentLogicalConfig(), "must not load an empty file-backed config")
+	assert.Nil(t, app.CurrentRuntime())
+	assert.NotEmpty(t, app.AdminURL())
+	assert.NotEmpty(t, app.TransportURL())
+	assert.Same(t, client, app.dynamoDBClient)
+}
 
 func TestValidateFilesystemProfile_AdditionalCases(t *testing.T) {
 	replicated := deployinfra.BootstrapConfig{

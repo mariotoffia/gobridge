@@ -15,9 +15,11 @@
 //
 // This package is the only Layer-2 location permitted to import
 // `gopkg.in/yaml.v3` and `github.com/go-viper/mapstructure/v2`.
-// The W-9 finding (ARCH_REVIEW.md) tracked these as the only inner
-// ring vendor concessions; the L-2 split moved them out of the pure
-// model package `github.com/mariotoffia/gobridge/config` into here.
+// They used to sit in the pure model package
+// `github.com/mariotoffia/gobridge/config`, which made the inner ring
+// carry a vendor dependency. Moving them here keeps that package
+// stdlib-only: the model stays free of any wire format, and every
+// yaml/mapstructure decision lives behind this one boundary.
 //
 // Allowed importers: the config-source adapters
 // (`adapters/native/config/file`, `adapters/aws/config/dynamodb`)

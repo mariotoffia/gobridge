@@ -148,9 +148,9 @@ func metricNames(entries []ports.MetricEntry) []string {
 //   - tags the counter with the configured (tagKey, tagValue),
 //   - propagates a nil error.
 //
-// Closes the verification gap noted in CLOCK_FINDINGS.md: the previous
-// Extend test only asserted absence of the legacy SQS-specific metric;
-// it did not validate the positive emission contract.
+// This closes a real gap: the earlier Extend test only asserted that the
+// legacy SQS-specific metric was absent. Absence proves nothing about
+// what IS emitted, so the positive contract went unverified.
 func TestInstrumentedDelivery_Extend_Success(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "test"}))

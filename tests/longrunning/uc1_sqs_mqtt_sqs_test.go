@@ -26,7 +26,7 @@ import (
 // Validates:
 //   - Shared MQTT subscription for competing consumers (A, B, C)
 //   - Fan-out: both D and E receive all messages
-//   - Exactly 5,000 unique messages per output queue (no duplicates)
+//   - Exactly uc1MsgCount unique messages per output queue (no duplicates)
 //
 // Topology:
 //   SQS-IN --[$share/uc1grp]--> A,B,C --pub--> uc1/pipeline/data
@@ -107,16 +107,16 @@ func TestUC1_SQS_MQTT_SharedSub_FanOut_SQS(t *testing.T) {
 	allRTs := append(ingressRTs, egressD, egressE)
 	gobridgesync(t, 10*time.Second, allRTs...)
 
-	// --- Send 5,000 messages to SQS-IN ---
+	// --- Send uc1MsgCount messages to SQS-IN ---
 	t.Logf("UC1: sending %d messages to SQS-IN", uc1MsgCount)
 	sendBulkToSQS(t, sqsInClient, sqsInURL, uc1MsgCount, nil)
 
-	// --- Wait for SQS-OUT-1 to have 5,000 messages ---
+	// --- Wait for SQS-OUT-1 to have uc1MsgCount messages ---
 	t.Log("UC1: polling SQS-OUT-1")
 	out1Bodies := pollAllSQS(t, sqsOut1Client, sqsOut1URL, uc1MsgCount, uc1PollTimeout)
 	t.Logf("UC1: SQS-OUT-1 received %d messages", len(out1Bodies))
 
-	// --- Wait for SQS-OUT-2 to have 5,000 messages ---
+	// --- Wait for SQS-OUT-2 to have uc1MsgCount messages ---
 	t.Log("UC1: polling SQS-OUT-2")
 	out2Bodies := pollAllSQS(t, sqsOut2Client, sqsOut2URL, uc1MsgCount, uc1PollTimeout)
 	t.Logf("UC1: SQS-OUT-2 received %d messages", len(out2Bodies))

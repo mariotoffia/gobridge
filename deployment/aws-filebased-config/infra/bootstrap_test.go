@@ -1,6 +1,7 @@
 package infra
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -14,6 +15,7 @@ func TestBootstrapConfig_Normalized_AppliesDefaults(t *testing.T) {
 
 	assertEqual(t, NodeRoleControl, c.NodeRole)
 	assertEqual(t, TopologySingle, c.Topology)
+	assertEqual(t, ConfigSourceFile, c.ConfigSource)
 	assertEqual(t, DefaultAdminAddr, c.AdminAddr)
 	assertEqual(t, DefaultMonitorAddr, c.MonitorAddr)
 	assertEqual(t, DefaultTransportHTTPAddr, c.TransportHTTPAddr)
@@ -156,6 +158,78 @@ func TestBootstrapConfig_EffectivePollInterval(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("EffectivePollInterval() = %v, want %v", got, tc.want)
 			}
+		})
+	}
+}
+
+func TestValidate_ConfigSourceMatrix(t *testing.T) {
+	tests := []struct {
+		name    string
+		fields  string
+		wantErr string
+	}{
+		{"empty defaults to file", `{}`, ""},
+		{"file", `{"config_source":"file"}`, ""},
+		{"default file requires path", `{"config_file_path":""}`, "config_file_path is required"},
+		{"file requires path", `{"config_source":"file","config_file_path":""}`, "config_file_path is required"},
+		{"file rejects dynamodb settings", `{"config_source":"file","config_dynamodb":{}}`, "config_dynamodb must be absent"},
+		{"default file rejects dynamodb settings", `{"config_dynamodb":{}}`, "config_dynamodb must be absent"},
+		{"unknown source", `{"config_source":"s3"}`, "unsupported config_source"},
+		{"dynamodb requires settings", `{"config_source":"dynamodb","config_file_path":""}`, "config_dynamodb.table_name is required"},
+		{"dynamodb requires table", `{"config_source":"dynamodb","config_file_path":"","config_dynamodb":{}}`, "config_dynamodb.table_name is required"},
+		{"dynamodb rejects file path", `{"config_source":"dynamodb","config_dynamodb":{"table_name":"config"}}`, "config_file_path must be empty"},
+		{"dynamodb rejects filesystem topology", `{"config_source":"dynamodb","config_file_path":"","config_dynamodb":{"table_name":"config"},"topology":"filesystem_replicated"}`, "filesystem_replicated"},
+		{"dynamodb single", `{"config_source":"dynamodb","config_file_path":"","config_dynamodb":{"table_name":"config"}}`, ""},
+		{"dynamodb ha", `{"config_source":"dynamodb","config_file_path":"","config_dynamodb":{"table_name":"config"},"topology":"dynamodb_coordinated_ha"}`, ""},
+		{"dynamodb requires bridge id", `{"config_source":"dynamodb","config_file_path":"","config_dynamodb":{"table_name":"config"},"bridge_id":""}`, "bridge_id is required"},
+		{"dynamodb poll", `{"config_source":"dynamodb","config_file_path":"","config_dynamodb":{"table_name":"config","watch_mode":"poll"}}`, ""},
+		{"dynamodb streams", `{"config_source":"dynamodb","config_file_path":"","config_dynamodb":{"table_name":"config","watch_mode":"streams","stream_poll_interval":"250ms"}}`, ""},
+		{"dynamodb unknown watch mode", `{"config_source":"dynamodb","config_file_path":"","config_dynamodb":{"table_name":"config","watch_mode":"invalid"}}`, "unsupported config_dynamodb.watch_mode"},
+		{"dynamodb invalid stream interval", `{"config_source":"dynamodb","config_file_path":"","config_dynamodb":{"table_name":"config","watch_mode":"streams","stream_poll_interval":"invalid"}}`, "config_dynamodb.stream_poll_interval must be a positive duration"},
+		{"dynamodb zero stream interval", `{"config_source":"dynamodb","config_file_path":"","config_dynamodb":{"table_name":"config","watch_mode":"streams","stream_poll_interval":"0s"}}`, "config_dynamodb.stream_poll_interval must be a positive duration"},
+		{"dynamodb negative stream interval", `{"config_source":"dynamodb","config_file_path":"","config_dynamodb":{"table_name":"config","watch_mode":"streams","stream_poll_interval":"-1s"}}`, "config_dynamodb.stream_poll_interval must be a positive duration"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := BootstrapConfig{
+				BridgeID: "b", ConfigFilePath: "/f", AdminAPIKeyParam: "/a",
+				DynamoDBHALeaseTableName: "leases", DynamoDBHAOutboxTableName: "outbox",
+				DynamoDBHAManagedSubscriptionsTableName: "history",
+				DynamoDBHAConfigFingerprint:             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			}
+			if err := json.Unmarshal([]byte(tc.fields), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			err := cfg.Normalized().Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected validation error: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatalf("expected error containing %q", tc.wantErr)
+				}
+				assertContains(t, err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestEffectivePollInterval_DynamoDBDefault(t *testing.T) {
+	assertEqual(t, 30*time.Second, DefaultDynamoDBPollInterval)
+	for _, interval := range []string{"", "invalid", "0s", "-1s", "5s"} {
+		t.Run(interval, func(t *testing.T) {
+			cfg := BootstrapConfig{PollInterval: interval}
+			if err := json.Unmarshal([]byte(`{"config_source":"dynamodb"}`), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			assertEqual(t, ConfigSourceDynamoDB, cfg.Normalized().ConfigSource)
+			want := 30 * time.Second
+			if interval == "5s" {
+				want = 5 * time.Second
+			}
+			assertEqual(t, want, cfg.EffectivePollInterval())
+			assertEqual(t, want, cfg.Normalized().EffectivePollInterval())
 		})
 	}
 }

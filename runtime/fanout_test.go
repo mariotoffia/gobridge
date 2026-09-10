@@ -201,7 +201,7 @@ func TestFanOut_PartialSessionAvailability(t *testing.T) {
 
 	// B should eventually drain and complete. Its first drain failed
 	// transiently and was released for retry, so the recovery drain is
-	// spaced by the A4 transient backoff floor (~5s); allow for it.
+	// spaced by the transient backoff floor (~5s); allow for it.
 	waitFor(t, 8*time.Second, "B completed", func() bool {
 		return outbox.CompletedCount() >= 2
 	})
@@ -215,7 +215,7 @@ func TestFanOut_RegisterSessionSenderWhileRunning(t *testing.T) {
 	sender := NewFakeSender()
 	cfg := goruntime.RouteConfig{
 		ID:                 "r1",
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
 	_ = rt.AddRoute(cfg, receiver, sender, nil, nil)
 	_ = rt.Start(context.Background())

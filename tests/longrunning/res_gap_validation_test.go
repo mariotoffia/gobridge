@@ -19,7 +19,6 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
@@ -92,8 +91,8 @@ func TestRES005_AutoExtendFailureDuplicates(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	sqsClient := sqslocal.Client(t)
-	sqsInURL := sqslocal.CreateQueueWithAttrs(t, sqsClient, sqslocal.UniqueQueue("res005-in"),
+	sqsClient := newSQSClient(t)
+	sqsInURL := createSQSQueueWithAttrs(t, sqsClient, uniqueQueueName("res005-in"),
 		map[string]string{"VisibilityTimeout": "5"})
 	collector := newMQTTCollector(t, outTopic, "res005-col")
 
@@ -124,8 +123,13 @@ func TestRES005_AutoExtendFailureDuplicates(t *testing.T) {
 	gobridgesync(t, 10*time.Second, rt)
 
 	sendBulkToSQS(t, sqsClient, sqsInURL, msgCount, nil)
-	lrWaitFor(t, 100*time.Second, fmt.Sprintf("collector >= %d", msgCount),
-		func() bool { return collector.count() >= msgCount })
+	// Wait on the quantity the assertion below checks. Waiting on the raw
+	// delivery count would return as soon as N deliveries had landed, and a
+	// redelivery makes one of those a repeat of a message already seen while
+	// another has not arrived — a correct at-least-once outcome the assertion
+	// would then read as a lost message.
+	lrWaitFor(t, 100*time.Second, fmt.Sprintf("unique >= %d", msgCount),
+		func() bool { return countUnique(collector) >= msgCount })
 
 	// Deterministic replacement for the old "sleep 15s and hope no more arrive":
 	// wait until the arrival count STOPS changing, then assert exactly-once.

@@ -145,7 +145,9 @@ func isSensitiveKey(key string) bool {
 // credentials and returns a single aggregated error describing every
 // field that contains a non-empty literal value where a credential
 // URI was expected. A nil cfg or a config without any violations
-// returns nil. See the package doc for the full policy.
+// returns nil. This is an explicitly invoked, consumer-selected policy utility;
+// Builder.Build and synth validation do not call it automatically. Diagnostics
+// name the fields, never their values.
 func ScanForPlaintextSecrets(cfg *ports.BridgeConfig) error {
 	if cfg == nil {
 		return nil
@@ -259,6 +261,11 @@ func walkValue(into []error, path string, v any) []error {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
+			// Resource tag names are user-defined metadata, not credential
+			// field names. A tag named "password" is still a literal selector.
+			if k == "queue_tags" {
+				continue
+			}
 			child := val[k]
 			childPath := path + "." + strings.ToLower(k)
 			if isSensitiveKey(k) {
@@ -279,6 +286,9 @@ func walkValue(into []error, path string, v any) []error {
 		}
 		sort.Strings(keys)
 		for _, ks := range keys {
+			if ks == "queue_tags" {
+				continue
+			}
 			var child any
 			for k, c := range val {
 				if fmt.Sprintf("%v", k) == ks {

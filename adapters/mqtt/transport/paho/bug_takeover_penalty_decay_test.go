@@ -11,7 +11,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// A-4 (MEDIUM): the session-takeover reconnect penalty must decay once the
+// (MEDIUM): the session-takeover reconnect penalty must decay once the
 // storm resolves, so an ordinary reconnect is not stuck paying a stale storm's
 // backoff and busting the failover window.
 //
@@ -54,5 +54,5 @@ func TestNoteSessionTakeover_ResolvedStorm_PenaltyDecaysWithoutNewTakeover(t *te
 	// changed is elapsed time: this isolates the recency gate.
 	clk.Advance(takeoverStabilityWindow)
 	require.Equal(t, time.Duration(0), sess.takeoverPenalty(),
-		"A-4: a resolved storm's penalty decays once no takeover has occurred for the stability window")
+		"a resolved storm's penalty decays once no takeover has occurred for the stability window")
 }

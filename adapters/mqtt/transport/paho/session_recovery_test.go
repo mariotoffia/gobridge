@@ -189,6 +189,13 @@ func (c *recoveryDisconnectConn) Disconnect(context.Context) error {
 	return nil
 }
 
+// TestSessionRecovery_DrainTimeoutTerminatesAndDisconnects pins the OUTER bound
+// on a settlement drain that never completes: the recovery attempt budget. The
+// drain has no tighter bound of its own — every settlement path the runtime
+// waiter observes is already bounded by the route's own send-wedge, processor
+// and store ceilings, so a bound invented here could only be SHORTER than a
+// legitimate settlement and would terminalize the session for cooperative
+// slowness (see TestSessionRecovery_DrainOutlastsTheAdapterReconcileBound).
 func TestSessionRecovery_DrainTimeoutTerminatesAndDisconnects(t *testing.T) {
 	clk := clocktest.New()
 	metrics := &ports.RecordingExporter{}
@@ -216,10 +223,11 @@ func TestSessionRecovery_DrainTimeoutTerminatesAndDisconnects(t *testing.T) {
 
 	require.NoError(t, s.requestRecovery(t.Context()))
 	<-waiterEntered
-	clk.Advance(settlementRecoveryDrainLimit - time.Nanosecond)
+	attemptBudget := s.recoveryAttemptTimeout()
+	clk.Advance(attemptBudget - time.Nanosecond)
 	select {
 	case <-disconnected:
-		t.Fatal("recovery disconnected before its five-second drain bound")
+		t.Fatal("recovery disconnected before its attempt budget elapsed")
 	default:
 	}
 	clk.Advance(time.Nanosecond)

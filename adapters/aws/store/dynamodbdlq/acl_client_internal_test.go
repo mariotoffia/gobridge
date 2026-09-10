@@ -103,7 +103,7 @@ func newDLQStore(f *fakeDLQClient, opts ...Option) *Store {
 	return s
 }
 
-// Regression for J7: DLQ entries must not carry a TTL by default, so a
+// Regression: DLQ entries must not carry a TTL by default, so a
 // dead-lettered message is not racing a short expiry clock during
 // investigation.
 func TestWrite_NoTTLByDefault(t *testing.T) {
@@ -121,7 +121,7 @@ func TestWrite_NoTTLByDefault(t *testing.T) {
 	}
 }
 
-// Regression for J7: an explicit retention window opts into TTL with a
+// Regression: an explicit retention window opts into TTL with a
 // days-scale (or configured) expiry = failed_at + retention.
 func TestWrite_TTLWhenRetentionConfigured(t *testing.T) {
 	f := &fakeDLQClient{}
@@ -141,7 +141,7 @@ func TestWrite_TTLWhenRetentionConfigured(t *testing.T) {
 	}
 }
 
-// Regression for J11: an index-less Purge must not scan the table unbounded;
+// Regression: an index-less Purge must not scan the table unbounded;
 // it stops after WithMaxScanPages pages.
 func TestPurge_BoundedByMaxScanPages(t *testing.T) {
 	f := &fakeDLQClient{}
@@ -163,7 +163,7 @@ func TestPurge_BoundedByMaxScanPages(t *testing.T) {
 	}
 }
 
-// FIX 3: DeleteByFilter over an eventually-consistent GSI can re-list an entry
+// DeleteByFilter over an eventually-consistent GSI can re-list an entry
 // it already deleted in an earlier pass. Because DeleteItem is idempotent, the
 // exact returned count must reflect rows ACTUALLY removed — so the delete uses
 // ReturnValues ALL_OLD and counts only calls that echoed an item. A re-listed

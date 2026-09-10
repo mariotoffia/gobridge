@@ -20,7 +20,17 @@ func (r *router) setManagedCleanupFilters(filters []string) {
 
 // quiesceForRecycle waits for active handler dispatch, purges old-epoch pending
 // deliveries without ACK, and makes subsequent old-socket ingress discard-only.
-func (r *router) quiesceForRecycle(ctx context.Context, waitSettlement func(context.Context) error) error {
+//
+// It takes two contexts because the phases fail for different reasons and are
+// owned by different layers: teardownCtx bounds the adapter's own work (see
+// Session.quiesceForRecycle), while settleCtx bounds the runtime settlement
+// barrier, whose duration belongs to the routes. Passing the tighter teardown
+// bound to the settlement wait would classify cooperative downstream slowness
+// as a drain failure, which the recovery treats as unrecoverable.
+func (r *router) quiesceForRecycle(
+	teardownCtx, settleCtx context.Context,
+	waitSettlement func(context.Context) error,
+) error {
 	if r == nil {
 		return nil
 	}
@@ -33,6 +43,11 @@ func (r *router) quiesceForRecycle(ctx context.Context, waitSettlement func(cont
 	r.connEpoch++
 	r.clearUnsettledLocked()
 	r.purgeStalePendingLocked()
+	// This closes a generation; it does not open one. The old socket is still
+	// live until the session reports it torn down, so nothing arriving before
+	// that report may lift the discard window this recycle just raised.
+	r.replacementPending = false
+	r.generationOpenedByClient = false
 	callbacks := r.callbacksInFlight
 	idle := r.callbacksIdle
 	r.mu.Unlock()
@@ -40,15 +55,15 @@ func (r *router) quiesceForRecycle(ctx context.Context, waitSettlement func(cont
 	if callbacks > 0 {
 		select {
 		case <-idle:
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-teardownCtx.Done():
+			return teardownCtx.Err()
 		}
 	}
 	// Callback return only means the RouteRunner accepted a Delivery. Its
 	// authoritative in-flight counter remains non-zero through processing and
 	// settlement, so wait on the runtime-installed barrier as the second phase.
 	if waitSettlement != nil {
-		if err := waitSettlement(ctx); err != nil {
+		if err := waitSettlement(settleCtx); err != nil {
 			return err
 		}
 	}

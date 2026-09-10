@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -38,6 +39,7 @@ func failoverBudgetBlueprint(slo string, cfg ports.PluginConfig) *ports.BridgeCo
 		Routes: []ports.RouteDef{{ID: "route", Session: &ports.RouteSessionDef{
 			SessionID: "exclusive", LeaseTTL: "5s", RenewInterval: "1s", RenewCallTimeout: "1s",
 			AcquirePollInterval: "4s", StepDownGrace: "1s", MaxRenewFails: 1, FailoverSLO: slo, StartupAllowance: "4s",
+			BrokerHealthStepDown: routing.BrokerPathFailoverOff,
 		}}},
 	}
 }

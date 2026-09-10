@@ -70,6 +70,13 @@ func TestOutboxReleaseConformance(t *testing.T) {
 	storetest.RunOutboxReleaseTests(t, store)
 }
 
+// Verifies the optional claimed-depth capability against the shared
+// conformance suite so stranded work is visible identically on every backend.
+func TestOutboxClaimedDepthConformance(t *testing.T) {
+	store := newTestStore(t)
+	storetest.RunOutboxClaimedDepthTests(t, store)
+}
+
 // Validates the wall-clock stale-claim reclaim behaviour against the shared
 // conformance suite, driven by a fake clock (TESTS.md: no time.Sleep).
 func TestOutboxStaleReclaimConformance(t *testing.T) {
@@ -369,7 +376,7 @@ func TestExpireWithNoExpirySetSkips(t *testing.T) {
 		t.Fatalf("persist: %v", err)
 	}
 
-	n, err := store.Expire(ctx, time.Now().Add(1*time.Hour), "SESSION#sess-noexp")
+	n, err := store.Expire(ctx, time.Now().Add(1*time.Hour), "SESSION#sess-noexp", persistence.LeaseToken{Version: 1, Owner: "owner-noexp"})
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}
@@ -503,7 +510,7 @@ func TestFullLifecycleWithExpiry(t *testing.T) {
 		t.Fatalf("expected 1 pending, got %d", len(pending))
 	}
 
-	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-lce")
+	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-lce", persistence.LeaseToken{Version: 1, Owner: "owner-lce"})
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}

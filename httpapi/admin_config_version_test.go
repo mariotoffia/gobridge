@@ -46,7 +46,7 @@ func TestHandleConfigTxnCommit_VersionConflict(t *testing.T) {
 }
 
 // TestHandleConfigTxnCommit_ZeroPatchDoesNotMutateSharedConfig is the
-// regression for the computeMerged aliasing bug surfaced by B3's review: a
+// regression for the computeMerged aliasing bug surfaced by the review: a
 // commit with no intervening PATCH must not mutate the live config object
 // returned by ConfigProvider (the App's appliedRef). Before the fix,
 // computeMerged returned that shared pointer unaliased and Commit bumped its

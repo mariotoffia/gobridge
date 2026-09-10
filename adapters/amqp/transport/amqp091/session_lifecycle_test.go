@@ -104,7 +104,7 @@ func TestSession_Close_ImmediatelyAfterStart_NoLeak(t *testing.T) {
 	bgDone := s.bgDone
 	s.mu.Unlock()
 	if bgDone == nil {
-		t.Fatal("bgDone was nil immediately after Start; Close would not wait for monitor goroutine to exit (B6 regression)")
+		t.Fatal("bgDone was nil immediately after Start; Close would not wait for monitor goroutine to exit")
 	}
 
 	if err := s.Close(context.Background()); err != nil {
@@ -210,7 +210,7 @@ func TestSession_Reconcile_PublisherOnlyPlan_StoresAndRuns(t *testing.T) {
 
 	if channelCalls.Load() == beforePub {
 		t.Fatal("Reconcile with publisher-only plan did not invoke conn.Channel(); " +
-			"publisher-only updates are silently ignored when a prior plan exists (B7 regression)")
+			"publisher-only updates are silently ignored when a prior plan exists")
 	}
 	s.mu.Lock()
 	stored := s.plan

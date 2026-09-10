@@ -172,9 +172,10 @@ func (r *OutboxRecord) ClaimedAt() time.Time { return r.claimedAt }
 
 // FirstAttemptedAt returns the instant the drainer FIRST claimed this record,
 // stamped once inside Claim and never moved by a later release or reclaim. It
-// is the clock the replay budget runs from. Zero for records persisted before
-// the replay-budget schema or never yet claimed; the drainer falls those back
-// to the CreatedAt age gate (poisonMinAge).
+// is the clock the replay budget runs from, and it is zero only for a record
+// that has never been claimed. A CLAIMED record with a zero value is a store
+// that broke the stamp contract; the drainer treats that as a budget it must
+// not spend, so a store bug cannot poison a message.
 func (r *OutboxRecord) FirstAttemptedAt() time.Time { return r.firstAttemptedAt }
 
 // ClaimVersion returns the fencing-token version recorded by the last
@@ -233,6 +234,9 @@ func (r *OutboxRecord) DispatchHeaders() map[string]any {
 // clone the envelope: it is a read-only peek used by the outbox drainer
 // to group records for per-key in-order delivery on the hot path. The
 // returned flag is false when the header is absent, non-string, or empty.
+// Storage adapters call it on the Persist hot path to denormalise the key into
+// a column or attribute, so it must stay clone-free: PersistenceSnapshot would
+// deep-copy the envelope for every record just to read one header.
 func (r *OutboxRecord) OrderingKey() (string, bool) {
 	key, ok := r.envelope.Headers().GetString(messaging.HeaderOrderingKey)
 	if !ok || key == "" {
@@ -427,10 +431,9 @@ type OutboxSnapshot struct {
 	Status          OutboxStatus
 	ClaimedBy       string
 	ClaimedAt       time.Time
-	// FirstAttemptedAt is the instant the drainer first claimed the record.
-	// Zero for records persisted before the replay-budget schema or never
-	// yet claimed. Stores must round-trip it verbatim (zero stays zero) and
-	// MUST NOT now-stamp it on marshal/unmarshal.
+	// FirstAttemptedAt is the instant the drainer first claimed the record,
+	// zero until the first claim. Stores must round-trip it verbatim (zero
+	// stays zero) and MUST NOT now-stamp it on marshal/unmarshal.
 	FirstAttemptedAt time.Time
 	ClaimVersion     uint64
 	ReplayCount      int
@@ -447,7 +450,7 @@ type OutboxSnapshot struct {
 // Use it whenever the envelope must outlive the aggregate or be handed
 // to mutator code (DLQ writer, retry submitter) so that subsequent
 // mutations cannot corrupt the persisted aggregate state. This satisfies
-// the DDD R5 aggregate-boundary rule: callers receive an isolated
+// the DDD aggregate-boundary rule: callers receive an isolated
 // messaging.Envelope rather than a shared reference.
 func (r *OutboxRecord) Snapshot() *messaging.Envelope {
 	return r.envelope.Clone()

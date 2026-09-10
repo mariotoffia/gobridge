@@ -2,13 +2,13 @@ package runtime
 
 import (
 	"context"
-	stdruntime "runtime"
 	"testing"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/session"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // TestDeepHealth_HungSessionHealthTimesOutNotReady proves the readiness-hang fix
@@ -56,16 +56,13 @@ func TestDeepHealth_HungSessionHealthTimesOutNotReady(t *testing.T) {
 	}
 
 	// The timeout is registered via rt.clk.After inside probeSessionsHealth (one
-	// shared deadline for the whole sweep). Spin (yielding, no logic-driving
-	// sleep) until the fake clock sees the timer, then advance past it to fire the
-	// timeout deterministically.
-	deadline := time.Now().Add(2 * time.Second)
-	for fake.TimerCount() < 1 && time.Now().Before(deadline) {
-		stdruntime.Gosched()
-	}
-	if fake.TimerCount() < 1 {
-		t.Fatal("probeSessionsHealth never registered its clock timeout")
-	}
+	// shared deadline for the whole sweep). Wait until the fake clock sees the
+	// timer, then advance past it to fire the timeout deterministically.
+	// Advancing before the registration lands would move fake time past a
+	// deadline that is armed relative to it, and the timeout would never fire.
+	wait.Until(t, 2*time.Second, "probeSessionsHealth registers its clock timeout", func() bool {
+		return fake.TimerCount() >= 1
+	})
 	fake.Advance(defaultSessionHealthTimeout + time.Second)
 
 	select {

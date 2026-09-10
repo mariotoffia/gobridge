@@ -10,7 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 )
 
-// Finding C3-M: on a transient store error the locator may serve the last-known
+// Finding: on a transient store error the locator may serve the last-known
 // owner rather than fail, so a brief blip does not disrupt routing. But that
 // stale fallback MUST be bounded by the lease's own expiry: a store outage can
 // outlast the lease, after which the cached owner may have stepped down and a

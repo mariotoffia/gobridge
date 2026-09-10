@@ -53,8 +53,10 @@ The runtime emits these metrics automatically when a `MetricsExporter` is config
 | `DLQEntries` | Counter | `route_id`, `category` | DLQ ARRIVALS (ingress counter -- only increases) |
 | `DLQDepth` | Gauge | — | Standing DLQ BACKLOG right now (sampled via the store's optional `DLQDepthReporter`) -- alarmed by default (`DLQDepth > 0`) |
 | `DLQWriteFailures` | Counter | — | Failed DLQ writes |
+| `DLQDuplicateSuppressed` | Counter | — | A DLQ write the store refused because the entry already existed — the SAME terminal event recorded twice. Reported as success (the evidence is already durable). A rising value means settlement is failing AFTER DLQ writes land: look at the source acknowledgement path, not the DLQ store |
 | `OutboxDepth` | Gauge | `partition` | TRUE pending outbox backlog (exact count via the store's optional `OutboxDepthReporter`; falls back to the claimed-count lower bound until an adapter implements it) |
 | `OutboxClaimBatchSize` | Gauge | `partition` | Records claimed on the last drain poll -- liveness/throughput, NOT the backlog |
+| `OutboxClaimedDepth` | Gauge | `partition` | Records currently CLAIMED — work an owner took but has not driven to a terminal state (via the store's optional `OutboxClaimedDepthReporter`). `OutboxDepth` at zero with a STANDING non-zero value here is stranded work, or an ordering-key group stalled behind a stranded head |
 | `OutboxDepthFailures` | Counter | `partition` | Depth-query failures on a supported reporter (real DB/read error); `OutboxDepth` is skipped that cycle so the missing-data alarm fires instead of masking the fault |
 | `OutboxDrainLatency` | Timer | `session_id` | Outbox drain cycle time |
 | `OutboxExpiredBeforeSend` | Counter | `route_id` | Claimed record found past its TTL before its send; handled by the route's `on_expired` policy |
@@ -146,10 +148,29 @@ bridge:
 sessions:
   - id: mqtt-session
     transport: mqtt
+    # direct_hold relies on the broker redelivering what a crashed process never
+    # acknowledged; only a persistent (or exclusive) session does that.
+    session_mode: persistent
     options:
       session:
         broker_url: tcp://localhost:1883
         client_id: observable-01
+        clean_start: false
+        session_expiry_interval: 3600
+
+stores:
+  # A persistent session keeps an exact record of the filters it installed on
+  # the broker (ADR 0003); seed the baseline once, before the first start:
+  #   gobridge -config bridge.yaml -seed-managed-subscriptions mqtt-session
+  managed_subscriptions:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/managed-subscriptions.db
+  # Where a message the route gives up on is kept.
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
 
 receivers:
   - id: mqtt-in
@@ -169,6 +190,9 @@ senders:
 bindings:
   - id: to-sqs
     sender_id: sqs-out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # connect, subscribe, reconcile. A session nobody manages never subscribes.
+    session_id: mqtt-session
     address: processed
 
 routes:
@@ -177,6 +201,9 @@ routes:
     delivery_mode: direct_hold
     bindings: [to-sqs]
     policy:
+      # Exactly one replica consumes this subscription; a second copy of this
+      # process would double-deliver. See Scenario 8 for fenced ownership.
+      allow_unfenced: true
       max_in_flight: 100
 ```
 

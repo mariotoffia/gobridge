@@ -37,7 +37,7 @@ import (
 //
 // Mutation killed (the reviewer's Critical): restore the pre-fix bufferLocked
 // that refuses a QoS 1/2 over the BYTE cap — either the un-ack+drop variant
-// (my previous, wedging) or the ack+drop variant (the original F-2) — and
+// (my previous, wedging) or the ack+drop variant (the original) — and
 // PendingCount drops below n and `delivered` loses the tail messages, failing
 // (a); an un-ack+drop victim would also strand later acks, but (a) already
 // catches the regression before any wedge can manifest.
@@ -138,7 +138,7 @@ func TestBug_PendingByteCap_QoS0Overflow_NoAck(t *testing.T) {
 	require.NotEmpty(t, rec.FindEntries(MetricMQTTRouterDropped),
 		"a QoS 0 overflow drop stays on the generic best-effort drop metric")
 	require.Empty(t, rec.FindEntries(MetricMQTTRouterOverflowDropped),
-		"FIX 2 / M-1: a QoS 0 overflow drop is best-effort (no delivery contract) — it must NOT touch the real-loss overflow metric")
+		"a QoS 0 overflow drop is best-effort (no delivery contract) — it must NOT touch the real-loss overflow metric")
 	require.Equal(t, int64(0), r.OverflowDroppedCount(),
 		"a QoS 0 overflow drop is not real loss and is not surfaced on OverflowDroppedCount")
 }
@@ -156,10 +156,10 @@ func TestBug_PendingByteCap_QoS0Overflow_NoAck(t *testing.T) {
 // stable connection while reporting healthy. Acking the victim keeps the ack
 // stream draining; the buffered prefix still settles on handler registration.
 //
-// This is the EXACT branch round-1 flagged as the wedge risk and had NO positive
+// This is the EXACT branch flagged as the wedge risk, and it had NO positive
 // coverage (every other OverflowDroppedCount assertion is == 0).
 //
-// Mutation killed (reproduces the round-1 wedge): drop the victim ack in
+// Mutation killed (reproduces the wedge): drop the victim ack in
 // dispatch's QoS>0 overflow branch (un-ack+drop) → assertion (b) "victim acked"
 // fails. Dropping the overflowDropped counter/metric fails assertion (a).
 func TestBug_CountCapValve_ProtocolViolation_AcksVictimAndDrainsPrefix(t *testing.T) {
@@ -203,7 +203,7 @@ func TestBug_CountCapValve_ProtocolViolation_AcksVictimAndDrainsPrefix(t *testin
 	// (b) the victim was ACKED — its slot is not a permanent un-acked entry, so
 	// paho's contiguous-prefix ack stream is not head-of-line-blocked.
 	require.Equal(t, int32(1), victimAcked.Load(),
-		"the dropped QoS 1/2 victim MUST be acked — an un-acked victim wedges the ack stream (round-1)")
+		"the dropped QoS 1/2 victim MUST be acked — an un-acked victim wedges the ack stream")
 	for i := 0; i < n; i++ {
 		require.Equal(t, int32(0), prefixAcked[i].Load(),
 			"the buffered prefix stays un-acked until it is actually delivered")

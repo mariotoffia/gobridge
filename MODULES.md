@@ -1,5 +1,7 @@
 # Modules: local development & releasing
 
+## Overview
+
 GoBridge is a multi-module Go workspace: each adapter, processor, `httpapi`, and
 `cmd/gobridge` is its own module so consumers `go get` only what they need. This is
 the single front door for the three module tasks. Deep release policy lives in
@@ -19,6 +21,16 @@ make build   # runs `make dev` automatically if go.work is missing
 - `make dev` discovers modules from disk, so it is never stale — re-run it any time.
 - Plain `make test`/`make lint` run **inside** the workspace, so they can't catch a module that uses an unreleased sibling API without bumping its `require` ("the workspace can lie" — see [DEVELOPMENT.md](DEVELOPMENT.md)). To check a module as an external consumer sees it, run `GOWORK=off go build ./...` in that module's directory; the release process re-verifies every published module with the workspace disabled before tagging (see [RELEASE.md](RELEASE.md)).
 
+The AWS CDK configured-image build fetches a versioned package through Go
+tooling, copies its owning module to a writable build directory, fills the fixed
+embed file, and runs `go build`. No Git checkout is needed. Without embedded
+config it still uses `go install package@version`. Both paths resolve the AWS
+profile `lib` module from the module proxy, so `lib` is on the release train
+(see [RELEASE.md](RELEASE.md#canonical-release-graph)) and `ImageFromGoBuild`
+must name a version that train has published. A requested plugin family must
+also be wired in that version; local workspace success does not prove it. See
+[CDK image sources](docs/aws-deployment/cdk-constructs.md#runtime-image-source).
+
 ## 2. Add a new module
 
 1. Create the module directory with a `go.mod`
@@ -29,7 +41,8 @@ make build   # runs `make dev` automatically if go.work is missing
    The release tool strips these per-tag at publish time — do not remove them by hand.
 3. `make dev` — the module joins the workspace automatically.
 4. **If it is published** (anything under `adapters/`, `processors/`, or `httpapi`,
-   `cmd/gobridge`, root): add it to
+   `cmd/gobridge`, root, or the three `deployment/aws-filebased-config/*` profile
+   modules): add it to
    [`scripts/release/modules.json`](scripts/release/modules.json) with its dependency
    `layer` (a module may only require lower layers). `make lint` runs `make
    modules-check` and **fails** if you forget this step.

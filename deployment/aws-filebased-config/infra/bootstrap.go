@@ -27,11 +27,28 @@ const (
 	TopologyDynamoDBCoordinatedHA Topology = "dynamodb_coordinated_ha"
 )
 
+// Config source selectors for the hot-reloadable bridge config.
+const (
+	ConfigSourceFile     = "file"
+	ConfigSourceDynamoDB = "dynamodb"
+)
+
+// ConfigDynamoDBSettings identifies the config table and change-detection mode.
+type ConfigDynamoDBSettings struct {
+	// TableName is deployment-owned when using the CDK facade.
+	TableName string `json:"table_name"`
+	// WatchMode selects "poll" (the default when empty) or "streams".
+	WatchMode string `json:"watch_mode,omitempty"`
+	// StreamPollInterval is the GetRecords cadence when using streams.
+	StreamPollInterval string `json:"stream_poll_interval,omitempty"`
+}
+
 const (
 	DefaultAdminAddr                   = ":8080"
 	DefaultMonitorAddr                 = ":8081"
 	DefaultTransportHTTPAddr           = ":8082"
 	DefaultPollInterval                = time.Second
+	DefaultDynamoDBPollInterval        = 30 * time.Second
 	DefaultContainerMemoryBytes uint64 = 1 << 30
 )
 
@@ -39,7 +56,7 @@ const (
 // credential poll-based wrapper when CredentialPollInterval is unset. It
 // MUST mirror runtime/credentials.DefaultCredentialPollInterval; the literal
 // is duplicated because this package is intentionally zero-dependency and
-// cannot import the runtime module (Finding 2).
+// cannot import the runtime module.
 const DefaultCredentialPollInterval = 5 * time.Minute
 
 // DefaultMountPath is the SINGLE canonical container directory where the
@@ -47,15 +64,15 @@ const DefaultCredentialPollInterval = 5 * time.Minute
 // outbox/DLQ state. It is FHS-conformant for runtime state.
 //
 // This constant is the one source of truth shared by the CDK task-def mount
-// (internal/gobridgebase), the Phase-1 store-path validator
+// (internal/gobridgebase), the fast-fail store-path validator
 // (internal/validation), and ServiceProps normalization. Keeping them
 // byte-identical is REQUIRED: a validator/mount mismatch either rejects a
 // correct config at synth or silently validates a store path that then writes
 // to ephemeral Fargate storage (outbox/DLQ durability lost on task replace).
 const DefaultMountPath = "/var/lib/gobridge"
 
-// DefaultBridgeYamlName is the file the seeder writes onto EFS and the runtime
-// watches. Stable so admin tooling can reference a well-known path.
+// DefaultBridgeYamlName is the mounted configuration file initialized and
+// watched by the runtime. Stable so admin tooling can reference a known path.
 const DefaultBridgeYamlName = "bridge.yaml"
 
 // Metrics exporter selectors for BootstrapConfig.MetricsExporter. An empty
@@ -103,6 +120,27 @@ type BootstrapConfig struct {
 	DynamoDBHAManagedSubscriptionsTableName string `json:"dynamodb_ha_managed_subscriptions_table_name,omitempty"`
 	DynamoDBHAConfigFingerprint             string `json:"dynamodb_ha_config_fingerprint,omitempty"`
 
+	// DynamoDBHABaselineConfigDigest identifies the config content this deployment
+	// admitted and seeded. A coordinated member uses it
+	// to seed the cohort's generation-zero committed artifact at boot, so a member
+	// restarting before the first rollout has ever committed recovers to the
+	// deployment's own baseline instead of whatever the mutable config source
+	// happens to hold at that moment.
+	//
+	// Both sources use DeploymentBaselineContentDigest, excluding only the
+	// top-level Version because initialization assigns that counter independently
+	// of the embedded document.
+	// The committed artifact still stores the actual source version and full digest.
+	//
+	// It is deliberately NOT the same value as DynamoDBHAConfigFingerprint: the
+	// fingerprint is the IMMUTABLE deployment profile (which every later committed
+	// config still matches), while this is the full content identity of one
+	// document (which only the un-edited deploy baseline matches).
+	//
+	// Empty disables baseline seeding, which leaves the conservative joiner rule
+	// in place — the behaviour of a composition root that has not opted in.
+	DynamoDBHABaselineConfigDigest string `json:"dynamodb_ha_baseline_config_digest,omitempty"`
+
 	// DynamoDBHARolloutTableName names the DynamoDB table backing the coordinated
 	// cluster rollout barrier's shared state (proposals, acks, the durable
 	// last-committed config artifact). Empty selects the adapter default
@@ -110,8 +148,23 @@ type BootstrapConfig struct {
 	// bridge.cluster.rollout: coordinated.
 	DynamoDBHARolloutTableName string `json:"dynamodb_ha_rollout_table_name,omitempty"`
 
-	ConfigFilePath string `json:"config_file_path"`
-	PollInterval   string `json:"poll_interval,omitempty"`
+	// ManagedSubscriptionBaselines attests, per persistent or exclusive MQTT
+	// session, the exact filters the session's broker identity already holds;
+	// an empty list attests an identity that is new and holds none. A durable
+	// session does not start until its baseline exists (a missing baseline is
+	// "history unknown", not "no history"; ADR 0003), and on the file-based
+	// profile the only process that can write stores.managed_subscriptions on
+	// the config mount is the task itself, so the runtime seeds every entry at
+	// boot, before it builds the bridge. Seeding is idempotent: an established
+	// baseline is kept and the listed filters are added to it. The single-task
+	// facade stamps it from its ManagedSubscriptionBaselines prop; the DynamoDB
+	// HA facade seeds its own table at deploy time and leaves this empty.
+	ManagedSubscriptionBaselines map[string][]string `json:"managed_subscription_baselines,omitempty"`
+
+	ConfigSource   string                  `json:"config_source,omitempty"`
+	ConfigDynamoDB *ConfigDynamoDBSettings `json:"config_dynamodb,omitempty"`
+	ConfigFilePath string                  `json:"config_file_path"`
+	PollInterval   string                  `json:"poll_interval,omitempty"`
 
 	// ContainerMemoryBytes is the hard memory limit of the runtime container.
 	// CDK always overwrites it from the effective Fargate task memory; the
@@ -122,7 +175,7 @@ type BootstrapConfig struct {
 	// must leave at least 20 percent of ContainerMemoryBytes as headroom.
 	ReservedMemoryBytes uint64 `json:"reserved_memory_bytes,omitempty"`
 
-	// Credential poll-based wrapper knobs (Finding 2). These control how the
+	// Credential poll-based wrapper knobs. These control how the
 	// runtime lifts a pull-style credential store (SSM, file) into the
 	// push-style rotation source that reaches long-lived transport sessions.
 	// Exposing them here lets an operator shrink the auth-failure blast radius
@@ -131,8 +184,8 @@ type BootstrapConfig struct {
 	//
 	//   CredentialFilePath  - base directory backing file:// credential URIs.
 	//                         Empty (default) registers NO file store; set it
-	//                         to enable file:// credentials in this profile
-	//                         (Finding 11). SSM (pms://) is always registered.
+	//                         to enable file:// credentials in this profile.
+	//                         SSM (pms://) is always registered.
 	//   CredentialPollInterval - poll cadence (e.g. "1m"); empty falls back to
 	//                         DefaultCredentialPollInterval.
 	//   CredentialPollJitter - +/- jitter applied per poll to de-synchronize a
@@ -142,7 +195,7 @@ type BootstrapConfig struct {
 	//   CredentialEmitOnStart - when nil (default) the wrapper emits on start
 	//                         so a rotation that landed in the build->watch
 	//                         window is surfaced on the first tick rather than
-	//                         silently baselined (Finding 1). Set to false only
+	//                         silently baselined. Set to false only
 	//                         to restore the legacy silent-baseline behaviour.
 	CredentialFilePath     string `json:"credential_file_path,omitempty"`
 	CredentialPollInterval string `json:"credential_poll_interval,omitempty"`
@@ -174,7 +227,7 @@ type BootstrapConfig struct {
 	// MetricsExporter=cloudwatch. Empty defaults to DefaultMetricsNamespace.
 	MetricsNamespace string `json:"metrics_namespace,omitempty"`
 	// InstanceID stamps the per-instance "instance_id" metric dimension so
-	// per-task series in a fleet do not collide (MF-8). Empty lets the
+	// per-task series in a fleet do not collide. Empty lets the
 	// exporter derive a per-task identity ("<hostname>-<pid>"), which is
 	// already unique per Fargate task; set it explicitly for a deterministic,
 	// operator-chosen identity.
@@ -210,6 +263,9 @@ func (c BootstrapConfig) Normalized() BootstrapConfig {
 	if out.Topology == "" {
 		out.Topology = TopologySingle
 	}
+	if out.ConfigSource == "" {
+		out.ConfigSource = ConfigSourceFile
+	}
 	if out.AdminAddr == "" {
 		out.AdminAddr = DefaultAdminAddr
 	}
@@ -231,23 +287,26 @@ func (c BootstrapConfig) Normalized() BootstrapConfig {
 	return out
 }
 
-// EffectivePollInterval returns the config file poll interval as a
-// time.Duration, falling back to DefaultPollInterval on parse error
-// or non-positive values.
+// EffectivePollInterval returns the config poll cadence, falling back to the
+// source-specific default when unset, unparseable, or non-positive.
 func (c BootstrapConfig) EffectivePollInterval() time.Duration {
+	fallback := DefaultPollInterval
+	if c.ConfigSource == ConfigSourceDynamoDB {
+		fallback = DefaultDynamoDBPollInterval
+	}
 	if c.PollInterval == "" {
-		return DefaultPollInterval
+		return fallback
 	}
 	d, err := time.ParseDuration(c.PollInterval)
 	if err != nil || d <= 0 {
-		return DefaultPollInterval
+		return fallback
 	}
 	return d
 }
 
 // EffectiveCredentialPollInterval returns the credential poll cadence as a
 // time.Duration, falling back to DefaultCredentialPollInterval on parse error
-// or non-positive values (Finding 2).
+// or non-positive values.
 func (c BootstrapConfig) EffectiveCredentialPollInterval() time.Duration {
 	if c.CredentialPollInterval == "" {
 		return DefaultCredentialPollInterval
@@ -277,7 +336,7 @@ func (c BootstrapConfig) EffectiveCredentialPollJitter() time.Duration {
 // EffectiveCredentialEmitOnStart reports whether the credential poll-based
 // wrapper should emit an initial rotation on start. It defaults to true so a
 // rotation that landed in the build->watch window is surfaced on the first
-// tick rather than silently adopted as the dedup baseline (Finding 1); set
+// tick rather than silently adopted as the dedup baseline; set
 // CredentialEmitOnStart to false to restore the legacy behaviour.
 func (c BootstrapConfig) EffectiveCredentialEmitOnStart() bool {
 	if c.CredentialEmitOnStart == nil {
@@ -317,11 +376,52 @@ func (c BootstrapConfig) Validate() error {
 		}
 	}
 
+	// The baseline digest is optional on every topology (empty disables baseline
+	// seeding), but a value that is present must be a real digest: a truncated or
+	// mistyped one would silently never match the loaded document, so the member
+	// would skip the seed and keep the very restart window the digest exists to
+	// close, with nothing to show for it.
+	if c.DynamoDBHABaselineConfigDigest != "" {
+		baseline, err := hex.DecodeString(c.DynamoDBHABaselineConfigDigest)
+		if err != nil || len(baseline) != 32 {
+			return fmt.Errorf("infra: dynamodb_ha_baseline_config_digest must be a 64-character SHA-256 hex value")
+		}
+	}
+
 	if c.BridgeID == "" {
 		return fmt.Errorf("infra: bridge_id is required")
 	}
-	if c.ConfigFilePath == "" {
-		return fmt.Errorf("infra: config_file_path is required")
+	switch c.ConfigSource {
+	case "", ConfigSourceFile:
+		if c.ConfigFilePath == "" {
+			return fmt.Errorf("infra: config_file_path is required")
+		}
+		if c.ConfigDynamoDB != nil {
+			return fmt.Errorf("infra: config_dynamodb must be absent when config_source is file")
+		}
+	case ConfigSourceDynamoDB:
+		if c.ConfigDynamoDB == nil || c.ConfigDynamoDB.TableName == "" {
+			return fmt.Errorf("infra: config_dynamodb.table_name is required when config_source is dynamodb")
+		}
+		if c.ConfigFilePath != "" {
+			return fmt.Errorf("infra: config_file_path must be empty when config_source is dynamodb")
+		}
+		if c.Topology == TopologyFilesystemReplicated {
+			return fmt.Errorf("infra: filesystem_replicated requires config_source file")
+		}
+		switch c.ConfigDynamoDB.WatchMode {
+		case "", "poll", "streams":
+		default:
+			return fmt.Errorf("infra: unsupported config_dynamodb.watch_mode %q (want poll or streams)", c.ConfigDynamoDB.WatchMode)
+		}
+		if c.ConfigDynamoDB.StreamPollInterval != "" {
+			d, err := time.ParseDuration(c.ConfigDynamoDB.StreamPollInterval)
+			if err != nil || d <= 0 {
+				return fmt.Errorf("infra: config_dynamodb.stream_poll_interval must be a positive duration")
+			}
+		}
+	default:
+		return fmt.Errorf("infra: unsupported config_source %q (want file or dynamodb)", c.ConfigSource)
 	}
 	if c.AdminAPIKeyParam == "" {
 		return fmt.Errorf("infra: admin_api_key_param is required")
@@ -347,6 +447,16 @@ func (c BootstrapConfig) Validate() error {
 	case "", MetricsExporterNoop, MetricsExporterCloudWatch:
 	default:
 		return fmt.Errorf("infra: unsupported metrics_exporter %q (want \"\", %q, or %q)", c.MetricsExporter, MetricsExporterNoop, MetricsExporterCloudWatch)
+	}
+	for sessionID, filters := range c.ManagedSubscriptionBaselines {
+		if sessionID == "" {
+			return fmt.Errorf("infra: managed_subscription_baselines names an empty session id")
+		}
+		for _, filter := range filters {
+			if filter == "" {
+				return fmt.Errorf("infra: managed_subscription_baselines for session %q contains an empty filter", sessionID)
+			}
+		}
 	}
 	return nil
 }

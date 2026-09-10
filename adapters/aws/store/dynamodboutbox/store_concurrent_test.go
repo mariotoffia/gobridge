@@ -1,8 +1,8 @@
 package dynamodboutbox_test
 
-// This file holds the J-N7 integration coverage: concurrent claimers racing
+// This file holds the integration coverage: concurrent claimers racing
 // the cold-partition fence seed against a real DynamoDB (DynamoDB Local via
-// the shared ddblocal harness), closing the residual gap that J2/J3/J5/J6
+// the shared ddblocal harness), closing the residual gap that
 // were only unit-tested against fakes.
 //
 // Like the rest of this package's store tests it is gated by the ddblocal
@@ -31,8 +31,8 @@ import (
 )
 
 // Verifies that many owners claiming a freshly-persisted (cold, no FENCE row)
-// partition concurrently all hit the seed==0 cold path at once (J-N6) without
-// (1) handing any record to two owners (J-N7 double-claim) or (2) corrupting
+// partition concurrently all hit the seed==0 cold path at once (J) without
+// (1) handing any record to two owners (a double-claim) or (2) corrupting
 // the monotonic fence — which must end up persisted so a later lower-version
 // claim is rejected O(1) instead of triggering another bounded scan.
 func TestConcurrentClaimersColdSeedRace(t *testing.T) {

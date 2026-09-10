@@ -1,7 +1,11 @@
 package bootstrap
 
 import (
+	"context"
 	"net/http"
+
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodbstreams"
 
 	ecscluster "github.com/mariotoffia/gobridge/adapters/aws/cluster/ecs"
 	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
@@ -10,8 +14,34 @@ import (
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	nativestore "github.com/mariotoffia/gobridge/adapters/native/store"
 	"github.com/mariotoffia/gobridge/bridge"
+	"github.com/mariotoffia/gobridge/config"
 	"github.com/mariotoffia/gobridge/ports"
 )
+
+// ensureDynamoDBClient shares the existing AWS construction path between config
+// loading and HA stores, preserving any client the embedding process injected.
+func (a *App) ensureDynamoDBClient(ctx context.Context) error {
+	if a.dynamoDBClient != nil {
+		return nil
+	}
+	client, err := newDynamoDBClient(ctx, a.cfg)
+	if err != nil {
+		return err
+	}
+	a.dynamoDBClient = client
+	return nil
+}
+
+// Streams has its own service endpoint in AWS. Copy only the shared client
+// settings; a supplied BaseEndpoint keeps local emulation on the same backend.
+func newDynamoDBStreamsClient(client *dynamodb.Client) *dynamodbstreams.Client {
+	opts := client.Options()
+	return dynamodbstreams.New(dynamodbstreams.Options{
+		Region: opts.Region, Credentials: opts.Credentials,
+		HTTPClient: opts.HTTPClient, Retryer: opts.Retryer,
+		BaseEndpoint: opts.BaseEndpoint,
+	})
+}
 
 type factoryRegistry struct {
 	cfg        *ports.BridgeConfig
@@ -22,7 +52,13 @@ type factoryRegistry struct {
 }
 
 func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistry {
-	var opts []bridge.BuilderOption
+	// Blueprint validation on EVERY build this root performs. The config manager
+	// validates what it emits, but the coordinated rollout paths build configs the
+	// manager never emitted — the vote's candidate and the bytes decoded from the
+	// durable committed artifact — and those reached the builder unvalidated. A
+	// dangling reference in a candidate must Nack at the vote; discovering it after
+	// the cohort commits fails every member at once.
+	opts := []bridge.BuilderOption{bridge.WithBlueprintValidator(config.Validate)}
 	if a.logger != nil {
 		opts = append(opts, bridge.WithLogger(a.logger))
 	}
@@ -34,10 +70,10 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 		// production store (runtime.CredentialResolver) exposes
 		// ResolveUncached, so every poll bypasses its TTL cache.
 		//
-		// The poll config is now driven by BootstrapConfig (Finding 2) instead
+		// The poll config is now driven by BootstrapConfig instead
 		// of a zero-value: EmitOnStart defaults true so a rotation that landed
 		// in the build->watch window is surfaced on the first tick rather than
-		// silently baselined (Finding 1); PollInterval is operator-tunable to
+		// silently baselined; PollInterval is operator-tunable to
 		// shrink hard-rotation auth-failure downtime; Jitter defaults to ~10%
 		// of the interval so a fleet does not stampede the credential backend
 		// on the same tick (LOW-severity finding).
@@ -77,8 +113,8 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 	// factories (nil keeps each adapter's internal Noop fallback) so their
 	// self-instrumented metrics actually emit on this config-driven path —
 	// previously both factories were constructed logger-only, leaving every
-	// SQS and MQTT adapter metric dead (Finding 8; the paho factory carried
-	// the same dead-metrics wiring bug). Mirrors the HTTP factory wiring
+	// SQS and MQTT adapter metric dead (the paho factory carried the same
+	// dead-metrics wiring bug). Mirrors the HTTP factory wiring
 	// below.
 	mqttFactory := paho.NewFactory(a.logger, a.metricsExporter)
 	sqsFactory := sqsadapter.NewFactory(a.logger, a.metricsExporter)

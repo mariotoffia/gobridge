@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -147,17 +148,86 @@ func canonicalBrokerSet(brokerURLs []string, brokerURL string) ([]string, error)
 	}
 	canonical := make([]string, 0, len(urls))
 	for _, raw := range urls {
-		u, err := url.Parse(raw)
+		endpoint, err := canonicalBrokerEndpoint(raw)
 		if err != nil {
-			return nil, errors.New("mqtt: durable session identity cannot canonicalize broker URL")
+			return nil, err
 		}
-		u.User = nil
-		u.Scheme = strings.ToLower(u.Scheme)
-		u.Host = strings.ToLower(u.Host)
-		u.RawQuery = u.Query().Encode()
-		canonical = append(canonical, u.String())
+		canonical = append(canonical, endpoint)
 	}
 	return canonical, nil
+}
+
+// canonicalBrokerEndpoint reduces a broker URL to the endpoint the dialer will
+// actually reach, so two spellings of one endpoint compare equal.
+//
+// Ownership of a broker-side session is decided by what the connection reaches,
+// not by how the URL was written. tcp:// and mqtt:// select the same dialer, an
+// omitted port means the family's default, and host case, userinfo and fragment
+// change nothing about the connection. Left uncollapsed, two durable sessions
+// spelled differently pass the duplicate-identity preflight, then disconnect
+// each other on their shared client ID and split their managed subscription
+// history. Path and query survive only for the WebSocket families, where they
+// address distinct broker endpoints.
+func canonicalBrokerEndpoint(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", errors.New("mqtt: durable session identity cannot canonicalize broker URL")
+	}
+	family, defaultPort, addressed := brokerDialFamily(u.Scheme)
+	if family == "" {
+		return "", fmt.Errorf("mqtt: durable session identity has unsupported broker URL scheme %q", u.Scheme)
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return "", errors.New("mqtt: durable session identity requires a broker URL host")
+	}
+	port := u.Port()
+	if port == "" {
+		port = defaultPort
+	}
+	endpoint := family + "://" + net.JoinHostPort(host, port)
+	if !addressed {
+		return endpoint, nil
+	}
+	path := u.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	endpoint += path
+	if query := u.Query().Encode(); query != "" {
+		endpoint += "?" + query
+	}
+	return endpoint, nil
+}
+
+// brokerDialFamily maps a broker URL scheme to the transport the adapter
+// actually dials, the port assumed when the URL omits one, and whether the URL
+// path/query address the endpoint (true only for the WebSocket families, where
+// the broker listens on a specific path).
+//
+// It is the single list of supported schemes: dialMQTTConnection selects its
+// dialer from the same families, so a scheme accepted at identity preflight is
+// exactly a scheme the adapter can connect with.
+//
+// The family names are the dominant spelling of each group (tcp, ssl, ws, wss)
+// rather than invented labels, because the canonical endpoint feeds the durable
+// session fingerprint that keys managed-subscription storage. A URL already
+// written in that spelling with an explicit port keeps the identity it had
+// before endpoints were canonicalized, so the common configurations carry their
+// stored history forward.
+func brokerDialFamily(scheme string) (family, defaultPort string, addressed bool) {
+	switch strings.ToLower(scheme) {
+	case "", "mqtt", "tcp":
+		return "tcp", "1883", false
+	case "ssl", "tls", "mqtts", "mqtt+ssl", "tcps":
+		return "ssl", "8883", false
+	case "ws":
+		return "ws", "80", true
+	case "wss":
+		return "wss", "443", true
+	default:
+		return "", "", false
+	}
 }
 
 func appendIdentityPart(dst *strings.Builder, value string) {

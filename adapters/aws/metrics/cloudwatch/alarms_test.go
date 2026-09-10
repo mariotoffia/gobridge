@@ -88,7 +88,7 @@ func TestDefaultAlarms_Severities(t *testing.T) {
 	}
 }
 
-// MF-4: OutboxDepth is a continuously emitted gauge — missing data means
+// OutboxDepth is a continuously emitted gauge — missing data means
 // the emitter is dead, so its alarms treat missing data as breaching.
 // Event counters treat missing data as notBreaching (no events = healthy).
 func TestDefaultAlarms_TreatMissingData(t *testing.T) {
@@ -105,7 +105,7 @@ func TestDefaultAlarms_TreatMissingData(t *testing.T) {
 
 // H-OBS: the silent-loss counters and the DLQ-depth backlog gauge must be in
 // the default rollup set, else a dimensionless fleet alarm can never match
-// their route/partition-dimensioned base series (MF-4). Fails before the fix
+// their route/partition-dimensioned base series. Fails before the fix
 // that added them to DefaultRollupMetrics.
 func TestDefaultRollupMetrics_CoversSilentLossCounters(t *testing.T) {
 	rollups := map[string]bool{}
@@ -120,6 +120,28 @@ func TestDefaultRollupMetrics_CoversSilentLossCounters(t *testing.T) {
 	} {
 		if !rollups[want] {
 			t.Errorf("DefaultRollupMetrics() missing silent-loss metric %q", want)
+		}
+	}
+}
+
+// TestDefaultRollupMetrics_CoversClusterRolloutConvergence pins the fleet
+// convergence series. Each is emitted with no runtime dimension, so on a fleet
+// with instance tagging the base series carries only instance_id and the
+// dimensionless fleet alarm the CDK bundle installs would never match it — the
+// alarm would sit in INSUFFICIENT_DATA while the cohort ran mixed generations,
+// which is the exact failure the alarm exists to catch.
+func TestDefaultRollupMetrics_CoversClusterRolloutConvergence(t *testing.T) {
+	rollups := map[string]bool{}
+	for _, name := range DefaultRollupMetrics() {
+		rollups[name] = true
+	}
+	for _, want := range []string{
+		shared.MetricClusterRolloutDiverged,
+		shared.MetricClusterRolloutTerminal,
+		shared.MetricClusterRolloutObservationAge,
+	} {
+		if !rollups[want] {
+			t.Errorf("DefaultRollupMetrics() missing cluster rollout convergence metric %q", want)
 		}
 	}
 }

@@ -95,10 +95,10 @@ func TestE2E_F1_Failover_SingleInstance_CrashBeforeDrain(t *testing.T) {
 
 	msgs := collector.getMessages()
 	if len(msgs) == 0 {
-		t.Fatal("F1: expected at least 1 message")
+		t.Fatal("expected at least 1 message")
 	}
 	if string(msgs[0].Payload()) != `{"f1":"crash"}` {
-		t.Errorf("F1: payload = %q, want %q", string(msgs[0].Payload()), `{"f1":"crash"}`)
+		t.Errorf("payload = %q, want %q", string(msgs[0].Payload()), `{"f1":"crash"}`)
 	}
 }
 
@@ -432,7 +432,7 @@ func TestE2E_F7_Failover_FanOutSessionOwnerCrash(t *testing.T) {
 
 // stallSender blocks in Send until ctx is cancelled. entered is closed when
 // the first delivery reaches Send — the observable "message held in pipeline"
-// crash point for F8.
+// crash point.
 type stallSender struct {
 	entered chan struct{}
 	once    sync.Once

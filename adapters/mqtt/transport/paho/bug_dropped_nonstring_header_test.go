@@ -7,7 +7,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestPublishFromEnvelope_NonStringHeaderIncrementsCounter is the MQTT-N1
+// TestPublishFromEnvelope_NonStringHeaderIncrementsCounter is the MQTT
 // regression: a bridge-to-bridge header whose value is NOT a string (here a
 // non-string idempotency-key) is dropped on egress because it cannot become
 // an MQTT user property. Before the fix the drop was silent; now it must
@@ -26,7 +26,7 @@ func TestPublishFromEnvelope_NonStringHeaderIncrementsCounter(t *testing.T) {
 	})
 
 	rec := &ports.RecordingExporter{}
-	pub := PublishFromEnvelope(env, "t/out", SenderOptions{QoS: 1}, nil, rec)
+	pub := mustPublishFromEnvelope(t, env, "t/out", SenderOptions{QoS: 1}, nil, rec)
 
 	entries := rec.FindEntries(MetricMQTTNonStringHeaderDropped)
 	if len(entries) != 1 {
@@ -71,7 +71,7 @@ func TestPublishFromEnvelope_AllStringHeaders_NoDropCounter(t *testing.T) {
 	})
 
 	rec := &ports.RecordingExporter{}
-	_ = PublishFromEnvelope(env, "t/out", SenderOptions{QoS: 1}, nil, rec)
+	_ = mustPublishFromEnvelope(t, env, "t/out", SenderOptions{QoS: 1}, nil, rec)
 
 	if entries := rec.FindEntries(MetricMQTTNonStringHeaderDropped); len(entries) != 0 {
 		t.Fatalf("MetricMQTTNonStringHeaderDropped entries = %d, want 0", len(entries))

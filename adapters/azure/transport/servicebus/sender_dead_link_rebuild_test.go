@@ -29,7 +29,7 @@ func sentCount(m *mockSenderAPI) int {
 	return len(m.sentMessages)
 }
 
-// --- HIGH-1: sender rebuilds a terminally closed link ----------------------
+// --- sender rebuilds a terminally closed link ----------------------
 
 // TestSender_RebuildsClosedLinkOnNextSend proves the Sender tears down a
 // terminally CLOSED link (typed *azservicebus.Error{Code: CodeClosed}) and

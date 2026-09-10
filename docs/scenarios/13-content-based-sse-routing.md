@@ -63,11 +63,35 @@ bridge:
 sessions:
   - id: mqtt-conn
     transport: mqtt
+    # direct_hold relies on the broker redelivering what a crashed process never
+    # acknowledged; only a persistent (or exclusive) session does that.
+    session_mode: persistent
     options:
       session:
         broker_url: tcp://mqtt.iot.local:1883
         client_id: sensor-sse-router-01
+        clean_start: false
+        session_expiry_interval: 3600
         keep_alive: 30
+        # The builder sizes ingress memory from max_payload_bytes,
+        # receive_maximum and the route's max_in_flight before it opens
+        # anything; 500 in flight at the default 256 KiB payload cap needs
+        # ~460 MiB, above the 256 MiB default budget. State the budget.
+        ingress_memory_budget_bytes: 536870912   # 512 MiB
+
+stores:
+  # A persistent session keeps an exact record of the filters it installed on
+  # the broker (ADR 0003); seed the baseline once, before the first start:
+  #   gobridge -config bridge.yaml -seed-managed-subscriptions mqtt-conn
+  managed_subscriptions:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/managed-subscriptions.db
+  # Where a message the route gives up on is kept.
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
 
 receivers:
   - id: sensor-in
@@ -104,6 +128,9 @@ senders:
 bindings:
   - id: to-temperature
     sender_id: sse-temperature
+    # Naming the session on the binding is what makes the bridge manage it:
+    # connect, subscribe, reconcile. A session nobody manages never subscribes.
+    session_id: mqtt-conn
     address: temperature
 
   - id: to-humidity
@@ -136,6 +163,9 @@ routes:
               value: "sensors/humidity/"
     policy:
       max_in_flight: 500
+      # Exactly one replica consumes this subscription; a second copy of this
+      # process would double-deliver. See Scenario 8 for fenced ownership.
+      allow_unfenced: true
 ```
 
 ## Config Walkthrough

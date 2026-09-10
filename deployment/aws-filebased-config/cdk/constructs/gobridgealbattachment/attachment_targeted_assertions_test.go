@@ -17,11 +17,11 @@ import (
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 )
 
-// Test_T20_Attachment_Single_PrioritiesContiguousFromBase: with 2 HTTP
+// TestAttachment_Single_PrioritiesContiguousFromBase: with 2 HTTP
 // receivers in yaml the Single attachment emits 5 ListenerRules. Their
 // priorities must form a contiguous block at BasePriority + step*0..N (step
 // 10, default base 100): 100,110,120,130,140.
-func Test_T20_Attachment_Single_PrioritiesContiguousFromBase(t *testing.T) {
+func TestAttachment_Single_PrioritiesContiguousFromBase(t *testing.T) {
 	_, stack, vpc, listener := newApp(t)
 	src := source.NewAsset(writeYAML(t, httpReceiverYAML))
 	single := newSingle(t, stack, vpc, src)
@@ -44,12 +44,12 @@ func Test_T20_Attachment_Single_PrioritiesContiguousFromBase(t *testing.T) {
 	}
 }
 
-// Test_T20_Attachment_TargetGroup_HealthCheckTunedDefaults pins the tuned TG
-// defaults from the design doc lines 265-270: Interval=15s, Timeout=5s,
+// TestAttachment_TargetGroup_HealthCheckTunedDefaults pins the tuned TG
+// defaults: Interval=15s, Timeout=5s,
 // HealthyThreshold=2, UnhealthyThreshold=2, plus protocol HTTP and matcher
 // 200. The existing test exercises Interval/Timeout/Threshold but does NOT
 // pin HealthCheckProtocol or the Matcher.
-func Test_T20_Attachment_TargetGroup_HealthCheckTunedDefaults(t *testing.T) {
+func TestAttachment_TargetGroup_HealthCheckTunedDefaults(t *testing.T) {
 	_, stack, vpc, listener := newApp(t)
 	src := source.NewAsset(writeYAML(t, baseYAML))
 	single := newSingle(t, stack, vpc, src)
@@ -105,14 +105,14 @@ func Test_T20_Attachment_TargetGroup_HealthCheckTunedDefaults(t *testing.T) {
 	}
 }
 
-// Test_T20_Attachment_Cluster_TGsTargetCorrectServices pins the TG-to-Service
+// TestAttachment_Cluster_TGsTargetCorrectServices pins the TG-to-Service
 // wiring on the cluster scenario. Each service attaches to exactly two target
 // groups: its role-specific TG (Control→ControlTargetGroup,
 // Worker→WorkerTargetGroup) plus the shared MonitorTargetGroup that every
 // service joins so the monitor-port health checks are reachable. This test
 // asserts the ARN references resolve to those exact TGs — the sibling
 // TestALBAttachment_Cluster_TGsTargetCorrectServices only counts LBs.
-func Test_T20_Attachment_Cluster_TGsTargetCorrectServices(t *testing.T) {
+func TestAttachment_Cluster_TGsTargetCorrectServices(t *testing.T) {
 	_, stack, vpc, listener := newApp(t)
 	// httpReceiverYAML emits the transport target group so the worker
 	// service attaches to its own (transport) TG plus the shared monitor
@@ -188,7 +188,7 @@ func Test_T20_Attachment_Cluster_TGsTargetCorrectServices(t *testing.T) {
 	}
 }
 
-// Test_T20_Attachment_TransportTG_HealthChecksLiveness pins [HIGH-2] as fixed
+// TestAttachment_TransportTG_HealthChecksLiveness pins as fixed
 // WITHOUT the ECS multi-TG recycle hazard: the transport (HTTP receiver)
 // target group health-checks the LIVENESS probe (/api/v1/monitor/live), the
 // SAME as control and monitor — NOT a broker-coupled readiness probe.
@@ -205,7 +205,7 @@ func Test_T20_Attachment_Cluster_TGsTargetCorrectServices(t *testing.T) {
 //
 // Mutation: flip the transport TG health-check default to /ready?level=full and
 // this fails.
-func Test_T20_Attachment_TransportTG_HealthChecksLiveness(t *testing.T) {
+func TestAttachment_TransportTG_HealthChecksLiveness(t *testing.T) {
 	_, stack, vpc, listener := newApp(t)
 	// httpReceiverYAML declares HTTP receivers, so a dedicated transport
 	// (worker) target group is emitted alongside control + monitor.

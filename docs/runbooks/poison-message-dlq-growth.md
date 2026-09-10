@@ -8,7 +8,7 @@ the entry's `LastError` before you act.
 ## Symptom
 
 - The `DLQ Growing` alarm fires: `DLQEntries` sum > 0
-  ([monitoring.md#cloudwatch-alarms](../aws-deployment/monitoring.md#cloudwatch-alarms))
+  ([alarms.md](../aws-deployment/alarms.md))
   or the guide's `DLQEntries` sum > 100 alert
   ([deployment-guide.md#observability](../deployment-guide.md#observability)).
 - Logs show `POISON_MESSAGE`, `INVALID_PAYLOAD`, or `SCHEMA_VIOLATION`.
@@ -17,7 +17,7 @@ the entry's `LastError` before you act.
 ## Diagnosis
 
 1. Read the DLQ summary and page the entries
-   ([http-api.md#admin-api-endpoints](../http-api.md#admin-api-endpoints)):
+   ([http-api.md#admin-api-endpoints](../http-api-admin.md)):
 
    ```bash
    curl -s -H "X-API-Key: ${ADMIN_KEY}" \
@@ -44,7 +44,30 @@ the entry's `LastError` before you act.
    `DLQEntries` (`route_id`, `category`) is the DLQ write count; `DLQWriteFailures`
    (no dimension) means the DLQ store itself is rejecting writes or no lease was
    held; `MessagesDropped` (`route_id`, `reason`) is a terminal drop that wrote
-   **no** DLQ record — silent loss, alert on it directly.
+   **no** DLQ record — silent loss, alert on it directly; `DLQWriteHold` (timer,
+   no dimension) is how long each DLQ write held its caller.
+
+5. **Intake stalled during a poison burst? Read `DLQWriteHold`.** The DLQ write
+   is synchronous and confirmed **before** the source delivery is settled, so
+   the failure evidence is at least as durable as the message it describes. The
+   cost of that guarantee is backpressure: while the DLQ store is unhealthy each
+   DLQ-bound delivery holds its route goroutine — and a global in-flight slot —
+   for up to the write budget. In the shipped runtime wiring that ceiling is
+   **10.5 s** (2 attempts × 5 s write timeout + one 500 ms backoff); it is not
+   configurable per route.
+
+   | `DLQWriteHold` | Reading |
+   |---|---|
+   | p99 ≈ 0 | Healthy store; holds are noise. |
+   | p99 rising, `DLQWriteFailures` flat | The store is slow but still confirming — intake throughput is already reduced. |
+   | p99 at ~10.5 s with `DLQWriteFailures` rising | Every DLQ write is burning the full budget and failing. Intake for DLQ-bound traffic is effectively stopped. |
+   | **No samples at all** while a route is visibly stalled | The store is ignoring cancellation — a wedge, not a slow write. The 10.5 s ceiling assumes the store honors its write deadline; the timer is only emitted when the write returns. |
+
+   Alarm on `DLQWriteHold` p99 > 5 s for 5 minutes (half the ceiling), paired
+   with `DLQWriteFailures` > 0. This is by design, not a defect: the alternative
+   to holding is settling a source message whose failure evidence was never
+   written. Messages are not lost during the hold — they stay unsettled and are
+   redelivered.
 
 ## Action
 
@@ -60,17 +83,42 @@ the entry's `LastError` before you act.
     "http://<host>:8080/api/v1/admin/dlq/redrive"
   ```
 
+  **A redrive that is not delivered keeps its entry.** An entry is deleted only
+  after the route confirms the replay reached its destination. If the redriven
+  message is dropped (`on_permanent_failure: drop`), filtered, expired, or
+  written back to the DLQ, the redrive is reported in the `errors` array with
+  the reason, counted on `DLQRedriveFailures`, and the original entry stays
+  where it was. Nothing is lost by retrying too early -- the worst case is a
+  207 and an unchanged DLQ.
+
+  Two consequences to expect:
+
+  - On a route that retains failures, a failed redrive writes a NEW entry for
+    the new failure while the original stays. You will see two entries for one
+    message. Delete the older one once you have confirmed they are the same
+    message (the new entry's envelope carries `x-bridge.causation-id` set to the
+    original envelope ID).
+  - A redrive is an operator action, not a broker redelivery, so the replayed
+    message is re-issued under a fresh bridge-minted envelope ID and gets the
+    route's normal retry budget even when the original message came from a
+    source that supplies no stable identity (the common MQTT publish).
+
 - **Confirmed unrecoverable entries**: delete by ID (max 1000) or by filter
   (an empty filter requires `confirm_delete_all`). Purge the entire DLQ only with
   `confirm_purge_all: true`
-  ([http-api.md#admin-api-endpoints](../http-api.md#admin-api-endpoints)).
+  ([http-api.md#admin-api-endpoints](../http-api-admin.md)).
 - **`DLQWriteFailures` rising**: the DLQ store is unhealthy or the instance holds
   no lease. Check store health (`SQLiteStoreUnhealthy` on SQLite deployments) and
   lease ownership before assuming the messages are safe.
+- **`DLQWriteHold` at the ceiling (intake stalled)**: fix the DLQ store — that is
+  the only lever. Do **not** try to restore throughput by removing the DLQ store
+  from the route: a route with no DLQ store drops permanently-failed messages
+  with a `MessagesDropped` metric instead of recording them. Reducing the poison
+  rate at the producer removes the hold at its source.
 - **Hot-looping poison on AMQP 0-9-1**: `AMQP091DelayedRetryUnhonored` means the
   broker has no delayed-redelivery primitive, so a poison message requeues
   immediately. Add an `x-delivery-limit` / dead-letter-exchange guard at the
-  broker ([troubleshooting.md#adapter--runtime-diagnostic-metrics](../troubleshooting.md#adapter--runtime-diagnostic-metrics)).
+  broker ([troubleshooting.md#adapter--runtime-diagnostic-metrics](../adapter-diagnostic-metrics.md)).
 
 ## Related runbooks
 

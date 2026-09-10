@@ -66,7 +66,7 @@ func (b *Builder) WithMemoryOutbox() *Builder {
 // replicas, the emitted config carries acknowledge_single_replica: true
 // so the runtime accepts it (MemoryStoreFactory.NewLeaseStore fails
 // closed otherwise). Keep such a deployment at exactly one replica; use
-// a DynamoDB lease for clustered failover. See finding c10-memlease-split.
+// a DynamoDB lease for clustered failover.
 func (b *Builder) WithMemoryLease() *Builder {
 	sc := &ports.StoreConfig{Type: nativestore.MemoryKind}
 	sc.SetDecoded(nativestore.MemoryConfig{AcknowledgeSingleReplica: true}, nil)
@@ -81,13 +81,16 @@ func (b *Builder) WithMemoryDLQ() *Builder {
 	return b
 }
 
-// memoryStore is the shared assembly path for the in-memory OUTBOX and
-// DLQ stores, which have no operator-tunable fields (the lease store's
-// acknowledge_single_replica flag is set on its own path in
-// WithMemoryLease), so this helper is parameter-free.
+// memoryStore is the shared assembly path for the in-memory OUTBOX and DLQ
+// stores. Both hold their records in the process heap while a successful write
+// already permits the runtime to settle the source, so the emitted config
+// carries acknowledge_volatile: true — MemoryStoreFactory.NewOutboxStore and
+// NewDLQStore fail closed otherwise. Choosing WithMemoryOutbox/WithMemoryDLQ in
+// the CDK IS that acknowledgement; the lease store's own
+// acknowledge_single_replica is set on its separate path in WithMemoryLease.
 func memoryStore() *ports.StoreConfig {
 	sc := &ports.StoreConfig{Type: nativestore.MemoryKind}
-	sc.SetDecoded(nativestore.MemoryConfig{}, nil)
+	sc.SetDecoded(nativestore.MemoryConfig{AcknowledgeVolatile: true}, nil)
 	return sc
 }
 

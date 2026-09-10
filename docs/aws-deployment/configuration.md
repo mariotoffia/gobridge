@@ -1,5 +1,7 @@
 # Configuration on AWS
 
+## Overview
+
 GoBridge uses a two-layer configuration model that separates deployment
 concerns from application concerns. The **bootstrap config** controls
 infrastructure-level settings (listen addresses, SSM parameter references,
@@ -21,7 +23,7 @@ flowchart LR
     end
 
     subgraph Dev Team
-        BRC[Bridge Config\nYAML on EFS]
+        BRC[Bridge Config\nYAML on EFS or JSON in DynamoDB]
     end
 
     BC --> APP[GoBridge Process]
@@ -39,10 +41,10 @@ flowchart LR
 |--------|------------------|---------------|
 | **Owner** | Infrastructure / platform team | Development / application team |
 | **Format** | JSON | YAML (or JSON) |
-| **Delivery** | Environment variable or file | EFS mount |
+| **Delivery** | Environment variable or file | EFS mount or DynamoDB config table |
 | **Mutability** | Immutable per task revision | Hot-reloadable at runtime |
 | **Contains** | Listen addresses, SSM refs, topology | Receivers, senders, routes, sessions |
-| **Sensitive data** | SSM parameter *references* only | No secrets (resolved at runtime) |
+| **Sensitive data** | SSM parameter references for bootstrap API keys | Literal values or credential references; embedded literals are visible to artifact readers |
 
 ---
 
@@ -53,16 +55,40 @@ The bootstrap config is defined by the `BootstrapConfig` struct in
 inline JSON via the `GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` environment variable
 or as a file path via `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`.
 
+With valid bootstrap settings, the control plane starts live but not ready and
+the data plane stays idle until a valid bridge document can activate. An
+optional embedded initial source can create an absent target during initial
+startup; existing documents are never overwritten. After activation, standalone
+deletion drains to idle and permits a later rebuild. Clustered deletion or
+uncertain teardown requires process exit and replacement. Read failures retain
+the last successful config as degraded.
+See [initial configuration and observations](config-initialization.md).
+
+DynamoDB polling defaults to 30 seconds.
+Streams mode requires an enabled table stream and stream-read permissions; the
+adapter falls back to polling when streams are unavailable. Library callers can
+inject an emulator client with `WithDynamoDBClient`; the config loader, runtime
+stores and derived streams client share its connection settings.
+
 ### Field Reference
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `bridge_id` | `string` | Yes | -- | Unique identifier for this bridge instance. Used as the `bridge.id` in the default logical config when no bridge config file exists yet. |
-| `config_file_path` | `string` | Yes | -- | Absolute path to the bridge config YAML as seen inside the container (the EFS mount point), e.g. `/var/lib/gobridge/bridge.yaml`. |
+| `bridge_id` | `string` | Yes | -- | Deployment identity used to select the config document and identify the control plane before a valid document activates. |
+| `config_source` | `string` | No | `"file"` | Bridge config source: `"file"` or `"dynamodb"`. Empty normalizes to `"file"`. Single and DynamoDB HA CDK facades provision the config table and role-scoped grants; the filesystem-replicated facade rejects DynamoDB at synth. Only control may initialize an absent document; workers remain read-only. No seeder container or S3 config asset is used. |
+| `config_dynamodb` | `object` | For DynamoDB | -- | DynamoDB config-source settings: `table_name` (required at runtime; CDK provisions and overwrites it), `watch_mode` (`"poll"` by default or `"streams"`), and `stream_poll_interval` (optional positive Go duration for the streams `GetRecords` cadence). Must be absent for the file source. |
+| `config_file_path` | `string` | For file | -- | Absolute path to the bridge config YAML as seen inside the container (the EFS mount point), e.g. `/var/lib/gobridge/bridge.yaml`. Required for the file source and must be empty for DynamoDB. |
 | `admin_api_key_param` | `string` | Yes | -- | SSM parameter name or `pms://` URI for the admin API key. Resolved at startup and on every config reload. The value is a single key or a JSON map of named keys — see [Admin key parameter value](#admin-key-parameter-value). |
-| `node_role` | `string` | No | `"control"` | Role of this node: `"control"` or `"worker"`. **Reserved / non-operative at runtime** -- every node starts the transport, admin, and monitor servers regardless of this value. Validated for shape and consumed only at deploy time by the CDK single/cluster facades (per-service role + synth validation). Reserved for future multi-node coordination. |
-| `topology` | `string` | No | `"single"` | Deployment topology: `"single"` (one replica) or `"filesystem_replicated"` (N replicas sharing EFS). |
-| `poll_interval` | `string` | No | `"1s"` | Go duration string for how often the poll watcher checks the bridge config file for changes. |
+| `node_role` | `string` | No | `"control"` | Configuration authority: `"control"` or `"worker"`. Only control may initialize or update shared config. File control uses the single-writer guard; DynamoDB updates use compare-and-swap (CAS). Workers have read-only config access in runtime wiring and deployed grants. The role does not select the monitor's failover role (`active`, `standby`, or `standalone`); either task family may process messages after activation. |
+| `topology` | `string` | No | `"single"` | Deployment topology: `"single"` (one replica), `"filesystem_replicated"` (N replicas sharing EFS), or `"dynamodb_coordinated_ha"` (the active/warm-standby profile stamped by `GoBridgeDynamoDBHA`). The HA value additionally requires the four `dynamodb_ha_*` identities below. |
+| `member_id` | `string` | No | `""` | This node's STABLE identity in a coordinated cluster rollout cohort. Required whenever the logical config sets `bridge.cluster.rollout: coordinated`, and it MUST appear verbatim in that config's `bridge.cluster.members`: the barrier freezes the roster as its membership epoch and counts acknowledgements against it, so an absent or drifting id aborts every rollout. Unlike `instance_id` it MUST survive a restart -- it is the cohort identity a restarted task rejoins under. Stamped per slot by `GoBridgeDynamoDBHA` when `MemberSlots` is set; empty for every non-coordinated deployment, including the autoscaled worker shape, whose interchangeable tasks have no such identity. |
+| `dynamodb_ha_lease_table_name` | `string` | No | `""` | Deployment-owned expectation: the physical DynamoDB table backing `stores.lease`. Stamped only by `GoBridgeDynamoDBHA`; the runtime refuses to boot a logical config whose lease table differs, so a tampered or stale EFS document cannot bypass synth-time admission. Required when `topology` is `"dynamodb_coordinated_ha"`. |
+| `dynamodb_ha_outbox_table_name` | `string` | No | `""` | As above, for `stores.outbox`. Required when `topology` is `"dynamodb_coordinated_ha"`, and must differ from the other two table names. |
+| `dynamodb_ha_managed_subscriptions_table_name` | `string` | No | `""` | As above, for `stores.managed_subscriptions`. Required when `topology` is `"dynamodb_coordinated_ha"`, and must differ from the other two table names. |
+| `dynamodb_ha_config_fingerprint` | `string` | No | `""` | 64-character SHA-256 hex of the IMMUTABLE deployment profile: `deployment_mode`, the `bridge.cluster` shape, and the identity of every deployment-owned store. It is NOT a hash of the whole document, so every later operator config change still matches it while every deployment-provisioned change moves it. Required (and validated for shape) when `topology` is `"dynamodb_coordinated_ha"`. |
+| `dynamodb_ha_baseline_config_digest` | `string` | No | `""` | 64-character SHA-256 hex digest identifying the content this deployment admitted. Both file and DynamoDB sources use `bridge.DeploymentBaselineContentDigest`, which normalizes only the top-level `version` to zero for comparison. Initialization assigns target version 1 independently of the embedded version; every editable field remains covered. A coordinated member uses this identity to establish the generation-zero committed artifact before serving. That artifact retains the actual stored version and full, version-sensitive `bridge.ConfigArtifactDigest`. Empty disables baseline seeding; malformed values fail startup. |
+| `dynamodb_ha_rollout_table_name` | `string` | No | `""` (adapter default `gobridge-rollouts`) | DynamoDB table backing the coordinated rollout barrier's shared state: the current proposal, the per-member acknowledgements, and the durable last-committed config artifact. Read only when the logical config sets `bridge.cluster.rollout: coordinated`. `GoBridgeDynamoDBHA` provisions the table and stamps its name when `MemberSlots` is set, deriving it as `<bridge.id>-rollouts` from the shared config document. The task role is granted only `dynamodb:GetItem` and `dynamodb:PutItem` on it, so the runtime's best-effort `CreateTable` preflight is denied and logged on every boot -- expected, because the deployment owns the table. |
+| `poll_interval` | `string` | No | `"1s"` (file), `"30s"` (DynamoDB) | Go duration string for how often the poll watcher checks the selected config source for changes. Empty, unparseable, or non-positive values use the source-specific default. |
 | `container_memory_bytes` | `uint64` | No | `1073741824` | Runtime container hard limit used by the MQTT memory profile. CDK overwrites this field from the effective Fargate `MemoryMiB`; do not set it independently in CDK deployments. |
 | `reserved_memory_bytes` | `uint64` | No | `0` | Non-MQTT memory already committed to other runtime components. This reservation plus the profile's 25% MQTT ingress allocation must leave at least 20% of `container_memory_bytes` as headroom. |
 | `admin_addr` | `string` | No | `":8080"` | Listen address for the admin HTTP server. |
@@ -72,16 +98,17 @@ or as a file path via `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`.
 | `monitor_api_key_param` | `string` | No | `""` | SSM parameter for the monitor API key. When empty, the admin key is used for monitor endpoints. |
 | `http_receiver_api_key_params` | `map[string]string` | No | `{}` | Map of receiver ID to SSM parameter name. Resolves API keys for HTTP receiver endpoints. |
 | `http_sender_api_key_params` | `map[string]string` | No | `{}` | Map of sender ID to SSM parameter name. Resolves API keys for HTTP sender (SSE) endpoints. |
-| `aws_region` | `string` | No | `""` | Override AWS region for SSM calls. Normally inherited from the task role / environment. |
+| `aws_region` | `string` | No | `""` | Override AWS region for SSM and DynamoDB clients. Normally inherited from the task role / environment. |
 | `ssm_endpoint` | `string` | No | `""` | Custom SSM endpoint URL. Requires `dev_mode: true`. Used for LocalStack or other local emulators. |
 | `metrics_exporter` | `string` | No | `""` | Runtime metrics backend. `""` or `"noop"` emits nothing; `"cloudwatch"` publishes runtime metrics through the `adapters/aws/metrics/cloudwatch` exporter. Any other value fails validation. |
 | `metrics_namespace` | `string` | No | `"GoBridge/Runtime"` | CloudWatch namespace used when `metrics_exporter` is `"cloudwatch"`. Empty defaults to `GoBridge/Runtime` (mirrors `domain/shared.MetricNamespace`). |
 | `instance_id` | `string` | No | `""` | Value of the per-task `instance_id` metric dimension. Empty lets the exporter derive `"<hostname>-<pid>"`, already unique per Fargate task; set it for a deterministic operator-chosen identity. |
-| `dev_mode` | `bool` | No | `false` | Enables local development features. Required when `ssm_endpoint` is set. Injects static test credentials for SSM. |
+| `dev_mode` | `bool` | No | `false` | Enables local development features. Required when `ssm_endpoint` is set. Injects static test credentials for SSM. With a DynamoDB config source, calls `EnsureTable` at startup; production never creates the config table. |
 | `credential_file_path` | `string` | No | `""` | Base directory backing `file://` credential URIs. Empty registers no file store (SSM `pms://` is always registered); set it to enable `file://` credentials in this profile. |
 | `credential_poll_interval` | `string` | No | `"5m"` | Go duration string for the credential rotation poll cadence. Empty, unparseable, or non-positive falls back to 5 minutes. Shrink it to reduce the auth-failure window of a hard rotation. |
 | `credential_poll_jitter` | `string` | No | ~10% of interval | Go duration of ±jitter applied per poll so a fleet does not stampede the secrets backend on the same tick. Empty or invalid defaults to a tenth of the effective poll interval; a parseable `"0"` disables jitter. |
 | `credential_emit_on_start` | `bool` | No | `true` | Whether the poll wrapper emits an initial rotation on start. Default (unset → `true`) surfaces a rotation that landed in the build→watch window; set `false` to restore the legacy silent-baseline behavior. |
+| `managed_subscription_baselines` | `map[string][]string` | No | `{}` | Per persistent or exclusive MQTT session, the exact topic filters its broker identity already holds; an empty list attests a new identity with no subscriptions. A durable session cannot start without its baseline. Once valid config is available, runtime seeds the configured local store before building the bridge. Seeding is idempotent and additive: remove obsolete filters from the attestation after runtime cleanup, or the next boot adds them again. Entries for sessions absent from the logical config are skipped with a warning; `GoBridgeSingle` rejects mismatched attestations at synth. `GoBridgeDynamoDBHA` creates its own DynamoDB baselines at deploy time and leaves this map empty. This operation is separate from initial configuration creation. See [MQTT durable sessions](../transports/mqtt-durable-sessions.md#managed-subscription-history). |
 
 ### Admin key parameter value
 
@@ -111,10 +138,15 @@ The bootstrap loader calls `Normalized()` to apply defaults and then `Validate()
 Validation fails if:
 
 - `bridge_id` is empty.
-- `config_file_path` is empty.
+- `config_source` is not `"file"` or `"dynamodb"` after normalization.
+- The file source has an empty `config_file_path` or a non-null `config_dynamodb`.
+- The DynamoDB source has no `config_dynamodb.table_name`, has a non-empty
+  `config_file_path`, or uses the `"filesystem_replicated"` topology.
+- `config_dynamodb.watch_mode` is not empty, `"poll"`, or `"streams"`, or a
+  supplied `config_dynamodb.stream_poll_interval` is not a positive Go duration.
 - `admin_api_key_param` is empty.
 - `node_role` is not `"control"` or `"worker"` (after normalization).
-- `topology` is not `"single"` or `"filesystem_replicated"` (after normalization).
+- `topology` is not `"single"`, `"filesystem_replicated"` or `"dynamodb_coordinated_ha"` (after normalization).
 - `metrics_exporter` is set to anything other than `""`, `"noop"`, or `"cloudwatch"`.
 - `ssm_endpoint` is set but `dev_mode` is `false`.
 - `container_memory_bytes` is zero after normalization, or
@@ -149,45 +181,18 @@ in-container path. A typical mapping:
 | Bridge config file (raw EFS path) | `/bridge.yaml` (what a host mounting the file system directly sees) |
 | `config_file_path` in bootstrap | `/var/lib/gobridge/bridge.yaml` (the in-container path the runtime reads) |
 
-You should write the bridge config to EFS using one of the following methods.
+The control process can create the file using an
+[embedded initial document](config-initialization.md). To update an existing
+document, use a config transaction or an atomic external writer.
 
 > **Pre-deploy checklist item — write atomically.** Whichever method you use,
 > the writer MUST write to a temporary file on the same EFS file system and then
 > `rename` it over `config_file_path` — never truncate and rewrite the file in
 > place. The poll watcher can read a torn in-place write mid-flight; a
 > partial-but-valid document carrying only `bridge.id` (an empty route graph is
-> permitted — `config/validate.go:47-63`) swaps live and **stops forwarding
+> permitted — `config/validate.go`) swaps live and **stops forwarding
 > traffic while `/health` and `/ready` stay green**. See
 > [External config writers must write atomically](../runbooks/external-config-atomic-writes.md).
-> The `cp` commands below overwrite in place; replace them with a
-> temp-file-plus-`mv` on the same mount for production writers.
-
-### Init Container
-
-Add an init container to the ECS task definition that copies the config from
-S3, a CodeArtifact archive, or an embedded default:
-
-```json
-{
-  "name": "config-init",
-  "image": "amazon/aws-cli:latest",
-  "essential": false,
-  "command": [
-    "s3", "cp",
-    "s3://my-config-bucket/gobridge/bridge.yaml",
-    "/var/lib/gobridge/bridge.yaml"
-  ],
-  "mountPoints": [
-    {
-      "sourceVolume": "gobridge-efs",
-      "containerPath": "/var/lib/gobridge"
-    }
-  ]
-}
-```
-
-The main container declares a `dependsOn` with condition `SUCCESS` on the
-init container.
 
 ### CI/CD Pipeline
 
@@ -200,7 +205,9 @@ aws efs describe-mount-targets --file-system-id $EFS_ID
 # Mount EFS via EFS mount helper (requires amazon-efs-utils)
 mount -t efs -o tls $EFS_ID:/ /mnt/efs
 # The access point roots at "/", so this is the container's /var/lib/gobridge/bridge.yaml
-cp bridge.yaml /mnt/efs/bridge.yaml
+tmp=$(mktemp /mnt/efs/.bridge.yaml.XXXXXX)
+cp bridge.yaml "$tmp"
+mv "$tmp" /mnt/efs/bridge.yaml
 umount /mnt/efs
 ```
 
@@ -221,17 +228,27 @@ sudo mkdir -p /mnt/efs
 sudo mount -t efs -o tls fs-0123456789abcdef0:/ /mnt/efs
 
 # Write config (access point roots at "/", so this is the container's /var/lib/gobridge/bridge.yaml)
-sudo cp bridge.yaml /mnt/efs/bridge.yaml
+tmp=$(sudo mktemp /mnt/efs/.bridge.yaml.XXXXXX)
+sudo cp bridge.yaml "$tmp"
+sudo mv "$tmp" /mnt/efs/bridge.yaml
 
 # Unmount
 sudo umount /mnt/efs
 ```
 
-You can also update bridge config through the admin API config-transaction
+These commands replace an existing document. Validate the staged config first;
+for clustered deployments, follow the
+[cluster rollout procedure](../runbooks/cluster-config-rollout.md) before writing.
+For an absent target, authenticated `POST /api/v1/admin/config` accepts a
+complete YAML or JSON document through the registry-aware decoder and strict
+creation capability. It is not an update transaction against a missing
+document. See [initial-create outcomes](config-initialization.md#operator-creation-and-rollout).
+
+You can update existing bridge config through the admin API config-transaction
 flow, which writes the new config durably and applies it in-band to the running
 runtime. There is **no `PUT /config` endpoint**: config changes go through a
 transaction (open → patch → commit), and the commit does the check-and-set on
-the `version` field. See [HTTP API — Config transactions](../http-api.md#config-transactions)
+the `version` field. See [HTTP API — Config transactions](../http-api-admin.md#config-transactions)
 for the full endpoint contract and commit outcomes.
 
 ```bash
@@ -267,157 +284,14 @@ curl -s -X DELETE -H "X-API-Key: $KEY" \
 
 A commit persists to `config_file_path` on EFS and returns a `status`
 (`committed`, `committed_applying`, `rolled_back`, `committed_not_applied`) —
-[read the outcome table](../http-api.md#config-transactions) before treating a
+[read the outcome table](../http-api-admin.md#config-transactions) before treating a
 non-200 as success. To roll a committed change back, open a new transaction and
 re-commit the previous config, or restore the file at its source (see
 [Config rollback](../runbooks/config-rollback.md)).
 
 ---
 
-## Hot-Reload
-
-GoBridge watches the bridge config file for changes using a poll-based
-watcher. When the file content changes, the runtime is rebuilt and swapped
-in without process restart.
-
-### Reload Sequence
-
-```mermaid
-sequenceDiagram
-    participant EFS as EFS (bridge.yaml)
-    participant W as Poll Watcher
-    participant M as Config Manager
-    participant A as App (bootstrap)
-    participant RT as Runtime
-
-    loop every poll_interval
-        W->>EFS: Read file + SHA-256 hash
-        alt content changed
-            W->>M: Emit new BridgeConfig
-            M->>M: Merge layers + validate
-            M->>A: Config change event
-            A->>A: resolveInputs (SSM keys)
-            A->>RT: Build new runtime
-            A->>RT: Start new runtime
-            A->>RT: Stop old runtime
-        end
-    end
-```
-
-### Why Poll Mode Instead of Notify
-
-The bootstrap library forces **poll mode** (`ModePoll`) for file watching.
-The default `notify` mode uses `fsnotify` (kernel inotify/kqueue events),
-which does not reliably propagate across NFS mounts. EFS is an NFS-based
-file system, so writes from one Fargate task or an external writer may not
-trigger inotify events on other tasks. Poll mode reads the file at a fixed
-interval and compares SHA-256 hashes, which works reliably regardless of the
-underlying filesystem.
-
-### Poll Interval Tuning
-
-| Environment | Recommended `poll_interval` | Rationale |
-|-------------|----------------------------|-----------|
-| Development | `"1s"` (default) | Fast feedback during local iteration. |
-| Staging | `"5s"` | Balance between responsiveness and EFS read cost. |
-| Production | `"5s"` to `"30s"` | Lower EFS I/O; config changes are infrequent. |
-
-### Swap Modes
-
-When a config change is detected, the bootstrap library must swap the old
-runtime for the new one. The swap strategy is **auto-detected** based on the
-transport capabilities declared by the registered factories.
-
-**Overlap mode** (default): The new runtime is started first, then the old
-runtime is stopped. This provides zero-downtime for stateless transports
-like HTTP and SQS where multiple concurrent listeners are safe.
-
-**Prepare/commit mode**: The old runtime is stopped first, then the new
-runtime is built and started. This is required for transports that declare
-the `CapExclusiveIdentity` capability (e.g. MQTT), where two simultaneous
-connections with the same client ID would cause disconnects.
-
-```mermaid
-flowchart TD
-    DETECT[Config change detected] --> CHECK{Any session transport\nhas CapExclusiveIdentity?}
-    CHECK -- No --> OVERLAP[Overlap Mode]
-    CHECK -- Yes --> PREPARE[Prepare/Commit Mode]
-
-    OVERLAP --> O1[Start new runtime]
-    O1 --> O2[Stop old runtime]
-    O2 --> DONE[Swap complete]
-
-    PREPARE --> P1[Stop old runtime]
-    P1 --> P2[Complete + start new runtime]
-    P2 --> DONE
-
-    style OVERLAP fill:#27ae60,stroke:#333,color:#fff
-    style PREPARE fill:#e67e22,stroke:#333,color:#fff
-```
-
-If the new runtime fails to start in prepare/commit mode, the bootstrap
-library attempts to **recover the previous configuration** by rebuilding and
-restarting the old runtime. This prevents a bad config push from leaving the
-bridge in a stopped state.
-
----
-
-## Config Updates in Production
-
-Follow this workflow for safe configuration updates in production.
-
-### Update Flow
-
-1. **Update the YAML on EFS.** Use CI/CD, a manual mount, or the admin API
-   config-transaction flow (open → patch → commit). The commit enforces
-   optimistic concurrency via the `version` field (check-and-set). There is no
-   `PUT /config` endpoint — see
-   [HTTP API — Config transactions](../http-api.md#config-transactions).
-
-2. **Poll watcher detects the change.** Within one `poll_interval` cycle, the
-   watcher reads the file, computes the SHA-256 hash, and detects the
-   difference.
-
-3. **Config is parsed and validated.** The YAML is deserialized into a
-   `BridgeConfig` struct. The `validateFilesystemProfile` function checks
-   topology constraints (e.g. `shared_outbox` routes are rejected under
-   `filesystem_replicated` topology).
-
-4. **SSM parameters are resolved.** The `resolveInputs` function reads
-   `admin_api_key_param`, `monitor_api_key_param`, and any
-   `http_receiver_api_key_params` / `http_sender_api_key_params` from SSM
-   Parameter Store with decryption.
-
-5. **New runtime is built and swapped in.** The appropriate swap mode
-   (overlap or prepare/commit) is selected and the runtime is replaced.
-
-6. **If validation or build fails:** The change is rejected, the last good
-   runtime continues running, and a warning is logged:
-   ```
-   bootstrap: config reload rejected; keeping last good runtime  error="..."
-   ```
-
-### The Version Field
-
-The `version` field in `BridgeConfig` is an integer counter incremented on
-each config commit via the admin API. When multiple instances share the same
-config file on EFS, this field provides optimistic concurrency control:
-
-```yaml
-version: 7
-bridge:
-  id: my-bridge
-  deployment_mode: clustered
-# ...
-```
-
-A config-transaction commit includes the current `version` value. The write
-succeeds only if the on-disk version matches. If another instance updated the
-file first, the commit fails with a conflict (`409`), and you should re-read
-and retry. A `version` of `0` (or absent) means the config has never been
-committed through the API.
-
----
+Hot-reload mechanics and the production update procedure are on their own page: [Hot-reload and production config updates](config-reload.md).
 
 ## Environment Variable Injection
 
@@ -476,12 +350,12 @@ feature requirements.
 | Feature | `single` | `filesystem_replicated` |
 |---------|----------|-------------------------|
 | Replicas | 1 | N |
-| Config source | EFS (single writer) | EFS (shared, poll-synced) |
+| Config source | EFS or DynamoDB (control writes) | EFS (shared, control writes) |
 | `shared_outbox` routes | Yes | No |
 | Route session leases | Yes | No |
 | `deployment_mode: clustered` | Yes | Yes |
 | `bridge.cluster.endpoints` | Optional | Recommended |
-| Config update propagation | Immediate (single instance) | Within `poll_interval` |
+| Config update propagation | Normal standalone reload rules | Detection within `poll_interval`; clustered changes require cohort replacement |
 
 ### Single Topology
 
@@ -494,8 +368,8 @@ a single task.
 
 The `filesystem_replicated` topology runs N Fargate tasks that all mount the
 same EFS file system. Each replica independently polls the bridge config file
-and builds its own runtime. This provides horizontal scaling and high
-availability, but with restrictions:
+and builds its own runtime. This provides independent horizontal scaling, not
+coordinated high availability, with these restrictions:
 
 - **No `shared_outbox` routes.** Durable outbox delivery requires distributed
   state coordination. Use `direct_hold` delivery mode instead, or switch to
@@ -522,12 +396,21 @@ version: 1
 bridge:
   id: orders-bridge-prod
   deployment_mode: standalone
-  shutdown_timeout: "30s"
-  # Prefer the scaled drain formula over drain_timeout in production:
-  # ceiling = min(batchCount * per_record_drain_timeout, max_drain_timeout).
+  # Process shutdown budget on SIGTERM; in this image the runtime drain
+  # (drain_timeout) runs inside it, so keep this above the drain budgets below.
+  shutdown_timeout: "45s"
+  drain_timeout: "30s"
+  # Outbox drain batch ceiling (distinct from drain_timeout, which bounds
+  # Runtime.Stop): min(batchCount * per_record_drain_timeout, max_drain_timeout).
   per_record_drain_timeout: "3s"
-  max_drain_timeout: "30s"
+  max_drain_timeout: "20s"
   log_level: info
+
+stores:
+  dlq:
+    type: dynamodb
+    options:
+      table_name: gobridge-dlq
 
 sessions:
   - id: mqtt-session
@@ -542,7 +425,7 @@ receivers:
   - id: sqs-receiver
     transport: sqs
     options:
-      queue_url: "https://sqs.eu-west-1.amazonaws.com/123456789012/orders"
+      queue_name: orders
 
 senders:
   - id: mqtt-sender
@@ -552,6 +435,9 @@ senders:
 bindings:
   - id: mqtt-binding
     sender_id: mqtt-sender
+    # Naming the session on the binding is what makes the bridge manage it:
+    # a session nobody manages never connects, and every publish fails.
+    session_id: mqtt-session
     address: "devices/{{.Header.device_id}}/commands"
 
 routes:
@@ -565,3 +451,8 @@ routes:
 
 For the complete field-by-field reference of all bridge config options, see
 [Configuration Reference](../configuration-reference.md).
+
+Embedded SQS config uses stable physical queue names or `queue_tags` with an
+optional `queue_name_prefix`; all embedded queue URLs are rejected.
+Use binding address `sqs:queue` for a tag-selected sender. See
+[queue references](config-initialization.md#queue-references-in-embedded-documents).

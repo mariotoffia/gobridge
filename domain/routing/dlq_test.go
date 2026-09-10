@@ -10,7 +10,7 @@ import (
 
 // TestDLQEntry_NewDLQEntry_ClonesEnvelope proves NewDLQEntry deep-clones
 // the spec envelope so a later mutation of the caller's envelope cannot
-// reach the entry (finding #9: snapshot boundary).
+// reach the entry (snapshot boundary).
 func TestDLQEntry_NewDLQEntry_ClonesEnvelope(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{
 		ID:      "env-dlq",

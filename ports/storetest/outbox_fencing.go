@@ -81,7 +81,7 @@ func testExpireSkipsClaimed(t *testing.T, store ports.OutboxStore) {
 		t.Fatalf("claim: %v", err)
 	}
 
-	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-expcl")
+	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-expcl", token)
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}
@@ -462,5 +462,112 @@ func testCompleteRejectsZeroClaimSnapshot(t *testing.T, store ports.OutboxStore)
 	}
 	if len(claimed) != 1 || claimed[0].ID() != "zcs-1" {
 		t.Fatalf("zero-claimed row must remain claimable (unmutated) after rejected complete; got %d records", len(claimed))
+	}
+}
+
+// testExpireRejectsZeroToken pins the valid-token requirement on Expire. The
+// bulk sweep is a TERMINAL, destructive mutation of pending work, so it must be
+// authorised by a real lease exactly as Claim, Complete and Release are: a
+// zero-value token is never a real lease, and accepting one would let a
+// miswired or preempted drainer destroy work it does not own. The rejection
+// must fire before any state transition, so the record stays claimable.
+func testExpireRejectsZeroToken(t *testing.T, store ports.OutboxStore) {
+	ctx := context.Background()
+	pk := "SESSION#sess-expzt"
+	past := time.Now().Add(-1 * time.Hour)
+	r := makeRecord(t, "expzt-1", "env-expzt-1", "bind-expzt-1", "sess-expzt", "route-1", past)
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	n, err := store.Expire(ctx, time.Now(), pk, persistence.LeaseToken{})
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
+		t.Fatalf("expected ErrStaleFencingToken expiring with a zero-value token, got %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("rejected expiry must transition nothing, got n=%d", n)
+	}
+
+	// Non-mutation probe: the row is still pending, so a real owner claims it.
+	owner := persistence.LeaseToken{Version: 1, Owner: "owner-expzt"}
+	claimed, err := store.Claim(ctx, pk, owner, 10)
+	if err != nil {
+		t.Fatalf("claim after rejected expiry: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].ID() != "expzt-1" {
+		t.Fatalf("record must remain pending after a rejected expiry; got %d records", len(claimed))
+	}
+}
+
+// testExpireRejectsStaleVersion pins that Expire honours the same durable
+// per-partition fencing high-water-mark as Claim. A preempted owner whose lease
+// has already been taken over at a higher version must not be able to bulk
+// expire pending work its successor can still deliver.
+func testExpireRejectsStaleVersion(t *testing.T, store ports.OutboxStore) {
+	ctx := context.Background()
+	pk := "SESSION#sess-expstale"
+
+	// A successor takes the partition at v2. A zero-limit claim advances the
+	// fence without claiming anything, which is exactly the takeover shape.
+	v2 := persistence.LeaseToken{Version: 2, Owner: "owner-v2"}
+	if _, err := store.Claim(ctx, pk, v2, 0); err != nil {
+		t.Fatalf("fence-advancing claim at v2: %v", err)
+	}
+
+	past := time.Now().Add(-1 * time.Hour)
+	r := makeRecord(t, "expstale-1", "env-expstale-1", "bind-expstale-1", "sess-expstale", "route-1", past)
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	v1 := persistence.LeaseToken{Version: 1, Owner: "owner-v1"}
+	n, err := store.Expire(ctx, time.Now(), pk, v1)
+	if !errors.Is(err, shared.ErrStaleFencingToken) {
+		t.Fatalf("expected ErrStaleFencingToken expiring with a stale token, got %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("stale expiry must transition nothing, got n=%d", n)
+	}
+
+	// The successor still owns deliverable work.
+	claimed, err := store.Claim(ctx, pk, v2, 10)
+	if err != nil {
+		t.Fatalf("successor claim after rejected stale expiry: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].ID() != "expstale-1" {
+		t.Fatalf("record must remain claimable by the rightful owner; got %d records", len(claimed))
+	}
+}
+
+// testExpireAdvancesPartitionFence pins that an accepted Expire advances the
+// durable high-water-mark exactly as Claim does. A drop-policy drainer sweeps
+// expiry BEFORE the egress-readiness gate, so on a partition whose egress never
+// becomes ready Expire is the only fencing call that ever runs — if it did not
+// advance the fence, a preempted owner could still win freshly pending work.
+func testExpireAdvancesPartitionFence(t *testing.T, store ports.OutboxStore) {
+	ctx := context.Background()
+	pk := "SESSION#sess-expfence"
+
+	v3 := persistence.LeaseToken{Version: 3, Owner: "owner-v3"}
+	n, err := store.Expire(ctx, time.Now(), pk, v3)
+	if err != nil {
+		t.Fatalf("expire on empty partition at v3: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("empty partition must expire nothing, got n=%d", n)
+	}
+
+	r := makeRecord(t, "expfence-1", "env-expfence-1", "bind-expfence-1", "sess-expfence", "route-1", time.Time{})
+	if err := store.Persist(ctx, []*persistence.OutboxRecord{r}); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+
+	v2 := persistence.LeaseToken{Version: 2, Owner: "owner-v2"}
+	stale, err := store.Claim(ctx, pk, v2, 10)
+	if err != nil && !errors.Is(err, shared.ErrStaleFencingToken) {
+		t.Fatalf("claim below the expiry-advanced fence: unexpected error %v", err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("a token below the expiry-advanced fence must win no records, got %d", len(stale))
 	}
 }

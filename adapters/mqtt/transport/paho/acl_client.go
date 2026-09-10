@@ -73,15 +73,19 @@ type subscribeSpec struct {
 	// subscription already exists broker-side, so the broker suppresses a full
 	// retained replay — avoiding the reconnect-storm where each network blip
 	// re-delivers every retained message per filter and direct routes
-	// re-process retained state (A-7).
+	// re-process retained state.
 	RetainHandling byte
 }
 
-// publishResult is the SDK-free view of a paho PUBACK / PUBREC. Only
-// the reason code is consumed by the port side; richer fields can be
-// added if future logic requires them.
+// publishResult is the SDK-free view of a paho PUBACK / PUBREC. Acknowledged
+// separates "the broker answered with reason code 0x00" from "no answer at
+// all": the SDK returns BOTH an acknowledgement and a generic error whenever
+// the reason code is 0x80 or higher, and the reason code is the only place the
+// broker's actual verdict survives. Without the flag a zero-valued result is
+// indistinguishable from a success.
 type publishResult struct {
-	ReasonCode byte
+	ReasonCode   byte
+	Acknowledged bool
 }
 
 // connackReasonCode extracts the CONNACK reason code from a rejected autopaho
@@ -100,6 +104,28 @@ func connackReasonCode(err error) (code byte, ok bool) {
 	return 0, false
 }
 
+// pahoLinkDown reports whether err is one of the SDK's typed
+// link-down sentinels: autopaho.ConnectionDownError (no usable
+// connection to the server) or pahov5.ErrConnectionLost (the link
+// dropped after a request went out, so the outcome is unknown). Both
+// are transient — the caller maps them to shared.ErrConnectionLost.
+// Kept here beside connackReasonCode so MapError classifies by type
+// without errors.go importing the vendor SDK.
+func pahoLinkDown(err error) bool {
+	return errors.Is(err, autopaho.ConnectionDownError) ||
+		errors.Is(err, pahov5.ErrConnectionLost)
+}
+
+// pahoInvalidArguments reports whether err is pahov5.ErrInvalidArguments,
+// which the SDK joins into requests the server cannot satisfy on this
+// connection (unsupported wildcards, shared subscriptions, QoS above the
+// server maximum, retain when disabled). autopaho itself refuses to retry
+// these (autopaho/auto.go), so they map to a permanent classification
+// rather than the transient fallback.
+func pahoInvalidArguments(err error) bool {
+	return errors.Is(err, pahov5.ErrInvalidArguments)
+}
+
 // pahoConn is the production pahoConnection backed by a real
 // autopaho.ConnectionManager.
 type pahoConn struct {
@@ -107,16 +133,38 @@ type pahoConn struct {
 	// metrics is the session's exporter, threaded so PublishEnvelope can
 	// count egress header drops (MetricMQTTNonStringHeaderDropped) on the
 	// Sender path — the same counting the Sender used to do when it called
-	// PublishFromEnvelope directly (F-2). May be nil; PublishFromEnvelope
+	// PublishFromEnvelope directly. May be nil; PublishFromEnvelope
 	// tolerates a nil exporter (drop applied, uncounted).
 	metrics ports.MetricsExporter
+	// brokerMaxPacketSize reports the Maximum Packet Size the broker granted in
+	// the CONNACK of the CURRENT connection, or 0 when it granted none. It is a
+	// func rather than a value because autopaho reconnects underneath this
+	// wrapper: each CONNACK can carry a different ceiling, and a publish must be
+	// measured against the one in force when it is written. May be nil in tests
+	// (treated as no ceiling).
+	brokerMaxPacketSize func() uint32
 }
 
 // newPahoConn wraps a live autopaho.ConnectionManager so it can be
 // stored in Session.cm (typed pahoConnection). metrics is the session's
-// exporter, used only by PublishEnvelope for egress drop counting.
-func newPahoConn(cm *autopaho.ConnectionManager, metrics ports.MetricsExporter) *pahoConn {
-	return &pahoConn{cm: cm, metrics: metrics}
+// exporter, used only by PublishEnvelope for egress drop counting;
+// brokerMaxPacketSize reads the session's per-connection broker ceiling.
+func newPahoConn(
+	cm *autopaho.ConnectionManager,
+	metrics ports.MetricsExporter,
+	brokerMaxPacketSize func() uint32,
+) *pahoConn {
+	return &pahoConn{cm: cm, metrics: metrics, brokerMaxPacketSize: brokerMaxPacketSize}
+}
+
+// connackMaximumPacketSize extracts the broker's Maximum Packet Size from a
+// CONNACK. Zero means the broker advertised none, which MQTT v5 §3.2.2.3.6
+// defines as no limit beyond the protocol ceiling.
+func connackMaximumPacketSize(connack *pahov5.Connack) uint32 {
+	if connack == nil || connack.Properties == nil || connack.Properties.MaximumPacketSize == nil {
+		return 0
+	}
+	return *connack.Properties.MaximumPacketSize
 }
 
 // AwaitConnection blocks until the underlying ConnectionManager
@@ -151,25 +199,34 @@ func (c *pahoConn) Subscribe(ctx context.Context, subs []subscribeSpec) ([]byte,
 		}
 	}
 	sa, err := c.cm.Subscribe(ctx, &pahov5.Subscribe{Subscriptions: opts})
+	// A rejected reason code makes the SDK return the SUBACK *and* a generic
+	// error. The reason codes are the broker's verdict — which filter was
+	// refused, and why — so they are handed back with the error rather than
+	// discarded; the caller classifies them first and falls back to the error
+	// only when no SUBACK arrived.
+	var reasons []byte
+	if sa != nil {
+		reasons = sa.Reasons
+	}
 	if err != nil {
-		return nil, fmt.Errorf("paho: subscribe: %w", err)
+		return reasons, fmt.Errorf("paho: subscribe: %w", err)
 	}
-	if sa == nil {
-		return nil, nil
-	}
-	return sa.Reasons, nil
+	return reasons, nil
 }
 
 // Unsubscribe issues an UNSUBSCRIBE for the given topics.
 func (c *pahoConn) Unsubscribe(ctx context.Context, topics []string) ([]byte, error) {
 	ack, err := c.cm.Unsubscribe(ctx, &pahov5.Unsubscribe{Topics: topics})
+	// Same contract as Subscribe: the UNSUBACK reason codes travel with the
+	// error so the caller can classify the broker's verdict per filter.
+	var reasons []byte
+	if ack != nil {
+		reasons = ack.Reasons
+	}
 	if err != nil {
-		return nil, fmt.Errorf("paho: unsubscribe: %w", err)
+		return reasons, fmt.Errorf("paho: unsubscribe: %w", err)
 	}
-	if ack == nil {
-		return nil, nil
-	}
-	return ack.Reasons, nil
+	return reasons, nil
 }
 
 // PublishEnvelope serialises the given messaging.Envelope into a paho
@@ -178,6 +235,12 @@ func (c *pahoConn) Unsubscribe(ctx context.Context, topics []string) ([]byte, er
 // transport-level destination, distinct from env.Subject()). The
 // PUBACK / PUBREC reason code is returned in publishResult so the port
 // side can map it via MapPublishReasonCode without importing the SDK.
+//
+// Two wire limits are enforced here, before the SDK is called at all: a field
+// Paho would silently truncate, and a packet larger than the Maximum Packet
+// Size the broker granted. Both return a permanent classification and count
+// MetricMQTTEgressRejected — a refused publish is a route rejection, never a
+// retry, and never bytes on the socket.
 func (c *pahoConn) PublishEnvelope(
 	ctx context.Context,
 	env *messaging.Envelope,
@@ -185,15 +248,43 @@ func (c *pahoConn) PublishEnvelope(
 	opts SenderOptions,
 	clk clock.Clock,
 ) (publishResult, error) {
-	pub := PublishFromEnvelope(env, topic, opts, clk, c.metrics)
-	resp, err := c.cm.Publish(ctx, pub)
+	pub, err := PublishFromEnvelope(env, topic, opts, clk, c.metrics)
 	if err != nil {
-		return publishResult{}, fmt.Errorf("paho: publish: %w", err)
+		c.countEgressRejected()
+		return publishResult{}, err
 	}
-	if resp == nil {
-		return publishResult{}, nil
+	if err := enforceEgressPacketLimit(pub, c.brokerMaximumPacketSize()); err != nil {
+		c.countEgressRejected()
+		return publishResult{}, err
 	}
-	return publishResult{ReasonCode: resp.ReasonCode}, nil
+	resp, err := c.cm.Publish(ctx, pub)
+	// A PUBACK / PUBREC carrying 0x80 or higher comes back together with a
+	// generic SDK error. The reason code is the broker's actual answer — "not
+	// authorized" is permanent, the generic fallback would call it a transient
+	// outage — so it is returned alongside the error, not dropped.
+	var result publishResult
+	if resp != nil {
+		result = publishResult{ReasonCode: resp.ReasonCode, Acknowledged: true}
+	}
+	if err != nil {
+		return result, fmt.Errorf("paho: publish: %w", err)
+	}
+	return result, nil
+}
+
+// brokerMaximumPacketSize returns the ceiling in force for the current
+// connection, or 0 when the broker granted none (or no reader is wired).
+func (c *pahoConn) brokerMaximumPacketSize() uint32 {
+	if c.brokerMaxPacketSize == nil {
+		return 0
+	}
+	return c.brokerMaxPacketSize()
+}
+
+func (c *pahoConn) countEgressRejected() {
+	if c.metrics != nil {
+		c.metrics.Counter(MetricMQTTEgressRejected, 1)
+	}
 }
 
 // Underlying returns the raw autopaho.ConnectionManager. Used only by

@@ -9,7 +9,7 @@ import (
 )
 
 // rolloutDeltaClass classifies a config delta for coordinated-rollout eligibility
-// (design §8). It exists so the coordinated cluster-rollout path can never admit
+// (ADR 0013). It exists so the coordinated cluster-rollout path can never admit
 // a change the single-node reload path would reject.
 type rolloutDeltaClass int
 
@@ -19,14 +19,49 @@ const (
 	rolloutLiveSafe rolloutDeltaClass = iota
 	// rolloutReplacementRequired marks a delta that alters durable identity or
 	// store targets (the reasons ADR 0012 exists). It is refused live and keeps
-	// the whole-cohort replacement procedure (§2 N2).
+	// the whole-cohort replacement procedure (§2).
 	rolloutReplacementRequired
 )
 
 // rolloutModeCoordinated is the cluster.rollout value that opts a clustered
-// deployment into the coordinated rollout barrier (design §8). Any other value
+// deployment into the coordinated rollout barrier (ADR 0013). Any other value
 // — including the empty default — keeps the legacy refuse-live-reconfig path.
 const rolloutModeCoordinated = "coordinated"
+
+// rolloutModeIndependent is the cluster.rollout value that lets every member
+// apply a live-safe change on its own, the way a standalone bridge does — no
+// barrier, no vote, no shared store, no coordinator.
+//
+// It exists because the two original modes are the two extremes. The default
+// refuses a clustered live reload outright (ADR 0012), so any change at all costs
+// a whole-cohort stop and redeploy. The coordinated barrier is the other end: it
+// is safe against a member that cannot build the change, and it needs a shared
+// rollout store, a lease-elected coordinator and a frozen roster to run at all.
+//
+// This is the middle, and what it trades is explicit: the change is validated
+// where it is written, and each member then applies it independently, so for a
+// few seconds one member can be running the new config while another is still on
+// the old one. An operator who can live with that window — most can, and it is
+// what a rolling ConfigMap update does — should not have to run a coordination
+// protocol to get a log level changed. A member that cannot build the change is a
+// broken member to be replaced, not a veto over the cohort.
+//
+// What it does NOT relax: a delta that cannot be applied live on ANY node —
+// a durable session's identity, a store's target — is still refused, with the
+// same reason a standalone bridge gives. Nor does it relax the cohort's own shape
+// (see clusterShapeChanged): the roster and the endpoint map describe the
+// deployment rather than what the cohort runs, so they change by redeploying even
+// where no barrier reads them.
+const rolloutModeIndependent = "independent"
+
+// independentRollout reports whether cfg opts a clustered deployment into
+// per-member application (cluster.rollout: independent).
+func independentRollout(cfg *ports.BridgeConfig) bool {
+	if !ports.IsClusteredDeployment(cfg) {
+		return false
+	}
+	return cfg.Bridge.Cluster != nil && cfg.Bridge.Cluster.Rollout == rolloutModeIndependent
+}
 
 // coordinatedRollout reports whether cfg opts into coordinated cluster rollout:
 // the deployment must be clustered AND cluster.rollout must be "coordinated".
@@ -72,6 +107,16 @@ const (
 // one is refused with its class reason (pointing at the whole-cohort procedure).
 func classifyClusterReload(oldCfg, newCfg *ports.BridgeConfig) (clusterReloadDisposition, string) {
 	if !ports.IsClusteredDeployment(oldCfg) && !ports.IsClusteredDeployment(newCfg) {
+		return clusterReloadProceed, ""
+	}
+	// Per-member application: classify the delta exactly as the coordinated path
+	// does, then apply it here instead of proposing it. Both sides must agree on
+	// the mode — cluster.rollout is part of the cohort's own definition, so a
+	// change to it is a whole-cohort replacement either way.
+	if independentRollout(oldCfg) && independentRollout(newCfg) {
+		if class, reason := classifyRolloutDelta(oldCfg, newCfg); class == rolloutReplacementRequired {
+			return clusterReloadRefuse, reason
+		}
 		return clusterReloadProceed, ""
 	}
 	// Both sides must be coordinated-clustered; entering, leaving, or a
@@ -134,7 +179,7 @@ func classifyRolloutDelta(oldCfg, newCfg *ports.BridgeConfig) (rolloutDeltaClass
 		}
 	}
 	// A deployment-mode change is a topology transition, not a live-safe delta
-	// (design §8). The store predicates above do not see it.
+	// (ADR 0013). The store predicates above do not see it.
 	if oldCfg.Bridge.DeploymentMode != newCfg.Bridge.DeploymentMode {
 		return rolloutReplacementRequired, fmt.Sprintf(
 			"deployment_mode change %q -> %q is a topology transition",
@@ -160,11 +205,19 @@ func classifyRolloutDelta(oldCfg, newCfg *ports.BridgeConfig) (rolloutDeltaClass
 // they cannot be rolled out through it:
 //
 //   - bridge.cluster.members IS the membership epoch the proposer freezes and
-//     the coordinator compares live membership against (F6). Rolling it would
+//     the coordinator compares live membership against. Rolling it would
 //     freeze the epoch from the OLD roster, commit under the OLD roster's acks,
 //     and leave the cohort running a config that declares a DIFFERENT roster: a
 //     member the delta adds never acked anything, and a member it removes keeps
-//     holding leases while no future rollout may include it.
+//     holding leases while no future rollout may include it. The rule holds for a
+//     cohort that runs NO barrier too, and for the same reason it is listed here:
+//     the roster is part of the deployment's own shape rather than of what the
+//     cohort runs. It is folded into DeploymentProfileFingerprint, which a
+//     deployment stamps and its members re-check at boot, and a topology that
+//     provisions one process per roster entry (the shipped AWS HA one does)
+//     requires the two to name each other. A member that took a live roster edit
+//     would pass the reload there and then fail its own admission check on the
+//     next restart.
 //   - bridge.cluster.endpoints is this instance's advertised capability map; the
 //     HTTP forwarder resolves remote exclusive requests through it, so changing
 //     it under live traffic retargets in-flight forwards mid-rollout.
@@ -186,9 +239,11 @@ func clusterShapeChanged(oldCfg, newCfg *ports.BridgeConfig) string {
 	// Compare the roster as the SET it is: a reorder or a repeated id names the
 	// same cohort, so only a real membership change is replacement-required.
 	if !slices.Equal(sortedSet(oldMembers), sortedSet(newMembers)) {
-		return fmt.Sprintf("bridge.cluster.members changed (%d -> %d members); the roster IS the "+
-			"membership epoch the rollout barrier freezes, so a change to it cannot be carried by "+
-			"the barrier itself", len(sortedSet(oldMembers)), len(sortedSet(newMembers)))
+		return fmt.Sprintf("bridge.cluster.members changed (%d -> %d members); the roster is part of "+
+			"the deployment's own shape rather than of what the cohort runs — it is the membership "+
+			"epoch a rollout barrier freezes, and it is the shape a deployment provisions members "+
+			"against — so it changes by redeploying the cohort, not by reloading it",
+			len(sortedSet(oldMembers)), len(sortedSet(newMembers)))
 	}
 	if !maps.Equal(oldEndpoints, newEndpoints) {
 		// Endpoint ADDRESSES are not secret, but they are deployment detail; the

@@ -17,16 +17,20 @@ import (
 //
 // Encryption is always on. Performance mode is locked to General Purpose.
 // Both access points share root path "/" and identical POSIX identity;
-// RW vs RO separation is enforced at IAM and ECS volume level (see T08
+// RW vs RO separation is enforced at IAM and ECS volume level (see
 // grants and the facade mount config), NOT at POSIX user level.
 type GoBridgeEfsConfigProps struct {
 	// Vpc is the VPC in which EFS mount targets are created. Required.
 	Vpc awsec2.IVpc
 
 	// VpcSubnets selects the subnets for mount targets. If nil the
-	// default is all private subnets in the VPC. The same selection
-	// must be used by the ECS services consuming this filesystem; the
-	// parent construct (GoBridgeSingle/Cluster) enforces that match.
+	// default is all private subnets in the VPC. A mount target serves
+	// its whole availability zone, so this selection must cover every AZ
+	// the consuming ECS services place tasks in. When this construct is
+	// passed to GoBridgeSingle/Cluster as a pre-built EfsConfig, that
+	// parent enforces the match via [AssertEfsSubnetParity] and fails
+	// synthesis on a mismatch; when the parent auto-creates the config it
+	// passes its own VpcSubnets through, so parity is structural.
 	VpcSubnets *awsec2.SubnetSelection
 
 	// FileSystem is an existing EFS filesystem to reuse. If nil a new
@@ -55,7 +59,7 @@ type GoBridgeEfsConfigProps struct {
 	PosixGID *string
 }
 
-// GoBridgeEfsConfig is an L2 construct that creates (or reuses) an EFS
+// GoBridgeEfsConfig is a construct that creates (or reuses) an EFS
 // filesystem with two access points - Control (intended RW) and Worker
 // (intended RO) - sharing root path "/".
 type GoBridgeEfsConfig struct {
@@ -66,6 +70,15 @@ type GoBridgeEfsConfig struct {
 	workerAP    awsefs.AccessPoint
 	securityGrp awsec2.SecurityGroup
 	vpcSubnets  *awsec2.SubnetSelection
+
+	// vpc and mountAZs record what the subnet selection actually
+	// RESOLVED to, so AssertEfsSubnetParity can compare a
+	// caller-supplied filesystem against the parent's ECS placement
+	// without re-resolving a selection against the wrong VPC. A mount
+	// target serves its entire AZ, so the AZ set — not the subnet ID
+	// set — is what a task needs to land in.
+	vpc      awsec2.IVpc
+	mountAZs []string
 }
 
 // NewGoBridgeEfsConfig creates the EFS configuration construct.
@@ -172,6 +185,8 @@ func NewGoBridgeEfsConfig(scope constructs.Construct, id *string, props *GoBridg
 		workerAP:    workerAP,
 		securityGrp: sg,
 		vpcSubnets:  subnetSelection,
+		vpc:         props.Vpc,
+		mountAZs:    availabilityZonesOf(selected),
 	}
 }
 

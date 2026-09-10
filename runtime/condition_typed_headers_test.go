@@ -6,7 +6,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
-// TestConditionEval_TypedHeaderAccessor_HeaderDotPrefix proves the M-2
+// TestConditionEval_TypedHeaderAccessor_HeaderDotPrefix proves
 // migration: extractField goes through messaging.Headers.Get() rather
 // than direct map indexing for the "header.<name>" form, including the
 // nil-headers branch (no panic, no match).

@@ -9,7 +9,7 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
-// Coverage for the finding-14 residual (audit D8): the instrumentation
+// Coverage for the finding-14 residual (audit): the instrumentation
 // wrappers for Sender and Receiver must not strip the optional capabilities
 // the runtime probes by type assertion — ports.ContextCloser (route-runner
 // shutdown), ports.RouteIDSetter (route start) and
@@ -102,7 +102,7 @@ func TestInstrumentedReceiver_ForwardsCloseAndRouteID(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	if !inner.closed {
-		t.Fatal("D8: Close not forwarded to inner receiver — resources leak on shutdown")
+		t.Fatal("Close not forwarded to inner receiver — resources leak on shutdown")
 	}
 
 	var asSetter ports.RouteIDSetter = r
@@ -118,7 +118,7 @@ func TestInstrumentedReceiverCapabilityPreserving_ForwardsStartedSignal(t *testi
 
 	signaler, ok := r.(ports.ReceiverStartedSignaler)
 	if !ok {
-		t.Fatal("D8: wrapper strips ReceiverStartedSignaler — readiness loses the started signal")
+		t.Fatal("wrapper strips ReceiverStartedSignaler — readiness loses the started signal")
 	}
 
 	select {

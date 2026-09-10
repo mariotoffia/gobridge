@@ -6,205 +6,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/assertions"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awscloudwatch"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
-	elbv2 "github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awssns"
 	"github.com/aws/jsii-runtime-go"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/imgsource"
 
 	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
+	bridgecore "github.com/mariotoffia/gobridge/bridge"
+	"github.com/mariotoffia/gobridge/ports"
 
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgealarms"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgealbattachment"
 	ha "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgedynamodbha"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/internal/singleton"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 )
-
-const validHAYAML = `
-bridge:
-  id: test-ha
-  deployment_mode: clustered
-  shutdown_timeout: 45s
-  per_record_drain_timeout: 2s
-  max_drain_timeout: 20s
-stores:
-  lease:
-    type: dynamodb
-    options:
-      table_name: gobridge-leases
-  outbox:
-    type: dynamodb
-    options:
-      table_name: gobridge-outbox
-      stale_claim_duration: 20s
-      compaction_grace: 24h
-  managed_subscriptions:
-    type: dynamodb
-    options:
-      table_name: gobridge-managed-subscriptions
-sessions:
-  - id: mqtt-ha
-    transport: mqtt
-    session_mode: exclusive
-    options:
-      session:
-        broker_url: tls://mqtt.example.test:8883
-        client_id: test-ha-stable
-        keep_alive: 30
-        connect_timeout: 5s
-        reconnect_timeout: 5s
-        reconcile_timeout: 5s
-        unmatched_grace: 1s
-        clean_start: false
-        session_expiry_interval: 3600
-receivers:
-  - id: mqtt-in
-    transport: mqtt
-    session_id: mqtt-ha
-    topics:
-      - topic: test/ha/in
-        qos: 1
-senders:
-  - id: mqtt-out
-    transport: mqtt
-    session_id: mqtt-ha
-    options:
-      sender:
-        qos: 1
-bindings:
-  - id: mqtt-out-binding
-    sender_id: mqtt-out
-    session_id: mqtt-ha
-    address: test/ha/out
-    options:
-      sender:
-        qos: 1
-routes:
-  - id: mqtt-ha-route
-    receiver_id: mqtt-in
-    delivery_mode: shared_outbox
-    bindings: [mqtt-out-binding]
-    policy:
-      ack_after: outbox_persist
-      max_in_flight: 10
-      max_outbox_depth: 1000
-    session:
-      session_id: mqtt-ha
-      sender_id: mqtt-out
-      lease_ttl: 10s
-      renew_interval: 2s
-      lease_renew_jitter: 500ms
-      max_renew_fails: 3
-      step_down_grace: 2s
-      acquire_poll_interval: 1s
-      renew_call_timeout: 1s
-      failover_slo: 120s
-      startup_allowance: 30s
-      drain_interval: 500ms
-      drain_batch_size: 10
-`
-
-type haHarness struct {
-	app    awscdk.App
-	stack  awscdk.Stack
-	vpc    awsec2.IVpc
-	bridge *ha.GoBridgeDynamoDBHA
-	source source.Source
-}
-
-func writeHAYAML(t *testing.T, body string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "bridge.yaml")
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write bridge yaml: %v", err)
-	}
-	return path
-}
-
-func haBootstrap() infra.BootstrapConfig {
-	return infra.BootstrapConfig{
-		BridgeID:         "test-ha",
-		ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",
-		AdminAPIKeyParam: "/test/admin",
-	}
-}
-
-func newHAHarness(t *testing.T, mutate func(*ha.DynamoDBHAProps)) *haHarness {
-	return newHAHarnessWithYAML(t, validHAYAML, mutate)
-}
-
-func newHAHarnessWithYAML(
-	t *testing.T,
-	yaml string,
-	mutate func(*ha.DynamoDBHAProps),
-) *haHarness {
-	t.Helper()
-	t.Cleanup(singleton.ResetForTest)
-	app := awscdk.NewApp(nil)
-	stack := awscdk.NewStack(app, jsii.String("HAStack"), nil)
-	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), &awsec2.VpcProps{MaxAzs: jsii.Number(2)})
-	src := source.NewAsset(writeHAYAML(t, yaml))
-	props := &ha.DynamoDBHAProps{
-		Vpc:                          vpc,
-		Image:                        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
-		Bootstrap:                    haBootstrap(),
-		BridgeConfig:                 src,
-		ManagedSubscriptionBaselines: map[string][]string{"mqtt-ha": {"legacy/#"}},
-	}
-	if mutate != nil {
-		mutate(props)
-	}
-	bridge := ha.NewGoBridgeDynamoDBHA(stack, jsii.String("Bridge"), props)
-	return &haHarness{app: app, stack: stack, vpc: vpc, bridge: bridge, source: src}
-}
-
-func managedSubscriptionInitializerID(t *testing.T, stack awscdk.Stack) string {
-	t.Helper()
-	resources := assertions.Template_FromStack(stack, nil).
-		FindResources(jsii.String("Custom::AWS"), nil)
-	if len(*resources) != 1 {
-		t.Fatalf("managed-subscription initializer count = %d, want 1", len(*resources))
-	}
-	for logicalID := range *resources {
-		return logicalID
-	}
-	return ""
-}
-
-func mainContainerFromTask(t *testing.T, raw map[string]any) map[string]any {
-	t.Helper()
-	defs := raw["Properties"].(map[string]any)["ContainerDefinitions"].([]any)
-	for _, def := range defs {
-		container := def.(map[string]any)
-		if container["Name"] == "gobridge" {
-			return container
-		}
-	}
-	t.Fatal("gobridge container not found")
-	return nil
-}
-
-func envValue(envs []any, name string) string {
-	for _, raw := range envs {
-		env := raw.(map[string]any)
-		if env["Name"] == name {
-			value, _ := env["Value"].(string)
-			return value
-		}
-	}
-	return ""
-}
 
 func TestGoBridgeDynamoDBHA_ProvisionsControlAndTwoWorkersAcrossAZs(t *testing.T) {
 	h := newHAHarness(t, nil)
@@ -217,12 +37,12 @@ func TestGoBridgeDynamoDBHA_ProvisionsControlAndTwoWorkersAcrossAZs(t *testing.T
 	for logicalID, raw := range *services {
 		props := (*raw)["Properties"].(map[string]any)
 		desired[props["DesiredCount"].(float64)] = true
-		wantRebalancing := "ENABLED"
-		if strings.Contains(logicalID, "ControlService") {
-			wantRebalancing = "DISABLED" // 0/100 single-writer deployment cannot use AZ rebalancing.
-		}
-		if props["AvailabilityZoneRebalancing"] != wantRebalancing {
-			t.Fatalf("%s AvailabilityZoneRebalancing = %v, want %s", logicalID, props["AvailabilityZoneRebalancing"], wantRebalancing)
+		// Both services deploy at 0/100 — the control task because a second RW
+		// config writer must never overlap, the workers because an incompatible
+		// revision must never overlap (whole-cohort replacement). Neither leaves
+		// the headroom above the desired count that AZ rebalancing needs.
+		if props["AvailabilityZoneRebalancing"] != "DISABLED" {
+			t.Fatalf("%s AvailabilityZoneRebalancing = %v, want DISABLED", logicalID, props["AvailabilityZoneRebalancing"])
 		}
 		network := props["NetworkConfiguration"].(map[string]any)["AwsvpcConfiguration"].(map[string]any)
 		subnets := network["Subnets"].([]any)
@@ -430,7 +250,7 @@ func TestGoBridgeDynamoDBHA_AcceptsCanonicalMQTTPahoAlias(t *testing.T) {
 	aliased := strings.ReplaceAll(validHAYAML, "transport: mqtt", "transport: mqtt.paho")
 	bridge := ha.NewGoBridgeDynamoDBHA(stack, jsii.String("Bridge"), &ha.DynamoDBHAProps{
 		Vpc:                          vpc,
-		Image:                        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Image:                        imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap:                    haBootstrap(),
 		BridgeConfig:                 source.NewAsset(writeHAYAML(t, aliased)),
 		ManagedSubscriptionBaselines: map[string][]string{"mqtt-ha": {}},
@@ -462,7 +282,7 @@ func TestGoBridgeDynamoDBHA_RejectsUnresolvedTableNameToken(t *testing.T) {
 	}()
 	ha.NewGoBridgeDynamoDBHA(stack, jsii.String("Bridge"), &ha.DynamoDBHAProps{
 		Vpc:          vpc,
-		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Image:        imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap:    haBootstrap(),
 		BridgeConfig: source.NewInline(materialized.Config),
 	})
@@ -499,6 +319,13 @@ func TestGoBridgeDynamoDBHA_RejectsInvalidHAProfiles(t *testing.T) {
 		"wrong lease store": func(s string) string {
 			return strings.Replace(s, "type: dynamodb", "type: memory", 1)
 		},
+		"undeclared broker-path policy": func(s string) string {
+			return strings.Replace(s, `      broker_health_step_down: 30s
+`, "", 1)
+		},
+		"broker-path step-down over the objective": func(s string) string {
+			return strings.Replace(s, "broker_health_step_down: 30s", "broker_health_step_down: 90s", 1)
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -513,7 +340,7 @@ func TestGoBridgeDynamoDBHA_RejectsInvalidHAProfiles(t *testing.T) {
 			}()
 			ha.NewGoBridgeDynamoDBHA(stack, jsii.String("Bridge"), &ha.DynamoDBHAProps{
 				Vpc:          vpc,
-				Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+				Image:        imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 				Bootstrap:    haBootstrap(),
 				BridgeConfig: source.NewAsset(writeHAYAML(t, mutate(validHAYAML))),
 			})
@@ -558,7 +385,7 @@ func TestGoBridgeDynamoDBHA_PendingVpcLookupDefersAZValidation(t *testing.T) {
 	}()
 	ha.NewGoBridgeDynamoDBHA(stack, jsii.String("Bridge"), &ha.DynamoDBHAProps{
 		Vpc:                          vpc,
-		Image:                        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Image:                        imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap:                    haBootstrap(),
 		BridgeConfig:                 source.NewAsset(writeHAYAML(t, validHAYAML)),
 		ManagedSubscriptionBaselines: map[string][]string{"mqtt-ha": {}},
@@ -578,207 +405,83 @@ func TestGoBridgeDynamoDBHA_ResolvedSingleAZIsRejected(t *testing.T) {
 	}()
 	ha.NewGoBridgeDynamoDBHA(stack, jsii.String("Bridge"), &ha.DynamoDBHAProps{
 		Vpc:                          vpc,
-		Image:                        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:test"), nil),
+		Image:                        imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap:                    haBootstrap(),
 		BridgeConfig:                 source.NewAsset(writeHAYAML(t, validHAYAML)),
 		ManagedSubscriptionBaselines: map[string][]string{"mqtt-ha": {}},
 	})
 }
 
-func TestGoBridgeDynamoDBHA_TaskRolesHaveExactDynamoDBDataPlaneGrants(t *testing.T) {
+// TestGoBridgeDynamoDBHA_StampsAnImmutableProfileAndABaselineDigest proves the
+// two identities this construct stamps through the real HA root.
+//
+// The deployment-profile fingerprint must ADMIT a genuine operator change: the
+// construct used to stamp a hash of the whole logical config, so the first real
+// change a cohort committed failed admission on every member afterwards — a
+// committed generation nobody could run. It must still REJECT a change to a field
+// the construct provisions.
+//
+// The baseline digest is the separate, full content identity of the document this
+// deployment seeded, which a coordinated member uses to establish the cohort's
+// generation-zero committed artifact.
+func TestGoBridgeDynamoDBHA_StampsAnImmutableProfileAndABaselineDigest(t *testing.T) {
 	h := newHAHarness(t, nil)
-	template := assertions.Template_FromStack(h.stack, nil)
-	policies := template.FindResources(jsii.String("AWS::IAM::Policy"), nil)
-	type roleGrant struct {
-		actions   map[string]bool
-		resources string
+	cfg := bootstrapFromControlTask(t, h)
+
+	if len(cfg.DynamoDBHABaselineConfigDigest) != 64 {
+		t.Fatalf("baseline digest length = %d, want SHA-256 hex", len(cfg.DynamoDBHABaselineConfigDigest))
 	}
-	grantsByRole := map[string]*roleGrant{}
-	for _, raw := range *policies {
-		props := (*raw)["Properties"].(map[string]any)
-		role := ""
-		for _, roleRaw := range props["Roles"].([]any) {
-			ref, _ := roleRaw.(map[string]any)["Ref"].(string)
-			switch {
-			case strings.Contains(ref, "Control"):
-				role = "control"
-			case strings.Contains(ref, "Worker"):
-				role = "worker"
-			}
-		}
-		if role == "" {
+	if cfg.DynamoDBHABaselineConfigDigest == cfg.DynamoDBHAConfigFingerprint {
+		t.Fatal("the baseline digest must be the document's content identity, not the deployment profile")
+	}
+
+	mat, err := source.NewAsset(writeHAYAML(t, validHAYAML)).Materialize()
+	if err != nil {
+		t.Fatalf("materialize deployed config: %v", err)
+	}
+	defer func() { _ = mat.Close() }()
+
+	if got := bridgecore.DeploymentProfileFingerprint(mat.Config); got != cfg.DynamoDBHAConfigFingerprint {
+		t.Fatalf("profile fingerprint of the deployed document = %q, want the stamped %q",
+			got, cfg.DynamoDBHAConfigFingerprint)
+	}
+
+	// A genuine operator change — the kind a coordinated rollout carries.
+	changed := *mat.Config
+	changed.Version = mat.Config.Version + 1
+	added := mat.Config.Routes[0]
+	added.ID = "rolled-route"
+	changed.Routes = append(append([]ports.RouteDef{}, mat.Config.Routes...), added)
+	if got := bridgecore.DeploymentProfileFingerprint(&changed); got != cfg.DynamoDBHAConfigFingerprint {
+		t.Fatal("a genuine live change must still match the admitted deployment profile")
+	}
+
+	// A change to a field the deployment provisions must not.
+	repointed := *mat.Config
+	repointed.Stores.Outbox = nil
+	if got := bridgecore.DeploymentProfileFingerprint(&repointed); got == cfg.DynamoDBHAConfigFingerprint {
+		t.Fatal("removing a deployment-owned store must not match the admitted deployment profile")
+	}
+}
+
+// bootstrapFromControlTask decodes the bootstrap JSON stamped into the control
+// task definition of a synthesized HA stack.
+func bootstrapFromControlTask(t *testing.T, h *haHarness) infra.BootstrapConfig {
+	t.Helper()
+	tasks := assertions.Template_FromStack(h.stack, nil).
+		FindResources(jsii.String("AWS::ECS::TaskDefinition"), nil)
+	for _, raw := range *tasks {
+		container := mainContainerFromTask(t, *raw)
+		envs := container["Environment"].([]any)
+		if envValue(envs, "GOBRIDGE_NODE_ROLE") != string(infra.NodeRoleControl) {
 			continue
 		}
-		document, _ := props["PolicyDocument"].(map[string]any)
-		for _, statementRaw := range document["Statement"].([]any) {
-			statement := statementRaw.(map[string]any)
-			actions := normalizeActions(statement["Action"])
-			hasDynamoDB := false
-			for _, action := range actions {
-				if strings.HasPrefix(action, "dynamodb:") {
-					hasDynamoDB = true
-				}
-			}
-			if !hasDynamoDB {
-				continue
-			}
-			if grantsByRole[role] == nil {
-				grantsByRole[role] = &roleGrant{actions: map[string]bool{}}
-			}
-			for _, action := range actions {
-				grantsByRole[role].actions[action] = true
-			}
-			rawResource, err := json.Marshal(statement["Resource"])
-			if err != nil {
-				t.Fatalf("marshal IAM resource: %v", err)
-			}
-			grantsByRole[role].resources += string(rawResource)
+		var cfg infra.BootstrapConfig
+		if err := json.Unmarshal([]byte(envValue(envs, "GOBRIDGE_FILEBASED_BOOTSTRAP_JSON")), &cfg); err != nil {
+			t.Fatalf("decode bootstrap: %v", err)
 		}
+		return cfg
 	}
-	want := map[string]bool{
-		"dynamodb:GetItem": true, "dynamodb:PutItem": true,
-		"dynamodb:UpdateItem": true, "dynamodb:Query": true,
-		"dynamodb:TransactWriteItems": true,
-		"dynamodb:DescribeTable":      true, "dynamodb:DescribeTimeToLive": true,
-	}
-	for _, role := range []string{"control", "worker"} {
-		grant := grantsByRole[role]
-		if grant == nil {
-			t.Fatalf("no DynamoDB grants found for %s task role", role)
-		}
-		if fmt.Sprint(grant.actions) != fmt.Sprint(want) {
-			for action := range grant.actions {
-				if !want[action] {
-					t.Errorf("%s role has forbidden DynamoDB action %s", role, action)
-				}
-			}
-			for action := range want {
-				if !grant.actions[action] {
-					t.Errorf("%s role missing DynamoDB action %s", role, action)
-				}
-			}
-		}
-		for _, table := range []string{"gobridge-leases", "gobridge-outbox", "gobridge-managed-subscriptions"} {
-			if !strings.Contains(grant.resources, table) {
-				t.Errorf("%s role resources do not contain exact table %s: %s", role, table, grant.resources)
-			}
-		}
-		for _, index := range []string{"ExpiryIndex", "RecordIDIndex", "ClaimIndex"} {
-			if !strings.Contains(grant.resources, "/index/"+index) {
-				t.Errorf("%s role resources do not contain exact index %s", role, index)
-			}
-		}
-		if strings.Contains(grant.resources, "/index/*") || strings.Contains(grant.resources, "resource/*") {
-			t.Errorf("%s role has wildcard DynamoDB resources: %s", role, grant.resources)
-		}
-	}
+	t.Fatal("control task definition not found")
+	return infra.BootstrapConfig{}
 }
-
-func normalizeActions(raw any) []string {
-	switch value := raw.(type) {
-	case string:
-		return []string{value}
-	case []any:
-		out := make([]string, 0, len(value))
-		for _, entry := range value {
-			if action, ok := entry.(string); ok {
-				out = append(out, action)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
-func TestGoBridgeDynamoDBHA_HealthyStandbyDoesNotInstallAcquireContentionAlarm(t *testing.T) {
-	h := newHAHarness(t, nil)
-	topic := awssns.NewTopic(h.stack, jsii.String("AlarmTopic"), nil)
-	gobridgealarms.NewGoBridgeAlarms(h.stack, jsii.String("Alarms"), &gobridgealarms.AlarmsProps{
-		DynamoDBHA: h.bridge, Efs: h.bridge.EfsConfig(), AlarmTopic: topic,
-	})
-	alarms := assertions.Template_FromStack(h.stack, nil).FindResources(jsii.String("AWS::CloudWatch::Alarm"), nil)
-	for logicalID, raw := range *alarms {
-		properties := (*raw)["Properties"].(map[string]any)
-		if properties["MetricName"] == "LeaseAcquireFailures" || strings.Contains(logicalID, "HALeaseAcquireFailures") {
-			t.Fatalf("healthy warm-standby contention must not install LeaseAcquireFailures alarm: %s %v", logicalID, properties)
-		}
-	}
-}
-
-func TestGoBridgeDynamoDBHA_ALBAttachmentTargetsHAServiceSet(t *testing.T) {
-	h := newHAHarness(t, nil)
-	alb := elbv2.NewApplicationLoadBalancer(h.stack, jsii.String("ALB"), &elbv2.ApplicationLoadBalancerProps{Vpc: h.vpc})
-	listener := alb.AddListener(jsii.String("Listener"), &elbv2.BaseApplicationListenerProps{
-		Port:          jsii.Number(80),
-		DefaultAction: elbv2.ListenerAction_FixedResponse(jsii.Number(404), nil),
-	})
-	attachment := gobridgealbattachment.NewGoBridgeALBAttachment(h.stack, jsii.String("Attachment"), &gobridgealbattachment.AttachmentProps{
-		DynamoDBHA:   h.bridge,
-		Listener:     listener,
-		Vpc:          h.vpc,
-		BridgeConfig: h.source,
-	})
-	if attachment.ControlTargetGroup() == nil || attachment.MonitorTargetGroup() == nil {
-		t.Fatal("HA attachment target groups are nil")
-	}
-}
-
-func TestGoBridgeDynamoDBHA_AlarmsCoverHAAndExternalDuration(t *testing.T) {
-	h := newHAHarness(t, nil)
-	topic := awssns.NewTopic(h.stack, jsii.String("AlarmTopic"), nil)
-	alarms := gobridgealarms.NewGoBridgeAlarms(h.stack, jsii.String("Alarms"), &gobridgealarms.AlarmsProps{
-		DynamoDBHA: h.bridge,
-		Efs:        h.bridge.EfsConfig(),
-		AlarmTopic: topic,
-	})
-	if alarms.WarmStandbyUnavailableAlarm() == nil || alarms.FailureToFullDurationAlarm() == nil {
-		t.Fatal("warm-standby or failure-to-Full alarm is nil")
-	}
-
-	template := assertions.Template_FromStack(h.stack, nil)
-	resources := template.FindResources(jsii.String("AWS::CloudWatch::Alarm"), nil)
-	metricNames := map[string]bool{}
-	foundDuration := false
-	for _, raw := range *resources {
-		props := (*raw)["Properties"].(map[string]any)
-		if name, ok := props["MetricName"].(string); ok {
-			metricNames[name] = true
-			if name == gobridgealarms.FailureToFullMetricName {
-				foundDuration = true
-				if props["TreatMissingData"] != "notBreaching" {
-					t.Fatalf("FailureToFullDuration TreatMissingData = %v, want notBreaching", props["TreatMissingData"])
-				}
-				if props["Threshold"] != float64(120000) {
-					t.Fatalf("FailureToFullDuration threshold = %v, want 120000ms", props["Threshold"])
-				}
-			}
-		}
-		if metrics, ok := props["Metrics"].([]any); ok {
-			for _, metric := range metrics {
-				m, _ := metric.(map[string]any)
-				stat, _ := m["MetricStat"].(map[string]any)
-				md, _ := stat["Metric"].(map[string]any)
-				name, _ := md["MetricName"].(string)
-				if name != "" {
-					metricNames[name] = true
-				}
-			}
-		}
-	}
-	if !foundDuration {
-		t.Fatal("FailureToFullDuration alarm not found")
-	}
-	for _, name := range []string{
-		"RunningTaskCount", "DesiredTaskCount", "SystemErrors", "ThrottledRequests",
-		"LeaseExpiries", "LeaseTransfers",
-		"OutboxDepth", "OutboxDrainLatency", "OutboxRecordFailures",
-		"DLQDepth", "DLQEntries", "DLQWriteFailures",
-	} {
-		if !metricNames[name] {
-			t.Errorf("missing HA alarm metric %q; got %v", name, metricNames)
-		}
-	}
-}
-
-var _ awscloudwatch.IAlarm

@@ -276,6 +276,11 @@ func TestOrphan_GraceRestartsPerConnection(t *testing.T) {
 type recordingUnsubConn struct {
 	mu     sync.Mutex
 	topics []string
+	// reason is the UNSUBACK reason code returned for every requested filter.
+	// The zero value 0x00 means "the filter existed and was removed"; 0x11
+	// ("no subscription existed") is what a broker answers when the filter was
+	// never created with that exact string — the wildcard-orphan case.
+	reason byte
 }
 
 func (c *recordingUnsubConn) AwaitConnection(context.Context) error { return nil }
@@ -288,7 +293,11 @@ func (c *recordingUnsubConn) Unsubscribe(_ context.Context, topics []string) ([]
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.topics = append(c.topics, topics...)
-	return make([]byte, len(topics)), nil
+	reasons := make([]byte, len(topics))
+	for i := range reasons {
+		reasons[i] = c.reason
+	}
+	return reasons, nil
 }
 
 func (c *recordingUnsubConn) PublishEnvelope(
@@ -326,7 +335,7 @@ func TestOrphan_SessionWiring_UnsubscribesExactTopic(t *testing.T) {
 	sess.cm = fake
 	// An empty plan models "first Reconcile ran, wants nothing": before any
 	// plan is stashed every topic is covered and orphan handling is
-	// deliberately deferred (MQTT-L2).
+	// deliberately deferred.
 	sess.plan = &connectivity.SessionPlan{}
 	sess.mu.Unlock()
 
@@ -366,7 +375,7 @@ func TestSession_TopicCoveredLocked(t *testing.T) {
 
 	// No plan stashed yet (no Reconcile has ever run): EVERY topic is covered
 	// so the pre-first-Reconcile broker backlog can never be orphan-dropped
-	// or its live topic unsubscribed (MQTT-L2).
+	// or its live topic unsubscribed.
 	require.True(t, sess.topicCoveredLocked("a/b"),
 		"before the first Reconcile every topic is covered")
 
@@ -392,7 +401,7 @@ func TestSession_TopicCoveredLocked(t *testing.T) {
 		"a topic covered by neither active subs nor the plan is a true orphan")
 }
 
-// HIGH-1 regression: a topic COVERED by a still-desired subscription whose
+// regression: a topic COVERED by a still-desired subscription whose
 // handler registers later than the grace window must be RETAINED un-acked (so
 // at-least-once holds and the publish is delivered once the handler registers)
 // and NEVER unsubscribed — ack-dropping it would be acknowledged live-route
@@ -444,11 +453,11 @@ func TestOrphan_CoveredTopicNotUnsubscribed_TrueOrphanStillUnsubscribed(t *testi
 	require.Equal(t, []string{"removed/route/1"}, fake.unsubscribed(),
 		"the covered topic must NOT be unsubscribed; only the true orphan is")
 	require.Equal(t, int64(1), sess.Router().UnmatchedDroppedCount(),
-		"only the true orphan is counted as benign orphan cleanup (M-3 metric split)")
+		"only the true orphan is counted as benign orphan cleanup (the metric split)")
 	require.Equal(t, int64(0), sess.Router().CoveredDroppedCount(),
-		"the covered topic's QoS 1 publish is RETAINED, not dropped (HIGH-1)")
+		"the covered topic's QoS 1 publish is RETAINED, not dropped")
 	require.Equal(t, int64(1), sess.Router().CoveredRetainedCount(),
-		"the covered topic's publish is RETAINED un-acked for its late handler (HIGH-1)")
+		"the covered topic's publish is RETAINED un-acked for its late handler")
 	require.Equal(t, 1, sess.Router().PendingCount(),
 		"the covered publish stays in the pending buffer until its handler registers")
 
@@ -461,7 +470,7 @@ func TestOrphan_CoveredTopicNotUnsubscribed_TrueOrphanStillUnsubscribed(t *testi
 		func(pub *pahov5.Publish, ack func() error) { _ = ack(); got <- string(pub.Payload) })
 	sess.Router().Wait()
 	require.Equal(t, "21", <-got,
-		"the RETAINED covered publish is delivered once its handler registers (HIGH-1, not lost)")
+		"the RETAINED covered publish is delivered once its handler registers (not lost)")
 
 	// A fresh publish is also delivered — the route is fully alive.
 	sess.Router().dispatch(&pahov5.Publish{Topic: "sensors/temp", QoS: 1, Payload: []byte("22")},

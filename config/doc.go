@@ -15,7 +15,7 @@
 // the only place permitted to import `gopkg.in/yaml.v3` or
 // `github.com/go-viper/mapstructure/v2`. Splitting the shared
 // kernel this way removes the historical inner-ring vendor
-// concession (W-9): this package is now stdlib-only and fits the
+// concession: this package is now stdlib-only and fits the
 // Clean-Architecture inner-ring rule without exception.
 //
 // Allowed importers: `config/parser` (sibling), `bridge`,

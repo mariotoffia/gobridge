@@ -1,5 +1,7 @@
 # Design: Coordinated cluster config rollout (barrier protocol)
 
+## Overview
+
 Status: **fully implemented** — every slice has shipped. This is the canonical
 protocol design. The shipped decisions are recorded authoritatively in
 [ADR 0013](../../adr/0013-coordinated-cluster-config-rollout.md) (base barrier)
@@ -19,8 +21,7 @@ Companion docs in this folder:
 [`cluster-config-rollout-research.md`](cluster-config-rollout-research.md)
 (prior art & split-brain analysis — the external specs this design reuses).
 
-Date: 2026-07-26 · Relates to: ADR 0012, ADR 0013, ADR 0014,
-`PROD_READY_ISSUES.md` §3 CLUSTER-3 · Operations:
+Date: 2026-07-26 · Relates to: ADR 0012, ADR 0013, ADR 0014 · Operations:
 [`docs/runbooks/cluster-config-rollout.md`](../../runbooks/cluster-config-rollout.md)
 · Plain-language configuration guide: [`docs/cluster/README.md`](../README.md)
 
@@ -36,16 +37,25 @@ non-no-op live reload of (or into) a clustered deployment, fail-closed
 `bootstrap.App.applyLogicalConfig`). Operators must replace the whole cohort.
 
 Goal: allow an operator to POST a config change to **any one node** and have
-the cluster apply it **atomically-in-effect**: every member stages it as a
-candidate, and only when **all members acknowledge** does it commit; any
-failure aborts everywhere and the old config keeps serving.
+the cluster **decide** on it atomically: every member stages it as a candidate,
+and only when **all members acknowledge** does it commit; any failure aborts
+everywhere and the old config keeps serving. Applying the committed generation is
+then per-member and eventual — see G2/G2b below and ADR 0013.
 
 ## 2. Goals and non-goals
 
 Goals
 
 - G1 One-shot operator flow: `POST` → propagate → all-ACK → commit.
-- G2 No mixed-version cohort through any supported path (0012's invariant kept).
+- G2 No member applies a generation the cohort did not agree on, through any
+  supported path (the decision half of 0012's invariant). Applying the agreed
+  generation is per-member and eventual: see ADR 0013 "What the barrier
+  guarantees, precisely" for the bounded, observable convergence window this
+  leaves, and G2b below for what closes it.
+- G2b The convergence window is bounded and visible: a member that cannot apply a
+  decided generation retries at a capped backoff, declares itself terminal past
+  the attempt bound, and publishes `applied` / `stale` / `terminal_generation` in
+  deep health and as fleet-alarmable metrics.
 - G3 Crash-safe: coordinator or member death mid-rollout never wedges or
   splits the cluster; the protocol resolves to Committed or Aborted.
 - G4 Reuse the existing coordination substrate (shared store, conditional
@@ -67,24 +77,20 @@ Non-goals
 - N4 Per-topic partial service (MQTT-RES-1) — unrelated, stays as is.
 - N5 Post-commit distributed rollback. Commit means "every member validated
   and built the candidate"; per-node convergence after swap remains guarded
-  by the existing MQTT-R1 watch (`ConfigDegraded`), same as single-node.
+  by the existing convergence watch (`ConfigDegraded`), same as single-node.
 
 ## 3. Protocol overview
 
-```
-operator ── POST config ──► any node (existing admin txn API)
-                              │  Propose: conditional-create rollout row
-                              │  gen=N, digest, membership epoch snapshot
-        every member ─────────┤  sees candidate (store watch)
-                              │  preflight class check → validate → BUILD
-                              │  candidate runtime (existing prepare path)
-                              │  → Ack(gen, member)   (or Nack(reason))
-        coordinator ──────────┤  (holder of the rollout lease, fenced)
-                              │  acks == epoch set → Commit(gen)   [atomic flip]
-                              │  Nack / timeout / epoch change → Abort(gen)
-        every member ─────────┘  observes Committed → swap (prepare→commit)
-                                 observes Aborted   → discard candidate
-                                 post-swap: MQTT-R1 convergence watch as today
+```mermaid
+flowchart TB
+    Operator[Operator stages config] --> Proposal[Propose generation and membership epoch]
+    Proposal --> Members[Each member validates and builds candidate]
+    Members --> Votes[Ack or Nack]
+    Votes --> Coordinator[Fenced coordinator reads votes]
+    Coordinator -->|Every member acknowledged| Commit[Commit generation]
+    Coordinator -->|Nack, timeout, or epoch change| Abort[Abort generation]
+    Commit --> Apply[Each member applies and checks convergence]
+    Abort --> Discard[Each member discards candidate]
 ```
 
 States: `Proposed → Staging → Committed | Aborted` (terminal). One active
@@ -200,7 +206,7 @@ with an unseen generation — run rollout-class preflight (§8); fetch + digest-
 verify candidate; validate; **build a candidate runtime via the existing
 `applyPrepareCommit` prepare path but do not swap**; `Ack` (or `Nack` with
 the error). Then wait: on `Committed` → complete the prepared swap (post-swap
-MQTT-R1 watch runs as today); on `Aborted` → discard the candidate runtime
+the convergence watch runs as today); on `Aborted` → discard the candidate runtime
 (existing candidate-cleanup path, RECONFIG-2). Store notifications are
 hints, never truth: every decision re-reads the rollout row with
 `ConsistentRead` (research rule 11). **Each node is itself a token-checking
@@ -218,7 +224,7 @@ side effect** (Chubby-style lock-delay — belt and braces over the fencing
 epoch; DynamoDB itself does this internally for its partition leaders).
 
 Joiner rule: a starting member adopts only the last **Committed**
-configuration (unchanged `AdoptValid` semantics); it never acks a rollout
+configuration through the committed-artifact path; it never acks a rollout
 proposed before it joined (its ID is not in the epoch).
 
 Guard change: the ADR 0012 refusal remains the **default**. It is lifted
@@ -237,7 +243,7 @@ is live-safe (§8); everything else still refuses fail-closed exactly as today.
 | F5b | Deposed coordinator decides **first** (no decision recorded yet) | **Not fenced** — accepted. Fail-safe: a zombie Commit still needs the full ack barrier (I2), a zombie Abort just keeps the old config serving. Bounded in practice by the successor's lock-delay (§6) | Residual — accepted (§11) |
 | F6 | Membership changes mid-rollout (join/leave) | Abort; operator retries (cheap — nothing swapped) | Strict epoch equality; simplest safe rule |
 | F7 | Member crashes after Commit, before its swap | Rejoins and boots the committed gen — same config, no split | Joiner rule |
-| F8 | Committed config fails to converge on a node (e.g. broker unreachable) | No distributed rollback; that node latches `ConfigDegraded` via MQTT-R1, alarmed — parity with single-node behavior (unless a confirm window is set, §8.1) | §2 N5 |
+| F8 | Committed config fails to converge on a node (e.g. broker unreachable) | No distributed rollback; that node latches `ConfigDegraded` via the convergence watch, alarmed — parity with single-node behavior (unless a confirm window is set, §8.1) | §2 N5 |
 | F9 | Store unavailable mid-rollout | No state flips possible; members keep old config; rollout resolves (or deadline-aborts) when the store returns | All transitions are store writes |
 | F10 | Candidate bytes tampered / mismatched | Member digest check fails → Nack → abort | Digest in rollout row |
 
@@ -288,7 +294,7 @@ bridge:
 
 - On `Committed`, every node performs its swap **provisionally**, arming a
   local deadman timer of `confirm_window`.
-- Each node that reaches convergence (the MQTT-R1 readiness check — the
+- Each node that reaches convergence (the post-swap readiness check — the
   NMDA "intended vs operational" instrument) writes a `Converged` record.
 - The coordinator writes `Confirmed` (fenced CAS) when all epoch members
   converged; nodes observing `Confirmed` disarm their timers.
@@ -390,14 +396,38 @@ config** when `current` holds a candidate the barrier has not committed, and the
 applier **reconciles** to it when the active row moved on before a member
 observed the commit. It advances on Commit (base) and, under a window, only on
 **Confirm** (§8.1) — so a crash reboots onto the last *confirmed* generation.
-Scoped, fail-safe limitation: no baseline auto-seed (a candidate sitting in
-`current` during the write→propose window is indistinguishable from a deploy
-baseline, so the artifact is established by the first real commit, not seeded).
+Without a deployment-admitted baseline identity, a candidate in `current`
+during the write→propose window cannot be distinguished from the baseline.
+The AWS HA profile supplies `dynamodb_ha_baseline_config_digest` to establish
+the generation-zero committed artifact. This is separate from creating an
+absent config-source document. Both file and DynamoDB baseline matching use
+`bridge.DeploymentBaselineContentDigest`, normalizing only the top-level version
+to zero because initialization assigns target version 1 independently of the
+embedded version. The committed artifact retains its actual stored version and
+full, version-sensitive `bridge.ConfigArtifactDigest`.
+
+**Initial configuration and deletion.** Only control may initialize an absent
+source document, through strict `CreateIfAbsent`, at version 1. Existing
+documents always win. An embedded document never replaces an existing source
+or bypasses the rollout barrier. With valid bootstrap, no valid config means
+live control-plane services but an idle, not-ready data plane.
+After clustered activation, confirmed source absence stops new intake and
+signals process exit and replacement. A clustered runtime does not return to
+live idle, with or without the coordinated barrier. Uncertain teardown also
+exits. Do not continue processing the old or cached committed config after
+confirmed absence. Standalone runtimes may rebuild after safe quiescence;
+read errors instead retain the last successful config as
+degraded. First activation is independent of Full readiness; returning to idle
+does not rearm initialization in the same process. Watchers must preserve
+delete/recreate ordering and accept a recreated source version through the
+normal validation and rollout path. See
+[initialization lifecycle](../../aws-deployment/config-initialization.md).
 
 **Composition obligations.** A coordinated root MUST wire `config.Validate`
 (an Ack proves the candidate passes the `BlueprintValidator` and builds, but not
 the runtime route-graph validation that runs at commit — without it a dangling
-reference is acked by all, committed, then fails every swap; G2 still holds).
+reference is acked by all, committed, then fails every swap; G2 still holds —
+every member reached the same decision and the same outcome).
 It MUST also re-sync the config manager after a barrier swap
 (`Manager.AdoptRunning` / `NotifyApplyResult`), or `ReconfigurePending` /
 deep-health `Degraded` can latch despite correct convergence.

@@ -30,7 +30,7 @@ func TestApplyCredentials_BeforeStart_UpdatesLiveCreds(t *testing.T) {
 		Username:   "u-old",
 		Password:   shared.NewSecret("p-old"),
 		// This test exercises the pre-Start rotation MECHANICS, not the
-		// HIGH-4 plaintext gate (covered by bug_plaintext_credentials_test.go);
+		// plaintext gate (covered by bug_plaintext_credentials_test.go);
 		// opt in so the tcp:// rotation is permitted here.
 		AllowPlaintextCredentials: true,
 	}, connectivity.SessionEphemeral, nil)
@@ -67,7 +67,7 @@ func TestApplyCredentials_NilSet_Rejected(t *testing.T) {
 	require.Error(t, err)
 	be, ok := shared.AsBridgeError(err)
 	require.True(t, ok)
-	require.Equal(t, shared.ErrCodeInvalidPayload, be.Code)
+	require.Equal(t, shared.ErrCodeInvalidConfig, be.Code)
 }
 
 // TestApplyCredentials_ClosedSession_Rejected ensures rotation after

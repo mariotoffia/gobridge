@@ -63,7 +63,7 @@ func validateRoutes(entries []*routeEntry, hasOutboxStore, hasLeaseStore, hasDLQ
 //     (replayBudgetExhausted); a record is only poisoned once BOTH halves hold.
 //   - OnExpired            — DLQ vs drop for an expired record.
 //   - OnPermanentFailure   — DLQ vs DROP for a permanent send failure OR a
-//     poisoned record. THIS is the CRITICAL-1 field: a single per-partition
+//     poisoned record. THIS is the field: a single per-partition
 //     drainer bakes in one OnPermanentFailure, so a record persisted by a
 //     dlq-policy route but drained under a drop-policy route is DROPPED with no
 //     DLQ evidence after the source was already ACKed — silent message loss.
@@ -95,12 +95,12 @@ func drainRelevant(p routing.RoutePolicy) drainRelevantPolicy {
 
 // validateSharedOutboxPartitions rejects a configuration where two or more
 // shared_outbox routes drain the SAME session partition with divergent
-// drain-relevant policy (finding 17 + CRITICAL-1). A session partition has
+// drain-relevant policy. A session partition has
 // exactly one drainer — the first route to claim it wins (bridge_start
 // drainerSessions guard) — so the other routes' records would be silently
 // drained under the first route's SendTimeout / MaxReplayAttempts / ReplayBudget
 // / OnExpired / OnPermanentFailure. The OnPermanentFailure case is the
-// CRITICAL-1 message-loss hazard: a record persisted by a dlq-policy route,
+// message-loss hazard: a record persisted by a dlq-policy route,
 // source-ACKed after Persist, then drained (and permanently-failed or poisoned)
 // under a drop-policy route is Completed with NO DLQ entry — the source delivery
 // is gone and the DLQ evidence the operator configured is lost. Rather than let
@@ -205,9 +205,23 @@ func validateDirectHold(ve *ValidationError, prefix string, entry *routeEntry, p
 		ve.add(prefix + "direct_hold invalid: target session requires lease handoff")
 	}
 
-	if !hasCapability(entry.config.SourceCapabilities, ports.CapVisibilityExtension) &&
+	// direct_hold settles the source only after the destination has accepted it,
+	// so what it needs from the source is that leaving a message unsettled is
+	// RECOVERABLE: the source redelivers it. A visibility window is one way to
+	// provide that and not the requirement — asking for the window instead
+	// refused every source that redelivers without one (an MQTT QoS 1
+	// subscription on a session the broker keeps), forcing those routes through an
+	// outbox, a lease and a store for a crash window that is identical either way.
+	// The HTTP branch stands apart because its "source" is a caller holding an
+	// open request: nothing is settled until the response, so the caller retries.
+	if !hasCapability(entry.config.SourceCapabilities, ports.CapSourceRedelivery) &&
 		!hasCapability(entry.config.SourceCapabilities, ports.CapHTTPEndpoint) {
-		ve.add(prefix + "direct_hold invalid: source does not support visibility extension")
+		reason := prefix + "direct_hold invalid: the source does not redeliver an unsettled message, " +
+			"so a crash between the send and the settle loses it"
+		if entry.config.SourceRedeliveryRefusal != "" {
+			reason += ": " + entry.config.SourceRedeliveryRefusal
+		}
+		ve.add(reason)
 	}
 
 	// Multiple bindings are allowed when a resolver is configured for
@@ -221,7 +235,7 @@ func validateDirectHold(ve *ValidationError, prefix string, entry *routeEntry, p
 		ve.add(prefix + "direct_hold invalid: shared consumer source requires fencing (use shared_outbox) or set AllowUnfenced")
 	}
 
-	// Finding 4: direct_hold dispatches a SINGLE leg (DispatchSingle). A
+	// Direct_hold dispatches a SINGLE leg (DispatchSingle). A
 	// resolver that yields more than one plan has its extra plans silently
 	// discarded at runtime (only plans[0] is sent). We cannot in general know
 	// how many plans an arbitrary resolver returns before it runs, but a
@@ -250,7 +264,7 @@ func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry,
 		ve.add(prefix + "shared_outbox invalid: no LeaseStore configured for exclusive session")
 	}
 
-	// Finding 11: a non-exclusive session never acquires a lease (only
+	// A non-exclusive session never acquires a lease (only
 	// runExclusive sets hasLease), so its outbox drainer's TokenFn reports
 	// "not held" on every cycle and the partition NEVER drains — the source is
 	// ACKed after persist and the records silently strand. shared_outbox
@@ -279,7 +293,7 @@ func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry,
 	//
 	// We deliberately do NOT reject a binding whose (non-empty) session simply
 	// has no drainer in THIS runtime: that is the normal cross-instance handoff
-	// (T11) where one instance ingests and persists while a different instance
+	// where one instance ingests and persists while a different instance
 	// owns the session lease and drains. Local drainer absence is therefore not
 	// proof of orphaning, so it cannot be a Start-time error without breaking
 	// cross-instance topologies.
@@ -404,7 +418,7 @@ func validateTimeouts(ve *ValidationError, prefix string, entry *routeEntry, has
 	}
 
 	// Total worst-case time the message can hold the source before it is settled,
-	// checked against the fixed visibility window (F4). Per-processor budgets are
+	// checked against the fixed visibility window. Per-processor budgets are
 	// own-time-only and disarm during next() (route/chain.go), so N compliant
 	// processors can legally consume N×ProcessorTimeout before the send even
 	// starts; add the send budget and the bounded DLQ-write budget the failure
@@ -418,7 +432,7 @@ func validateTimeouts(ve *ValidationError, prefix string, entry *routeEntry, has
 	// case only when a DLQ write is actually reachable: a DLQ store exists AND the
 	// terminal policy is not drop. A drop-policy route, or any route in a
 	// deployment with no DLQ store, settles the source in-memory on failure, so
-	// counting the budget there would over-reject a safe config at startup (F4).
+	// counting the budget there would over-reject a safe config at startup.
 	dlqBudget := time.Duration(0)
 	if hasDLQStore && policy.OnPermanentFailure != routing.FailureDrop {
 		dlqBudget = dlqWriteBudget
@@ -442,15 +456,16 @@ func validateTimeouts(ve *ValidationError, prefix string, entry *routeEntry, has
 // side drifting is caught.
 const dlqWriteBudget = 10500 * time.Millisecond
 
-// validateBackoff rejects negative Backoff fields (F8). WithDefaults fills only
-// ZERO fields, so a negative interval/multiplier survives to here. A negative
-// MaxInterval is the dangerous one: route.retryDelay only clamps exponential
-// growth behind a `> 0` MaxInterval guard, so a negative cap never fires and
-// float64 growth reaches time.Duration(+Inf) (implementation-defined, negative on
-// amd64/arm64), feeding Retry a negative/near-infinite delay. InitialInterval and
-// Multiplier are rejected for the same fail-loud-on-bad-config posture. The check
-// mirrors domain/routing.RoutePolicy.Validate, which the runtime start path does
-// not call.
+// validateBackoff rejects a Backoff block that is not a backoff. WithDefaults
+// fills only ZERO fields, so a negative interval or a below-one multiplier
+// survives to here. A negative MaxInterval is the dangerous one: route.retryDelay
+// only clamps exponential growth behind a `> 0` MaxInterval guard, so a negative
+// cap never fires and float64 growth reaches time.Duration(+Inf)
+// (implementation-defined, negative on amd64/arm64), feeding Retry a
+// negative/near-infinite delay. A multiplier in (0,1) is the inverse defect: it
+// makes each retry fire sooner than the last, hammering a failing target at an
+// accelerating rate. The checks mirror domain/routing.RoutePolicy.Validate,
+// which the runtime start path does not call.
 func validateBackoff(ve *ValidationError, prefix string, policy routing.RoutePolicy) {
 	if policy.Backoff.InitialInterval < 0 {
 		ve.add(prefix + fmt.Sprintf("Backoff.InitialInterval (%s) must not be negative", policy.Backoff.InitialInterval))
@@ -458,8 +473,16 @@ func validateBackoff(ve *ValidationError, prefix string, policy routing.RoutePol
 	if policy.Backoff.MaxInterval < 0 {
 		ve.add(prefix + fmt.Sprintf("Backoff.MaxInterval (%s) must not be negative", policy.Backoff.MaxInterval))
 	}
-	if policy.Backoff.Multiplier < 0 {
-		ve.add(prefix + fmt.Sprintf("Backoff.Multiplier (%g) must not be negative", policy.Backoff.Multiplier))
+	if policy.Backoff.Multiplier != 0 && policy.Backoff.Multiplier < 1 {
+		ve.add(prefix + fmt.Sprintf(
+			"Backoff.Multiplier (%g) must be >= 1; below 1 accelerates retries instead of backing off",
+			policy.Backoff.Multiplier))
+	}
+	if policy.Backoff.JitterFactor != routing.JitterDisabled &&
+		(policy.Backoff.JitterFactor < 0 || policy.Backoff.JitterFactor > 1) {
+		ve.add(prefix + fmt.Sprintf(
+			"Backoff.JitterFactor (%g) must be a fraction in [0,1] or routing.JitterDisabled",
+			policy.Backoff.JitterFactor))
 	}
 }
 

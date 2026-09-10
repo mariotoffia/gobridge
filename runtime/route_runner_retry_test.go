@@ -78,15 +78,22 @@ func TestRouteRunner_DirectHoldTransientSendUsesBackoff(t *testing.T) {
 	}
 
 	waitFor(t, 2*time.Second, "delivery retried with backoff", del.IsRetried)
-	if del.RetryAfter < 500*time.Millisecond {
-		t.Fatalf("RetryAfter = %v, want >= %v", del.RetryAfter, 500*time.Millisecond)
+	// The runner defaults an unset jitter to the recommended fraction, so the
+	// first retry is equal-jittered around InitialInterval:
+	// [initial*(1-jitter), initial]. The point of the assertion is that the
+	// policy's interval governs — not a zero or hard-coded delay.
+	const initial = 500 * time.Millisecond
+	lo := time.Duration(float64(initial) * (1 - routing.DefaultJitterFactor))
+	if del.RetryAfter < lo || del.RetryAfter > initial {
+		t.Fatalf("RetryAfter = %v, want within the equal-jitter band [%v, %v] around the policy interval",
+			del.RetryAfter, lo, initial)
 	}
 }
 
 // TestRetryDelay_PublicJitterStaysWithinBounds exercises the public
 // RetryDelay (which draws from math/rand/v2) and asserts the default
 // equal-jitter keeps every sample within [d*(1-jitter), d] and never
-// above MaxInterval — finding #27 via the production entry point.
+// above MaxInterval — via the production entry point.
 func TestRetryDelay_PublicJitterStaysWithinBounds(t *testing.T) {
 	policy := routing.RoutePolicy{Backoff: routing.BackoffPolicy{
 		InitialInterval: time.Second,
@@ -115,7 +122,7 @@ func TestRetryDelay_PublicJitterStaysWithinBounds(t *testing.T) {
 // MaxReplayAttempts boundary is honored per transport for ASB and amqp10
 // sources, not only SQS. At the cap a recoverable send error poisons the message
 // to the DLQ; one below the cap the same error retries — proving the boundary is
-// exact, not off-by-one. Regression for E5 (asb) / E5-AMQP10 — before the fix
+// exact, not off-by-one. Regression (asb) / — before the fix
 // receiveCount() read only the SQS header, returned 0 for these transports, and
 // the cap never triggered.
 func TestRouteRunner_DirectHold_MaxReplay_PerTransportCount(t *testing.T) {

@@ -89,7 +89,7 @@ func heldRow(owner string, version uint64, base time.Time, ttl time.Duration) ma
 	}
 }
 
-// FIX 2: a crashed-and-restarted node (fresh Store instance, empty observation
+// a crashed-and-restarted node (fresh Store instance, empty observation
 // map) whose lease row still names it as owner must reclaim IMMEDIATELY —
 // fenced on (owner, version) — without observing its own stale tuple for a full
 // TTL. A node cannot race itself.
@@ -121,7 +121,7 @@ func TestAcquire_SameOwnerFastPath_SeizesWithoutObservationWindow(t *testing.T) 
 	}
 }
 
-// FIX 2 (negative): a DIFFERENT owner does NOT get the fast path — its first
+// (negative): a DIFFERENT owner does NOT get the fast path — its first
 // sighting starts the observation window and returns ErrAlreadyExists without
 // issuing any takeover write.
 func TestAcquire_DifferentOwner_FirstSightingObservesNoSeize(t *testing.T) {
@@ -141,7 +141,7 @@ func TestAcquire_DifferentOwner_FirstSightingObservesNoSeize(t *testing.T) {
 	}
 }
 
-// FIX 2 (window still enforced for a different owner): a different owner seizes
+// The window is still enforced for a different owner: a different owner seizes
 // only AFTER the observation window elapses on its own clock — proving the fast
 // path did not weaken the cross-owner takeover guard.
 func TestAcquire_DifferentOwner_SeizesAfterObservationWindow(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// warnSubstrConnectLease is the distinctive fragment of the F2 advisory emitted
+// warnSubstrConnectLease is the distinctive fragment of the advisory emitted
 // by validateConnectLeaseBudget; tests key off it to avoid matching unrelated
 // warnings (e.g. the direct_hold fencing advisory). The advisory now folds the
 // reconcile budget into the span ("connect + reconcile + first-renew span"), so
@@ -15,7 +15,7 @@ const warnSubstrConnectLease = "first-renew span"
 
 func boolPtrConfig(b bool) *bool { return &b }
 
-// hasConnectLeaseWarning reports whether the F2 advisory is present.
+// hasConnectLeaseWarning reports whether the advisory is present.
 func hasConnectLeaseWarning(warnings []string) bool {
 	for _, w := range warnings {
 		if strings.Contains(w, warnSubstrConnectLease) {
@@ -25,7 +25,7 @@ func hasConnectLeaseWarning(warnings []string) bool {
 	return false
 }
 
-// TestValidateConnectLeaseBudget covers finding F2: a deferred-connect
+// TestValidateConnectLeaseBudget covers a deferred-connect
 // (connect_after_lease) lease-bound session whose connect_timeout consumes so
 // much of the lease TTL that the first renewal can complete at/after expiry must
 // emit an advisory warning; eager-connect, unset-connect_timeout, and
@@ -58,7 +58,7 @@ func TestValidateConnectLeaseBudget(t *testing.T) {
 			wantWarn:       false,
 		},
 		{
-			// nil ConnectAfterLease defaults to true (F6) => still warns.
+			// nil ConnectAfterLease defaults to true => still warns.
 			name:           "tight_default_deferred_warns",
 			leaseTTL:       "45s",
 			renewInterval:  "8s",
@@ -145,10 +145,10 @@ func TestValidateConnectLeaseBudget_DurationType(t *testing.T) {
 	}
 }
 
-// TestDerivedRenewIntervalForConfig_GoldenValues is a drift-guard for finding F2.
+// TestDerivedRenewIntervalForConfig_GoldenValues is a drift-guard.
 // derivedRenewIntervalForConfig is a hand-copy of runtime/session.deriveRenewInterval
 // (the config package cannot import runtime/session without violating the layering
-// rule), so the two can silently diverge and make the F2 advisory compute the
+// rule), so the two can silently diverge and make the advisory compute the
 // wrong renew interval. A full cross-package equivalence test is impossible (both
 // funcs are unexported in different modules), so instead this pins the derived
 // output for representative inputs. The golden values below were computed from the
@@ -166,7 +166,7 @@ func TestDerivedRenewIntervalForConfig_GoldenValues(t *testing.T) {
 		{"default_360s_mf3", 360 * time.Second, 3, 75555555555},
 		// MaxRenewFails <= 0 is floored to 1 (matches deriveRenewInterval).
 		{"floored_mf0", 360 * time.Second, 0, 235555555555},
-		// Tight single-attempt profile (the F1 split-brain-sensitive shape).
+		// Tight single-attempt profile (the split-brain-sensitive shape).
 		{"tight_45s_mf1", 45 * time.Second, 1, 25555555555},
 		{"small_30s_mf3", 30 * time.Second, 3, 3333333333},
 		{"common_60s_mf3", 60 * time.Second, 3, 8888888888},

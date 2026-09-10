@@ -58,7 +58,7 @@ func (t *Tracer) StartSpan(
 // Extract reads a W3C trace context (traceparent/tracestate) from the
 // given carrier headers into ctx, so a span started next becomes a
 // child of the remote parent. Headers use the bridge's map[string]any
-// bag; the method is SDK-free at its boundary (K1).
+// bag; the method is SDK-free at its boundary.
 func (t *Tracer) Extract(ctx context.Context, headers map[string]any) context.Context {
 	if t.client == nil {
 		return ctx
@@ -67,7 +67,7 @@ func (t *Tracer) Extract(ctx context.Context, headers map[string]any) context.Co
 }
 
 // Inject writes the active span context in ctx onto the carrier headers
-// for outbound W3C propagation, returning the (possibly new) map (K1).
+// for outbound W3C propagation, returning the (possibly new) map.
 func (t *Tracer) Inject(ctx context.Context, headers map[string]any) map[string]any {
 	if t.client == nil {
 		if headers == nil {

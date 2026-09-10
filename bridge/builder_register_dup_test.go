@@ -20,7 +20,7 @@ func (p *c15FakeProcessor) Process(ctx context.Context, env *messaging.Envelope,
 	return next(ctx, env)
 }
 
-// F12: registering two processors under the same name must fail Build with an
+// registering two processors under the same name must fail Build with an
 // error naming the duplicate, instead of silently overwriting (last-wins) and
 // dropping the losing processor from every route that references the name.
 func TestBuilder_RegisterProcessor_DuplicateNameFailsBuild(t *testing.T) {
@@ -36,7 +36,7 @@ func TestBuilder_RegisterProcessor_DuplicateNameFailsBuild(t *testing.T) {
 	assert.Contains(t, strings.ToLower(err.Error()), "already registered")
 }
 
-// F12: distinct processor names build fine (guard does not false-positive).
+// distinct processor names build fine (guard does not false-positive).
 func TestBuilder_RegisterProcessor_DistinctNamesBuild(t *testing.T) {
 	ctx := context.Background()
 
@@ -49,7 +49,7 @@ func TestBuilder_RegisterProcessor_DistinctNamesBuild(t *testing.T) {
 	require.NotNil(t, rt)
 }
 
-// F12: the same guard applies to transport-factory registration (the guard is
+// the same guard applies to transport-factory registration (the guard is
 // symmetric across all three Register* surfaces).
 func TestBuilder_RegisterTransportFactory_DuplicateNameFailsBuild(t *testing.T) {
 	ctx := context.Background()
@@ -64,7 +64,7 @@ func TestBuilder_RegisterTransportFactory_DuplicateNameFailsBuild(t *testing.T) 
 	assert.Contains(t, strings.ToLower(err.Error()), "already registered")
 }
 
-// F12: the Supervisor is the surface the CLI registers plugins on, so a
+// the Supervisor is the surface the CLI registers plugins on, so a
 // duplicate name there must ALSO fail the build — the deduped supervisor maps
 // would otherwise drop the collision before any Builder guard could see it.
 // White-box via newBuilder().Build(): buildRuntime uses exactly that path, so
@@ -84,7 +84,7 @@ func TestSupervisor_RegisterProcessor_DuplicateNameFailsBuild(t *testing.T) {
 	assert.Contains(t, strings.ToLower(err.Error()), "already registered")
 }
 
-// F12: distinct names on the Supervisor still build (guard does not
+// distinct names on the Supervisor still build (guard does not
 // false-positive across rebuilds).
 func TestSupervisor_RegisterProcessor_DistinctNamesBuild(t *testing.T) {
 	s := NewSupervisor()

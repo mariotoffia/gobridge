@@ -166,7 +166,7 @@ func TestValidate_ExclusiveSessionWithoutLeaseStore(t *testing.T) {
 	assert.Contains(t, err.Error(), "requires stores.lease")
 }
 
-// TestValidate_SessionRenewTiming_BadCombo validates the C3 cross-field
+// TestValidate_SessionRenewTiming_BadCombo validates the cross-field
 // invariant: when renew_interval is set explicitly, (renew_interval +
 // jitter/2) * max_renew_fails must stay below lease_ttl, otherwise the owner
 // can exhaust all tolerated renewal failures before the lease expires and a
@@ -184,7 +184,7 @@ func TestValidate_SessionRenewTiming_BadCombo(t *testing.T) {
 }
 
 // TestValidate_SessionRenewTiming_JitterPushesOverLease proves the jitter term
-// participates in the invariant (C3): a combo that is valid without jitter
+// participates in the a combo that is valid without jitter
 // becomes invalid once lease_renew_jitter is added.
 func TestValidate_SessionRenewTiming_JitterPushesOverLease(t *testing.T) {
 	cfg := validConfig()
@@ -201,12 +201,12 @@ func TestValidate_SessionRenewTiming_JitterPushesOverLease(t *testing.T) {
 }
 
 // TestValidate_SessionRenewTiming_CallTimeoutPushesOverLease proves the
-// per-attempt renew_call_timeout term participates in the C3 invariant (finding
-// H2). All other terms are safe on their own — the operator-set
+// per-attempt renew_call_timeout term participates in the invariant (finding
+// All other terms are safe on their own — the operator-set
 // renew_call_timeout alone pushes the worst-case span over lease_ttl. Without
 // the fix (old formula (renew+jitter/2)*maxFails, omitting call_timeout) this
 // combo PASSES: (14+0.5)*3 = 43.5s < 45s. With the fix it is rejected:
-// (14+0.5+5)*3 = 58.5s >= 45s — the exact HIGH-1 gap.
+// (14+0.5+5)*3 = 58.5s >= 45s — the exact gap.
 func TestValidate_SessionRenewTiming_CallTimeoutPushesOverLease(t *testing.T) {
 	cfg := validConfig()
 	cfg.Routes[0].Session.RenewInterval = "14s"
@@ -234,16 +234,36 @@ func TestValidate_SessionRenewTiming_OK(t *testing.T) {
 	require.NoError(t, Validate(cfg))
 }
 
-// TestValidate_SessionRenewTiming_DerivedRenewSkipped validates that an empty
-// renew_interval (derived from lease_ttl downstream, contract C3) is not
-// subjected to the invariant, so a derive-config never produces a false
-// split-brain rejection even with a tiny lease_ttl.
-func TestValidate_SessionRenewTiming_DerivedRenewSkipped(t *testing.T) {
+// TestValidate_SessionRenewTiming_DerivedRenewNotSubjectToSpanRule validates
+// that an empty renew_interval (derived from lease_ttl downstream) is not
+// subjected to the explicit worst-case-span rule, so a derive-config never
+// produces a false split-brain rejection. The derived values satisfy that
+// invariant by construction.
+func TestValidate_SessionRenewTiming_DerivedRenewNotSubjectToSpanRule(t *testing.T) {
+	cfg := validConfig()
+	cfg.Routes[0].Session.RenewInterval = ""
+	cfg.Routes[0].Session.LeaseTTL = "360s"
+
+	require.NoError(t, Validate(cfg))
+}
+
+// TestValidate_SessionRenewTiming_DerivedRenewCollapsesRejected pins the other
+// half: "derived" is not the same as "safe". A lease_ttl too small for the
+// failure tolerance leaves no per-attempt budget, so the derived renew interval
+// and the standby acquire poll collapse toward the 1 ms floor — the owner renews
+// back to back and every standby claims per millisecond until the lease store
+// throttles, and those throttling errors are counted as transient renew
+// failures. Validation must catch that HERE: the admin config transaction
+// validates, writes durably and only then applies, so a rule the builder alone
+// enforces costs a durable write plus a failed apply plus a rollback.
+func TestValidate_SessionRenewTiming_DerivedRenewCollapsesRejected(t *testing.T) {
 	cfg := validConfig()
 	cfg.Routes[0].Session.RenewInterval = ""
 	cfg.Routes[0].Session.LeaseTTL = "1s"
 
-	require.NoError(t, Validate(cfg))
+	err := Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "leaves no room for the renew cadence")
 }
 
 // Verifies Validate rejects routes with no bindings.

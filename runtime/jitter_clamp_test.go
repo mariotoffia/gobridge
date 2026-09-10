@@ -64,7 +64,7 @@ func TestSessionManager_LargeJitter_NoHotLoop(t *testing.T) {
 }
 
 // TestGlobalMaxInFlight_NegativeClamp validates that negative values
-// are clamped to 0, meaning no global semaphore is created (QA-H5).
+// are clamped to 0, meaning no global semaphore is created (QA).
 func TestGlobalMaxInFlight_NegativeClamp(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()
@@ -78,7 +78,7 @@ func TestGlobalMaxInFlight_NegativeClamp(t *testing.T) {
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID:                 "route-1",
 		Policy:             routing.RoutePolicy{MaxInFlight: 2}.WithDefaults(),
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}, receiver, sender, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestGlobalMaxInFlight_LimitsAcrossRoutes(t *testing.T) {
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID:                 "route-1",
 		Policy:             routing.RoutePolicy{MaxInFlight: 5}.WithDefaults(),
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}, receiver1, sender, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -144,7 +144,7 @@ func TestGlobalMaxInFlight_LimitsAcrossRoutes(t *testing.T) {
 	err = rt.AddRoute(runtime.RouteConfig{
 		ID:                 "route-2",
 		Policy:             routing.RoutePolicy{MaxInFlight: 5}.WithDefaults(),
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}, receiver2, sender, nil, nil)
 	if err != nil {
 		t.Fatal(err)

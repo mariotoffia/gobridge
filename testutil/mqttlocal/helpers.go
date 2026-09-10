@@ -2,17 +2,21 @@ package mqttlocal
 
 import "fmt"
 
-// buildConfig renders the mosquitto.conf for the given options.
+// buildConfig renders the mosquitto.conf for the given options. Listener ports
+// are the container-internal ones from secure.go; the host side maps them.
 //
 // Container lifecycle plumbing (orphan sweep, healthy/TCP/stabilize gates,
 // log capture, free ports) lives in testutil/dockerexec — shared by every
 // testutil/*local launcher.
-func buildConfig(c config, hasWS bool) string {
-	s := "listener 1883 0.0.0.0\nprotocol mqtt\n\n"
-	if hasWS {
-		s += "listener 9001 0.0.0.0\nprotocol websockets\n\n"
+func buildConfig(c config) string {
+	s := fmt.Sprintf("listener %d 0.0.0.0\nprotocol mqtt\n\n", plainPort)
+	if c.webSocket {
+		s += fmt.Sprintf("listener %d 0.0.0.0\nprotocol websockets\n\n", wsPort)
 	}
-	s += "allow_anonymous true\n\n"
+	s += secureListenerLines(c)
+	// allow_anonymous is global in Mosquitto: with a password file present
+	// every listener, plaintext and TLS alike, demands credentials.
+	s += fmt.Sprintf("\nallow_anonymous %t\n\n", c.username == "")
 	if c.persistence {
 		s += "persistence true\npersistence_location /mosquitto/data/\n"
 	} else {

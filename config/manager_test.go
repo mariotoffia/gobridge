@@ -321,8 +321,11 @@ func TestManager_Watch_SlowConsumer_GetsLatestConfig(t *testing.T) {
 
 func TestManager_CustomMergeFunc(t *testing.T) {
 	base := minimalValidConfig("bridge1")
+	// The overlay carries a real log level (the field is a validated enum); the
+	// base leaves it unset, so seeing it in the merged result proves the custom
+	// merge ran.
 	overlay := &ports.BridgeConfig{
-		Bridge: ports.BridgeSettings{LogLevel: "custom"},
+		Bridge: ports.BridgeSettings{LogLevel: "debug"},
 	}
 
 	called := false
@@ -340,5 +343,5 @@ func TestManager_CustomMergeFunc(t *testing.T) {
 	cfg, err := mgr.Load(context.Background())
 	require.NoError(t, err)
 	assert.True(t, called, "custom merge should be called")
-	assert.Equal(t, "custom", cfg.Bridge.LogLevel)
+	assert.Equal(t, "debug", cfg.Bridge.LogLevel)
 }

@@ -56,7 +56,7 @@ func assertNoEmit(t *testing.T, ch <-chan *ports.BridgeConfig, when string) {
 // The read-once invariant is asserted structurally: the seam counts reads and
 // each reloadIfChanged attempt must consume exactly one. A reintroduced
 // hash-read-then-parse-read would surface as two reads in a single attempt.
-// Because the stability gate (HIGH-2) only applies content that reads
+// Because the stability gate only applies content that reads
 // identically twice, the commit necessarily hashes and parses the same single
 // read.
 func TestReloadIfChanged_HashesAndParsesSameRead(t *testing.T) {
@@ -106,7 +106,7 @@ func TestReloadIfChanged_HashesAndParsesSameRead(t *testing.T) {
 	}
 }
 
-// TestReloadIfChanged_TornInPlaceWrite_NotAppliedUntilStable is the HIGH-2
+// TestReloadIfChanged_TornInPlaceWrite_NotAppliedUntilStable is the
 // regression: a non-atomic in-place write can momentarily leave the watched
 // file holding a truncated-but-parseable snapshot (valid YAML/JSON for only
 // some of the routes). reloadIfChanged must NOT apply such an intermediate

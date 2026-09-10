@@ -8,7 +8,7 @@ import (
 
 // Config holds the configuration for the OTel tracing adapter.
 //
-// Environment variables (K7): when Endpoint / ServiceName are left
+// Environment variables: when Endpoint / ServiceName are left
 // unset via options, the adapter honors the standard OpenTelemetry
 // environment variables before falling back to built-in defaults.
 // Precedence is: explicit WithXxx option > OTEL_* env var > default.
@@ -23,12 +23,12 @@ type Config struct {
 	Environment    string `json:"environment,omitempty"`
 	// SamplerRatio is the head sampling ratio in [0,1]. A nil pointer
 	// means "unset" and defaults to 1.0; an explicit 0.0 disables
-	// sampling of new (root) traces (K6).
+	// sampling of new (root) traces.
 	SamplerRatio *float64          `json:"samplerRatio,omitempty"`
 	Insecure     bool              `json:"insecure,omitempty"`
 	Headers      map[string]string `json:"headers,omitempty"`
 
-	// Batch/queue/export tuning for the BatchSpanProcessor (K3). Zero
+	// Batch/queue/export tuning for the BatchSpanProcessor. Zero
 	// values keep the OTel SDK defaults.
 	BatchTimeout       time.Duration `json:"batchTimeout,omitempty"`
 	ExportTimeout      time.Duration `json:"exportTimeout,omitempty"`
@@ -36,8 +36,8 @@ type Config struct {
 	MaxExportBatchSize int           `json:"maxExportBatchSize,omitempty"`
 
 	// errorHandler receives export/backpressure failures that would
-	// otherwise be invisible (K3). Defaults to a slog.Default() Warn
-	// logger (MF-5); explicitly installing nil suppresses reporting.
+	// otherwise be invisible. Defaults to a slog.Default() Warn
+	// logger; explicitly installing nil suppresses reporting.
 	// Not serialized.
 	errorHandler func(error)
 	// errorHandlerSet distinguishes "never configured" (default warn
@@ -132,7 +132,7 @@ func WithMaxExportBatchSize(n int) Option {
 
 // WithErrorHandler installs a callback invoked when a span export
 // fails. When never configured, failures are logged at Warn level via
-// slog.Default() (MF-5); pass nil to explicitly suppress reporting.
+// slog.Default(); pass nil to explicitly suppress reporting.
 func WithErrorHandler(fn func(error)) Option {
 	return func(t *Tracer) {
 		t.config.errorHandler = fn
@@ -152,7 +152,7 @@ func applyDefaults(cfg *Config) {
 		cfg.SamplerRatio = &one
 	}
 	if cfg.errorHandler == nil && !cfg.errorHandlerSet {
-		// Span-export failures must not be silent by default (MF-5).
+		// Span-export failures must not be silent by default.
 		// Opt out with WithErrorHandler(nil).
 		cfg.errorHandler = func(err error) {
 			slog.Default().Warn("otel-tracing: export failure", slog.String("error", err.Error()))

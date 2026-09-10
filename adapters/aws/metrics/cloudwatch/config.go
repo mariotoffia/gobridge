@@ -31,7 +31,7 @@ type Config struct {
 	// MaxBufferedDatums is the HARD cap on pending in-memory state
 	// (gauge samples + distinct counter/histogram series). When a slow
 	// CloudWatch endpoint stalls flushing, new samples/series beyond the
-	// cap are dropped and counted (MF-1) instead of growing process
+	// cap are dropped and counted instead of growing process
 	// memory without bound. Default: 10000.
 	MaxBufferedDatums int `json:"maxBufferedDatums,omitempty"`
 	// MaxRetryDatums bounds how many metric datums a failed PutMetricData is
@@ -41,14 +41,14 @@ type Config struct {
 	MaxRetryDatums int `json:"maxRetryDatums,omitempty"`
 	// RollupMetrics lists metric names that are double-published WITHOUT
 	// any dimensions (a zero-dimension fleet rollup copy) in addition to
-	// their normal dimensioned emission (MF-4). CloudWatch alarms on a
+	// their normal dimensioned emission. CloudWatch alarms on a
 	// metric without dimensions never match dimensioned data, so
 	// DefaultAlarms only fire when the metrics they target are listed
 	// here — see DefaultRollupMetrics.
 	RollupMetrics []string `json:"rollupMetrics,omitempty"`
 	// InstanceID, when set, is added to DefaultTags as the
 	// "instance_id" dimension so per-instance series in a fleet do not
-	// collide (MF-8). Set via WithInstanceTag. Rollup copies never
+	// collide. Set via WithInstanceTag. Rollup copies never
 	// carry it (they aggregate the fleet by design).
 	InstanceID string       `json:"instanceId,omitempty"`
 	Endpoint   string       `json:"endpoint,omitempty"`
@@ -92,7 +92,7 @@ func WithMaxBatchSize(n int) Option {
 }
 
 // WithMaxBufferedDatums sets the HARD cap on pending in-memory metric
-// state; beyond it new samples/series are dropped and counted (MF-1).
+// state; beyond it new samples/series are dropped and counted.
 // Default: 10000.
 func WithMaxBufferedDatums(n int) Option {
 	return func(e *Exporter) { e.config.MaxBufferedDatums = n }
@@ -100,7 +100,7 @@ func WithMaxBufferedDatums(n int) Option {
 
 // WithRollupMetrics double-publishes the listed metric names WITHOUT
 // dimensions (zero-dimension fleet rollup) in addition to the normal
-// dimensioned emission (MF-4). Required for DefaultAlarms to fire; see
+// dimensioned emission. Required for DefaultAlarms to fire; see
 // DefaultRollupMetrics for the canonical list.
 func WithRollupMetrics(names ...string) Option {
 	return func(e *Exporter) { e.config.RollupMetrics = append(e.config.RollupMetrics, names...) }
@@ -108,7 +108,7 @@ func WithRollupMetrics(names ...string) Option {
 
 // WithInstanceTag adds an "instance_id" dimension (TagKeyInstanceID) to
 // every dimensioned metric so per-instance series in a fleet do not
-// collide (MF-8). Pass the bridge's configured InstanceID
+// collide. Pass the bridge's configured InstanceID
 // (ports.BridgeSettings.InstanceID); an empty id derives
 // "<hostname>-<pid>". Rollup copies never carry the tag.
 func WithInstanceTag(id string) Option {
@@ -163,7 +163,7 @@ func WithEndpoint(endpoint string) Option {
 
 // WithLogger sets the structured logger used to warn about dropped/requeued
 // metrics, rejected values, and invalid dimensions. Defaults to
-// slog.Default() so self-loss is never silent (MF-5); pass nil to
+// slog.Default() so self-loss is never silent; pass nil to
 // explicitly suppress diagnostics.
 func WithLogger(l *slog.Logger) Option {
 	return func(e *Exporter) {
@@ -190,7 +190,7 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.MaxBatchSize <= 0 || cfg.MaxBatchSize > apiMaxBatchDatums {
 		// The CloudWatch PutMetricData limit has been 1,000 datums /
-		// 1 MB since 2022 (MF-6); the historical default of 20 caused
+		// 1 MB since 2022; the historical default of 20 caused
 		// 50x the necessary API calls.
 		cfg.MaxBatchSize = apiMaxBatchDatums
 	}
@@ -203,7 +203,7 @@ func applyDefaults(cfg *Config) {
 	if cfg.MaxRetryDatums <= 0 {
 		// Zero is the unset default; a negative value must not be interpreted
 		// as "disable the bound" (the requeue guard is maxRetry > 0), which
-		// would let the retry buffer grow without limit (N5).
+		// would let the retry buffer grow without limit.
 		cfg.MaxRetryDatums = 10000
 	}
 	if cfg.InstanceID != "" && !hasTagKey(cfg.DefaultTags, TagKeyInstanceID) {

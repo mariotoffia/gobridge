@@ -94,17 +94,20 @@ classDiagram
 | `id` | string | **yes** | -- | Unique bridge identifier |
 | `instance_id` | string | no | auto-generated | Instance identifier (useful in clustered mode) |
 | `deployment_mode` | string | no | `standalone` | `standalone` or `clustered` |
-| `shutdown_timeout` | duration | no | `30s` | Grace period for clean shutdown |
-| `drain_timeout` | duration | no | `30s` | Legacy fixed ceiling for a drain batch. Retained for backward compatibility; prefer `per_record_drain_timeout` + `max_drain_timeout` for production workloads. |
-| `per_record_drain_timeout` | duration | no | `3s` (when paired) | Per-record budget in the scaled formula `ceiling = min(batchCount * per_record_drain_timeout, max_drain_timeout)`. Setting this or `max_drain_timeout` activates the scaled formula and supersedes `drain_timeout`. |
-| `max_drain_timeout` | duration | no | `10s` (when paired) | Upper bound for the scaled drain formula. Must be >= `per_record_drain_timeout`. |
-| `log_level` | string | no | `info` | Log level: `debug`, `info`, `warn`, `error` |
+| `shutdown_timeout` | duration | no | `30s` | The process shutdown budget on SIGTERM. In the shipped `gobridge-filebased` image it is the ONE budget the config-watcher join, rollout-drive stop, HTTP shutdown, runtime drain, store close and telemetry flush all run inside, so `drain_timeout` must stay below it (the `30s`/`30s` defaults leave no headroom; 45--60 s is the production shape). `cmd/gobridge` bounds its supervisor wait and, separately, its HTTP stop by it. See [Health Checks and Graceful Shutdown](health-and-shutdown.md#shutdown-timeouts). Keep the orchestrator's stop grace above this value. |
+| `drain_timeout` | duration | no | `30s` | How long the supervisor lets a runtime drain when it STOPS one (shutdown, or a reconfiguration swap). It is the ceiling on `Runtime.Stop`, not a per-batch outbox budget. |
+| `per_record_drain_timeout` | duration | no | `3s` | Per-record budget in the outbox drain batch ceiling `min(batchCount * per_record_drain_timeout, max_drain_timeout)`. The ceiling may only RAISE a batch budget already floored at one full send, so it can never cut a send short. |
+| `max_drain_timeout` | duration | no | `10s` | Upper bound of that batch ceiling. Must be >= `per_record_drain_timeout`. |
+| `log_level` | string | no | `info` | Log level: `debug`, `info`, `warn` (alias `warning`), `error`. Case-insensitive. Validated as a closed enum -- an unknown value is rejected at load instead of being silently ignored. Applied when the reload that carries it is **installed**, never before: a candidate that fails validation or fails to build leaves process verbosity unchanged, so the running system always matches a config an operator can read back |
 
 ### `bridge.cluster` -- Cluster Config
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `endpoints` | map[capability]url | no | auto-discovered | Static override for THIS instance's advertised capability endpoints, keyed by capability (`http`) with a full URL value (`http://host:port`). NOT a peer/instance map. |
+| `rollout` | string | no | `refuse` | Live-config-change strategy for a clustered deployment. `refuse` (the default, also the meaning of an unset value) is ADR 0012: every live config delta is rejected and changes roll by whole-cohort replacement. `independent` lets every member apply a live-safe delta on its own, exactly as a standalone bridge does -- no barrier, no vote, no shared store, no roster; the cost is a brief window where one member runs the new config and another still runs the old one. `coordinated` opts into the rollout barrier; it additionally requires `members` and a rollout store wired by the composition root. All three still refuse a delta that cannot be applied live on any node (a durable session identity, a store target), with the same reason a standalone bridge gives. Any other value is rejected at load -- an unrecognised strategy is never silently downgraded to `refuse`. |
+| `members` | list of string | yes when `rollout: coordinated`; unused otherwise | -- | The cohort ROSTER: every member's stable `member_id`, listed identically on every member, without duplicates. It is the membership epoch the barrier freezes at propose time and counts acknowledgements against, so an id that no running process announces stalls every rollout. This is a peer list, unlike `endpoints`. Each id must match the `member_id` its process announces (in the AWS profile, the bootstrap `member_id`). |
+| `confirm_window` | duration | no | unset (base protocol) | Opts a coordinated rollout into the confirm window: a positive duration makes every commit PROVISIONAL. Each member swaps and must then reach convergence; the coordinator confirms once the whole cohort converged, and if confirmation never lands every member reverts to the last confirmed generation. Unset or `0s` is the base protocol, where a commit is final. A failed trial costs two disruptions (apply, then revert), which is why it is opt-in. Only valid with `rollout: coordinated` -- `independent` has no cohort-wide commit to confirm and nothing that could revert one. |
 
 ```yaml
 bridge:
@@ -130,16 +133,26 @@ bridge:
     # a clustered node refuses every live config delta and changes are rolled by
     # whole-cohort replacement. "coordinated" opts into the barrier protocol in
     # docs/cluster/spec/cluster-config-rollout-protocol.md and additionally requires
-    # `members` below, a versioned CAS-capable config source, and a rollout store
-    # wired by the composition root. NOTE: no shipped composition root wires one
-    # yet, so "coordinated" currently fails every reload closed (visibly, with the
-    # running config still serving) rather than coordinating anything.
+    # `members` below and a rollout store wired by the composition root.
+    #
+    # The shipped AWS profile wires that store, but ONLY in its static member-slot
+    # shape (GoBridgeDynamoDBHA with MemberSlots): every cohort member runs as its
+    # own single-task ECS service with a restart-stable member_id. The autoscaled
+    # worker shape rejects "coordinated" at synth time, because interchangeable
+    # tasks cannot carry a stable member_id. See docs/cluster/README.md.
     rollout: refuse
     # The cohort ROSTER — the membership epoch the rollout barrier freezes and
     # counts acknowledgements against. Required and non-empty when rollout is
     # "coordinated"; identical on every member; no duplicates. This is a peer
-    # list, unlike `endpoints` above.
+    # list, unlike `endpoints` above. It is fixed for the life of the cohort in
+    # EVERY rollout mode, including "independent": add or remove a member by
+    # redeploying the cohort, not by reloading it. Reordering it, or repeating an
+    # id, names the same cohort and is not a change.
     members: [instance-01, instance-02]
+    # Optional. A positive confirm window makes every commit provisional: each
+    # member applies, and unless the whole cohort converges before the window
+    # expires, every member reverts to the last confirmed generation.
+    # confirm_window: 90s
 ```
 
 ## `config_watch` -- File Watch Settings
@@ -186,14 +199,13 @@ Configures the backing stores for lease coordination, outbox persistence, dead-l
 |--------|------|------------|---------|-------------|
 | `path` | string | all roles | -- (**required**) | Database file path (`:memory:` remains available to non-durable test roles). For `managed_subscriptions`, this must be a plain absolute, already-clean filesystem path: `:memory:`, relative paths, `file:` URIs, queries, and fragments are rejected. The final parent must be owner-controlled `0700` (missing adapter-owned parents are created as `0700`); the database, WAL, SHM, and journal are descriptor-validated non-symlink regular files at `0600`. Insecure existing paths are rejected, never silently chmodded. |
 | `stale_claim_duration` | duration | outbox | runtime-derived | How long a same-owner stranded claim waits before another claim attempt may take it. Failover reclaim via a higher fencing version is always immediate and independent of this. |
+| `retention` | duration | outbox | `1h` | Window completed/expired outbox rows are kept before piggybacked compaction deletes them. Negative disables compaction (rows kept forever). Keep comfortably above any upstream redelivery window, since deleting a terminal row releases its duplicate-detection identity. |
 
 > **Windows limitation:** `sqlite` managed-subscription history currently fails
 > construction explicitly on Windows. The adapter requires descriptor-relative
 > no-follow creation and validation for the database and WAL/SHM/journal
 > sidecars; equivalent secure Windows handle semantics are not implemented.
 > Use DynamoDB for this role on Windows. Other SQLite store roles are unaffected.
-
-| `retention` | duration | outbox | `1h` | Window completed/expired outbox rows are kept before piggybacked compaction deletes them. Negative disables compaction (rows kept forever). Keep comfortably above any upstream redelivery window, since deleting a terminal row releases its duplicate-detection identity. |
 
 **DynamoDB** (`type: dynamodb`):
 
@@ -216,7 +228,10 @@ String Set; grant `GetItem`, `UpdateItem`, and `DescribeTable` (the standard
 read/write-data grant is a permitted superset). The identity is an opaque,
 secret-safe durable-session fingerprint. A missing baseline or any store outage
 fails startup before the MQTT broker connection is opened; seed an explicit
-empty baseline for a genuinely new durable session.
+empty baseline for a genuinely new durable session — `ManagedSubscriptionBaselines`
+on the AWS profile, `-seed-managed-subscriptions <session-id>` on the reference
+binary, or `Builder.SeedManagedSubscriptionBaselines` in a custom composition
+root (see [durable sessions](transports/mqtt-durable-sessions.md#managed-subscription-history)).
 
 **DLQ read ordering** is oldest-first (`failed_at ASC`) across all backends, so
 operators triage the earliest failures first.
@@ -229,19 +244,30 @@ does not shorten this floor: it bounds how aggressively terminal *record* rows
 are compacted, not the fence. The floor stops ephemeral/rotating session
 partitions from accreting one immortal fence row each, while 30 days of
 abandonment is deemed safe because such a partition has no competing owner left
-to fence (`sqliteoutbox/outbox.go:35`, `dynamodboutbox/acl_store.go:72`).
+to fence (`sqliteoutbox/outbox.go`, `dynamodboutbox/acl_store.go`).
 
-**DynamoDB outbox GSI change (breaking for existing tables).** The outbox table's
-secondary indexes changed: the former `StatusIndex` (a table-wide hot partition
-rewritten on every state transition) and the never-queried `ClaimedByIndex` were
-removed, and a sparse `ExpiryIndex` (hash `has_expiry`, range `expires_at`,
-`KEYS_ONLY`) was added alongside the existing `RecordIDIndex`. A freshly created
-table (`Store.CreateTable`) provisions the new shape automatically; a table
-created by an earlier build must be migrated. See
-[DynamoDB outbox GSI migration](runbooks/dynamodb-outbox-gsi-migration.md).
+**DynamoDB outbox indexes.** The outbox table requires three sparse indexes —
+`ExpiryIndex` (hash `has_expiry`, range `expires_at`, `KEYS_ONLY`),
+`RecordIDIndex` (hash `record_id`, `KEYS_ONLY`) and `ClaimIndex` (hash `PK`,
+range `claim_sort`, **`Projection: ALL`**). `Store.CreateTable` provisions all
+three; the factory preflight rejects a table that is missing one or has
+`ClaimIndex` under-projected. See
+[DynamoDB outbox table schema](runbooks/dynamodb-outbox-table-schema.md).
 
-Set `stale_claim_duration` above your worst-case drain-batch timeout;
-`step_down_grace + 15s` (~20s) is a safe rule of thumb.
+Set `stale_claim_duration` above your worst-case drain-batch timeout. A
+stale-claim reclaim is crash recovery — it hands a record to a second sender on
+the assumption the first is dead — so a value below the time a HEALTHY owner can
+hold a claim duplicates deliveries that are still in flight, silently. Validation
+enforces two bounds on an explicit value:
+
+| Value | Result |
+|---|---|
+| at or below the largest route `send_timeout` | **rejected** — the first owner's send has not even timed out yet |
+| at or below `send_timeout` + the drain-batch ceiling (`max_drain_timeout`, else `drain_timeout`) | **warning** — a record claimed at the head of a batch can wait most of that budget before its own send starts |
+| above both | accepted |
+
+Leaving the key unset is the safe default: the bridge derives
+`step_down_grace + max(2 x step_down_grace, 15s)` and no bound is applied.
 
 ```yaml
 stores:
@@ -256,6 +282,10 @@ stores:
       stale_claim_duration: 30s
   dlq:
     type: memory
+    options:
+      # In-memory DLQ entries are lost on restart, erasing the terminal
+      # evidence of dropped messages; the loss must be acknowledged.
+      acknowledge_volatile: true
   managed_subscriptions:
     type: dynamodb
     options:
@@ -264,12 +294,12 @@ stores:
 
 ## `sessions` -- Transport Sessions
 
-Sessions represent stateful transport connections (e.g. an MQTT connection). Stateless transports (SQS, Azure SB) do not use sessions.
+Sessions represent stateful transport connections (an MQTT connection, an AMQP connection). Only a transport whose factory reports the `stateful_session` capability creates one; the stateless transports (`sqs`, `servicebus`, `http`) return no session, and the builder rejects a receiver or sender that names a `session_id` on one of them.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `id` | string | **yes** | -- | Unique session identifier |
-| `transport` | string | **yes** | -- | Transport name: `mqtt`, `sqs`, `servicebus`, `http` |
+| `transport` | string | **yes** | -- | A stateful transport kind: `mqtt` (alias `mqtt.paho`), `amqp091` (alias `amqp.amqp091`) or `amqp10` (alias `amqp.amqp10`). A stateless kind cannot be named here. |
 | `session_mode` | string | no | `ephemeral` | `ephemeral`, `persistent`, `exclusive` |
 | `options` | map | no | -- | Transport-specific options (see [Transport Reference](transport-configuration.md)) |
 
@@ -347,7 +377,7 @@ Bindings connect routes to senders with a specific address.
 |-------|------|----------|---------|-------------|
 | `id` | string | **yes** | -- | Unique binding identifier |
 | `sender_id` | string | **yes** | -- | Reference to a sender |
-| `session_id` | string | no | -- | Optional session override |
+| `session_id` | string | no | -- | The session this binding runs on and -- under `shared_outbox` -- the outbox partition its records live in and are drained from; naming a session here also gives it its lease-held manager. An ingress session that only a receiver names needs neither this nor a route `session` block: the receiver's own binding to it connects it and reconciles its subscriptions, with no lease and no partition (the shape a `direct_hold` route holds its source in). A session declared `exclusive` must still be named here or in a route `session` block, because exclusive means lease-held. |
 | `address` | string | **yes** | -- | Destination address -- supports `{header}` templates |
 | `options` | map | no | -- | Per-binding options -- **parsed but not consumed at runtime** (`DestinationBinding.Config` is never read); leave bindings bare and configure the transport on the sender. |
 
@@ -381,7 +411,10 @@ ID reference graph, delivery hooks, programmatic builder/lifecycle notes, and
 the validation-rules summary -- is documented in
 [Routes, Runtime & Validation Reference](routes-and-runtime-reference.md). That
 reference also covers the per-route lease-timing knobs under `routes[].session`,
-including `renew_call_timeout`, `acquire_poll_interval`, `failover_slo`, and
-`startup_allowance`. A declared SLO is validated from failure detection through
-`ServiceLevelFull`; measured warm and cold evidence is still required.
+including `renew_call_timeout`, `acquire_poll_interval`, `failover_slo`,
+`startup_allowance`, and `broker_health_step_down`. A declared SLO is validated
+from failure detection through `ServiceLevelFull` against BOTH failure modes;
+measured warm and cold evidence is still required. The arithmetic, and both
+shipped lease profiles evaluated at their defaults, are in
+[Failover Budget](failover-budget.md).
 

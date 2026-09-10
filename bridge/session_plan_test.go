@@ -15,7 +15,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// White-box unit tests for sessionPlanFor (the helper that fixes F1: the
+// White-box unit tests for sessionPlanFor (the helper that fixes: the
 // bridge never assembled a connectivity.SessionPlan, so every broker session
 // reconciled an empty plan and subscribed to nothing).
 // ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ func TestSessionPlanFor_EmptyAndDegenerateInputs(t *testing.T) {
 // ---------------------------------------------------------------------------
 // End-to-end regression test: the assembled plan must be THREADED through the
 // builder into the session.Config the session manager reconciles. This is the
-// true F1 regression guard — it FAILS before the fix (manager reconciles an
+// true regression guard — it FAILS before the fix (manager reconciles an
 // empty plan) and PASSES after.
 // ---------------------------------------------------------------------------
 
@@ -262,7 +262,7 @@ func TestBuilder_AssemblesAndThreadsSessionPlan_SharedSessionUnion(t *testing.T)
 }
 
 // ---------------------------------------------------------------------------
-// White-box unit tests for the Publishers side of sessionPlanFor (F1-P3): a
+// White-box unit tests for the Publishers side of sessionPlanFor: a
 // sender whose typed config implements ports.PublishingConfig advertises its
 // exchange, which the bridge threads into PublisherPlan.Topic so amqp091's
 // declarePublisher auto-declares it.
@@ -342,7 +342,7 @@ func TestSessionPlanFor_PublishersFromDeclarer(t *testing.T) {
 }
 
 // TestBuilder_ThreadsSessionPlan_Path2SessionSender_F1P4 is the end-to-end
-// regression guard for F1-P4: a session registered ONLY via the builder's
+// regression guard: a session registered ONLY via the builder's
 // Path-2 session-sender loop (a shared_outbox binding whose session is no
 // route's primary) must reconcile its receivers' subscriptions, not the empty
 // plan that session.DefaultConfig carries.
@@ -436,7 +436,7 @@ func TestBuilder_ThreadsSessionPlan_Path2SessionSender_F1P4(t *testing.T) {
 		got[s.Topic] = s.QoS
 	}
 	assert.Equal(t, map[string]int{"topic/dedicated": 1}, got,
-		"a Path-2 session-sender must reconcile its receivers' subscriptions, not an empty plan (F1-P4)")
+		"a Path-2 session-sender must reconcile its receivers' subscriptions, not an empty plan")
 }
 
 // warnCountingHandler is a minimal slog.Handler that records only Warn-level (or

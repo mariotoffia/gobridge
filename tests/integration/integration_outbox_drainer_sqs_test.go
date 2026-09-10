@@ -15,14 +15,14 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
 	"github.com/mariotoffia/gobridge/runtime/outbox"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
+	"github.com/mariotoffia/gobridge/testutil/flocilocal"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Outbox Drainer → Real SQS Sender Integration Tests
 //
 // Validates the full Outbox Drainer pipeline with a real SQS sender
-// backed by ElasticMQ, exercising the Persist → Claim → Send → SQS
+// backed by the local AWS emulator, exercising the Persist → Claim → Send → SQS
 // lifecycle end-to-end.
 //
 // Summary:
@@ -43,7 +43,7 @@ import (
 //
 //	┌──────────┐     ┌──────────────┐     ┌──────────┐     ┌───────────┐
 //	│ Persist  │────▶│ DynamoDB     │────▶│ Drainer  │────▶│ SQS Queue │
-//	│ 5 recs   │     │ OutboxStore  │     │ Claim+   │     │ (ElasticMQ│
+//	│ 5 recs   │     │ OutboxStore  │     │ Claim+   │     │ (emulated │
 //	└──────────┘     └──────────────┘     │ Send     │     │  verify)  │
 //	                                      │ Complete │     └───────────┘
 //	                                      └──────────┘
@@ -60,7 +60,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_FullCycle(t *testing.T) {
 
 	sender, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueURL: queueURL,
-		Endpoint: sqslocal.Endpoint(t),
+		Endpoint: flocilocal.Endpoint(t),
 		Region:   "us-west-1",
 		Timeout:  10 * time.Second,
 	})
@@ -162,7 +162,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_ExpiredToDLQ(t *testing.T) {
 
 	sender, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueURL: queueURL,
-		Endpoint: sqslocal.Endpoint(t),
+		Endpoint: flocilocal.Endpoint(t),
 		Region:   "us-west-1",
 		Timeout:  10 * time.Second,
 	})
@@ -258,7 +258,7 @@ func TestIntegration_OutboxDrainer_RealSQSSender_HeaderPreservation(t *testing.T
 
 	sender, err := sqsadapter.NewSender(sqsadapter.SenderConfig{
 		QueueURL: queueURL,
-		Endpoint: sqslocal.Endpoint(t),
+		Endpoint: flocilocal.Endpoint(t),
 		Region:   "us-west-1",
 		Timeout:  10 * time.Second,
 	})

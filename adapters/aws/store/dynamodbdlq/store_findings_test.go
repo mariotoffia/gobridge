@@ -86,7 +86,7 @@ func equalStrs(a, b []string) bool {
 // DLQ entry (no envelope) must round-trip through Write→read without an
 // envelope-unmarshal error.
 //
-// Root cause: C09 added a mandatory-ID guard to Envelope.UnmarshalJSON. A
+// Root cause: added a mandatory-ID guard to Envelope.UnmarshalJSON. A
 // metadata-only entry's zero Snapshot marshals to a NON-empty zero-JSON
 // ({"CreatedAt":…}) carrying an empty envelope ID; the read guard only skips
 // unmarshal on the empty string "", not on that zero-JSON, so read-back FAILED.

@@ -97,22 +97,27 @@ func TestApplyConnectLimits(t *testing.T) {
 	})
 }
 
-// TestMaxPacketSizeFor covers the pure derivation the helper delegates to.
+// TestMaxPacketSizeFor covers the pure derivation the helper delegates to. The
+// crossing slot holds the guard's raw wire packet plus the one decode in
+// flight: the SDK's wire-sized buffers and copies (sdkDecodeWireMultiple of
+// them) and one User Property above the retained cap, which is all the guard
+// lets the decoder see.
 func TestMaxPacketSizeFor(t *testing.T) {
 	got, err := maxPacketSizeFor(0)
 	require.NoError(t, err)
 	require.Equal(t,
-		uint32(2*mqttPacketOverheadAllowance+
-			maxIngressUserProperties*retainedUserPropertyBytes+
+		uint32((1+sdkDecodeWireMultiple)*mqttPacketOverheadAllowance+
+			maxDecodedUserProperties*retainedUserPropertyBytes+
 			retainedPacketFixedBytes),
 		got,
-		"crossing packet size includes one raw wire buffer, one decoded representation, and structural heap allowance")
+		"crossing packet size includes one raw wire buffer, the SDK decode buffers, one truncated decoded representation, and structural heap allowance")
 	got, err = maxPacketSizeFor(256 << 10)
 	require.NoError(t, err)
 	require.Equal(t,
-		2*uint32(256<<10)+uint32(2*mqttPacketOverheadAllowance+
-			maxIngressUserProperties*retainedUserPropertyBytes+
-			retainedPacketFixedBytes),
+		uint32(1+sdkDecodeWireMultiple)*uint32(256<<10)+
+			uint32((1+sdkDecodeWireMultiple)*mqttPacketOverheadAllowance+
+				maxDecodedUserProperties*retainedUserPropertyBytes+
+				retainedPacketFixedBytes),
 		got)
 	_, err = maxPacketSizeFor(math.MaxUint32)
 	require.Error(t, err, "overflow past the MQTT ceiling is rejected, never clamped or wrapped")
@@ -122,7 +127,7 @@ func TestIngressMemoryPacketBytes_CrossingFactorCoversAcceptedAndRejectedWirePac
 	const maxPayload = uint32(256 << 10)
 	wire, err := wirePacketSizeFor(maxPayload)
 	require.NoError(t, err)
-	decoded, err := decodedPacketSizeFor(maxPayload)
+	decoded, err := transientDecodedPacketSizeFor(maxPayload)
 	require.NoError(t, err)
 	crossing, err := maxPacketSizeFor(maxPayload)
 	require.NoError(t, err)

@@ -1,11 +1,13 @@
 # Development Guide
 
+## Overview
+
 This guide covers everything you need to set up a development environment, build, test, and contribute to gobridge.
 
 ## Prerequisites
 
 - **Go 1.25+** -- gobridge uses a Go workspace (`go.work`)
-- **Docker** -- required for integration tests (DynamoDB Local, ElasticMQ, Mosquitto, Azure Service Bus emulator)
+- **Docker** -- required for integration tests (Floci, DynamoDB Local, Mosquitto, Azure Service Bus emulator)
 - **Make** -- optional, provides convenient commands
 - **Dev tools** -- run `make install` to install all required tools
 
@@ -17,7 +19,7 @@ For the everyday workflow — bootstrapping the workspace, adding a module, and 
 `go get`-able release — see [MODULES.md](MODULES.md); it is the simple front door and
 links here and to [RELEASE.md](RELEASE.md) for depth.
 
-```
+```text
 gobridge/
 ├── go.work                 # Workspace definition
 ├── go.mod                  # Root module (domain, ports, runtime, bridge, config, ...)
@@ -77,10 +79,9 @@ gobridge/
 │
 ├── cmd/gobridge/           # Example binary
 ├── testutil/               # Docker test helpers
+│   ├── flocilocal/         # Floci -- every AWS API except DynamoDB
 │   ├── ddblocal/           # DynamoDB Local
-│   ├── sqslocal/           # ElasticMQ (SQS-compatible)
 │   ├── asblocal/           # Azure Service Bus emulator
-│   ├── s3local/            # MinIO (S3-compatible)
 │   └── tlsgen/             # TLS certificate generator (pure crypto, no Docker)
 └── tests/integration/      # End-to-end integration tests
 ```
@@ -107,6 +108,69 @@ make build
 go build ./...
 ```
 
+For the reference command, a plain
+`go -C cmd/gobridge build -o gobridge.out .` is a **blank root by design**:
+no transports, stores or telemetry exporters are linked. Choose its plugin
+families explicitly, from the repository root:
+
+```bash
+make build-gobridge                                      # Blank root
+make build-gobridge GOBRIDGE_TAGS=gobridge_mqtt,gobridge_native
+make build-gobridge GOBRIDGE_TAGS=gobridge_all             # Every family
+./cmd/gobridge/gobridge.out -version
+```
+
+`GOBRIDGE_TAGS` defaults to empty. The target writes
+`cmd/gobridge/gobridge.out`, uses `-trimpath`, and stamps `main.version` from
+`IMAGE_TAG` (default `dev`) and `main.gitSHA` from `GIT_SHA` (default: current
+short commit SHA). Override those Make variables for release metadata.
+An equivalent direct selection is
+`go -C cmd/gobridge build -tags gobridge_mqtt,gobridge_native -o gobridge.out .`;
+without linker stamps, `-version` reports `dev` for both metadata values.
+Version and commit metadata use linker strings; initial config uses `go:embed`.
+Plugins use build tags. Runtime bootstrap settings remain separate.
+
+Embed a YAML or JSON initial document with:
+
+```bash
+make build-gobridge GOBRIDGE_TAGS=gobridge_mqtt,gobridge_native \
+  INITIAL_CONFIG_FILE=path/to/initial.yaml
+make docker-build INITIAL_CONFIG_FILE=config/initial.yaml
+docker build --build-arg INITIAL_CONFIG_FILE=config/initial.yaml -t gobridge:local .
+```
+
+The Docker input must be inside the build context. Both command entry points
+embed the fixed `initial-config.base64` file into `main.initialConfigBase64`.
+`scripts/buildconfig` uses only the Go standard library to generate the Base64
+payload and a Go build overlay, leaving original source files unchanged.
+The payload stays in files, not environment variables or command arguments.
+Initialization still creates only absent targets and never overwrites config.
+
+Both commands accept `-initial-config-digest` to print the SHA-256 hash of the
+embedded bytes before runtime or network startup, without printing config data.
+Image builds compare that hash with the input; custom commands must support
+the probe when embedding config.
+
+Literal credentials are allowed, but readers of the binary, image, build context,
+or cache can recover them. Base64 provides no secrecy. Use `pms://` references
+when you do not want secret values in the artifact. See
+[initial configuration](docs/aws-deployment/config-initialization.md) for the
+creation and missing-config lifecycle.
+
+See [PLUGIN.md](PLUGIN.md#binary-composition-build-tags) for the family table.
+`go.mod` keeps the requirements for **all** optional adapters, and
+`go mod tidy` considers tagged files too. Tags let the linker exclude unused
+families; they do not shrink the module graph. The Kubernetes Dockerfile
+separately defaults `GO_BUILD_TAGS` to `gobridge_mqtt,gobridge_native`, so
+building its image without overrides retains MQTT and memory/SQLite stores.
+It also accepts `INITIAL_CONFIG_FILE`, `VERSION`, and `GIT_SHA`; see the
+[Kubernetes image build](deployment/kubernetes/README.md#embed-an-initial-configuration).
+
+For repository-independent authenticated startup, set `-admin-addr` and
+`GOBRIDGE_ADMIN_API_KEY`; `-monitor-addr` and `-http-tls-cert`/`-http-tls-key`
+control the other listener settings. Legacy boot-file `http:` settings remain
+supported. See [startup and initial creation](docs/aws-deployment/config-initialization.md#control-plane-startup).
+
 ### Run Unit Tests
 
 ```bash
@@ -115,6 +179,8 @@ make test
 ```
 
 This runs `go test -short -race -timeout 120s ./...`. The `-short` flag causes all Docker-dependent tests to skip automatically.
+`cmd/gobridge` runs both untagged and with `-tags gobridge_all`, covering the
+blank root and every family without needing separate per-family invocations.
 
 ### Run Integration Tests
 
@@ -130,6 +196,8 @@ make test-integration
 ```
 
 `make test-integration` runs `go test -race -timeout 600s -v ./...` with dummy AWS credentials set for the SDK.
+It also runs `cmd/gobridge` with `-tags gobridge_all` and without `-short`,
+so family-tagged integration tests execute rather than being skipped.
 
 ## Environment Variables
 
@@ -138,12 +206,35 @@ The test utilities check these environment variables before starting Docker cont
 | Variable | Default | Used By |
 |----------|---------|---------|
 | `DYNAMODB_ENDPOINT` | (auto-start DynamoDB Local) | `testutil/ddblocal` |
-| `SQS_ENDPOINT` | (auto-start ElasticMQ) | `testutil/sqslocal` |
+| `FLOCI_ENDPOINT` | (auto-start Floci) | `testutil/flocilocal` |
 | `MQTT_BROKER_URL` | (auto-start Mosquitto) | MQTT integration tests |
 | `ASB_CONNECTION_STRING` | (auto-start ASB emulator) | `testutil/asblocal` |
-| `S3_ENDPOINT` | (auto-start MinIO) | `testutil/s3local` |
 
 When an environment variable is set, the test utility uses the existing service instead of starting a container.
+
+### Local deployment proof
+
+`make test-local-deploy` deploys the `aws-filebased-config` CDK profile against
+local emulation and drives the running system. It needs Docker and Node, no AWS
+account and no credentials: it builds the runtime image, installs the CDK CLI
+and its local wrapper under `.tools/`, stands the emulators on one Docker
+network, and reclaims everything — including the containers the emulator
+launched — when it finishes.
+
+| Variable | Effect |
+|----------|--------|
+| `GOBRIDGE_INT_LOCAL=1` | Take the local branch instead of skipping on missing `GOBRIDGE_INT_*`. Set by the Make target. |
+| `GOBRIDGE_INT_KEEP=1` | Leave the stack, the containers and the shared config directory in place for a post-mortem. |
+| `GOBRIDGE_LOCAL_IMAGE` | Optional image override; `-initial-config-digest` must match each staged fixture's embedded bytes or the run fails. Unset it to build this checkout through the root Dockerfile for each config-bearing CDK asset. |
+
+Two local runs cannot share a machine: the emulator starts an image registry of
+its own on a fixed host port.
+
+The suite deploys one stack per topology — the SQS data plane, the MQTT bridge,
+the control/worker cluster, the static-slot cohort, and the shape, redeploy,
+destroy and dead-letter proofs. What each one proves, what the emulator cannot
+back, and the measured reason behind every matrix entry that has no local test
+is [docs/aws-deployment/local-deployment-suite.md](docs/aws-deployment/local-deployment-suite.md).
 
 ## Linting
 
@@ -209,15 +300,16 @@ The repo is a multi-module `go.work` workspace. The rules below keep it consumab
 - **Working against a local clone from another project:** use *your* project's `go.work` (`go work use ../gobridge/...`) or a `replace` in *your* go.mod — main-module replaces always apply and stay on your machine.
 - **Inter-module `require`s always name the latest published tag** (during development that is the previous release — the workspace gives you HEAD behavior locally). This keeps `make tidy`, `make update`, `make outdated`, and `make vulncheck` working: those loops run `go mod tidy` / `go list -m` per module, which ignore the workspace and resolve from the module proxy.
 - **The workspace can lie:** using a new sibling API at HEAD without bumping the require compiles locally but breaks consumers. `GOWORK=off go build ./...` in the module is the check; CI runs it per published module (see RELEASE.md).
-- **Internal-only modules** (`tests/`, `testutil/`, `scripts/`, `deployment/`) are never tagged or published and may keep local `replace` directives.
+- **Internal-only modules** under `tests/`, `testutil/`, `scripts/`, and most of `deployment/` are not tagged and may keep local `replace` directives. The AWS profile's `infra`, `lib`, and `cdk` modules are published exceptions: `cdk` and `infra` because an external stack compiles against them, `lib` because versioned `ImageFromGoBuild` builds the profile command from the module proxy. See [RELEASE.md](RELEASE.md#canonical-release-graph).
 
-> **Current state:** published modules still carry `replace` directives and `v0.0.0` requires; the migration steps are in [RELEASE.md — First release checklist](RELEASE.md#first-release-checklist).
+> **Current state:** published modules still carry `replace` directives and `v0.0.0` requires; the migration steps are in [RELEASE.md — Release procedure](RELEASE.md#release-procedure).
 
 ## Base image digests
 
-The root `Dockerfile` pins both base images to a **top-level multi-platform OCI
-index digest** (the index, not a per-architecture manifest), so a rebuild pulls
-the exact reviewed bytes:
+The root `Dockerfile` and the Kubernetes profile's `deployment/kubernetes/Dockerfile`
+pin both base images to a **top-level multi-platform OCI index digest** (the
+index, not a per-architecture manifest), so a rebuild pulls the exact reviewed
+bytes. Refresh both files together:
 
 | Stage | Image | Pinned index digest |
 |-------|-------|---------------------|
@@ -248,17 +340,6 @@ reproducible only to the extent these pinned bases, the locked per-module
 `go.sum`, and the Go toolchain are fixed. The build claims no bit-for-bit
 reproducibility beyond those facts.
 
-The seeder base image (`public.ecr.aws/aws-cli/aws-cli`, pinned to a concrete
-`2.x.y` tag) uses the same discipline. `make -C deployment/aws-filebased-config
-update-seeder-image` discovers the highest concrete `2.x.y` tag (the upstream
-image publishes no floating `2` tag), resolves and verifies its top-level index
-(amd64 + arm64), computes the digest from the verified bytes, and rewrites both
-`image.txt` and the seeder `Dockerfile`, failing closed on a missing tag, digest,
-or platform. It never installs a tool; the tested resolver versions are crane
-v0.21.7 or docker buildx v0.34.1 (exact, not floors). Its shell checks (both the
-crane and docker paths) run under `make -C deployment/aws-filebased-config test`
-(see [TESTS.md](TESTS.md), Deployment shell tests).
-
 ## CI Workflow
 
 ```bash
@@ -273,10 +354,13 @@ registrychk + pluginsym) and writes one log per checker under
 (`audit-timings` for production code, `audit-test-timings` for test
 code).
 
-`.github/workflows/ci.yml` runs two jobs: `test` (`make test`) and
-`lint` (`make lint`). The lint job uploads `reports/` as an artifact
-on every run so architectural and analyzer failures are inspectable
-without re-running locally.
+In `.github/workflows/ci.yml`, the `test` job runs `make test` and builds and
+vets `cmd/gobridge` both untagged and with `-tags gobridge_all`.
+The `lint` job runs `make lint`; `.golangci.yml` selects `gobridge_all` so
+every family implementation is linted, while untagged vet covers the stubs.
+The lint job uploads `reports/` on every run so failures are inspectable
+without re-running locally. The workflow also has release-preparation,
+integration and on-demand fuzz jobs.
 
 ## Adding a New Module
 

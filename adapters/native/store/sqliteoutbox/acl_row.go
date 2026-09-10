@@ -46,9 +46,10 @@ func scanOutboxRecords(rows *sql.Rows) ([]*persistence.OutboxRecord, error) {
 			snap.ClaimedAt = time.UnixMilli(claimedAtMs)
 		}
 		if firstAttemptedMs > 0 {
-			// 0 encodes the zero time (legacy row or never-claimed): leave
-			// FirstAttemptedAt as the zero value so the drainer falls back to
-			// the CreatedAt age gate. Never now-stamp it here.
+			// 0 encodes the zero time — a row that has never been claimed. Leave
+			// FirstAttemptedAt as the zero value; the claim UPDATE is the single
+			// authority that stamps it, and the drainer treats an unstamped
+			// CLAIMED record as a budget it must not spend. Never now-stamp here.
 			snap.FirstAttemptedAt = time.UnixMilli(firstAttemptedMs)
 		}
 		if expiresAtMs > 0 {

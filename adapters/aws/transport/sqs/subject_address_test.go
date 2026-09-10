@@ -1,5 +1,5 @@
 // Tests covering the subject/address separation contract for the SQS
-// adapter (T08):
+// adapter:
 //
 //   - SQS senders are bound to a single queue URL. ports.OutboundMessage
 //     .Address must be empty or equal to the resolved queue URL. A
@@ -329,7 +329,7 @@ func runReceiverOnce(t *testing.T, cfg ReceiverConfig, msg sqstypes.Message) *me
 	return got
 }
 
-// Acceptance test for T08: a message with no "Subject" attribute and
+// Acceptance test: a message with no "Subject" attribute and
 // SNSUnwrap disabled produces an empty Envelope.Subject — no fallback
 // to the configured queue name or queue URL.
 func TestReceiver_NoSubjectAttribute_YieldsEmptySubject(t *testing.T) {
@@ -366,8 +366,8 @@ func TestReceiver_SNSUnwrapEnabled_NonSNSBody_YieldsEmptySubject(t *testing.T) {
 
 // Verifies that an SNS notification with a TopicArn but no inner
 // Subject leaves Envelope.Subject empty and exposes the TopicArn under
-// headers["sns.topic_arn"]. T08 forbids promoting TopicArn into the
-// logical Subject.
+// headers["sns.topic_arn"]. A transport-level topic name must never be
+// promoted into the logical Subject.
 func TestReceiver_SNSUnwrap_TopicArnOnly_YieldsEmptySubject(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{
 		"Type":     "Notification",
@@ -443,7 +443,7 @@ func TestReceiver_SubjectAttribute_PopulatesSubject(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// FIFO deduplication review (T08)
+// FIFO deduplication review
 // ---------------------------------------------------------------------------
 
 // Verifies dedup IDs match for envelopes with identical fields, and

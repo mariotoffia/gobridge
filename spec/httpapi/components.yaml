@@ -427,13 +427,14 @@ schemas:
     required: [ids]
     description: >
       Request body for redriving specific DLQ messages. Each entry is
-      claimed by deleting it from the DLQ FIRST, then re-injected into its
-      original route — confined to the single binding that failed, so
-      redriving one leg of a fan-out route does not duplicate deliveries to
-      the healthy bindings. Claim-before-inject gives at-most-once semantics:
-      if the process crashes between the delete and the inject the entry is
-      dropped rather than delivered twice (a best-effort restore closes most
-      of that window). Duplicate IDs are deduplicated automatically.
+      re-injected into its original route FIRST — under a fresh envelope ID
+      with a causation link to the original, confined to the single binding
+      that failed so the healthy bindings of a fan-out route see nothing —
+      and deleted from the DLQ only after the inject is confirmed. A failed
+      or refused inject leaves the entry and its evidence intact. The
+      guarantee is at-least-once: a crash between a confirmed inject and the
+      delete re-drives the entry on the next attempt rather than losing it.
+      Duplicate IDs are deduplicated automatically.
     properties:
       ids:
         type: array
@@ -539,7 +540,7 @@ schemas:
 
   DeepHealthResponse:
     type: object
-    required: [running, healthy, instance_id, role, ready_for_traffic, service_level, level, sessions, routes]
+    required: [running, healthy, instance_id, role, ready_for_traffic, empty, service_level, level, sessions, routes]
     description: >
       Comprehensive health report covering runtime state, session connectivity,
       and route status. Returned with 200 when ready or 503 when not ready.
@@ -564,6 +565,15 @@ schemas:
         type: boolean
         description: Whether this instance should receive traffic from a load balancer.
         example: true
+      empty:
+        type: boolean
+        description: >
+          Whether this instance carries no routes and no sessions, so no message
+          can be bridged through it. True for a bridge started without a usable
+          configuration. An empty instance is alive and running but never
+          reaches the `full` readiness level and never claims
+          `ready_for_traffic`.
+        example: false
       service_level:
         type: string
         description: >
@@ -706,3 +716,13 @@ schemas:
       last_apply_error:
         type: string
         description: Definitive live-apply error for the current desired config; cleared when that desired config succeeds or is superseded.
+      restart_required:
+        type: string
+        description: >
+          Names a part of the desired configuration that has been accepted and
+          durably stored but cannot be applied to the running process, so the
+          change stays inert until the process is restarted. The `http` block is
+          the case that exists today: admin and monitor listeners are bound once,
+          at startup. Absent when the running process matches its desired
+          configuration in every such field.
+        example: "http admin_addr changed since startup; HTTP listeners are bound once at startup, so restart the process to apply"

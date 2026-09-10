@@ -29,13 +29,33 @@ flowchart LR
 bridge:
   id: mqtt-forwarder
 
+stores:
+  # A persistent session keeps an exact record of the filters it installed on
+  # the broker (ADR 0003). Seed its baseline once, before the first start:
+  #   gobridge -config bridge.yaml -seed-managed-subscriptions mqtt-conn
+  managed_subscriptions:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/managed-subscriptions.db
+  # Where a message the route gives up on is kept.
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
+
 sessions:
   - id: mqtt-conn
     transport: mqtt
+    # direct_hold relies on the broker redelivering whatever a crashed process
+    # never acknowledged. Only a persistent (or exclusive) session does that;
+    # an ephemeral one hands a restarted process a fresh, empty session.
+    session_mode: persistent
     options:
       session:
         broker_url: tcp://localhost:1883
         client_id: mqtt-forwarder-01
+        clean_start: false
+        session_expiry_interval: 3600
 
 receivers:
   - id: sensor-in
@@ -55,6 +75,9 @@ senders:
 bindings:
   - id: to-archive
     sender_id: sensor-out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # connect, subscribe, reconcile. A session nobody manages never subscribes.
+    session_id: mqtt-conn
     address: archive/sensors
 
 routes:
@@ -63,6 +86,10 @@ routes:
     delivery_mode: direct_hold
     dispatch_mode: single
     bindings: [to-archive]
+    policy:
+      # Exactly one replica consumes this subscription. A second copy of this
+      # process would double-deliver; see Scenario 8 for fenced ownership.
+      allow_unfenced: true
 ```
 
 ## Config Walkthrough
@@ -182,7 +209,10 @@ sessions:
 
 ### Using a Persistent Session
 
-Preserves subscriptions across reconnections:
+Preserves subscriptions across reconnections. A persistent session that
+subscribes also keeps an exact record of the filters it installed, so it needs
+a `managed_subscriptions` store — the builder refuses to start without one
+([ADR 0003](../adr/0003-mqtt-persistent-session-hygiene.md)):
 
 ```yaml
 sessions:
@@ -195,7 +225,26 @@ sessions:
         client_id: mqtt-forwarder-01
         clean_start: false
         session_expiry_interval: 3600  # 1 hour
+
+stores:
+  managed_subscriptions:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/managed-subscriptions.db
 ```
+
+The session loads that record before it connects, and a missing record is
+"history unknown", not "no history". Seed it once, before the first start,
+attesting that `mqtt-forwarder-01` is a new identity with no subscriptions:
+
+```bash
+gobridge -config bridge.yaml -seed-managed-subscriptions mqtt-conn
+```
+
+If the `client_id` already has subscriptions on the broker, list them instead
+(`-seed-managed-subscriptions 'mqtt-conn=sensors/#'`). Seeding is idempotent;
+running it on every start is safe. See
+[MQTT durable session state](../transports/mqtt-durable-sessions.md).
 
 ### Multiple Subscriptions
 

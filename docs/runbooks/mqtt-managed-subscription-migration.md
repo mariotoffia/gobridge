@@ -28,7 +28,7 @@ a terminal state. It does not claim Full or portable redistribution.
 Do not remove/rename an entire durable session as an ordinary live reload.
 Existing sessions with no ledger baseline must first be seeded with every exact
 filter or migrated under maintenance as documented in the
-[MQTT transport reference](../transports/mqtt.md#managed-subscription-history).
+[MQTT transport reference](../transports/mqtt-durable-sessions.md#managed-subscription-history).
 
 ## Restore, drain, retry after a pinned replay
 

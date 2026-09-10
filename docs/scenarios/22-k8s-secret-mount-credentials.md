@@ -44,12 +44,28 @@ namespace together decide the on-disk file location.
 bridge:
   id: k8s-secret-mount
 
+stores:
+  # A persistent session keeps an exact record of the filters it installed on
+  # the broker (ADR 0003); the profile's init container seeds the baseline.
+  managed_subscriptions:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/managed-subscriptions.db
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
+
 sessions:
   - id: mqtt-tls
     transport: mqtt
+    session_mode: persistent   # direct_hold needs a source that redelivers
     options:
       session:
         broker_url: tls://mqtt.internal:8883
+        client_id: k8s-secret-mount
+        clean_start: false
+        session_expiry_interval: 3600
       credentials_uri: file://prod/mqtt/broker-creds
 
 receivers:
@@ -66,6 +82,9 @@ senders:
 bindings:
   - id: to-forward
     sender_id: forward
+    # Naming the session on the binding is what makes the bridge manage it:
+    # connect, subscribe, reconcile. A session nobody manages never subscribes.
+    session_id: mqtt-tls
     address: processed/sensors
 
 routes:
@@ -74,6 +93,10 @@ routes:
     delivery_mode: direct_hold
     dispatch_mode: single
     bindings: [to-forward]
+    policy:
+      # Exactly one replica consumes this subscription; a second copy of this
+      # process would double-deliver. See Scenario 8 for fenced ownership.
+      allow_unfenced: true
 ```
 
 ## Config Walkthrough

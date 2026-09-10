@@ -71,10 +71,19 @@ func RunOutboxStoreTests(t *testing.T, store ports.OutboxStore) {
 	t.Run("CompleteRejectsZeroClaimSnapshot", func(t *testing.T) { testCompleteRejectsZeroClaimSnapshot(t, store) })
 	t.Run("CompleteRejectsSameVersionDifferentOwner", func(t *testing.T) { testCompleteRejectsSameVersionDifferentOwner(t, store) })
 	t.Run("ExpireSkipsClaimed", func(t *testing.T) { testExpireSkipsClaimed(t, store) })
+	t.Run("ExpireRejectsZeroToken", func(t *testing.T) { testExpireRejectsZeroToken(t, store) })
+	t.Run("ExpireRejectsStaleVersion", func(t *testing.T) { testExpireRejectsStaleVersion(t, store) })
+	t.Run("ExpireAdvancesPartitionFence", func(t *testing.T) { testExpireAdvancesPartitionFence(t, store) })
 	t.Run("ClaimRejectsStaleVersionOnPending", func(t *testing.T) { testClaimRejectsStaleVersionOnPending(t, store) })
 	t.Run("ClaimRejectsStaleVersionAfterNoopHigherClaim", func(t *testing.T) { testClaimRejectsStaleVersionAfterNoopHigherClaim(t, store) })
 	t.Run("ClaimReturnsSameKeyRecordsInCreatedOrder", func(t *testing.T) { testClaimReturnsSameKeyRecordsInCreatedOrder(t, store) })
 	t.Run("ClaimTieBreaksByPersistOrderOnEqualCreatedAt", func(t *testing.T) { testClaimTieBreaksByPersistOrderOnEqualCreatedAt(t, store) })
+	t.Run("ClaimBlocksYoungerSiblingOfStrandedHead", func(t *testing.T) { testClaimBlocksYoungerSiblingOfStrandedHead(t, store) })
+	t.Run("ClaimBlocksYoungerSiblingOfPendingHeadBeyondLimit", func(t *testing.T) {
+		testClaimBlocksYoungerSiblingOfPendingHeadBeyondLimit(t, store)
+	})
+	t.Run("ClaimAllowsIndependentKeysPastStrandedHead", func(t *testing.T) { testClaimAllowsIndependentKeysPastStrandedHead(t, store) })
+	t.Run("ClaimReturnsWholeGroupWhenHeadIsClaimable", func(t *testing.T) { testClaimReturnsWholeGroupWhenHeadIsClaimable(t, store) })
 	t.Run("ClaimZeroLimitAdvancesFenceOnly", func(t *testing.T) { testClaimZeroLimitAdvancesFenceOnly(t, store) })
 	t.Run("ClaimBeyondReplayCapRemainsClaimable", func(t *testing.T) { testClaimBeyondReplayCapRemainsClaimable(t, store) })
 	t.Run("ClaimFenceInterleaving", func(t *testing.T) { testClaimFenceInterleaving(t, store) })
@@ -125,7 +134,7 @@ func testPersistDuplicate(t *testing.T, store ports.OutboxStore) {
 }
 
 // testPersistPartialOverlap pins the per-record Persist idempotency contract
-// (C1): a batch that partially overlaps already-persisted records persists
+// a batch that partially overlaps already-persisted records persists
 // the new records and silently skips the existing ones; ErrDuplicateRecord
 // is returned ONLY when every record in the batch already existed. This is
 // what makes a fan-out re-persist after a partial failure safe: without it,
@@ -470,7 +479,7 @@ func testExpireMarksEligible(t *testing.T, store ports.OutboxStore) {
 		t.Fatalf("persist: %v", err)
 	}
 
-	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-exp")
+	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-exp", persistence.LeaseToken{Version: 1, Owner: "owner-exp"})
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}
@@ -487,10 +496,10 @@ func testExpireMarksEligible(t *testing.T, store ports.OutboxStore) {
 	}
 }
 
-// testExpireScopedToPartition proves Expire is partition-scoped (M1): a sweep
+// testExpireScopedToPartition proves Expire is partition-scoped: a sweep
 // for one partition must NOT expire another partition's pending-expired records,
-// even though both are past their expiry. A drainer holding partition S1's lease
-// must never destroy S2's records.
+// even though both are past their expiry. A drainer holding partition the lease
+// must never destroy the records.
 func testExpireScopedToPartition(t *testing.T, store ports.OutboxStore) {
 	ctx := context.Background()
 	past := time.Now().Add(-1 * time.Hour)
@@ -501,7 +510,7 @@ func testExpireScopedToPartition(t *testing.T, store ports.OutboxStore) {
 	}
 
 	// Sweep only partition 1.
-	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-expscope-1")
+	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-expscope-1", persistence.LeaseToken{Version: 1, Owner: "owner-expscope"})
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}
@@ -522,7 +531,7 @@ func testExpireScopedToPartition(t *testing.T, store ports.OutboxStore) {
 		t.Fatalf("query p2: %v", err)
 	}
 	if len(p2) != 1 {
-		t.Fatalf("M1: unswept partition 2 must retain its pending record, got %d", len(p2))
+		t.Fatalf("unswept partition 2 must retain its pending record, got %d", len(p2))
 	}
 }
 
@@ -542,7 +551,7 @@ func testExpireSkipsCompleted(t *testing.T, store ports.OutboxStore) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-expsk")
+	n, err := store.Expire(ctx, time.Now(), "SESSION#sess-expsk", persistence.LeaseToken{Version: 1, Owner: "owner-expsk"})
 	if err != nil {
 		t.Fatalf("expire: %v", err)
 	}

@@ -16,7 +16,7 @@ import (
 )
 
 // TestMQTTIngressPoison_RealBrokerPropertyAmplificationAckDroppedWithoutTerminal
-// pins the MQTT-L1 escape against a real broker: a publish exceeding the User
+// pins escape against a real broker: a publish exceeding the User
 // Property count cap fits the advertised Maximum Packet Size, so the broker
 // forwards it. The adapter must ACK-and-DROP it (freeing the broker in-flight
 // slot, counting MQTTIngressPoisonDropped) and the session must stay healthy
@@ -80,7 +80,7 @@ func TestMQTTIngressPoison_RealBrokerPropertyAmplificationAckDroppedWithoutTermi
 		"over-cap user properties must be acked-and-dropped on the poison counter")
 
 	health := source.Health(ctx)
-	assert.True(t, health.Ready, "a poison publish must NOT latch the session terminal (MQTT-L1)")
+	assert.True(t, health.Ready, "a poison publish must NOT latch the session terminal")
 	assert.NoError(t, health.LastError)
 	assert.Zero(t, health.UnsettledCount,
 		"the poison drop settles immediately; it must not linger in the unsettled window")
@@ -92,7 +92,7 @@ func TestMQTTIngressPoison_RealBrokerPropertyAmplificationAckDroppedWithoutTermi
 }
 
 // TestMQTTIngressPoison_OversizePayloadAckFreesSlotAndLaterTrafficFlows pins
-// the full MQTT-L1 escape sequence for the easiest poison to trigger — a
+// the full escape sequence for the easiest poison to trigger — a
 // payload one byte over max_payload_bytes, well inside the advertised
 // Maximum Packet Size: the packet is acked-and-dropped, the session stays
 // up, a later good publish flows normally, and after a Reload (reconnect,
@@ -175,7 +175,7 @@ func TestMQTTIngressPoison_OversizePayloadAckFreesSlotAndLaterTrafficFlows(t *te
 		"oversize payload must be acked-and-dropped on the poison counter")
 
 	health := source.Health(ctx)
-	require.True(t, health.Ready, "a poison publish must NOT latch the session terminal (MQTT-L1)")
+	require.True(t, health.Ready, "a poison publish must NOT latch the session terminal")
 
 	send("good") // 4 bytes: within the cap; the same connection must still deliver
 	select {

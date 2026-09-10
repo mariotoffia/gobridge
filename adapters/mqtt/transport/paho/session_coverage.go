@@ -26,10 +26,16 @@ const orphanUnsubscribeTimeout = 10 * time.Second
 //
 // MQTT exposes no subscription listing, so the orphan is identified only
 // by its own post-grace publish and unsubscribed by that EXACT topic
-// name. A wildcard orphan subscription may therefore survive (UNSUBSCRIBE
-// matches the filter, not a concrete topic), but its publishes keep being
-// acked-and-dropped, so the stall cannot recur. The router dedups per
-// topic, so this runs at most once per orphan topic per process.
+// name. UNSUBSCRIBE matches the FILTER a subscription was created with,
+// never a topic that filter covers, so this converges an exact-filter
+// orphan and CANNOT converge a wildcard or shared one: the broker answers
+// 0x11 ("no subscription existed") and keeps delivering. That outcome is
+// reported rather than logged as a cleanup — only exact managed
+// subscription history names such a filter, and a managed session
+// converges it through reconcile instead (see reconcileManagedUnsubscribe).
+// The surviving orphan's publishes keep being acked-and-dropped, so the
+// stall cannot recur. The router dedups per topic, so this runs at most
+// once per orphan topic per process.
 //
 // A concrete topic that a STILL-DESIRED subscription covers (an active
 // broker subscription in s.activeSubs, or a filter in the current plan) is
@@ -77,9 +83,11 @@ func (s *Session) unsubscribeOrphan(topic string) {
 		return
 	}
 
+	removed := false
 	reasons, err := cm.Unsubscribe(ctx, []string{topic})
 	if err == nil {
 		confirmation := classifyUnsubackReasons([]string{topic}, reasons)
+		removed = confirmation.removedAny
 		if confirmation.firstErr != nil {
 			err = confirmation.firstErr
 		} else if len(confirmation.confirmed) != 1 {
@@ -92,6 +100,27 @@ func (s *Session) unsubscribeOrphan(topic string) {
 				"client_id", s.opts.ClientID,
 				"topic", topic,
 				"error", err,
+			)
+		}
+		return
+	}
+
+	if !removed {
+		// UNSUBACK 0x11: the broker holds no subscription under this exact
+		// name, so the orphan was created with a wildcard or shared filter
+		// this session cannot reconstruct from a delivered topic. Guessing a
+		// filter would risk removing a LIVE subscription, so nothing is
+		// removed and nothing is claimed. Ingress is unaffected (the publishes
+		// are acked-and-dropped), but MetricMQTTRouterUnmatchedDropped will
+		// keep rising for this filter until an operator removes it at the
+		// broker or the session runs with managed subscriptions, whose exact
+		// durable history converges it on the next reconcile.
+		if s.logger != nil {
+			s.logger.Warn("mqtt: orphan broker subscription survived cleanup; its filter is "+
+				"wildcarded or shared and MQTT cannot unsubscribe it by a delivered topic — "+
+				"enable managed subscriptions for exact durable filters, or remove it at the broker",
+				"client_id", s.opts.ClientID,
+				"topic", topic,
 			)
 		}
 		return
@@ -117,7 +146,7 @@ func (s *Session) unsubscribeOrphan(topic string) {
 // is the applied-state history Reconcile hands to s.reconcile so an empty
 // target plan tears down the topics actually established on the broker — even
 // when a reconnect has just reset the volatile activeSubs snapshot
-// (c4-remove-subs) AND even when a prior reconcile FAILED to unsubscribe them
+// AND even when a prior reconcile FAILED to unsubscribe them
 // (blocking-#2: the failed op's topics stay in the applied set until an
 // unsubscribe succeeds). Callers must hold s.mu.
 func (s *Session) appliedPlanTopicsLocked() []string {
@@ -141,7 +170,7 @@ func (s *Session) appliedPlanTopicsLocked() []string {
 // hold s.mu.
 //
 // Before the FIRST Reconcile of a process lifetime (s.plan == nil), EVERY
-// topic is treated as covered (MQTT-L2). Manager.Run calls Start before
+// topic is treated as covered. Manager.Run calls Start before
 // Reconcile, so a resumed clean_start=false broker replays the offline
 // QoS 1/2 backlog on CONNACK while no plan is stashed yet; if that window
 // outlives the grace timer (a reloadGate held by a concurrent operation, or
@@ -188,7 +217,7 @@ func (s *Session) topicCoveredLocked(topic string) bool {
 // planHasSharedSubscriptionsLocked reports whether the last reconciled plan
 // contains at least one shared subscription ("$share/<group>/<filter>"). It is
 // the signal that this session participates in horizontal scale-out, which
-// REQUIRES a unique per-instance client_id (HIGH-3): it drives the one-time
+// REQUIRES a unique per-instance client_id: it drives the one-time
 // reconcile advisory and escalates the severity of a session takeover (a
 // takeover while shared subscriptions are active is the observable symptom of
 // replicas sharing a client_id and DOSing each other). Callers must hold s.mu.
@@ -209,7 +238,7 @@ func (s *Session) planHasSharedSubscriptionsLocked() bool {
 // is still covered by a subscription the session wants — so the router can
 // distinguish a REAL live-route loss (a covered topic acked-and-dropped
 // past grace because its receiver handler registered late) from benign
-// orphan cleanup, and split the drop metric accordingly (M-3). It must be
+// orphan cleanup, and split the drop metric accordingly. It must be
 // called WITHOUT r.mu held (it takes s.mu); both router drop sites release
 // r.mu before invoking it.
 func (s *Session) topicCovered(topic string) bool {

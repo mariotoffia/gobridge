@@ -42,7 +42,7 @@ type Delivery struct {
 	// settled: a settlement attempt has been claimed (may still be in
 	// flight). settleDone: that attempt has finished. settleOK: it
 	// finished successfully. The three flags let concurrent callers
-	// distinguish "in progress" from "previously failed" (finding 17).
+	// distinguish "in progress" from "previously failed".
 	settled    bool
 	settleDone bool
 	settleOK   bool
@@ -59,7 +59,7 @@ type Delivery struct {
 	// permanently consumes this delivery's link-credit slot (go-amqp only
 	// replenishes credit on a completed disposition), so the receiver
 	// uses this to count failures and force a link rebuild before credit
-	// exhaustion stalls it silently (finding F2). Guarded by
+	// exhaustion stalls it silently. Guarded by
 	// onSettleFailedOnce.
 	onSettleFailed     func(err error)
 	onSettleFailedOnce sync.Once
@@ -67,7 +67,7 @@ type Delivery struct {
 	// delayWarnOnce dedupes the "delayed retry" Warn to once
 	// per receiver link. It is shared by every Delivery created from the
 	// same link (set by receiverLink.Receive) so an unhonored delayed
-	// retry warns once per link rather than once per message (G-N2). A nil
+	// retry warns once per link rather than once per message (G). A nil
 	// guard (directly-constructed deliveries) warns on each call.
 	delayWarnOnce *sync.Once
 }
@@ -109,7 +109,7 @@ func (d *Delivery) Envelope() *messaging.Envelope { return d.env }
 // was already claimed by an earlier call. A concurrent second caller
 // used to get a misleading "already settled with error" while the first
 // attempt was merely still IN FLIGHT; the in-progress case now has its
-// own message (finding 17). Callers must hold no locks.
+// own message. Callers must hold no locks.
 func (d *Delivery) alreadySettledError() error {
 	d.mu.Lock()
 	done, ok := d.settleDone, d.settleOK
@@ -146,7 +146,7 @@ func (d *Delivery) fireOnSettleFailed(err error) {
 // finishSettle records the outcome of a settlement attempt, fires the
 // in-flight tracking hook, and — on failure — notifies the owning
 // Receiver so it can observe the leaked link credit and force a link
-// rebuild before the receiver stalls silently (finding F2).
+// rebuild before the receiver stalls silently.
 func (d *Delivery) finishSettle(err error) {
 	d.mu.Lock()
 	d.settleDone = true
@@ -217,12 +217,12 @@ func (d *Delivery) Retry(ctx context.Context, after time.Duration, _ error) erro
 
 	var err error
 	if after > 0 {
-		// Finding 2 (delayed-retry boundary): the broker, not this
+		// Delayed-retry boundary: the broker, not this
 		// client, ultimately controls redelivery timing for a modified
 		// outcome. The x-opt-delivery-time annotation asks the broker to
 		// schedule redelivery at now+after; a honoring broker applies the
 		// spacing, a non-honoring one falls back to its own policy.
-		// Surface the broker-delegated scheduling two ways (G-N2): a
+		// Surface the broker-delegated scheduling two ways (G): a
 		// per-message counter for rate/alerting and a once-per-link Warn
 		// (deduped via delayWarnOnce).
 		d.metrics.Counter(MetricAMQP10DelayedRetryDeferred, 1)

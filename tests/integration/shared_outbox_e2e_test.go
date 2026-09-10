@@ -20,19 +20,19 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	"github.com/mariotoffia/gobridge/runtime/session"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
+	"github.com/mariotoffia/gobridge/testutil/flocilocal"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 func TestMain(m *testing.M) {
 	ddblocal.Configure(ddblocal.WithCleanOrphans(true))
-	sqslocal.Configure(sqslocal.WithCleanOrphans(true))
+	flocilocal.Configure(flocilocal.WithCleanOrphans(true))
 	mqttlocal.Configure(mqttlocal.WithCleanOrphans(true))
 
 	code := m.Run()
 
-	sqslocal.Shutdown()
+	flocilocal.Shutdown()
 	mqttlocal.Shutdown()
 	ddblocal.Shutdown()
 	os.Exit(code)
@@ -548,7 +548,7 @@ func TestE2E_MemoryLease_DynamoOutbox(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// G4: Crash recovery with DynamoDB stores
+// Crash recovery with DynamoDB stores
 // ---------------------------------------------------------------------------
 
 // validates crash recovery: primary persists and acks then stops before drain; secondary acquires the lease and sends the orphaned record.
@@ -679,7 +679,7 @@ func TestE2E_DynamoDB_CrashRecovery(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// G5: Fencing token validation with DynamoDB
+// Fencing token validation with DynamoDB
 // ---------------------------------------------------------------------------
 
 // validates DynamoDB conditional writes reject Complete with a stale token after another owner reclaims the record.
@@ -764,10 +764,14 @@ func TestE2E_DynamoDB_FencingValidation(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// G6: Poison message with DynamoDB
+// Poison message with DynamoDB
 // ---------------------------------------------------------------------------
 
 // validates poison handling: repeated send failure exceeds MaxReplayAttempts and the record moves to the DLQ.
+// poisonReplayDLQBound is how long the exhausted-replay path may take to reach
+// the dead-letter queue before the wait is treated as a wedged drainer.
+const poisonReplayDLQBound = 60 * time.Second
+
 func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 	client := ddblocal.Client(t)
 
@@ -781,7 +785,7 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 	// MaxReplayAttempts=3 means 3 send attempts; on the 4th claim the
 	// drainer's poison gate detects ReplayCount > MaxReplayAttempts and
 	// sends to DLQ. Stores never filter claims by replay count (contract
-	// C2) — the drainer is the sole poison authority.
+	// The drainer is the sole poison authority.
 	outboxStore := dboutbox.NewStore(client,
 		dboutbox.WithTableName(outboxTable),
 		dboutbox.WithStaleClaimDuration(200*time.Millisecond),
@@ -797,10 +801,9 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 		goruntime.WithOutboxStore(outboxStore),
 		goruntime.WithLeaseStore(leaseStore),
 		goruntime.WithDLQStore(dlq),
-		// The poison gates (legacy poisonMinAge and the wall-clock ReplayBudget
-		// set on the route policy below) would otherwise stall this fast-poll
-		// e2e; replay exhaustion crossing the budget is what is under test.
-		goruntime.WithOutboxPoisonMinAge(time.Millisecond),
+		// The poison gate is replay exhaustion AND the wall-clock ReplayBudget
+		// measured from the record's first attempt; the route policy below
+		// shrinks that budget so this fast-poll e2e does not stall on it.
 	)
 
 	receiver := newFakeReceiver()
@@ -847,7 +850,16 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 	waitFor(t, 3*time.Second, "acked", func() bool { return del.isAcked() })
 
 	// Wait for the drainer to exhaust replay attempts and send to DLQ.
-	waitFor(t, 30*time.Second, "DLQ entry", func() bool {
+	//
+	// The bound is derived from the retry schedule this route runs, not picked:
+	// three replay attempts back off 1s, 2s and 4s at the default initial
+	// interval and multiplier, and every attempt adds jitter plus a claim and a
+	// complete round trip to DynamoDB. That lands near 15s on an idle host, so
+	// a 30s bound left no room for store latency at all — it passed alone and
+	// failed inside a loaded suite, reporting a drainer defect that did not
+	// exist. Four times the idle cost absorbs a slow store without letting a
+	// genuinely wedged drainer pass.
+	waitFor(t, poisonReplayDLQBound, "DLQ entry", func() bool {
 		dlq.mu.Lock()
 		defer dlq.mu.Unlock()
 		return len(dlq.entries) >= 1
@@ -857,7 +869,7 @@ func TestE2E_DynamoDB_PoisonMessage(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// G7: Fan-out atomicity with DynamoDB
+// Fan-out atomicity with DynamoDB
 // ---------------------------------------------------------------------------
 
 // validates fan-out persist and drain to two sessions; idempotent re-emit of the same envelope does not duplicate sends.

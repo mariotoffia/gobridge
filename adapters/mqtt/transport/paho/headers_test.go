@@ -152,7 +152,7 @@ func TestPublishFromEnvelope_BasicFields(t *testing.T) {
 	})
 	opts := SenderOptions{QoS: 1, Retain: true}
 
-	pub := PublishFromEnvelope(env, env.Subject(), opts, nil)
+	pub := mustPublishFromEnvelope(t, env, env.Subject(), opts, nil)
 
 	if pub.Topic != "out/topic" {
 		t.Errorf("topic = %q, want %q", pub.Topic, "out/topic")
@@ -175,7 +175,7 @@ func TestPublishFromEnvelope_DefaultTopic(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte("x")})
 	opts := SenderOptions{DefaultTopic: "fallback/topic", QoS: 0}
 
-	pub := PublishFromEnvelope(env, opts.DefaultTopic, opts, nil)
+	pub := mustPublishFromEnvelope(t, env, opts.DefaultTopic, opts, nil)
 
 	if pub.Topic != "fallback/topic" {
 		t.Errorf("topic = %q, want %q", pub.Topic, "fallback/topic")
@@ -196,7 +196,7 @@ func TestPublishFromEnvelope_Headers(t *testing.T) {
 	})
 	opts := SenderOptions{QoS: 1}
 
-	pub := PublishFromEnvelope(env, env.Subject(), opts, nil)
+	pub := mustPublishFromEnvelope(t, env, env.Subject(), opts, nil)
 
 	if pub.Properties == nil {
 		t.Fatal("properties should be set")
@@ -231,7 +231,7 @@ func TestPublishFromEnvelope_MessageExpiry(t *testing.T) {
 	})
 	opts := SenderOptions{QoS: 1}
 
-	pub := PublishFromEnvelope(env, env.Subject(), opts, nil)
+	pub := mustPublishFromEnvelope(t, env, env.Subject(), opts, nil)
 
 	if pub.Properties == nil || pub.Properties.MessageExpiry == nil {
 		t.Fatal("MessageExpiry should be set")
@@ -248,7 +248,7 @@ func TestPublishFromEnvelope_NoProperties(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte("x")})
 	opts := SenderOptions{QoS: 0}
 
-	pub := PublishFromEnvelope(env, "t", opts, nil)
+	pub := mustPublishFromEnvelope(t, env, "t", opts, nil)
 
 	if pub.Properties != nil {
 		for _, u := range pub.Properties.User {
@@ -362,8 +362,7 @@ func TestEnvelopeFromPublish_TimeConsistency(t *testing.T) {
 // nil properties produces an envelope carrying only the adapter-controlled
 // transport headers (recorded topic, retained flag, QoS) plus the
 // generated-identity marker: with no producer identity the id is adapter-minted,
-// which the adapter records so the runtime can bound the uncountable replay case
-// (MQTT-CORE-1).
+// which the adapter records so the runtime can bound the uncountable replay case.
 func TestEnvelopeFromPublish_NilProperties(t *testing.T) {
 	pub := &pahov5.Publish{
 		Topic:   "t",
@@ -376,7 +375,7 @@ func TestEnvelopeFromPublish_NilProperties(t *testing.T) {
 		t.Errorf("expected exactly 4 headers (mqtt.topic, mqtt.retained, mqtt.qos, x-bridge.generated-id) for nil properties, got %d: %v", got, env.Headers())
 	}
 	if _, ok := messaging.GetHeaderString(env.Headers(), messaging.HeaderGeneratedID); !ok {
-		t.Errorf("no-identity publish: expected HeaderGeneratedID marker (MQTT-CORE-1)")
+		t.Errorf("no-identity publish: expected HeaderGeneratedID marker")
 	}
 	if v, _ := messaging.GetHeaderString(env.Headers(), HeaderMQTTTopic); v != "t" {
 		t.Errorf("headers[%q] = %q, want %q", HeaderMQTTTopic, v, "t")
@@ -577,7 +576,7 @@ func TestPublishFromEnvelope_IncludesMessageID(t *testing.T) {
 		Subject: "t",
 		Payload: []byte("p"),
 	})
-	pub := PublishFromEnvelope(env, env.Subject(), SenderOptions{QoS: 1}, nil)
+	pub := mustPublishFromEnvelope(t, env, env.Subject(), SenderOptions{QoS: 1}, nil)
 
 	if pub.Properties == nil {
 		t.Fatal("properties should be set")
@@ -601,7 +600,7 @@ func TestRoundTrip_EnvelopeID(t *testing.T) {
 		Payload: []byte("data"),
 	})
 
-	pub := PublishFromEnvelope(original, original.Subject(), SenderOptions{QoS: 1}, nil)
+	pub := mustPublishFromEnvelope(t, original, original.Subject(), SenderOptions{QoS: 1}, nil)
 	restored := EnvelopeFromPublish(pub, nil)
 
 	if restored.ID() != original.ID() {
@@ -622,7 +621,7 @@ func TestRoundTrip_EnvelopePublishEnvelope(t *testing.T) {
 	})
 
 	opts := SenderOptions{QoS: 1}
-	pub := PublishFromEnvelope(original, original.Subject(), opts, nil)
+	pub := mustPublishFromEnvelope(t, original, original.Subject(), opts, nil)
 	restored := EnvelopeFromPublish(pub, nil)
 
 	if restored.Subject() != original.Subject() {

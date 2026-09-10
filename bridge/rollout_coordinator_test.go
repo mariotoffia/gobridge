@@ -15,11 +15,11 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// errStoreUnavailable simulates a transient store outage (F9).
+// errStoreUnavailable simulates a transient store outage.
 var errStoreUnavailable = errors.New("rollout store unavailable")
 
 // flakyRolloutStore wraps a real memoryrollout.Store and can inject a Current
-// outage (F9) or a Commit rejection (F5), so coordinator-step tests exercise how
+// outage or a Commit rejection, so coordinator-step tests exercise how
 // the coordinator HANDLES a failing/fencing store — the store's own enforcement
 // is covered by the domain + conformance suites.
 type flakyRolloutStore struct {
@@ -96,14 +96,14 @@ func proposeAndAck(t *testing.T, epoch, ackers []string, nacks map[string]string
 // coordTok is a valid coordinator fencing token for the step tests.
 var coordTok = persistence.LeaseToken{Owner: "coordinator", Version: 1}
 
-// TestCoordinatorStep_CommitsFullyAckedRollout validates F3: a coordinator
+// TestCoordinatorStep_CommitsFullyAckedRollout validates that a coordinator
 // (here a successor observing state a predecessor left) drives a fully-acked
 // rollout to Committed through the real store.
 func TestCoordinatorStep_CommitsFullyAckedRollout(t *testing.T) {
 	st := proposeAndAck(t, []string{"a", "b"}, []string{"a", "b"}, nil)
 	ctx := context.Background()
 
-	terminal, err := coordinatorStep(ctx, st, []string{"a", "b"}, coordTok, rolloutBase.Add(time.Minute))
+	terminal, err := coordinatorStep(ctx, nil, st, []string{"a", "b"}, coordTok, rolloutBase.Add(time.Minute))
 
 	require.NoError(t, err)
 	require.True(t, terminal)
@@ -112,13 +112,13 @@ func TestCoordinatorStep_CommitsFullyAckedRollout(t *testing.T) {
 	require.Equal(t, persistence.RolloutCommitted, cur.State())
 }
 
-// TestCoordinatorStep_AbortsOnNack validates F2 driven through the store: a
+// TestCoordinatorStep_AbortsOnNack validates driven through the store: a
 // nacked rollout is aborted, carrying the nack reason.
 func TestCoordinatorStep_AbortsOnNack(t *testing.T) {
 	st := proposeAndAck(t, []string{"a", "b"}, []string{"a"}, map[string]string{"b": "bad plugin"})
 	ctx := context.Background()
 
-	terminal, err := coordinatorStep(ctx, st, []string{"a", "b"}, coordTok, rolloutBase.Add(time.Minute))
+	terminal, err := coordinatorStep(ctx, nil, st, []string{"a", "b"}, coordTok, rolloutBase.Add(time.Minute))
 
 	require.NoError(t, err)
 	require.True(t, terminal)
@@ -133,13 +133,13 @@ func TestCoordinatorStep_AbortsOnNack(t *testing.T) {
 func TestCoordinatorStep_WaitsWhenNoRollout(t *testing.T) {
 	st := memoryrollout.NewStore(memoryrollout.WithClock(clocktest.NewAt(rolloutBase)))
 
-	terminal, err := coordinatorStep(context.Background(), st, []string{"a"}, coordTok, rolloutBase)
+	terminal, err := coordinatorStep(context.Background(), nil, st, []string{"a"}, coordTok, rolloutBase)
 
 	require.NoError(t, err)
 	require.False(t, terminal)
 }
 
-// TestCoordinatorStep_SurfacesStaleFencingToken validates F5 handling: when the
+// TestCoordinatorStep_SurfacesStaleFencingToken validates handling: when the
 // store rejects the Commit because this coordinator was deposed, the step does
 // NOT report the rollout terminal and surfaces the stale-token error so the loop
 // can step down.
@@ -147,13 +147,13 @@ func TestCoordinatorStep_SurfacesStaleFencingToken(t *testing.T) {
 	inner := proposeAndAck(t, []string{"a"}, []string{"a"}, nil)
 	st := &flakyRolloutStore{inner: inner, commitErr: shared.ErrStaleFencingToken}
 
-	terminal, err := coordinatorStep(context.Background(), st, []string{"a"}, coordTok, rolloutBase.Add(time.Minute))
+	terminal, err := coordinatorStep(context.Background(), nil, st, []string{"a"}, coordTok, rolloutBase.Add(time.Minute))
 
 	require.False(t, terminal)
 	require.ErrorIs(t, err, shared.ErrStaleFencingToken)
 }
 
-// TestCoordinatorStep_StoreUnavailableThenResolves validates F9: while the store
+// TestCoordinatorStep_StoreUnavailableThenResolves validates that while the store
 // is unavailable the coordinator makes no decision and surfaces the outage; once
 // the store returns, the same observation commits.
 func TestCoordinatorStep_StoreUnavailableThenResolves(t *testing.T) {
@@ -161,12 +161,12 @@ func TestCoordinatorStep_StoreUnavailableThenResolves(t *testing.T) {
 	st := &flakyRolloutStore{inner: inner, failReads: true}
 	ctx := context.Background()
 
-	terminal, err := coordinatorStep(ctx, st, []string{"a"}, coordTok, rolloutBase.Add(time.Minute))
+	terminal, err := coordinatorStep(ctx, nil, st, []string{"a"}, coordTok, rolloutBase.Add(time.Minute))
 	require.False(t, terminal)
 	require.ErrorIs(t, err, errStoreUnavailable)
 
 	st.failReads = false // store recovers
-	terminal, err = coordinatorStep(ctx, st, []string{"a"}, coordTok, rolloutBase.Add(time.Minute))
+	terminal, err = coordinatorStep(ctx, nil, st, []string{"a"}, coordTok, rolloutBase.Add(time.Minute))
 	require.NoError(t, err)
 	require.True(t, terminal)
 	cur, err := st.Current(ctx)
@@ -187,7 +187,7 @@ func TestFirstSideEffectAllowed(t *testing.T) {
 }
 
 // TestRolloutCoordinator_LockDelayDefersFirstSideEffect validates the Chubby-
-// style lock-delay (design §6): a freshly elected coordinator does not commit a
+// style lock-delay (cluster-config-rollout-protocol.md §6): a freshly elected coordinator does not commit a
 // committable rollout until it has waited out one previous-lease duration, even
 // though the barrier is already satisfied. Deterministic via clocktest — the
 // coordinator's observe() is caller-driven, no goroutine.
@@ -252,7 +252,7 @@ func TestRolloutCoordinator_ObserveBeforeElectIsNoOp(t *testing.T) {
 	require.Equal(t, persistence.RolloutStaging, cur.State(), "an unelected coordinator must not commit")
 }
 
-// TestRolloutCoordinator_SuccessorResumesAfterCrash validates F3: the first
+// TestRolloutCoordinator_SuccessorResumesAfterCrash validates that the first
 // coordinator elects and then crashes before deciding; after its lease expires a
 // successor elects and, past its own lock-delay, drives the in-progress rollout
 // left in the store to Committed. All state is durable, so resume is election +
@@ -345,7 +345,7 @@ func TestDecideRollout_WaitWhenAcksIncompleteBeforeDeadline(t *testing.T) {
 	require.Equal(t, rolloutActionWait, action)
 }
 
-// TestDecideRollout_AbortWhenDeadlineExceededIncomplete validates F1: a member
+// TestDecideRollout_AbortWhenDeadlineExceededIncomplete validates that a member
 // that never acks lets the deadline pass → the coordinator aborts.
 func TestDecideRollout_AbortWhenDeadlineExceededIncomplete(t *testing.T) {
 	deadline := rolloutBase.Add(5 * time.Minute)
@@ -357,7 +357,7 @@ func TestDecideRollout_AbortWhenDeadlineExceededIncomplete(t *testing.T) {
 	require.NotEmpty(t, reason)
 }
 
-// TestDecideRollout_AbortOnNackBeforeDeadline validates F2: any Nack aborts the
+// TestDecideRollout_AbortOnNackBeforeDeadline validates that any Nack aborts the
 // rollout immediately, without waiting for the deadline.
 func TestDecideRollout_AbortOnNackBeforeDeadline(t *testing.T) {
 	deadline := rolloutBase.Add(5 * time.Minute)
@@ -371,7 +371,7 @@ func TestDecideRollout_AbortOnNackBeforeDeadline(t *testing.T) {
 	require.Contains(t, reason, "plugin build failed")
 }
 
-// TestDecideRollout_AbortOnMembershipChangeEvenIfAllAcked validates F6: the
+// TestDecideRollout_AbortOnMembershipChangeEvenIfAllAcked validates that the
 // epoch is frozen at Propose; if live membership diverges (here a joiner) the
 // coordinator aborts — even though every ORIGINAL epoch member has acked. This
 // proves the membership check precedes the commit check.

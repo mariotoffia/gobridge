@@ -274,11 +274,11 @@ func (s *outageOutboxStore) Complete(ctx context.Context, ids []string, token pe
 	return s.OutboxStore.Complete(ctx, ids, token)
 }
 
-func (s *outageOutboxStore) Expire(ctx context.Context, before time.Time, partition string) (int, error) {
+func (s *outageOutboxStore) Expire(ctx context.Context, before time.Time, partition string, token persistence.LeaseToken) (int, error) {
 	if err := s.fail(); err != nil {
 		return 0, err
 	}
-	return s.OutboxStore.Expire(ctx, before, partition)
+	return s.OutboxStore.Expire(ctx, before, partition, token)
 }
 
 func (s *outageOutboxStore) QueryPending(ctx context.Context, key string, limit int) ([]*persistence.OutboxRecord, error) {

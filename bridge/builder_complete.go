@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"slices"
 	"strings"
 	"time"
 
@@ -18,7 +17,7 @@ import (
 // builderCloseBudget bounds the best-effort teardown of receivers/senders (and
 // their network clients / broker links) when complete() fails after building
 // them. It is detached from the possibly-already-expired build ctx so a
-// deadline-expired swap still releases the links (HIGH-5).
+// deadline-expired swap still releases the links.
 const builderCloseBudget = 5 * time.Second
 
 // complete creates sessions, receivers, senders, wires routes, and
@@ -28,7 +27,7 @@ const builderCloseBudget = 5 * time.Second
 //
 // complete is unexported; external callers reach it through
 // Builder.Build (single-shot) or BuildPlan.Commit (explicit
-// two-phase). See M-3 / W-7.
+// two-phase).
 func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime.Runtime, retErr error) {
 	if prep == nil {
 		return nil, fmt.Errorf("bridge: complete called with nil preparedBuild")
@@ -37,11 +36,11 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 	// If the build fails after the runtime takes ownership of the prep-opened
 	// stores, the discarded runtime is never Started and therefore never
 	// Stopped, so its lease/outbox/DLQ handles (e.g. SQLite files) would leak on
-	// every failed swap (Finding 2). Release them here, mirroring runtime.Stop's
+	// every failed swap. Release them here, mirroring runtime.Stop's
 	// io.Closer teardown. Sessions are handled by the defer above; the durable
 	// store handles are the piece an abandoned, never-started runtime would
 	// otherwise never close. This is independent of the supervisor calling
-	// newRt.Stop() on a runtime it received (C1): complete() returns nil on
+	// newRt.Stop() on a runtime it received: complete() returns nil on
 	// failure, so the supervisor never sees this runtime to stop it.
 	defer func() {
 		if retErr != nil {
@@ -55,11 +54,13 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 	}
 	defer func() {
 		if retErr != nil {
-			for id, s := range sessions {
-				if closeErr := s.Close(ctx); closeErr != nil && b.logger != nil {
-					b.logger.Warn("closing session after build failure", "session", id, "error", closeErr)
-				}
-			}
+			// Detached and bounded, exactly like the receiver/sender teardown
+			// below: the build context is routinely already expired here (a
+			// deadline-bounded swap), and closing a session with a dead context
+			// makes the broker client refuse the disconnect — so the client id /
+			// durable session is still held broker-side when the recovery build
+			// immediately reconnects with the same identity.
+			closeBuiltContextClosers(ctx, b.logger, "session", sessions)
 		}
 	}()
 
@@ -72,7 +73,7 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 	// ValidateRoutes) would otherwise leak every one on each failed reload — the
 	// runtime that would own and Stop them is never returned. Close any that
 	// implement ports.ContextCloser on every failure path, mirroring the
-	// session/store defers (HIGH-5). Registered after the session defer so it
+	// session/store defers. Registered after the session defer so it
 	// runs BEFORE it (LIFO): tear the links down before their sessions.
 	defer func() {
 		if retErr != nil {
@@ -101,22 +102,22 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 	// CredentialAware. Gated on the effective push store so builds without
 	// one skip this entirely, preserving legacy behavior. effectivePushStore
 	// resolves an explicitly-registered push store, or lazily wraps a polled
-	// pull store with the fully-resolved logger (Finding 13).
+	// pull store with the fully-resolved logger.
 	pushStore := b.effectivePushStore()
 	if pushStore != nil && (len(sessionURIs)+len(receiverURIs)+len(senderURIs)) > 0 {
 		var refresherOpts []RefresherOption
 		// Emit MetricCredentialRotationApplied per applied rotation so the
-		// success side of credential rotation is observable (F4).
+		// success side of credential rotation is observable.
 		if b.metrics != nil {
 			refresherOpts = append(refresherOpts, WithRefresherMetrics(b.metrics))
 		}
 		// Wire push rotations to the pull-cache invalidator so the next
-		// synchronous resolve fetches fresh material (contract C4) — but ONLY for
+		// synchronous resolve fetches fresh material (contract) — but ONLY for
 		// a decoupled push store. The coherent lazy-wrapper path already refreshes
 		// this same resolver's cache on the detecting poll, so invalidating there
-		// would delete a just-cached fresh entry and blind F5 stale-serve for a
-		// poll interval (see pullCacheNeedsRotationInvalidation / adversarial
-		// Finding 1). Detect the capability structurally to avoid importing runtime.
+		// would delete a just-cached fresh entry and blind stale-serve for a
+		// poll interval (see pullCacheNeedsRotationInvalidation). Detect the
+		// capability structurally to avoid importing runtime.
 		if b.pullCacheNeedsRotationInvalidation() {
 			if inv, ok := b.credStore.(interface{ InvalidateCache(uri string) }); ok {
 				refresherOpts = append(refresherOpts, WithRotationCallback(inv.InvalidateCache))
@@ -154,14 +155,14 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 		rt.AttachCredentialCloser(func(_ context.Context) { refresher.Close() })
 	}
 
-	// Contract C2: run the runtime's pre-start route validation now, while the
+	// Contract: run the runtime's pre-start route validation now, while the
 	// OLD runtime (if any) is still serving, so a statically-rejectable config
 	// fails HERE — during construction, before the supervisor stops the old
 	// runtime — instead of inside Start, after the old runtime has already been
 	// torn down and cannot resume. ValidateRoutes is idempotent and
 	// side-effect-free; Start runs the same checks internally as a backstop. On
 	// failure retErr is set, so the defers above release the sessions and store
-	// handles this half-built runtime opened (Finding 2).
+	// handles this half-built runtime opened.
 	if err := rt.ValidateRoutes(); err != nil {
 		return nil, fmt.Errorf("bridge: route validation: %w", err)
 	}
@@ -174,7 +175,7 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 // production adapters (Service Bus receiver/sender, AMQP 1.0 receiver/sender,
 // HTTP SSE sender) hold network clients or broker links that would otherwise
 // leak on every failed reload, since the runtime that owns and Stops them is
-// never returned (HIGH-5). Teardown is best-effort and bounded by a fresh
+// never returned. Teardown is best-effort and bounded by a fresh
 // budget DETACHED from ctx: complete() often fails BECAUSE ctx expired, and a
 // dead ctx would make every Close return immediately without releasing the link.
 func closeBuiltContextClosers[T any](ctx context.Context, logger *slog.Logger, kind string, items map[string]T) {
@@ -216,13 +217,13 @@ func (b *Builder) closeStoreHandles(stores *storeResult) {
 	}
 }
 
-// (contract C5). Instead of a hard-coded session.DefaultConfig — which pinned a
+// (contract). Instead of a hard-coded session.DefaultConfig — which pinned a
 // ~6-minute failover regardless of a tuned cluster — it inherits the timings
 // from the route's own session block when present, the same source the route's
 // primary session uses, so a binding-only exclusive sender is tuned like the
 // rest of the deployment. When the route has no session block it falls back to
 // defaults but leaves RenewInterval unset so the session manager derives it
-// from LeaseTTL (contract C3), and applies bridge-level drain defaults.
+// from LeaseTTL (contract), and applies bridge-level drain defaults.
 func (b *Builder) bindingSessionConfig(routeDef ports.RouteDef, sessionID string) (session.Config, error) {
 	clustered := IsClusteredDeployment(b.cfg)
 	if routeDef.Session != nil {
@@ -290,7 +291,7 @@ func (b *Builder) wireRoutes(
 		// plan is identical for all routes sharing it — safe under the
 		// first-wins session-manager dedup in runtime/bridge_start.go.
 		// Without this the broker session declares no topology and
-		// subscribes to nothing (F1). sessCfg is nil only when the route has
+		// subscribes to nothing. sessCfg is nil only when the route has
 		// no session, in which case there is nothing to reconcile.
 		if sessCfg != nil && routeDef.Session != nil {
 			sessCfg.Plan = sessionPlanFor(b.cfg, routeDef.Session.SessionID, b.logger)
@@ -298,59 +299,12 @@ func (b *Builder) wireRoutes(
 
 		var routeSession ports.Session
 		var routeSender ports.Sender
-		var caps []ports.Capability
-		var sourceVisTimeout time.Duration
-		var sourceAutoExtend bool
-		var sourceTransport string
 
 		recvDef := findReceiver(b.cfg, routeDef.ReceiverID)
+		source := b.sourceRouteFacts(recvDef)
+		sourceSessionID := ""
 		if recvDef != nil {
-			transport := recvDef.Transport
-			if transport == "" {
-				if sd := findSession(b.cfg, recvDef.SessionID); sd != nil {
-					transport = sd.Transport
-				}
-			}
-			// Record the resolved source transport identity so the runtime can
-			// strip foreign redelivery-count headers on ingress (F3). Prefer the
-			// receiver config's canonical Kind() (e.g. "aws.sqs") over the
-			// operator-chosen registry name: a count-bearing transport registered
-			// under a custom name would otherwise have its OWN redelivery-count
-			// header stripped as foreign, silently disabling the replay cap. Falls
-			// back to the registry name when the receiver carries no typed plugin
-			// config (count-less transports, which strip all count headers anyway).
-			sourceTransport = transport
-			if recvDef.Config != nil {
-				if k := recvDef.Config.Kind(); k != "" {
-					sourceTransport = k
-				}
-			}
-			if tf, ok := b.transports[transport]; ok {
-				caps = tf.Capabilities()
-				if vtp, ok := tf.(ports.VisibilityTimeoutProvider); ok {
-					sourceVisTimeout = vtp.VisibilityTimeout()
-				}
-				// A per-route receiver config (SQS visibility_timeout, ASB
-				// lock_duration) overrides the transport-wide Factory
-				// constant, so the validator checks SendTimeout against the
-				// window the route actually runs with (Finding 2 / D2). Its
-				// auto-extend flag lets the validator skip that check when
-				// the window is renewed in the background.
-				if vc, ok := recvDef.Config.(ports.VisibilityTimeoutConfig); ok {
-					sourceVisTimeout = vc.EffectiveVisibilityTimeout()
-					sourceAutoExtend = vc.AutoExtendEnabled()
-				}
-				// A per-route receiver config may also narrow the source
-				// capabilities below the transport-wide Factory constant when
-				// the receiver's MODE implements a smaller set (e.g. ASB
-				// ReceiveAndDelete cannot redeliver, so it drops
-				// CapVisibilityExtension/CapSourceRedelivery). The validator's
-				// silent-drop check then sees the honest per-route set instead
-				// of the transport-wide constant (C14 F4).
-				if cc, ok := recvDef.Config.(ports.CapabilityConfig); ok {
-					caps = cc.Capabilities()
-				}
-			}
+			sourceSessionID = recvDef.SessionID
 		}
 
 		if routeDef.Session != nil {
@@ -379,7 +333,7 @@ func (b *Builder) wireRoutes(
 			return fmt.Errorf("bridge: route %q: no sender resolved", routeDef.ID)
 		}
 
-		// F-3: warn when a route's egress can lose an accepted publish at crash
+		// warn when a route's egress can lose an accepted publish at crash
 		// in a way that would become bridge-level loss. See
 		// egressDurabilityAdvisory — silent for both current delivery modes.
 		if b.logger != nil &&
@@ -397,7 +351,7 @@ func (b *Builder) wireRoutes(
 		// its primary session. If that session resolves to nil because it is
 		// declared on a stateless transport, the runtime creates no drainer for
 		// the partition: the source is ACKed after the outbox persist but the
-		// records are never drained — silent message loss (Finding 4). Reject
+		// records are never drained — silent message loss. Reject
 		// it at build time.
 		if routeDef.Session != nil && routeSession == nil &&
 			routing.DeliveryMode(routeDef.DeliveryMode) == routing.DeliverySharedOutbox {
@@ -422,10 +376,12 @@ func (b *Builder) wireRoutes(
 			Policy:                  policy,
 			Bindings:                bindings,
 			Processors:              procs,
-			SourceCapabilities:      caps,
-			SourceVisibilityTimeout: sourceVisTimeout,
-			SourceAutoExtend:        sourceAutoExtend,
-			SourceTransport:         sourceTransport,
+			SourceCapabilities:      source.Capabilities,
+			SourceVisibilityTimeout: source.VisibilityTimeout,
+			SourceAutoExtend:        source.AutoExtend,
+			SourceTransport:         source.Transport,
+			SourceRedeliveryRefusal: source.RedeliveryRefusal,
+			SourceSessionID:         sourceSessionID,
 		}
 
 		// Build content-based resolver from config if present.
@@ -453,14 +409,14 @@ func (b *Builder) wireRoutes(
 
 		// Build per-binding AddressValidator registry. The validator is
 		// supplied by the binding's transport via TransportFactory's
-		// AddressValidator capability (AP-005). Bindings whose transport
+		// AddressValidator capability. Bindings whose transport
 		// returns a nil validator are simply omitted; the runtime then
 		// skips validation for those bindings.
 		if vmap := buildAddressValidators(b.transports, bindings); len(vmap) > 0 {
 			rcfg.AddressValidators = vmap
 		}
 
-		// Build-time address validation (D1): fail fast when a binding's static
+		// Build-time address validation: fail fast when a binding's static
 		// address does not match its sender's bound destination, instead of
 		// surfacing the error only at first send. Only literal addresses are
 		// checked here — an address containing a "{key}" placeholder is rendered
@@ -513,7 +469,7 @@ func (b *Builder) wireRoutes(
 			// Derive the binding session's lease timings the same way the
 			// route's primary session gets them, instead of a hard-coded
 			// DefaultConfig that pinned a ~6-minute failover on an otherwise
-			// tuned cluster (contract C5).
+			// tuned cluster (contract).
 			sc, scErr := b.bindingSessionConfig(routeDef, bd.SessionID)
 			if scErr != nil {
 				return fmt.Errorf("bridge: route %q: binding %q session config: %w", routeDef.ID, bd.ID, scErr)
@@ -525,7 +481,7 @@ func (b *Builder) wireRoutes(
 			}
 			// Thread the session's desired topology so a session registered only
 			// via a binding (Path-2) still reconciles its receivers' subscriptions
-			// and sender exchanges instead of an empty plan (F1-P4). Mirrors the
+			// and sender exchanges instead of an empty plan. Mirrors the
 			// Path-1 assignment above. bd.SessionID is non-empty (guarded above).
 			sc.Plan = sessionPlanFor(b.cfg, bd.SessionID, b.logger)
 			if err := rt.RegisterSessionSender(sc, sess, snd); err != nil {
@@ -537,13 +493,9 @@ func (b *Builder) wireRoutes(
 
 	// registeredSessions now holds every session the builder wired with a
 	// manager (route-primary Path-1 + session-sender Path-2). A plan-driven
-	// receiver bound to a session absent from this set would never reconcile and
-	// be silently inert — fail the build instead (ADV-P4-FU1).
-	if err := b.validatePlanDrivenReceiverSessions(registeredSessions); err != nil {
-		return err
-	}
-
-	return nil
+	// receiver bound to a session absent from this set is managed by its own
+	// binding to it: the session becomes an ingress session.
+	return b.wireIngressSessions(rt, sessions, registeredSessions)
 }
 
 // egressDurabilityAdvisory reports whether a route wiring warrants an
@@ -594,56 +546,6 @@ func egressDurabilityAdvisory(mode routing.DeliveryMode, snd ports.Sender) bool 
 	default:
 		return true
 	}
-}
-
-// PLAN-DRIVEN transport (one advertising ports.CapPlanDrivenSubscriptions —
-// mqtt, amqp091) is bound to a session that gets NO session manager. Such a
-// session is never reconciled, so the receiver's subscriptions are never
-// established and it is silently inert (ADV-P4-FU1, the missing-manager sibling
-// of ADV-F1-P4).
-//
-// managed is the set of sessions wired with a manager during wireRoutes — every
-// route-primary session (Path-1) and every session-sender session (Path-2). A
-// session manager is created ONLY from one of those two wirings (see
-// runtime/bridge_start.go), so a plan-driven receiver whose session is absent
-// from this set can never have its plan reconciled.
-//
-// Self-establishing (amqp10, whose receivers attach links on start independent
-// of the plan) and address-direct (SQS/Service Bus/HTTP) transports do NOT
-// advertise the capability and are skipped: for them a missing manager is not
-// the same silent-loss defect. This is exactly why ADV-F1-P4 could not be fixed
-// with a blanket validate-layer guard — it false-positived on amqp10, which the
-// config layer cannot distinguish without adapter knowledge arch-lint forbids.
-func (b *Builder) validatePlanDrivenReceiverSessions(managed map[string]bool) error {
-	// Only a receiver actually referenced by a route is wired and can subscribe;
-	// an unreferenced receiver is inert regardless of its session, so it is not
-	// this defect and is not flagged here.
-	routed := make(map[string]bool, len(b.cfg.Routes))
-	for i := range b.cfg.Routes {
-		routed[b.cfg.Routes[i].ReceiverID] = true
-	}
-	for i := range b.cfg.Receivers {
-		rd := &b.cfg.Receivers[i]
-		if rd.SessionID == "" || managed[rd.SessionID] || !routed[rd.ID] {
-			continue
-		}
-		transport := rd.Transport
-		if transport == "" {
-			if sd := findSession(b.cfg, rd.SessionID); sd != nil {
-				transport = sd.Transport
-			}
-		}
-		tf, ok := b.transports[transport]
-		if !ok || !slices.Contains(tf.Capabilities(), ports.CapPlanDrivenSubscriptions) {
-			continue
-		}
-		return fmt.Errorf("bridge: receiver %q (transport %q) is bound to session %q, which no route "+
-			"manages, so its plan-driven subscriptions would never reconcile and it would be silently "+
-			"inert; give a route a session block naming %q (or a binding targeting it) so the session is "+
-			"managed and its subscriptions are established",
-			rd.ID, transport, rd.SessionID, rd.SessionID)
-	}
-	return nil
 }
 
 // validateSharedOutboxBindingSessions rejects a shared_outbox binding whose
@@ -784,19 +686,13 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context, managedStore ports.
 	// route's primary session, a binding, a receiver, or a sender. An
 	// unreferenced session gets no session manager and is never handed to the
 	// runtime, so it would open a connection/lease that Stop never closes —
-	// a leak on every hot-reload (Finding 6). Skip them with a warning.
+	// a leak on every hot-reload. Skip them with a warning.
 	referenced := referencedSessionIDs(b.cfg)
 
-	cleanup := func(exclude string) {
-		for id, s := range sessions {
-			if id == exclude {
-				continue
-			}
-			if closeErr := s.Close(ctx); closeErr != nil && b.logger != nil {
-				b.logger.Warn("closing session after partial failure", "session", id, "error", closeErr)
-			}
-		}
-	}
+	// Same detached bounded teardown as the failure path in complete(): a
+	// partially-built session set is disconnected under a live context even when
+	// the build context has already expired.
+	cleanup := func() { closeBuiltContextClosers(ctx, b.logger, "session", sessions) }
 
 	for _, sd := range b.cfg.Sessions {
 		if !referenced[sd.ID] {
@@ -809,12 +705,12 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context, managedStore ports.
 		}
 		tf, ok := b.transports[sd.Transport]
 		if !ok {
-			cleanup("")
+			cleanup()
 			return nil, nil, fmt.Errorf("bridge: no transport factory registered for %q (session %q)", sd.Transport, sd.ID)
 		}
 		uri, err := b.resolveConfigCredentials(ctx, sd.Config, fmt.Sprintf("session %q", sd.ID))
 		if err != nil {
-			cleanup("")
+			cleanup()
 			return nil, nil, err
 		}
 		if uri != "" {
@@ -822,12 +718,12 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context, managedStore ports.
 		}
 		spec, err := sessionSpecWithManagedSubscriptions(sd, b.cfg, managedStore)
 		if err != nil {
-			cleanup("")
+			cleanup()
 			return nil, nil, fmt.Errorf("bridge: create session spec %q: %w", sd.ID, err)
 		}
 		sess, err := tf.NewSession(ctx, spec)
 		if err != nil {
-			cleanup("")
+			cleanup()
 			return nil, nil, fmt.Errorf("bridge: create session %q: %w", sd.ID, err)
 		}
 		if sess != nil {
@@ -839,7 +735,7 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context, managedStore ports.
 
 // referencedSessionIDs returns the set of session IDs referenced by any route
 // primary session, binding, receiver, or sender. Used to avoid constructing
-// (and leaking) unreferenced SessionDefs (Finding 6).
+// (and leaking) unreferenced SessionDefs.
 func referencedSessionIDs(cfg *ports.BridgeConfig) map[string]bool {
 	ref := make(map[string]bool, len(cfg.Sessions))
 	for i := range cfg.Routes {
@@ -876,7 +772,7 @@ func (b *Builder) buildReceiversWithURIs(ctx context.Context, sessions map[strin
 	// (nil, nil, err), so complete's own receiver defer — which closes the
 	// RETURN value — sees nil and cannot release the receivers already built
 	// this pass. They may hold broker links (Service Bus, AMQP 1.0, HTTP SSE),
-	// so close the partial LOCAL map here (HIGH-5). The map returns stay blank
+	// so close the partial LOCAL map here. The map returns stay blank
 	// (_) so `return nil, nil, err` does not nil out the map this defer reads.
 	// This is complementary to complete's defer, never a double close: a failed
 	// pass returns before complete registers its receiver defer, and a fully
@@ -905,7 +801,7 @@ func (b *Builder) buildReceiversWithURIs(ctx context.Context, sessions map[strin
 				// declared but resolved to a nil session because its transport
 				// is stateless (NewSession returns nil). The old code reported
 				// both as "references unknown session", which misled operators
-				// debugging a stateless-transport session (Finding 10).
+				// debugging a stateless-transport session.
 				if sd := findSession(b.cfg, rd.SessionID); sd != nil {
 					return nil, nil, fmt.Errorf("bridge: receiver %q references session %q whose "+
 						"transport %q is stateless (it creates no session object); a receiver cannot "+
@@ -937,7 +833,7 @@ func (b *Builder) buildSendersWithURIs(ctx context.Context, sessions map[string]
 	uris := make(map[string]string, len(b.cfg.Senders))
 	// See buildReceiversWithURIs: close the partial LOCAL map on a mid-loop
 	// failure so senders already built this pass (which may hold broker links)
-	// are not leaked past complete's return-value-scoped defer (HIGH-5).
+	// are not leaked past complete's return-value-scoped defer.
 	defer func() {
 		if retErr != nil {
 			closeBuiltContextClosers(ctx, b.logger, "sender", senders)
@@ -959,7 +855,7 @@ func (b *Builder) buildSendersWithURIs(ctx context.Context, sessions map[string]
 			sess = sessions[sd.SessionID]
 			if sess == nil {
 				// See buildReceiversWithURIs: distinguish undeclared from
-				// declared-but-stateless (Finding 10).
+				// declared-but-stateless.
 				if decl := findSession(b.cfg, sd.SessionID); decl != nil {
 					return nil, nil, fmt.Errorf("bridge: sender %q references session %q whose "+
 						"transport %q is stateless (it creates no session object); a sender cannot "+

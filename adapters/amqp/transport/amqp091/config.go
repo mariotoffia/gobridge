@@ -108,7 +108,7 @@ const (
 
 // defaultMaxAbandonedPublishes bounds, per sender, the publisher channels
 // parked on background reapers after a publish wedged past its deadline
-// (HIGH-4). Small on purpose: reaching it means publishes are wedging faster
+// Small on purpose: reaching it means publishes are wedging faster
 // than the broker/heartbeat is releasing them, so refusing new publishes fast
 // (transient) is the correct back-pressure. The reapers drain on broker
 // recovery or reconnect, restoring the budget.

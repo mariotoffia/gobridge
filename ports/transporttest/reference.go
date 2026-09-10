@@ -16,7 +16,7 @@ import (
 // This file is a minimal, fully-compliant reference transport. It exists to
 // (a) prove the conformance suites in this package are correct — reference_test.go
 // runs every suite against it — and (b) serve as living documentation of the
-// canonical ports.Delivery / ports.Receiver / ports.Sender contracts. A wave-6
+// canonical ports.Delivery / ports.Receiver / ports.Sender contracts. An
 // adapter author can read it as the smallest thing that passes the kit.
 
 // refDelivery is a reference ports.Delivery implementing the canonical

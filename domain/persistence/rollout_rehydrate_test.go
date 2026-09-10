@@ -111,7 +111,7 @@ func TestRollout_SnapshotRehydrateRoundTrip(t *testing.T) {
 // TestRehydrateRollout_ProducesLiveAggregate proves the reconstituted value is a
 // fully-functional aggregate, not a frozen shell: a rehydrated Staging rollout
 // still commits, and a rehydrated terminal rollout still enforces
-// terminal-immutability AND the fencing high-water mark (invariants I3/I4). This
+// terminal-immutability AND the fencing high-water mark (invariants). This
 // is the property the store's compare-and-set retry loop depends on -- it
 // re-reads, rehydrates, and re-applies a transition every attempt.
 func TestRehydrateRollout_ProducesLiveAggregate(t *testing.T) {

@@ -191,7 +191,7 @@ func TestRouterQuiesceForRecycleIsBoundedByContextWithStuckHandler(t *testing.T)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := r.quiesceForRecycle(ctx, nil); !errors.Is(err, context.Canceled) {
+	if err := r.quiesceForRecycle(ctx, ctx, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("quiesce error = %v, want context cancellation", err)
 	}
 
@@ -223,7 +223,7 @@ func TestRouterQuiesceForRecycleWaitsForRuntimeSettlementAfterCallback(t *testin
 	settlementRelease := make(chan struct{})
 	quiesced := make(chan error, 1)
 	go func() {
-		quiesced <- r.quiesceForRecycle(context.Background(), func(ctx context.Context) error {
+		quiesced <- r.quiesceForRecycle(context.Background(), context.Background(), func(ctx context.Context) error {
 			close(settlementEntered)
 			select {
 			case <-settlementRelease:

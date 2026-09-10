@@ -19,7 +19,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
+	"github.com/mariotoffia/gobridge/testutil/flocilocal"
 )
 
 // =========================================================================
@@ -47,7 +47,7 @@ func TestUC27_Intermittent_SendFailures(t *testing.T) {
 	faulty := newFaultySender(realSender, 20)
 	sqsRx, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          inQueueURL,
-		Client:            sqslocal.Client(t),
+		Client:            newSQSClient(t),
 		MaxMessages:       10,
 		WaitTimeSeconds:   1,
 		VisibilityTimeout: 30, // 30s: prevents premature SQS redelivery during retries
@@ -162,9 +162,9 @@ func TestUC28_VisibilityTimeout_Race(t *testing.T) {
 	)
 
 	// Create SQS queue with short visibility timeout (5s).
-	client := sqslocal.Client(t)
-	name := sqslocal.UniqueQueue("uc28-in")
-	inQueueURL := sqslocal.CreateQueueWithAttrs(t, client, name, map[string]string{
+	client := newSQSClient(t)
+	name := uniqueQueueName("uc28-in")
+	inQueueURL := createSQSQueueWithAttrs(t, client, name, map[string]string{
 		"VisibilityTimeout": "5",
 	})
 
@@ -173,7 +173,7 @@ func TestUC28_VisibilityTimeout_Race(t *testing.T) {
 	dlqStore := &lrDLQStore{}
 
 	// Receiver with visibility=5s and AutoExtend=true.
-	ep := sqslocal.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	autoExtend := true
 	sqsRx, err := sqsadapter.NewReceiver(sqsadapter.ReceiverConfig{
 		QueueURL:          inQueueURL,
@@ -297,7 +297,14 @@ func TestUC29_MessageTTL_Expiry(t *testing.T) {
 			ExpiresAt: time.Now().Add(-1 * time.Second),
 		})
 		err := rt.Inject(ctx, "uc29-route", env)
-		require.NoError(t, err, "inject message %d", i)
+		// An already-expired message is settled terminally and never
+		// delivered, which is the whole point of this route. Inject reports
+		// that outcome rather than reporting success, because an injected
+		// message is settled through a synthetic acknowledgement that always
+		// succeeds — without the distinction a dropped message would look
+		// delivered.
+		require.ErrorIs(t, err, ports.ErrInjectNotDelivered,
+			"inject message %d: an expired message must report that it was not delivered", i)
 	}
 
 	lrWaitFor(t, pollTimeout, fmt.Sprintf("DLQ >= %d", msgCount), func() bool {

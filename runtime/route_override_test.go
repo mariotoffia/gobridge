@@ -218,7 +218,7 @@ func TestDirectHold_Override_RenderAddressError_RoutesDLQ(t *testing.T) {
 // TestDirectHold_Override_AddressValidator_RoutesDLQ
 // ---------------------------------------------------------------------------
 //
-// AP-005: replaces the old MQTT-specific override validation test. The
+// replaces the old MQTT-specific override validation test. The
 // runtime no longer hardcodes mqtt — it dispatches to a per-binding
 // AddressValidator supplied by the transport. This test wires a
 // rejecting validator and asserts the override path routes to DLQ.

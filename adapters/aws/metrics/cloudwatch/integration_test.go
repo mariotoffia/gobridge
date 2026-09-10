@@ -13,22 +13,19 @@ import (
 	cwsdk "github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 
-	"github.com/mariotoffia/gobridge/testutil/localstack"
+	"github.com/mariotoffia/gobridge/testutil/flocilocal"
 )
 
 func TestMain(m *testing.M) {
-	localstack.Configure(
-		localstack.WithServices("cloudwatch"),
-		localstack.WithCleanOrphans(true),
-	)
+	flocilocal.Configure(flocilocal.WithCleanOrphans(true))
 	code := m.Run()
-	localstack.Shutdown()
+	flocilocal.Shutdown()
 	os.Exit(code)
 }
 
 func integrationClient(t testing.TB) *cwsdk.Client {
 	t.Helper()
-	ep := localstack.Endpoint(t)
+	ep := flocilocal.Endpoint(t)
 	cfg, err := awsconfig.LoadDefaultConfig(context.Background(),
 		awsconfig.WithRegion("us-west-1"),
 		awsconfig.WithCredentialsProvider(
@@ -47,7 +44,7 @@ func uniqueNamespace(prefix string) string {
 	return fmt.Sprintf("%s/%d", prefix, time.Now().UnixNano())
 }
 
-// Verifies PutMetricData succeeds against LocalStack and the metric appears in ListMetrics.
+// Verifies PutMetricData succeeds against the AWS emulator and the metric appears in ListMetrics.
 func TestIntegration_PutMetricData(t *testing.T) {
 	client := integrationClient(t)
 	ctx := context.Background()
@@ -86,7 +83,7 @@ func TestIntegration_PutMetricData(t *testing.T) {
 	}
 }
 
-// Verifies the Exporter flushes counters to LocalStack and they appear in ListMetrics.
+// Verifies the Exporter flushes counters to the AWS emulator and they appear in ListMetrics.
 func TestIntegration_Exporter_FlushCounters(t *testing.T) {
 	client := integrationClient(t)
 	ctx := context.Background()
@@ -127,7 +124,7 @@ func TestIntegration_Exporter_FlushCounters(t *testing.T) {
 	}
 }
 
-// Verifies the Exporter flushes histograms (StatisticValues) to LocalStack.
+// Verifies the Exporter flushes histograms (StatisticValues) to the AWS emulator.
 func TestIntegration_Exporter_FlushHistograms(t *testing.T) {
 	client := integrationClient(t)
 	ctx := context.Background()
@@ -168,7 +165,7 @@ func TestIntegration_Exporter_FlushHistograms(t *testing.T) {
 	}
 }
 
-// Verifies EnsureAlarms creates alarms visible via DescribeAlarms on LocalStack.
+// Verifies EnsureAlarms creates alarms visible via DescribeAlarms on the AWS emulator.
 func TestIntegration_EnsureAlarms(t *testing.T) {
 	client := integrationClient(t)
 	ctx := context.Background()
@@ -249,7 +246,7 @@ func TestIntegration_EnsureAlarms_Idempotent(t *testing.T) {
 	}
 }
 
-// Verifies Close performs a final flush to LocalStack.
+// Verifies Close performs a final flush to the AWS emulator.
 func TestIntegration_Exporter_Close(t *testing.T) {
 	client := integrationClient(t)
 	ctx := context.Background()

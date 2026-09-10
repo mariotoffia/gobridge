@@ -15,11 +15,16 @@ import (
 )
 
 // casFakeDDB models DynamoDB's conditional-write and strong-read semantics
-// for the config CAS path (J3): PutItem is honoured only when the
+// for the config CAS path: PutItem is honoured only when the
 // attribute_not_exists / version==expected condition holds.
 type casFakeDDB struct {
 	hasRow        bool
 	storedVersion int64
+	storedData    string
+	rawVersion    ddbtypes.AttributeValue
+	getCalls      int
+	getErr        error
+	putErr        error
 	// versionAbsent models a row seeded outside this loader (AWS console,
 	// Terraform, data import): PK/SK/data are present but the `version`
 	// attribute is missing. GetItem omits the version attribute and PutItem
@@ -42,6 +47,10 @@ type casFakeDDB struct {
 }
 
 func (f *casFakeDDB) GetItem(_ context.Context, in *awsddb.GetItemInput, _ ...func(*awsddb.Options)) (*awsddb.GetItemOutput, error) {
+	f.getCalls++
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	f.lastGetConsistent = in.ConsistentRead != nil && *in.ConsistentRead
 	if !f.hasRow {
 		return &awsddb.GetItemOutput{}, nil
@@ -50,6 +59,9 @@ func (f *casFakeDDB) GetItem(_ context.Context, in *awsddb.GetItemInput, _ ...fu
 		attrPK:   &ddbtypes.AttributeValueMemberS{Value: "config#cas"},
 		attrSK:   &ddbtypes.AttributeValueMemberS{Value: skCurrent},
 		attrData: &ddbtypes.AttributeValueMemberS{Value: "{}"},
+	}
+	if f.storedData != "" {
+		item[attrData] = &ddbtypes.AttributeValueMemberS{Value: f.storedData}
 	}
 	// A version-less (externally seeded) row reports no version attribute, so
 	// getCurrentVersion sees 0 — exactly what the version-less CAS clause keys
@@ -61,11 +73,17 @@ func (f *casFakeDDB) GetItem(_ context.Context, in *awsddb.GetItemInput, _ ...fu
 		}
 		item[attrVersion] = &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(v, 10)}
 	}
+	if f.rawVersion != nil {
+		item[attrVersion] = f.rawVersion
+	}
 	return &awsddb.GetItemOutput{Item: item}, nil
 }
 
 func (f *casFakeDDB) PutItem(_ context.Context, in *awsddb.PutItemInput, _ ...func(*awsddb.Options)) (*awsddb.PutItemOutput, error) {
 	f.putCalls++
+	if f.putErr != nil {
+		return nil, f.putErr
+	}
 	f.lastPutHadCond = in.ConditionExpression != nil
 	if in.ConditionExpression != nil {
 		f.lastPutCond = *in.ConditionExpression
@@ -78,12 +96,13 @@ func (f *casFakeDDB) PutItem(_ context.Context, in *awsddb.PutItemInput, _ ...fu
 	}
 
 	// Model the CAS condition:
-	//   attribute_not_exists(PK)
-	//   OR version == expected
+	//   version == expected
 	//   OR (attribute_not_exists(version) AND expected == 0)
-	allowed := !f.hasRow ||
-		(!f.versionAbsent && f.storedVersion == expected) ||
-		(f.versionAbsent && expected == 0)
+	allowed := (f.hasRow && !f.versionAbsent && f.storedVersion == expected) ||
+		((!f.hasRow || f.versionAbsent) && expected == 0)
+	if f.lastPutCond == "attribute_not_exists(#pk)" {
+		allowed = !f.hasRow
+	}
 	if !allowed {
 		return nil, &ddbtypes.ConditionalCheckFailedException{}
 	}
@@ -92,6 +111,7 @@ func (f *casFakeDDB) PutItem(_ context.Context, in *awsddb.PutItemInput, _ ...fu
 	f.hasRow = true
 	f.versionAbsent = false // the write stamps the version
 	f.storedVersion = newV
+	f.storedData = in.Item[attrData].(*ddbtypes.AttributeValueMemberS).Value
 	f.getReturnsVersion = -1
 	return &awsddb.PutItemOutput{}, nil
 }
@@ -112,7 +132,7 @@ func newCASLoader(f *casFakeDDB) *Loader {
 	}
 }
 
-// Regression for J3: Save must use a strong read and a conditional
+// Regression: Save must use a strong read and a conditional
 // (compare-and-set) write so a concurrent admin write cannot be silently
 // lost. A stale expected-version write is rejected as ErrVersionMismatch.
 func TestSave_CompareAndSet(t *testing.T) {
@@ -195,7 +215,7 @@ func TestSave_AdoptsVersionlessItem(t *testing.T) {
 	// condition level where the guard lives.
 	f2 := &casFakeDDB{hasRow: true, versionAbsent: true, getReturnsVersion: -1}
 	s := &session{ddb: f2, tableName: "cfg"}
-	if err := s.putConfigItem(ctx, "config#cas", []byte("{}"), 6, 5); !isConditionFailed(err) {
+	if err := s.putConfigItem(ctx, "config#cas", []byte("{}"), 6, 5, false); !isConditionFailed(err) {
 		t.Fatalf("non-zero expected against a version-less row must fail the CAS condition, got %v", err)
 	}
 }

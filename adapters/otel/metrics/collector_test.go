@@ -13,7 +13,7 @@ import (
 	otelmetrics "github.com/mariotoffia/gobridge/adapters/otel/metrics"
 )
 
-// K8: metrics exported through a real OTLP HTTP exporter must reach a
+// metrics exported through a real OTLP HTTP exporter must reach a
 // collector on Flush. Uses httptest, no sleeps.
 func TestExporter_ExportReachesCollector(t *testing.T) {
 	t.Parallel()

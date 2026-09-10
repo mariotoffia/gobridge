@@ -27,7 +27,7 @@ import (
 //
 //   - default → the enabled TTL FAILS the factory build (shared.ErrInvalidConfig).
 //   - WithSchemaPreflightAdvisory → STILL fatal: the schema opt-out must NOT relax
-//     the TTL check (round-2 HIGH; the TTL failure is ErrInvalidConfig, matched
+//     the TTL check (the TTL failure is ErrInvalidConfig, matched
 //     before the schema-advisory branch in preflight).
 //   - WithTTLPreflightAdvisory → downgraded to a loud WARN and the store builds.
 //

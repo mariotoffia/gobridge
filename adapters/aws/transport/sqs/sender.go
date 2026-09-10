@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,11 +43,10 @@ type Sender struct {
 	// authGrace gives a plain (non-KMS) API auth failure a bounded,
 	// clock-driven grace window before it is classified permanent, so a
 	// static-key rotation / IAM-propagation gap is retried instead of
-	// DLQ/drop-then-ACK-ing the source during a purely transient window
-	// (Finding: c8-auth-permanent).
+	// DLQ/drop-then-ACK-ing the source during a purely transient window.
 	authGrace *authGrace
 
-	// authFailureCB is the reactive-recovery hook (HIGH-3). The
+	// authFailureCB is the reactive-recovery hook. The
 	// CredentialRefresher injects a URI-bound callback via
 	// SetAuthFailureCallback; reportAuthFailure invokes it when a live
 	// SendMessage / SendMessageBatch call is classified as
@@ -58,8 +58,9 @@ type Sender struct {
 
 	// maxMessageBytes is the SQS message-size ceiling (body + attributes)
 	// enforced when selecting egress attributes. Defaults to
-	// sqsMaxMessageBytes (256 KiB); override with WithMaxMessageBytes for
-	// queues whose MaximumMessageSize has been raised (Finding 4).
+	// sqsMaxMessageBytes (1 MiB, the service default); override with
+	// WithMaxMessageBytes for a queue whose MaximumMessageSize is
+	// provisioned below it.
 	maxMessageBytes int
 }
 
@@ -69,9 +70,9 @@ type SenderOption func(*Sender)
 
 // WithMaxMessageBytes overrides the SQS message-size ceiling (body plus
 // attributes) the sender enforces when selecting message attributes. Use it
-// for queues whose MaximumMessageSize has been raised above the 256 KiB
+// for a queue whose MaximumMessageSize differs from the 1 MiB
 // default so a large body does not silently drop ALL attributes — including
-// the rank-0 idempotency-key / traceparent propagation headers (Finding 4).
+// the rank-0 idempotency-key / traceparent propagation headers.
 // Non-positive values are ignored so the default ceiling is retained.
 func WithMaxMessageBytes(n int) SenderOption {
 	return func(s *Sender) {
@@ -100,8 +101,9 @@ func (s *Sender) storeClient(c sqsAPI) {
 }
 
 // NewSender creates an SQS Sender. The sender resolves its queue URL
-// lazily on the first Send call unless QueueURL is already set.
+// lazily on the first Send/SendBatch call unless QueueURL is already set.
 func NewSender(cfg SenderConfig, opts ...SenderOption) (*Sender, error) {
+	cfg.QueueTags = maps.Clone(cfg.QueueTags)
 	cfg.applyDefaults()
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -141,11 +143,11 @@ func (s *Sender) clock() clock.Clock {
 // queue, but a route binding address is frequently the logical queue
 // NAME — scenario configs use `address: <queue-name>` — while the sender
 // resolves a fully-qualified queue URL. Accept any unambiguous reference
-// to the bound queue: empty (use the configured queue), the resolved
+// to the bound queue: empty or QueueAddress (use the configured queue), the resolved
 // queue URL, the configured QueueName, or the queue name embedded as the
 // last path segment of the queue URL. Everything else is a mismatch.
 func (s *Sender) addressMatchesQueue(addr string) bool {
-	if addr == "" || addr == s.queueURL {
+	if addr == "" || addr == QueueAddress || addr == s.queueURL {
 		return true
 	}
 	if s.cfg.QueueName != "" && addr == s.cfg.QueueName {
@@ -185,6 +187,8 @@ func queueNameFromURL(u string) string {
 // canonical URL is resolved. That is the safe direction — build-time accepts a
 // superset of send-time, so a valid config never fails the build.
 func (s *Sender) ValidateAddress(address string) error {
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
 	if address == "" || s.addressMatchesQueue(address) {
 		return nil
 	}
@@ -204,9 +208,10 @@ func (s *Sender) ValidateAddress(address string) error {
 // for both single and batch sends, instead of the single-send path
 // falling into the transient default and retrying a config fault.
 func (s *Sender) validateFIFOGroup(env *messaging.Envelope) error {
-	if !s.cfg.isFIFO() {
+	if !s.isFIFO() {
 		return nil
 	}
+
 	groupID, _ := extractFIFOFields(env.Headers())
 	if groupID == "" && s.cfg.MessageGroupID == "" {
 		return shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
@@ -214,6 +219,10 @@ func (s *Sender) validateFIFOGroup(env *messaging.Envelope) error {
 			env.ID(), messaging.HeaderOrderingKey))
 	}
 	return nil
+}
+
+func (s *Sender) isFIFO() bool {
+	return s.cfg.isFIFO() || isFIFOQueue(s.queueURL)
 }
 
 // Send submits a single envelope to SQS.
@@ -226,8 +235,9 @@ func (s *Sender) validateFIFOGroup(env *messaging.Envelope) error {
 // name, or the queue name embedded as the last path segment of the URL
 // (the form scenario configs use, e.g. `address: orders`). Anything else
 // is rejected with shared.ErrInvalidTopic without contacting the SDK or
-// emitting metrics. Per-message dynamic addressing for SQS is explicitly
-// out of scope (see ARCHITECTURE_PLAN "Non-Goals"). The logical
+// emitting metrics. Per-message dynamic addressing for SQS is deliberately
+// out of scope: a sender is bound to one queue at build time, so honouring
+// an arbitrary Address would silently bypass that binding. The logical
 // Envelope.Subject is mapped to the "Subject" SQS message attribute by
 // buildSendInput and never selects the queue.
 func (s *Sender) Send(ctx context.Context, msg ports.OutboundMessage) error {

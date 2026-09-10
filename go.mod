@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/go-viper/mapstructure/v2 v2.5.0
-	github.com/mariotoffia/gobridge/testutil/wait v0.0.0-20260424080041-92c57d17e957
+	github.com/mariotoffia/gobridge/testutil/wait v0.0.0-20260827121207-e4131f9ac111
 	github.com/stretchr/testify v1.11.1
 	gopkg.in/yaml.v3 v3.0.1
 )

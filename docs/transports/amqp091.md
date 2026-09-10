@@ -24,8 +24,10 @@ sender settings under `options.sender`, per-topic declarations under
 
 > **Plan-driven subscriptions.** amqp091 receivers subscribe (queue-declare +
 > bind + consume) *only* when the session manager reconciles the `SessionPlan`.
-> A receiver on an unmanaged session is silently inert, so the builder requires
-> a session manager for amqp091 receivers.
+> A receiver on an unmanaged session would be silently inert, so the builder
+> gives every amqp091 receiver's session a manager: the route's `session` block
+> or a binding when one names it, and otherwise the receiver's own binding to
+> the session (an ingress session with no lease).
 
 ## YAML Example
 
@@ -219,6 +221,26 @@ Two rules govern the declaration:
 | `Ack(ctx)` | `delivery.Ack(false)` | Single-message acknowledgement |
 | `Retry(ctx, after, err)` | `delivery.Nack(false, true)` | Requeue; `after` is logged but not enforced |
 | `Extend(ctx, deadline)` | -- | Returns `ErrNotSupported` |
+
+## Envelope identity: publish a `message_id`
+
+A publisher's `message_id` becomes `Envelope.ID`. A delivery without one gets an
+identity minted at ingress, and AMQP 0-9-1 offers nothing stable to anchor it
+to: the delivery tag is per-channel, and a requeue carries no counter. The same
+message requeued is therefore converted under a **new** identity every time.
+
+The adapter marks such an envelope `x-bridge.generated-id`, which tells the
+runtime the identity cannot be counted. The runtime's replay ledger keys on the
+envelope ID, so for an unmarked unstable identity `max_replay_attempts` could
+never fire and a deterministically-failing message would requeue forever,
+never draining and never producing DLQ evidence.
+
+> **Behavior consequence -- no retry budget without a `message_id`.** Because
+> such a message is uncountable, the runtime does not retry it: the FIRST
+> transient failure settles it terminally, to the DLQ (or dropped, per the
+> route's `on_permanent_failure`). Setting `message_id` on the publisher is the
+> fix and the only one — this adapter derives identity from that property alone.
+> Watch `DLQEntries` after upgrading if your producers do not set it.
 
 ## Header Mapping
 

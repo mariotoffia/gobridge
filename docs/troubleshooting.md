@@ -8,7 +8,7 @@ operator-facing index: when a code shows up in logs, metrics, or DLQ
 entries, find the section here for what it means and how to recover.
 
 For the architectural model, see [ARCHITECTURE.md §15 — Error
-Classification](../ARCHITECTURE.md#15-error-classification). For the
+Classification](internals/architecture-contracts-and-clustering.md#15-error-classification). For the
 canonical names, see the **shared kernel** rows in
 [UBIQUITOUS.md](../UBIQUITOUS.md).
 
@@ -28,8 +28,6 @@ canonical names, see the **shared kernel** rows in
 2. Jump to the matching section below.
 3. Apply the recovery action; if a metric is listed under "Related metrics",
    verify the fix by watching it return to baseline.
-
----
 
 ## Transient codes (auto-retried)
 
@@ -159,8 +157,6 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
 * **Related metrics.** Per-processor latency histograms,
   `RouteErrors{route_id="…"}`.
 
----
-
 ## Permanent codes (DLQ-bound)
 
 Retry will not help. The runtime sends these to the DLQ (when configured)
@@ -196,6 +192,13 @@ the source of the failure.
 * **Recovery.** Update the resource-side policy to grant the action.
   Verify the ARN / topic name in the policy matches the configured
   destination exactly.
+* **MQTT.** A PUBACK/PUBREC or SUBACK reason code of `0x87` (*Not authorized*)
+  maps here, carrying the broker's own verdict rather than a generic transport
+  error. That makes a broker ACL denial permanent and dead-letters it on the
+  first attempt instead of retrying it until the replay budget is spent. Check
+  the broker's publish/subscribe ACL for the bridge's `client_id` and the exact
+  topic — including any `$`-prefixed namespace, which the bridge now forwards
+  and the broker authorizes (see [MQTT](transports/mqtt.md#publish-namespaces)).
 
 ### `NOT_FOUND`
 
@@ -349,7 +352,7 @@ it at runtime too.
   re-acquires. Investigate only when the rate is high enough to suggest
   thrashing leases (clock skew, undersized `LeaseTTL`,
   network partition between instances and the `LeaseStore`). See
-  [ARCHITECTURE.md §16 — Clustered Deployment](../ARCHITECTURE.md#16-clustered-deployment).
+  [ARCHITECTURE.md §16 — Clustered Deployment](internals/architecture-contracts-and-clustering.md#16-clustered-deployment).
 * **Related metrics.** Lease churn, outbox-claim rejection counters.
 
 ### `DUPLICATE_RECORD`
@@ -380,7 +383,7 @@ it at runtime too.
   panic and classified it as `permanent` because panics indicate a bug.
 * **Likely cause.** Nil-pointer or out-of-range access in custom
   processor code; assumption about envelope shape that does not hold.
-* **Recovery.** Treat as a P1 bug — the DLQ entry's `LastError` carries
+* **Recovery.** Treat as a bug — the DLQ entry's `LastError` carries
   the panic message and stack. Fix the processor and replay the affected
   DLQ entries.
 * **Related metrics.** `RouteErrors{route_id="…"}`.
@@ -437,8 +440,6 @@ it at runtime too.
 * **Recovery.** No action required. The runtime treats it as an
   idempotent no-op.
 
----
-
 ## Rejected codes (silent drop)
 
 The runtime drops these envelopes without sending them to the DLQ (the
@@ -454,8 +455,6 @@ the bridge cannot meaningfully retain).
 * **Recovery.** No action unless the filter rule itself is wrong.
   Audit filter expressions against representative payloads.
 * **Related metrics.** `gobridge_filter_dropped_total`.
-
----
 
 ## Runtime-only codes
 
@@ -479,71 +478,7 @@ the bridge cannot meaningfully retain).
   the underlying cause; treat that as the real failure to fix.
 * **Class.** Permanent.
 
----
-
-## Adapter & runtime diagnostic metrics
-
-These counters were added to make specific failure and degradation modes
-observable. The names below are the **verbatim** OTel instrument names emitted
-by the transport adapters (namespace `GoBridge/Runtime`) -- the bridge does not
-add a `gobridge_` prefix or a `_total` suffix; a Prometheus backend may apply
-its own normalization downstream. Each has a real emission site; alert on a
-sustained non-zero rate.
-
-### MQTT (`adapters/mqtt/transport/paho`)
-
-All MQTT metrics carry a `session_id` tag (the effective `client_id`) unless
-noted. Code references name the emitting function; the authoritative
-per-metric contract lives on the constants in
-`adapters/mqtt/transport/paho/metrics.go`.
-
-| Metric | When it increments | What a rising value means |
-|--------|--------------------|---------------------------|
-| `MQTTPublishLatency` | Timer around every egress publish, success or failure (`Sender.Send`). | Broker acceptance (PUBACK/PUBCOMP for QoS 1/2) is slowing down; correlate with broker load and `MQTTPublishFailures`. |
-| `MQTTPublishFailures` | An egress publish failed or the broker rejected it with a non-success reason code (`Sender.Send`); circuit-open rejections also count here with a `reason=circuit_open` tag (`CircuitBreakerSender.Send`). | The primary egress error counter — alert on a sustained non-zero rate. Failures surface to the route runner for retry/outbox handling, so a rising value is broker/topic trouble, not silent loss. |
-| `MQTTConnectLatency` | Timer around a successful initial `Session.Start` connect (dial + CONNACK + connection-up callback). | Broker connection establishment is slowing (TLS handshake, auth backend, broker load). Not emitted for background reconnect attempts. |
-| `MQTTReconcileLatency` | Timer around each successful subscription reconcile (`Session.reconcile`: SUBSCRIBE/UNSUBSCRIBE convergence). | The broker is slow to answer SUBACK/UNSUBACK; contributes directly to startup, reload, and failover time. |
-| `MQTTHandlerPanics` | A router dispatch handler panicked; the panic is recovered and the delivery is left un-acked for broker redelivery (`router.fanout` / `router.emitOne`). No `session_id` tag. | A bug in the receive pipeline. The un-acked publish is redelivered, so a panicking handler can loop the same message — find and fix the panic. |
-| `MQTTRouterBuffered` | A publish arrived before any matching handler was registered (e.g. a persistent-session backlog delivered on CONNACK before `Receiver.Run`) and was held in the router's bounded pending buffer during the `unmatched_grace` window instead of being immediately acked-and-dropped (`router.dispatchCore`). No `session_id` tag. | Normal in small bursts at reconnect; a large or growing value means handlers register too slowly or the backlog exceeds the buffer. Publishes still unmatched when the grace window closes are settled as covered-retained or orphan-dropped. |
-| `MQTTRouterDropped` | A **QoS 0** publish was dropped under backpressure: the serialized dispatch queue was full under a flood, or the pre-registration pending buffer hit its entry/byte ceiling (`defaultPendingBytesLimit=64 MiB`), or an older QoS 0 entry was evicted to make room for QoS 1/2 (`router.enqueueDispatch`, `router.dropQoS0Overflow`, `router.evictOldestQoS0Locked`). The dispatch queue is sized to the effective `receive_maximum` (default **192**, not a fixed constant — see `docs/transports/mqtt.md`). QoS 1/2 is never dropped here — it blocks on the dispatch queue or evicts an older QoS 0 entry. Also incremented ONCE by a raw pre-decode terminal reject (`Session.rejectPredecodeIngress`: malformed packet or total size above the advertised maximum — a broker bug that also fails the session closed). | A QoS 0 flood is outrunning handler dispatch, or a large CONNACK backlog exceeded the pending cap before handlers registered. QoS 0 carries no delivery contract, so drops are expected under overload; a sustained rate means the consumer cannot keep up — add capacity or shed load upstream. A single count coinciding with a session terminal error is the pre-decode reject, not backpressure. |
-| `MQTTRouterUnmatchedDropped` | A publish still matched **no** registered topic filter after the `unmatched_grace` window elapsed AND its topic is not covered by any subscription the session still wants: it was acked, dropped, and its exact topic UNSUBSCRIBEd (deduped, one warn per topic) to converge broker state (`router.dropOrphan`). Before the FIRST reconcile of a process lifetime nothing is ever counted here — the pre-plan backlog is retained as covered instead. | The signature of an orphan broker-side subscription — a route removed from config whose subscription survived on the resumed `clean_start=false` session. Expected as a one-shot right after a route removal; a continuously rising value means the broker keeps delivering for a subscription no configured route covers — investigate the removed route (a surviving **wildcard** subscription cannot be cleared by the concrete-topic UNSUBSCRIBE; configure the managed subscription store to converge it). |
-| `MQTTRouterCoveredRetained` | A publish on a topic a still-desired subscription covers was RETAINED un-acked past the grace window because its receiver handler had not registered yet (`router.settlePending` / `router.retainCovered`). NOT loss. | A receiver registers later than `unmatched_grace` (or never). Investigate the slow route start; the retained backlog pins broker in-flight slots until the handler registers or the broker redelivers. |
-| `MQTTRouterCoveredDropped` | A covered **QoS 0** publish was dropped past the grace window because the bounded pending buffer could not hold it (`router.retainCovered`). Covered QoS 1/2 is never counted here. | Best-effort loss on a live route during slow startup. Any non-zero value: speed up receiver registration or lengthen `unmatched_grace`. |
-| `MQTTRouterOverflowDropped` | A QoS 1/2 publish was acked-and-dropped because the pending buffer's count cap (== `receive_maximum`) was hit with no evictable QoS 0 (`router.overflowAckDrop`). Unreachable with a spec-compliant broker. | The broker delivered more un-acked QoS 1/2 than the Receive Maximum it was granted — a protocol violation. MESSAGE LOST; investigate the broker. |
-| `MQTTRouterStalePurged` | An old-connection publish was discarded: pending entries purged on reconnect (their acks died with the old connection) or old-socket ingress released during a recovery/managed-cleanup recycle window (`router.purgeStalePendingLocked`, `router.enqueueDispatch`/`router.dispatchCore` discard branches). | QoS 1/2 counted here is redelivered by the resumed session (not lost); QoS 0 is a best-effort loss across a disconnect. A steadily rising value means frequent reconnects/recycles while traffic is in flight. |
-| `MQTTIngressPoisonDropped` | An inbound publish violated a local representational cap the broker cannot enforce (`max_payload_bytes`, metadata byte cap, User Property count cap) while fitting the advertised Maximum Packet Size; it was ACKED-and-DROPPED to prevent a permanent redelivery/terminal loop (`router.dropPoisonIngress`). | An authorized publisher is sending packets this bridge is configured to refuse; each count is a deliberate, acknowledged loss. Alert on any non-zero value and follow `docs/runbooks/mqtt-ingress-poison.md`. |
-| `MQTTAckAfterReconnect` | A delivery settled after the underlying connection cycled; the protocol ack could not be delivered (paho `ErrPacketNotFound`) and the settlement was mapped to success (`router.ackWithReconnectMapping`). | Each count is a guaranteed broker redelivery — a burst after a reconnect storm predicts duplicates on routes without downstream dedup (`direct_hold`). Verify downstream idempotency. |
-| `MQTTIngressHeaderDropped` | An inbound MQTT user property was dropped because its key/value is unsafe (invalid UTF-8, control characters) or over-long (`EnvelopeFromPublish`). No `session_id` tag. | A peer publishes spec-legal-but-rejected headers; routes filtering on those headers misroute. Find the publisher. |
-| `MQTTNonStringHeaderDropped` | An egress header value was dropped because it is not a string and cannot become an MQTT user property (`PublishFromEnvelope`). No `session_id` tag. | Bridge-to-bridge metadata (idempotency key, tenant id) is being lost on egress — fix the producing route's header types. |
-| `MQTTEventDropped` | The bounded session lifecycle-event channel was full and an event was evicted (`Session.pushEvent`). No `session_id` tag. | Under an event storm a `SessionConnected` may be evicted, deferring a reconcile one connect edge. Alert if non-zero in steady state. |
-| `MQTTSessionRecoveryRecycle` | A durable QoS 1/2 `Delivery.Retry` (or an emit-error recovery request) started an actual settlement-recovery session recycle (`Session.recordRecoveryRecycleStart`). | The downstream is failing deliveries hard enough to force session recycles; every recycle redelivers ALL unsettled deliveries on the session (duplicates for innocent in-flight messages). |
-| `MQTTUnsettled` / `MQTTOldestUnsettledAge` / `MQTTReceiveWindowUtilization` | Gauges snapshotting the un-acked QoS 1/2 window per health sweep (`Session.Health`). | Rising unsettled count/age means settlement (outbox persist / target accept) is stalling; utilization → 1.0 means ingress is about to block on the broker's Receive-Maximum window. An emit-error stranded delivery now triggers a bounded recovery recycle instead of wedging here permanently. |
-| `MQTTSessionTakeover` | A server disconnect with reason code `0x8E` (*Session taken over*): another client connected with the same ClientID (`Session.noteSessionTakeover`). Reason code `0x8F` is *Topic Filter Invalid* — a different condition, NOT counted here. | Two instances share a `client_id` and keep kicking each other — give each replica a distinct ClientID (`client_id_suffix`) or use an exclusive session. One takeover during exclusive failover is normal; a climbing streak is a collision. |
-| `MQTTQoSDowngraded` | The broker granted a subscription at a LOWER QoS than requested (`Session.reconcile` on SUBACK). | The delivery guarantee is weaker than the route assumes; readiness stays below Full. Investigate a broker QoS-cap policy. |
-
-### AMQP 0-9-1 (`adapters/amqp/transport/amqp091`)
-
-| Metric | When it increments | What a rising value means |
-|--------|--------------------|---------------------------|
-| `AMQP091DelayedRetryUnhonored` | A `Retry(after > 0)` was requested but AMQP 0-9-1 has no native delayed-redelivery primitive, so the nack requeues immediately and the requested backoff spacing is lost (`acl_delivery.go:130`). | Poison messages can hot-loop on a classic queue. Add an `x-delivery-limit` / dead-letter-exchange guard, or move retry spacing to the broker. |
-| `AMQP091ReconnectRaceRetried` | A permanent-classified consume failure (403 `ACCESS_REFUSED` on an exclusive consumer, or 404 `NOT_FOUND` mid-topology-redeclare) was retried as a transient reconnect race (`receiver.go:132`). | Expected briefly after a reconnect/partition; climbing past the retry budget means a genuine misconfiguration, not a race. |
-
-### AMQP 1.0 (`adapters/amqp/transport/amqp10`)
-
-| Metric | When it increments | What a rising value means |
-|--------|--------------------|---------------------------|
-| `AMQP10DelayedRetryDeferred` | A `Retry` with a positive delay was handed back to the broker (`ModifyMessage` + `x-opt-delivery-time`) because AMQP 1.0 has no portable client-side delayed-redelivery primitive; the broker decides when to redeliver (`acl_delivery.go:203`). Increments once per deferred retry; a Warn fires once per link. | Broker-delegated retry scheduling, **not** a failure -- a honoring broker (Artemis) applies the requested spacing, a non-honoring one falls back to its own redelivery policy. Expected under retry load; correlate with delivery-attempt exhaustion rather than alerting on the counter alone. |
-
-### HTTP (`adapters/http/transport`)
-
-| Metric | When it increments | What a rising value means |
-|--------|--------------------|---------------------------|
-| `HTTPIngressDuplicates` | An ingress request was short-circuited by the receiver's bounded idempotency window: the presented `Idempotency-Key` / `X-Dedup-Id` was already processed, so the request is acked (200) without re-emitting (`receiver.go:288`). | Healthy dedup of producer retries; a spike may indicate an aggressively retrying client. |
-| `HTTPForwardLoopRefused` | A request already carrying `X-Bridge-Forwarded` resolved to a remote route and was refused with 508 instead of re-forwarded (`receiver.go:251`). | A cluster routing disagreement (A->B->A). Reconcile ownership/routing or wire the forward token. |
-| `HTTPForwardBreakerOpen` | A cluster forward was rejected by the forwarder's circuit breaker without a network attempt (peer considered down) (`forwarder.go:235`). | A peer node is down or flapping; the breaker is failing fast. |
-| `SSENoSubscribers` | A `Send` completed with zero connected SSE clients -- at-most-once, so the source is still acked but nobody received it (`sender_sse.go:215`). | Alert when subscribers are expected; the event is gone. |
-| `SSEAllDropped` | A `Send` where every connected client's buffer was full, so the event was dropped for 100% of subscribers (`sender_sse.go:241`). | All SSE clients are too slow; the broadcast reached nobody. |
-| `SSEDeadlineUnsupported` | An SSE stream whose `ResponseWriter` chain cannot set per-write deadlines (`sender_sse.go:358`). | Slow-client eviction is inert for those streams; a stalled reader can pin a goroutine. Front SSE with a writer that supports deadlines. |
+The adapter and runtime diagnostic counters — what each one means when it climbs — are on their own page: [Adapter and runtime diagnostic metrics](adapter-diagnostic-metrics.md).
 
 ## Quick reference
 

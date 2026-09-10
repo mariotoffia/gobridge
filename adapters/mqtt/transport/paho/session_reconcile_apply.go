@@ -21,6 +21,15 @@ func (s *Session) reconcile(
 
 	desired := make(map[string]byte, len(plan.Subscriptions))
 	for _, sub := range plan.Subscriptions {
+		// Defense in depth for a plan handed straight to a session: the factory
+		// seam validates configured subscriptions, but Reconcile is public and a
+		// direct-library caller reaches it without one. The QoS check must
+		// happen BEFORE the narrowing conversion — the SDK writes qos & 0x03, so
+		// an unchecked 4 silently becomes at-most-once delivery on a route that
+		// asked for at-least-once.
+		if err := ValidateMQTTSubscription(sub.Topic, sub.QoS); err != nil {
+			return shared.ErrInvalidConfig.Wrap(err).WithMessage("mqtt: invalid subscription in session plan")
+		}
 		qos := byte(sub.QoS)
 		if current, ok := desired[sub.Topic]; !ok || qos > current {
 			desired[sub.Topic] = qos
@@ -120,7 +129,7 @@ func (s *Session) reconcile(
 	// the reconnect window: handleConnectionUp reset activeSubs to empty but a
 	// clean_start=false broker still holds the resumed subscriptions, so
 	// without them an empty plan would fail to tear anything down and orphan
-	// the broker sub (c4-remove-subs). Unsubscribing a topic the broker does
+	// the broker sub. Unsubscribing a topic the broker does
 	// not actually hold is harmless (the broker ignores it).
 	var toUnsub []string
 	unsubSeen := make(map[string]struct{})
@@ -171,7 +180,7 @@ func (s *Session) reconcile(
 			return err
 		}
 		if confirmation.firstErr != nil {
-			return confirmation.firstErr.With("topic", confirmation.errTopic)
+			return confirmation.failure()
 		}
 	}
 
@@ -184,11 +193,11 @@ func (s *Session) reconcile(
 			// When enabled it breaks the same-session MQTT->MQTT self-delivery
 			// loop (Scenario 01) but MUST stay off for a shared subscription
 			// ($share), where it is an MQTT 5 Protocol Error the broker rejects
-			// with a DISCONNECT (A-2).
+			// with a DISCONNECT.
 			//
 			// RetainHandling is 1 for persistent/exclusive sessions so a
 			// reconnect that resumes the session does not trigger a full
-			// retained-message replay per filter (A-7); ephemeral sessions keep
+			// retained-message replay per filter; ephemeral sessions keep
 			// 0 (each connect is a fresh subscription that must rehydrate
 			// retained state).
 			toSub = append(toSub, subscribeSpec{
@@ -211,15 +220,21 @@ func (s *Session) reconcile(
 		}
 		// Adapter-owned deadline per SUBSCRIBE too: a broker that accepts the
 		// connection but never returns SUBACK must not hang the reconcile — and
-		// any startup / hot-reload step awaiting it — indefinitely (HIGH-2).
+		// any startup / hot-reload step awaiting it — indefinitely.
 		if err := s.requireReconcileEpoch(operationEpoch); err != nil {
 			return err
 		}
 		subCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
-		reasons, err := cm.Subscribe(subCtx, toSub)
+		reasons, subErr := cm.Subscribe(subCtx, toSub)
 		cancel()
-		if err != nil {
-			return MapError(err)
+		// A SUBACK that arrived is the broker's verdict even when the SDK also
+		// reported an error — it does that for every reason code of 0x80 or
+		// higher. Classifying the reason codes first keeps "not authorized"
+		// permanent instead of relabelling it as a transient outage, and keeps
+		// the grants in a partially accepted SUBACK. No reason codes means no
+		// verdict, so the SDK error is the only evidence there is.
+		if subErr != nil && len(reasons) == 0 {
+			return MapError(subErr)
 		}
 		if err := s.requireReconcileEpoch(operationEpoch); err != nil {
 			return err
@@ -228,7 +243,13 @@ func (s *Session) reconcile(
 		// while only contract-satisfying grants become active. This preserves
 		// cleanup knowledge without treating a weaker QoS grant as ready.
 		succeeded, firstErr, errTopic := classifySubackReasons(toSub, reasons)
-		var downgradeErr *shared.BridgeError
+		// The reported grant is the topic-smallest downgrade, matching what
+		// observedQoSDowngrade reports for the SAME state on a later reconcile
+		// that issues no SUBSCRIBE. toSub is built from a map, so picking "the
+		// first one seen" would make the reported filter vary between
+		// reconciles and reset the permanence confirmation count each time.
+		var downgrade qosDowngradeGrant
+		var downgraded bool
 		for _, opt := range succeeded {
 			req := desired[opt.Topic]
 			if opt.QoS >= req {
@@ -246,8 +267,9 @@ func (s *Session) reconcile(
 					"granted_qos", opt.QoS,
 				)
 			}
-			if downgradeErr == nil {
-				downgradeErr = qosDowngradeError(opt.Topic, req, opt.QoS)
+			if !downgraded || opt.Topic < downgrade.topic {
+				downgrade = qosDowngradeGrant{topic: opt.Topic, requested: req, granted: opt.QoS}
+				downgraded = true
 			}
 		}
 		if len(succeeded) > 0 {
@@ -270,11 +292,16 @@ func (s *Session) reconcile(
 			}
 			s.mu.Unlock()
 		}
-		if downgradeErr != nil {
-			return downgradeErr
+		if downgraded {
+			return s.noteQoSDowngrade(downgrade)
 		}
 		if firstErr != nil {
 			return firstErr.With("topic", errTopic)
+		}
+		if subErr != nil {
+			// Every reason code was a grant yet the SDK still failed the call.
+			// Nothing in the SUBACK explains it, so its own classification stands.
+			return MapError(subErr)
 		}
 	}
 
@@ -287,9 +314,12 @@ func (s *Session) reconcile(
 	if err := s.requireReconcileEpoch(operationEpoch); err != nil {
 		return err
 	}
-	if downgradeErr := observedQoSDowngrade(desired, observed); downgradeErr != nil {
-		return downgradeErr
+	if grant, downgraded := observedQoSDowngrade(desired, observed); downgraded {
+		return s.noteQoSDowngrade(grant)
 	}
+	// Every desired filter was granted at or above its requested QoS: any
+	// confirmation streak from an earlier broker policy is stale.
+	s.clearQoSDowngrade()
 
 	s.mu.Lock()
 	if epochErr := reconcileEpochMismatch(operationEpoch, s.connEpoch); epochErr != nil {
@@ -335,10 +365,15 @@ func subscriptionStateConverged(
 	return true
 }
 
+// observedQoSDowngrade reports the first (topic-sorted, so the verdict is
+// stable across reconciles of the same state) desired filter whose LAST
+// broker-observed grant sits below the requested QoS. It covers the reconcile
+// that issues no SUBSCRIBE at all: an unchanged downgraded filter is
+// deliberately not re-subscribed, so the standing grant is the only evidence.
 func observedQoSDowngrade(
 	desired map[string]byte,
 	observed map[string]subscriptionGrant,
-) *shared.BridgeError {
+) (qosDowngradeGrant, bool) {
 	topics := make([]string, 0, len(desired))
 	for topic := range desired {
 		topics = append(topics, topic)
@@ -348,10 +383,10 @@ func observedQoSDowngrade(
 		req := desired[topic]
 		grant, ok := observed[topic]
 		if ok && grant.Requested == req && grant.Granted < req {
-			return qosDowngradeError(topic, req, grant.Granted)
+			return qosDowngradeGrant{topic: topic, requested: req, granted: grant.Granted}, true
 		}
 	}
-	return nil
+	return qosDowngradeGrant{}, false
 }
 
 func (s *Session) requireReconcileEpoch(operationEpoch uint64) error {
@@ -370,16 +405,8 @@ func reconcileEpochMismatch(operationEpoch, currentEpoch uint64) error {
 		With("current_epoch", currentEpoch)
 }
 
-func qosDowngradeError(topic string, requested, granted byte) *shared.BridgeError {
-	return shared.ErrQoSNotSupported.
-		WithMessage("mqtt: broker granted subscription QoS below requested").
-		With("topic", topic).
-		With("requested_qos", int(requested)).
-		With("granted_qos", int(granted))
-}
-
 // retainHandlingForMode returns the MQTT5 RetainHandling value for a session of
-// the given mode (A-7). Persistent and exclusive sessions resume across
+// the given mode. Persistent and exclusive sessions resume across
 // reconnects, so RetainHandling 1 ("send retained only if the subscription did
 // not already exist") hydrates retained state on the first subscribe yet
 // suppresses a redundant retained replay on every subsequent reconnect that

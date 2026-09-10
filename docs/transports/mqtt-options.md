@@ -14,9 +14,10 @@ backpressure.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `broker_url` | string | -- | Single broker URL (e.g. `tcp://host:1883`). Folded into `broker_urls` when the list form is absent. |
-| `broker_urls` | []string | -- | Broker URLs for failover. Ephemeral sessions may use multiple independent URLs. Persistent/exclusive sessions reject more than one distinct canonical URL because one managed-filter history cannot safely span independent broker-session domains. |
+| `broker_urls` | []string | -- | Broker URLs for failover. Ephemeral sessions may use multiple independent URLs. Persistent/exclusive sessions reject more than one distinct canonical URL because one managed-filter history cannot safely span independent broker-session domains. **Canonical** means the endpoint actually dialled: scheme aliases collapse (`tcp`/`mqtt`, and `ssl`/`tls`/`mqtts`/`mqtt+ssl`/`tcps`), an omitted port becomes the family default (1883 / 8883 / 80 / 443), host case, userinfo and fragment are ignored, and path/query count only for `ws`/`wss`. Two durable sessions spelled differently but reaching one endpoint are rejected as duplicate identities at startup instead of disconnecting each other on their shared `client_id`. A scheme outside that list is rejected. |
 | `client_id` | string | -- | MQTT client identifier. **Required** on the effective (merged) session config at build time, together with at least one broker URL (`Config.ValidateEffectiveSession` in `config_plugin.go`, enforced by `Factory.NewSession`); an empty value is accepted at parse time. For scale-out uniqueness from one shared config file, see `client_id_suffix`. |
-| `client_id_suffix` | string | -- | Opt-in per-instance uniquifier appended to `client_id`, required for clustered non-Exclusive `$share` consumers. `hostname` appends the process-cached hostname; for **Persistent** sessions it is safe **only where hostnames are stable across restarts** (StatefulSet/VM — NOT Deployments/ECS, where every rollout orphans the previous broker session and its queued QoS 1/2; the factory **rejects** this combination unless `assert_stable_client_identity: true` — see [Deployment identity](#deployment-identity)). `nonce` appends a process-cached random token and is allowed only for Ephemeral sessions. Unset leaves `client_id` verbatim. Exclusive rejects every suffix because failover resumes one stable shared client ID. |
+| `client_id_suffix` | string | -- | Opt-in per-instance uniquifier appended to `client_id`, required for clustered non-Exclusive `$share` consumers. `hostname` appends the process-cached hostname; for **Persistent** sessions it is safe **only where hostnames are stable across restarts** (StatefulSet/VM — NOT Deployments/ECS, where every rollout orphans the previous broker session and its queued QoS 1/2; the factory **rejects** this combination unless `assert_stable_client_identity: true` — see [Deployment identity](mqtt.md#deployment-identity)). `nonce` appends a process-cached random token and is allowed only for Ephemeral sessions. Unset leaves `client_id` verbatim. Exclusive rejects every suffix because failover resumes one stable shared client ID. |
+| `assert_stable_client_identity` | bool | `false` | Affirms that this deployment's hostnames survive a restart, admitting the one combination the factory otherwise **rejects at build time**: a **Persistent** session with `client_id_suffix: hostname`. On a Kubernetes Deployment or an ECS service every rollout mints a new hostname, so a new `client_id`, so a new broker session — the previous session's queued QoS 1/2 messages are stranded until `session_expiry_interval` expires them, which is loss by timeout and invisible to the bridge. Setting this is the operator vouching for a StatefulSet/VM identity profile; it does **not** make a Deployment or ECS safe. A warning is logged on every admitted session. Ignored for non-persistent modes and for any suffix other than `hostname` — see [Deployment identity](mqtt.md#deployment-identity). |
 | `keep_alive` | int | `30` | Keep-alive interval in seconds. Explicit `0` disables the MQTT pinger — half-open-connection detection then rests on TCP keep-alive alone (much slower, and OS-dependent), so a dead-but-open socket can go unnoticed for minutes. The registry/blueprint path defaults to `30`; a direct library consumer that sets `0` should understand this trade-off. |
 | `connect_timeout` | duration | `30s` | Bounds the **initial** Start connection await |
 | `reconnect_timeout` | duration | `30s` | Bounds each individual (re)connect attempt (TCP dial + TLS + CONNECT/CONNACK). Maps to autopaho `ConnectTimeout`; `0` → autopaho default (10s). |
@@ -26,7 +27,7 @@ backpressure.
 | `clean_start` | bool | `false` | MQTT 5 clean-start flag; consulted only for Persistent/Exclusive sessions. **`clean_start: true` on a Persistent session wipes the broker-side session (subscriptions AND queued offline QoS 1/2) on every process restart** — the backlog the mode exists to retain is discarded each time. Honoured as configured, with a construction-time warning; on Exclusive it is overridden to `false` (takeover loop). |
 | `session_expiry_interval` | int | `0` | MQTT 5 session expiry in seconds. For Persistent/Exclusive sessions a `0` is replaced at session creation (`NewSession`) with `86400` (24h) — a literal `0` would give zero offline retention. Ephemeral always uses `0`. |
 | `receive_maximum` | int | `0` → **192** (`DefaultReceiveMaximum`) | MQTT 5 Receive Maximum: max in-flight QoS 1/2 messages the broker may send before PUBACKs. `0` is normalized because it is illegal on the wire. The same effective value sizes one reservation shared by the serialized dispatch queue and startup/migration pending entries; those stores cannot each retain a full independent window. An explicitly configured non-zero value receives full window validation during parse and is rejected when unsafe. An omitted value stays unmaterialized during parse so a deployment profile may derive a lower safe value; generic bridge preflight later applies 192 and performs the same full validation. |
-| `max_payload_bytes` | int | `0` → **262144** (`DefaultMaxPayloadBytes`) | Maximum inbound application body, in bytes. CONNECT advertises a separate wire Maximum Packet Size of this body limit plus a 128 KiB MQTT v5 metadata allowance. After TLS/WebSocket decoding but before Paho packet decoding, an adapter-owned connection guard frames one bounded wire packet, validates Remaining Length before allocation, and rejects an oversized body, a property block over 128 KiB, more than 128 structurally parsed User Properties, or topic-plus-properties metadata over 128 KiB. The decoded callback repeats the retained-representation checks as defense in depth. A violation terminally recycles the session before SDK acknowledgement tracking or adapter queues can retain the packet. Values too large to retain the metadata allowance below the MQTT 256 MiB − 1 packet ceiling are rejected, never clamped. This does not limit outbound publishes. |
+| `max_payload_bytes` | int | `0` → **262144** (`DefaultMaxPayloadBytes`) | Maximum inbound application body, in bytes. CONNECT advertises a separate wire Maximum Packet Size of this body limit plus a 128 KiB MQTT v5 metadata allowance. After TLS/WebSocket decoding but before Paho packet decoding, an adapter-owned connection guard frames one bounded wire packet, validates Remaining Length before allocation, rejects malformed PUBLISH structure and any packet above the advertised total, and truncates a User Property list longer than 129 entries to 129 on the raw bytes so the SDK never decodes more (`MQTTIngressUserPropertiesTruncated`). The decoded callback then enforces the local caps the broker cannot see — an oversized body, more than 128 User Properties, or topic-plus-properties metadata over 128 KiB — by acking and dropping the packet (`MQTTIngressPoisonDropped`), never by failing the session. Values too large to retain the metadata allowance below the MQTT 256 MiB − 1 packet ceiling are rejected, never clamped. This does not limit outbound publishes. |
 | `ingress_memory_budget_bytes` | int | `0` → **268435456** (`DefaultIngressMemoryBudgetBytes`) | Per-session conservative MQTT ingress budget (256 MiB). The bridge validates the full packet/window equation below using the route's effective `max_in_flight` before opening stores or transports. Validation includes ReceiverDef-backed sessions with no consuming route and referenced Persistent/Exclusive sessions that can resume stale backlog. Exact boundary is accepted; one byte over budget and every arithmetic overflow are rejected as invalid config. |
 | `unmatched_grace` | duration | `30s` | Grace window after **each** connect during which an incoming publish matching no registered receiver filter is buffered (un-acked) awaiting handler registration. It is also the post-recycle no-replay verification window for managed-filter removal; a pinned matching replay or a shorter reconciliation deadline fails migration closed and preserves history. After the window a still-unmatched publish is split by whether a wanted subscription still covers its topic. A topic the session still wants whose handler registered late is **retained un-acked** and redelivered once the handler registers (`MQTTRouterCoveredRetained`) — never acked-dropped, so a late-registering live route cannot lose a QoS 1/2 message; only a covered QoS 0 publish the bounded buffer cannot hold is dropped best-effort (`MQTTRouterCoveredDropped`). An orphan topic no configured route covers (a leftover broker-side subscription on a resumed `clean_start=false` session) is acked, dropped, and UNSUBSCRIBEd (deduped, one warn per topic) to converge (`MQTTRouterUnmatchedDropped`, benign cleanup). `0` → `DefaultUnmatchedGrace` (30s). |
 | `no_local` | bool | `false` | Opt-in MQTT 5 **No-Local**. When `true`, every **ordinary** subscription is issued with the No-Local flag so the broker does not deliver a message back to the same session that published it — breaking the same-broker MQTT→MQTT self-delivery loop where a session that both subscribes and publishes on overlapping filters would otherwise receive and re-forward its own publishes (unbounded self-amplification). Default `false` preserves the least-surprising MQTT contract (a session receives its own publishes), so existing single-session round-trip topologies are unaffected. A shared subscription (`$share/…`) **never** sets No-Local even when this is `true`: MQTT 5 §3.8.3.1 makes No-Local on a shared subscription a Protocol Error the broker rejects with a DISCONNECT. Cross-bridge delivery is unaffected — No-Local is per-connection and distinct bridges use distinct `client_id`s. See [ADR 0010](../adr/0010-mqtt-loop-prevention-contract.md). |
@@ -46,13 +47,66 @@ backpressure.
 | `tls.key_pem` | string | -- | Client private key PEM material (redacted on marshal; requires `cert_pem`) |
 | `tls.insecure_skip_verify` | bool | `false` | Skip server certificate verification |
 
+### Duration validation
+
+Every duration above accepts `0`, which selects the documented default. A
+**negative** value is rejected at configuration validation, so it can never
+reach a session. Nothing downstream treats a negative duration as an error --
+it becomes an already-expired context -- so a build that accepted one would
+start successfully and then fail every attempt it made, for a reason that is
+invisible in the configuration.
+
+### Packet acknowledgement budget
+
+The MQTT client applies its own deadline to each packet acknowledgement it
+waits for (CONNACK, SUBACK, UNSUBACK, PUBACK/PUBCOMP), *inside* the deadline
+the bridge already set. Its built-in default is 10 seconds -- shorter than
+every budget on this page -- so leaving it alone would silently override them:
+a SUBACK the bridge was willing to wait 30 seconds for would be abandoned at
+10, failing a reconcile while the broker was answering normally.
+
+There is no key for it. The session derives the budget as the longest of
+`connect_timeout`, `reconnect_timeout`, `reconcile_timeout`, the `timeout` of
+every sender bound to the session, and the 30-second sender default -- so the
+adapter-owned bound is always the one that governs. It is not a liveness bound
+of its own: each packet operation already runs under its own deadline, and that
+is what bounds an unresponsive broker.
+
+One consequence is worth knowing when tuning shutdown: a SUBSCRIBE or
+UNSUBSCRIBE still in flight when the session is closed now waits out
+`reconcile_timeout` rather than being cut short at the client's old 10-second
+default. Cancelling the context passed to `Reconcile` still ends it
+immediately, which is what the runtime does on shutdown, so this is visible
+only to a library consumer that closes a session while holding a longer-lived
+context open.
+
+### Where each ingress cap is enforced
+
+Sizing memory from `max_payload_bytes` alone understates the peak, because the
+caps do not all bite at the same point. Three boundaries matter, and only the
+first two happen before the SDK builds Go objects:
+
+| Boundary | What it enforces | What a violation costs |
+|---|---|---|
+| Broker (CONNECT-advertised Maximum Packet Size) | `max_payload_bytes` + the 128 KiB metadata allowance, as ONE whole-packet limit. It is the only inbound limit a compliant broker enforces. | Nothing reaches the bridge. |
+| Predecode connection guard (raw bytes, after TLS/WebSocket, before Paho decodes) | Structural validity of the PUBLISH, Remaining Length validated before allocation, total size against the advertised maximum, and the User Property list truncated to **129** entries on the raw bytes (`MQTTIngressUserPropertiesTruncated`). | One raw wire packet buffered. A malformed packet or a total above the advertised maximum fails the session closed — only a broken broker can produce either. |
+| Decoded publish callback (after Paho has built Go objects) | The LOCAL representational caps the broker cannot see: an oversized body, more than **128** User Properties, or topic-plus-properties metadata over 128 KiB. The packet is acked and dropped (`MQTTIngressPoisonDropped`), never failed. | One fully decoded packet — the `transientDecodedPacketSize` term below. The packet is refused only AFTER it has been materialised. |
+
+The third row is the memory boundary that matters: **a packet that violates a
+local cap is decoded in full before anything refuses it.** That cost is budgeted
+as `crossing`, not as a retained slot, because it exists for the duration of one
+decode and nothing keeps it. The property caps are split for exactly this reason
+— 128 is what a packet may RETAIN, 129 is the most the SDK will ever DECODE — so
+the guard bounds the decode while the callback still sees the violation and
+refuses the packet.
+
 ### Ingress byte model
 
 Every MQTT session that can own inbound state is validated independently:
 
 ```text
 packet   = ceil(decodedPacketSize(maxPayloadBytes) * 1.25)
-crossing = ceil((wirePacketSize(maxPayloadBytes) + decodedPacketSize(maxPayloadBytes)) * 1.25)
+crossing = ceil((wirePacketSize(maxPayloadBytes) + transientDecodedPacketSize(maxPayloadBytes)) * 1.25)
 window   = receiveMaximum + dispatchCapacity + routeMaxInFlight
 bound    = packet * window + crossing
 ```
@@ -65,15 +119,34 @@ plus a 128 KiB allowance covering the fixed-header byte, worst-case four-byte
 Remaining Length encoding, maximal 65,535-byte topic plus its two-byte length,
 QoS packet identifier, worst-case properties-length encoding, and bounded
 property bytes. `decodedPacketSize` adds both Paho User Property struct
-representations (capped at 128) and a 32 KiB fixed allowance for SDK structures,
-accepted Envelope header-map buckets, outbox/queue state, and allocator
-page/size-class rounding. The 25% factor covers remaining Go object and slice
-bookkeeping.
+representations and a 32 KiB fixed allowance for SDK structures, accepted
+Envelope header-map buckets, outbox/queue state, and allocator page/size-class
+rounding. The 25% factor covers remaining Go object and slice bookkeeping.
+
+The two decoded terms differ, and the difference is load-bearing.
+`decodedPacketSize` — the per-slot **retained** cost — budgets 128 User
+Properties, because a packet exceeding that cap is acked-and-dropped by the
+publish callback before anything retains it. `transientDecodedPacketSize` — used
+only by `crossing` — budgets what ONE SDK decode can hold: four wire-sized
+allocations (the SDK's read buffer, the doubled replacement it grows into when
+the packet ends within one read chunk of the buffer's capacity, and the topic,
+property and payload copies it takes out of that buffer) plus 129 User
+Properties. The CONNECT advertises only a whole-packet Maximum Packet Size, so a
+compliant broker may forward a packet whose metadata section is nothing but
+five-byte (empty key, empty value) User Properties — about 78,600 of them in a
+zero-payload packet at the default limit. The SDK spends roughly 1.3 KiB of
+allocation decoding each one, around 100 MiB for that single packet, before the
+callback could refuse it. No budget can honestly absorb that, so the predecode
+guard removes the excess on the raw bytes instead: the decoder never sees more
+than 129 User Properties, the callback still refuses the packet, and every such
+packet is counted on `MQTTIngressUserPropertiesTruncated`. Because the guard
+bounds every packet before decoding, the bound holds for the packets the SDK
+queues ahead of the callback as well as for the one in flight.
 
 The single `crossing` term is the formula's `+1` ownership slot. It covers one
 complete raw packet buffered by the predecode connection guard plus Paho's
-conservative decoded accepted representation while that wire packet is consumed.
-For a rejected packet only the raw half exists, so the same term is conservative.
+worst-case decoded representation while that wire packet is consumed. For a
+rejected packet only the raw half exists, so the same term is conservative.
 The guard checks the advertised Maximum Packet Size from Remaining Length before
 allocating and never buffers a second packet. Envelope, no-processor route, and
 outbox fan-out clones share immutable payload backing; a processor that calls
@@ -91,9 +164,11 @@ stores or transports; generic composition therefore applies default 192 and
 rejects a window that the default 256 MiB budget cannot hold.
 
 The defaults (256 KiB payload, Receive Maximum 192, route `max_in_flight` 100)
-produce a 263,710,720-byte bound, below the 256 MiB default budget. Raising
+produce a 265,185,360-byte bound, below the 256 MiB default budget. Raising
 payload size, Receive Maximum, or route concurrency may require a larger budget.
-Do not tune only the message count.
+Do not tune only the message count. A budget smaller than one `crossing` slot
+(about 2.4 MiB at the default payload size) is rejected outright: the session
+could not decode a single legal packet.
 
 The AWS file-based profile reserves 25% of the effective Fargate task memory,
 divides it across unique included MQTT sessions, and derives the largest safe
@@ -112,10 +187,10 @@ MQTT ingress.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `default_topic` | string | -- | Fallback publish topic used when `OutboundMessage.Address` is empty. The publish topic is never read from `Envelope.Subject`. Validated as an MQTT publish topic at **build time** (wildcards `+`/`#`, a `$`-reserved prefix, and null bytes are rejected), because it bypasses the runtime address validator — a malformed value would otherwise only fail at first publish, as a broker DISCONNECT that tears down the shared session for every route on it. |
+| `default_topic` | string | -- | Fallback publish topic used when `OutboundMessage.Address` is empty. The publish topic is never read from `Envelope.Subject`. Validated as an MQTT publish topic at **build time** (wildcards `+`/`#`, the `$share/` prefix, and null bytes are rejected), because it bypasses the runtime address validator — a malformed value would otherwise only fail at first publish, as a broker DISCONNECT that tears down the shared session for every route on it. |
 | `qos` | int | `1` | MQTT QoS level (0, 1, or 2) |
 | `retain` | bool | `false` | MQTT retain flag |
-| `timeout` | duration | `30s` | Per-publish timeout, applied as the **stricter** of this value and the caller's remaining deadline. On a bridge route the dispatcher already wraps every send in the route's `policy.send_timeout` (default 30s), so a `timeout` **shorter** than the remaining route deadline tightens the publish while a **longer** one is capped by the route deadline — it never extends the route ceiling. **Note the coercion asymmetry:** unlike an explicit `qos: 0` or `keep_alive: 0` (honoured as-is), a configured `timeout: 0` is coerced **up** to the `30s` default at build. The 60s Send-time safety-net for a zero timeout is therefore reachable only by a direct library consumer that constructs `SenderOptions` and leaves `Timeout` at `0`, bypassing the factory — via config, a `0` becomes `30s`. See [Resilience Behavior](#resilience-behavior) for the interaction with `policy.send_timeout`. |
+| `timeout` | duration | `30s` | Per-publish timeout, applied as the **stricter** of this value and the caller's remaining deadline. The session raises the MQTT client's per-packet acknowledgement budget to cover the longest `timeout` of any sender bound to it, so the value you configure is the one that governs a PUBACK wait (see [Packet acknowledgement budget](#packet-acknowledgement-budget)). On a bridge route the dispatcher already wraps every send in the route's `policy.send_timeout` (default 30s), so a `timeout` **shorter** than the remaining route deadline tightens the publish while a **longer** one is capped by the route deadline — it never extends the route ceiling. **Note the coercion asymmetry:** unlike an explicit `qos: 0` or `keep_alive: 0` (honoured as-is), a configured `timeout: 0` is coerced **up** to the `30s` default at build. The 60s Send-time safety-net for a zero timeout is therefore reachable only by a direct library consumer that constructs `SenderOptions` and leaves `Timeout` at `0`, bypassing the factory — via config, a `0` becomes `30s`. See [Resilience Behavior](mqtt-behavior.md#resilience-behavior) for the interaction with `policy.send_timeout`. |
 | `throttle_retry_after` | duration | `500ms` | Retry-after hint attached to a publish failure **only** when the broker returns PUBACK/PUBREC reason `0x97` (Quota exceeded) -- the one reason code that signals throttling. Other non-zero reason codes classify as generic errors with no back-off hint. |
 
 ## Credential URI (`options.credentials_uri`)
@@ -192,6 +267,18 @@ The same pattern works for AMQP 0-9-1, AMQP 1.0 and Azure Service Bus.
 
 MQTT receivers have no transport-specific options. Subscriptions are declared
 in the `topics[]` array on the `ReceiverDef`, not in the `options` map.
+
+Every entry is validated at **build time** -- the topic filter against the MQTT
+v5 filter rules (wildcard placement, `$share/<group>/<filter>` shape, UTF-8, no
+null bytes, length) and `qos` against 0/1/2. Both checks are repeated when the
+session plan is reconciled, so a plan handed straight to a `Session` by a
+library consumer fails the same way. Validating at build matters twice over: a
+subscription only reaches the broker when the session manager reconciles the
+plan, so a malformed filter would otherwise fail *after* the process had
+started serving -- and an out-of-range `qos` would not fail at all. The MQTT
+client writes the level as `qos & 0x03`, so `qos: 4` would reach the broker as
+`0`: the route would believe it subscribed at-least-once while the broker
+delivered at-most-once and never asked for an acknowledgement.
 
 > **Use the factory for production composition (library-consumer note).**
 > `Factory.NewReceiver` atomically reserves the session's sole ingress receiver

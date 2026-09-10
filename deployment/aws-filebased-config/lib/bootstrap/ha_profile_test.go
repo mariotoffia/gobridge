@@ -8,6 +8,7 @@ import (
 
 	awsstore "github.com/mariotoffia/gobridge/adapters/aws/store"
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
+	"github.com/mariotoffia/gobridge/bridge"
 	deployinfra "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
@@ -42,15 +43,13 @@ func qualityReviewHAConfig() *ports.BridgeConfig {
 
 func qualityReviewHABootstrap(t *testing.T, cfg *ports.BridgeConfig) deployinfra.BootstrapConfig {
 	t.Helper()
-	fingerprint, err := configFingerprint(cfg)
-	require.NoError(t, err)
 	return deployinfra.BootstrapConfig{
 		BridgeID: "ha-review", ConfigFilePath: "/var/lib/gobridge/bridge.yaml", AdminAPIKeyParam: "/admin",
 		NodeRole: deployinfra.NodeRoleWorker, Topology: deployinfra.TopologyDynamoDBCoordinatedHA,
 		DynamoDBHALeaseTableName:                awsstore.DefaultDynamoDBLeaseTableName,
 		DynamoDBHAOutboxTableName:               awsstore.DefaultDynamoDBOutboxTableName,
 		DynamoDBHAManagedSubscriptionsTableName: awsstore.DefaultDynamoDBManagedSubscriptionsTableName,
-		DynamoDBHAConfigFingerprint:             fingerprint,
+		DynamoDBHAConfigFingerprint:             bridge.DeploymentProfileFingerprint(cfg),
 	}
 }
 
@@ -69,13 +68,49 @@ func TestValidateDeploymentProfile_DynamoDBHARejectsTamperedTableIdentity(t *tes
 	require.ErrorContains(t, err, awsstore.DefaultDynamoDBOutboxTableName)
 }
 
-func TestValidateDeploymentProfile_DynamoDBHARejectsTamperedExclusiveIdentity(t *testing.T) {
-	cfg := qualityReviewHAConfig()
+// TestValidateDeploymentProfile_DynamoDBHAAdmitsAnExclusiveIdentityChange pins
+// where the boundary now sits. A durable session's broker identity is OPERATOR
+// content, not a field the deployment provisions, so deployment admission passes
+// it — and it must, because an operator legitimately adds durable sessions
+// through a coordinated rollout and no fingerprint can express "a superset of the
+// admitted sessions". Changing an EXISTING durable identity is still refused, by
+// the live-reload preflight (bridge.ClassifyClusterReload), which is the check
+// that owns that rule.
+func TestValidateDeploymentProfile_DynamoDBHAAdmitsAnExclusiveIdentityChange(t *testing.T) {
+	cfg := haRolloutCfg()
 	bootstrap := qualityReviewHABootstrap(t, cfg)
-	cfg.Sessions[0].Config.(*paho.Config).Session.ClientID = "tampered-client"
+	before := cloneHAConfigForCompare(t, cfg)
+	cfg.Sessions[0].Config.(*paho.Config).Session.ClientID = "rotated-client"
 
-	err := validateDeploymentProfile(bootstrap, cfg)
-	require.ErrorContains(t, err, "fingerprint")
+	require.NoError(t, validateDeploymentProfile(bootstrap, cfg),
+		"operator content must not be gated by the immutable deployment profile")
+
+	disp, reason := bridge.ClassifyClusterReload(before, cfg)
+	require.Equal(t, bridge.ClusterReloadRefuse, disp,
+		"the reload preflight is what refuses a changed durable session identity")
+	require.NotEmpty(t, reason)
+}
+
+// TestValidateDeploymentProfile_DynamoDBHARejectsTamperedCohortShape proves the
+// gate still closes on the deployment's own fields: the cohort roster and the
+// rollout mode are provisioned by the deployment, so a config document that
+// redefines them is not the one this deployment admitted.
+func TestValidateDeploymentProfile_DynamoDBHARejectsTamperedCohortShape(t *testing.T) {
+	cfg := qualityReviewHAConfig()
+	cfg.Bridge.Cluster = &ports.ClusterConfig{Rollout: "coordinated", Members: []string{"node-a"}}
+	bootstrap := qualityReviewHABootstrap(t, cfg)
+	cfg.Bridge.Cluster.Members = []string{"node-a", "node-intruder"}
+
+	require.ErrorContains(t, validateDeploymentProfile(bootstrap, cfg), "deployment profile")
+}
+
+// cloneHAConfigForCompare snapshots cfg so a later in-place edit can be compared
+// against what the config looked like before it.
+func cloneHAConfigForCompare(t *testing.T, cfg *ports.BridgeConfig) *ports.BridgeConfig {
+	t.Helper()
+	clone, err := cloneBridgeConfig(cfg, newDefaultPluginRegistry())
+	require.NoError(t, err)
+	return clone
 }
 
 func TestApplyLogicalConfig_DynamoDBHATamperFailsBeforeRuntimePlan(t *testing.T) {

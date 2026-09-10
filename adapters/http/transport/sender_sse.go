@@ -221,8 +221,9 @@ func (s *SSESender) shuttingDownErr(env *messaging.Envelope) error {
 // must match the configured identity exactly; any other value is
 // rejected with shared.ErrInvalidTopic without marshalling, fan-out
 // to clients, or metric emission. Per-message dynamic SSE channel
-// routing is explicitly out of scope (Non-Goal in
-// ARCHITECTURE_PLAN.md). The logical Envelope.Subject flows through
+// routing is deliberately out of scope: an SSE sender IS one channel,
+// so a per-message channel would mean a per-message connection.
+// The logical Envelope.Subject flows through
 // to the SSE event payload's "subject" field unchanged.
 func (s *SSESender) Send(ctx context.Context, msg ports.OutboundMessage) error {
 	env := msg.Envelope
@@ -476,7 +477,7 @@ func (s *SSESender) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	s.armWriteDeadline(rc)
-	// The per-write deadline is the slow-client eviction mechanism (H4).
+	// The per-write deadline is the slow-client eviction mechanism.
 	// If the ResponseWriter chain does not support it (e.g. a fronting
 	// middleware that wraps without Unwrap), eviction is inert and a
 	// stalled reader would pin this goroutine. Emit a metric so the gap is
@@ -657,7 +658,7 @@ type sseEvent struct {
 // "data:" line (the client rejoins segments with "\n"). A single "data:"
 // prefix in front of multi-line bytes would make EventSource keep only
 // the first physical line and mis-parse the rest — silent data loss at
-// the SSE boundary (HIGH-3). json.Marshal already compacts the RawMessage
+// the SSE boundary. json.Marshal already compacts the RawMessage
 // payload (stripping structural newlines), but the formatter must not
 // depend on the shape produced by its only caller.
 func formatSSE(event string, data []byte) []byte {

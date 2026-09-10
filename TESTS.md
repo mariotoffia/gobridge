@@ -63,11 +63,58 @@ sanctioned homes for poll pacing are `testutil/wait` and `testutil/dockerexec`;
 `make audit-test-timings` scans every other test file AND every non-test file
 under `testutil/`, `ports/storetest`, and `tests/testutil` for `time.Sleep`.
 
+**`runtime.Gosched()` is banned in tests for the same reason**, and
+`make audit-test-timings` fails on it. A `for !cond() { runtime.Gosched() }`
+loop is the same hand-rolled poller wearing a disguise: it obeys the letter of
+the no-sleep rule while breaking its purpose. `Gosched` yields but leaves the
+waiter immediately runnable, so it holds a CPU for the whole wait and competes
+with the very goroutine whose progress it is waiting for — under `-race`, on a
+loaded machine, that is enough to make a correct test fail. Several were also
+written with no deadline at all, which turns one stuck goroutine into a package
+timeout that kills every unrelated test in the binary. Use `testutil/wait`
+(`Until`, `Poll`, `RequireReceive`, `RequireClosed`, `Silent`, `StableFor`),
+which backs off, parks the waiter, and clamps to `t.Deadline()`.
+
 If the wait cannot be expressed without `time.Sleep`, the production
 code is not testable. Add a `Clock` dependency or a started-signal
 channel.
 
 ### 2.2 Time is injected, never read
+
+#### `clocktest` delivers every tick the test advanced past
+
+`clocktest.Ticker.Reset` deliberately KEEPS a tick that `Advance` has already
+delivered into the channel. This is the one place the fake parts company with
+`time.Ticker`, and it matters because a loop that re-paces itself calls `Reset`
+at the end of the handler it is running, while the test drives the clock from
+another goroutine:
+
+```
+test goroutine                     loop goroutine
+--------------                     --------------
+                                   <-ticker.C()   (tick 1)
+Advance(...)  -> fires tick 2         ...handler still running...
+                                   ticker.Reset(d)
+```
+
+Real `time.Ticker` may discard tick 2 there, and that is harmless because wall
+time keeps flowing — the next tick is at most one period away. Under a fake
+clock nothing else moves time, so a discarded tick is never re-delivered: the
+loop blocks forever and the test hangs until its wait deadline. Whether that
+happened depended on which goroutine won a race, which is exactly the
+non-determinism a fake clock exists to remove.
+
+So: a tick the test advanced past is an event that HAPPENED. `Reset` changes
+only the cadence of the ticks still to come, and re-arms `nextTick` from the
+current fake time. `Reset` on a timer keeps `time.Timer` semantics and does drop
+the pending value — there is nothing to lose, because the new deadline will fire
+on a later `Advance`.
+
+`Reset` also re-registers a timer or ticker that `Advance` retired after a
+`Stop` (or, for a timer, after it fired). A re-armed element the clock has
+forgotten is a deadline no `Advance` will ever cross.
+
+#### Injection
 
 Production code under test takes `domain/clock.Clock`. Tests use
 `clocktest.FakeClock`, advance it explicitly, assert the result.
@@ -103,6 +150,32 @@ A test that fails because DNS is down is wrong.
 Every resource (goroutine, file, container, channel) is registered
 with `t.Cleanup` or `defer` **at acquisition**, not "later, at the
 end". Guarantees cleanup runs even when an early `require` aborts.
+
+### 2.7 Never call `jsii.Close()` in a CDK test
+
+The exception to 2.6, and it is not optional. `jsii.Close()` crashes
+the test binary at random.
+
+`jsii-runtime-go`'s `ensureStarted` spawns a goroutine that sits in
+`p.cmd.Wait()` on the node kernel process. `Process.Close()` writes
+`{"exit":0}` to that process's stdin — deliberately making it exit —
+and then calls `p.cmd.Wait()` **itself**. Two concurrent
+`(*exec.Cmd).Wait` on one command. Go 1.26's `Wait` ends with
+`closeDescriptors(c.parentIOPipes); c.parentIOPipes = nil`, so the
+loser of the race iterates a half-torn slice and segfaults on a nil
+`io.Closer`. Under Go ≤1.25 the second `Wait` merely returned
+`ECHILD` ("Runtime process exited abnormally: wait: no child
+processes"), which is why this only surfaced recently.
+
+So **every `jsii.Close()` is a coin flip**, and the code is identical
+in every `jsii-runtime-go` release from v1.127.0 to v1.139.0 — there
+is no version to upgrade to. Let the test binary exit instead: the
+kernel child gets EOF on stdin and exits on its own (verified: no
+stray node processes). Removing the calls also cut the CDK module's
+suite from ~110s to ~24s, because each `Close()` forced the next test
+to re-spawn node and re-import the whole CDK assembly.
+
+Do not "fix" a leak that is not there by adding it back.
 
 ---
 
@@ -156,6 +229,11 @@ func TestMyDLQStore(t *testing.T) {
 If the suite does not test what you need, extend the suite — do not
 write a one-off in your adapter package. Every implementation gets
 the new check that way.
+
+Config stores use `ports/configstoretest.Run(t, newStore)`. The factory
+returns a fresh, empty `ports.ConfigStore` for each case and registers its
+cleanup on that case's `t`. The suite also checks compare-and-swap writes
+when the store implements `ports.ConditionalConfigStore`.
 
 ### 3.4 Subject vs Address
 
@@ -212,8 +290,27 @@ inject the dependency. The constructor under test should accept
 ## 5. Integration tests
 
 Verify an adapter conforms to its port contract against a **real**
-dependency (Docker-managed broker, DynamoDB Local, ElasticMQ, ASB
-emulator, MinIO).
+dependency (Docker-managed broker, AWS emulator, ASB emulator).
+
+**Which emulator serves what.** One helper per backend, and the split is
+deliberate:
+
+| Concern | Helper | Backend |
+|---|---|---|
+| SQS, SSM, CloudWatch, and every other emulated AWS API | `testutil/flocilocal` | Floci, one container serving all of them on one endpoint |
+| DynamoDB | `testutil/ddblocal` | DynamoDB Local |
+| MQTT, AMQP 0-9-1, AMQP 1.0, Azure Service Bus | `mqttlocal`, `rabbitmqlocal`, `artemislocal`, `asblocal` | the real brokers / Microsoft's emulator |
+
+DynamoDB is deliberately **not** served by the general AWS emulator. The
+store adapters are compare-and-swap end to end — leases, slots, outbox
+claims — and their correctness rests on `ConditionExpression` semantics.
+Amazon's own DynamoDB Local is the reference for those; a general emulator
+that silently accepted a failing condition would turn every one of those
+tests green while the invariant was broken. A false green is worse than a
+red.
+
+Brokers are not served by it either: it emulates AWS APIs, not MQTT, AMQP
+or Service Bus.
 
 ### 5.1 Skip discipline
 
@@ -246,6 +343,23 @@ not embed `docker run` calls in tests.
 Integration tests are gated by `testing.Short()` + Docker probe, not
 a build tag. A `//go:build integration` line is wrong; remove it.
 
+Plugin-family tags select compiled capabilities, not test cost. A test in
+`cmd/gobridge` that pins a family's behavior must carry
+`//go:build gobridge_<family> || gobridge_all`; blank-root tests stay untagged.
+Tests running in both builds must account for the compiled family set.
+
+| Family tag | Behavior covered |
+|---|---|
+| `gobridge_mqtt` | MQTT |
+| `gobridge_native` | Memory/SQLite stores and native store seeding |
+| `gobridge_aws` | SQS, DynamoDB and AWS store seeding |
+| `gobridge_azure` | Azure Service Bus |
+| `gobridge_amqp091` | AMQP 0-9-1 |
+| `gobridge_amqp10` | AMQP 1.0 |
+| `gobridge_http` | HTTP message transport |
+| `gobridge_otel` | OTel metrics and tracing |
+| `gobridge_all` | All family-constrained tests |
+
 ### 5.3 Container hygiene
 
 - Containers named `gobridge-<package>-<uuid>`. Never use a fixed
@@ -271,89 +385,29 @@ brokers → assertions) is end-to-end, not adapter-level. Lives in
 
 ---
 
-## 6. Long-running tests
+## 6. Deployment, long-running and shell suites
 
-Catch what unit/integration cannot: goroutine leaks, soak behaviour,
-broker-crash recovery, real back-pressure, multi-hop flows, lease
-takeover races. Expensive; must remain invisible to default `go test`.
-
-### 6.1 Mandatory shape
-
-Every file starts with:
-
-```go
-//go:build longrunning
-
-package longrunning
-```
-
-The build tag is the only thing keeping these off PR runs. A
-long-running test without the tag is a CI accident.
-
-### 6.2 Where they live
-
-- Directory `tests/longrunning/` (own Go module — see `tests/longrunning/go.mod`).
-- One file per use-case or gap: `uc<NN>_<topic>_test.go` for
-  scenarios; `gap_<topic>_test.go` for gap probes
-  (e.g. `gap_goroutine_leak_test.go`).
-- Shared helpers in `longrunning_test.go` and
-  `longrunning_perf_helpers_test.go`.
-
-### 6.3 How they run
-
-- Locally: `make test-long-running` (uncached, 10 800 s timeout, requires
-  Docker, writes `reports/test-long-running.log`).
-- CI: **never**. Nothing carrying the `longrunning` tag runs in the cloud —
-  not on a PR, not on a schedule, not in a release gate. That includes the two
-  bounded single-test proofs, which are developer-machine runs like the rest:
-  Both bounded proofs are part of that single target, not separate ones:
-  - `TestUC3SeparateProcessFailover` runs two real bridge processes against a
-    real broker and DynamoDB, kills the lease owner, and asserts the standby
-    recovers. It is picked up by the suite like any other test.
-  - `TestMQTTIngressMemory` is re-run by `make test-long-running` inside a
-    container with an enforced 512 MiB cgroup. It cannot assert anything
-    without a real memory bound — run through the ordinary suite it detects no
-    limit and skips itself — so the harness is the test, not a convenience.
-    `GOBRIDGE_REQUIRE_MEMORY_LIMIT=1` makes an absent limit fail instead of
-    skip; Darwin retains the explicit skip.
-
-  Run both before merging anything that touches clustering, leases, outbox
-  draining or MQTT ingress: CI cannot catch a regression in them.
-- Never run inside `make test` or `make test-integration` — Makefile
-  excludes `tests/longrunning/` explicitly.
-
-### 6.4 Determinism even at length
-
-Long-running ≠ allowed-to-be-flaky. Same anti-flake rules apply:
-
-- No `time.Sleep` for synchronisation. Use `clocktest`, channels, or
-  `require.Eventually` with a generous timeout.
-- Fail loudly. A leak detector that prints a warning and passes is
-  worse than no detector. `t.Fatalf` on the first proven leak.
-- Bound resource usage. A soak test allocating without bound cannot
-  distinguish flakiness from regression.
-
-### 6.5 What belongs here
-
-| Long-running | Integration | Unit |
-|---|---|---|
-| broker crash + reconnect | adapter sends a message and gets an ack | `BackoffPolicy` multiplier correctly applied |
-| 60-minute soak + leak detection | round-tripping a message through a real container | `Envelope.Clone()` deep-copies headers |
-| multi-hop bridge mesh | single bridge instance with one route | route policy normalisation |
-| lease handover under load | one acquire + one renew | `LeaseToken.Version` monotonicity |
-
-Shrinkable to seconds without losing meaning → integration, not
-long-running.
-
----
+The slow and specialised suites — CDK deployment tests, the `tests/longrunning`
+module, and the deployment shell tests — are on their own page:
+[Deployment, long-running and shell test suites](docs/internals/testing-slow-suites.md).
+The rules there are these rules; those suites are separated because each needs
+Docker, a build tag, or an AWS sandbox, so none of them runs in `make test`.
 
 ## 7. Fixtures and shared helpers
 
-- `testutil/*local` — Docker container helpers (DynamoDB, SQS, ASB,
-  S3, MQTT, RabbitMQ, Artemis, LocalStack). Each exposes `Configure`,
-  `Shutdown`, typed `Client(t)`. Readiness is a three-stage deterministic
-  gate (container running → protocol-truth probe → stabilize); teardown is
-  observable state (`docker` reports stopped/gone), never a sleep.
+- `testutil/*local` — Docker container helpers (AWS APIs, DynamoDB, ASB,
+  MQTT, RabbitMQ, Artemis). Each exposes `Configure`, `Shutdown`, and either
+  a typed `Client(t)` or, where one container serves many services,
+  `AWSConfig(t)`. Readiness is a three-stage deterministic gate (container
+  running → protocol-truth probe → stabilize); teardown is observable state
+  (`docker` reports stopped/gone), never a sleep. Per-service plumbing on top
+  of a container — creating a queue, a table, a topic — belongs in the test
+  package that needs it, not in another helper package.
+- `testutil/testcontent` — TID-tagged content verification: every test
+  message carries a unique id in a header and in the JSON payload, and the
+  assertion helpers compare sent against received by id to detect loss,
+  duplication and corruption. Reach for it in any delivery test that has to
+  account for every message.
 - `testutil/dockerexec` — bounded docker CLI wrapper plus the shared
   container gates (`WaitHealthy`, `WaitStopped`, `WaitGone`, `WaitLogLine`,
   `WaitTCP`, `WaitProbe`, `Stabilize`, `RemoveOrphans`, `FreePort`).
@@ -364,7 +418,20 @@ long-running.
 - `tests/longrunning/nodeprocess_harness_test.go` — `nodeProcess`, the one
   separate-OS-process bridge launcher (re-exec + stdout token barriers +
   real SIGKILL). Any new multi-process scenario uses it.
-- `testutil/tlsgen` — pure-crypto TLS material generator. No Docker.
+- `testutil/tlsgen` — pure-crypto TLS material generator. No Docker. `SignedBy`
+  issues a leaf from a generated CA, which is what a mutual-TLS proof needs:
+  three identities one authority vouches for, not three self-signed leaves.
+- `testutil/netfault` — bounded TCP fault-injection proxy between a client and
+  its broker: partition (`Cut`), half-open connection (`Blackhole`),
+  `SetLatency`, or an endpoint that serves no new connections while its live
+  ones keep working (`RefuseNew`). `Heal` reverses any of them; `Accepted()`
+  lets a test assert a real reconnect instead of inferring one. Per-segment
+  packet loss is deliberately not modelled — the package doc says why.
+- `mqttlocal.NewBrokerInstance` secure options — `WithAuth`, `WithTLS`,
+  `WithMutualTLS`, `WithWebSocket`: a Mosquitto that actually refuses, with
+  `ws`/`wss` listeners and a `Material()` CA plus client pair to validate and
+  present. Required for any claim about an authenticated or
+  certificate-validating path.
 - `domain/clock/clocktest` — fake clock. Only blessed way to drive
   time forward.
 - `ports/storetest` — conformance suites for `LeaseStore`,
@@ -379,21 +446,23 @@ the same shape. Do not inline its logic.
 
 ## 8. Running the suite
 
-```bash
-# Uncached unit tests + timing audits. Must pass on every save.
-make test
+| Command | Scope and requirements |
+|---|---|
+| `make test` | Uncached unit tests + timing audits; must pass on every save. Includes `cmd/gobridge` untagged and with `-tags gobridge_all`. |
+| `make test-integration` | Uncached unit + integration; Docker required, mandatory in CI. Includes `cmd/gobridge` with `gobridge_all` and without `-short`. |
+| `make test-local-deploy` | AWS profile end to end on emulators (`integration_local`); Docker + Node, no AWS account or credentials. Rebuilds the runtime image and provisions its CDK CLI under `.tools/`. `LOCAL_DEPLOY_RUN` selects tests; see the [deployment test index](docs/internals/testing-slow-suites.md#56-deployment-tests) for the DynamoDB-config proof. |
+| `make test-long-running` | `longrunning` suite; Docker required, may take hours. |
+| `make test-release-gate` | Named release subset plus the finite-cgroup proof; developer machine, never CI. |
+| `make test-soak` | Published 60-minute soak; `make test-long-running` uses its 5-minute smoke profile. |
+| `make fuzz FUZZTIME=5m` | Mutate every fuzz target for `FUZZTIME` each (default 5m). Seed corpora already run in `make test`. |
+| `make check` | Build + lint + unit tests. |
+| `make check-all` | Build + lint + integration tests; Docker required. |
 
-# Uncached unit + integration. Requires Docker. Mandatory in CI and used by
-# `make check-all`.
-make test-integration
-
-# Long-running suite (build tag `longrunning`, Docker required, hours).
-make test-long-running
-
-# CI gates
-make check       # build + lint + unit
-make check-all   # build + lint + integration
-```
+Release-gate and soak runs belong on developer machines; fuzzing also runs
+on demand in CI. Give them the time — a soak cut short is not a soak.
+Nothing carrying the `longrunning` tag runs in the cloud; `make lint` and the
+pull-request CI only COMPILE that module (`go vet -tags=longrunning`), which is
+what stops a refactor from silently deleting a production proof.
 
 Every test target passes `-count=1`, writes its report under `reports/`, and
 returns the failing `go test` status after report generation.
@@ -429,39 +498,3 @@ Walk this before pushing:
 A reviewer checks the same list.
 
 ---
-
-## 10. Deployment shell tests
-
-The file-based AWS deployment ships pure-bash tests that need no Go, no Docker,
-and no network:
-
-```bash
-make -C deployment/aws-filebased-config test
-```
-
-They cover two scripts:
-
-- `seeder.sh` — the EFS config-seeder contract (single-line JSON outcome, hash
-  match/mismatch, adopt/abort modes). A PATH shim mocks the `aws` CLI over
-  fixture files.
-- `scripts/update-image.sh` — the base-image digest refresh, exercised on BOTH
-  resolver paths (crane and docker buildx) with fake `crane`, `docker`, and
-  `curl` tools that model real command output and exit codes. The checks assert
-  each resolver receives the exact concrete `2.x.y` reference, the manifest JSON
-  reaches the verifier on stdin (the pinned digest equals the hash of the exact
-  bytes), the script pins a top-level multi-platform index (OCI index or Docker
-  manifest list), **verifies `linux/amd64` + `linux/arm64` before it writes**,
-  prints only the pinned `image@sha256` reference, and **fails closed** (rewrites
-  nothing) on a missing platform, a single-arch manifest, malformed JSON, or a
-  registry that advertises no concrete `2.x.y` tag (so the mutable `2` tag is
-  never pinned). Staged fail-closed cases prove that when the digest resolves but
-  the Dockerfile target is bad — zero matching `FROM`, multiple matching `FROM`, a
-  missing target directory, or a read-only Dockerfile — the script exits non-zero
-  and **leaves both `image.txt` and the Dockerfile checksums unchanged**. A forced
-  `UPDATE_IMAGE_TOOL` other than `crane`/`docker` is rejected (exit 2). The script
-  never installs a tool (versions tested for this workflow: crane v0.21.7 / docker
-  buildx v0.34.1).
-
-These are the verification gates for the container-input pins. The resolve/verify
-workflow the root `Dockerfile` follows is in [DEVELOPMENT.md](DEVELOPMENT.md)
-(Base image digests).

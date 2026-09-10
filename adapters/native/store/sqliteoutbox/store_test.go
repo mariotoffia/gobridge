@@ -18,7 +18,7 @@ import (
 )
 
 // Compile-time assertion that the SQLite store implements the optional
-// OutboxReleaser capability the drainer type-asserts for the A4 transient-
+// OutboxReleaser capability the drainer type-asserts for the transient-
 // failure fast path. It lives in the test file because the production
 // package satisfies its ports structurally (no ports import) per
 // .go-arch-lint.yml; only memorydlq carries an in-package ports assertion.
@@ -30,6 +30,18 @@ var _ ports.OutboxReleaser = (*sqliteoutbox.Store)(nil)
 // rationale as the OutboxReleaser assertion above (no production ports import
 // per .go-arch-lint.yml).
 var _ ports.OutboxDepthReporter = (*sqliteoutbox.Store)(nil)
+
+// Compile-time assertion that the SQLite store implements the optional
+// OutboxClaimedDepthReporter capability the drainer type-asserts to emit the
+// stranded-work gauge (shared.MetricOutboxClaimedDepth). Same test-package
+// placement rationale as the assertions above.
+var _ ports.OutboxClaimedDepthReporter = (*sqliteoutbox.Store)(nil)
+
+// Validates the optional claimed-depth capability against the shared
+// conformance suite so stranded work is visible identically on every backend.
+func TestOutboxClaimedDepthConformance(t *testing.T) {
+	storetest.RunOutboxClaimedDepthTests(t, newTempStore(t))
+}
 
 func newTempStore(t *testing.T) *sqliteoutbox.Store {
 	t.Helper()
@@ -292,7 +304,7 @@ func persistSQLite(t *testing.T, s *sqliteoutbox.Store, id, sessionID string) {
 	}
 }
 
-// TestRelease_AllowsSameOwnerRetryAfterTransientFailure proves the A4
+// TestRelease_AllowsSameOwnerRetryAfterTransientFailure proves
 // fast path on the SQLite backend: a live owner returns a
 // transiently-failed claimed record to pending via Release and re-claims
 // it on the next drain with the SAME token version — no fencing-version

@@ -273,7 +273,7 @@ func TestFilteredAction_IsValid(t *testing.T) {
 	}
 }
 
-// TestRoutePolicy_WithDefaults_FilteredDefaultsDrop is the domain half of F1:
+// TestRoutePolicy_WithDefaults_FilteredDefaultsDrop is the domain half:
 // an unset OnFiltered defaults to drop, NOT the DLQ. This is the default that
 // decouples a filter-drop from the permanent-failure DLQ sink.
 func TestRoutePolicy_WithDefaults_FilteredDefaultsDrop(t *testing.T) {

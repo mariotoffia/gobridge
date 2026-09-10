@@ -11,7 +11,7 @@ and is redelivered; best-effort traffic in flight at the kill is lost.
 On `SIGTERM`/`SIGINT` GoBridge drains in phases: settle in-flight work (bounded
 by `drain_timeout`), release leases, close transports and stores, then stop
 HTTP — the whole sequence bounded by `shutdown_timeout`
-([deployment-guide.md](../deployment-guide.md#health-checks-and-graceful-shutdown)).
+([deployment-guide.md](../health-and-shutdown.md)).
 The orchestrator must give the container **more** stop time than
 `shutdown_timeout`, or it sends `SIGKILL` mid-drain. A second `SIGINT`/`SIGTERM`
 also forces an immediate exit before drain completes.
@@ -22,7 +22,7 @@ Evidence the process was killed/forced **before** graceful drain finished:
 
 - No clean `exit 0`: the orchestrator reports `SIGKILL` (exit `137` =
   `128+9`) or exit code `2` (a second signal forcing immediate exit —
-  [exit codes](../deployment-guide.md#exit-codes)).
+  [exit codes](../health-and-shutdown.md#exit-codes)).
 - The shutdown log stops partway — no final "clean shutdown" line, phases
   (drain → lease release → store close) truncated.
 - The orchestrator's stop/termination grace is at or below `shutdown_timeout`

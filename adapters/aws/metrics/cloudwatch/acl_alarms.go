@@ -25,6 +25,16 @@ const (
 // (TESTS.md §3.1 / .go-arch-lint.yml).
 const metricSQSVisibilityExtensions = "SQSVisibilityExtensions"
 
+// The MQTT transport's operational counters, mirrored for the same reason: this
+// module must not import a sibling adapter. The shipped CDK alarm bundle alarms
+// on all three DIMENSIONLESS, and the adapter emits each one tagged with the
+// session, so without a rollup copy those alarms can never match a series.
+const (
+	metricMQTTIngressPoisonDropped = "MQTTIngressPoisonDropped"
+	metricMQTTSessionTakeover      = "MQTTSessionTakeover"
+	metricMQTTQoSDowngraded        = "MQTTQoSDowngraded"
+)
+
 // AlarmDefinition describes a CloudWatch alarm that EnsureAlarms will create.
 type AlarmDefinition struct {
 	Name        string
@@ -41,7 +51,7 @@ type AlarmDefinition struct {
 	// datapoints ("breaching", "notBreaching", "ignore", "missing").
 	// Empty defaults to "notBreaching" — correct for event counters
 	// whose absence is the healthy state, WRONG for continuously
-	// emitted gauges whose absence means the emitter died (MF-4).
+	// emitted gauges whose absence means the emitter died.
 	TreatMissingData string
 }
 
@@ -52,7 +62,7 @@ type AlarmDefinition struct {
 // partition, MessagesDropped/Expired/Filtered → route_id[/reason]), and a
 // CloudWatch alarm without dimensions NEVER matches dimensioned data —
 // so the exporter must double-publish a zero-dimension rollup copy of
-// these metrics for the default alarms to fire (MF-4):
+// these metrics for the default alarms to fire:
 //
 //	exporter, err := cloudwatch.New(ctx, shared.MetricNamespace,
 //	    cloudwatch.WithRollupMetrics(cloudwatch.DefaultRollupMetrics()...),
@@ -90,10 +100,32 @@ func DefaultRollupMetrics() []string {
 		shared.MetricMessagesDropped,
 		shared.MetricMessagesExpired,
 		shared.MetricMessagesFiltered,
+		// Coordinated cluster rollout convergence gauges. Each is emitted with NO
+		// runtime dimension, so on a fleet WITH instance tagging its base series
+		// carries only instance_id and a dimensionless fleet alarm would miss it.
+		// They are exactly the series a fleet alarm must read: whether ANY member is
+		// off the decided generation, cannot repair itself, or has stopped being
+		// able to see the rollout row at all — questions no per-instance view
+		// answers, and no single member can answer about the cohort.
+		shared.MetricClusterRolloutDiverged,
+		shared.MetricClusterRolloutTerminal,
+		shared.MetricClusterRolloutObservationAge,
+		// The MQTT operational counters the CDK bundle alarms on, and the session
+		// reconcile failure beside them. Each is emitted per session_id, so the
+		// dimensionless alarms the bundle provisions had nothing to match: they sat
+		// at INSUFFICIENT_DATA rather than reporting an acked-and-dropped poison
+		// packet, a client-id collision, a broker QoS cap, or a subscription
+		// reconcile that never converges.
+		metricMQTTIngressPoisonDropped,
+		shared.MetricReconcileFailures,
+		metricMQTTSessionTakeover,
+		metricMQTTQoSDowngraded,
 	}
 }
 
-// DefaultAlarms returns the alarm definitions specified in ARCHITECTURE_NEW-STORES.md.
+// DefaultAlarms returns the standard alarm set for a gobridge deployment:
+// one alarm per operationally significant metric, as described in
+// docs/aws-deployment/monitoring.md.
 // snsTopicARN is optional; when non-empty, alarm actions are set to publish
 // to the given SNS topic.
 //
@@ -101,7 +133,7 @@ func DefaultRollupMetrics() []string {
 // zero-dimension rollup series produced by
 // WithRollupMetrics(DefaultRollupMetrics()...) — configure that option
 // on the exporter or these alarms will never leave INSUFFICIENT_DATA
-// silently (MF-4). To alarm per dimension value instead (e.g. one
+// silently. To alarm per dimension value instead (e.g. one
 // alarm per route_id), create per-dimension alarms via your deployment
 // tooling; AlarmDefinition deliberately models the fleet-rollup shape.
 //
@@ -255,7 +287,7 @@ func DefaultAlarms(namespace, snsTopicARN string) []AlarmDefinition {
 // it is a provisioning-time API. Call it from your bootstrap/CDK-glue
 // alongside exporter construction, with the SAME namespace the
 // exporter publishes to and WithRollupMetrics(DefaultRollupMetrics()...)
-// configured on the exporter (MF-4).
+// configured on the exporter.
 func EnsureAlarms(ctx context.Context, client cloudWatchAPI, alarms []AlarmDefinition) error {
 	for _, a := range alarms {
 		treatMissing := a.TreatMissingData

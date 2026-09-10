@@ -27,7 +27,7 @@ var errReleasedForRetry = errors.New("outbox: record released for transient retr
 // Complete was never called. It is consumed inside drainBatch's group loop —
 // never propagated as a drain error — to STOP the ordering group WITHOUT
 // counting the still-claimed head as a success and WITHOUT letting a later
-// same-key record overtake it (M4). The group loop deliberately does NOT
+// same-key record overtake it. The group loop deliberately does NOT
 // releaseRemainder for this case: a store that just failed Release will fail it
 // again, so the still-claimed head and the unattempted tail are recovered
 // together by version/stale reclaim. It increments transientReleases so it
@@ -36,19 +36,19 @@ var errReleaseFailed = errors.New("outbox: record release failed after transient
 
 // errBatchDeadlineDeferred signals processRecord aborted a send because the
 // batch deadline (workCtx/batchCtx) fired mid-flight. The record was NOT
-// delivered and has been released back to pending (finding 9): it must be
+// delivered and has been released back to pending: it must be
 // counted as DEFERRED, never as a success, and drives the transient backoff
 // floor so the next cycle does not immediately re-hammer an overloaded batch.
 //
 // Note the deferral re-claims the record on the next cycle, which increments
 // its ReplayCount even though no send failed. Replay count therefore counts
 // claims, not failures, which is why the poison gate (processRecord) AND-checks
-// poisonAgeReached — see poisonMinAge.
+// the wall-clock replay budget — see replayBudgetExhausted.
 var errBatchDeadlineDeferred = errors.New("outbox: record deferred: batch deadline aborted send")
 
 // errCompletionFenced signals that a record's Send had returned but the
 // post-send fence (postSendFence) refused the Complete because the batch was
-// abandoned/cancelled AFTER the send returned (HIGH-2) while the drainer still
+// abandoned/cancelled AFTER the send returned while the drainer still
 // held a live lease. The watchdog abandons a ctx-ignoring sender and proceeds;
 // if that sender LATER returns nil, its abandoned goroutine must NOT complete a
 // claim the drainer already moved on from. The record was not completed and
@@ -59,7 +59,7 @@ var errBatchDeadlineDeferred = errors.New("outbox: record deferred: batch deadli
 // it (a concurrent/new drain cycle may already have reclaimed it, so releasing
 // would race). A lease LOSS is the distinct, harder condition and is instead
 // surfaced as shared.ErrStaleFencingToken so the drain loop backs off for a new
-// lease (HIGH-1).
+// lease.
 var errCompletionFenced = errors.New("outbox: completion fenced: batch abandoned after send returned")
 
 func (d *Drainer) completeCtx(parent context.Context) (context.Context, context.CancelFunc) {
@@ -71,7 +71,7 @@ func (d *Drainer) completeCtx(parent context.Context) (context.Context, context.
 }
 
 // completeBudget mirrors completeCtx's bounded Complete/Release window so the
-// batch timeout can reserve margin for it on top of each send (finding 10).
+// batch timeout can reserve margin for it on top of each send.
 func (d *Drainer) completeBudget() time.Duration {
 	timeout := d.policy.SendTimeout
 	if timeout <= 0 || timeout > 5*time.Second {
@@ -80,7 +80,7 @@ func (d *Drainer) completeBudget() time.Duration {
 	return timeout
 }
 
-// emitDLQ counts a durable DLQ write from the drain path (finding 15). Without
+// emitDLQ counts a durable DLQ write from the drain path. Without
 // it, drainer-side poison/expiry/permanent DLQ writes were invisible to the
 // conservation law even though the ingress route path emits the same counter.
 func (d *Drainer) emitDLQ(category string) {
@@ -92,7 +92,7 @@ func (d *Drainer) emitDLQ(category string) {
 
 // emitDrop counts a terminal DROP from the drain path: a record settled WITHOUT
 // a DLQ write and without a successful send, because the route's policy is
-// OnPermanentFailure=drop or no DLQ store is configured (H3). It mirrors the
+// OnPermanentFailure=drop or no DLQ store is configured. It mirrors the
 // route runner's emitDrop (route/dispatch.go) so drainer-side drops feed the
 // same MessagesDropped series as ingress-side drops — dimensioned by
 // TagKeyReason so the one series stays queryable across both paths and closes
@@ -112,7 +112,7 @@ func (d *Drainer) emitDrop(category string) {
 // guardComplete — so a stale owner can never settle work after step-down. It
 // fails CLOSED on two independent step-down conditions:
 //
-//   - Lease authority (HIGH-1): the record was claimed under `token`; if the
+//   - Lease authority: the record was claimed under `token`; if the
 //     current LIVE token (d.tokenFn — the runtime-side session token, since the
 //     store is not required to consult live lease state on Complete) is absent
 //     or carries a different Version, the lease was lost — possibly re-acquired
@@ -120,7 +120,7 @@ func (d *Drainer) emitDrop(category string) {
 //     lost lease is the harder fencing violation; surfaced as
 //     shared.ErrStaleFencingToken so the drain loop stops sibling sends and backs
 //     off for a new lease.
-//   - Batch abandonment (HIGH-2): batchCtx was cancelled — the drain watchdog
+//   - Batch abandonment: batchCtx was cancelled — the drain watchdog
 //     abandoned a ctx-ignoring sender's batch and the drainer proceeded, or a
 //     sibling cancelled it on a stale token. The lease may still be live, so this
 //     is NOT a stale token; surfaced as errCompletionFenced so the record is left
@@ -129,7 +129,7 @@ func (d *Drainer) emitDrop(category string) {
 // Returns nil only when BOTH hold, i.e. it is safe to Complete.
 //
 // ponytail: SHUTDOWN-GRACE COHERENCE (cross-cutting, owned by the composition
-// root R2 — bridge.go / session manager, NOT this package). This fence makes the
+// root — bridge.go / session manager, NOT this package). This fence makes the
 // lease-authority check runtime-side and observable, so during a SINGLE-instance
 // graceful shutdown a legitimate final send that outlives the manager-close grace
 // gets its live lease cleared at close, its final Complete fenced, and the record
@@ -137,8 +137,8 @@ func (d *Drainer) emitDrop(category string) {
 // for it). That is the accepted lesser-evil already documented in bridge.go Stop,
 // but it is only bounded if the shutdown grace covers the worst-case in-flight
 // completion: bridge.go's storeCloseGrace MUST stay >= SendTimeout +
-// completeBudget() (the bound this drainer reserves per record). R2 must keep
-// that inequality when wiring Stop; if the grace is shorter than a configured
+// completeBudget() (the bound this drainer reserves per record). Whoever
+// wires Stop must keep that inequality; if the grace is shorter than a configured
 // SendTimeout, a healthy final delivery is needlessly re-sent after restart. This
 // package cannot enforce it (it does not own the shutdown sequence); the pointer
 // lives here because the fence is what makes the coherence load-bearing.
@@ -178,11 +178,11 @@ func (d *Drainer) guardComplete(batchCtx context.Context, rec *persistence.Outbo
 }
 
 // completeTerminal Completes a terminally-settled record and fires the delivery
-// hook's OnSettled, but only AFTER the store transition durably succeeds (M3).
+// hook's OnSettled, but only AFTER the store transition durably succeeds.
 //
 // It first runs the shared post-send fence (guardComplete): a record whose
 // terminal path straddled a lease transfer or a watchdog abandonment is LEFT
-// Claimed for reclaim rather than settled by a stale owner (HIGH-1/HIGH-2). The
+// Claimed for reclaim rather than settled by a stale owner. The
 // fence covers every terminal branch — permanent, expired, poison — because all
 // three route their Complete through here; the success path guards the same way
 // inline.
@@ -212,23 +212,6 @@ func (d *Drainer) completeTerminal(ctx context.Context, rec *persistence.OutboxR
 	return nil
 }
 
-// poisonAgeReached reports whether a replay-exhausted record is old enough to
-// be poisoned to the DLQ (finding 8). The age gate prevents a transient egress
-// outage — which can burn the small replay budget in seconds — from poisoning
-// otherwise-healthy records: a record is only poisoned once it has ALSO reached
-// poisonMinAge. When CreatedAt is unknown (zero), the age cannot be checked, so
-// we fail OPEN and allow poisoning — preserving the pre-age-gate behaviour
-// (poison on replay exhaustion) rather than retrying a genuinely poisoned record
-// forever. Production records always carry a persist timestamp, so the age gate
-// is effective there; only ageless (e.g. hand-rehydrated) records fail open.
-func (d *Drainer) poisonAgeReached(rec *persistence.OutboxRecord) bool {
-	created := rec.CreatedAt()
-	if created.IsZero() {
-		return true
-	}
-	return d.clk.Since(created) >= d.poisonMinAge
-}
-
 // replayBudgetExhausted reports whether a replay-exhausted record has ALSO spent
 // its wall-clock replay budget and may therefore be poisoned to the DLQ
 // (WP-REPLAY-BUDGET). The budget is measured from the record's FIRST delivery
@@ -236,20 +219,24 @@ func (d *Drainer) poisonAgeReached(rec *persistence.OutboxRecord) bool {
 // replay COUNT quickly cannot poison an otherwise-healthy record until real time
 // — replayBudget — has actually elapsed since delivery was first attempted.
 //
-// Records with a zero FirstAttemptedAt (persisted before the replay-budget
-// schema, or never yet claimed) fall back BIT-FOR-BIT to the legacy CreatedAt
-// age gate (poisonAgeReached / poisonMinAge), so upgrading in place changes no
-// poison decision for pre-existing records.
+// A record reaching this gate has just been claimed, and every backend stamps
+// FirstAttemptedAt on the first claim (the aggregate does it in
+// OutboxRecord.Claim; SQLite in its claim UPDATE, DynamoDB via if_not_exists,
+// the in-memory store through the aggregate). A zero value is therefore a store
+// that broke that contract, and the answer is NOT to guess an age from
+// CreatedAt: poisoning routes a message to the dead-letter queue — or drops it
+// outright under FailureDrop — so the budget is reported UNSPENT and the record
+// keeps being retried. A store bug must not be able to destroy messages.
 func (d *Drainer) replayBudgetExhausted(rec *persistence.OutboxRecord) bool {
 	first := rec.FirstAttemptedAt()
 	if first.IsZero() {
-		return d.poisonAgeReached(rec)
+		return false
 	}
 	return d.clk.Since(first) >= d.replayBudget
 }
 
 // releaseOne best-effort returns a single claimed record to pending using the
-// optional OutboxReleaser capability (finding 9). Stores without the capability
+// optional OutboxReleaser capability. Stores without the capability
 // keep the legacy leave-claimed behavior and recover via version/stale reclaim.
 func (d *Drainer) releaseOne(ctx context.Context, rec *persistence.OutboxRecord, token persistence.LeaseToken) {
 	releaser, ok := d.outboxStore.(ports.OutboxReleaser)
@@ -272,7 +259,7 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 	// OutboundMessage.Address.
 	outbound := rec.Snapshot()
 	routeTag := shared.Tag{Key: shared.TagKeyRouteID, Value: d.routeID}
-	attempt := rec.ReplayCount() + 1
+	attempt := attemptNumber(rec)
 
 	if outbound.HasExpiry() && outbound.IsExpired(d.clk) {
 		d.metrics.Counter(shared.MetricOutboxExpiredBeforeSend, 1, routeTag)
@@ -284,9 +271,7 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 	// gated on replay exhaustion AND the replay budget being spent
 	// (replayBudgetExhausted): both must hold. A record is poisoned only once
 	// wall-clock time since its FIRST attempt (FirstAttemptedAt) has reached
-	// ReplayBudget; legacy records carrying a zero FirstAttemptedAt fall back
-	// bit-for-bit to the CreatedAt/poisonMinAge age gate. Both conditions are a
-	// hard AND, never an OR.
+	// ReplayBudget. Both conditions are a hard AND, never an OR.
 	if rec.ReplayCount() > d.policy.MaxReplayAttempts && d.replayBudgetExhausted(rec) {
 		return d.handlePoison(ctx, rec, token)
 	}
@@ -324,7 +309,7 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 	})
 
 	if sendErr == nil {
-		// Post-send fence (HIGH-1/HIGH-2): the target accepted the message, but
+		// Post-send fence: the target accepted the message, but
 		// this owner may no longer be authoritative — its lease could have
 		// transferred while Send blocked, or the drain watchdog could have
 		// abandoned this batch. guardComplete leaves the record Claimed for
@@ -370,7 +355,7 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 			Err:         sendErr,
 			Terminal:    true,
 		}
-		// H3: honor OnPermanentFailure=drop and a missing DLQ store (both legal
+		// honor OnPermanentFailure=drop and a missing DLQ store (both legal
 		// configs) by dropping-with-metric instead of writing a DLQ entry the
 		// operator opted out of. Mirrors route.poisonReplayCapExceeded. Without
 		// this gate a drop-policy route miscounts drops as DLQ entries, and with
@@ -407,7 +392,7 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 	// implements the optional OutboxReleaser capability, return the record
 	// to pending so this same live owner can re-claim and retry it on the
 	// very next drain — no fencing-version bump or wall-clock stale-claim
-	// wait required (A4). Stores that do NOT implement it keep the legacy
+	// wait required. Stores that do NOT implement it keep the legacy
 	// leave-claimed behavior and rely on version/stale reclaim.
 	releaser, ok := d.outboxStore.(ports.OutboxReleaser)
 	if !ok {
@@ -436,7 +421,7 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 		// Release failed for some reason OTHER than a stale token (e.g. a
 		// store write/I/O error). The record was NOT sent and Release did NOT
 		// transition it, so it stays durably Claimed. Return errReleaseFailed
-		// (M4) so the group loop STOPS this ordering group without counting the
+		// so the group loop STOPS this ordering group without counting the
 		// head as a success and without letting a later same-key record
 		// overtake it. The loop does NOT releaseRemainder for this signal: a
 		// store that just failed Release will fail it again, so the still-claimed
@@ -455,7 +440,7 @@ func (d *Drainer) processRecord(ctx context.Context, rec *persistence.OutboxReco
 // retry (errReleasedForRetry). Stopping the group prevents a later same-key
 // record from overtaking the released one, but the remainder was already
 // claimed this cycle; without releasing it the unsent tail would strand as
-// claimed on version-only stores (memory, SQLite) — the very A4 defect —
+// claimed on version-only stores (memory, SQLite) — the very defect —
 // because the same owner at the same fencing version cannot re-claim a
 // claimed record. Each id is released individually, honoring OutboxReleaser's
 // single-record contract. Best-effort: stores without OutboxReleaser keep the
@@ -491,11 +476,11 @@ func (d *Drainer) handleExpired(ctx context.Context, rec *persistence.OutboxReco
 		// rejected by validateTerminalFailureSink at Start; the HasStore guard
 		// mirrors the permanent/poison branches here and dispatch.go for defense
 		// in depth, so we never emit a phantom DLQ metric for a Route whose
-		// dlq.Route would silently no-op. Count the loss (finding 15) so the
+		// dlq.Route would silently no-op. Count the loss so the
 		// conservation law can attribute it.
 		d.metrics.Counter(shared.MetricMessagesExpired, 1, routeTag)
 	}
-	// M3: completeTerminal fires OnSettled only after Complete durably lands;
+	// completeTerminal fires OnSettled only after Complete durably lands;
 	// the MessagesExpired / DLQ count above is per-write and already stands.
 	return d.completeTerminal(ctx, rec, token, ports.DeliveryOutcome{
 		Direction:   ports.DirectionEgress,
@@ -503,7 +488,7 @@ func (d *Drainer) handleExpired(ctx context.Context, rec *persistence.OutboxReco
 		BindingID:   rec.BindingID(),
 		Address:     rec.Address(),
 		Envelope:    env,
-		Attempt:     rec.ReplayCount() + 1,
+		Attempt:     attemptNumber(rec),
 		MaxAttempts: d.policy.MaxReplayAttempts,
 		Err:         shared.ErrMessageExpired,
 		Terminal:    true,
@@ -515,13 +500,12 @@ func (d *Drainer) handlePoison(ctx context.Context, rec *persistence.OutboxRecor
 	// A record reaches this poison DLQ only by crossing MaxReplayAttempts AND
 	// spending its wall-clock ReplayBudget since FirstAttemptedAt (a permanent
 	// send error DLQs immediately via the non-transient branch in
-	// processRecord). The replay budget is the A4-R1 root-cause fix: a transient
+	// processRecord). The replay budget is the root-cause fix: a transient
 	// egress outage that merely burns the replay COUNT quickly no longer poisons
 	// a healthy record, because poisoning now requires real time — measured from
 	// the FIRST attempt — to have elapsed. The transientRetryFloor still bounds
 	// how fast the count burns (rate); the budget bounds the TOTAL burn. Legacy
-	// records with a zero FirstAttemptedAt fall back to the CreatedAt/poisonMinAge
-	// age gate. Emit an explicit WARN carrying the age evidence
+	// Emit an explicit WARN carrying the age evidence
 	// (first_attempted_at, replay_budget) so a genuine budget-exhaustion loss is
 	// observable at the point of loss instead of surfacing only as a generic,
 	// reason-less DLQ entry.
@@ -538,12 +522,12 @@ func (d *Drainer) handlePoison(ctx context.Context, rec *persistence.OutboxRecor
 		BindingID:   rec.BindingID(),
 		Address:     rec.Address(),
 		Envelope:    env,
-		Attempt:     rec.ReplayCount() + 1,
+		Attempt:     attemptNumber(rec),
 		MaxAttempts: d.policy.MaxReplayAttempts,
 		Err:         poisonErr,
 		Terminal:    true,
 	}
-	// H3: honor OnPermanentFailure=drop / no DLQ store (mirror the permanent
+	// honor OnPermanentFailure=drop / no DLQ store (mirror the permanent
 	// branch). A poison under a drop policy — or with no store to write to — is
 	// dropped-with-metric, not written to a DLQ the operator opted out of and
 	// not counted as a DLQ entry with nothing behind it.
@@ -560,7 +544,19 @@ func (d *Drainer) handlePoison(ctx context.Context, rec *persistence.OutboxRecor
 		return dlqErr
 	}
 	d.emitDLQ("poison")
-	// M3: OnSettled fires only after Complete durably lands; emitDLQ above is
+	// OnSettled fires only after Complete durably lands; emitDLQ above is
 	// per-write and already stands even if Complete later fails.
 	return d.completeTerminal(ctx, rec, token, outcome)
+}
+
+// attemptNumber is the 1-based attempt number reported to delivery hooks
+// (ports.DeliveryAttempt.Attempt / ports.DeliveryOutcome.Attempt) on the outbox
+// path. OutboxRecord.Claim increments ReplayCount for the claim that is being
+// attempted right now, so the count ALREADY includes this attempt — adding one
+// made the first delivery report attempt 2 while the direct path reported 1 for
+// the same message. The floor of 1 covers a record rehydrated with a zero
+// replay count — an out-of-tree store that does not increment it — so the
+// number stays 1-based whatever the store did.
+func attemptNumber(rec *persistence.OutboxRecord) int {
+	return max(rec.ReplayCount(), 1)
 }

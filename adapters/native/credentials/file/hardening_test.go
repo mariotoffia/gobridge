@@ -16,7 +16,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// TestAtomicWrite_ExternalReaderNeverSeesPartialJSON is the I3 regression: a
+// TestAtomicWrite_ExternalReaderNeverSeesPartialJSON is the regression: a
 // process that reads the credential file directly (bypassing the repository
 // mutex, as an out-of-process reader or a crash-time observer would) must
 // never see a truncated or partially written secret. The pre-fix
@@ -85,7 +85,7 @@ func TestAtomicWrite_ExternalReaderNeverSeesPartialJSON(t *testing.T) {
 }
 
 // TestAtomicWrite_Perms0600 pins that the atomically written file keeps the
-// 0600 secret permission (I3).
+// 0600 secret permission.
 func TestAtomicWrite_Perms0600(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -103,7 +103,7 @@ func TestAtomicWrite_Perms0600(t *testing.T) {
 }
 
 // TestAtomicWrite_LeavesNoTempFiles verifies the temp file used for the atomic
-// rename is always cleaned up (I3).
+// rename is always cleaned up.
 func TestAtomicWrite_LeavesNoTempFiles(t *testing.T) {
 	dir := t.TempDir()
 	repo, err := New(dir)
@@ -122,7 +122,7 @@ func TestAtomicWrite_LeavesNoTempFiles(t *testing.T) {
 	}
 }
 
-// TestGet_RespectsContextCancellation is the I6 regression: a cancelled
+// TestGet_RespectsContextCancellation is the regression: a cancelled
 // context must short-circuit before any filesystem work. The pre-fix code
 // ignored ctx entirely.
 func TestGet_RespectsContextCancellation(t *testing.T) {
@@ -140,7 +140,7 @@ func TestGet_RespectsContextCancellation(t *testing.T) {
 }
 
 // TestMutations_RespectContextCancellation covers Create/Update/Delete/List
-// for the same I6 cancellation contract.
+// for the same cancellation contract.
 func TestMutations_RespectContextCancellation(t *testing.T) {
 	repo, err := New(t.TempDir())
 	require.NoError(t, err)
@@ -156,7 +156,7 @@ func TestMutations_RespectContextCancellation(t *testing.T) {
 	require.ErrorIs(t, listErr, context.Canceled)
 }
 
-// TestGet_CorruptFileReturnsBridgeError is the I6 regression for error
+// TestGet_CorruptFileReturnsBridgeError is the regression for error
 // mapping: a malformed credential file surfaces as a classified BridgeError
 // (ErrInvalidPayload) instead of a raw fmt-wrapped error.
 func TestGet_CorruptFileReturnsBridgeError(t *testing.T) {

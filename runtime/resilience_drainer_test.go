@@ -5,7 +5,7 @@ package runtime_test
 //
 // Tests validating outbox drainer fixes:
 // RES-003: Stale fencing token uses longer backoff
-// QA-C3:  retryOrFallback with nil DLQ
+// retryOrFallback with nil DLQ
 //
 // Summary:
 // ┌──────┬────────────────────────────────────────────┬──────────┐
@@ -78,7 +78,7 @@ func TestDrainer_StaleFencingToken_UsesMinBackoff(t *testing.T) {
 
 // TestRetryUnsupported_NilDLQ_AcksDelivery validates that when transport
 // retry is not supported and no DLQ is configured, the delivery is acked
-// (preventing infinite redelivery) with a log warning (QA-C3).
+// (preventing infinite redelivery) with a log warning (QA).
 //
 // Scenario:
 // ───────────────────────────────────────────────

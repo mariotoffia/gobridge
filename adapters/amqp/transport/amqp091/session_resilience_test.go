@@ -100,7 +100,7 @@ func TestSession_Close_MultipleCallsSafe(t *testing.T) {
 	}
 }
 
-// TestSession_Close_HonoursContext_HalfDeadBroker is the M-2 regression:
+// TestSession_Close_HonoursContext_HalfDeadBroker is the regression:
 // Session.Close must race conn.Close() against ctx so a half-dead broker
 // (whose Connection.Close-Ok never arrives) cannot wedge shutdown for the
 // SDK's ~20-30s handshake timeout.
@@ -136,8 +136,8 @@ func TestSession_Close_HonoursContext_HalfDeadBroker(t *testing.T) {
 	}
 }
 
-// TestSession_Close_HonoursContext_StuckReconnectGoroutine is the FIX 3
-// regression (a follow-up to M-2): Close's wait for the background reconnect
+// TestSession_Close_HonoursContext_StuckReconnectGoroutine is the
+// regression (a follow-up): Close's wait for the background reconnect
 // goroutine to exit must be ctx-bounded. That goroutine can be parked in an
 // SDK topology call (dial/declare) that ignores ctx, so an unconditional
 // <-bgDone wait would overrun the caller's deadline by up to a heartbeat.
@@ -171,7 +171,7 @@ func TestSession_Close_HonoursContext_StuckReconnectGoroutine(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- s.Close(ctx) }()
 
-	// With FIX 3 Close returns promptly on ctx (no connection to close, so
+	// With Close returns promptly on ctx (no connection to close, so
 	// nil); without it, it blocks on <-bgDone until release and this times
 	// out.
 	if err := wait.RequireReceive(t, done, 2*time.Second); err != nil {

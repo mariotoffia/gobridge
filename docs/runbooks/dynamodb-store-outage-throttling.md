@@ -53,7 +53,7 @@ full store outage stops durable progress and can trigger failover.
      `THROTTLED`.
    - GSI: an outbox depth/claim query needs its index present and `ACTIVE`. A
      missing or backfilling GSI throttles or errors — see
-     [DynamoDB outbox GSI migration](dynamodb-outbox-gsi-migration.md).
+     [DynamoDB outbox table schema](dynamodb-outbox-table-schema.md).
 
 ## Action
 
@@ -84,4 +84,4 @@ durable records and drops in-flight messages.
 - [Outbox backlog / stuck drain](outbox-backlog-stuck-drain.md)
 - [Lease flapping / split-brain](lease-flapping-split-brain.md)
 - [Poison message / DLQ growth](poison-message-dlq-growth.md)
-- [DynamoDB outbox GSI migration](dynamodb-outbox-gsi-migration.md)
+- [DynamoDB outbox table schema](dynamodb-outbox-table-schema.md)

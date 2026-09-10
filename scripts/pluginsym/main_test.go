@@ -9,13 +9,16 @@ import (
 
 func TestCanonicalize(t *testing.T) {
 	cases := map[string]string{
-		"aws.sqs":   "sqs",
-		"mqtt.paho": "mqtt",
-		"sqs":       "sqs",
-		"mqtt":      "mqtt",
-		"memory":    "memory",
-		"sqlite":    "sqlite",
-		"unknown":   "unknown",
+		"azure.servicebus": "servicebus",
+		"amqp.amqp091":     "amqp091",
+		"amqp.amqp10":      "amqp10",
+		"aws.sqs":          "sqs",
+		"mqtt.paho":        "mqtt",
+		"sqs":              "sqs",
+		"mqtt":             "mqtt",
+		"memory":           "memory",
+		"sqlite":           "sqlite",
+		"unknown":          "unknown",
 	}
 	for in, want := range cases {
 		if got := canonicalize(in, aliasMap); got != want {
@@ -231,24 +234,41 @@ func TestCheckSymmetry_BothDirectionsAtOnce(t *testing.T) {
 }
 
 func TestBuildRegisteredKinds_LiveAdapters(t *testing.T) {
-	// The live composition root is cmd/gobridge/main.go relative to the
-	// repo root, two levels up from this module directory.
-	mainPath := filepath.Join("..", "..", "cmd", "gobridge", "main.go")
-	got, err := buildRegisteredKinds(mainPath)
+	files, violations, err := analyzeDirectory(filepath.Join("..", "..", "cmd", "gobridge"))
 	if err != nil {
-		t.Fatalf("buildRegisteredKinds: %v", err)
+		t.Fatal(err)
 	}
-	for _, want := range []string{"mqtt", "mqtt.paho", "memory", "sqlite"} {
-		found := false
-		for _, k := range got {
-			if k == want {
-				found = true
-				break
+	if len(violations) != 0 {
+		t.Errorf("live composition violations: %v", violations)
+	}
+	expected := map[string][]string{
+		"plugins_mqtt.go":   {"mqtt", "mqtt.paho"},
+		"plugins_native.go": {"memory", "sqlite"},
+		"main.go":           {},
+	}
+	owners := map[string]string{
+		"mqtt": "plugins_mqtt.go", "mqtt.paho": "plugins_mqtt.go",
+		"memory": "plugins_native.go", "sqlite": "plugins_native.go",
+	}
+	for _, f := range files {
+		name := filepath.Base(f.path)
+		if want, ok := expected[name]; ok {
+			if !equal(f.registered, want) {
+				t.Errorf("%s registered %v, want %v", name, f.registered, want)
+			}
+			delete(expected, name)
+		}
+		for _, kind := range f.registered {
+			if owner, ok := owners[kind]; ok && owner != name {
+				t.Errorf("%s registered in %s, want only %s", kind, name, owner)
 			}
 		}
-		if !found {
-			t.Errorf("expected registered kind %q in %v", want, got)
+		if name == "main.go" && len(f.wired) != 0 {
+			t.Errorf("main.go wires %v, want none", f.wired)
 		}
+	}
+	for name := range expected {
+		t.Errorf("missing composition file %s", name)
 	}
 }
 

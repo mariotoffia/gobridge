@@ -12,7 +12,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// A-12 (LOW): the grace worker must not act on a STALE timer tick. beginGrace /
+// (LOW): the grace worker must not act on a STALE timer tick. beginGrace /
 // rearmGrace re-arm the shared grace timer with Timer.Reset from another
 // goroutine; if the timer had already fired, a tick is left queued in the timer
 // channel and the worker would sweep immediately after the re-arm — BEFORE the
@@ -50,15 +50,15 @@ func TestBug_GraceTimer_StaleTickDoesNotSweepEarly(t *testing.T) {
 	// open. A tick arriving now is stale and must be ignored.
 	r.sweepIfExpired()
 	require.Equal(t, 1, r.PendingCount(),
-		"A-12: a stale tick within the grace window must NOT sweep the orphan")
+		"a stale tick within the grace window must NOT sweep the orphan")
 	require.False(t, acked.Load(),
-		"A-12: a stale tick must NOT ack the orphan early")
+		"a stale tick must NOT ack the orphan early")
 
 	// Once the window has genuinely elapsed, the same call settles the orphan.
 	fake.Advance(grace + time.Second)
 	r.sweepIfExpired()
 	require.Equal(t, 0, r.PendingCount(),
-		"A-12: after the deadline the orphan is settled")
+		"after the deadline the orphan is settled")
 	require.True(t, acked.Load(),
-		"A-12: a real expiry acks and drops the orphan")
+		"a real expiry acks and drops the orphan")
 }

@@ -1,7 +1,9 @@
 package parser_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,6 +14,18 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
+// TestMarshalBridgeConfigJSONPreservesVersion verifies integer precision through the wire map.
+func TestMarshalBridgeConfigJSONPreservesVersion(t *testing.T) {
+	for _, version := range []int{1, math.MaxInt/2 + 1, math.MaxInt} {
+		cfg := &ports.BridgeConfig{Version: version, Bridge: ports.BridgeSettings{ID: "config-store"}}
+		data, err := parser.MarshalBridgeConfigJSON(cfg)
+		require.NoError(t, err)
+		got, err := parser.Parse(bytes.NewReader(data), parser.FormatJSON, ports.NewRegistry())
+		require.NoError(t, err)
+		assert.Equal(t, cfg, got)
+	}
+}
+
 type fakeBlueprintConfig struct {
 	KindName string `json:"kind" yaml:"kind"`
 	URL      string `json:"queue_url,omitempty" yaml:"queue_url,omitempty"`
@@ -20,9 +34,9 @@ type fakeBlueprintConfig struct {
 func (f fakeBlueprintConfig) Kind() string    { return f.KindName }
 func (f fakeBlueprintConfig) Validate() error { return nil }
 
-// Phase 5 of FIX-003 relocates the blueprint marshallers from ports/ to
-// config/ so the inner ring stays format-neutral. These tests lock in
-// the bridge-level options projection for both wire formats so the
+// The blueprint marshallers live in config/ rather than ports/ so the
+// inner ring stays format-neutral. These tests lock in the bridge-level
+// options projection for both wire formats so the
 // FileStore (config.WriteFile / parser.MarshalYAML) and DynamoDB Save
 // (parser.MarshalBridgeConfigJSON) paths do not silently drop typed
 // PluginConfig payloads.

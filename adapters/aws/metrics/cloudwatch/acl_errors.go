@@ -6,7 +6,7 @@ import (
 	"github.com/aws/smithy-go"
 )
 
-// isPermanentPutError classifies a PutMetricData failure (MF-3).
+// isPermanentPutError classifies a PutMetricData failure.
 //
 // Permanent (return true): validation-class client faults such as
 // InvalidParameterValue / MissingRequiredParameter — retrying the same

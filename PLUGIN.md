@@ -1,5 +1,7 @@
 # Plugin Guide
 
+## Overview
+
 This guide explains how to extend gobridge with custom transport adapters, store backends, credential repositories, observability exporters, and message processors.
 
 All extension points follow the hexagonal architecture: implement a port interface from `ports/`, expose a typed `ports.PluginConfig`, register a decoder on a `*ports.Registry` via an exported `Register(reg *ports.Registry) error`, register the factory with the `bridge.Builder`, and gobridge handles the rest. The architectural framing for this contract lives in [DDD.md](DDD.md), [UBIQUITOUS.md](UBIQUITOUS.md), and [`docs/typed-plugin-config.adoc`](docs/typed-plugin-config.adoc).
@@ -12,436 +14,151 @@ All extension points follow the hexagonal architecture: implement a port interfa
 > `map[string]any` to plugin code. See
 > [Typed Plugin Config](#typed-plugin-config).
 
+## Adapter contracts by kind
 
-## Transport Adapters
+Each adapter kind has its own contract page — the ports it implements, its
+factory, its options, and how it registers:
 
-Transport adapters connect gobridge to messaging systems. A transport provides message ingress (Receiver), egress (Sender), and optionally a stateful connection (Session).
+| Kind | Page |
+|---|---|
+| Transports | [Transport adapters](docs/internals/plugin-transport-adapters.md) |
+| Stores (lease, outbox, DLQ, managed subscriptions) | [Store adapters](docs/internals/plugin-store-adapters.md) |
+| Credential sources and observability exporters | [Credential and observability adapters](docs/internals/plugin-credential-and-observability-adapters.md) |
 
-### Port Interfaces
+Processors, the module conventions, and the typed-config contract below apply to
+every kind.
 
-From `ports/transport.go`:
+## Binary composition (build tags)
 
-```go
-type Delivery interface {
-    Envelope() *messaging.Envelope
-    Ack(ctx context.Context) error
-    Retry(ctx context.Context, after time.Duration, reason error) error
-    Extend(ctx context.Context, until time.Time) error
-}
+The reference binary, `cmd/gobridge`, is a **blank root** when built without
+tags: no transport, store or telemetry exporter is linked. The file config
+source, `file://` credential store and admin/monitor HTTP API remain available.
+`-admin-addr` plus `GOBRIDGE_ADMIN_API_KEY` enables repository-independent
+authenticated startup; legacy boot-file `http:` settings remain supported.
+A blank build does not supply listener/auth settings. Missing config leaves
+the data plane idle and not ready. Unknown plugin kinds fail decoding. See
+[control-plane startup](docs/aws-deployment/config-initialization.md#control-plane-startup).
 
-type Receiver interface {
-    Run(ctx context.Context, emit func(context.Context, Delivery) error) error
-}
+Select **plugin families** at compile time with additive **family tags**:
 
-// OutboundMessage carries an envelope together with the per-dispatch
-// transport destination resolved by the runtime (DispatchPlan.Address).
-// Senders MUST publish to OutboundMessage.Address — they MUST NOT read a
-// destination out of OutboundMessage.Envelope.Subject (which is the
-// logical event subject and is not a transport destination).
-type OutboundMessage struct {
-    Envelope *messaging.Envelope
-    Address  string
-}
+| Tag | Links | Registry kinds added |
+|---|---|---|
+| None | File config source and file credential store only | None |
+| `gobridge_mqtt` | Paho MQTT transport | `mqtt`, `mqtt.paho` |
+| `gobridge_native` | Memory and SQLite stores | `memory`, `sqlite` |
+| `gobridge_aws` | SQS transport and DynamoDB stores | `sqs`, `aws.sqs`, `dynamodb` |
+| `gobridge_azure` | Azure Service Bus transport | `servicebus`, `azure.servicebus` |
+| `gobridge_amqp091` | AMQP 0-9-1 transport | `amqp091`, `amqp.amqp091` |
+| `gobridge_amqp10` | AMQP 1.0 transport | `amqp10`, `amqp.amqp10` |
+| `gobridge_http` | HTTP transport (in the root module) | `http` |
+| `gobridge_otel` | OTel metrics and tracing exporters | None |
+| `gobridge_all` | Every family above | Union of their kinds |
 
-type Sender interface {
-    Send(ctx context.Context, msg OutboundMessage) error
-}
+Tags compose: `-tags gobridge_mqtt,gobridge_native` selects the Kubernetes
+image's default set; `-tags gobridge_aws,gobridge_otel` selects SQS, DynamoDB
+and OTel without MQTT or SQLite. The admin/monitor API does not need
+`gobridge_http`; that tag selects the message transport. No tag registers
+processors or switches the file config source or credential backend. The
+separate AWS file-based deployment profile owns its own wiring.
 
-type BatchResult struct {
-    Index int   // index into the input slice
-    Err   error // nil on success
-}
+`gobridge -version` prints `gobridge <version> (<gitSHA>) families=[...]`,
+with sorted family names and `dev` for unstamped metadata. Usage also lists
+the compiled families; the startup log adds the exact decodable kinds. A blank
+root warns that no transports or stores are linked and names the tag mechanism.
+Build commands and version stamps are in [DEVELOPMENT.md](DEVELOPMENT.md#build).
 
-type BatchSender interface {
-    Sender
-    SendBatch(ctx context.Context, msgs []OutboundMessage) ([]BatchResult, error)
-}
+An embedded initial document does not select plugin families. The entry point
+decodes `main.initialConfigBase64`, filled by `go:embed`, then parses with the
+normal typed registry. Only strict creation of an absent target is allowed.
+See [initial configuration](docs/aws-deployment/config-initialization.md).
+The `-seed-managed-subscriptions` operation described here is separate and
+remains supported.
 
-type Session interface {
-    Start(ctx context.Context) error
-    Reconcile(ctx context.Context, plan connectivity.SessionPlan) error
-    Health(ctx context.Context) SessionHealth
-    Events() <-chan SessionEvent
-    Close(ctx context.Context) error
-}
-```
+### Family files and lifecycle
 
-### Transport Factory (ports-first)
+Each family has a pair in `cmd/gobridge`, both in `package main`:
+`plugins_<family>.go` with `//go:build gobridge_<family> || gobridge_all`,
+and `plugins_<family>_stub.go` with
+`//go:build !gobridge_<family> && !gobridge_all`.
+Do not add platform conditions or GOOS/GOARCH filename suffixes.
+The adapters' own `register.go` files stay untagged.
 
-To integrate with the builder, implement `ports.TransportFactory` (from
-`ports/factories.go`). Each spec carries a typed `ports.PluginConfig`
-the adapter has registered (see [Typed Plugin Config](#typed-plugin-config)
-below — this is the single source of truth for adapter-specific
-options, and it replaces the old `Options map[string]any` decoding):
-
-```go
-type TransportFactory interface {
-    NewSession(ctx context.Context, spec ports.SessionSpec) (ports.Session, error)
-    NewReceiver(ctx context.Context, spec ports.ReceiverSpec, session ports.Session) (ports.Receiver, error)
-    NewSender(ctx context.Context, spec ports.SenderSpec, session ports.Session) (ports.Sender, error)
-    Capabilities() []ports.Capability
-}
-```
-
-The bridge converts the declarative `config.*Def` shapes into
-`ports.*Spec` values, with the adapter's typed `PluginConfig`
-already attached on `Spec.Config`, before invoking the factory. The
-plugin only sees ports types, so a transport adapter never needs to
-import `bridge` or `config` — its only inner-ring dependencies are
-`ports` (and `domain`, `logging` as needed).
-
-For stateless transports, `NewSession` should return `(nil, nil)`.
-
-Optional companion interfaces (also in `ports`):
-
-- `ports.VisibilityTimeoutProvider` — declares the source visibility
-  timeout used by the runtime validator (e.g. SQS).
-- `ports.IngressMemoryConfig` — lets a typed session config validate a
-  transport-owned ingress byte bound against the route's effective concurrency.
-  The bridge calls it after dedicated-session cardinality checks and before
-  opening stores or transports.
-- `ports.IngressMemoryProfileConfig` — extends that contract for deployment
-  profiles that assign a per-session byte budget and derive safe transport
-  concurrency. Implementations must preserve safe explicit values and reject
-  unsafe explicit values rather than silently clamping them.
-
-Transports that expose HTTP endpoints (e.g. the HTTP source / SSE
-sink) deliberately do not have a port-level abstraction: HTTP handlers
-are inherently HTTP, so the composition root wires them via the
-adapter's concrete type rather than through `ports/` (keeping
-`net/http` out of the inner ring).
-
-### Registration
+For a transport/store family, replace `Family` below with its Go name:
 
 ```go
-builder.RegisterTransportFactory("mytransport", myTransportFactory)
+func registerFamilyDecoders(reg *ports.Registry) error
+func wireFamilyFactories(ctx context.Context, sup *bridge.Supervisor, logger *slog.Logger, metrics ports.MetricsExporter) error
+func seedFamilyStores(ctx context.Context, b *bridge.Builder) error
 ```
 
-The `"mytransport"` name must match the `transport` field in config YAML:
+Only store-providing families implement `seedFamilyStores`. It supplies the
+same stores to the `-seed-managed-subscriptions` one-shot Builder as the wire
+function supplies to the Supervisor. Keep decoder calls, factory wiring and
+seed wiring together in the tagged file, with string-literal kind names.
+Stubs have the same signatures and return nil without registering anything.
 
-```yaml
-receivers:
-  - id: my-receiver
-    transport: mytransport
-    options:
-      endpoint: "..."
-```
+Untagged `plugins.go` explicitly calls each family from `registerAllDecoders`,
+`wireAllFactories` and, for stores, `seedAllStores`; `main.go` and the seed
+entry point call those aggregates. Do not hide registration in maps, loops,
+function values or `init()`. A family's only `init()` is the one-line
+`compiledFamilies = append(compiledFamilies, "<family>")` metadata append.
+The narrow lint exceptions on existing family files cover metadata only.
 
-### Implementation Pattern
-
-**Typical file layout:**
-
-```
-adapters/mycloud/transport/myqueue/
-├── doc.go              # Package documentation
-├── go.mod              # Separate module
-├── config.go           # ReceiverConfig, SenderConfig, option parsing
-├── errors.go           # Map SDK errors to shared.BridgeError
-├── receiver.go         # ports.Receiver implementation
-├── sender.go           # ports.Sender implementation
-├── delivery.go         # ports.Delivery implementation
-├── headers.go          # Transport-specific header mapping
-├── factory.go          # Transport factory (ports.TransportFactory)
-├── receiver_test.go    # Unit tests
-└── sender_test.go
-```
-
-**Key implementation concerns:**
-
-1. **Delivery mapping**: Map transport-native ack/nack/extend to `ports.Delivery`. For example, SQS maps `Ack` to `DeleteMessage`, `Retry` to `ChangeMessageVisibility`, `Extend` to visibility extension.
-
-2. **Error mapping**: Create an `errors.go` that maps SDK error codes to `shared.BridgeError` with correct classification (Transient vs Permanent vs Rejected).
-
-3. **Header mapping**: Map transport-native message properties to `messaging.Envelope.Headers` and vice versa. Strip `x-bridge.*` reserved headers at ingress.
-
-4. **Typed config**: Export a concrete `Config` struct satisfying
-   `ports.PluginConfig` and register its decoder via an exported
-   `Register(reg *ports.Registry) error` in `register.go` (the
-   composition root calls it explicitly; no `init()`, no process-wide
-   registry). The adapter receives its already-decoded typed config via
-   `Spec.Config` — it never decodes `map[string]any`, and plugin shapes
-   never enter the core `config` package. See
-   [Typed Plugin Config](#typed-plugin-config) below.
-
-5. **Capabilities**: Return appropriate `ports.Capability` values:
-   - `CapStatefulSession` -- transport uses sessions (e.g. MQTT)
-   - `CapVisibilityExtension` -- supports deadline extension (e.g. SQS)
-   - `CapSourceRedelivery` -- transport redelivers on nack (e.g. SQS)
-   - `CapDelayedSend` -- supports delayed delivery
-   - `CapSharedConsumer` -- broker load-balances one subscription across a consumer group (e.g. MQTT `$share`)
-   - `CapExclusiveIdentity` -- session owns a unique client identity (lease-based single holder); **must be single-use** -- see the lifecycle note below
-   - `CapDedicatedIngressSession` -- the session is one ingress dispatch/settlement failure domain and permits at most one logical receiver consumed by at most one route runner; senders may still share it
-
-**Dedicated-ingress sessions fail during preflight.** When a factory declares
-`CapDedicatedIngressSession`, `bridge.Builder.Plan` counts receivers by session
-and route-runner consumers by receiver. It rejects either a second logical
-receiver or reuse of the sole receiver by multiple routes before opening stores,
-sessions, receivers, senders, or runtime resources. This validation is
-capability-based: it does not switch on a transport name, and registering the
-same adapter under aliases does not change the session cardinality. Stateful
-adapters should also enforce the contract defensively in `NewReceiver` with a concurrency-safe reservation stored
-on the `Session`, not on the `Factory`; a factory-local reservation can be
-bypassed by aliases or multiple factory values. Do not count `Sender`s in that
-reservation.
-
-**Exclusive sessions are single-use.** A transport that declares
-`CapExclusiveIdentity` must treat `Start`-after-`Close` as a permanent error:
-once `Close` runs, a later `Start` returns `shared.ErrUnavailable` rather than
-reconnecting. The runtime depends on this -- when a lease-owning session cannot
-renew, it escalates to a terminal state (`ErrSessionUnrecoverable`), releases the
-lease so a standby takes over, and lets the orchestrator restart the process with
-a fresh session. A transport that silently reconnected a closed exclusive session
-would break lease fencing. `CapExclusiveIdentity` is declared by paho MQTT
-(always) and amqp091 (latched on first exclusive use); amqp10 does not advertise
-the capability but is subject to the same single-use rule when run as an
-exclusive session.
-
-**Compile-time interface checks:**
+OTel is the non-registry family. Its pair provides these hooks instead:
 
 ```go
-var _ ports.Receiver = (*Receiver)(nil)
-var _ ports.Sender = (*Sender)(nil)
-var _ ports.TransportFactory = (*Factory)(nil)
+func newMetricsExporter(ctx context.Context, logger *slog.Logger) (ports.MetricsExporter, func(context.Context) error, error)
+func newTracer(ctx context.Context, logger *slog.Logger) (ports.Tracer, func(context.Context) error, error)
 ```
 
-### Reference Implementations
+The stubs return `(nil, nil, nil)`, leaving the runtime's no-op defaults.
+The tagged hooks construct OTLP exporters using `OTEL_EXPORTER_OTLP_ENDPOINT`
+or the signal-specific `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` and
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` variables. `run()` constructs them before
+the Supervisor and factory wiring, passes the shared metrics exporter to
+factories and the HTTP API, and owns their close functions through shutdown.
+Hot-reloaded runtimes share them; they must not close them. Construction and
+wiring errors fail startup rather than silently disabling a compiled family.
+The AWS family loads the SDK's default AWS configuration and constructs a
+DynamoDB client in both normal wiring and store seeding.
 
-- **Stateful (MQTT)**: `adapters/mqtt/transport/paho/` -- full Session
-  with Reconcile; `paho.Factory` directly satisfies `ports.TransportFactory`.
-- **Stateless (SQS)**: `adapters/aws/transport/sqs/` -- composes
-  `ReceiverFactory` and `SenderFactory` into a unified `Factory` that
-  also satisfies `ports.VisibilityTimeoutProvider`.
-- **Stateless (ASB)**: `adapters/azure/transport/servicebus/` -- auto-
-  extend message lock, batch send with size-limited batches.
+### Per-file registration symmetry
 
-## Store Adapters
+`make lint` runs `pluginsym -dir cmd/gobridge` over every non-test Go file,
+regardless of the host platform or active tags. Its contract is:
 
-Store adapters provide persistence for leases, outbox records, DLQ entries, and exact managed-subscription history.
+1. **Matching kinds:** each file's adapter decoders and wired factory kinds
+   must match after alias collapse. Supervisor and Builder calls count
+   together; repeated wiring of the same kind is counted once.
+2. **One owner:** an adapter import path may register in only one file.
+3. **Empty stubs:** an inverse-tag stub must register and wire nothing.
+4. **Exact constraints:** family and stub constraints must have the exact
+   additive/inverse forms above, with no extra conditions.
+5. **Blank root:** files without family tags must register and wire nothing.
+   The untagged seed entry point is not an exception.
 
-### Port Interfaces
+Kind arguments must be string literals; indirect calls are rejected.
+Aliases such as `aws.sqs` and `sqs` count as one canonical kind. Because
+each build includes or excludes a whole file, this per-file rule preserves
+symmetry for every family combination. See [pluginsym](scripts/pluginsym/README.md)
+for alias mappings and diagnostics.
 
-From `ports/stores.go`:
+### Adding a family
 
-```go
-type LeaseStore interface {
-    Acquire(ctx context.Context, leaseID string, ownerID string, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error)
-    Renew(ctx context.Context, leaseID string, token persistence.LeaseToken, ttl time.Duration, endpoints map[string]string) (persistence.LeaseToken, error)
-    Release(ctx context.Context, leaseID string, token persistence.LeaseToken) error
-    Current(ctx context.Context, leaseID string) (persistence.LeaseInfo, error)
-}
-
-type OutboxStore interface {
-    Persist(ctx context.Context, records []*persistence.OutboxRecord) error
-    Claim(ctx context.Context, partitionKey string, token persistence.LeaseToken, limit int) ([]*persistence.OutboxRecord, error)
-    Complete(ctx context.Context, recordIDs []string, token persistence.LeaseToken) error
-    Expire(ctx context.Context, before time.Time) (int, error)
-    QueryPending(ctx context.Context, partitionKey string, limit int) ([]*persistence.OutboxRecord, error)
-}
-
-type DLQStore interface {
-    Write(ctx context.Context, entry routing.DLQEntry) error
-    List(ctx context.Context, filter routing.DLQFilter) ([]routing.DLQEntry, error)
-    Replay(ctx context.Context, entryIDs []string) error
-    Purge(ctx context.Context, before time.Time) (int, error)
-}
-
-type ManagedSubscriptionStore interface {
-    List(ctx context.Context, storageIdentity string) ([]string, error)
-    Remember(ctx context.Context, storageIdentity string, filters []string) error
-    Forget(ctx context.Context, storageIdentity string, filters []string) error
-}
-```
-
-### Store Factory (ports-first)
-
-Implement `ports.StoreFactory` (from `ports/stores.go`):
-
-```go
-type StoreFactory interface {
-    NewLeaseStore(ctx context.Context, cfg ports.PluginConfig) (LeaseStore, error)
-    NewOutboxStore(ctx context.Context, cfg ports.PluginConfig, runtime OutboxRuntimeOptions) (OutboxStore, error)
-    NewDLQStore(ctx context.Context, cfg ports.PluginConfig) (DLQStore, error)
-}
-```
-
-Each method receives the typed `ports.PluginConfig` the adapter
-registered on `*ports.Registry` (see
-[Typed Plugin Config](#typed-plugin-config) below). The factory does
-its own type assertion on the concrete config type — it never sees
-`map[string]any`.
-
-Optional companion interfaces:
-
-- `ports.ManagedSubscriptionStoreFactory.NewManagedSubscriptionStore(...)` — exact durable MQTT filter history; separate from `StoreFactory` so unrelated plugins are not widened.
-- `ports.DistributedStoreFactory.IsDistributed() bool` — returns true
-  when the store provides cross-process coordination. Required for
-  clustered deployments.
-
-Return `(nil, nil)` for store types the factory does not support.
-
-### Registration
-
-```go
-builder.RegisterStoreFactory("mybackend", myStoreFactory)
-```
-
-Config:
-
-```yaml
-stores:
-  lease:
-    type: mybackend
-    options:
-      connection_string: "..."
-```
-
-### Conformance Testing
-
-Use the built-in conformance test suites in `ports/storetest/`:
-
-```go
-func TestMyStore(t *testing.T) {
-    store := mybackend.NewStore(/* ... */)
-    storetest.RunDLQStoreTests(t, store)
-    storetest.RunOutboxStoreTests(t, store)
-    storetest.RunLeaseStoreTests(t, store, nil)
-}
-```
-
-These suites verify all required behaviors (idempotency, filtering, fencing, etc.).
-
-### Reference Implementations
-
-- **Memory**: `adapters/native/store/memory*/` -- sync.Mutex + maps, good for tests
-- **SQLite**: `adapters/native/store/sqlite*/` -- WAL mode, modernc.org/sqlite, JSON marshaling
-- **DynamoDB**: `adapters/aws/store/dynamodb*/` -- conditional writes, GSIs, TTL compaction, and atomic managed-filter sets
-
-## Credential Adapters
-
-Credential adapters resolve secrets by URI scheme.
-
-### Port Interfaces
-
-From `ports/credentials.go`:
-
-```go
-type CredentialRepository interface {
-    Scheme() string
-    Namespace() string
-    Get(ctx context.Context, uri string) (*connectivity.CredentialSet, error)
-}
-
-type CredentialAdmin interface {
-    CredentialRepository
-    Create(ctx context.Context, uri string, creds *connectivity.CredentialSet) error
-    Update(ctx context.Context, uri string, creds *connectivity.CredentialSet, version int64) error
-    Delete(ctx context.Context, uri string, version int64) error
-    List(ctx context.Context, prefix string) ([]string, error)
-}
-```
-
-### Registration
-
-Register on the `CredentialResolver`:
-
-```go
-resolver := runtime.NewCredentialResolver()
-resolver.Register(myRepo)
-builder := bridge.NewBuilder(cfg, bridge.WithCredentialStore(resolver))
-```
-
-The resolver dispatches by URI scheme (`file://`, `pms://`, `vault://`) with longest-prefix namespace matching.
-
-### Domain Types
-
-`connectivity.CredentialSet` contains optional `*PasswordCredential` and `*TLSMaterial`. Credential values must never appear in logs.
-
-### Reference Implementations
-
-- **File**: `adapters/native/credentials/file/` -- scheme `"file"`, filesystem-based, supports CredentialAdmin
-- **SSM**: `adapters/aws/credentials/ssm/` -- scheme `"pms"`, AWS Parameter Store
-
-### Runtime Rotation
-
-Transport sessions (or receivers/senders) that want to accept rotated
-credentials on a live connection implement the
-`bridge.CredentialAware` capability interface:
-
-```go
-type CredentialAware interface {
-    ApplyCredentials(ctx context.Context, creds *connectivity.CredentialSet) error
-}
-```
-
-The `bridge.CredentialRefresher` discovers participating transports
-via a silent type assertion -- non-aware transports (HTTP, stateless
-adapters) coexist cleanly in the same bridge.
-
-`ApplyCredentials` receives the full `*CredentialSet` (password and
-TLS material together); the implementation dispatches on what
-changed and triggers the appropriate rebuild (reconnect for
-stateful transports, client swap for stateless ones). See
-[`docs/credentials-rotation.md`](docs/credentials-rotation.md) for
-the full contract, per-transport behaviour matrix, and worked
-examples of adding a new rotatable capability or writing a new
-transport that participates in rotation.
-
-A transport that authenticates on a live connection may call
-`CredentialRefresher.NotifyAuthFailure(uri, err)` when the broker reports
-`NOT_AUTHORIZED`, forcing an immediate credential re-resolve instead of waiting
-for the poll interval (rate-limited per URI). Stock transports do this
-automatically: implement the optional `bridge.AuthFailureReporter` capability
-(`SetAuthFailureCallback(func(err error))`) and the refresher injects a
-URI-bound callback at `Watch` time — the amqp10/amqp091/mqtt sessions report at
-reconnect, and the SQS/Service Bus sender+receiver report on the live send and
-receive paths. HTTP has no runtime-rotatable session, so it wires nothing.
-Resolve and rotation observability is built in and not your plugin's job: the
-resolver emits
-`CredentialResolveFailure` and `CredentialStaleServed`, the refresher emits
-`CredentialRotationApplied`, and the poll wrapper emits
-`CredentialRefreshFailures`.
-
-## Observability Adapters
-
-### Metrics
-
-Implement `ports.MetricsExporter`:
-
-```go
-type MetricsExporter interface {
-    Counter(name string, value int64, tags ...shared.Tag)
-    Gauge(name string, value float64, tags ...shared.Tag)
-    Histogram(name string, value float64, tags ...shared.Tag)
-    Timer(name string, duration time.Duration, tags ...shared.Tag)
-    Flush(ctx context.Context) error
-    Close(ctx context.Context) error
-}
-```
-
-Pass to runtime: `runtime.WithMetrics(exporter)`.
-
-Reference: `adapters/otel/metrics/` (OTLP), `adapters/aws/metrics/cloudwatch/`.
-
-### Tracing
-
-Implement `ports.Tracer`:
-
-```go
-type Tracer interface {
-    StartSpan(ctx context.Context, name string, attrs ...shared.Tag) (context.Context, Span)
-}
-
-type Span interface {
-    End()
-    SetError(err error)
-    AddEvent(name string, attrs ...shared.Tag)
-    SetAttributes(attrs ...shared.Tag)
-}
-```
-
-Pass to runtime: `runtime.WithTracer(tracer)`.
-
-Reference: `adapters/otel/tracing/`.
+1. Add the tagged file and inverse stub, with explicit decoder/factory calls,
+   any store-seeding function, and the metadata append.
+2. Add the family calls to the aggregates in `plugins.go`. Keep untagged
+   files free of direct adapter registrations.
+3. Add each decoder adapter to `scripts/pluginsym`'s `adapterRegistrars`;
+   extend `aliasMap` for its aliases and add its module requirements.
+4. Add the required adapter modules to `cmd/gobridge/go.mod` under
+   [RELEASE.md](RELEASE.md)'s versioning policy. Build tags trim the linked
+   binary, not the module graph; published modules must not gain local replaces.
+5. Add family-constrained tests per [TESTS.md](TESTS.md#52-no-build-tags).
+   Keep `gobridge_all` coverage in `.golangci.yml`, both Makefile test targets and
+   `.github/workflows/ci.yml` build/vet passes; retain untagged coverage too.
+6. Update the family table above and deployment examples as needed.
+   Run `make lint` and `make test` before committing.
 
 ## Processors
 
@@ -673,6 +390,10 @@ from `ports/plugin_config.go`:
 - `FreezableConfig` lets the adapter produce a deep-owned immutable configuration
   snapshot while intentionally preserving opaque runtime dependencies whose identity
   must remain stable. Core code never reflect-clones adapter configs.
+  Initialization requires it for mutable custom configs, such as a config with
+  a map or slice. Deeply immutable scalar value configs, such as a value struct
+  containing only strings and numbers, need not implement it. See
+  [initialization snapshots](docs/aws-deployment/config-initialization.md#snapshot-ownership).
 - `ReplicaIdentityConfig` declares the effective per-replica identity strategy
   used by clustered shared consumers. Validation fails closed when a shared
   subscription cannot prove a strategy.

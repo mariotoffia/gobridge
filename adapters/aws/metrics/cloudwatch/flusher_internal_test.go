@@ -16,7 +16,7 @@ import (
 // channel receive (not a sleep); tests pass as soon as the event fires.
 const waitTimeout = 5 * time.Second
 
-// MF-1 regression: reaching the flush-trigger threshold must wake the
+// regression: reaching the flush-trigger threshold must wake the
 // single flusher goroutine — no per-emission goroutine spawning, no
 // blocking of the emitting caller. The mock signals when the flush
 // lands, so the test synchronises on the event itself.
@@ -58,7 +58,7 @@ func TestExporter_BufferFullTriggersBackgroundFlush(t *testing.T) {
 	}
 }
 
-// MF-1: after a retryable flush failure, buffer-full triggers are
+// after a retryable flush failure, buffer-full triggers are
 // suppressed until the backoff window has elapsed on the injected
 // clock — a stalled endpoint must not be hammered by threshold
 // triggers. The governor is exercised synchronously (it is owned by
@@ -102,9 +102,9 @@ func TestFlushGovernor_SuppressesTriggersDuringBackoff(t *testing.T) {
 	}
 }
 
-// MF-1: consecutive retryable failures double the backoff up to the
+// consecutive retryable failures double the backoff up to the
 // FlushInterval cap; permanent failures neither suppress nor reset
-// (the batcher already dropped the offending batch, MF-3).
+// (the batcher already dropped the offending batch).
 func TestFlushGovernor_BackoffDoublesAndPermanentSkips(t *testing.T) {
 	fake := clocktest.NewAt(time.Unix(1700000000, 0))
 	gov := newFlushGovernor(fake, 3*time.Second)
@@ -129,7 +129,7 @@ func TestFlushGovernor_BackoffDoublesAndPermanentSkips(t *testing.T) {
 	}
 }
 
-// MF-1: the periodic ticker flushes on the injected clock cadence.
+// the periodic ticker flushes on the injected clock cadence.
 func TestExporter_PeriodicFlushOnTicker(t *testing.T) {
 	flushed := make(chan struct{}, 10)
 	mock := &mockCloudWatch{

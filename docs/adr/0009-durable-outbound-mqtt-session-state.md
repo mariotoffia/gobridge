@@ -10,7 +10,7 @@ Implementation: `NonDurableEgressReporter`, `Sender.NonDurableEgress`, and `egre
 
 The paho MQTT adapter connects through autopaho with `cfg.Session` left nil, so
 the connection manager uses autopaho's **default in-memory** packet/session store
-(`adapters/mqtt/transport/paho/acl_session.go`, the `M-6` note on the
+(`adapters/mqtt/transport/paho/acl_session.go`, the deferred-alternative note on the
 `autopaho.ClientConfig` build). That store holds the client-side outbound queue:
 a QoS 1/2 PUBLISH that has been sent but whose PUBACK (QoS 1) / PUBCOMP (QoS 2)
 has not yet arrived lives only in process memory.
@@ -94,7 +94,7 @@ runtime can reason about it.
   uniquely-identified record), so it buys protocol-level exactly-once we do not
   currently need. It remains the natural extension if a
   future route mode settles the source ahead of the transport. Tracked as the
-  deferred `M-6` alternative.
+  deferred alternative.
 - **Advertise MQTT QoS 2 as the durability guarantee.** Rejected — the in-memory
   store makes that claim false across a restart, and it would invite operators to
   drop the route-layer outbox that provides the guarantee.

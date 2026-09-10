@@ -16,7 +16,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// BUG M1: HTTP Receiver no Content-Type validation
+// BUG: HTTP Receiver no Content-Type validation
 // ---------------------------------------------------------------------------
 
 func TestBugReceiver_RejectsNonJSONContentType(t *testing.T) {
@@ -219,7 +219,7 @@ func TestBugReceiver_AcceptsJSONWithCharset(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// BUG M2: HTTP Receiver empty Envelope.ID
+// BUG: HTTP Receiver empty Envelope.ID
 // ---------------------------------------------------------------------------
 
 func TestBugReceiver_GeneratesIDWhenEmpty(t *testing.T) {

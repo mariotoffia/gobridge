@@ -222,8 +222,8 @@ func (c Config) ValidateSenderEntity() error {
 // ports.VisibilityTimeoutConfig so the builder threads this per-route
 // value into the runtime validator instead of the Factory's 30s constant,
 // correctly guarding a route whose lock_duration is shorter than the
-// default against a SendTimeout that exceeds half the lock window
-// (Finding 2). It mirrors the identical SQS EffectiveVisibilityTimeout().
+// default against a SendTimeout that exceeds half the lock window.
+// It mirrors the identical SQS EffectiveVisibilityTimeout().
 func (c Config) EffectiveVisibilityTimeout() time.Duration {
 	if c.Receiver.LockDuration > 0 {
 		return c.Receiver.LockDuration
@@ -235,14 +235,14 @@ func (c Config) EffectiveVisibilityTimeout() time.Duration {
 // in the background while a message is in flight, mirroring
 // ReceiverConfig.autoExtendEnabled (default on when unset). It satisfies
 // ports.VisibilityTimeoutConfig so the validator can skip the finite
-// SendTimeout-vs-window check for auto-extended routes (Finding 2 / D2).
+// SendTimeout-vs-window check for auto-extended routes.
 func (c Config) AutoExtendEnabled() bool {
 	return c.Receiver.AutoExtend == nil || *c.Receiver.AutoExtend
 }
 
 // Capabilities reports the SOURCE capabilities this receiver config
 // actually honours, so a route can advertise an HONEST, mode-aware set
-// instead of the Factory's transport-wide default (F4/F8).
+// instead of the Factory's transport-wide default.
 //
 // PeekLock (the default) renews locks (CapVisibilityExtension) and
 // redelivers via abandon / lock expiry (CapSourceRedelivery). A delayed

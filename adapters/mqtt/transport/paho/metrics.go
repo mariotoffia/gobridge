@@ -16,12 +16,28 @@ const (
 	MetricMQTTOldestUnsettledAge       = "MQTTOldestUnsettledAge"
 	MetricMQTTReceiveWindowUtilization = "MQTTReceiveWindowUtilization"
 
-	// MetricMQTTNonStringHeaderDropped counts bridge-to-bridge / application
-	// header values dropped on egress because their value is not a string
-	// and therefore cannot be serialised as an MQTT user property (e.g. a
-	// non-string idempotency-key or tenant-id). Emitted by
-	// PublishFromEnvelope so the otherwise-silent drop is observable.
+	// MetricMQTTNonStringHeaderDropped counts header values dropped on egress
+	// because they cannot be represented on the wire: a bridge-to-bridge /
+	// application value that is not a string and therefore cannot be serialised
+	// as an MQTT user property (e.g. a non-string idempotency-key or
+	// tenant-id), or a retained binary correlation header whose encoding no
+	// longer decodes. Emitted by PublishFromEnvelope so the otherwise-silent
+	// drop is observable.
 	MetricMQTTNonStringHeaderDropped = "MQTTNonStringHeaderDropped"
+
+	// MetricMQTTEgressRejected counts publishes refused BEFORE any byte reached
+	// the socket because the constructed packet violates a wire limit: a
+	// length-prefixed field above the MQTT v5 65,535-byte ceiling (which Paho
+	// would silently truncate, so the broker would acknowledge metadata that
+	// differs from the source), or an encoded packet larger than the Maximum
+	// Packet Size the broker granted in its CONNACK (which the broker answers
+	// with a DISCONNECT, leaving QoS 1/2 completion ambiguous and churning the
+	// session on every retry). The publish is returned to the route as a
+	// permanent rejection, so it is DLQ'd rather than retried. Any non-zero
+	// value means a producer or a route is generating messages this broker
+	// cannot accept — find the oversized field or lower the message size before
+	// the route's DLQ fills.
+	MetricMQTTEgressRejected = "MQTTEgressRejected"
 
 	// MetricMQTTIngressHeaderDropped counts inbound MQTT user properties
 	// dropped on ingress because their key or value is unsafe (not valid
@@ -29,7 +45,7 @@ const (
 	// It is the ingress counterpart to MetricMQTTNonStringHeaderDropped:
 	// without it a peer publishing a spec-legal-but-rejected header (e.g. an
 	// over-long value) loses it silently, and a route filtering on that
-	// header misroutes with nothing to debug from (M-2). Reserved and
+	// header misroutes with nothing to debug from. Reserved and
 	// adapter-controlled keys stripped on purpose are NOT counted here — only
 	// application/bridge user properties lost to the safety filter.
 	MetricMQTTIngressHeaderDropped = "MQTTIngressHeaderDropped"
@@ -67,7 +83,7 @@ const (
 	// cannot retain is a best-effort loss. Covered QoS 1/2 is NEVER counted
 	// here: it is RETAINED un-acked instead (MetricMQTTRouterCoveredRetained)
 	// so at-least-once holds — dropping a covered live-route QoS 1/2 would be
-	// acknowledged loss (HIGH-1). ANY non-zero value means a receiver handler
+	// acknowledged loss. ANY non-zero value means a receiver handler
 	// registered later than unmatched_grace (30s default) while a covered QoS 0
 	// backlog overflowed the buffer. Split out from
 	// MetricMQTTRouterUnmatchedDropped so this loss is not masked by benign
@@ -76,7 +92,7 @@ const (
 
 	// MetricMQTTRouterCoveredRetained counts publishes on a STILL-COVERED topic
 	// RETAINED un-acked past the startup grace window because their receiver
-	// handler had not registered yet (HIGH-1). Unlike MetricMQTTRouterCoveredDropped
+	// handler had not registered yet. Unlike MetricMQTTRouterCoveredDropped
 	// these are NOT lost: rather than ack-and-drop a still-desired live-route
 	// publish (which would convert startup slowness into acknowledged loss and
 	// break at-least-once), the router keeps it in the bounded pending buffer
@@ -102,13 +118,13 @@ const (
 	// MetricMQTTRouterDropped (QoS 0 best-effort overflow) and from the
 	// covered/orphan past-grace drops (MetricMQTTRouterCoveredDropped /
 	// MetricMQTTRouterUnmatchedDropped) so this protocol-violation loss is never
-	// masked (c4-qos12-overflow / F-2 / M-1).
+	// masked.
 	MetricMQTTRouterOverflowDropped = "MQTTRouterOverflowDropped"
 
 	// MetricMQTTRouterStalePurged counts publishes DISCARDED because they
 	// belong to a PRIOR broker connection generation. Two branches feed it:
 	//
-	//   - Reconnect purge (A-1): pre-registration pending publishes buffered
+	//   - Reconnect purge: pre-registration pending publishes buffered
 	//     under a previous connection are purged on reconnect. Their protocol
 	//     acks died with the old connection (paho ErrPacketNotFound), and a
 	//     clean_start=false broker REDELIVERS every un-acked QoS 1/2 with
@@ -116,16 +132,22 @@ const (
 	//     copy pile up beside its ghost until the count cap (==
 	//     receive_maximum) ack-drops a LIVE message as a bogus
 	//     MetricMQTTRouterOverflowDropped, breaking at-least-once.
-	//   - Recycle-window discard (MQTT-L4): publishes still arriving on (or
+	//   - Recycle-window discard: publishes still arriving on (or
 	//     already queued from) the OLD socket while a recovery/managed-cleanup
 	//     recycle is disconnecting it are released without dispatch or ack.
 	//     Previously this branch was the router's only fully silent drop.
 	//
-	// In BOTH branches QoS 1/2 entries are NOT lost (the resumed session
+	// It also counts ingress released while the session is CLOSING: the router
+	// is stopped before the SDK disconnect (otherwise a parked publish callback
+	// pins that disconnect for the whole close deadline), so publishes keep
+	// arriving, and anything still queued for dispatch is shed.
+	//
+	// In EVERY branch QoS 1/2 entries are NOT lost (the resumed session
 	// redelivers them); QoS 0 entries are a best-effort loss (no redelivery
-	// contract across a disconnect, by protocol). A steadily rising count
-	// means frequent reconnects/recycles while traffic is in flight —
-	// expected churn, not data loss for QoS 1/2.
+	// contract across a disconnect, by protocol) and are counted on
+	// MetricMQTTRouterDropped instead. A steadily rising count means frequent
+	// reconnects/recycles/closes while traffic is in flight — expected churn,
+	// not data loss for QoS 1/2.
 	MetricMQTTRouterStalePurged = "MQTTRouterStalePurged"
 
 	// MetricMQTTSessionTakeover counts server disconnects with reason code
@@ -144,7 +166,7 @@ const (
 	// terminating the session on it would hand every publisher a permanent
 	// kill switch: the un-acked packet would be redelivered on each
 	// clean_start=false resume and re-latch the session terminal forever
-	// (MQTT-L1). Instead the packet is acked (freeing the broker's in-flight
+	// Instead the packet is acked (freeing the broker's in-flight
 	// slot and stopping redelivery) and dropped, and this counter is the
 	// deliberate-loss record. ANY non-zero value means a publisher is sending
 	// packets this bridge is configured to refuse — alert on it and find the
@@ -153,16 +175,73 @@ const (
 	// advertised Maximum Packet Size) still fail the session closed.
 	MetricMQTTIngressPoisonDropped = "MQTTIngressPoisonDropped"
 
+	// MetricMQTTIngressUserPropertiesTruncated counts inbound PUBLISH packets
+	// whose User Property list the predecode guard cut to one entry above the
+	// retained cap before the SDK decoded the packet. The CONNECT advertises
+	// only a whole-packet Maximum Packet Size, so a compliant broker forwards
+	// a packet whose metadata section is nothing but tens of thousands of
+	// five-byte User Properties; the SDK would materialise every one of them
+	// twice before the publish callback could refuse the packet, turning a
+	// 128 KiB metadata section into megabytes of decode. The guard removes
+	// the excess on the raw bytes instead, the callback still sees one more
+	// property than the cap and acks-and-drops the packet
+	// (MetricMQTTIngressPoisonDropped), and this counter records that the
+	// property count the callback logged was bounded by the guard rather than
+	// the count the publisher sent. Tagged session_id.
+	MetricMQTTIngressUserPropertiesTruncated = "MQTTIngressUserPropertiesTruncated"
+
+	// MetricMQTTReceiverEmitRejected counts inbound deliveries the route
+	// pipeline REFUSED at emit — a shutting-down or wedged route runner. It is
+	// tagged with the session and an outcome:
+	//
+	//   - "recovering": the delivery was durable (QoS 1/2), so it is left
+	//     un-acked and a bounded session recycle makes the broker redeliver it.
+	//     The count is the leading indicator of the recycle that follows.
+	//   - "lost": the delivery was QoS 0 — no acknowledgement to withhold and no
+	//     redelivery contract, so the message is gone. Any non-zero "lost" count
+	//     is acknowledged best-effort loss; alert on it if the deployment treats
+	//     QoS 0 ingress as significant.
+	MetricMQTTReceiverEmitRejected = "MQTTReceiverEmitRejected"
+
 	// MetricMQTTAckAfterReconnect counts delivery settlements whose protocol
-	// acknowledgement could not be sent because the underlying connection was
-	// torn down and re-established between receive and settle (paho
-	// ErrPacketNotFound). The settlement still reports SUCCESS to the runtime
+	// acknowledgement could not reach the broker because the connection was torn
+	// down and re-established between receive and settle. It is measured from
+	// the connection generation captured at receive, NOT from an SDK error
+	// class: paho marks an acknowledgement and flushes the acknowledged prefix
+	// asynchronously, so an ack marked just before the connection dropped
+	// returns success and is still redelivered. The settlement reports SUCCESS
+	// to the runtime
 	// — the broker redelivers the packet on the resumed session and downstream
 	// idempotency/dedup absorbs the duplicate (documented at-least-once
-	// residual, MQTT-L5) — but each count here is a GUARANTEED broker
+	// residual) — but each count here is a GUARANTEED broker
 	// redelivery: a burst after a reconnect storm is the leading indicator of
 	// a duplicate flood on routes without downstream dedup (direct_hold).
 	MetricMQTTAckAfterReconnect = "MQTTAckAfterReconnect"
+
+	// MetricMQTTConnectFailures counts rejected or failed CONNECT attempts,
+	// tagged with the session and the bounded BridgeError code the failure
+	// classified to (UNAVAILABLE, NOT_AUTHORIZED, TIMEOUT, CONNECTION_LOST, …).
+	// MQTT authenticates only at CONNECT and autopaho then retries forever
+	// behind the scenes, so this is the ONE place a reconnect failure names its
+	// cause; the same cause is latched on SessionHealth.LastError until the
+	// session is up again. The broker URL is deliberately NOT a dimension (it
+	// may carry credentials); only the bounded code is. A rising NOT_AUTHORIZED
+	// rate is a credential problem (see the credential-expiry runbook); a
+	// rising UNAVAILABLE / CONNECTION_LOST rate is a broker or network outage.
+	MetricMQTTConnectFailures = "MQTTConnectFailures"
+
+	// MetricMQTTSessionResumeLost counts connections where a persistent or
+	// exclusive session asked the broker to RESUME (clean_start=false) and the
+	// CONNACK answered Session Present=false: the broker had no session state,
+	// so the subscriptions and the queued offline QoS 1/2 backlog for this
+	// client id are gone. Causes are a session expiry elapsed during a long
+	// outage, a broker restart without persistence, or an exclusive standby
+	// connecting after session_expiry_interval. Re-subscribing then succeeds
+	// and the session reports healthy again, so WITHOUT this counter the
+	// discontinuity is invisible. Tagged with the session. Any non-zero value
+	// means offline continuity — the reason those modes exist — was broken at
+	// least once; see docs/runbooks/broker-outage-reconnect-storm.md.
+	MetricMQTTSessionResumeLost = "MQTTSessionResumeLost"
 
 	// MetricMQTTQoSDowngraded counts subscriptions the broker granted at a
 	// LOWER QoS than requested (for example, requested QoS 2 and SUBACK reason

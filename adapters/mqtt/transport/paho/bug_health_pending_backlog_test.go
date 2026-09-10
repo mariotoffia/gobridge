@@ -14,7 +14,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// A-5 (MED): ServiceLevelFull must NOT be reported while the router still holds
+// (MED): ServiceLevelFull must NOT be reported while the router still holds
 // covered publishes in its pending buffer. The classic gap: a session with
 // several receivers loses one — its subscription stays active and the OTHER
 // receivers keep the session-total handler count above zero, so the naive

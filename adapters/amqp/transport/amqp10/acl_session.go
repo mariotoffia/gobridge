@@ -62,7 +62,7 @@ func (s *amqpSessionLink) NewReceiverLink(
 // (at-most-once) — a crash between receive and process would lose them
 // while the adapter docs promise at-least-once. Requesting Unsettled
 // makes a downgrading broker fail the attach LOUDLY instead of silently
-// weakening the delivery guarantee (finding 3).
+// weakening the delivery guarantee.
 func receiverLinkOptions(credit int32, durabilityMode uint32, capability, linkName string) *amqp.ReceiverOptions {
 	opts := &amqp.ReceiverOptions{
 		Credit:                    credit,

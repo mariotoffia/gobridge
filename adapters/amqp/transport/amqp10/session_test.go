@@ -151,7 +151,7 @@ func TestSession_Health_Connected_WithPlan(t *testing.T) {
 		t.Fatalf("Reconcile() error: %v", err)
 	}
 
-	// F5: Full requires the planned subscription to actually have an
+	// Full requires the planned subscription to actually have an
 	// established receiver link; register one and mark it up so
 	// active == wanted. Without a receiver the session is (correctly)
 	// Degraded — see TestSession_Health_ActiveClampedToRegistered.

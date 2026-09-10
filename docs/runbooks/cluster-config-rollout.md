@@ -112,14 +112,122 @@ If a **coordinated** rollout will not resolve (deep health
 `config_watch.rollout.state` stuck at `proposed` / `staging`):
 
 - Deep health names the member the cohort is waiting on (the roster minus who has
-  acked) — most often one whose own config source has not yet delivered the
-  change. Confirm that member actually received the new config.
+  acked), and the abort reason repeats it: `rollout deadline exceeded with 1/3
+  acks; never voted: gobridge-ha-worker-1, gobridge-ha-worker-2`.
+- Then read `config_watch.rollout.not_voting` **on each named member**. That is
+  the only place the cause lives — a member that never voted leaves no trace in
+  the shared row — and it distinguishes the three cases, which need different
+  actions:
+
+  | `not_voting` says | What happened | What to do |
+  |---|---|---|
+  | its own config source has not delivered the candidate | the benign case: that member's watcher is lagging | wait; the deadline bounds it. If it never arrives, check that member's config source. |
+  | its barrier refused to carry the delta | that member read a **different document** from the proposer's, so it computes a different candidate identity and cannot join the rollout | reconcile the config sources; the reason names both digests. |
+  | it is not in the frozen membership epoch | the roster and the member's identity disagree | fix `bridge.cluster.members` or the member's id, then re-post. |
+
 - A rollout that cannot gather every acknowledgement **aborts on its own at its
   deadline**; the running config keeps serving. Fix the config and re-post it, or
   roll the config source back to the last committed document.
 - A member that restarts while the source still holds an uncommitted candidate
   boots on the last committed config — see
   [Operating a coordinated cohort](../cluster/operating.md#when-a-change-doesnt-go-through).
+
+## After upgrading: a member will not start because the committed config cannot be decoded
+
+**Only affects a coordinated cohort that has been running a GoBridge release up
+to and including v0.3.6.** It cannot happen to a cohort first deployed on a later
+release, and it never affects setups 1-3.
+
+Those releases wrote the durable committed-config artifact with every duration
+field (`5s`, `1m`) stored as a bare number, which the config parser deliberately
+refuses to read back. A member only decodes the artifact when it restarts on a
+config that is **not** the committed one, so the record can sit unread for a long
+time and then stop a restart:
+
+```text
+bridge: cluster.rollout: the durable last-committed config artifact
+(generation=N config_version=M) could not be decoded (...), so this node cannot
+recover the config the cohort is running; refusing to start.
+```
+
+**The upgrade normally repairs itself, in this order.**
+
+1. Check that the config source holds the document the cohort last **committed**
+   — not a change you have written but not rolled out, and not one an earlier
+   rollout aborted. A member restarting on the committed document never reads the
+   record at all, so this is what keeps the upgrade from meeting the problem.
+2. Upgrade the members one at a time, so the cohort keeps running throughout.
+3. Roll out any one config change afterwards. Every commit rewrites the record,
+   so the first change on the new image replaces it for good.
+
+**If the cohort is entirely down and a member reports the error above**, the
+record has to be removed by hand before the cohort can start. It is one item in
+the rollout coordination table, under a fixed key.
+
+> **Removing it is permanent, and it is the only thing in that table you may
+> remove.** Do it only with every member of the cohort stopped, and delete only
+> the key shown below. The table also holds the in-flight rollout row, which the
+> cohort repairs on its own; deleting anything else loses state no member can
+> rebuild.
+
+The table name is the one your deployment's bootstrap document carries in
+`dynamodb_ha_rollout_table_name`; the shipped AWS deployment derives it as
+`<bridge.id>-rollouts`, and a deployment that sets no name uses
+`gobridge-rollouts`. The partition key attribute is `PK`:
+
+```bash
+aws dynamodb delete-item \
+  --table-name "<your rollout table>" \
+  --key '{"PK": {"S": "ROLLOUT#committed"}}'
+```
+
+Then start the cohort from the config document your deployment stamped, exactly
+as [the procedure](#procedure) describes.
+
+**What you give up by deleting it, and for how long.** Until a member re-seeds it
+at startup, the cohort has no recovery point, so a member restarting behaves as it
+did before the artifact existed: it still refuses to start on a config the barrier
+aborted or has not yet decided, but it cannot be moved back onto the committed one
+either. The first member to boot on the document the deployment stamped
+re-establishes generation zero (see below), and the first committed change after
+that restores the normal recovery point.
+
+## The generation-zero baseline
+
+A coordinated cohort recovers a restarting member to the config the cohort last
+**committed**. Before the very first rollout commits there is no such record, so
+the deployment establishes one at startup instead.
+
+- The deployment stamps the digest of the exact config document it seeds
+  (`dynamodb_ha_baseline_config_digest` in bootstrap). When a member boots on
+  precisely that document, it records it as the cohort's **generation zero** and
+  verifies the write by reading it back, before it starts serving.
+- The record is written only after this member has built and installed that
+  config, so a config a member cannot run never becomes the cohort's baseline.
+- Every member of the cohort writes the same baseline; that is a no-op, not a
+  conflict. Once any rollout has committed, the baseline write is ignored — it can
+  never rewind the cohort to its deploy state. If a **different** baseline is
+  already established (a peer's, or an earlier deploy's), that one wins: this
+  member adopts and reports it instead of overwriting it.
+- After that, a member restarting while the config source still holds a change
+  the cohort has not committed boots the **committed** config and offers the
+  change to the barrier, instead of running a config no peer is running.
+
+Read it in deep health under `config_watch.rollout`: `baseline_generation` and
+`baseline_digest` are what a restart of that member would recover to.
+
+Read the `cluster_rollout_baseline_seed` audit event to see what a member did:
+
+| Outcome | Meaning |
+|---|---|
+| `verified` | This member established the baseline, or re-wrote the identical one, and read it back. |
+| `superseded` | A different baseline was already established; this member adopted it. Expect this on a redeploy whose config changed — the change then rolls through the barrier as usual. |
+| `adopted` | This member's document is not the deployment baseline (normal after a committed change); it reports the baseline that stands. |
+| `skipped` | Not the deployment baseline **and** no baseline exists yet — the conservative joiner rule applies, as before any seed. |
+| `failed` | The rollout store could not be written or read. Startup fails; this is a store outage, not a config problem. |
+
+If members disagree about which document is the baseline for long, they were
+deployed from different config documents. Redeploy the cohort from one.
 
 ## Related
 

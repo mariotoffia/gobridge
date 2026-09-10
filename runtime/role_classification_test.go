@@ -70,7 +70,7 @@ func TestRoleUnlocked_ClassifiesByExclusiveSessionsOnly(t *testing.T) {
 		rt := &Runtime{sessionMgrs: map[string]*session.Manager{
 			"s": newRoleTestManager(false, nil),
 		}}
-		require.Equal(t, roleStandalone, rt.Role(),
+		require.Equal(t, ports.RoleStandalone, rt.Role(),
 			"a non-exclusive session must not classify the instance as standby")
 	})
 
@@ -78,7 +78,7 @@ func TestRoleUnlocked_ClassifiesByExclusiveSessionsOnly(t *testing.T) {
 		rt := &Runtime{sessionMgrs: map[string]*session.Manager{
 			"s": newRoleTestManager(true, nil),
 		}}
-		require.Equal(t, roleStandby, rt.Role())
+		require.Equal(t, ports.RoleStandby, rt.Role())
 	})
 
 	t.Run("exclusive session holding a lease is active", func(t *testing.T) {
@@ -94,6 +94,6 @@ func TestRoleUnlocked_ClassifiesByExclusiveSessionsOnly(t *testing.T) {
 		require.Equal(t, session.LeaseStateAcquired, ev.State)
 
 		rt := &Runtime{sessionMgrs: map[string]*session.Manager{"s": mgr}}
-		require.Equal(t, roleActive, rt.Role())
+		require.Equal(t, ports.RoleActive, rt.Role())
 	})
 }

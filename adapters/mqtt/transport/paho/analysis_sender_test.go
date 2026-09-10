@@ -85,7 +85,7 @@ func TestAnaSender_EmptyTopicAndNoDefault_ReturnsErrInvalidTopic(t *testing.T) {
 // resolution order: msg.Address || opts.DefaultTopic).
 func TestAnaSender_PublishFromEnvelope_UsesExplicitTopic(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte("x")})
-	pub := PublishFromEnvelope(env, "explicit/t", SenderOptions{DefaultTopic: "fallback/t", QoS: 1}, nil)
+	pub := mustPublishFromEnvelope(t, env, "explicit/t", SenderOptions{DefaultTopic: "fallback/t", QoS: 1}, nil)
 	if pub.Topic != "explicit/t" {
 		t.Fatalf("topic = %q, want %q", pub.Topic, "explicit/t")
 	}
@@ -115,7 +115,7 @@ func TestAnaSender_ApplyTimeout_PreservesShorterParentDeadline(t *testing.T) {
 }
 
 // TestAnaSender_ApplyTimeout_ConfiguredTimeoutTightensLongerParentDeadline
-// pins the M-1 fix: when the configured SenderOptions.Timeout is STRICTER
+// pins the fix: when the configured SenderOptions.Timeout is STRICTER
 // (shorter) than the caller's deadline, applyTimeout tightens to it, so an
 // operator-set sender.timeout is no longer silently shadowed by a looser
 // route policy.send_timeout. (The reverse — a configured timeout LOOSER than

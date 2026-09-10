@@ -1,6 +1,6 @@
 // Command cfgshape enforces the typed-pluggable-config contract
-// described in FIX-003. See package cfgshape (this directory) for the
-// rule set.
+// documented in docs/typed-plugin-config.adoc. See package cfgshape
+// (this directory) for the rule set.
 //
 // Usage (via go vet):
 //

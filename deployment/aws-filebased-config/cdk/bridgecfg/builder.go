@@ -38,9 +38,17 @@ type Builder struct {
 	bindingIDs  map[string]struct{}
 	routeIDs    map[string]struct{}
 
-	// scanSecrets toggles the plaintext-secrets pass run from
-	// Build. On by default.
-	scanSecrets bool
+	// senderAddresses records the transport destination each declared
+	// sender resolves to, keyed by sender id.
+	//
+	// A binding MUST carry an address — the runtime validator refuses a
+	// config whose binding has none — and the builder synthesises the
+	// binding for the common one-sender route, so the address has to come
+	// from somewhere. It comes from the sender that owns the destination:
+	// only the transport-specific With*Sender method knows what "the
+	// destination" means for its transport, so each one records it here and
+	// WithRoute reads it back without knowing any transport at all.
+	senderAddresses map[string]string
 }
 
 // New returns a Builder seeded with the given bridge ID. The ID
@@ -49,12 +57,12 @@ type Builder struct {
 // chain remains uninterrupted.
 func New(name string) *Builder {
 	b := &Builder{
-		sessionIDs:  map[string]struct{}{},
-		receiverIDs: map[string]struct{}{},
-		senderIDs:   map[string]struct{}{},
-		bindingIDs:  map[string]struct{}{},
-		routeIDs:    map[string]struct{}{},
-		scanSecrets: true,
+		sessionIDs:      map[string]struct{}{},
+		receiverIDs:     map[string]struct{}{},
+		senderIDs:       map[string]struct{}{},
+		bindingIDs:      map[string]struct{}{},
+		routeIDs:        map[string]struct{}{},
+		senderAddresses: map[string]string{},
 	}
 	if name == "" {
 		b.fail(errors.New("bridgecfg: New: bridge name must not be empty"))
@@ -66,9 +74,9 @@ func New(name string) *Builder {
 
 // Build finalises the config and returns the assembled
 // *ports.BridgeConfig. Any error captured during the chain is
-// returned verbatim; in addition the plaintext-secret scanner is run
-// against the final config so inline credentials surface as a Build
-// error rather than escaping into the synthesized bridge.yaml.
+// returned verbatim. Literal credentials and credential references are
+// consumer choices; callers wanting a URI-only policy can explicitly call
+// ScanForPlaintextSecrets on the returned config.
 //
 // Build does not call config.Validate — heavyweight cross-reference
 // checks are the construct's responsibility (Phase 2 validator) so
@@ -77,11 +85,6 @@ func New(name string) *Builder {
 func (b *Builder) Build() (*ports.BridgeConfig, error) {
 	if b.err != nil {
 		return nil, b.err
-	}
-	if b.scanSecrets {
-		if err := ScanForPlaintextSecrets(&b.cfg); err != nil {
-			return nil, fmt.Errorf("bridgecfg: build: %w", err)
-		}
 	}
 	cfg := b.cfg
 	return &cfg, nil

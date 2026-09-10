@@ -54,7 +54,13 @@ func buildAWSConfig(ctx context.Context, region, endpoint, profile string) (aws.
 	return cfg, nil
 }
 
-func resolveQueueURL(ctx context.Context, client sqsAPI, queueURL, queueName string) (string, error) {
+func resolveQueueURL(ctx context.Context, client sqsAPI, queueURL, queueName string, tags map[string]string, prefix string) (string, error) {
+	if err := validateQueueReference(queueURL, queueName, tags, prefix, true); err != nil {
+		return "", err
+	}
+	if tags != nil {
+		return resolveQueueTags(ctx, client, tags, prefix)
+	}
 	if queueURL != "" {
 		return queueURL, nil
 	}
@@ -64,7 +70,7 @@ func resolveQueueURL(ctx context.Context, client sqsAPI, queueURL, queueName str
 	if err != nil {
 		return "", MapError(err)
 	}
-	if out.QueueUrl == nil {
+	if out == nil || aws.ToString(out.QueueUrl) == "" {
 		return "", fmt.Errorf("sqs: get queue URL: nil QueueUrl for queue %q", queueName)
 	}
 	return *out.QueueUrl, nil

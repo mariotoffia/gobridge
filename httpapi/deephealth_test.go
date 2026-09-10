@@ -97,7 +97,7 @@ func TestHandleDeepHealth_Running(t *testing.T) {
 			OnPermanentFailure: routing.FailureDrop,
 			OnExpired:          routing.ExpiredDrop,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}, receiver, sender, nil, nil)
 	require.NoError(t, err)
 
@@ -147,7 +147,7 @@ func TestHandleDeepHealth_WithSession(t *testing.T) {
 			OnPermanentFailure: routing.FailureDrop,
 			OnExpired:          routing.ExpiredDrop,
 		},
-		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}, receiver, sender, sess, sessCfg)
 	require.NoError(t, err)
 

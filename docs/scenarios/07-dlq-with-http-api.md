@@ -47,10 +47,15 @@ bridge:
 sessions:
   - id: mqtt-conn
     transport: mqtt
+    # direct_hold relies on the broker redelivering what a crashed process never
+    # acknowledged; only a persistent (or exclusive) session does that.
+    session_mode: persistent
     options:
       session:
         broker_url: tcp://mqtt.example.com:1883
         client_id: dlq-bridge-01
+        clean_start: false
+        session_expiry_interval: 3600
 
 receivers:
   - id: mqtt-in
@@ -70,11 +75,23 @@ senders:
 bindings:
   - id: to-events
     sender_id: sqs-out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # connect, subscribe, reconcile. A session nobody manages never subscribes.
+    session_id: mqtt-conn
     address: events
 
 stores:
   dlq:
     type: memory
+    options:
+      acknowledge_volatile: true
+  # A persistent session keeps an exact record of the filters it installed on
+  # the broker (ADR 0003); seed the baseline once, before the first start:
+  #   gobridge -config bridge.yaml -seed-managed-subscriptions mqtt-conn
+  managed_subscriptions:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/managed-subscriptions.db
 
 routes:
   - id: ingest
@@ -83,6 +100,9 @@ routes:
     dispatch_mode: single
     bindings: [to-events]
     policy:
+      # Exactly one replica consumes this subscription; a second copy of this
+      # process would double-deliver. See Scenario 8 for fenced ownership.
+      allow_unfenced: true
       max_in_flight: 100
       max_replay_attempts: 3
       on_permanent_failure: dlq
@@ -102,7 +122,7 @@ http:
 
 ### `stores.dlq: { type: memory }`
 
-The DLQ store holds failed message entries. The `memory` type is suitable for development and single-instance deployments, but entries are lost on restart. See **Variations** for persistent options.
+The DLQ store holds failed message entries. The `memory` type is suitable for development and single-instance deployments, but entries are lost on restart -- which erases the only record that a message existed and was given up on. That loss must be acknowledged with `acknowledge_volatile: true` before the store will build. See **Variations** for persistent options.
 
 ### `policy.on_permanent_failure: dlq`
 
@@ -194,7 +214,7 @@ routes, so verify delivery:
 { "redriven": 2, "failed": 0, "warning": "runtime lacks redrive-safe injection: replays reuse the original envelope id and may be silently deduplicated by the outbox on shared_outbox routes; verify delivery" }
 ```
 
-See [HTTP API Reference](../http-api.md#dlq-redrive) for the full contract (207
+See [HTTP API Reference](../http-api-admin.md#dlq-redrive) for the full contract (207
 on partial failure, per-entry `errors`).
 
 ### Purge DLQ Entries

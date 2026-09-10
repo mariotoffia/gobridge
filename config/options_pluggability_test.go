@@ -7,12 +7,11 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestTypedPluginConfig_OnAllAttachmentPoints locks in the FIX-003
-// invariant that every plugin attachment point in ports/blueprint.go
-// carries a typed `Config ports.PluginConfig` instead of an untyped
-// `Options map[string]any`. Phase 1 inverts the previous
-// pluggability constraint: the inner ring must remain free of raw
-// option maps so the two-stage parser owns kind discrimination.
+// TestTypedPluginConfig_OnAllAttachmentPoints locks in the invariant that
+// every plugin attachment point in ports/blueprint.go carries a typed
+// `Config ports.PluginConfig` instead of an untyped `Options map[string]any`.
+// The inner ring must remain free of raw option maps so the two-stage
+// parser is the only place that discriminates on kind.
 //
 // This regression test fails if a future change reintroduces an
 // `Options map[string]any` shape on any of the listed core *Def
@@ -46,7 +45,7 @@ func TestTypedPluginConfig_OnAllAttachmentPoints(t *testing.T) {
 			}
 
 			if _, ok := rt.FieldByName("Options"); ok {
-				t.Fatalf("%s.Options must not exist; raw map[string]any options are forbidden after FIX-003 phase 1", rt.Name())
+				t.Fatalf("%s.Options must not exist; raw map[string]any options are forbidden on attachment points", rt.Name())
 			}
 
 			for i := 0; i < rt.NumField(); i++ {

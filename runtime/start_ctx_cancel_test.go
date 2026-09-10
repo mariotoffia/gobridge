@@ -20,7 +20,7 @@ import (
 // Under the KEYSTONE lifecycle split a ctx-cancel-driven Stop is a CLEAN stop
 // (it routes through rt.Stop, which no longer conflates a deliberate stop with
 // unrecoverable death), so the runtime reports not-running WITHOUT going
-// terminal — only component-failure trips are terminal now (CRITICAL 3).
+// terminal — only component-failure trips are terminal now.
 func TestStart_ParentCtxCancel_DrivesStop(t *testing.T) {
 	rt := goruntime.New(goruntime.WithInstanceID("l9-ctx-cancel"))
 
@@ -41,7 +41,7 @@ func TestStart_ParentCtxCancel_DrivesStop(t *testing.T) {
 	// A clean, deliberate teardown must NOT trip terminal (that is reserved for
 	// unrecoverable component failures that must restart the process).
 	assert.False(t, rt.Terminal(),
-		"a ctx-cancel-driven clean Stop must not report terminal (CRITICAL 3)")
+		"a ctx-cancel-driven clean Stop must not report terminal")
 
 	// A subsequent explicit Stop is idempotent (no panic, no error).
 	assert.NoError(t, rt.Stop(context.Background()))

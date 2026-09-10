@@ -1,15 +1,12 @@
 package dynamodb
 
 import (
-	"bytes"
 	"context"
-	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
 	"time"
 
-	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -97,13 +94,8 @@ const (
 	ModeStreams
 )
 
-var (
-	_ ports.Loader   = (*Loader)(nil)
-	_ ports.Reloader = (*Loader)(nil)
-)
-
-// Loader implements ports.Loader and ports.Reloader using a DynamoDB
-// table. The full BridgeConfig is stored as a single JSON item with an
+// Loader implements ports.Reloader and ports.ConditionalConfigStore using a
+// DynamoDB table. The full BridgeConfig is stored as a single JSON item with an
 // accompanying numeric version attribute.
 //
 // All AWS SDK interactions are funnelled through the unexported
@@ -134,8 +126,17 @@ type Loader struct {
 	// math/rand/v2.Float64; tests inject a deterministic source.
 	randFloat func() float64
 
-	mu          sync.Mutex
-	lastVersion int64
+	mu                  sync.Mutex
+	watching            bool
+	observation         *configObservation
+	observationSequence uint64
+	lastVersion         int64 // last ordinary Load/Save observation, not a delivery acknowledgement
+
+	// The first Load (including absence/version zero) seeds the watch baseline.
+	// Later store reads/writes must not acknowledge config for the watcher.
+	watchVersion     int64
+	watchHasBaseline bool
+	watchStarted     bool
 }
 
 // Option configures a Loader.
@@ -207,30 +208,6 @@ func WithClock(c clock.Clock) Option {
 
 func (l *Loader) pk() string { return "config#" + l.bridgeID }
 
-// Load retrieves the current BridgeConfig from DynamoDB.
-func (l *Loader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
-	rawData, version, found, err := l.session.getConfigItem(ctx, l.pk())
-	if err != nil {
-		return nil, err
-	}
-	if !found {
-		return nil, shared.ErrNotFound.WithMessage("config not found for bridge " + l.bridgeID)
-	}
-
-	cfg, err := parser.Parse(bytes.NewReader([]byte(rawData)), parser.FormatJSON, l.registry)
-	if err != nil {
-		return nil, fmt.Errorf("dynamodb config load: parse: %w", err)
-	}
-
-	if version > 0 {
-		l.mu.Lock()
-		l.lastVersion = version
-		l.mu.Unlock()
-	}
-
-	return cfg, nil
-}
-
 // Watch observes the configured table for changes and emits updated
 // configurations on the returned channel. The channel is closed when
 // ctx is cancelled. The initial config is NOT emitted; call Load
@@ -248,34 +225,7 @@ func (l *Loader) Load(ctx context.Context) (*ports.BridgeConfig, error) {
 // stream is disabled while watching) still degrade to poll mode after
 // streamAcquireFallbackAfter consecutive acquisition failures.
 func (l *Loader) Watch(ctx context.Context) (<-chan *ports.BridgeConfig, error) {
-	ch := make(chan *ports.BridgeConfig, 1)
-
-	if l.mode == ModeStreams {
-		arn, reason := l.resolveStreamArn(ctx)
-		if reason == "" {
-			go l.streamLoop(ctx, ch, arn)
-			return ch, nil
-		}
-		// Streams are not reachable at startup. Historically this was a
-		// PERMANENT downgrade to poll mode — a single transient DescribeTable
-		// error (throttle, brief IAM propagation) disabled push-based updates
-		// for the entire process lifetime. Instead poll now but keep re-probing
-		// the stream in the background and upgrade to the streams consumer once
-		// it becomes reachable.
-		if l.logger != nil {
-			l.logger.Warn("dynamodb config loader: streams unavailable; polling and will retry streams in the background",
-				"reason", reason,
-				"table", l.session.tableName,
-				"poll_interval", l.pollInterval.String(),
-			)
-		}
-		go l.superviseStreamReacquire(ctx, ch)
-		return ch, nil
-	}
-
-	ticker := l.clk.NewTicker(l.pollInterval)
-	go l.pollLoop(ctx, ch, ticker)
-	return ch, nil
+	return l.watch(ctx, nil)
 }
 
 // superviseStreamReacquire owns ch while streams are unavailable: it polls (so
@@ -312,9 +262,8 @@ func (l *Loader) pollUntilStreamReachable(ctx context.Context, ch chan *ports.Br
 	pollTicker := l.clk.NewTicker(l.pollInterval)
 	defer pollTicker.Stop()
 
-	l.mu.Lock()
-	ps := pollState{lastSeen: l.lastVersion}
-	l.mu.Unlock()
+	version, _ := l.beginWatchCursor()
+	ps := pollState{lastSeen: version}
 
 	backoff := l.streamPollInterval
 	reprobeC := l.clk.After(backoff)
@@ -329,6 +278,8 @@ func (l *Loader) pollUntilStreamReachable(ctx context.Context, ch chan *ports.Br
 		case <-reprobeC:
 			if a, reason := l.resolveStreamArn(ctx); reason == "" {
 				return a, true
+			} else {
+				l.observeResult(ctx, nil, shared.ErrUnavailable.WithMessage(reason))
 			}
 			backoff = nextBackoff(backoff)
 			reprobeC = l.clk.After(backoff)
@@ -363,9 +314,8 @@ func (l *Loader) pollLoop(ctx context.Context, ch chan *ports.BridgeConfig, tick
 	defer close(ch)
 	defer ticker.Stop()
 
-	l.mu.Lock()
-	ps := pollState{lastSeen: l.lastVersion}
-	l.mu.Unlock()
+	version, _ := l.beginWatchCursor()
+	ps := pollState{lastSeen: version}
 
 	for {
 		select {
@@ -395,6 +345,10 @@ type pollState struct {
 // (rate-limited) and escalate to Error after pollFailureEscalateAfter
 // consecutive occurrences.
 func (l *Loader) pollOnce(ctx context.Context, ch chan *ports.BridgeConfig, ps *pollState) {
+	if l.observation != nil {
+		l.observeCurrent(ctx)
+		return
+	}
 	v, err := l.currentVersion(ctx)
 	if err != nil {
 		l.logPollFailure(ps, "version check", err)
@@ -411,7 +365,7 @@ func (l *Loader) pollOnce(ctx context.Context, ch chan *ports.BridgeConfig, ps *
 	}
 	ps.consecutiveFailures = 0
 	l.deliverLatest(ch, cfg)
-	ps.lastSeen = v
+	ps.lastSeen = int64(cfg.Version)
 }
 
 // logPollFailure records a poll-cycle failure with rate-limited logging that
@@ -459,6 +413,7 @@ func (l *Loader) deliverLatest(ch chan *ports.BridgeConfig, cfg *ports.BridgeCon
 	for {
 		select {
 		case ch <- cfg:
+			l.recordWatchDelivery(int64(cfg.Version))
 			return
 		default:
 		}
@@ -496,56 +451,4 @@ func (l *Loader) jitteredBackoff(d time.Duration) time.Duration {
 	return half + time.Duration(rf()*float64(half))
 }
 
-// Save writes a BridgeConfig to DynamoDB using an optimistic
-// compare-and-set so concurrent admin writers cannot silently lose
-// updates. It reads the current committed version with a strongly
-// consistent read, then conditionally writes version+1 guarded on the
-// stored version being unchanged. A concurrent write that advanced the
-// version causes a shared.ErrVersionMismatch, which the caller should
-// resolve by reloading and retrying.
-func (l *Loader) Save(ctx context.Context, cfg *ports.BridgeConfig) error {
-	data, err := parser.MarshalBridgeConfigJSON(cfg)
-	if err != nil {
-		return fmt.Errorf("dynamodb config save: marshal: %w", err)
-	}
-
-	// Pre-check the payload against the per-item ceiling so an oversized config
-	// fails with a clear, actionable error rather than an opaque DynamoDB
-	// ValidationException after a wasted strong read and conditional write.
-	if len(data) > maxConfigItemBytes {
-		return fmt.Errorf("dynamodb config save: serialized config is %d bytes, which exceeds the %d-byte per-item limit (DynamoDB caps a single item at 400 KB); reduce the configuration size", len(data), maxConfigItemBytes)
-	}
-
-	current, err := l.currentVersion(ctx)
-	if err != nil {
-		return err
-	}
-	newVersion := current + 1
-
-	if err := l.session.putConfigItem(ctx, l.pk(), data, newVersion, current); err != nil {
-		if isConditionFailed(err) {
-			return shared.ErrVersionMismatch.
-				WithMessage("dynamodb config save: concurrent update detected; reload and retry").
-				With("expectedVersion", current)
-		}
-		return err
-	}
-
-	l.mu.Lock()
-	l.lastVersion = newVersion
-	l.mu.Unlock()
-
-	return nil
-}
-
-// EnsureTable creates the DynamoDB table if it does not already exist.
-// When the loader runs in ModeStreams the table is provisioned with a
-// KEYS_ONLY stream so self-provisioned deployments actually get the
-// streams-based Watch they configured instead of silently degrading to
-// poll mode. Intended for test setup and local development.
-func (l *Loader) EnsureTable(ctx context.Context) error {
-	if err := l.session.ensureTable(ctx, l.mode == ModeStreams); err != nil {
-		return err
-	}
-	return l.session.waitTableExists(ctx, 30*time.Second)
-}
+var _ ports.Reloader = (*Loader)(nil)

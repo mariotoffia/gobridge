@@ -35,7 +35,7 @@ func DefaultMerge(base, overlay *ports.BridgeConfig) (*ports.BridgeConfig, error
 
 	// Version is an optimistic-concurrency counter: a non-zero overlay version
 	// is the newer committed version and wins; a zero overlay leaves the base
-	// version intact instead of silently dropping it to 0 (Finding 8).
+	// version intact instead of silently dropping it to 0.
 	if overlay.Version != 0 {
 		out.Version = overlay.Version
 	}
@@ -65,7 +65,7 @@ func DefaultMerge(base, overlay *ports.BridgeConfig) (*ports.BridgeConfig, error
 		// Defensive deep-clone for symmetry with the HTTP/Cluster clones: with
 		// no overlay ConfigWatch, out.ConfigWatch still aliases base.ConfigWatch
 		// (via `out := *base`) so a later mutation of the merged config could
-		// reach back into the cached base layer (Finding 10).
+		// reach back into the cached base layer.
 		cw := *out.ConfigWatch
 		out.ConfigWatch = &cw
 	}
@@ -90,7 +90,7 @@ func DefaultMerge(base, overlay *ports.BridgeConfig) (*ports.BridgeConfig, error
 		// Defensive deep-clone: with no overlay HTTP block, out.HTTP still
 		// aliases base.HTTP (via `out := *base`). Clone it for symmetry with
 		// the Cluster clone above so a later mutation of the merged config
-		// cannot reach back into the cached base layer (Finding 10).
+		// cannot reach back into the cached base layer.
 		h := *out.HTTP
 		out.HTTP = &h
 	}
@@ -168,7 +168,7 @@ func mergeBridgeSettings(base, overlay *ports.BridgeSettings) {
 		base.LogLevel = overlay.LogLevel
 	}
 	// Cluster was silently dropped: an overlay that added or changed cluster
-	// endpoints never took effect after a merge (Finding 8). Overlay replaces
+	// endpoints never took effect after a merge. Overlay replaces
 	// base when set; the endpoint map is cloned so the merged config never
 	// aliases the overlay's map.
 	if overlay.Cluster != nil {
@@ -193,8 +193,8 @@ func mergeStores(base, overlay *ports.StoresConfig) {
 // mergeStoreRole returns a clone of the overlay store when set, otherwise a
 // clone of the base store. Cloning the base (rather than aliasing its pointer
 // via `out := *base`) keeps the merged config from reaching back into the
-// cached base layer if a consumer later mutates the store entry (Finding 10 —
-// symmetry with the overlay clone and the Cluster clone).
+// cached base layer if a consumer later mutates the store entry, in symmetry
+// with the overlay clone and the Cluster clone.
 func mergeStoreRole(base, overlay *ports.StoreConfig) *ports.StoreConfig {
 	if overlay != nil {
 		sc := *overlay
@@ -285,10 +285,51 @@ func mergeReceiverDef(base, overlay ports.ReceiverDef) ports.ReceiverDef {
 		out.SessionID = overlay.SessionID
 	}
 	if len(overlay.Topics) > 0 {
-		out.Topics = overlay.Topics
+		out.Topics = mergeTopics(base.Topics, overlay.Topics, base.Transport, overlay.Transport)
 	}
 	cfg, raw := carriedPluginConfig(base.Config, overlay.Config, base.Raw(), overlay.Raw(), base.Transport, overlay.Transport)
 	out.SetDecoded(cfg, raw)
+	return out
+}
+
+// mergeTopics resolves an overlay subscription list against the base one.
+//
+// The overlay list is authoritative about WHICH topics the receiver subscribes
+// to — that is how an operator removes one — but a subscription that survives
+// the change keeps the typed options it already had. Those options exist only in
+// the typed Config, which the wire form drops (json:"-"), so an overlay that
+// merely repeats a topic in order to add a sibling carries none of them; taking
+// the overlay entry verbatim would write a document with the survivor's options
+// erased, which is permanent. Matching is by topic, the only identity a
+// subscription has.
+//
+// A genuinely new topic keeps whatever the overlay gave it, which for the admin
+// API is nothing — the parse of the committed document supplies its defaults.
+func mergeTopics(base, overlay []ports.SubscriptionDef, baseKind, overlayKind string) []ports.SubscriptionDef {
+	carried := make(map[string]ports.SubscriptionDef, len(base))
+	for _, sub := range base {
+		carried[sub.Topic] = sub
+	}
+	out := make([]ports.SubscriptionDef, 0, len(overlay))
+	for _, sub := range overlay {
+		prior, survives := carried[sub.Topic]
+		if !survives {
+			out = append(out, sub)
+			continue
+		}
+		merged := sub
+		if merged.QoS == 0 {
+			// The wire form omits a zero QoS, so an overlay cannot distinguish
+			// "leave it alone" from "set it to 0" — and every other scalar in this
+			// merge reads an absent value as "leave it alone". A survivor that
+			// silently dropped to at-most-once delivery because the operator
+			// repeated its topic to add a sibling is the worse of the two readings.
+			merged.QoS = prior.QoS
+		}
+		cfg, raw := carriedPluginConfig(prior.Config, sub.Config, prior.Raw(), sub.Raw(), baseKind, overlayKind)
+		merged.SetDecoded(cfg, raw)
+		out = append(out, merged)
+	}
 	return out
 }
 

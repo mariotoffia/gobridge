@@ -32,26 +32,26 @@ senders:
         default_topic: events/out
         qos: 1
 
-  - id: sqs-out
-    transport: sqs
-    options:
-      queue_url: https://sqs.us-west-1.amazonaws.com/123456789012/events
-      credentials_uri: pms://prod/aws/sqs-creds
-
 bindings:
   - id: to-mqtt
     sender_id: mqtt-out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # a session nobody manages never connects, and every publish fails.
+    session_id: mqtt-tls
     address: events/out
 
-  - id: to-sqs
-    sender_id: sqs-out
-    address: events
+stores:
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
 
 routes:
   - id: forward-http
     receiver_id: http-in
-    dispatch_mode: all
-    bindings: [to-mqtt, to-sqs]
+    delivery_mode: direct_hold
+    dispatch_mode: single
+    bindings: [to-mqtt]
 
 http:
   admin_addr: ":8080"
@@ -61,11 +61,11 @@ http:
   cors_origins: "https://dashboard.example.com"
 ```
 
-This configuration ingests over HTTP and fans out to an MQTT (TLS) sender and
-an SQS sender, demonstrating:
-- **Credential URI** on the MQTT session (`file://`) and SQS sender (`pms://`)
-  for transport-level authentication. The URI is a top-level `options` key
-  (sibling of the nested `session:` / `sender:` role blocks).
+This configuration ingests over HTTP and forwards to an MQTT (TLS) sender,
+demonstrating:
+- **Credential URI** on the MQTT session (`file://`) for transport-level
+  authentication. The URI is a top-level `options` key, alongside the nested
+  `session:` block.
 - **API key** on the HTTP receiver for endpoint-level protection (minimum 16
   characters).
 - **Separate admin and monitor keys** for management API access control (each

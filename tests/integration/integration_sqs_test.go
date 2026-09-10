@@ -7,14 +7,13 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SQS adapter integration tests with ElasticMQ
+// SQS adapter integration tests against the local AWS emulator
 //
 // Validates SQS Receiver and Sender behaviour against a real
-// SQS-compatible endpoint (ElasticMQ in Docker).
+// SQS-compatible endpoint (the local AWS emulator in Docker).
 //
 // Summary:
 // ┌──────┬─────────────────────────────────────────────────┐
@@ -113,9 +112,9 @@ func TestIntegration_SQS_Sender_FIFO(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	client := sqslocal.Client(t)
-	name := sqslocal.UniqueQueue("ir3") + ".fifo"
-	queueURL := sqslocal.CreateQueueWithAttrs(t, client, name, map[string]string{
+	client := newSQSClient(t)
+	name := uniqueQueueName("ir3") + ".fifo"
+	queueURL := createSQSQueueWithAttrs(t, client, name, map[string]string{
 		"FifoQueue":                 "true",
 		"ContentBasedDeduplication": "true",
 	})
@@ -158,9 +157,9 @@ func TestIntegration_SQS_Receiver_VisibilityTimeout(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	client := sqslocal.Client(t)
-	name := sqslocal.UniqueQueue("ir4")
-	queueURL := sqslocal.CreateQueueWithAttrs(t, client, name, map[string]string{
+	client := newSQSClient(t)
+	name := uniqueQueueName("ir4")
+	queueURL := createSQSQueueWithAttrs(t, client, name, map[string]string{
 		"VisibilityTimeout": "2",
 	})
 	receiver := newSQSReceiverWithVisibility(t, queueURL, 2)

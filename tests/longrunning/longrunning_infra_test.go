@@ -11,8 +11,8 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 	"github.com/mariotoffia/gobridge/testutil/dockerexec"
+	"github.com/mariotoffia/gobridge/testutil/flocilocal"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
-	"github.com/mariotoffia/gobridge/testutil/sqslocal"
 )
 
 // ---------------------------------------------------------------------------
@@ -21,7 +21,7 @@ import (
 
 // testInfra holds the endpoints for the three local Docker services that
 // were (re)started by withFreshInfra. Tests use the singleton helpers
-// (sqslocal.Client, mqttlocal.BrokerURL, ddblocal.Client) for actual
+// (flocilocal.AWSConfig, mqttlocal.BrokerURL, ddblocal.Client) for actual
 // connections; these fields are informational / for logging.
 type testInfra struct {
 	SQSEndpoint string
@@ -40,7 +40,7 @@ func withFreshInfra(t *testing.T) *testInfra {
 
 	killAllGobridgeContainers(t)
 
-	sqsEP := sqslocal.ForceStart(t)
+	sqsEP := flocilocal.ForceStart(t)
 	ddbEP := ddblocal.ForceStart(t)
 	mqttEP := mqttlocal.ForceStart(t)
 
@@ -82,7 +82,7 @@ func killAllGobridgeContainers(t *testing.T) {
 	t.Helper()
 
 	for _, prefix := range []string{
-		"gobridge-sqslocal-",
+		"gobridge-flocilocal-",
 		"gobridge-ddblocal-",
 		"gobridge-mqtt-",
 		"gobridge-mqttinst-",

@@ -5,6 +5,7 @@ package longrunning_test
 import (
 	"context"
 	"fmt"
+	"os"
 	"runtime"
 	"testing"
 	"time"
@@ -20,27 +21,69 @@ import (
 )
 
 // =========================================================================
-// UC68: 5-Minute Soak Test
+// UC68: Soak Test
 //
-// Injects 100 msgs/sec for 5 minutes (~30,000) via the Inject API.
-// Monitors heap growth and goroutine stability throughout.
+// Injects 100 msgs/sec through the Inject API for the configured duration,
+// watching heap growth and goroutine stability throughout.
+//
+// TWO PROFILES, one test. The suite runs the SHORT profile (5 minutes) so
+// `make test-long-running` stays usable; `make test-soak` sets
+// GOBRIDGE_SOAK_DURATION=60m for the published hour, which is the interval a
+// slow goroutine, timer, connection or memory leak needs to become visible. A
+// short profile is a smoke test of the soak, not the soak.
 //
 // Assert: >= 95% delivered. Heap growth < 2x. Goroutine count stable.
 // =========================================================================
 
-func TestUC68_FiveMinuteSoak(t *testing.T) {
+const (
+	// soakDurationEnv overrides the soak profile, e.g. "60m". Any duration
+	// time.ParseDuration accepts.
+	soakDurationEnv = "GOBRIDGE_SOAK_DURATION"
+	// shortSoakDuration is the profile the ordinary suite runs.
+	shortSoakDuration = 5 * time.Minute
+	// soakDrainAllowance is the headroom added to the injection window for
+	// delivery, teardown and the final assertions.
+	soakDrainAllowance = 2 * time.Minute
+)
+
+// soakDuration reports the configured soak profile. An unparseable value fails
+// the test rather than silently falling back: a run that believed it was doing
+// the published hour and quietly did five minutes would be worse evidence than
+// no run at all.
+func soakDuration(t *testing.T) time.Duration {
+	t.Helper()
+	raw := os.Getenv(soakDurationEnv)
+	if raw == "" {
+		return shortSoakDuration
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil {
+		t.Fatalf("%s=%q is not a duration: %v", soakDurationEnv, raw, err)
+	}
+	if parsed <= 0 {
+		t.Fatalf("%s=%q must be positive", soakDurationEnv, raw)
+	}
+	return parsed
+}
+
+func TestUC68_Soak(t *testing.T) {
 	_ = withFreshInfra(t)
+	duration := soakDuration(t)
 	const (
-		duration    = 5 * time.Minute
-		rate        = 100 // msgs/sec
-		outTopic    = "uc68/output"
-		testTimeout = 420 * time.Second
+		rate     = 100 // msgs/sec
+		outTopic = "uc68/output"
 	)
+	testTimeout := duration + soakDrainAllowance
+	t.Logf("UC68: soak profile %v (override with %s)", duration, soakDurationEnv)
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	collector := newMQTTCollector(t, outTopic, "uc68-col")
+	// Counting, not retaining: an hour at 100 msgs/sec is ~360,000 envelopes,
+	// and a collector holding them all is hundreds of megabytes of the TEST's
+	// heap — which the leak assertion below would read as the bridge leaking.
+	// This test only ever counts.
+	collector := newCountingMQTTCollector(t, outTopic, "uc68-col")
 
 	sessID := mqttlocal.UniqueClientID("uc68-sess")
 	sess := setupMQTTSession(t, sessID, connectivity.SessionExclusive)
@@ -132,8 +175,10 @@ injectLoop:
 	if initialFloor < 50<<20 {
 		initialFloor = 50 << 20 // floor at 50MB to avoid false positives when initial heap is tiny
 	}
-	require.Less(t, heap.finalHeap(), 2*initialFloor,
-		"Final heap must be <= 2x initial (floored at 50MB)")
+	require.Lessf(t, heap.finalHeap(), 2*initialFloor,
+		"final heap %dMB must be <= 2x initial (floored at 50MB) after %d messages; "+
+			"the collector retains nothing, so this heap is the bridge's",
+		heap.finalHeap()/(1<<20), injected)
 
 	goroutineDiff := endGoroutines - startGoroutines
 	require.Less(t, goroutineDiff, 50,

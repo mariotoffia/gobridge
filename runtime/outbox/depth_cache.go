@@ -67,7 +67,7 @@ func (c *DepthCache) Update(partitionKey string, atCapacity bool) {
 				delete(c.entries, k)
 			}
 		}
-		// Finding 21: if the stale sweep did not free enough, evict entries
+		// If the stale sweep did not free enough, evict entries
 		// ONE AT A TIME (random order — Go map iteration is randomized) until
 		// back within the bound, never below it. The previous code collapsed
 		// the entire cache to a single entry, which dropped every other

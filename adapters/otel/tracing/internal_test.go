@@ -12,7 +12,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-// K6 true-regression: a sampler ratio of 0.0 must disable sampling of
+// true-regression: a sampler ratio of 0.0 must disable sampling of
 // new root traces. Before the fix, WithSamplerRatio(0) was reset to 1.0
 // by applyDefaults, so every root span was sampled.
 func TestSamplerFromConfig_ZeroDisablesRootSampling(t *testing.T) {
@@ -53,7 +53,7 @@ func TestSamplerFromConfig_OneSamplesRoot(t *testing.T) {
 }
 
 // applyDefaults must preserve an explicit 0.0 rather than treating it as
-// unset (the root cause of the K6 bug).
+// unset (the root cause of the bug).
 func TestApplyDefaults_SamplerRatioZeroPreserved(t *testing.T) {
 	t.Parallel()
 
@@ -87,7 +87,7 @@ func TestWithSamplerRatio_ZeroIsExplicit(t *testing.T) {
 	assert.Equal(t, 0.0, *cfg.SamplerRatio)
 }
 
-// K7: an OTLP endpoint env var suppresses the hardcoded default so the
+// an OTLP endpoint env var suppresses the hardcoded default so the
 // SDK can honor it.
 func TestApplyDefaults_HonorsEnvEndpoint(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.internal:4318")
@@ -99,7 +99,7 @@ func TestApplyDefaults_HonorsEnvEndpoint(t *testing.T) {
 	assert.Empty(t, cfg.Endpoint, "env endpoint must not be overridden by a hardcoded default")
 }
 
-// K7: OTEL_SERVICE_NAME suppresses the hardcoded service name default.
+// OTEL_SERVICE_NAME suppresses the hardcoded service name default.
 func TestApplyDefaults_HonorsEnvServiceName(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
@@ -111,7 +111,7 @@ func TestApplyDefaults_HonorsEnvServiceName(t *testing.T) {
 	assert.Empty(t, cfg.ServiceName, "env service name must not be overridden by a hardcoded default")
 }
 
-// K3 true-regression: span export failures are surfaced via the error
+// true-regression: span export failures are surfaced via the error
 // handler instead of being silently swallowed.
 func TestObservedSpanExporter_ReportsExportError(t *testing.T) {
 	t.Parallel()
@@ -144,7 +144,7 @@ func (failingSpanExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan)
 
 func (failingSpanExporter) Shutdown(context.Context) error { return nil }
 
-// MF-9: carrier lookup is case-insensitive per W3C; writes stay
+// carrier lookup is case-insensitive per W3C; writes stay
 // lowercase (bridge header vocabulary).
 func TestHeaderCarrier_GetCaseInsensitive(t *testing.T) {
 	t.Parallel()
@@ -163,7 +163,7 @@ func TestHeaderCarrier_GetCaseInsensitive(t *testing.T) {
 	assert.Equal(t, "00-new-new-01", c["traceparent"])
 }
 
-// MF-5: span-export failures must not be silent by default — an unset
+// span-export failures must not be silent by default — an unset
 // error handler falls back to slog warn logging, and an explicit
 // WithErrorHandler(nil) opts out.
 func TestApplyDefaults_ErrorHandlerDefaultsToWarnLogger(t *testing.T) {

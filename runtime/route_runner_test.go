@@ -183,7 +183,7 @@ func TestRouteRunner_HeaderInjection(t *testing.T) {
 
 // TestRouteRunner_TraceInjection_StampsOutbound proves the dispatch path stamps
 // propagator-produced W3C headers onto the OUTBOUND envelope and replaces the
-// stale upstream trace headers the clone carried. Guards the otel K1 egress
+// stale upstream trace headers the clone carried. Guards the otel egress
 // wiring against an env.SetHeader/outbound.SetHeader mix-up (the FakeTracer
 // pass-through blind spot the adversarial review flagged) and the stale
 // tracestate leak.
@@ -388,11 +388,11 @@ func TestRouteRunner_ProcessorError_MessageFiltered_DLQ(t *testing.T) {
 	}
 }
 
-// TestRouteRunner_ProcessorError_MessageFiltered_DefaultDropsNotDLQ is the F1
+// TestRouteRunner_ProcessorError_MessageFiltered_DefaultDropsNotDLQ is the
 // regression guard. With the DEFAULT policy (OnPermanentFailure defaults to
 // FailureDLQ) AND a DLQ store configured, a message a processor intentionally
 // drops must be DROPPED (MessagesFiltered emitted), NOT written to the DLQ.
-// Before F1 the filter-drop was gated on OnPermanentFailure==FailureDLQ, so an
+// Previously the filter-drop was gated on OnPermanentFailure==FailureDLQ, so an
 // allow-list filter DLQ'd 100% of non-matching traffic by default.
 //
 // Fails without the fix (restore the OnPermanentFailure gate): dlqStore.Count()
@@ -439,7 +439,7 @@ func TestRouteRunner_ProcessorError_MessageFiltered_DefaultDropsNotDLQ(t *testin
 	}
 }
 
-// TestRouteRunner_MessageFiltered_ProcessorTag is the F13 guard: when the
+// TestRouteRunner_MessageFiltered_ProcessorTag is the guard: when the
 // filtering processor attributes its drop via ErrMessageFiltered.With(
 // TagKeyProcessor, name), the MessagesFiltered metric carries a processor tag
 // so a drop can be traced to the processor that made it.
@@ -475,7 +475,7 @@ func TestRouteRunner_MessageFiltered_ProcessorTag(t *testing.T) {
 	}
 }
 
-// TestRouteRunner_MessageFiltered_NoProcessorDetail verifies the F13 fallback: a
+// TestRouteRunner_MessageFiltered_NoProcessorDetail verifies the fallback: a
 // bare ErrMessageFiltered (no attribution) still emits MessagesFiltered, untagged
 // by processor, without panicking.
 func TestRouteRunner_MessageFiltered_NoProcessorDetail(t *testing.T) {

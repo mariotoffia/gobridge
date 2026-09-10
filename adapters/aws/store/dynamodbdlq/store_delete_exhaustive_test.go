@@ -33,7 +33,7 @@ func echoDelete(in *dynamodb.DeleteItemInput) (*dynamodb.DeleteItemOutput, error
 	}}, nil
 }
 
-// TestDeleteByScanExhaustive_UnboundedWarnsButPagesToExhaustion is the FIX 4
+// TestDeleteByScanExhaustive_UnboundedWarnsButPagesToExhaustion is the
 // regression for the truly-unbounded delete-all path (Limit<=0, no index): it
 // must page the WHOLE table to exhaustion (NOT stop at maxScanPages) so no
 // matching entry survives — the contract — while emitting ONE loud WARN once the
@@ -83,7 +83,7 @@ func TestDeleteByScanExhaustive_UnboundedWarnsButPagesToExhaustion(t *testing.T)
 	}
 }
 
-// TestDeleteByScanExhaustive_HonoursContextPerItem is the FIX 4 regression for
+// TestDeleteByScanExhaustive_HonoursContextPerItem is the regression for
 // per-ITEM cancellation: a ~1MB scan page can hold thousands of items, and
 // before this fix ctx was only checked per PAGE — a cancelled purge kept issuing
 // DeleteItem for every item in the current page. Now cancellation stops promptly.

@@ -289,7 +289,7 @@ func TestListByCategoryIndex_SinceAndBefore(t *testing.T) {
 	}
 
 	if len(entries) != 2 {
-		t.Fatalf("expected 2 entries in [T2,T4), got %d", len(entries))
+		t.Fatalf("expected 2 entries in, got %d", len(entries))
 	}
 
 	ids := map[string]bool{}

@@ -61,6 +61,13 @@ bindings:
     sender_id: sqs-out
     address: processed-events
 
+stores:
+  # Where a message the route gives up on is kept.
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
+
 routes:
   - id: process
     receiver_id: sqs-in
@@ -337,6 +344,8 @@ To persist permanently failed messages, add a DLQ store:
 stores:
   dlq:
     type: memory
+    options:
+      acknowledge_volatile: true
 
 routes:
   - id: process

@@ -100,14 +100,16 @@ func TestMQTTIngressConn_NonPublishPacketsPassThrough(t *testing.T) {
 }
 
 // TestMQTTIngressConn_RepresentationalCapViolationsPassThrough pins the
-// MQTT-L1 boundary: a packet violating only a LOCAL representational cap
+// boundary: a packet violating only a LOCAL representational cap
 // (oversize payload, too many user properties, oversize metadata) but
 // fitting the advertised Maximum Packet Size is FORWARDED by a compliant
 // broker, so the raw guard must NOT reject it terminally — there is no way
 // to ack below Paho, and an un-acked terminal rejection is a
 // publisher-triggerable permanent redelivery/terminal loop. The guard
 // passes such packets through; the router callback acks-and-drops them
-// (TestRouter_IngressPoisonAckDrop*).
+// (TestRouter_IngressPoisonAckDrop*). A User Property list further above the
+// cap is passed through shortened, not rejected — see
+// ingress_conn_truncate_test.go.
 func TestMQTTIngressConn_RepresentationalCapViolationsPassThrough(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -118,7 +120,7 @@ func TestMQTTIngressConn_RepresentationalCapViolationsPassThrough(t *testing.T) 
 			packet: testPublishPacket(1, "guard/oversize", nil, bytes.Repeat([]byte{'p'}, int(DefaultMaxPayloadBytes)+1)),
 		},
 		{
-			name:   "user property count above cap",
+			name:   "user property count one above cap",
 			packet: testPublishPacket(1, "guard/properties", testUserProperties(maxIngressUserProperties+1), []byte("ok")),
 		},
 		{

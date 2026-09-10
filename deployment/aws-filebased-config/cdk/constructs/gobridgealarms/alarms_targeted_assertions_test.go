@@ -11,12 +11,12 @@ import (
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgealarms"
 )
 
-// Test_T20_Alarms_Cluster_NamedAlarmsByMetricName: every named alarm in the
+// TestAlarms_Cluster_NamedAlarmsByMetricName: every named alarm in the
 // cluster+attachment scenario must be present in the synthesized template,
 // looked up by MetricName. Distinct from the existing Emits7 test which
 // asserts via accessor count — this one pins the actual CloudFormation
 // MetricName strings the alarms watch on.
-func Test_T20_Alarms_Cluster_NamedAlarmsByMetricName(t *testing.T) {
+func TestAlarms_Cluster_NamedAlarmsByMetricName(t *testing.T) {
 	h := newHarness(t)
 	c := h.newCluster(t)
 	att := h.newAttachment(t, c)
@@ -50,11 +50,11 @@ func Test_T20_Alarms_Cluster_NamedAlarmsByMetricName(t *testing.T) {
 	}
 }
 
-// Test_T20_Alarms_Defaults_PerMetricShape pins the default ComparisonOperator,
+// TestAlarms_Defaults_PerMetricShape pins the default ComparisonOperator,
 // EvaluationPeriods, and Threshold per metric category for the cluster
 // scenario (using construct defaults — no overrides). Iterates every alarm
 // and matches by MetricName so a new alarm or a default change fails loudly.
-func Test_T20_Alarms_Defaults_PerMetricShape(t *testing.T) {
+func TestAlarms_Defaults_PerMetricShape(t *testing.T) {
 	h := newHarness(t)
 	c := h.newCluster(t)
 	att := h.newAttachment(t, c)
@@ -107,10 +107,10 @@ func Test_T20_Alarms_Defaults_PerMetricShape(t *testing.T) {
 	}
 }
 
-// Test_T20_Alarms_AlarmActions_RefSnsTopic asserts that every alarm wires its
+// TestAlarms_AlarmActions_RefSnsTopic asserts that every alarm wires its
 // AlarmActions[0] to a Ref of the provided SNS topic logical id. Distinct
 // from existing TestAlarms_OkActionWired which only checks count==1.
-func Test_T20_Alarms_AlarmActions_RefSnsTopic(t *testing.T) {
+func TestAlarms_AlarmActions_RefSnsTopic(t *testing.T) {
 	h := newHarness(t)
 	s := h.newSingle(t)
 	gobridgealarms.NewGoBridgeAlarms(h.stack, jsii.String("BridgeAlarms"), &gobridgealarms.AlarmsProps{

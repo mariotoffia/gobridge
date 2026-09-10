@@ -36,6 +36,18 @@ type BrokerInstance struct {
 	dataDir  string // host-side temp dir for Mosquitto persistence data
 	url      string
 	stopped  bool
+
+	// Secure-fixture state. secureDir holds the generated password file and
+	// TLS material bind-mounted into the container; the URLs below are empty
+	// unless the matching listener was configured.
+	secureDir string
+	material  *Material
+	tlsURL    string
+	wsURL     string
+	tlsPort   int
+	wsPort    int
+	wssPort   int
+	wssURL    string
 }
 
 // NewBrokerInstance starts a fresh Mosquitto container with the given options.
@@ -63,7 +75,7 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 		t.Fatalf("mqttlocal.NewBrokerInstance: free port: %v", err)
 	}
 
-	confContent := buildConfig(c, false)
+	confContent := buildConfig(c)
 	confFile, err := os.CreateTemp("", "mqttinstance-*.conf")
 	if err != nil {
 		t.Fatalf("mqttlocal.NewBrokerInstance: create config: %v", err)
@@ -109,8 +121,32 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 		url:      fmt.Sprintf("tcp://127.0.0.1:%d", port),
 	}
 
-	b.start()
+	if c.needsSecureMaterial() {
+		secureDir, material, materialErr := writeSecureMaterial(c)
+		if materialErr != nil {
+			t.Fatalf("mqttlocal.NewBrokerInstance: %v", materialErr)
+		}
+		b.secureDir = secureDir
+		b.material = material
+	}
+	// Each extra listener gets its own host port so the endpoints a test uses
+	// are independent: killing one does not free another.
+	if c.tls {
+		b.tlsPort = freePortOrFatal(t)
+		b.tlsURL = fmt.Sprintf("ssl://127.0.0.1:%d", b.tlsPort)
+	}
+	if c.webSocket {
+		b.wsPort = freePortOrFatal(t)
+		b.wsURL = fmt.Sprintf("ws://127.0.0.1:%d", b.wsPort)
+		if c.tls {
+			b.wssPort = freePortOrFatal(t)
+			b.wssURL = fmt.Sprintf("wss://127.0.0.1:%d", b.wssPort)
+		}
+	}
 
+	// Registered BEFORE start: a container that fails its health or readiness
+	// gate fatals inside start(), and without this the container, the config
+	// file and the generated material would all outlive the test.
 	t.Cleanup(func() {
 		// Drain rather than SIGKILL: Mosquitto flushes its persistence file on
 		// SIGTERM, and waiting for the container to disappear stops a
@@ -120,7 +156,12 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 		if dataDir != "" {
 			_ = os.RemoveAll(dataDir)
 		}
+		if b.secureDir != "" {
+			_ = os.RemoveAll(b.secureDir)
+		}
 	})
+
+	b.start()
 
 	return b
 }
@@ -139,11 +180,24 @@ func (b *BrokerInstance) start() {
 	args := []string{
 		"run", "-d",
 		"--name", b.name,
-		"-p", fmt.Sprintf("127.0.0.1:%d:1883", b.port),
+		"-p", fmt.Sprintf("127.0.0.1:%d:%d", b.port, plainPort),
 		"-v", b.confPath + ":/mosquitto/config/mosquitto.conf:ro",
 	}
 	if b.dataDir != "" {
 		args = append(args, "-v", b.dataDir+":/mosquitto/data")
+	}
+	if b.secureDir != "" {
+		args = append(args, "-v", b.secureDir+":"+secureMountPath+":ro")
+	}
+	// Ordered pairs, not a map: an unconfigured listener has host port 0, and
+	// two of those would collapse into one map entry while the published order
+	// varied run to run.
+	for _, listener := range [][2]int{
+		{b.tlsPort, tlsPort}, {b.wsPort, wsPort}, {b.wssPort, wssPort},
+	} {
+		if listener[0] > 0 {
+			args = append(args, "-p", fmt.Sprintf("127.0.0.1:%d:%d", listener[0], listener[1]))
+		}
 	}
 	if b.cfg.memory != "" {
 		args = append(args, "--memory", b.cfg.memory)
@@ -162,7 +216,7 @@ func (b *BrokerInstance) start() {
 		dockerexec.LogFailure(b.name)
 		b.t.Fatalf("mqttlocal.BrokerInstance: container unhealthy: %v", err)
 	}
-	if err := waitBrokerReady(b.port, 30*time.Second); err != nil {
+	if err := waitBrokerReady(b.port, 30*time.Second, b.cfg.username, b.cfg.password); err != nil {
 		dockerexec.LogFailure(b.name)
 		b.t.Fatalf("mqttlocal.BrokerInstance: broker not ready: %v", err)
 	}
@@ -170,8 +224,39 @@ func (b *BrokerInstance) start() {
 	b.stopped = false
 }
 
-// URL returns the MQTT broker URL (tcp://127.0.0.1:<port>).
+// URL returns the plaintext MQTT broker URL (tcp://127.0.0.1:<port>).
 func (b *BrokerInstance) URL() string { return b.url }
+
+// TLSURL returns the TLS MQTT endpoint (ssl://127.0.0.1:<port>), or "" when
+// the fixture was not built [WithTLS].
+func (b *BrokerInstance) TLSURL() string { return b.tlsURL }
+
+// WebSocketURL returns the plaintext WebSocket endpoint (ws://127.0.0.1:<port>),
+// or "" when the fixture was not built [WithWebSocket].
+func (b *BrokerInstance) WebSocketURL() string { return b.wsURL }
+
+// SecureWebSocketURL returns the TLS WebSocket endpoint (wss://127.0.0.1:<port>),
+// or "" unless the fixture was built with both [WithWebSocket] and [WithTLS].
+func (b *BrokerInstance) SecureWebSocketURL() string { return b.wssURL }
+
+// Material returns the TLS material this fixture generated, or nil when it
+// serves no TLS listener. See [Material] for what a client validates with.
+func (b *BrokerInstance) Material() *Material { return b.material }
+
+// Credentials returns the username and password this fixture requires, or two
+// empty strings when it allows anonymous access.
+func (b *BrokerInstance) Credentials() (string, string) {
+	return b.cfg.username, b.cfg.password
+}
+
+func freePortOrFatal(t testing.TB) int {
+	t.Helper()
+	port, err := dockerexec.FreePort()
+	if err != nil {
+		t.Fatalf("mqttlocal: free port: %v", err)
+	}
+	return port
+}
 
 // ContainerName returns the Docker container name.
 func (b *BrokerInstance) ContainerName() string { return b.name }
@@ -244,7 +329,7 @@ func (b *BrokerInstance) RestartGraceful() {
 		dockerexec.LogFailure(b.name)
 		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: unhealthy: %v", err)
 	}
-	if err := waitBrokerReady(b.port, 30*time.Second); err != nil {
+	if err := waitBrokerReady(b.port, 30*time.Second, b.cfg.username, b.cfg.password); err != nil {
 		dockerexec.LogFailure(b.name)
 		b.t.Fatalf("mqttlocal.BrokerInstance.RestartGraceful: broker not ready: %v", err)
 	}

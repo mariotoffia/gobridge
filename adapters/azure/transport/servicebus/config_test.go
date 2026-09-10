@@ -43,7 +43,7 @@ func TestReceiverConfig_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			// HIGH-3: entityNameFor would silently select the queue and
+			// entityNameFor would silently select the queue and
 			// ignore the topic/subscription — reject the ambiguous config.
 			name: "both queue and topic+subscription rejected",
 			cfg: ReceiverConfig{
@@ -154,7 +154,7 @@ func TestSenderConfig_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			// HIGH-3: entityName would silently select the queue and ignore
+			// entityName would silently select the queue and ignore
 			// the topic — reject the ambiguous config.
 			name: "both queue and topic rejected",
 			cfg: SenderConfig{
@@ -196,7 +196,7 @@ func TestSenderConfig_ApplyDefaults(t *testing.T) {
 
 // --- helpers ---
 
-// D2-FU2 — Config.Validate bounds receiver.lock_duration to the Service Bus
+// Config.Validate bounds receiver.lock_duration to the Service Bus
 // broker range (5s..5min); 0 means "use the 30s default".
 func TestConfig_Validate_LockDurationBounds(t *testing.T) {
 	tests := []struct {
@@ -225,7 +225,7 @@ func TestConfig_Validate_LockDurationBounds(t *testing.T) {
 
 func boolPtr(v bool) *bool { return &v }
 
-// TestValidateReceiverEntity_RejectsBothQueueAndTopic pins HIGH-3 on the
+// TestValidateReceiverEntity_RejectsBothQueueAndTopic pins on the
 // plugin build boundary (factory.NewReceiver → Config.ValidateReceiverEntity):
 // a config that names BOTH a queue and a topic/subscription must fail fast
 // rather than silently consuming from the queue.
@@ -256,7 +256,7 @@ func TestValidateReceiverEntity_RejectsBothQueueAndTopic(t *testing.T) {
 	}
 }
 
-// TestValidateSenderEntity_RejectsBothQueueAndTopic pins HIGH-3 on the
+// TestValidateSenderEntity_RejectsBothQueueAndTopic pins on the
 // sender build boundary (factory.NewSender → Config.ValidateSenderEntity).
 //
 // Mutation: drop the validateSenderEntityExclusive call. Then the both-set

@@ -66,13 +66,13 @@ func (f *faultyLeaseStore) Current(ctx context.Context, leaseID string) (persist
 // Scenario:
 // ───────────────────────────────────────────────
 //
-//	T0   Bridge running, messages flowing
-//	T1   failRenew = true (simulated DDB outage)
-//	T2   Lease expires (~2s LeaseTTL)
-//	T3   Session steps down (not ready)
-//	T4   failRenew = false (DDB recovers)
-//	T5   Runtime/session replaced, lease acquired, traffic resumes
-//	T6   All 2000 messages delivered
+//	Bridge running, messages flowing
+//	failRenew = true (simulated DDB outage)
+//	Lease expires (~2s LeaseTTL)
+//	Session steps down (not ready)
+//	failRenew = false (DDB recovers)
+//	Runtime/session replaced, lease acquired, traffic resumes
+//	All 2000 messages delivered
 //
 // ───────────────────────────────────────────────
 //

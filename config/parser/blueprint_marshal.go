@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -25,7 +26,7 @@ import (
 // The functions below project Config back into the canonical `options`
 // key alongside the inner ring fields. They live in `config/` (not in
 // `ports/`) because the inner ring is dependency-neutral, not tag-free
-// (M-11): ports has no
+// ports has no
 // runtime dependency on yaml.v3 or encoding/json. Adapters that need to
 // emit a wire-format BridgeConfig (file store, DynamoDB store, admin
 // tooling) call these helpers explicitly via the config shared kernel.
@@ -90,6 +91,10 @@ func marshalBridgeConfigYAML(cfg *ports.BridgeConfig) ([]byte, error) {
 type codec interface {
 	marshal(any) ([]byte, error)
 	unmarshal([]byte, any) error
+	// normalize repairs the options map this codec produced for cfg so the
+	// parser can read it back. It exists because a format's default projection
+	// of a Go value is not always one the decoder accepts.
+	normalize(cfg any, opts map[string]any)
 }
 
 // Both codecs reveal shared.Secret values on marshal: these codecs are used
@@ -100,13 +105,26 @@ type codec interface {
 // default (redacting) json.Marshal/yaml.Marshal calls elsewhere are unaffected.
 type jsonCodec struct{}
 
-func (jsonCodec) marshal(v any) ([]byte, error)   { return json.Marshal(shared.RevealSecrets(v)) } //nolint:wrapcheck // wrapped by caller
-func (jsonCodec) unmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }                  //nolint:wrapcheck // wrapped by caller
+func (jsonCodec) marshal(v any) ([]byte, error) { return json.Marshal(shared.RevealSecrets(v)) } //nolint:wrapcheck // wrapped by caller
+func (jsonCodec) unmarshal(b []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	// Wire-map projection must not round integer counters through float64.
+	dec.UseNumber()
+	return dec.Decode(v) //nolint:wrapcheck // wrapped by caller
+}
+
+// normalize rewrites every duration encoding/json wrote as a bare number into the
+// string form the decoder accepts — see blueprint_marshal_duration.go.
+func (jsonCodec) normalize(cfg any, opts map[string]any) { jsonDurationsAsStrings(cfg, opts) }
 
 type yamlCodec struct{}
 
 func (yamlCodec) marshal(v any) ([]byte, error)   { return yaml.Marshal(shared.RevealSecrets(v)) } //nolint:wrapcheck // wrapped by caller
 func (yamlCodec) unmarshal(b []byte, v any) error { return yaml.Unmarshal(b, v) }                  //nolint:wrapcheck // wrapped by caller
+
+// normalize is a no-op: yaml.v3 already writes a duration in the form the decoder
+// reads.
+func (yamlCodec) normalize(any, map[string]any) {}
 
 // bridgeConfigToWireMap performs the round-trip: marshal cfg with
 // reflection (dropping all Config fields), unmarshal back into a
@@ -274,5 +292,9 @@ func pluginOptions(cfg ports.PluginConfig, c codec) (map[string]any, error) {
 	if len(opts) == 0 {
 		return nil, nil
 	}
+	// The projection has to be readable by the parser that will decode it — the
+	// whole point of an options map is that it round-trips — and the two wire
+	// formats do not agree about durations.
+	c.normalize(cfg, opts)
 	return opts, nil
 }

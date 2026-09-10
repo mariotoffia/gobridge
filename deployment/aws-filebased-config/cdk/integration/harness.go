@@ -1,5 +1,5 @@
-//go:build integration_aws
-// +build integration_aws
+//go:build integration_aws || integration_local
+// +build integration_aws integration_local
 
 package integration
 
@@ -35,12 +35,39 @@ type SandboxEnv struct {
 	Keep              bool
 }
 
+// localSandboxHook synthesizes a SandboxEnv against local emulation. Only the
+// integration_local build installs it; under integration_aws it stays nil and
+// the branch below cannot be taken, so "real account, real money" keeps meaning
+// exactly that.
+var localSandboxHook func(t *testing.T) SandboxEnv
+
+// cdkBinaryName is the CLI that drives deploy and destroy. The local build
+// swaps it for the emulator-aware wrapper; the outputs-file contract, the
+// argument list and the cleanup are identical either way.
+var cdkBinaryName = "cdk"
+
+// postSynthHook rewrites the synthesized cloud assembly before it is deployed,
+// and postDeployHook runs once the stack is up. Both are local-only: the
+// emulator needs the task definitions adjusted for what it can actually back,
+// and the DynamoDB data plane needs the deployed schema mirrored to it.
+var (
+	postSynthHook  func(t *testing.T, asmDir, stackName string)
+	postDeployHook func(t *testing.T, outputs StackOutputs)
+)
+
 // RequireSandbox reads the GOBRIDGE_INT_* env vars. Ordinary tagged tests
 // retain the existing explicit skip when sandbox configuration is absent. When
 // GOBRIDGE_INT_HA=1 requests credentialed release proof, missing base variables
 // fail instead, so the requested proof cannot silently pass by skipping.
+//
+// GOBRIDGE_INT_LOCAL=1 takes the local branch instead: the sandbox is stood up
+// against local emulation, so nothing is read from the environment and nothing
+// is skipped.
 func RequireSandbox(t *testing.T) SandboxEnv {
 	t.Helper()
+	if localSandboxHook != nil && os.Getenv("GOBRIDGE_INT_LOCAL") == "1" {
+		return localSandboxHook(t)
+	}
 	env, err := sandboxEnvFrom(os.Getenv)
 	if err != nil {
 		if os.Getenv("GOBRIDGE_INT_HA") == "1" {
@@ -171,24 +198,11 @@ func DeployStack(t *testing.T, app awscdk.App, env SandboxEnv, stackName string)
 	// The app's default cloud assembly is at app.Outdir(); copy/move
 	// is unnecessary — we just point cdk at it.
 	asmDir := *app.Outdir()
-
-	outFile := filepath.Join(t.TempDir(), "outputs.json")
-
-	args := []string{
-		"deploy",
-		stackName,
-		"--app", asmDir,
-		"--require-approval", "never",
-		"--outputs-file", outFile,
-		"--ci",
+	if postSynthHook != nil {
+		postSynthHook(t, asmDir, stackName)
 	}
-	t.Logf("cdk %s", strings.Join(args, " "))
-	cmd := exec.Command("cdk", args...)
-	cmd.Stdout = testWriter{t}
-	cmd.Stderr = testWriter{t}
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("cdk deploy %s: %v", stackName, err)
-	}
+
+	flat := cdkDeploy(t, stackName, asmDir)
 
 	t.Cleanup(func() {
 		if env.Keep {
@@ -198,13 +212,59 @@ func DeployStack(t *testing.T, app awscdk.App, env SandboxEnv, stackName string)
 		DestroyStack(t, env, stackName, asmDir)
 	})
 
+	if postDeployHook != nil {
+		postDeployHook(t, flat)
+	}
+	return flat
+}
+
+// cdkDeploy runs one `cdk deploy` against an already-synthesized cloud assembly
+// and returns the stack outputs it wrote.
+//
+// It registers no cleanup and runs no hook, so a caller that deploys the SAME
+// assembly a second time — to prove the deploy is idempotent — gets exactly the
+// deploy and nothing else.
+func cdkDeploy(t *testing.T, stackName, asmDir string) StackOutputs {
+	t.Helper()
+	outputs, err := cdkDeployE(t, stackName, asmDir)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	return outputs
+}
+
+// cdkDeployE is cdkDeploy without the fatal: a caller that treats a failed
+// deploy as an answer rather than an error gets to say so itself.
+func cdkDeployE(t *testing.T, stackName, asmDir string) (StackOutputs, error) {
+	t.Helper()
+	outFile := filepath.Join(t.TempDir(), "outputs.json")
+	args := []string{
+		"deploy",
+		stackName,
+		"--app", asmDir,
+		"--require-approval", "never",
+		"--outputs-file", outFile,
+		"--ci",
+	}
+	t.Logf("%s %s", cdkBinaryName, strings.Join(args, " "))
+	cmd := exec.Command(cdkBinaryName, args...)
+	var captured strings.Builder
+	cmd.Stdout = io.MultiWriter(testWriter{t}, &captured)
+	cmd.Stderr = io.MultiWriter(testWriter{t}, &captured)
+	if err := cmd.Run(); err != nil {
+		// The tail, not the whole transcript: every line is already in the test
+		// log, and what a caller needs from the error is the reason CloudFormation
+		// gave — which is at the end.
+		return nil, fmt.Errorf("%s deploy %s: %w\n%s",
+			cdkBinaryName, stackName, err, lastBytes(captured.String(), 4000))
+	}
 	raw, err := os.ReadFile(outFile)
 	if err != nil {
-		t.Fatalf("read outputs file: %v", err)
+		return nil, fmt.Errorf("read outputs file: %w", err)
 	}
 	var nested map[string]map[string]string
 	if err := json.Unmarshal(raw, &nested); err != nil {
-		t.Fatalf("parse outputs json: %v", err)
+		return nil, fmt.Errorf("parse outputs json: %w", err)
 	}
 	flat := StackOutputs{}
 	for _, m := range nested {
@@ -212,7 +272,7 @@ func DeployStack(t *testing.T, app awscdk.App, env SandboxEnv, stackName string)
 			flat[k] = v
 		}
 	}
-	return flat
+	return flat, nil
 }
 
 // DestroyStack runs `cdk destroy --force` against the supplied stack.
@@ -224,13 +284,21 @@ func DestroyStack(t *testing.T, env SandboxEnv, stackName, asmDir string) {
 		return
 	}
 	args := []string{"destroy", stackName, "--app", asmDir, "--force", "--ci"}
-	t.Logf("cdk %s", strings.Join(args, " "))
-	cmd := exec.Command("cdk", args...)
+	t.Logf("%s %s", cdkBinaryName, strings.Join(args, " "))
+	cmd := exec.Command(cdkBinaryName, args...)
 	cmd.Stdout = testWriter{t}
 	cmd.Stderr = testWriter{t}
 	if err := cmd.Run(); err != nil {
-		t.Logf("cdk destroy %s failed: %v", stackName, err)
+		t.Logf("%s destroy %s failed: %v", cdkBinaryName, stackName, err)
 	}
+}
+
+// lastBytes returns the final n bytes of s, marked when it was truncated.
+func lastBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return "…\n" + s[len(s)-n:]
 }
 
 // httpGet issues a GET with a 30s default timeout and returns

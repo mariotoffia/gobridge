@@ -11,7 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// The joiner rule (design §6): "a starting member adopts only the last Committed
+// The joiner rule (ADR 0013): "a starting member adopts only the last Committed
 // configuration; it never acks a rollout proposed before it joined".
 //
 // It exists because the candidate travels through each member's OWN config
@@ -21,9 +21,9 @@ import (
 // has NOT agreed to run. Without this gate a member restarting in that window —
 // or at any time after an ABORTED rollout, since the rejected document stays in
 // the source until the operator rolls it back — would boot straight onto a
-// config no other member is running. That is the mixed-version cohort goal G2
-// forbids and, since ADR 0012 refuses clustered live reload outright today, it
-// would be a safety REGRESSION rather than a limitation.
+// config no member has agreed to run. That is the pre-commit guarantee ADR 0013
+// makes absolute and, since ADR 0012 refuses clustered live reload outright
+// today, breaking it would be a safety REGRESSION rather than a limitation.
 //
 // The rule is deliberately narrow: it refuses only what the barrier has
 // explicitly not-committed. In particular it does NOT require the boot config to
@@ -60,14 +60,14 @@ func (d *ClusterRolloutDriver) ResolveBoot(ctx context.Context, cfg *ports.Bridg
 // resolveCoordinatedBoot). It seeds the baseline on a fresh cohort, boots the
 // config unchanged when it IS the committed one or a whole-cohort replacement,
 // and otherwise substitutes the durable committed config so the member never runs
-// a config the barrier has not committed (G2).
+// a config the barrier has not committed.
 func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Context, cfg *ports.BridgeConfig) (*ports.BridgeConfig, error) {
 	bootDigest, ok := configCanonicalBytesDigest(cfg)
 	if !ok {
 		return nil, fmt.Errorf("bridge: cannot compute the boot config digest to check it against the " +
 			"cluster rollout committed artifact; refusing to start")
 	}
-	committed, err := d.barrier.committedStore.CommittedConfig(ctx)
+	committed, err := rolloutOpValue(ctx, d.barrier.ops, rolloutOpRead, d.barrier.committedStore.CommittedConfig)
 	if errors.Is(err, shared.ErrNotFound) {
 		// No committed artifact yet: no barrier rollout has ever committed, so there
 		// is no cohort-committed config to recover to. Do NOT seed off `current` —
@@ -76,7 +76,7 @@ func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Cont
 		// would durably poison the baseline and split the cohort. Fall back to the
 		// conservative joiner rule (refuse an aborted/undecided boot config, boot on
 		// current otherwise) until the first commit establishes the artifact. (An
-		// explicit deploy-time seed is a Phase-6 composition concern.)
+		// explicit deploy-time seed is a composition-root concern.)
 		if jerr := d.checkRolloutJoinerRule(ctx, cfg); jerr != nil {
 			return nil, jerr
 		}
@@ -96,11 +96,15 @@ func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Cont
 	committedCfg, err := d.barrier.decode(committed.ConfigBytes)
 	if err != nil {
 		return nil, fmt.Errorf("bridge: cluster.rollout: the durable last-committed config artifact "+
-			"(generation=%d config_version=%d) could not be decoded, so this node cannot recover the "+
-			"config the cohort is running; refusing to start: %w", committed.Generation, committed.ConfigVersion, err)
+			"(generation=%d config_version=%d) could not be decoded (%w), so this node cannot recover "+
+			"the config the cohort is running; refusing to start. The record itself is unusable, so no "+
+			"config change repairs it: the cohort's next commit rewrites it, and a cohort that is "+
+			"entirely down needs it removed by hand first — see "+
+			"docs/runbooks/cluster-config-rollout.md",
+			committed.Generation, committed.ConfigVersion, err)
 	}
 	// Integrity: the reconstructed committed config must match the digest the
-	// artifact records (F10-style), mirroring reconcileMissedCommit. A
+	// artifact records, mirroring reconcileMissedCommit. A
 	// decodable-but-wrong artifact (bit-rot that still parses, or a non-digest-
 	// preserving codec) must not be booted as if it were the committed config.
 	if raw, ok := configCanonicalBytes(committedCfg); !ok || candidateConfigDigest(raw) != committed.Digest {
@@ -113,7 +117,7 @@ func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Cont
 	// new config ONLY when it is strictly NEWER than the committed artifact — a
 	// forward whole-cohort replacement. A same-or-older replacement-delta is a
 	// stale or rolled-back boot config (the member's config source is lagging), so
-	// boot on the committed config instead of running a config no peer runs (G2).
+	// boot on the committed config instead of running a config no peer runs.
 	// A live-safe delta always belongs to the barrier: boot on the committed
 	// config and let the barrier roll the candidate `cfg` (staged above).
 	if class, _ := classifyRolloutDelta(committedCfg, cfg); class == rolloutReplacementRequired &&
@@ -150,7 +154,7 @@ func (d *ClusterRolloutDriver) checkCoordinatedRolloutPreflight(ctx context.Cont
 // A node outside its own roster can never Ack (the aggregate rejects a voter
 // outside the frozen epoch), so every rollout it proposes is guaranteed to
 // deadline-abort while blocking every other proposal for the whole TTL
-// (invariant I1 permits one active rollout). Catching it at boot turns a 3am
+// (invariant permits one active rollout). Catching it at boot turns a 3am
 // discovery into a startup failure.
 func (d *ClusterRolloutDriver) checkRolloutMembership(cfg *ports.BridgeConfig) error {
 	members := rolloutMembers(cfg)
@@ -177,15 +181,15 @@ func (d *ClusterRolloutDriver) checkRolloutMembership(cfg *ports.BridgeConfig) e
 // without it), so an unreadable store means this node cannot tell a committed
 // config from a rejected one — and booting on the wrong one splits the cohort.
 func (d *ClusterRolloutDriver) checkRolloutJoinerRule(ctx context.Context, cfg *ports.BridgeConfig) error {
-	r, err := d.barrier.store.Current(ctx)
+	r, err := rolloutOpValue(ctx, d.barrier.ops, rolloutOpRead, d.barrier.store.Current)
 	if err != nil {
 		if errors.Is(err, shared.ErrNotFound) {
 			return nil // no rollout has ever been proposed: nothing has been rejected
 		}
 		return fmt.Errorf("bridge: cluster.rollout: coordinated requires the rollout store to be "+
 			"readable at startup so this node can tell a cohort-committed config from one the cohort "+
-			"rejected; booting without that check could start this node on a config no other member "+
-			"is running (a mixed-version cohort). Refusing to start (config_version=%d): %w",
+			"rejected; booting without that check could start this node on a config the cohort never "+
+			"agreed to run. Refusing to start (config_version=%d): %w",
 			cfg.Version, err)
 	}
 	digest, ok := configCanonicalBytesDigest(cfg)
@@ -214,8 +218,9 @@ func (d *ClusterRolloutDriver) checkRolloutJoinerRule(ctx context.Context, cfg *
 	default:
 		return fmt.Errorf("bridge: refusing to start on a config whose cluster rollout is still "+
 			"UNDECIDED (generation=%d state=%q config_version=%d). Starting now would apply the "+
-			"candidate ahead of the all-member commit barrier — exactly the mixed-version cohort the "+
-			"barrier prevents. Wait for the rollout to commit or abort, then start this node; "+
+			"candidate ahead of the all-member commit barrier — running a generation the cohort has "+
+			"not agreed on, which is exactly what the barrier prevents. Wait for the rollout to "+
+			"commit or abort, then start this node; "+
 			"see docs/runbooks/cluster-config-rollout.md",
 			r.Generation(), r.State(), r.ConfigVersion())
 	}

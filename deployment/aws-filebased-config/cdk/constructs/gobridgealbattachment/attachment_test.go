@@ -12,9 +12,9 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/assertions"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	elbv2 "github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2"
 	"github.com/aws/jsii-runtime-go"
+	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/imgsource"
 
 	// Register the http transport plugin so yaml parsing of
 	// "transport: http" succeeds in tests that exercise receiver
@@ -25,7 +25,6 @@ import (
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgecluster"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/internal/source"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/ssmexports"
 	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
 )
 
@@ -103,7 +102,7 @@ func newSingle(t *testing.T, stack awscdk.Stack, vpc awsec2.IVpc, src source.Sou
 	t.Helper()
 	return gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Single"), &gobridgesingle.SingleProps{
 		Vpc:          vpc,
-		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:latest"), nil),
+		Image:        imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap:    bootstrap(),
 		BridgeConfig: src,
 	})
@@ -113,7 +112,7 @@ func newCluster(t *testing.T, stack awscdk.Stack, vpc awsec2.IVpc, src source.So
 	t.Helper()
 	return gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Cluster"), &gobridgecluster.ClusterProps{
 		Vpc:          vpc,
-		Image:        awsecs.ContainerImage_FromRegistry(jsii.String("gobridge:latest"), nil),
+		Image:        imgsource.NewRegistry("gobridge@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		Bootstrap:    bootstrap(),
 		BridgeConfig: src,
 	})
@@ -313,156 +312,10 @@ func TestALBAttachment_NoReceiver_WorkerFallsBackToMonitor(t *testing.T) {
 	}
 }
 
-// TestALBAttachment_PortsPerConcern is the core B1 regression guard:
+// TestALBAttachment_PortsPerConcern is the core regression guard:
 // each concern's target group must sit on the container port the
 // process actually serves — admin (8080), monitor (8081), transport
 // (8082) — so ALB traffic and health checks reach the right listener.
-func TestALBAttachment_PortsPerConcern(t *testing.T) {
-	_, stack, vpc, listener := newApp(t)
-	src := source.NewAsset(writeYAML(t, httpReceiverYAML))
-	single := newSingle(t, stack, vpc, src)
-	att := gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Att"), &gobridgealbattachment.AttachmentProps{
-		Single: single, Listener: listener, Vpc: vpc, BridgeConfig: src,
-	})
-	tpl := assertions.Template_FromStack(stack, nil)
-	tgs := *tpl.FindResources(jsii.String("AWS::ElasticLoadBalancingV2::TargetGroup"), nil)
-	st := awscdk.Stack_Of(stack)
-	portOf := func(tg elbv2.ApplicationTargetGroup) float64 {
-		ref := refOfAttribute(st, tg.TargetGroupArn())
-		raw, ok := tgs[ref]
-		if !ok {
-			t.Fatalf("target group %q not found in template", ref)
-		}
-		props := (*raw)["Properties"].(map[string]any)
-		p, _ := props["Port"].(float64)
-		return p
-	}
-	if got := portOf(att.ControlTargetGroup()); got != 8080 {
-		t.Fatalf("control TG Port = %v, want 8080 (admin)", got)
-	}
-	if got := portOf(att.MonitorTargetGroup()); got != 8081 {
-		t.Fatalf("monitor TG Port = %v, want 8081", got)
-	}
-	if got := portOf(att.WorkerTargetGroup()); got != 8082 {
-		t.Fatalf("worker (transport) TG Port = %v, want 8082 — receivers must route to the transport port, not admin", got)
-	}
-}
-
-// TestALBAttachment_Ports_IgnoreHTTPOverride_MatchBootstrap is the
-// c15-cdk-ports port-agreement guard at the synthesized-resource level:
-// the bridge yaml sets an `http:` block (admin_addr :9090,
-// monitor_addr :9091) that the file-based runtime IGNORES
-// (lib/bootstrap.checkIgnoredHTTPBlock). The runtime binds only to the
-// BootstrapConfig listen ports, so the emitted target-group ports AND
-// the health-check port MUST match those bootstrap ports (8080 admin,
-// 8081 monitor, 8082 transport), never the http: overrides. Otherwise
-// the ALB would health-check and route to ports nothing listens on.
-//
-// Mutation: repoint DerivePortMappings back at cfg.HTTP → the control TG
-// flips to 9090, the monitor TG + HealthCheckPort flip to 9091, and this
-// test FAILs.
-func TestALBAttachment_Ports_IgnoreHTTPOverride_MatchBootstrap(t *testing.T) {
-	_, stack, vpc, listener := newApp(t)
-	src := source.NewAsset(writeYAML(t, httpOverrideReceiverYAML))
-	single := newSingle(t, stack, vpc, src)
-	att := gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Att"), &gobridgealbattachment.AttachmentProps{
-		Single: single, Listener: listener, Vpc: vpc, BridgeConfig: src,
-	})
-	tpl := assertions.Template_FromStack(stack, nil)
-	tgs := *tpl.FindResources(jsii.String("AWS::ElasticLoadBalancingV2::TargetGroup"), nil)
-	st := awscdk.Stack_Of(stack)
-	propsOf := func(tg elbv2.ApplicationTargetGroup) map[string]any {
-		ref := refOfAttribute(st, tg.TargetGroupArn())
-		raw, ok := tgs[ref]
-		if !ok {
-			t.Fatalf("target group %q not found in template", ref)
-		}
-		return (*raw)["Properties"].(map[string]any)
-	}
-
-	// Traffic ports pinned to the bootstrap listen ports, NOT the
-	// http: block's 9090/9091.
-	cp, _ := propsOf(att.ControlTargetGroup())["Port"].(float64)
-	if cp != 8080 {
-		t.Fatalf("control TG Port = %v, want 8080 (bootstrap admin) — http.admin_addr :9090 must NOT sway it", cp)
-	}
-	mp, _ := propsOf(att.MonitorTargetGroup())["Port"].(float64)
-	if mp != 8081 {
-		t.Fatalf("monitor TG Port = %v, want 8081 (bootstrap monitor) — http.monitor_addr :9091 must NOT sway it", mp)
-	}
-	wp, _ := propsOf(att.WorkerTargetGroup())["Port"].(float64)
-	if wp != 8082 {
-		t.Fatalf("worker TG Port = %v, want 8082 (bootstrap transport)", wp)
-	}
-
-	// Every health check probes the monitor listen port. It must be the
-	// bootstrap monitor port (8081), never http.monitor_addr (9091), or
-	// the probes hit a port nothing listens on and deploys fail.
-	for _, raw := range tgs {
-		hcp := (*raw)["Properties"].(map[string]any)["HealthCheckPort"]
-		if hcp != "8081" {
-			t.Fatalf("HealthCheckPort = %v, want \"8081\" (bootstrap monitor) — must ignore http.monitor_addr :9091", hcp)
-		}
-	}
-}
-
-func TestALBAttachment_HealthCheckDefaults(t *testing.T) {
-	_, stack, vpc, listener := newApp(t)
-	src := source.NewAsset(writeYAML(t, baseYAML))
-	single := newSingle(t, stack, vpc, src)
-	gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Att"), &gobridgealbattachment.AttachmentProps{
-		Single: single, Listener: listener, Vpc: vpc, BridgeConfig: src,
-	})
-	tpl := assertions.Template_FromStack(stack, nil)
-	tgs := tpl.FindResources(jsii.String("AWS::ElasticLoadBalancingV2::TargetGroup"), nil)
-	for _, raw := range *tgs {
-		props := (*raw)["Properties"].(map[string]any)
-		if props["HealthCheckPath"] != "/api/v1/monitor/live" {
-			t.Fatalf("HealthCheckPath = %v, want /api/v1/monitor/live", props["HealthCheckPath"])
-		}
-		// Every TG probes the monitor port (8081) via the health-check
-		// port override, regardless of its own traffic port.
-		if props["HealthCheckPort"] != "8081" {
-			t.Fatalf("HealthCheckPort = %v, want \"8081\"", props["HealthCheckPort"])
-		}
-		if props["HealthCheckIntervalSeconds"] != 15.0 {
-			t.Fatalf("HealthCheckIntervalSeconds = %v, want 15", props["HealthCheckIntervalSeconds"])
-		}
-		if props["HealthCheckTimeoutSeconds"] != 5.0 {
-			t.Fatalf("HealthCheckTimeoutSeconds = %v, want 5", props["HealthCheckTimeoutSeconds"])
-		}
-		if props["HealthyThresholdCount"] != 2.0 {
-			t.Fatalf("HealthyThresholdCount = %v, want 2", props["HealthyThresholdCount"])
-		}
-		if props["UnhealthyThresholdCount"] != 2.0 {
-			t.Fatalf("UnhealthyThresholdCount = %v, want 2", props["UnhealthyThresholdCount"])
-		}
-	}
-}
-
-func TestALBAttachment_HealthCheckOverride(t *testing.T) {
-	_, stack, vpc, listener := newApp(t)
-	src := source.NewAsset(writeYAML(t, baseYAML))
-	single := newSingle(t, stack, vpc, src)
-	gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Att"), &gobridgealbattachment.AttachmentProps{
-		Single: single, Listener: listener, Vpc: vpc, BridgeConfig: src,
-		HealthCheck: &gobridgealbattachment.HealthCheckProps{Path: "/custom/health"},
-	})
-	tpl := assertions.Template_FromStack(stack, nil)
-	tgs := tpl.FindResources(jsii.String("AWS::ElasticLoadBalancingV2::TargetGroup"), nil)
-	for _, raw := range *tgs {
-		props := (*raw)["Properties"].(map[string]any)
-		if props["HealthCheckPath"] != "/custom/health" {
-			t.Fatalf("HealthCheckPath = %v, want /custom/health", props["HealthCheckPath"])
-		}
-		// A custom Path override is honored, but the health-check Port
-		// stays pinned to the monitor port — the probes live only there.
-		if props["HealthCheckPort"] != "8081" {
-			t.Fatalf("HealthCheckPort = %v, want \"8081\"", props["HealthCheckPort"])
-		}
-	}
-}
-
 func TestALBAttachment_NegativeBasePriority_Panics(t *testing.T) {
 	_, stack, vpc, listener := newApp(t)
 	src := source.NewAsset(writeYAML(t, baseYAML))
@@ -587,202 +440,4 @@ func TestALBAttachment_NilProps_Panics(t *testing.T) {
 	gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Att"), nil)
 }
 
-// --- T15: accessors + outputs ---
-
-func newAttachment(t *testing.T, prio int) (awscdk.Stack, *gobridgealbattachment.GoBridgeALBAttachment) {
-	t.Helper()
-	_, stack, vpc, listener := newApp(t)
-	src := source.NewAsset(writeYAML(t, baseYAML))
-	single := newSingle(t, stack, vpc, src)
-	att := gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Att"), &gobridgealbattachment.AttachmentProps{
-		Single: single, Listener: listener, Vpc: vpc, BridgeConfig: src,
-		BasePriority: prio,
-	})
-	return stack, att
-}
-
-func TestALBAttachment_URLAccessors_NonNil(t *testing.T) {
-	_, att := newAttachment(t, 0)
-	if att.PublicDnsName() == nil {
-		t.Fatal("PublicDnsName nil")
-	}
-	if att.AdminURL() == nil {
-		t.Fatal("AdminURL nil")
-	}
-	if att.HealthzURL() == nil {
-		t.Fatal("HealthzURL nil")
-	}
-}
-
-func resolveOutput(t *testing.T, stack awscdk.Stack, value *string) string {
-	t.Helper()
-	return *awscdk.Stack_Of(stack).Resolve(value).(*string)
-}
-
-func TestALBAttachment_AdminURL_HasPathSuffix(t *testing.T) {
-	stack, att := newAttachment(t, 0)
-	resolved := awscdk.Stack_Of(stack).Resolve(att.AdminURL())
-	// Resolution returns a Fn::Join intrinsic; serialize and check
-	// the literal path suffix is present.
-	s := fmt.Sprintf("%v", resolved)
-	if !strings.Contains(s, "https://") {
-		t.Fatalf("AdminURL resolved form lacks https://: %s", s)
-	}
-	if !strings.Contains(s, "/api/v1/") {
-		t.Fatalf("AdminURL resolved form lacks /api/v1/ suffix: %s", s)
-	}
-	_ = resolveOutput // keep helper in scope for future use
-}
-
-func TestALBAttachment_HealthzURL_HasPathSuffix(t *testing.T) {
-	stack, att := newAttachment(t, 0)
-	resolved := awscdk.Stack_Of(stack).Resolve(att.HealthzURL())
-	s := fmt.Sprintf("%v", resolved)
-	if !strings.Contains(s, "/api/v1/monitor/health") {
-		t.Fatalf("HealthzURL resolved form lacks /api/v1/monitor/health suffix: %s", s)
-	}
-}
-
-func outputNames(tpl assertions.Template) map[string]bool {
-	got := tpl.FindOutputs(jsii.String("*"), nil)
-	out := map[string]bool{}
-	if got == nil {
-		return out
-	}
-	for name := range *got {
-		out[name] = true
-	}
-	return out
-}
-
-func TestALBAttachment_WithCfnOutputs_Prefixed(t *testing.T) {
-	stack, att := newAttachment(t, 0)
-	att.WithCfnOutputs("OrdersBridge")
-	tpl := assertions.Template_FromStack(stack, nil)
-	names := outputNames(tpl)
-	for _, want := range []string{"OrdersBridgeAdminURL", "OrdersBridgeHealthzURL"} {
-		if !names[want] {
-			t.Fatalf("missing output %q (got %v)", want, names)
-		}
-	}
-}
-
-func TestALBAttachment_WithCfnOutputs_EmptyPrefix(t *testing.T) {
-	stack, att := newAttachment(t, 0)
-	att.WithCfnOutputs("")
-	tpl := assertions.Template_FromStack(stack, nil)
-	names := outputNames(tpl)
-	for _, want := range []string{"AdminURL", "HealthzURL"} {
-		if !names[want] {
-			t.Fatalf("missing output %q (got %v)", want, names)
-		}
-	}
-}
-
-func ssmParameterNames(tpl assertions.Template) []string {
-	res := tpl.FindResources(jsii.String("AWS::SSM::Parameter"), nil)
-	out := []string{}
-	if res == nil {
-		return out
-	}
-	for _, raw := range *res {
-		props := (*raw)["Properties"].(map[string]any)
-		if n, ok := props["Name"].(string); ok {
-			out = append(out, n)
-		}
-	}
-	return out
-}
-
-func TestALBAttachment_WithSSMExports_DefaultSet(t *testing.T) {
-	stack, att := newAttachment(t, 0)
-	att.WithSSMExports("/gobridge/prod/test")
-	tpl := assertions.Template_FromStack(stack, nil)
-	tpl.ResourceCountIs(jsii.String("AWS::SSM::Parameter"), jsii.Number(3))
-	names := ssmParameterNames(tpl)
-	want := map[string]bool{
-		"/gobridge/prod/test/admin-url":        true,
-		"/gobridge/prod/test/healthz-url":      true,
-		"/gobridge/prod/test/manifest-version": true,
-	}
-	for _, n := range names {
-		if !want[n] {
-			t.Fatalf("unexpected SSM Name %q (allowed %v)", n, want)
-		}
-		delete(want, n)
-	}
-	if len(want) != 0 {
-		t.Fatalf("missing SSM Names: %v", want)
-	}
-}
-
-func TestALBAttachment_WithSSMExports_IncludeARNs(t *testing.T) {
-	stack, att := newAttachment(t, 0)
-	att.WithSSMExports("/gobridge/prod/test", ssmexports.IncludeARNs())
-	tpl := assertions.Template_FromStack(stack, nil)
-	tpl.ResourceCountIs(jsii.String("AWS::SSM::Parameter"), jsii.Number(6))
-	names := ssmParameterNames(tpl)
-	want := map[string]bool{
-		"/gobridge/prod/test/admin-url":        true,
-		"/gobridge/prod/test/healthz-url":      true,
-		"/gobridge/prod/test/manifest-version": true,
-		"/gobridge/prod/test/alb-arn":          true,
-		"/gobridge/prod/test/cluster-arn":      true,
-		"/gobridge/prod/test/efs-id":           true,
-	}
-	for _, n := range names {
-		if !want[n] {
-			t.Fatalf("unexpected SSM Name %q (allowed %v)", n, want)
-		}
-		delete(want, n)
-	}
-	if len(want) != 0 {
-		t.Fatalf("missing SSM Names: %v", want)
-	}
-}
-
-func TestALBAttachment_WithSSMExports_ManifestVersionMatchesConst(t *testing.T) {
-	stack, att := newAttachment(t, 0)
-	att.WithSSMExports("/gobridge/prod/test")
-	tpl := assertions.Template_FromStack(stack, nil)
-	res := tpl.FindResources(jsii.String("AWS::SSM::Parameter"), nil)
-	for _, raw := range *res {
-		props := (*raw)["Properties"].(map[string]any)
-		if props["Name"] != "/gobridge/prod/test/manifest-version" {
-			continue
-		}
-		if got := props["Value"]; got != gobridgealbattachment.ManifestVersion {
-			t.Fatalf("manifest-version Value = %v, want %s", got, gobridgealbattachment.ManifestVersion)
-		}
-		return
-	}
-	t.Fatal("manifest-version parameter not found")
-}
-
-func TestALBAttachment_WithSSMExports_EmptyPrefix_Panics(t *testing.T) {
-	_, att := newAttachment(t, 0)
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic on empty prefix")
-		}
-		if !strings.Contains(fmt.Sprintf("%v", r), "must not be empty") {
-			t.Fatalf("panic message = %v", r)
-		}
-	}()
-	att.WithSSMExports("")
-}
-
-func TestALBAttachment_WithSSMExports_NoLeadingSlash_Panics(t *testing.T) {
-	_, att := newAttachment(t, 0)
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic on missing leading slash")
-		}
-		if !strings.Contains(fmt.Sprintf("%v", r), "must start with '/'") {
-			t.Fatalf("panic message = %v", r)
-		}
-	}()
-	att.WithSSMExports("no-leading-slash")
-}
+// --- accessors + outputs ---

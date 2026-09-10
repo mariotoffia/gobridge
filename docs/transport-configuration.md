@@ -98,9 +98,19 @@ uses these to validate routes and enable transport-specific features.
 | `shared_consumer` | Yes | -- | -- | -- | -- | -- | Broker load-balances one subscription across a consumer group (`$share`) |
 | `plan_driven_subscriptions` | Yes | -- | -- | Yes | -- | -- | Subscribes only when the session manager reconciles the plan |
 | `visibility_extension` | -- | Yes | Yes | -- | -- | -- | Auto-renew message lock / visibility |
-| `source_redelivery` | -- | Yes | -- | Yes | Yes | -- | Broker redelivers unacknowledged messages |
+| `source_redelivery` | Per route² | Yes | Yes | Yes | Yes | -- | Broker redelivers unacknowledged messages |
 | `delayed_send` | -- | Yes | -- | -- | -- | -- | Native delayed delivery (SQS `delay_seconds`) |
 | `http_endpoint` | -- | -- | -- | -- | -- | Yes | Exposes HTTP endpoints |
+
+² MQTT declares `source_redelivery` per ROUTE rather than transport-wide,
+because whether the broker still holds an unacknowledged delivery after this
+process dies is a per-route choice: the session must be `persistent` or
+`exclusive` with `clean_start: false` (so the broker keeps it for this client
+id), and every subscription the route runs with must be QoS 1 or 2. A route that
+misses either is refused `direct_hold` with a message naming which one, because
+the two have different fixes. This is what admits an MQTT→SQS bridge to
+`direct_hold` and lets it run with no outbox, no lease and no outbox partition;
+see [delivery modes](routes-and-runtime-reference.md#delivery-modes).
 
 ¹ AMQP 0-9-1 advertises `exclusive_identity` only **after** it has built an
 exclusive consumer -- the capability latches on first exclusive use. The
@@ -165,8 +175,8 @@ type TransportFactory interface {
 
 ## Multi-Transport Example
 
-HTTP webhook ingress fanned out to an SQS archive, MQTT device commands, and an
-SSE dashboard -- three transports on one bridge:
+HTTP webhook ingress dispatched by subject to an SQS archive, MQTT device
+commands, or an SSE dashboard -- three transports on one bridge:
 
 ```yaml
 bridge:
@@ -208,14 +218,32 @@ bindings:
     address: "event-archive"
   - id: to-commands
     sender_id: mqtt-commands
+    session_id: mqtt-primary   # a session is connected only while a route manages it
     address: "devices/commands"
   - id: to-dashboard
     sender_id: sse-dashboard
     address: "dashboard-events"
+stores:
+  dlq:
+    type: sqlite
+    options: { path: /var/lib/gobridge/dlq.db }
 routes:
-  - id: webhook-fanout
+  # direct_hold delivers one destination per message; the resolver picks it
+  # from the subject. Durable fan-out to several addresses is shared_outbox
+  # territory (Scenario 5).
+  - id: webhook-dispatch
     receiver_id: webhook-in
+    delivery_mode: direct_hold
+    dispatch_mode: single
     bindings: ["to-archive", "to-commands", "to-dashboard"]
+    resolver:
+      type: rules
+      default_binding: to-archive
+      rules:
+        - binding_id: to-commands
+          match: [{ field: subject, operator: prefix, value: "command/" }]
+        - binding_id: to-dashboard
+          match: [{ field: subject, operator: prefix, value: "dashboard/" }]
     policy: { max_in_flight: 100 }
 ```
 

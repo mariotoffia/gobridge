@@ -97,7 +97,7 @@ senders:
 
 Either `queue_name` or both `topic_name` + `subscription_name` are required.
 
-> **Exactly one entity kind (HIGH-3).** Setting `queue_name` **and**
+> **Exactly one entity kind.** Setting `queue_name` **and**
 > `topic_name`/`subscription_name` on the same receiver is rejected at build.
 > The two name a different entity; silently preferring the queue and ignoring
 > the topic would consume from the wrong place. Configure a queue **or** a
@@ -127,7 +127,7 @@ Either `queue_name` or both `topic_name` + `subscription_name` are required.
 
 Either `queue_name` or `topic_name` is required.
 
-> **Exactly one entity kind (HIGH-3).** Setting both `queue_name` and
+> **Exactly one entity kind.** Setting both `queue_name` and
 > `topic_name` on the same sender is rejected at build — a queue **or** a
 > topic, never both, so a message can never be published to a different entity
 > than intended.
@@ -182,7 +182,7 @@ delayed `Retry` falls back to an immediate `Abandon` — the delay is dropped
 because a scheduled message addresses the topic and would fan out to sibling
 subscriptions. Redelivery still happens; only the delay is lost.
 
-> **Prefer duplicates over loss on an ambiguous settle (CRITICAL-1).** A
+> **Prefer duplicates over loss on an ambiguous settle.** A
 > delayed `Retry` first schedules the copy, then completes the original. If the
 > copy is durably scheduled but `CompleteMessage` then fails **ambiguously**
 > (timeout / connection-lost — the broker may already have committed the
@@ -231,7 +231,7 @@ same credentials) retries it, and `currentClient()` returns nil until it
 succeeds. The gap is visible and recoverable — never a nil-panic — but it is a
 real no-client window that the non-session path does not have.
 
-**Managed identity → client secret takes precedence (HIGH-2).** When a rotation
+**Managed identity → client secret takes precedence.** When a rotation
 delivers an AAD **client secret** (a username/password credential), the adapter
 switches to client-secret auth and clears `use_managed_identity`. The credential
 builder evaluates managed identity *before* client-secret auth, so a lingering
@@ -266,7 +266,7 @@ string.
   build even when the broker entity permits a longer lock. Set `lock_duration`
   to match the broker entity LockDuration so the declared window reflects what
   the broker enforces.
-- **Sender rebuilds a terminally closed link (HIGH-1).** A sender link that the
+- **Sender rebuilds a terminally closed link.** A sender link that the
   broker reports as terminally **closed** (`CodeClosed`) never recovers on its
   own. On such an error the sender tears the dead link down and rebuilds a fresh
   one on the next `Send`/`SendBatch`, so a single closed link no longer wedges

@@ -72,6 +72,13 @@ sessions:
         # opt in explicitly. Prefer an amqps:// address in production.
         allow_insecure_plain: true
 
+stores:
+  # Where a message the route gives up on is kept.
+  dlq:
+    type: sqlite
+    options:
+      path: /var/lib/gobridge/state/dlq.db
+
 receivers:
   - id: rabbit-in
     transport: amqp091
@@ -113,6 +120,7 @@ senders:
       sender:
         exchange: "responses"
         routing_key: "inbound"
+        mandatory: true   # an unroutable publish is returned, not silently discarded
 
 bindings:
   - id: to-artemis
@@ -121,6 +129,9 @@ bindings:
 
   - id: to-rabbit
     sender_id: rabbit-out
+    # Naming the session on the binding is what makes the bridge manage it:
+    # connect, declare, consume. A session nobody manages never subscribes.
+    session_id: rabbit-conn
     address: inbound
 
 routes:
@@ -353,7 +364,7 @@ routes:
   - id: orders-fanout
     receiver_id: rabbit-in
     delivery_mode: direct_hold
-    dispatch_mode: all
+    dispatch_mode: fan_out
     bindings: [to-artemis, to-archive]
     policy:
       max_in_flight: 100

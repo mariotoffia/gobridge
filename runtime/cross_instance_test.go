@@ -14,7 +14,7 @@ import (
 // TestCrossInstance_SQSConsumerAndMQTTOwnerAreDifferent verifies that one
 // bridge instance can consume from SQS and persist to the shared outbox,
 // while a different bridge instance holding the MQTT sess lease drains
-// the outbox and publishes. This is the core T11 cross-instance handoff.
+// the outbox and publishes. This is the core cross-instance handoff.
 func TestCrossInstance_SQSConsumerAndMQTTOwnerAreDifferent(t *testing.T) {
 	// Shared stores visible to both instances.
 	outbox := NewFakeOutboxStore()
