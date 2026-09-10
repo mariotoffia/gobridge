@@ -16,6 +16,14 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
+// clockSkewAllowance backdates NotBefore. Fixture certificates are minted on
+// the host and validated inside a container whose clock can sit slightly
+// behind it, so a certificate that becomes valid exactly "now" is not yet
+// valid over there and the peer aborts the handshake with a bad-certificate
+// alert. The window is a test fixture's, not a trust decision; backdating it
+// costs nothing and removes the whole class of failure.
+const clockSkewAllowance = 5 * time.Minute
+
 // Options configures self-signed certificate generation.
 type Options struct {
 	CommonName   string
@@ -78,7 +86,7 @@ func Generate(opts Options) (*Result, error) {
 			CommonName:   opts.CommonName,
 			Organization: opts.Organization,
 		},
-		NotBefore:             now,
+		NotBefore:             now.Add(-clockSkewAllowance),
 		NotAfter:              now.Add(opts.ValidFor),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
