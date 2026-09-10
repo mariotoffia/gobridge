@@ -122,6 +122,29 @@ go get github.com/mariotoffia/gobridge/adapters/native/store
 go get github.com/mariotoffia/gobridge/adapters/aws/store
 ```
 
+### Consuming from your own CDK app
+
+Deploying GoBridge on ECS from your own AWS CDK app needs no clone of this
+repository and no `replace` directive. Two modules of the AWS deployment
+profile are imported directly:
+
+```bash
+go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk@vX.Y.Z
+go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra@vX.Y.Z
+```
+
+`cdk` carries the facade constructs (`gobridgesingle`, `gobridgecluster`,
+`gobridgedynamodbha`) and the `gobridgecdk` image sources; `infra` carries
+`BootstrapConfig` and the other declaration types those constructs take. A
+third profile module, `.../lib`, is the bridge binary itself — you never import
+it, but `gobridgecdk.ImageFromGoBuild` builds it from the module proxy at the
+version you name, which is why it is published on the same train.
+
+Use one `vX.Y.Z` for both lines, and pick a version whose train includes the
+profile modules — the `v0.3.x` profile tags predate the train and are not a
+complete set ([RELEASE.md](RELEASE.md#canonical-release-graph)). Walkthrough:
+[CDK quickstart](docs/scenarios/cdk/01-quickstart-default-vpc.md).
+
 ## Documentation
 
 | Document | Description |

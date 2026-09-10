@@ -917,6 +917,7 @@ exclude example.com/blocked v1.0.0
 			"adapters/mqtt/transport/paho": commit,
 			cdkInfraModulePath:             commit,
 			cdkModulePath:                  commit,
+			libModulePath:                  commit,
 			finalModulePath:                commit,
 		},
 	)

@@ -49,8 +49,10 @@ Existing `awsecs.ContainerImage` values are no longer accepted. Choose one of:
 | `gobridgecdk.ImageFromEcrRepository(repo, tag)` | A consumer-managed `awsecr.IRepository` with an explicit tag or SHA-256 digest. CDK grants the execution role pull access. Prefer immutable tags or digests. |
 | `gobridgecdk.ImageFromGoBuild(props)` | Builds a downloaded module copy with the facade's parsed `BridgeConfig` in its fixed embed file; uses `go install package@version` only without embedded config. No Git checkout. |
 
-`ImageGoBuildProps.Version` is required: supply a published compatible
-lib-module version, not `main` or `latest`. `Package` defaults to
+`ImageGoBuildProps.Version` is required: supply a published profile version,
+not `main` or `latest`. The profile `lib` module rides the same release train
+as `cdk` and `infra`, so the version you already use for
+`go get .../cdk@vX.Y.Z` is the one to pass here. `Package` defaults to
 `github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/cmd/gobridge-filebased`.
 The embedded Dockerfile uses digest-pinned Go and distroless nonroot bases;
 `GoImage` and `BaseImage` overrides must also be digest-pinned. Synth stages the
@@ -69,14 +71,17 @@ both the Docker build platform and Fargate task architecture. Both base images
 must support the selected platform. Registry and ECR
 sources use `linux/amd64`.
 
-**Publication prerequisite:** the compatible lib module and its optional plugin
-family wiring are not yet externally consumable. Deriving a build tag does not
-register runtime decoders or factories. Until those prerequisites are published,
-use a compatible pinned registry image or your own ECR image. A custom `Package`
-must implement this profile's bootstrap and health-check contract, provide
-`initial-config.base64` consumed through `go:embed`, and support the build's
-`-initial-config-digest` probe. The standard commands embed that file in
-`main.initialConfigBase64` and decode it before initialization.
+**Version prerequisite:** pick a version from a train that publishes the profile
+modules; the `v0.3.x` profile tags predate the train and are not a complete set
+([RELEASE.md](../../RELEASE.md#canonical-release-graph)). Optional plugin family
+wiring is a property of that version too — deriving a build tag does not by
+itself register runtime decoders or factories, so a config that needs AMQP or
+Azure Service Bus requires a version whose profile binary links that family.
+Where neither holds, use a pinned registry image or your own ECR image instead.
+A custom `Package` must implement this profile's bootstrap and health-check
+contract, provide `initial-config.base64` consumed through `go:embed`, and
+support the build's `-initial-config-digest` probe. The standard commands embed
+that file in `main.initialConfigBase64` and decode it before initialization.
 
 After compilation, the generated build runs
 `/gobridge-filebased -initial-config-digest` and compares its output with the

@@ -314,7 +314,7 @@ go 1.25.0
 // Resolution alone would not catch a published manifest that no longer
 // satisfies the constructs' own imports, which is why this asserts `go build`
 // and not `go list`.
-func TestConsumerSmoke_ResolvesAndBuildsPublishedCDK(t *testing.T) {
+func TestConsumerSmoke_ResolvesAndBuildsPublishedProfileModules(t *testing.T) {
 	repo, manifest := smokeFixture(t)
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 
@@ -371,6 +371,9 @@ go 1.25.0
 	wantResolved := []string{
 		manifest.importPath(cdkInfraModulePath) + "@" + testReleaseVersion,
 		cdk + "@" + testReleaseVersion,
+		// ImageFromGoBuild builds the profile command out of lib at the train
+		// version, so an external consumer needs lib to resolve publicly too.
+		manifest.importPath(libModulePath) + "@" + testReleaseVersion,
 	}
 	var resolved, built, fetched []string
 	for _, request := range requests {
@@ -391,15 +394,21 @@ go 1.25.0
 	// Fetching the module path alone leaves go.sum without entries for what the
 	// CDK's own code imports, and the build that follows fails on every one of
 	// them. The fetch must name the package.
-	facade := cdk + "/" + cdkSmokePackage
-	if want := facade + "@" + testReleaseVersion; !slices.Contains(fetched, want) {
-		t.Errorf("smoke did not go get %s; fetched %v", want, fetched)
+	//
+	// gobridgecdk carries the image sources and the sealed BridgeImageSource
+	// the facades take; no facade imports it in non-test code, so building only
+	// gobridgesingle would leave that whole public surface uncompiled.
+	for _, pkg := range cdkSmokePackages {
+		facade := cdk + "/" + pkg
+		if want := facade + "@" + testReleaseVersion; !slices.Contains(fetched, want) {
+			t.Errorf("smoke did not go get %s; fetched %v", want, fetched)
+		}
+		if !slices.Contains(built, facade) {
+			t.Errorf("smoke did not build %s; built %v", facade, built)
+		}
 	}
 	if slices.Contains(fetched, cdk+"@"+testReleaseVersion) {
 		t.Errorf("smoke fetched the cdk module path; go build needs the package path")
-	}
-	if !slices.Contains(built, facade) {
-		t.Errorf("smoke did not build %s; built %v", facade, built)
 	}
 }
 

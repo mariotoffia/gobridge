@@ -64,64 +64,54 @@ export CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --query Account --outpu
 export CDK_DEFAULT_REGION=us-west-1
 ```
 
-## Build and Push Container Image
+## Set Up the Consumer Module
 
-Save the [bridge configuration](#bridge-configuration) as `bridge.yaml` before
-building or synthesizing. The same document must describe the image's initial
-config and the CDK declaration.
-
-GoBridge ships as a Go binary. The repository root already contains a production `Dockerfile`
-that builds the `gobridge-filebased` binary as a multi-stage, `CGO_ENABLED=0` (pure-Go SQLite via
-`modernc.org/sqlite`), distroless/static-debian12 image running as nonroot UID 65532. Use it as-is
-— do not hand-roll an Alpine image:
+Your CDK app is an ordinary Go module. It does not clone this repository and it
+does not need a `replace` directive:
 
 ```bash
-# From the repository root
-docker build --build-arg INITIAL_CONFIG_FILE=bridge.yaml -t gobridge:local .
+mkdir gobridge-quickstart && cd gobridge-quickstart
+go mod init example.com/gobridge-quickstart
+go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk@vX.Y.Z
+go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra@vX.Y.Z
 ```
 
-The image has no shell, `curl`, or `wget`; its `HEALTHCHECK` runs the binary directly
-(`["/usr/local/bin/gobridge-filebased", "-healthcheck"]`), which probes the local monitor
-`/live` endpoint.
+Use the same `vX.Y.Z` on both lines and pass it to `ImageFromGoBuild` below —
+one version covers the constructs, the declaration types and the bridge binary.
+Pick a version whose train includes the profile modules
+([RELEASE.md](../../../RELEASE.md#canonical-release-graph)).
 
-Create an ECR repository and push the image you built:
+## Container Image
 
-```bash
-ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
-REGION=us-west-1
-REPO_URI="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/gobridge"
+Save the [bridge configuration](#bridge-configuration) as `bridge.yaml` next to
+your CDK app before synthesizing. The same document describes the image's
+initial config and the CDK declaration.
 
-# Create ECR repository (skip if it already exists)
-aws ecr create-repository \
-  --repository-name gobridge \
-  --region "${REGION}" || true
+`gobridgecdk.ImageFromGoBuild` builds the image for you at synth time. It
+downloads the profile command at the version you name through Go tooling,
+copies the owning module to a writable directory, fills its fixed embed file
+with the facade's parsed `BridgeConfig`, and runs `go build` — no Git checkout
+and no `docker build` of your own. The result is the same multi-stage,
+`CGO_ENABLED=0` (pure-Go SQLite via `modernc.org/sqlite`),
+distroless/static-debian12 image running as nonroot UID 65532, with a
+`HEALTHCHECK` that runs the binary directly (`-healthcheck`, which probes the
+local monitor `/live` endpoint). Docker publishes the staged asset to your
+CDK bootstrap ECR repository during `cdk deploy`, so `cdk bootstrap` and a
+running Docker daemon are the only prerequisites.
 
-# Authenticate Docker with ECR
-aws ecr get-login-password --region "${REGION}" | \
-  docker login --username AWS --password-stdin "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com"
+The build verifies the binary's `-initial-config-digest` output against the
+staged document, so an image can never disagree with the config the stack
+declares. Optional plugin families are derived from that config; a family must
+be wired into the version you name. Literal credentials may be embedded, but
+artifact readers can recover them; Base64 does not hide them.
 
-# Tag and push the configured image
-docker tag gobridge:local "${REPO_URI}:initial"
-docker push "${REPO_URI}:initial"
-
-# Use this digest in ImageFromRegistry, not the mutable tag.
-aws ecr describe-images --repository-name gobridge \
-  --image-ids imageTag=initial --region "${REGION}" \
-  --query 'imageDetails[0].imageDigest' --output text
-```
-
-CDK cannot modify this registry image. `BridgeYamlAsset("bridge.yaml")` still
-drives validation and grants; it is not a separate S3 upload or overwrite.
-An image without embedded config needs an existing target or waits idle for
-operator creation. Literal credentials may be embedded, but artifact readers
-can recover them; Base64 does not hide them.
-
-The alternative `ImageFromGoBuild` path automatically embeds the facade's parsed
-config by fetching the published package through Go tooling, filling its fixed
-embed file in a writable module copy, and running `go build`. No Git checkout
-is needed; the no-config path still uses `go install package@version`.
-A compatible published `lib` module and any optional family wiring remain
-prerequisites; do not assume current released versions provide them. See
+If you would rather run your own image — an air-gapped registry, a custom
+`Package`, or a build pipeline you already own — use
+`gobridgecdk.ImageFromRegistry("...@sha256:<digest>")` or
+`gobridgecdk.ImageFromEcrRepository(repo, tag)` instead. CDK cannot modify
+those images: they must carry their own initial document, find an existing
+target, or wait idle for operator creation, while `BridgeYamlAsset` still
+drives validation and grants. See
 [CDK image sources](../../aws-deployment/cdk-constructs.md#runtime-image-source).
 
 ## Create SSM Parameter
@@ -175,13 +165,13 @@ func main() {
 
 	gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Single"), &gobridgesingle.SingleProps{
 		Vpc:   vpc,
-		Image: gobridgecdk.ImageFromRegistry("<account>.dkr.ecr.us-west-1.amazonaws.com/gobridge@sha256:<digest>"),
+		Image: gobridgecdk.ImageFromGoBuild(gobridgecdk.ImageGoBuildProps{Version: "vX.Y.Z"}),
 		Bootstrap: infra.BootstrapConfig{
 			BridgeID:         "gobridge-main",
 			ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",
 			AdminAPIKeyParam: "/gobridge/admin-api-key",
 		},
-		// Declare the same logical config used to build this registry image.
+		// This document is validated at synth and embedded into the image.
 		BridgeConfig: gobridgecdk.BridgeYamlAsset("bridge.yaml"),
 	})
 
@@ -192,7 +182,6 @@ func main() {
 ### Deploy
 
 ```bash
-cd <your-cdk-app>
 cdk deploy --require-approval broadening
 ```
 
@@ -341,12 +330,16 @@ cdk destroy
 the exact retained filesystem and its mount targets before deleting it.
 Deletion permanently removes its configuration and any stored message state.
 
-Also clean up the ECR repository and SSM parameter:
+Also clean up the SSM parameter:
 
 ```bash
-aws ecr delete-repository --repository-name gobridge --force --region us-west-1
 aws ssm delete-parameter --name /gobridge/admin-api-key --region us-west-1
 ```
+
+`ImageFromGoBuild` publishes into the shared CDK bootstrap asset repository.
+Leave that repository in place — other CDK stacks in the account use it — and
+prune old image assets with an ECR lifecycle policy instead
+([Container image](../../aws-deployment/container-image.md#ecr-lifecycle-policy)).
 
 ## What's Next
 

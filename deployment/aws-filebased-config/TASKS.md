@@ -418,7 +418,7 @@ DESIGN.md D7; `testutil/testcontent` into `bootstrap_modules`); `RELEASE.md`
 `ImageFromGoBuild`); `docs/aws-deployment/container-image.md` +
 `cdk-constructs.md`.
 
-- [ ] Smoke target red until go.mod staging works, then green; docs updated;
+- [x] Smoke target red until go.mod staging works, then green; docs updated;
   `make lint && make test`. Commit —
   `docs(deploy/aws): external consumer workflow; smoke-tested go get path`
 

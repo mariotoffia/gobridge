@@ -289,14 +289,16 @@ The tool first retries a **proxy-only** pass with
 `GOPROXY=https://proxy.golang.org` for bounded tag propagation, then repeats a
 separate **direct-only** pass with `GOPROXY=direct`. Every attempt has a fresh
 `HOME`, `GOPATH`, module/build cache, and `GOBIN`; system/global Git config is
-disabled. Both passes retain checksum-database verification, bind Paho, both
-CDK modules, and `cmd/gobridge` `Origin.Hash` to their exact local tag commits,
-and run:
+disabled. Both passes retain checksum-database verification, bind Paho, all
+three deployment-profile modules, and `cmd/gobridge` `Origin.Hash` to their
+exact local tag commits, and run:
 
 ```text
 go mod init example.com/gobridge-release-smoke
 go get github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho@vX.Y.Z
 go list github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho
+go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk@vX.Y.Z
+go build github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk
 go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle@vX.Y.Z
 go build github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle
 go install github.com/mariotoffia/gobridge/cmd/gobridge@vX.Y.Z
@@ -305,15 +307,23 @@ go install github.com/mariotoffia/gobridge/cmd/gobridge@vX.Y.Z
 It rejects every `replace` or `exclude` directive in resolved module manifests
 and in the generated consumer go.mod.
 
-The CDK step **builds** rather than lists. `cdk` is not in `cmd/gobridge`'s
+The `lib` module is resolved but not built. Nothing a consumer writes imports
+it; `ImageFromGoBuild` fetches it inside a Docker build at deploy time, so what
+the smoke has to prove is that the tag exists on the proxy and its published
+manifest carries no `replace`.
+
+The CDK steps **build** rather than list. `cdk` is not in `cmd/gobridge`'s
 dependency graph, so nothing else in the train compiles it from outside the
 repository, and resolution alone would not catch a published manifest that no
-longer satisfies the constructs' own imports. Building
-`constructs/gobridgesingle` reaches `gobridgecdk`, `bridgecfg`, `registry`, the
-shared constructs, and the `infra` types they take as arguments in one command,
-which is the same surface the quickstart in `docs/scenarios/cdk/` uses.
+longer satisfies the constructs' own imports. Both CDK packages are built
+because neither reaches the other: `constructs/gobridgesingle` is the facade a
+stack instantiates and pulls in `bridgecfg`, `registry`, the shared constructs
+and the `infra` types they take, while `gobridgecdk` holds the image sources
+and the sealed `BridgeImageSource` those facades accept — and no facade imports
+it outside its own tests. Together they are the surface the quickstart in
+`docs/scenarios/cdk/` uses.
 
-The CDK step fetches the **package** path, not the module path. `go get
+The CDK steps fetch the **package** path, not the module path. `go get
 module@version` records the requirement but not the `go.sum` entries for what
 that module's own code imports, so the build that follows fails on every
 missing sum. The Paho pair avoids this because `go list` needs no build

@@ -7,6 +7,13 @@ Part of the [AWS Deployment Overview](overview.md).
 
 ---
 
+An external CDK app usually needs none of this. `gobridgecdk.ImageFromGoBuild`
+builds the same image from published modules at synth time, so a consumer
+neither clones this repository nor runs `docker build`
+([CDK image sources](cdk-constructs.md#runtime-image-source)). This page covers
+the repository's own build: local development, CI, and the pipelines that
+produce a registry image for `ImageFromRegistry` or `ImageFromEcrRepository`.
+
 ## Production Dockerfile
 
 The repository ships a multi-stage `Dockerfile` at the root that builds the

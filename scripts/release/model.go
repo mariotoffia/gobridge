@@ -24,13 +24,15 @@ const (
 	cdkModulePath        = "deployment/aws-filebased-config/cdk"
 	cdkInfraModulePath   = "deployment/aws-filebased-config/infra"
 	libModulePath        = "deployment/aws-filebased-config/lib"
-
-	// cdkSmokePackage is the facade an external stack instantiates. Building
-	// it reaches gobridgecdk, bridgecfg, registry, the shared constructs and
-	// the infra types in one command, so it stands in for the whole public
-	// CDK surface in the external consumer smoke.
-	cdkSmokePackage = "constructs/gobridgesingle"
 )
+
+// cdkSmokePackages are the CDK packages an external stack writes against.
+// gobridgesingle is the facade a stack instantiates; building it reaches
+// bridgecfg, registry, the shared constructs and the infra types. gobridgecdk
+// carries the image sources and the sealed BridgeImageSource those facades
+// take, and no facade imports it in non-test code, so it has to be built on
+// its own or the whole public image-source surface stays uncompiled.
+var cdkSmokePackages = []string{"gobridgecdk", "constructs/gobridgesingle"}
 
 // publishedDeploymentModules are the only modules under deployment/ that are
 // tagged and consumable. Everything else there is internal wiring for the

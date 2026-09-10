@@ -1553,6 +1553,10 @@ func runConsumerSmokePass(
 		"adapters/mqtt/transport/paho",
 		cdkInfraModulePath,
 		cdkModulePath,
+		// The default image source builds the profile command out of lib at
+		// the train version, so a consumer that never imports lib still needs
+		// its tag to resolve from the proxy.
+		libModulePath,
 		finalModulePath,
 	} {
 		if err := resolveSmokeModule(
@@ -1578,14 +1582,18 @@ func runConsumerSmokePass(
 	// code imports, so a following `go build` fails on every missing sum. The
 	// paho pair does not hit this because `go list` needs no build deps, and
 	// `go install pkg@version` resolves in module-agnostic mode.
-	cdkFacade := cdk + "/" + cdkSmokePackage
 	commands := [][]string{
 		{"get", paho + "@" + version},
 		{"list", paho},
-		{"get", cdkFacade + "@" + version},
-		{"build", cdkFacade},
-		{"install", command + "@" + version},
 	}
+	for _, pkg := range cdkSmokePackages {
+		facade := cdk + "/" + pkg
+		commands = append(commands,
+			[]string{"get", facade + "@" + version},
+			[]string{"build", facade},
+		)
+	}
+	commands = append(commands, []string{"install", command + "@" + version})
 	for _, args := range commands {
 		output, err := runner.run(ctx, commandRequest{
 			Dir:     consumerDir,
