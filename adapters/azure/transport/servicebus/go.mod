@@ -14,7 +14,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus v1.10.0
 	github.com/mariotoffia/gobridge v0.0.0
 	github.com/mariotoffia/gobridge/testutil/asblocal v0.0.0-00010101000000-000000000000
-	github.com/mariotoffia/gobridge/testutil/wait v0.0.0-20260424080041-92c57d17e957
+	github.com/mariotoffia/gobridge/testutil/wait v0.0.0-20260827121207-e4131f9ac111
 	github.com/stretchr/testify v1.11.1
 )
 
