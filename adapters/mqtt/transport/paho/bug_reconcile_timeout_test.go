@@ -84,7 +84,7 @@ func (c *reconcileProbeCM) Unsubscribe(ctx context.Context, topics []string) ([]
 
 var _ pahoConnection = (*reconcileProbeCM)(nil)
 
-// TestBug_Reconcile_BrokerOps_CarryAdapterOwnedDeadline proves: even
+// TestBug_Reconcile_BrokerOps_CarryAdapterOwnedDeadline proves that even
 // when the reconcile ctx carries NO deadline (the runtime frequently passes a
 // deadline-less context), the adapter wraps EACH broker SUBSCRIBE and
 // UNSUBSCRIBE in its own context.WithTimeout(reconcile_timeout). Before the

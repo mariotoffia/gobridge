@@ -23,7 +23,7 @@ import (
 
 // TestIntegration_DurableClose_SiblingRecoveryBounded runs TWO links on ONE
 // session — a durable receiver and a non-durable sibling receiver — and
-// closes the durable one. It asserts:
+// closes the durable one. It asserts that
 //
 //  1. Blast radius: closing the durable receiver tears down the shared
 //     connection (a SessionDisconnected event fires), so the sibling link

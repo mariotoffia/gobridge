@@ -54,7 +54,7 @@ func highFourValidConfig() *ports.BridgeConfig {
 	}
 }
 
-// TestBuildPlan_FailedCommitIsNotRetryable covers: a Commit is one-shot
+// TestBuildPlan_FailedCommitIsNotRetryable covers that a Commit is one-shot
 // even when it FAILS. complete()'s failure defers close the prep-opened store
 // handles, so a retried Commit would build a runtime over already-closed stores
 // (and double-close them). The plan is marked consumed BEFORE complete runs, so
@@ -88,7 +88,7 @@ func TestBuildPlan_FailedCommitIsNotRetryable(t *testing.T) {
 		"a rejected retry must not touch (double-close) the already-released handles")
 }
 
-// TestBuildPlan_CloseReleasesUncommittedStores covers: a plan that is
+// TestBuildPlan_CloseReleasesUncommittedStores covers that a plan that is
 // prepared but never committed leaks the SQLite/DynamoDB handles prepare opened
 // unless Close/Abort releases them. Close is idempotent and, once a plan is
 // closed, Commit is rejected.

@@ -76,7 +76,7 @@ func (h *recordingLogHandler) messageCountContaining(level slog.Level, substr st
 // TestBug_SettleUnmatched_CoveredRetained_OrphanDropped drives settleUnmatched
 // via two post-grace unmatched publishes — one on a COVERED topic (a
 // still-desired subscription whose handler registered late) and one on an
-// ORPHAN topic (a route removed from config) — and asserts: the covered
+// ORPHAN topic (a route removed from config) — and asserts that the covered
 // publish is RETAINED un-acked (never ack-dropped, so at-least-once holds) and
 // is delivered once its handler finally registers, while the orphan is
 // acked-and-dropped.

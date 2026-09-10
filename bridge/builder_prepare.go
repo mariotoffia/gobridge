@@ -23,7 +23,7 @@ import (
 //
 // preparedBuild is unexported on purpose: the only supported public
 // entry points are Builder.Build (single-shot) and Builder.Plan +
-// BuildPlan.Commit (explicit two-phase). See.
+// BuildPlan.Commit (explicit two-phase).
 type preparedBuild struct {
 	cfg    *ports.BridgeConfig
 	stores *storeResult

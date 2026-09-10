@@ -43,7 +43,7 @@ type sqlSession struct {
 //
 // ponytail: single-writer ceiling. Good enough for the single-process
 // deployments this store targets; a read-heavy file deployment would upgrade
-// to a separate read-only connection pool over the WAL. See.
+// to a separate read-only connection pool over the WAL.
 func openSession(path string) (*sqlSession, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {

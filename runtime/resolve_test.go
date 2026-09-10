@@ -254,9 +254,8 @@ func TestBindingResolver_MatchByID_NotFound(t *testing.T) {
 // BindingResolver -- MQTT topic validation
 // ---------------------------------------------------------------------------
 //
-// MQTT-specific resolver-level validation tests were removed as part of
-// BindingResolver no longer performs transport-aware address
-// validation. The route runner now invokes a per-binding
+// MQTT-specific resolver-level validation tests were removed: BindingResolver
+// no longer performs transport-aware address validation. The route runner now invokes a per-binding
 // ports.AddressValidator returned by TransportFactory.AddressValidator,
 // so the equivalent end-to-end coverage lives next to the runner
 // (runtime/route_address_validator_test.go) and inside the paho package.

@@ -81,7 +81,7 @@ func TestValidateMQTTTopicFilter(t *testing.T) {
 	}
 }
 
-// TestValidateMQTTTopic_EmptySegment pins: empty topic levels are
+// TestValidateMQTTTopic_EmptySegment pins that empty topic levels are
 // spec-legal for a publish Topic Name (MQTT 5.0 §4.7.1.1 — only the whole
 // name must be non-empty) and must be accepted. Real devices emit "a//b" and
 // a mirror route re-publishing such a source topic must not DLQ it.
@@ -94,7 +94,7 @@ func TestValidateMQTTTopic_EmptySegment(t *testing.T) {
 	}
 }
 
-// TestValidateMQTTTopic_LeadingSlash pins: a leading empty level
+// TestValidateMQTTTopic_LeadingSlash pins that a leading empty level
 // ("/devices/data") is a distinct, legal MQTT topic and must be accepted.
 func TestValidateMQTTTopic_LeadingSlash(t *testing.T) {
 	if err := ValidateMQTTTopic("/devices/data"); err != nil {
@@ -102,7 +102,7 @@ func TestValidateMQTTTopic_LeadingSlash(t *testing.T) {
 	}
 }
 
-// TestValidateMQTTTopic_TrailingSlash pins: a trailing empty level
+// TestValidateMQTTTopic_TrailingSlash pins that a trailing empty level
 // ("devices/data/") is a distinct, legal MQTT topic and must be accepted.
 func TestValidateMQTTTopic_TrailingSlash(t *testing.T) {
 	if err := ValidateMQTTTopic("devices/data/"); err != nil {

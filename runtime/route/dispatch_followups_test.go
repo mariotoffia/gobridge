@@ -169,7 +169,7 @@ func TestSendDirectHold_UnparseableReceiveCountEmitsSignal(t *testing.T) {
 	})
 }
 
-// TestBuildOutboxRecords_StampsBridgeSpanForDrain proves: the
+// TestBuildOutboxRecords_StampsBridgeSpanForDrain proves that the
 // shared-outbox build path now stamps THIS bridge's active span onto the
 // persisted envelope, so a record drained later (by a separate drainer with no
 // access to the span) propagates this bridge hop downstream instead of the bare

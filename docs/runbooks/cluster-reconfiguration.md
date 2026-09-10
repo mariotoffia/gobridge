@@ -23,7 +23,7 @@ each instance watches its own config source, reloads, validates, and swaps its
 runtime independently, with **no cluster-wide version barrier and no coordinated
 rollback**
 ([Scenario 10](../scenarios/10-dynamic-reconfiguration.md#cluster-semantics-and-limitations)).
-Before, rolling a config change through a cohort therefore let the fleet run a
+Before this guard, rolling a config change through a cohort let the fleet run a
 **mix of old and new definitions** until every instance converged — indefinitely
 if one stayed wedged on a config it could not load. That split-version window is
 exactly what the fail-closed guard now blocks: local config CAS / reference

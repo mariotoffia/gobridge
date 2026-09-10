@@ -37,7 +37,7 @@ func TestThrottleKeyFromRequest_IgnoresXFF(t *testing.T) {
 // must STILL be throttled. The pre-fix code keyed the limiter on the spoofable
 // leftmost XFF, so each rotated value looked like a new client and reset the
 // counter — defeating the limiter entirely (and, under an AWS ALB that APPENDS
-// to client XFF, this held in the shipped topology). It also verifies:
+// to client XFF, this held in the shipped topology). It also verifies that
 // Retry-After is derived from AuthFailureWindow, not the old hardcoded 60.
 func TestRequireAdminAuth_ThrottleKeyedOnRemoteAddr_NotXFF(t *testing.T) {
 	clk := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))

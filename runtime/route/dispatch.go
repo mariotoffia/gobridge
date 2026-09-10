@@ -85,7 +85,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	rc := r.effectiveAttempt(env)
 	// a redelivery-count header that is present but uninterpretable makes
 	// receiveCount fail open to a first delivery (native rc==0) so a good message
-	// is never DLQ'd on a parse error.: effectiveAttempt then falls back to
+	// is never DLQ'd on a parse error. effectiveAttempt then falls back to
 	// the bridge-owned replay ledger, so the recoverable-retry path below is now
 	// CAPPED even for a count-less / unparseable source instead of retrying a
 	// permanently-failing send unbounded. Surface the unparseable condition as a
@@ -366,7 +366,7 @@ func (r *RouteRunner) boundedSend(ctx context.Context, sender ports.Sender, msg 
 
 	// Injected clock (never time.NewTimer): the production timing audit forbids a
 	// real timer in this layer, and it keeps the ceiling deterministically
-	// drivable from tests via a fake clock.: the ceiling is the WEDGE bound
+	// drivable from tests via a fake clock. The ceiling is the WEDGE bound
 	// (SendTimeout + margin), strictly LARGER than the sendCtx SendTimeout deadline
 	// so a cooperative sender aborting at SendTimeout returns via `done` and wins
 	// this race — only a genuinely-parked (ctx-ignoring) send reaches the ceiling.
@@ -602,7 +602,7 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 		// payload, a catastrophic regex, or a hung transform — would otherwise
 		// retry forever, each attempt holding a concurrency slot for the full
 		// ProcessorTimeout and eventually wedging the route semaphore on brokers
-		// without a native redrive cap.: replayCapReached uses the
+		// without a native redrive cap. replayCapReached uses the
 		// bridge-owned ledger for count-less sources so this cap applies to MQTT /
 		// AMQP 0-9-1 too, not only to count-bearing transports. At or above
 		// MaxReplayAttempts, poison to the DLQ (or drop-with-metric under
@@ -702,7 +702,7 @@ func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery
 	// replay-cap gate as handleProcessorError: a deterministically-failing
 	// resolver (e.g. a persistently unreachable locator) would otherwise retry
 	// forever, and previously re-dispatched with ZERO delay — an immediate hot
-	// loop.: the cap now applies to count-less sources via the ledger too.
+	// loop. The cap now applies to count-less sources via the ledger too.
 	// At or above MaxReplayAttempts, poison terminally; below the cap, retry with
 	// the policy's bounded backoff instead of zero.
 	if abandoned := r.abandonIfCancelled(ctx, env, "resolve destination", err); abandoned != nil {
@@ -1231,7 +1231,7 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 		// Replay-cap gate (mirrors handleProcessorError). A permanently-failing
 		// record build — a resolver emitting a BindingID absent from the route's
 		// bindings, or the store rejecting an oversized record (helpers.go) — would
-		// otherwise retry indefinitely.: replayCapReached uses the source's
+		// otherwise retry indefinitely. replayCapReached uses the source's
 		// native redelivery count when present (SQS, ASB, AMQP 1.0) and the
 		// bridge-owned ledger for COUNT-LESS sources (MQTT, AMQP 0-9-1, HTTP), so
 		// the cap now applies uniformly instead of never firing for count-less
@@ -1274,7 +1274,7 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 			return r.retryOrFallbackUncharged(ctx, del, env, RetryDelay(r.policy, r.effectiveAttempt(env)+1, persistErr), persistErr)
 		}
 		// Replay-cap gate (mirrors handleProcessorError). A permanently-failing
-		// outbox persist would otherwise retry indefinitely.: the cap reads
+		// outbox persist would otherwise retry indefinitely. The cap reads
 		// the native redelivery count for count-bearing sources (SQS, ASB, AMQP
 		// 1.0) and the bridge-owned ledger for count-less ones (MQTT, AMQP 0-9-1),
 		// so it now fires for both. At or above the cap, poison terminally; below

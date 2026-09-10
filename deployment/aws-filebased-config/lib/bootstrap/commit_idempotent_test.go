@@ -35,7 +35,7 @@ type commitObservation struct {
 // to the swap-failure→wedge path). The original test masked this by
 // pinning PollInterval to "1h" (dormant watcher).
 //
-// This test runs a live watcher (short poll) and asserts:
+// This test runs a live watcher (short poll) and asserts that
 //   - an admin commit rebuilds the runtime EXACTLY ONCE (the in-band apply);
 //     the watcher's re-emit is recognised as already-applied and skipped;
 //   - a genuine external disk edit STILL triggers a rebuild (the idempotency

@@ -72,8 +72,8 @@ func (*activationLeaseLoss) Unwrap() error { return errLeaseLostAfterRenewal }
 // lease expires naturally while the orchestrator restarts the pod.
 var ErrSessionUnrecoverable = errors.New("session cannot be re-established in this process")
 
-// releaseAndReturn is the connect-failure recovery path (finding /
-// M12): a term acquired the lease but could not make the session usable
+// releaseAndReturn is the connect-failure recovery path: a term acquired the
+// lease but could not make the session usable
 // (Start/ensureConnected/Reconcile failed while we hold the lease). It releases
 // the just-acquired lease best-effort — otherwise a restarted Run would block in
 // Acquire against our own unexpired lease until self-expiry, AND (on the

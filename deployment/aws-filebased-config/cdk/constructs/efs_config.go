@@ -59,7 +59,7 @@ type GoBridgeEfsConfigProps struct {
 	PosixGID *string
 }
 
-// GoBridgeEfsConfig is an construct that creates (reuses) an EFS
+// GoBridgeEfsConfig is a construct that creates (or reuses) an EFS
 // filesystem with two access points - Control (intended RW) and Worker
 // (intended RO) - sharing root path "/".
 type GoBridgeEfsConfig struct {

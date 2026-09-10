@@ -27,7 +27,7 @@ const builderCloseBudget = 5 * time.Second
 //
 // complete is unexported; external callers reach it through
 // Builder.Build (single-shot) or BuildPlan.Commit (explicit
-// two-phase). See.
+// two-phase).
 func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime.Runtime, retErr error) {
 	if prep == nil {
 		return nil, fmt.Errorf("bridge: complete called with nil preparedBuild")

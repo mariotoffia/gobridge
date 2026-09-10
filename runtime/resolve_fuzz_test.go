@@ -4,8 +4,8 @@ package runtime
 // Fuzz Tests for RenderAddress
 //
 // FuzzValidateMQTTTopic was moved to
-// adapters/mqtt/transport/paho/topic_validator_test.go as part of
-// MQTT topic validation lives next to the paho factory now.
+// adapters/mqtt/transport/paho/topic_validator_test.go — MQTT topic
+// validation lives next to the paho factory now.
 // ═══════════════════════════════════════════════
 
 import (

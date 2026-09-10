@@ -220,7 +220,7 @@ func testConfig() *ports.BridgeConfig {
 				DeliveryMode: "shared_outbox",
 				Bindings:     []string{"b1"},
 				// drop policies keep the shared testConfig route valid under the
-				// build-time ValidateRoutes call (Finding 5 /): the default
+				// build-time ValidateRoutes call: the default
 				// on_permanent_failure/on_expired is "dlq", which requires a DLQ
 				// store. Tests that need DLQ behaviour set it explicitly.
 				Policy: ports.PolicyDef{OnPermanentFailure: "drop", OnExpired: "drop"},
@@ -986,7 +986,7 @@ func TestBuilder_DrainMaxFieldsReachSessionConfig(t *testing.T) {
 // factory implementing VisibilityTimeoutProvider causes the builder to
 // populate SourceVisibilityTimeout on the resulting route. When
 // SendTimeout >= VisibilityTimeout/2, the route is rejected — and, since
-// Finding 5 / moved static route validation into complete(), that
+// Static route validation moved into complete(), so that
 // rejection now happens at BUILD time (before the old runtime is stopped),
 // not only at Start().
 func TestBuilder_WiresSourceVisibilityTimeout(t *testing.T) {
@@ -1014,7 +1014,7 @@ func TestBuilder_WiresSourceVisibilityTimeout(t *testing.T) {
 // factory reports 30s, under which SendTimeout=8s is safe (8 < 15). The
 // receiver config reports a shorter 10s window with auto-extend OFF (a
 // fixed window), under which the same SendTimeout is unsafe (8 > 5), so
-// the route must be rejected. Since Finding 5 / moved static route
+// the route must be rejected. Since static route validation moved
 // validation into complete(), that rejection now happens at BUILD time. If
 // the builder ignored the config and used the factory constant, no error
 // would fire — making this a true regression guard.
@@ -1179,7 +1179,7 @@ func TestBuilder_ValidatesStaticAddressAtBuildTime(t *testing.T) {
 			Bindings:  []ports.BindingDef{{ID: "b1", SenderID: "tx1", Address: address}},
 			Routes: []ports.RouteDef{
 				// drop policies keep the route valid under the build-time
-				// ValidateRoutes call (Finding 5 /) so this test isolates
+				// ValidateRoutes call so this test isolates
 				// static ADDRESS validation, not DLQ-policy validation.
 				{ID: "r1", ReceiverID: "rx1", DeliveryMode: "direct_hold", Bindings: []string{"b1"},
 					Policy: ports.PolicyDef{OnPermanentFailure: "drop", OnExpired: "drop"}},

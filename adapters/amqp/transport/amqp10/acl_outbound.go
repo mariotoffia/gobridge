@@ -189,8 +189,8 @@ func envelopeToMessage(env *messaging.Envelope, durable bool) *amqp.Message {
 	// headerMessageID, when present, carries the DETERMINISTIC STRING
 	// rendering of the inbound message-id: messageToHeaders renders a
 	// typed uuid/ulong/binary id via messageIDToString so no go-amqp SDK
-	// type ever reaches the domain envelope headers (ACL purity,
-	// ). headersToMessage therefore set Properties.MessageID to
+	// type ever reaches the domain envelope headers (ACL purity).
+	// headersToMessage therefore set Properties.MessageID to
 	// that string, and egress emits a string message-id. Downstream
 	// message-id dedup still holds because the rendering is stable
 	// (same id → same string). Only stamp the (string) envelope ID when

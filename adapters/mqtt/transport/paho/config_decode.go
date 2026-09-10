@@ -280,7 +280,7 @@ func tlsConfigFromMap(m map[string]any) *TLSConfig {
 // returns (0, false) — the caller keeps the field's default — rather than an
 // error: this map path is intentionally lenient for programmatic callers, and
 // strict validation of malformed input lives on the registry/YAML surface
-// (register.go's decoder rejects unknown or unparseable keys).: the two
+// (register.go's decoder rejects unknown or unparseable keys). The two
 // public config surfaces differ in strictness by design; this leniency is the
 // documented behaviour of the map path, not an oversight.
 func optDuration(m map[string]any, key string) (time.Duration, bool) {

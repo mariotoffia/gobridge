@@ -44,7 +44,7 @@ flowchart TB
     end
 
     VIP -->|"lease holder"| R1
-    VIP -.->|"waiting for lease"|
+    VIP -.->|"waiting for lease"| R2
 
     subgraph AWS ["AWS"]
         SQS["SQS Queue\ntelemetry-events"]

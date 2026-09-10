@@ -95,7 +95,7 @@ func TestConfig_Capabilities_ModeAware(t *testing.T) {
 // duration (the ASB visibility analog), falling back to the 30s default
 // when lock_duration is unset. The builder threads this value into the
 // runtime validator in preference to Factory.VisibilityTimeout(), so a
-// route with a short lock_duration is correctly guarded (Finding 2 /).
+// route with a short lock_duration is correctly guarded.
 func TestConfig_EffectiveVisibilityTimeout(t *testing.T) {
 	if got := (Config{}).EffectiveVisibilityTimeout(); got != 30*time.Second {
 		t.Errorf("unset lock_duration: got %v, want 30s", got)

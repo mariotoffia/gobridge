@@ -160,6 +160,6 @@ func TestConfig_AutoExtendEnabled(t *testing.T) {
 func TestFactory_VisibilityTimeout_DefaultUnchanged(t *testing.T) {
 	// The singleton factory reports the 30s default because it has no
 	// per-route config; the per-route value is threaded via the receiver
-	// Config's EffectiveVisibilityTimeout (Finding 2 /).
+	// Config's EffectiveVisibilityTimeout.
 	assert.Equal(t, 30*time.Second, NewFactory(nil).VisibilityTimeout())
 }

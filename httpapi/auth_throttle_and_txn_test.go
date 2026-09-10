@@ -81,7 +81,7 @@ func newConfigTxnServer(t *testing.T, store ports.ConfigStore, clk *clocktest.Fa
 	cfg.ConfigStore = store
 	cfg.ConfigProvider = func() *ports.BridgeConfig { return sampleBridgeConfig() }
 	// Single-process test server: assert single-writer so a durable commit
-	// against a non-CAS test store is not fail-closed refused (see).
+	// against a non-CAS test store is not fail-closed refused.
 	cfg.ConfigSingleWriter = true
 	s := New(rt, cfg, WithClock(clk))
 	require.NotNil(t, s.configTxn, "config txn manager must be wired when store+provider are set")

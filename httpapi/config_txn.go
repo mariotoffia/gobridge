@@ -61,7 +61,7 @@ var (
 	// (Config.ConfigSingleWriter). A plain last-writer-wins Save on a shared
 	// non-CAS backend can silently clobber a peer admin instance's acknowledged
 	// commit, so the durable write is refused rather than performed silently
-	// (see). It is a deployment-configuration condition, not a
+	// It is a deployment-configuration condition, not a
 	// client-correctable one: either wire a CAS store or assert single-writer.
 	errConfigStoreNotCAS = errors.New("config commit refused: non-CAS store is cluster-unsafe")
 )
@@ -110,7 +110,7 @@ type configTxnManager struct {
 	// defaults it to true for the direct, in-process, single-manager
 	// construction used by tests and embedders; Server.New overrides it from
 	// Config.ConfigSingleWriter so a real deployment fails closed on a shared
-	// non-CAS store by default (see).
+	// non-CAS store by default.
 	singleWriter bool
 }
 

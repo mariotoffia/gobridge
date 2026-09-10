@@ -17,7 +17,7 @@ import (
 // (it consumes the whole flush budget, then returns nil) and records whether
 // Close was ever called. The runtime is a SHARED-exporter borrower: it must
 // Flush buffered data on Stop but must NOT Close the exporter (the composition
-// root owns Close). See.
+// root owns Close).
 type slowFlushExporter struct {
 	ports.NoopExporter
 	mu          sync.Mutex

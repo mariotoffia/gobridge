@@ -29,7 +29,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestSender_Send_ReconnectWindow_ClassifiesTransient pins: a publish
+// TestSender_Send_ReconnectWindow_ClassifiesTransient pins that a publish
 // racing the reconnect window must see a TRANSIENT (retryable) classification
 // and must NOT open a channel / publish into the incomplete topology.
 //

@@ -59,7 +59,7 @@ func TestHandleLive_200AfterCleanStop(t *testing.T) {
 	assert.Equal(t, "alive", body["status"])
 }
 
-// TestAdmin_StopThenStart_NoPermanent409 reproduces: POST
+// TestAdmin_StopThenStart_NoPermanent409 reproduces the defect: POST
 // /bridge/stop followed by POST /bridge/start must both succeed when routed
 // through the supervisor (BridgeController). Before the fix, stop was
 // process-suicide and any later start hit a permanent single-use 409.

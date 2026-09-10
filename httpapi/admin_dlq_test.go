@@ -334,7 +334,7 @@ func TestHandleDLQDeleteByFilter_StoreError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
-// TestHandleDLQDeleteByFilter_NegativeLimit_RejectedNoDelete pins: a
+// TestHandleDLQDeleteByFilter_NegativeLimit_RejectedNoDelete pins that a
 // negative limit must be rejected with 400 BEFORE any DeleteByFilter call. The
 // DeleteByFilter port contract treats Limit <= 0 as "delete EVERY matching
 // entry", so copying a negative limit into the filter would silently turn a

@@ -95,7 +95,7 @@ func TestStripForeignReceiveCounts(t *testing.T) {
 	})
 }
 
-// TestRenderAddress_UnterminatedPlaceholder pins: an opening '{' with no
+// TestRenderAddress_UnterminatedPlaceholder pins that an opening '{' with no
 // matching '}' is a malformed template and must error, symmetric with the
 // missing-key error, rather than silently appending the raw remainder.
 func TestRenderAddress_UnterminatedPlaceholder(t *testing.T) {
@@ -111,7 +111,7 @@ func TestRenderAddress_UnterminatedPlaceholder(t *testing.T) {
 	}
 }
 
-// TestGenericAddressSanity pins: when no transport AddressValidator is
+// TestGenericAddressSanity pins that when no transport AddressValidator is
 // registered, a rendered address is rejected only for the transport-agnostic
 // danger classes (empty, ASCII control chars), and every printable value —
 // including transport wildcards, whose legitimacy only a transport validator can

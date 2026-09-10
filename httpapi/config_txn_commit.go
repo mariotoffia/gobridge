@@ -204,8 +204,7 @@ func (m *configTxnManager) commitDurable(ctx context.Context, txnID string) (*po
 	// implement the capability have no safe cross-instance write, so the plain
 	// Save is taken ONLY when the operator asserted a single writer
 	// (m.singleWriter); otherwise the commit fails closed with
-	// errConfigStoreNotCAS rather than performing a silent last-writer-wins Save
-	// (see).
+	// errConfigStoreNotCAS rather than performing a silent last-writer-wins Save.
 	if cas, ok := m.store.(ports.ConditionalConfigStore); ok {
 		if err := cas.SaveIfVersion(ctx, merged, m.active.baseVersion); err != nil {
 			if errors.Is(err, shared.ErrVersionMismatch) {

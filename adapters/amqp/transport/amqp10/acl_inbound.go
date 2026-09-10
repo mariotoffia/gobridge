@@ -165,7 +165,7 @@ func (r *receiverLink) Receive(
 	env, err := messageToEnvelope(msg, clk)
 	if err != nil {
 		// A malformed message is rejected at the broker so it is not
-		// redelivered in an infinite loop.: the reject is itself a
+		// redelivered in an infinite loop. The reject is itself a
 		// settlement that can FAIL (deadline exceeded, connection dropped);
 		// if it does, the delivery is STILL UNSETTLED. Reporting
 		// errIngressRejected here would emit a false "rejected" metric,

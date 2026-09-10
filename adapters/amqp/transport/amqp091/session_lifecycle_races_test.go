@@ -48,7 +48,7 @@ func subscriptionPlanForTest() connectivity.SessionPlan {
 	}
 }
 
-// TestSession_Start_ReconcileFailure_FailsStart pins: when the initial
+// TestSession_Start_ReconcileFailure_FailsStart pins that when the initial
 // reconcile fails, Start must return the mapped error (not nil), close
 // the dialed connection, unwind to the pre-Start state, and emit no
 // SessionConnected. A subsequent Start (after the plan is fixed) succeeds.
@@ -193,7 +193,7 @@ func TestSession_ReconnectCloseRace_ClosesDialedConnection(t *testing.T) {
 	require.False(t, s.Health(context.Background()).Connected)
 }
 
-// TestSession_Reconnect_ReconcileFailure_NoConnectedUntilHealed pins:
+// TestSession_Reconnect_ReconcileFailure_NoConnectedUntilHealed pins that
 // after a redial whose reconcile fails, the session must NOT report
 // Connected and must NOT emit SessionConnected (that is the race the
 // receiver's health probe used to win, ending in a permanent 404). The

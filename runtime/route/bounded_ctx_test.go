@@ -42,7 +42,7 @@ func (s *deadlineCapturingStore) Release(context.Context, []string, persistence.
 	return nil
 }
 
-// TestPersistReceivesBoundedContext pins: the runtime wraps the
+// TestPersistReceivesBoundedContext pins that the runtime wraps the
 // outbox Persist call in a bounded (deadline-bearing) context so a black-holed
 // store cannot pin route in-flight capacity forever.
 //

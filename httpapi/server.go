@@ -151,8 +151,8 @@ type Config struct {
 	// is false, a durable commit is REFUSED rather than falling back to a plain
 	// last-writer-wins Save. A plain Save on a shared non-CAS backend lets two
 	// admin instances that both read version N each pass the read-time version
-	// guard and clobber each other's acknowledged commit (silent lost update;
-	// see). Only assert this when the deployment guarantees a single
+	// guard and clobber each other's acknowledged commit (a silent lost update).
+	// Only assert this when the deployment guarantees a single
 	// admin writer; a multi-instance cluster MUST use a ConditionalConfigStore
 	// instead, which is always safe regardless of this flag.
 	ConfigSingleWriter bool `json:"config_single_writer,omitempty"`
@@ -339,7 +339,7 @@ func New(rt ports.Runtime, cfg Config, opts ...Option) *Server {
 		// single writer. newTxnManager defaults to single-writer (the in-process
 		// construction used by tests/embedders); the real server path must fail
 		// closed on a shared non-CAS store unless ConfigSingleWriter is set, so
-		// no silent last-writer-wins durable commit path remains (see).
+		// no silent last-writer-wins durable commit path remains.
 		s.configTxn.singleWriter = cfg.ConfigSingleWriter
 	}
 	s.adminThrottle = newAuthThrottle(s.clk, cfg.AuthFailureLimit, cfg.AuthFailureWindow)

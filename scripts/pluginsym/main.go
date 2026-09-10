@@ -9,7 +9,7 @@
 // an unhelpful error, and CI never noticed.
 //
 // For every non-test Go file in the composition package, regardless of
-// active build tags, this tool asserts:
+// active build tags, this tool asserts that
 //
 //   - Every kind that has a registered ConfigDecoder has a
 //     corresponding wired factory in the composition root. Aliases

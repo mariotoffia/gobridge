@@ -267,7 +267,7 @@ func (s *Sender) SendBatch(ctx context.Context, msgs []ports.OutboundMessage) ([
 
 	// If the shared batch link went terminally CLOSED, tear it down so the
 	// NEXT Send/SendBatch rebuilds a fresh one instead of reusing the dead
-	// link forever (fenced against a concurrent rotation). See.
+	// link forever (fenced against a concurrent rotation).
 	for i := range results {
 		if isClosedLinkError(results[i].Err) {
 			s.invalidateOnClosedLink(ctx, client, results[i].Err)

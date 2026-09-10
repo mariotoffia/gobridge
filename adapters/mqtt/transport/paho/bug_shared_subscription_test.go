@@ -30,7 +30,7 @@ func (h *recordingLogHandler) errorCountContaining(substr string) int {
 
 const sharedSubAdvisorySubstr = "shared subscriptions ($share)"
 
-// TestBug_Takeover_SharedSubscription_EscalatesOnFirstOccurrence proves:
+// TestBug_Takeover_SharedSubscription_EscalatesOnFirstOccurrence proves that
 // a session takeover (0x8E) while shared subscriptions ($share) are active on a
 // NON-Exclusive session is the smoking gun of the client_id-collision self-DOS
 // (replicas that must be unique are sharing an identity and kicking each other

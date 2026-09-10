@@ -158,8 +158,7 @@ several are breaking at the wire or observable in operations.
   new metric; see [the runbook](runbooks/mqtt-ingress-poison.md). Malformed
   packets and totals above the advertised maximum (broker bugs) remain
   session-terminal.
-- **Pre-first-reconcile backlog is retained, never orphan-dropped
-  ** Before the first `Reconcile` of a process lifetime every topic
+- **Pre-first-reconcile backlog is retained, never orphan-dropped.** Before the first `Reconcile` of a process lifetime every topic
   counts as covered, so a CONNACK backlog replayed ahead of the first plan
   can no longer be PUBACK-dropped and its live topic unsubscribed under a
   delayed startup. Genuine orphans converge one reconcile later.
@@ -186,10 +185,9 @@ several are breaking at the wire or observable in operations.
 - **New construction-time warnings.** `session_mode: persistent` +
   `clean_start: true` (wipes the offline backlog every restart) and
   persistent + `client_id_suffix: hostname` (strands broker queues on every
-  Deployment/ECS rollout, — see
+  Deployment/ECS rollout — see
   [Deployment identity](transports/mqtt.md#deployment-identity)).
-- **Circuit-breaker outcomes are generation-safe under concurrency
-  ** The MQTT sender and HTTP forwarder admit requests through the
+- **Circuit-breaker outcomes are generation-safe under concurrency.** The MQTT sender and HTTP forwarder admit requests through the
   new `ports.CircuitBreakerAdmitter` surface, so an outcome landing after a
   breaker state transition is discarded as stale instead of releasing a
   half-open probe it never held.

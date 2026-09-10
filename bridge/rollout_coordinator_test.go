@@ -96,7 +96,7 @@ func proposeAndAck(t *testing.T, epoch, ackers []string, nacks map[string]string
 // coordTok is a valid coordinator fencing token for the step tests.
 var coordTok = persistence.LeaseToken{Owner: "coordinator", Version: 1}
 
-// TestCoordinatorStep_CommitsFullyAckedRollout validates: a coordinator
+// TestCoordinatorStep_CommitsFullyAckedRollout validates that a coordinator
 // (here a successor observing state a predecessor left) drives a fully-acked
 // rollout to Committed through the real store.
 func TestCoordinatorStep_CommitsFullyAckedRollout(t *testing.T) {
@@ -153,7 +153,7 @@ func TestCoordinatorStep_SurfacesStaleFencingToken(t *testing.T) {
 	require.ErrorIs(t, err, shared.ErrStaleFencingToken)
 }
 
-// TestCoordinatorStep_StoreUnavailableThenResolves validates: while the store
+// TestCoordinatorStep_StoreUnavailableThenResolves validates that while the store
 // is unavailable the coordinator makes no decision and surfaces the outage; once
 // the store returns, the same observation commits.
 func TestCoordinatorStep_StoreUnavailableThenResolves(t *testing.T) {
@@ -252,7 +252,7 @@ func TestRolloutCoordinator_ObserveBeforeElectIsNoOp(t *testing.T) {
 	require.Equal(t, persistence.RolloutStaging, cur.State(), "an unelected coordinator must not commit")
 }
 
-// TestRolloutCoordinator_SuccessorResumesAfterCrash validates: the first
+// TestRolloutCoordinator_SuccessorResumesAfterCrash validates that the first
 // coordinator elects and then crashes before deciding; after its lease expires a
 // successor elects and, past its own lock-delay, drives the in-progress rollout
 // left in the store to Committed. All state is durable, so resume is election +
@@ -345,7 +345,7 @@ func TestDecideRollout_WaitWhenAcksIncompleteBeforeDeadline(t *testing.T) {
 	require.Equal(t, rolloutActionWait, action)
 }
 
-// TestDecideRollout_AbortWhenDeadlineExceededIncomplete validates: a member
+// TestDecideRollout_AbortWhenDeadlineExceededIncomplete validates that a member
 // that never acks lets the deadline pass → the coordinator aborts.
 func TestDecideRollout_AbortWhenDeadlineExceededIncomplete(t *testing.T) {
 	deadline := rolloutBase.Add(5 * time.Minute)
@@ -357,7 +357,7 @@ func TestDecideRollout_AbortWhenDeadlineExceededIncomplete(t *testing.T) {
 	require.NotEmpty(t, reason)
 }
 
-// TestDecideRollout_AbortOnNackBeforeDeadline validates: any Nack aborts the
+// TestDecideRollout_AbortOnNackBeforeDeadline validates that any Nack aborts the
 // rollout immediately, without waiting for the deadline.
 func TestDecideRollout_AbortOnNackBeforeDeadline(t *testing.T) {
 	deadline := rolloutBase.Add(5 * time.Minute)
@@ -371,7 +371,7 @@ func TestDecideRollout_AbortOnNackBeforeDeadline(t *testing.T) {
 	require.Contains(t, reason, "plugin build failed")
 }
 
-// TestDecideRollout_AbortOnMembershipChangeEvenIfAllAcked validates: the
+// TestDecideRollout_AbortOnMembershipChangeEvenIfAllAcked validates that the
 // epoch is frozen at Propose; if live membership diverges (here a joiner) the
 // coordinator aborts — even though every ORIGINAL epoch member has acked. This
 // proves the membership check precedes the commit check.

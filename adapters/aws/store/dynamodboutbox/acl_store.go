@@ -1261,7 +1261,7 @@ func (s *Store) Complete(ctx context.Context, recordIDs []string, token persiste
 			// let the record be re-DELIVERED on the next stale/version reclaim;
 			// a transient timeout instead keeps it claimed so the caller
 			// retries Complete once the GSI catches up, closing the
-			// duplicate-delivery window (at-least-once still holds). See.
+			// duplicate-delivery window (at-least-once still holds).
 			return shared.ErrTimeout.
 				WithMessage("outbox record key resolution timed out: RecordIDIndex GSI lag").
 				With("recordID", id)

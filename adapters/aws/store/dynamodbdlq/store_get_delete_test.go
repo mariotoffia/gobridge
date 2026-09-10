@@ -194,9 +194,9 @@ func TestDeleteByFilter_EmptyFilter(t *testing.T) {
 // Scenario:
 // ───────────────────────────────────────────────
 //
-//	4 entries for same route at
+//	4 entries for same route at T1, T2, T3, T4
 //	List with RouteID + Since=T2 + Before=T4
-//	Expected: entries at (half-open range)
+//	Expected: entries at T2 and T3 (half-open range)
 //
 // ───────────────────────────────────────────────
 func TestListByRouteIndex_SinceAndBefore(t *testing.T) {
@@ -232,7 +232,7 @@ func TestListByRouteIndex_SinceAndBefore(t *testing.T) {
 	}
 
 	if len(entries) != 2 {
-		t.Fatalf("expected 2 entries in, got %d", len(entries))
+		t.Fatalf("expected 2 entries in [T2,T4), got %d", len(entries))
 	}
 
 	ids := map[string]bool{}

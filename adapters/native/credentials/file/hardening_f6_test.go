@@ -82,7 +82,7 @@ func TestGet_NilCredentialsEnvelopeReturnsError(t *testing.T) {
 	}
 }
 
-// TestNew_ReadOnlyMount_DirExists_NoCrash is an regression test: when the
+// TestNew_ReadOnlyMount_DirExists_NoCrash is a regression test: when the
 // base directory cannot be created because the mount is read-only but the
 // directory already exists (an operator-provisioned K8s Secret volume), New
 // must succeed rather than crash-loop the pod.
@@ -99,7 +99,7 @@ func TestNew_ReadOnlyMount_DirExists_NoCrash(t *testing.T) {
 	require.NotNil(t, repo)
 }
 
-// TestNew_ReadOnlyMount_ChmodEROFS_WarnsAndContinues is an regression test:
+// TestNew_ReadOnlyMount_ChmodEROFS_WarnsAndContinues is a regression test:
 // a loose-permission directory whose chmod fails with EROFS/EPERM (operator-
 // controlled mount) must be tolerated with a WARN, not a hard error.
 func TestNew_ReadOnlyMount_ChmodEROFS_WarnsAndContinues(t *testing.T) {

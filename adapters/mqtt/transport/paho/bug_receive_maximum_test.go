@@ -69,7 +69,7 @@ func TestBug_ReceiveMaximumExplicit_NotCoerced(t *testing.T) {
 	require.Equal(t, 2048, limit, "the pending buffer tracks the explicit Receive Maximum")
 }
 
-// TestBug_ReceiveMaximumDefault_WarnsOnCoercion asserts: the
+// TestBug_ReceiveMaximumDefault_WarnsOnCoercion asserts that the
 // previously SILENT default coercion now emits a WARN, matching the sibling
 // session_expiry coercion in the same constructor. An operator implicitly
 // relying on the old 65535 ceiling gets a visible signal that they were capped

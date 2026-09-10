@@ -52,7 +52,7 @@ func (f *slowDrainTransportFactory) NewReceiver(_ context.Context, _ ports.Recei
 
 var _ ports.TransportFactory = (*slowDrainTransportFactory)(nil)
 
-// TestSupervisor_TerminalFalseDuringHealthySwap reproduces: while a
+// TestSupervisor_TerminalFalseDuringHealthySwap reproduces the defect: while a
 // perfectly healthy reconfiguration swap is in progress, Supervisor.Terminal()
 // must stay false for the WHOLE window. Before the fix, the old (stopping)
 // runtime reported terminal for the entire swap, so the liveness backstop
@@ -126,7 +126,7 @@ func (e *reloadExporter) Close(context.Context) error {
 
 var _ ports.MetricsExporter = (*reloadExporter)(nil)
 
-// TestSupervisor_SharedExporterSurvivesReload reproduces: the
+// TestSupervisor_SharedExporterSurvivesReload reproduces the defect: the
 // Supervisor shares ONE metrics exporter across every runtime it builds. A
 // runtime's Stop must FLUSH (buffered data must not be lost) but must NOT
 // CLOSE the shared exporter — before the fix the first reload's Stop closed

@@ -9,7 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// TestDeriveRenewTimings_SatisfyInvariant pins finding 1 / contract and
+// TestDeriveRenewTimings_SatisfyInvariant pins the renew-timing contract and
 // when an operator supplies ONLY LeaseTTL (bridge/convert.go no
 // longer seeds DefaultConfig, so RenewInterval/RenewJitter arrive zero), the
 // derived-then-clamped renew interval, jitter, and per-call timeout must satisfy

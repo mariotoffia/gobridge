@@ -233,7 +233,7 @@ func TestBreaker_HalfOpen_AbandonedProbeReclaimed(t *testing.T) {
 	}
 }
 
-// TestBreaker_ReclaimedProbeLateOutcomeDoesNotReleaseNewerSlot pins:
+// TestBreaker_ReclaimedProbeLateOutcomeDoesNotReleaseNewerSlot pins that
 // a probe whose slot was reclaimed (it exceeded probe_timeout) must NOT, when it
 // finally reports, release the newer probe that has since taken a slot, nor vote
 // in the current half-open epoch. Before the fix the token carried no slot

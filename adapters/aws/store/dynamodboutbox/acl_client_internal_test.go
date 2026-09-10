@@ -619,7 +619,7 @@ func TestClaim_TransactionPairsFenceCheckWithRecordUpdate(t *testing.T) {
 	}
 }
 
-// Regression for the poison-record deadlock (finding 1 / contract): the
+// Regression for the poison-record deadlock (store contract): the
 // store must never filter claimable records by replay count — poison
 // detection is the drainer's decision. A record whose replay_count is far
 // past any poison threshold must still be claimable so the drainer can

@@ -9,7 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 )
 
-// TestBug_DiscardDisconnectContextBounded pins: the context
+// TestBug_DiscardDisconnectContextBounded pins that the context
 // used to tear down a ConnectionManager on a failed/abandoned Start path is
 // BOUNDED (has a deadline), so a disconnect cannot block forever if the SDK
 // ignores cancellation. It prefers ReconnectTimeout, then ConnectTimeout, then

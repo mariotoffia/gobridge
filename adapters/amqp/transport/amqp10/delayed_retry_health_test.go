@@ -16,7 +16,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestDelivery_DelayedRetryDeferred_MetricAndWarn covers: a
+// TestDelivery_DelayedRetryDeferred_MetricAndWarn covers that a
 // delayed retry (after > 0) deferred to broker scheduling increments
 // MetricAMQP10DelayedRetryDeferred once per message and emits the Warn
 // once per link (shared delayWarnOnce), while an immediate retry

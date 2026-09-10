@@ -38,7 +38,7 @@ type SessionOptions struct {
 	// identity contract requires a STABLE, SHARED client_id across instances:
 	// the lease serialises connections and the standby resumes the broker
 	// session on takeover, so a unique-per-instance id would strand queued
-	// QoS messages (see acl_session.go and scenario 08 /). Empty means
+	// QoS messages (see acl_session.go and scenario 08). Empty means
 	// ClientID is used verbatim (the default).
 	ClientIDSuffix string `mapstructure:"client_id_suffix" yaml:"client_id_suffix,omitempty" json:"client_id_suffix,omitempty"`
 	// AssertStableClientIdentity is the operator's explicit assertion that the

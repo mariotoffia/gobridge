@@ -60,7 +60,7 @@ import (
 // instead of raced against real time.
 // ═══════════════════════════════════════════════════════════════════════
 
-// TestSharedOutbox_TransientSenderFailure_RecoversOnRetry validates:
+// TestSharedOutbox_TransientSenderFailure_RecoversOnRetry validates that
 // the egress sender fails transiently (simulating a broker disconnect),
 // the drainer releases each claimed record back to pending instead of
 // completing it, and after the sender recovers the very next drain

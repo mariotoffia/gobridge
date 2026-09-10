@@ -34,7 +34,7 @@ type sqlSession struct {
 //
 // ponytail: single-writer ceiling — sufficient for the single-process
 // deployments this DLQ store targets; a read-heavy deployment would add a
-// separate read-only pool over the WAL. See.
+// separate read-only pool over the WAL.
 func openSession(path string) (*sqlSession, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {

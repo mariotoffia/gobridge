@@ -79,7 +79,7 @@ func TestSupervisor_InitialBuildFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "initial build")
 }
 
-// TestSupervisor_StaticallyInvalidConfigFailsAtBuild validates finding 5 /:
+// TestSupervisor_StaticallyInvalidConfigFailsAtBuild validates that
 // a statically-rejectable initial config (direct_hold with multiple bindings and
 // no resolver) is rejected during the BUILD phase — complete() runs the
 // runtime's ValidateRoutes before Start — so the supervisor reports it as

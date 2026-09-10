@@ -136,7 +136,7 @@ func makeOrderingRecord(t *testing.T, id, orderingKey string) *persistence.Outbo
 	return rec
 }
 
-// TestOutboxDrainer_PerOrderingKeySerialization verifies:
+// TestOutboxDrainer_PerOrderingKeySerialization verifies that
 // records sharing a non-empty ordering key are delivered SEQUENTIALLY in
 // persisted order and never overlap in time, while records with distinct
 // keys (and keyless records) drain concurrently.

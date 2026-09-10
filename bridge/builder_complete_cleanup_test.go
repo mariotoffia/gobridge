@@ -47,7 +47,7 @@ func (f *closableLinkFactory) NewSender(_ context.Context, _ ports.SenderSpec, _
 	return f.send, nil
 }
 
-// TestComplete_FailureClosesReceiversAndSenders covers: when complete()
+// TestComplete_FailureClosesReceiversAndSenders covers that when complete()
 // fails AFTER receivers and senders are built (here ValidateRoutes rejects a
 // dlq-default route with no DLQ store), every receiver/sender that implements
 // ports.ContextCloser must be closed. Otherwise the network clients / broker
