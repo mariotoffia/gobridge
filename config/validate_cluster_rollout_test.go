@@ -41,7 +41,7 @@ func TestValidateClusterRollout_AcceptsTheDefaultModes(t *testing.T) {
 }
 
 // TestValidateClusterRollout_AcceptsAConfirmWindow proves the opt-in confirm
-// window (design §8.1) validates on a coordinated cohort.
+// window (cluster-config-rollout-protocol.md §8.1) validates on a coordinated cohort.
 func TestValidateClusterRollout_AcceptsAConfirmWindow(t *testing.T) {
 	cfg := coordinatedRolloutConfig()
 	cfg.Bridge.Cluster.ConfirmWindow = "90s"

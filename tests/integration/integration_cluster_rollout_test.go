@@ -32,7 +32,7 @@ func rolloutRealCodec() (func(*ports.BridgeConfig) ([]byte, error), func([]byte)
 	return encode, decode
 }
 
-// Coordinated cluster rollout against REAL DynamoDB (design §10 integration
+// Coordinated cluster rollout against REAL DynamoDB (cluster-config-rollout-protocol.md §10 integration
 // row). The in-package bridge tests drive the same protocol over the memory
 // store; what only a real store can prove is that the barrier's conditional
 // writes — the single-winner Propose, the fenced Commit, the ack CAS — behave
@@ -217,7 +217,7 @@ func TestClusterRolloutDDB_HappyPath(t *testing.T) {
 }
 
 // rolloutCohortConfigWindow is rolloutCohortConfig opted into the confirm window
-// (design §8.1) with the given Go-duration string.
+// (cluster-config-rollout-protocol.md §8.1) with the given Go-duration string.
 func rolloutCohortConfigWindow(memberID string, version int, window string) *ports.BridgeConfig {
 	cfg := rolloutCohortConfig(memberID, version)
 	cfg.Bridge.Cluster.ConfirmWindow = window

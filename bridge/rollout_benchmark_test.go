@@ -122,7 +122,7 @@ func benchCommittedApplier(b *testing.B) (*rolloutApplier, context.Context) {
 }
 
 // BenchmarkRolloutApplierStep_ConfirmWindowSteadyState measures the steady-state
-// per-poll cost of the confirm-window (design §8.1) applier path: a member that has
+// per-poll cost of the confirm-window (cluster-config-rollout-protocol.md §8.1) applier path: a member that has
 // provisionally swapped and converged re-reads the row every poll and re-checks the
 // deadman. It is the confirm-window twin of the base steady-state benchmark, so a
 // regression in the provisional/converge/deadman path is visible, not just the base

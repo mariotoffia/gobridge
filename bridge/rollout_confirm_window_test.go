@@ -15,7 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
-// Confirm window (design §8.1) orchestration tests: the coordinator's post-commit
+// Confirm window (cluster-config-rollout-protocol.md §8.1) orchestration tests: the coordinator's post-commit
 // decision logic (pure) and the whole drive over the controllable fake host, where
 // convergence is injectable so the deadman-revert path is deterministic.
 

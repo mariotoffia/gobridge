@@ -147,9 +147,9 @@ func (a *rolloutApplier) adoptable(cand stagedCandidate) *ports.BridgeConfig {
 // reconcileMissedCommit converges a running member to the durable last-committed
 // artifact when it is AHEAD of the generation this member has applied — the case
 // where the member missed a commit because the active rollout row was overwritten
-// by the next proposal before it observed the commit (design residual seq (2)),
-// or was down when the commit happened and never staged the candidate. It fetches
-// the committed BYTES (option (a)), so it needs no staged candidate.
+// by the next proposal before it observed the commit, or was down when the commit
+// happened and never staged the candidate. It fetches the committed BYTES rather
+// than replaying the proposal, so it needs no staged candidate.
 //
 // A no-op when no codec is wired, the artifact is not ahead, or the decoded bytes
 // fail their digest check (the running config is then kept — better than building

@@ -27,7 +27,7 @@ func TestClassifyRolloutDelta_LiveSafe_BenignChange(t *testing.T) {
 // changing bridge.cluster.members is replacement-required. The roster IS the
 // membership epoch the barrier freezes, so carrying a roster change through the
 // barrier would commit under the OLD roster's acks and leave the cohort running
-// a config declaring a DIFFERENT one (design §8).
+// a config declaring a DIFFERENT one (cluster-config-rollout-protocol.md §8).
 func TestClassifyRolloutDelta_ReplacementRequired_MemberRosterChange(t *testing.T) {
 	oldCfg := supervisorTestConfigWithSession("r1", "sess")
 	oldCfg.Bridge.Cluster = &ports.ClusterConfig{Rollout: "coordinated", Members: []string{"a", "b"}}
@@ -84,7 +84,7 @@ func TestClassifyRolloutDelta_ReplacementRequired_LeaseSessionIdentity(t *testin
 }
 
 // TestClassifyRolloutDelta_ReplacementRequired_DeploymentModeChange validates
-// that a deployment-mode change is replacement-required (design §8: "no
+// that a deployment-mode change is replacement-required (cluster-config-rollout-protocol.md §8: "no
 // deployment-mode change") — a topology transition, not a live-safe delta.
 func TestClassifyRolloutDelta_ReplacementRequired_DeploymentModeChange(t *testing.T) {
 	oldCfg := supervisorTestConfigWithSession("r1", "sess")

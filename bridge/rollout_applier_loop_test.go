@@ -399,7 +399,7 @@ func (f *failingRolloutStore) Revert(context.Context, uint64, persistence.LeaseT
 var _ ports.ClusterRolloutStore = (*failingRolloutStore)(nil)
 
 // TestCandidateConfigDigest_IsStableAcrossIndependentLoads pins the determinism
-// the barrier depends on (design §11 Phase 4, previously "UNPROVEN"). Every
+// the barrier depends on (cluster-config-rollout-protocol.md §11 Phase 4, previously "UNPROVEN"). Every
 // member computes the candidate digest itself from the config its OWN source
 // delivered, so two independently-constructed but content-identical configs MUST
 // canonicalise to the same digest — otherwise the first proposer wins and every
@@ -417,7 +417,7 @@ func TestCandidateConfigDigest_IsStableAcrossIndependentLoads(t *testing.T) {
 }
 
 // TestCandidateConfigDigest_SecretValuesParticipate records the DECISION about
-// what the digest covers (design §11 Phase 4: "revealed vs referenced secrets").
+// what the digest covers (cluster-config-rollout-protocol.md §11 Phase 4: "revealed vs referenced secrets").
 // It is computed over REVEALED secrets, so two members whose sources disagree on
 // a secret VALUE compute different digests and the disagreement aborts the
 // rollout instead of splitting the cohort. This is safe against the "every

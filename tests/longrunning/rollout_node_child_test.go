@@ -152,7 +152,7 @@ func TestRolloutNode(t *testing.T) {
 				announcedAbortGen = st.Generation
 				fmt.Fprintf(os.Stdout, "%s:%s:%d\n", rolloutTokAborted, member, st.Generation)
 			}
-			// Confirm window (design §8.1): emit CONFIRMED once the coordinator has
+			// Confirm window (cluster-config-rollout-protocol.md §8.1): emit CONFIRMED once the coordinator has
 			// confirmed the whole-cohort convergence and this member runs it.
 			if st.State == "confirmed" && st.Generation != announcedConfirmGen && cfg != nil {
 				announcedConfirmGen = st.Generation

@@ -187,7 +187,7 @@ func TestFirstSideEffectAllowed(t *testing.T) {
 }
 
 // TestRolloutCoordinator_LockDelayDefersFirstSideEffect validates the Chubby-
-// style lock-delay (design §6): a freshly elected coordinator does not commit a
+// style lock-delay (cluster-config-rollout-protocol.md §6): a freshly elected coordinator does not commit a
 // committable rollout until it has waited out one previous-lease duration, even
 // though the barrier is already satisfied. Deterministic via clocktest — the
 // coordinator's observe() is caller-driven, no goroutine.

@@ -82,7 +82,7 @@ func rolloutNodeCodec() (func(*ports.BridgeConfig) ([]byte, error), func([]byte)
 // rolloutNodeConfig is a clustered, coordinated config whose roster is members,
 // with a single fake route. address distinguishes generations (a live-safe delta).
 // confirmWindow (a Go-duration string, or "" for the base protocol) opts the cohort
-// into the confirm window (design §8.1).
+// into the confirm window (cluster-config-rollout-protocol.md §8.1).
 func rolloutNodeConfig(bridgeID string, version int, address string, members []string, confirmWindow string) *ports.BridgeConfig {
 	cfg := &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{

@@ -9,7 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// The confirm window (design §8.1) layers a NETCONF/NSO "provisional apply with
+// The confirm window (cluster-config-rollout-protocol.md §8.1) layers a NETCONF/NSO "provisional apply with
 // deadman timer" on top of the base barrier. These tests pin the aggregate's
 // half: a windowed Commit is NON-terminal, members Converge, a fenced Confirm
 // (all converged) or Revert makes it terminal, and the base protocol
