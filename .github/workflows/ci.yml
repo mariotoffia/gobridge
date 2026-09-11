@@ -3,23 +3,11 @@ name: CI
 permissions:
   contents: read
 
-# Every label change starts a run (see the pull_request types below), so a
-# pull request would otherwise pay for a full workflow per label. Supersede
-# the previous run for the same ref instead. Pushes to main are never
-# cancelled: those runs are the record that main is green.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 on:
   push:
     branches: [main, master]
   pull_request:
     branches: [main, master]
-    # `labeled` is not in the default type set (opened, synchronize,
-    # reopened). Without it, adding test-integration to an open pull request
-    # would do nothing until the next push, which reads as a broken label.
-    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
       fuzztime:
@@ -28,9 +16,9 @@ on:
         default: '5m'
   # Nightly schedule paused on request. Re-enable by uncommenting; GitHub only
   # honours `schedule:` from the default branch, so this must be changed on
-  # main to take effect. Every push to main still runs the full suite, a pull
-  # request runs it when labelled test-integration, and workflow_dispatch
-  # triggers it on demand.
+  # main to take effect. The jobs here run on every push and pull request and on
+  # demand via workflow_dispatch; the Docker-backed integration suite lives in
+  # integration.yml.
   # schedule:
   #   - cron: '17 2 * * *'
 
@@ -95,39 +83,6 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: unit-test-reports
-          path: reports/
-          if-no-files-found: ignore
-
-  # Docker-backed, and the longest job in the workflow by a wide margin (~20
-  # minutes against ~11 for everything else), so it is the whole critical
-  # path. Pull requests opt in with the `test-integration` label; pushes to
-  # main and manual dispatches always run it, so a pull request that skipped
-  # it is still covered by the main run that follows the merge.
-  integration:
-    if: >-
-      github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'test-integration')
-    runs-on: ubuntu-latest
-    timeout-minutes: 80
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version: '1.25'
-
-      # Nothing longrunning-tagged runs in the cloud. The MQTT ingress memory
-      # proof and the separate-process failover proof are part of
-      # `make test-long-running`, which is a developer-machine run.
-      - name: Run Docker-backed integration tests
-        run: make test-integration
-
-      - name: Upload integration-test reports
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: integration-test-reports
           path: reports/
           if-no-files-found: ignore
 

@@ -360,10 +360,10 @@ The `lint` job runs `make lint`; `.golangci.yml` selects `gobridge_all` so
 every family implementation is linted, while untagged vet covers the stubs.
 The lint job uploads `reports/` on every run so failures are inspectable
 without re-running locally. The workflow also has release-preparation and
-on-demand fuzz jobs, plus `integration`, the critical path at ~20 minutes:
-pushes to `main` and `workflow_dispatch` always run it, a pull request opts
-in with the **`test-integration`** label. Labelling an open one starts the
-run at once; an unlabelled pull request is covered by the next `main` push.
+on-demand fuzz jobs. Integration (~20 minutes) is its own workflow,
+`integration.yml`, run on every push to `main` and on manual dispatch; a pull
+request opts in with the **`test-integration`** label, and an unlabelled one
+is covered by the `main` push after its merge.
 
 ## Adding a New Module
 
