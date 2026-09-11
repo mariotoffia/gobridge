@@ -2,20 +2,20 @@
 
 # GoBridge production runtime image.
 #
-# Builds the file-based deployment binary (gobridge-filebased) as a fully
+# Builds the AWS deployment binary (gobridge-aws) as a fully
 # static, CGO-free executable and ships it on distroless/static as a non-root
 # user. The image ships no shell, curl or wget on purpose: the container
 # health check reuses the binary itself (`-healthcheck`), which probes the
 # local monitor /live endpoint (503 once the runtime is terminal).
 #
 # The build context is the repository root because the binary's module
-# (deployment/aws-filebased-config/lib) resolves the rest of GoBridge through
+# (deployment/aws/lib) resolves the rest of GoBridge through
 # relative `replace` directives (../../.. etc.). We build with GOWORK=off so
 # the container build is reproducible from the module's own go.mod/go.sum
 # rather than the workspace's go.work.
 
-ARG BINARY_MODULE=deployment/aws-filebased-config/lib
-ARG BINARY_PKG=./cmd/gobridge-filebased
+ARG BINARY_MODULE=deployment/aws/lib
+ARG BINARY_PKG=./cmd/gobridge-aws
 
 # ---- build stage ------------------------------------------------------------
 # Base image pinned to a top-level multi-platform OCI index digest (verified to
@@ -64,10 +64,10 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     cd "${BINARY_MODULE}"; \
     go build -overlay="$overlay" -mod=mod -trimpath -tags "$GO_BUILD_TAGS" \
       -ldflags "-s -w -X main.version=$VERSION -X main.gitSHA=$GIT_SHA" \
-      -o /out/gobridge-filebased "${BINARY_PKG}"; \
+      -o /out/gobridge-aws "${BINARY_PKG}"; \
     if [ -n "$INITIAL_CONFIG_FILE" ]; then \
       expected_digest="$(sha256sum "$initial_config" | cut -d ' ' -f 1)"; \
-      actual_digest="$(/out/gobridge-filebased -initial-config-digest)"; \
+      actual_digest="$(/out/gobridge-aws -initial-config-digest)"; \
       test "$actual_digest" = "$expected_digest"; \
     fi
 
@@ -79,7 +79,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # base (see DEVELOPMENT.md → "Base image digests").
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b AS runtime
 
-COPY --from=build /out/gobridge-filebased /usr/local/bin/gobridge-filebased
+COPY --from=build /out/gobridge-aws /usr/local/bin/gobridge-aws
 
 # Non-root by default (matches the CDK container User and the distroless user).
 USER 65532:65532
@@ -88,6 +88,6 @@ USER 65532:65532
 # ECS overrides this with an equivalent HealthCheck.Command, but keeping it in
 # the image makes `docker run` and CI smoke tests self-checking.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD ["/usr/local/bin/gobridge-filebased", "-healthcheck"]
+  CMD ["/usr/local/bin/gobridge-aws", "-healthcheck"]
 
-ENTRYPOINT ["/usr/local/bin/gobridge-filebased"]
+ENTRYPOINT ["/usr/local/bin/gobridge-aws"]

@@ -9,7 +9,7 @@ The example creates a Virtual Private Cloud (VPC) and a shared config filesystem
 
 You are a developer evaluating GoBridge and want a running instance as quickly as possible. You
 have an AWS account and a VPC (or let your CDK app create one), but no ECS cluster or EFS
-filesystem. The `gobridgesingle.NewGoBridgeSingle` facade construct creates the ECS service, EFS
+filesystem. The `gobridge.NewSingle` facade construct creates the ECS service, EFS
 filesystem, mount, and Identity and Access Management (IAM) grants.
 The bridge process creates absent config using the initial document embedded
 in your image; no seeder container is needed.
@@ -72,8 +72,7 @@ does not need a `replace` directive:
 ```bash
 mkdir gobridge-quickstart && cd gobridge-quickstart
 go mod init example.com/gobridge-quickstart
-go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk@vX.Y.Z
-go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra@vX.Y.Z
+go get github.com/mariotoffia/gobridge/deployment/aws/cdk@vX.Y.Z
 
 # The CDK CLI needs to know how to run your app.
 printf '{"app": "go run ."}\n' > cdk.json
@@ -82,9 +81,10 @@ printf '{"app": "go run ."}\n' > cdk.json
 Run `go mod tidy` after writing the stack below, before `cdk deploy`. `go get`
 on a module path records the requirement but not the `go.sum` entries for what
 that module's own code imports, and the build fails on every missing one.
+`go mod tidy` also adds the `infra` module the constructs depend on.
 
-Use the same `vX.Y.Z` on both lines and pass it to `ImageFromGoBuild` below —
-one version covers the constructs, the declaration types and the bridge binary.
+That one `vX.Y.Z` covers the constructs, the declaration types and the bridge
+binary: the stack builds GoBridge at the same version.
 Pick a version whose train includes the profile modules
 ([RELEASE.md](../../../RELEASE.md#canonical-release-graph)).
 
@@ -94,15 +94,18 @@ Save the [bridge configuration](#bridge-configuration) as `bridge.yaml` next to
 your CDK app before synthesizing. The same document describes the image's
 initial config and the CDK declaration.
 
-`gobridgecdk.ImageFromGoBuild` builds the image for you — no Git checkout and
+With `Image` left unset, the construct builds the image for you — no Git checkout and
 no `docker build` of your own. `cdk synth` only stages the build context: a
 generated Dockerfile plus the facade's parsed `BridgeConfig`. Everything else
 happens during `cdk deploy`, when Docker downloads the profile command at the
-version you name, copies its owning module to a writable directory, fills the
+version your app depends on, copies its owning module to a writable directory, fills the
 fixed embed file, runs `go build`, and pushes the image to your CDK bootstrap
-asset repository. **A malformed `Version` fails at synth; a version that does
-not exist, or an unreachable module proxy, fails during `cdk deploy` — after a
-stack update has begun.** An AMQP or Azure Service Bus config needs no extra
+asset repository. **An app whose `cdk` module is replaced or not a released
+version fails at synth; a version that does not exist, or an unreachable module
+proxy, fails during `cdk deploy` — after a stack update has begun.** An app
+built against a local `replace` sets
+`Image: gobridge.ImageFromGoBuild(gobridge.GoBuild{Version: "vX.Y.Z"})`.
+An AMQP or Azure Service Bus config needs no extra
 step: the build derives its `gobridge_amqp091`, `gobridge_amqp10` or
 `gobridge_azure` tag from the config, and the binary links that transport.
 
@@ -117,17 +120,17 @@ may push to the bootstrap asset repository in ECR.
 The build verifies the binary's `-initial-config-digest` output against the
 staged document, so an image can never disagree with the config the stack
 declares. Optional plugin families are derived from that config; a family must
-be wired into the version you name. Literal credentials may be embedded, but
+be wired into the version you build. Literal credentials may be embedded, but
 artifact readers can recover them; Base64 does not hide them.
 
 On a version whose train predates the profile modules, or if you would rather
 run your own image — an air-gapped registry, a custom `Package`, or a build
 pipeline you already own — build it from this repository's root `Dockerfile`
 ([Container image](../../aws-deployment/container-image.md)) and use
-`gobridgecdk.ImageFromRegistry("...@sha256:<digest>")` or
-`gobridgecdk.ImageFromEcrRepository(repo, tag)` instead. CDK cannot modify
+`gobridge.ImageFromRegistry("...@sha256:<digest>")` or
+`gobridge.ImageFromEcr(repo, tag)` instead. CDK cannot modify
 those images: they must carry their own initial document, find an existing
-target, or wait idle for operator creation, while `BridgeYamlAsset` still
+target, or wait idle for operator creation, while `ConfigFile` still
 drives validation and grants. See
 [CDK image sources](../../aws-deployment/cdk-constructs.md#runtime-image-source).
 
@@ -149,9 +152,9 @@ The value must be at least 16 characters. Choose a strong, random string for pro
 ## CDK Stack
 
 There is no prebuilt env-driven CDK entrypoint; you write a small CDK app that instantiates the
-`gobridgesingle.NewGoBridgeSingle` facade. The facade takes a `*SingleProps`. Its four required
-fields are `Vpc`, `Image`, `Bootstrap`, and `BridgeConfig`; everything else falls back to
-documented defaults (CPU 512, MemoryMiB 1024, MountPath `/var/lib/gobridge`).
+`gobridge.NewSingle` facade. The facade takes a `*gobridge.SingleProps`. Its required
+fields are `Vpc`, `Bootstrap`, and `BridgeConfig`; everything else falls back to
+documented defaults (Go-built image, CPU 512, MemoryMiB 1024, MountPath `/var/lib/gobridge`).
 
 ### App
 
@@ -163,9 +166,7 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
 	"github.com/aws/jsii-runtime-go"
 
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
-	"github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+	"github.com/mariotoffia/gobridge/deployment/aws/cdk/gobridge"
 )
 
 func main() {
@@ -180,16 +181,15 @@ func main() {
 	// Provide a VPC (create one, or look up an existing VPC by ID/tags).
 	vpc := awsec2.NewVpc(stack, jsii.String("Vpc"), &awsec2.VpcProps{MaxAzs: jsii.Number(2)})
 
-	gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Single"), &gobridgesingle.SingleProps{
-		Vpc:   vpc,
-		Image: gobridgecdk.ImageFromGoBuild(gobridgecdk.ImageGoBuildProps{Version: "vX.Y.Z"}),
-		Bootstrap: infra.BootstrapConfig{
+	gobridge.NewSingle(stack, "Single", &gobridge.SingleProps{
+		Vpc: vpc,
+		Bootstrap: gobridge.Bootstrap{
 			BridgeID:         "gobridge-main",
 			ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",
 			AdminAPIKeyParam: "/gobridge/admin-api-key",
 		},
 		// This document is validated at synth and embedded into the image.
-		BridgeConfig: gobridgecdk.BridgeYamlAsset("bridge.yaml"),
+		BridgeConfig: gobridge.ConfigFile("bridge.yaml"),
 	})
 
 	app.Synth(nil)
@@ -202,8 +202,8 @@ func main() {
 cdk deploy --require-approval broadening
 ```
 
-The facade serializes the `BootstrapConfig` (after defaults are applied) into the task container
-as the `GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` environment variable:
+The facade serializes the `Bootstrap` settings (after defaults are applied) into the task container
+as the `GOBRIDGE_AWS_BOOTSTRAP_JSON` environment variable:
 
 ```json
 {
@@ -353,7 +353,7 @@ Also clean up the SSM parameter:
 aws ssm delete-parameter --name /gobridge/admin-api-key --region us-west-1
 ```
 
-`ImageFromGoBuild` publishes into the shared CDK bootstrap asset repository.
+The Go-built image is published into the shared CDK bootstrap asset repository.
 Leave that repository in place — other CDK stacks in the account use it — and
 prune old image assets with an ECR lifecycle policy instead
 ([Container image](../../aws-deployment/container-image.md#ecr-lifecycle-policy)).

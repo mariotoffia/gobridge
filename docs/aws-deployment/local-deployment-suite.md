@@ -1,6 +1,6 @@
 # Running the deployment suite locally
 
-The `aws-filebased-config` CDK profile can be deployed and driven with **no AWS
+The AWS CDK profile (`deployment/aws`) can be deployed and driven with **no AWS
 account and no credentials**. The same stack the credentialed suite deploys is
 synthesized, handed to `cdklocal`, and stood up on local emulators; the tests
 then talk to the running system.
@@ -42,7 +42,7 @@ make test-local-deploy LOCAL_DEPLOY_RUN='^TestLocal_DynamoDBConfigHotReload$'
 # One topology, with the tools already installed; build its runtime from this checkout.
 PATH="$PWD/.tools/local-deploy/node_modules/.bin:$PATH" \
 GOBRIDGE_INT_LOCAL=1 \
-go -C deployment/aws-filebased-config/cdk test -tags=integration_local -v \
+go -C deployment/aws/cdk test -tags=integration_local -v \
   ./integration/ -run TestLocal_SQSDataPlane
 ```
 
@@ -303,11 +303,11 @@ All three are closed.
 
 ## Where the code lives
 
-- `deployment/aws-filebased-config/cdk/integration/` — the harness and the
+- `deployment/aws/cdk/integration/` — the harness and the
   tests. One harness serves both backends: `integration_aws` deploys to a
   credentialed sandbox, `integration_local` deploys the same stack through
   `cdklocal`, and the local backend is one branch in each shared function.
-- `deployment/aws-filebased-config/cdk/integration/lambdafn/` — the Go function
+- `deployment/aws/cdk/integration/lambdafn/` — the Go function
   both ends of the Lambda topology run. One binary; the deployment's environment
   decides which end an instance is and which queue it forwards to.
 - `testutil/flocilocal` — the emulator container helper, and why DynamoDB and

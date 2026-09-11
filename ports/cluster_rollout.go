@@ -161,7 +161,7 @@ type ClusterCommittedConfigStore interface {
 // RolloutHost is the RUNTIME the coordinated cluster-rollout barrier drive acts
 // on. The barrier orchestration (bridge.ClusterRolloutDriver) is runtime-agnostic:
 // it drives through this port, so ONE barrier implementation serves both the
-// bridge.Supervisor and a bespoke composition root (the shipped file-based
+// bridge.Supervisor and a bespoke composition root (the shipped AWS
 // bootstrap.App) without either duplicating the drive or migrating to the other's
 // swap machinery. It is a port (not a bridge type) precisely because a composition
 // root implements it and injects it into the driver — the same shape as

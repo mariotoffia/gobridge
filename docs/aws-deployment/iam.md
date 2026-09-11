@@ -39,11 +39,10 @@ and adapter permissions continue to be derived as before.
 
 ## SQS discovery grants
 
-The facade's shared base calls `GrantSQSConfig`, which uses
-`QueueRegistry.ResolveQueue` for receiver, sender, and binding references.
-Tag selectors must be bound with `BindQueueTags(name, tags, prefix)` on an
-already registered queue. Missing or ambiguous mappings do not fall back to
-wildcard message permissions.
+The facade's shared base calls `GrantSQSConfig`, which resolves receiver,
+sender, and binding references against the `Queues` prop. A tag selector must
+be listed in `QueueTags` under the same key as its queue in `Queues`. Missing
+or ambiguous mappings do not fall back to wildcard message permissions.
 
 A stable physical `queue_name` uses `sqs:GetQueueUrl`. Tag selection adds
 `sqs:ListQueues` and `sqs:ListQueueTags`; do not add those discovery actions for
@@ -209,7 +208,7 @@ TTL check (both an observed enabled TTL and an unverifiable `DescribeTimeToLive`
 Neither relaxes a **confirmed** schema mismatch, which stays fatal. Use them only
 for a dev/emulator that cannot serve these control-plane calls.
 
-The shipped `aws-filebased-config` deployment builds the factory as
+The shipped `deployment/aws` deployment builds the factory as
 `NewDynamoDBStoreFactory(client)` with no options and exposes **no**
 `schema_preflight_advisory` or `ttl_preflight_advisory` config key, so opting into
 advisory mode requires code-level wiring in a custom composition root. The

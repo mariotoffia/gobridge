@@ -59,7 +59,7 @@ image's default set; `-tags gobridge_aws,gobridge_otel` selects SQS, DynamoDB
 and OTel without MQTT or SQLite. The admin/monitor API does not need
 `gobridge_http`; that tag selects the message transport. No tag registers
 processors or switches the config source or credential backend. The AWS
-deployment profile always links AWS, MQTT, native stores and HTTP, with [optional AMQP and Azure families](deployment/aws-filebased-config/ARCHITECTURE.md#image-source).
+deployment profile always links AWS, MQTT, native stores and HTTP, with [optional AMQP and Azure families](deployment/aws/ARCHITECTURE.md#image-source).
 
 `gobridge -version` prints `gobridge <version> (<gitSHA>) families=[...]`,
 with sorted family names and `dev` for unstamped metadata. Usage also lists

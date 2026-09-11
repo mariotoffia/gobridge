@@ -195,10 +195,10 @@ GoBridge supports distributed tracing through the `ports.Tracer` interface. The
 OTLP tracing adapter (`adapters/otel/tracing/`) exports spans over HTTP to any
 OTLP-compatible collector.
 
-> **Not wired in the `aws-filebased-config` profile.** That deployment profile
+> **Not wired in the `deployment/aws` profile.** That deployment profile
 > has no `traces_exporter` surface and provisions no OTLP collector; wiring a
 > tracer requires a custom composition root (the wiring point is documented in
-> `deployment/aws-filebased-config/lib/bootstrap/registry.go`).
+> `deployment/aws/lib/bootstrap/registry.go`).
 
 ### ADOT Sidecar on Fargate
 

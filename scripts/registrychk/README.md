@@ -3,15 +3,15 @@
 CI gate that enforces every AWS-deployable plugin kind registered into
 the local `*ports.Registry` (built by calling each adapter's exported
 `Register(reg *ports.Registry) error`) has matching CDK helpers in
-`deployment/aws-filebased-config/cdk`.
+`deployment/aws/cdk`.
 
 For each canonical AWS-deployable kind (after collapsing aliases like
 `aws.sqs` → `sqs` and `mqtt.paho` → `mqtt`) it checks:
 
 - A bridgecfg builder symbol exists with prefix `With<Kind>*` under
-  `deployment/aws-filebased-config/cdk/bridgecfg/`.
+  `deployment/aws/cdk/bridgecfg/`.
 - A grants helper file exists at
-  `deployment/aws-filebased-config/cdk/constructs/internal/grants/<kind>.go`
+  `deployment/aws/cdk/constructs/internal/grants/<kind>.go`
   when the kind has an IAM surface (transport-only kinds like `http`
   and in-process stores like `memory`/`sqlite` are exempt).
 

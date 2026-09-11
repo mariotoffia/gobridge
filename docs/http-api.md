@@ -153,7 +153,7 @@ When an admin named key is used there, its name still flows to the audit context
 
 #### Named keys from an SSM parameter
 
-The `aws-filebased-config` deployment profile can populate named keys from the
+The `deployment/aws` deployment profile can populate named keys from the
 single admin SSM parameter. The resolved value is read by shape:
 
 - A value whose first non-space byte is `{` is parsed as a JSON object of

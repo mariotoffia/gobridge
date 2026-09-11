@@ -67,7 +67,7 @@ Two states deserve calling out because they look healthy from the outside:
 ```yaml
 bridge:
   id: my-bridge
-  # Process shutdown budget on SIGTERM. In the shipped gobridge-filebased image
+  # Process shutdown budget on SIGTERM. In the shipped gobridge-aws image
   # the watcher join, rollout stop, HTTP shutdown, runtime drain, store close
   # and telemetry flush all run inside it.
   shutdown_timeout: 45s
@@ -139,7 +139,7 @@ cancel and close phases (steps 4--5) run detached from the caller context under
 their own bounded close timeouts. How the two budgets relate differs between
 the shipped binaries:
 
-- **`gobridge-filebased`** (the shipped image) spends `shutdown_timeout` as the
+- **`gobridge-aws`** (the shipped image) spends `shutdown_timeout` as the
   ONE process budget: the config-watcher join, the rollout-drive stop, the HTTP
   servers, the runtime drain (bounded by `drain_timeout` INSIDE that budget),
   store close and the metrics flush all consume the same deadline in sequence.
@@ -190,7 +190,7 @@ two binaries use these codes.
 | `1` | Startup failure (plugin registration, config load, watcher start, HTTP server start, or the supervisor produced no runtime), or the runtime entered a terminal, unrecoverable state (`main.go`). |
 | `2` | Flag/usage error (Go `flag` package default `ExitOnError`), or a second `SIGINT`/`SIGTERM` forcing an immediate exit before drain completes (`main.go`). |
 
-**`gobridge-filebased`** (shipped image entrypoint, `deployment/aws-filebased-config/lib/cmd/gobridge-filebased/main.go`):
+**`gobridge-aws`** (shipped image entrypoint, `deployment/aws/lib/cmd/gobridge-aws/main.go`):
 
 | Code | Meaning |
 |------|---------|

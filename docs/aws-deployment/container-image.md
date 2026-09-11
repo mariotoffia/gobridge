@@ -7,17 +7,17 @@ Part of the [AWS Deployment Overview](overview.md).
 
 ---
 
-An external CDK app usually needs none of this. `gobridgecdk.ImageFromGoBuild`
+An external CDK app usually needs none of this. A facade with no `Image` set
 builds the same image from published modules during `cdk deploy`, so a consumer
 neither clones this repository nor runs `docker build`
 ([CDK image sources](cdk-constructs.md#runtime-image-source)). This page covers
 the repository's own build: local development, CI, and the pipelines that
-produce a registry image for `ImageFromRegistry` or `ImageFromEcrRepository`.
+produce a registry image for `gobridge.ImageFromRegistry` or `gobridge.ImageFromEcr`.
 
 ## Production Dockerfile
 
 The repository ships a multi-stage `Dockerfile` at the root that builds the
-`gobridge-filebased` binary as a static, **CGO-free** executable — the SQLite
+`gobridge-aws` binary as a static, **CGO-free** executable — the SQLite
 store uses `modernc.org/sqlite`, which is pure Go, so there is no cgo and no
 `CGO_ENABLED=1` — and ships it on `distroless/static-debian12:nonroot`:
 
@@ -30,21 +30,21 @@ FROM golang:1.25-bookworm@sha256:ea341baa9bd5ba6784f6d7161ace70544349a6242d54d34
 WORKDIR /src
 COPY . .
 ENV CGO_ENABLED=0 GOWORK=off GOFLAGS=-mod=mod
-RUN cd deployment/aws-filebased-config/lib && \
+RUN cd deployment/aws/lib && \
     go build -trimpath -ldflags="-s -w" \
-      -o /out/gobridge-filebased ./cmd/gobridge-filebased
+      -o /out/gobridge-aws ./cmd/gobridge-aws
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b AS runtime
-COPY --from=build /out/gobridge-filebased /usr/local/bin/gobridge-filebased
+COPY --from=build /out/gobridge-aws /usr/local/bin/gobridge-aws
 USER 65532:65532
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD ["/usr/local/bin/gobridge-filebased", "-healthcheck"]
-ENTRYPOINT ["/usr/local/bin/gobridge-filebased"]
+  CMD ["/usr/local/bin/gobridge-aws", "-healthcheck"]
+ENTRYPOINT ["/usr/local/bin/gobridge-aws"]
 ```
 
 Build from the repository root — the binary module resolves the rest of
 GoBridge through relative `replace` directives (`docker build -t
-gobridge-filebased:latest .`).
+gobridge-aws:latest .`).
 
 Key points:
 
@@ -69,7 +69,7 @@ Supply a YAML or JSON file inside the build context:
 
 ```sh
 docker build --build-arg INITIAL_CONFIG_FILE=config/initial.yaml \
-  -t gobridge-filebased:local .
+  -t gobridge-aws:local .
 ```
 
 The build uses native Go file embedding. The document is not carried in compiler
@@ -91,7 +91,7 @@ with the `gobridge_<family>` build tags shared with the reference binary
 
 ```sh
 docker build --build-arg GO_BUILD_TAGS=gobridge_amqp091,gobridge_azure \
-  -t gobridge-filebased:local .
+  -t gobridge-aws:local .
 # or, through the Makefile
 make docker-build GOBRIDGE_TAGS=gobridge_amqp091
 ```
@@ -100,8 +100,8 @@ Only those three tags change this image; the base families are unconditional,
 and `gobridge_all` selects every optional family. A config naming a kind whose
 family was not selected fails to decode at startup, and the startup log names
 every kind the binary can decode. CDK consumers do not set this by hand:
-`ImageFromGoBuild` derives the tags from the bridge config, or takes an
-explicit `BuildTags` list.
+the Go build derives the tags from the bridge config, or
+`gobridge.ImageFromGoBuild` takes an explicit `BuildTags` list.
 
 ## ECR Lifecycle Policy
 

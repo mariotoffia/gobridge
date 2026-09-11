@@ -1,0 +1,78 @@
+package bootstrap
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsssm "github.com/aws/aws-sdk-go-v2/service/ssm"
+	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/stretchr/testify/require"
+
+	deployinfra "github.com/mariotoffia/gobridge/deployment/aws/infra"
+	"github.com/mariotoffia/gobridge/testutil/flocilocal"
+	"github.com/mariotoffia/gobridge/testutil/wait"
+)
+
+func TestIntegration_AppStartsWithSSMSecrets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	flocilocal.Configure(flocilocal.WithCleanOrphans(true))
+	t.Cleanup(flocilocal.Shutdown)
+
+	ssmClient := awsssm.NewFromConfig(flocilocal.AWSConfig(t))
+	putSecureString(t, ssmClient, "/gobridge/admin", "admin-secret-key-123456")
+	putSecureString(t, ssmClient, "/gobridge/monitor", "monitor-secret-key-123")
+
+	cfgPath := t.TempDir() + "/bridge.yaml"
+	app := NewApp(deployinfra.BootstrapConfig{
+		BridgeID:           "bridge-integration",
+		ConfigFilePath:     cfgPath,
+		PollInterval:       "100ms",
+		AdminAddr:          ":0",
+		MonitorAddr:        ":0",
+		TransportHTTPAddr:  ":0",
+		AdminAPIKeyParam:   "/gobridge/admin",
+		MonitorAPIKeyParam: "/gobridge/monitor",
+		AWSRegion:          flocilocal.Region,
+		SSMEndpoint:        flocilocal.Endpoint(t),
+		DevMode:            true,
+	}, WithInitialConfig("bridge:\n  id: bridge-integration\n"))
+
+	require.NoError(t, app.Start(t.Context()))
+	t.Cleanup(func() {
+		_ = app.Stop(context.Background())
+	})
+	wait.Until(t, 5*time.Second, "initial configuration becomes active", func() bool {
+		return app.CurrentAppliedConfig() != nil
+	})
+
+	req, err := http.NewRequest(http.MethodGet, app.AdminURL()+"/api/v1/admin/config", nil)
+	require.NoError(t, err)
+	req.Header.Set("X-API-Key", "admin-secret-key-123456")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.NotNil(t, body["config"])
+}
+
+func putSecureString(t *testing.T, client *awsssm.Client, name, value string) {
+	t.Helper()
+	_, err := client.PutParameter(t.Context(), &awsssm.PutParameterInput{
+		Name:      aws.String(name),
+		Value:     aws.String(value),
+		Type:      ssmtypes.ParameterTypeSecureString,
+		Overwrite: aws.Bool(true),
+	})
+	require.NoError(t, err)
+}

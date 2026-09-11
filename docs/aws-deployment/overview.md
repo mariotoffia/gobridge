@@ -21,8 +21,8 @@ described in [CDK Construct Library](cdk-constructs.md).
 flowchart TD
     subgraph VPC["VPC (private subnets)"]
         subgraph ECS["ECS Fargate"]
-            T1[Task 1\ngobridge-filebased]
-            T2[Task N\ngobridge-filebased]
+            T1[Task 1\ngobridge-aws]
+            T2[Task N\ngobridge-aws]
         end
 
         EFS[(EFS\nbridge.yaml)]

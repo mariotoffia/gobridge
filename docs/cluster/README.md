@@ -208,7 +208,7 @@ bridge:
 
 And in each process's deployment/bootstrap config, its own identity. In the AWS
 file-based profile that config is the JSON document supplied through
-`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` — one per member, differing only in
+`GOBRIDGE_AWS_BOOTSTRAP_JSON` — one per member, differing only in
 `member_id` and `node_role`:
 
 <!-- docs-example: skip -->

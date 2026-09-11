@@ -37,7 +37,7 @@ covers upgrading and rolling back between digests.
 ```json
 {
   "healthCheck": {
-    "command": ["CMD", "/usr/local/bin/gobridge-filebased", "-healthcheck"],
+    "command": ["CMD", "/usr/local/bin/gobridge-aws", "-healthcheck"],
     "interval": 10,
     "timeout": 5,
     "retries": 3,
@@ -163,7 +163,7 @@ mode, which also covers network filesystems that drop inotify events.
 - **The AWS file-based profile (the shipped image) does not honor the `http:`
   block.** It sources the admin/monitor listen addresses, CORS origins, and API
   keys from the bootstrap config (env/SSM) rather than `bridge.yaml`
-  (`deployment/aws-filebased-config/lib/bootstrap/app.go`), and it sets
+  (`deployment/aws/lib/bootstrap/app.go`), and it sets
   no in-process TLS — TLS terminates at the ALB in front of the task. The
   `http:` block's `tls_cert_file` / `tls_key_file` (and its admin/monitor
   addresses and keys) are ignored on that image.

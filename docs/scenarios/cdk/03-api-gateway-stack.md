@@ -2,7 +2,7 @@
 
 ## Overview
 
-The full stack combines the `GoBridgeSingle` facade, NLB, VPC Link,
+The full stack combines the `gobridge.NewSingle` facade, NLB, VPC Link,
 REST API, usage plans, and custom domain:
 
 The registry image must contain its own embedded initial document, consume
@@ -25,9 +25,7 @@ import (
     "github.com/aws/constructs-go/constructs/v10"
     "github.com/aws/jsii-runtime-go"
 
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+    "github.com/mariotoffia/gobridge/deployment/aws/cdk/gobridge"
 )
 
 func NewAPIGatewayStack(scope constructs.Construct, id string) awscdk.Stack {
@@ -46,17 +44,17 @@ func NewAPIGatewayStack(scope constructs.Construct, id string) awscdk.Stack {
 
     // --- GoBridge single facade (EFS and cluster) ---
 
-    bridge := gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Bridge"),
-        &gobridgesingle.SingleProps{
+    bridge := gobridge.NewSingle(stack, "Bridge",
+        &gobridge.SingleProps{
             Vpc: vpc,
-            Image: gobridgecdk.ImageFromRegistry(
+            Image: gobridge.ImageFromRegistry(
                 "123456789012.dkr.ecr.us-west-1.amazonaws.com/gobridge@sha256:<digest>"),
-            Bootstrap: infra.BootstrapConfig{
+            Bootstrap: gobridge.Bootstrap{
                 BridgeID:         "gobridge-api",
                 ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",
                 AdminAPIKeyParam: "/gobridge/admin-api-key",
             },
-            BridgeConfig: gobridgecdk.BridgeYamlAsset("bridge.yaml"),
+            BridgeConfig: gobridge.ConfigFile("bridge.yaml"),
             CPU:          jsii.Number(1024),
             MemoryMiB:    jsii.Number(2048),
         },
@@ -211,7 +209,7 @@ func main() {
 | Section | Lines | Purpose |
 |---------|-------|---------|
 | VPC lookup | `Vpc_FromLookup` | Import existing VPC by ID |
-| GoBridge service | `NewGoBridgeSingle` | Fargate task with EFS and SSM; optional initialization inside control |
+| GoBridge service | `gobridge.NewSingle` | Fargate task with EFS and SSM; optional initialization inside control |
 | NLB + target group | `NewNetworkLoadBalancer` | Internal NLB on port 8082, health check on 8081 |
 | VPC Link | `NewVpcLink` | Connects API Gateway to the private NLB |
 | REST API + proxy | `NewRestApi`, `AddProxy` | Catches all paths, requires API key |

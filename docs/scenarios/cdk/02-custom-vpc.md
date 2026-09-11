@@ -286,13 +286,13 @@ The full stack listing for this scenario is on its own page: [Custom VPC — com
 ### Reusing an Existing EFS Filesystem
 
 When the platform team provides a shared EFS filesystem, pass it directly to
-`GoBridgeEfsConfigProps.FileSystem`. The construct creates control and worker
+`gobridge.EfsConfigProps.FileSystem`. The construct creates control and worker
 access points at `/` and skips filesystem creation.
 
 ```go
 import (
     "github.com/aws/aws-cdk-go/awscdk/v2/awsefs"
-    cdkconstructs "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
+    "github.com/mariotoffia/gobridge/deployment/aws/cdk/gobridge"
 )
 
 existingFs := awsefs.FileSystem_FromFileSystemAttributes(stack, jsii.String("SharedEfs"),
@@ -306,8 +306,8 @@ existingFs := awsefs.FileSystem_FromFileSystemAttributes(stack, jsii.String("Sha
     },
 )
 
-efsConfig := cdkconstructs.NewGoBridgeEfsConfig(stack, jsii.String("Efs"),
-    &cdkconstructs.GoBridgeEfsConfigProps{
+efsConfig := gobridge.NewEfsConfig(stack, "Efs",
+    &gobridge.EfsConfigProps{
         Vpc:        vpc,
         FileSystem: existingFs,
     },
@@ -337,15 +337,15 @@ missing subnets before deploying the GoBridge stack.
 ### Shared EFS Across Services
 
 Multiple services can share one EFS filesystem, but GoBridge's control and worker
-access points both expose `/`; `GoBridgeEfsConfigProps` has no configurable
+access points both expose `/`; `gobridge.EfsConfigProps` has no configurable
 access-point path. Another service can use a narrower path, but that does not
 confine GoBridge to its own directory. Use a separate filesystem when services
 require filesystem isolation.
 
 ```go
 // GoBridge's control and worker access points both expose the filesystem root.
-gobridgeEfs := cdkconstructs.NewGoBridgeEfsConfig(stack, jsii.String("GoBridgeEfs"),
-    &cdkconstructs.GoBridgeEfsConfigProps{
+gobridgeEfs := gobridge.NewEfsConfig(stack, "GoBridgeEfs",
+    &gobridge.EfsConfigProps{
         Vpc:        vpc,
         FileSystem: sharedFs,
     },

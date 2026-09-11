@@ -25,7 +25,7 @@ IMAGE_TAG  ?= dev
 
 # The runtime image tag the local deployment proof deploys. It is built by
 # docker-build and never pushed.
-IMAGE_LOCAL_TAG ?= gobridge-filebased:local
+IMAGE_LOCAL_TAG ?= gobridge-aws:local
 GIT_SHA    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 INITIAL_CONFIG_FILE ?=
 export IMAGE_TAG GIT_SHA INITIAL_CONFIG_FILE
@@ -91,7 +91,7 @@ dev: ## Regenerate the Go workspace (go.work) from every on-disk module (local-d
 # Container image
 # ============================================================================
 
-docker-build: ## Build the production runtime image (gobridge-filebased, no push). GOBRIDGE_TAGS selects optional families; only gobridge_amqp091/amqp10/azure/all change this image
+docker-build: ## Build the production runtime image (gobridge-aws, no push). GOBRIDGE_TAGS selects optional families; only gobridge_amqp091/amqp10/azure/all change this image
 	@echo "Building $(IMAGE):$(IMAGE_TAG) ..."
 	docker build \
 		--build-arg VERSION=$(IMAGE_TAG) \
@@ -212,18 +212,18 @@ test: audit-timings audit-test-timings ## Run unit tests (no Docker, integration
 	# and ./gobridgecdk running in no target at all, which is how a SIGSEGV in
 	# ./constructs reached a release gate unseen. ./... cannot drift.
 	# ./integration is behind integration_aws and contributes nothing here.
-	@cd deployment/aws-filebased-config/cdk && go test -count=1 -timeout 300s ./...
-	@cd deployment/aws-filebased-config/cdk && AWS_EC2_METADATA_DISABLED=true \
+	@cd deployment/aws/cdk && go test -count=1 -timeout 300s ./...
+	@cd deployment/aws/cdk && AWS_EC2_METADATA_DISABLED=true \
 		go test -race -count=1 -timeout 120s -tags=integration_aws \
 		-run '^TestSandboxEnvFrom_' ./integration
-	@cd deployment/aws-filebased-config/cdk && AWS_EC2_METADATA_DISABLED=true \
+	@cd deployment/aws/cdk && AWS_EC2_METADATA_DISABLED=true \
 		go test -count=1 -timeout 120s -tags=integration_aws \
 		-run '^TestLookupVpc_ExplicitAttributesProduceCompleteAssembly$$' ./integration
 	# The local deployment backend shares files with the credentialed one, so a
 	# change made while working either path can break the other. Nothing else in
 	# any gate compiles this tag, and an edit that only breaks it would otherwise
 	# reach a branch green.
-	@cd deployment/aws-filebased-config/cdk && go vet -tags=integration_local ./integration/...
+	@cd deployment/aws/cdk && go vet -tags=integration_local ./integration/...
 	@echo "Running unit tests across all modules..."
 	@echo "Report will be saved to: reports/test-unit.log"
 	@bash -c 'set -o pipefail; { rc=0; for modfile in $$(find . -name go.mod -not -path "./.worktrees/*" -not -path "*/vendor/*" -not -path "*/tests/longrunning/*" | sort); do \
@@ -234,10 +234,10 @@ test: audit-timings audit-test-timings ## Run unit tests (no Docker, integration
 	done; \
 	echo "--- Testing ./cmd/gobridge (-tags=gobridge_all) ---"; \
 	go -C cmd/gobridge test -tags gobridge_all -count=1 -short -race -timeout 120s ./... || rc=$$?; \
-	echo "--- Testing ./deployment/aws-filebased-config/lib (-tags=gobridge_all) ---"; \
-	go -C deployment/aws-filebased-config/lib test -tags gobridge_all -count=1 -short -race -timeout 120s ./... || rc=$$?; \
-	echo "--- Testing ./deployment/aws-filebased-config/lib (-tags=gobridge_amqp091) ---"; \
-	go -C deployment/aws-filebased-config/lib test -tags gobridge_amqp091 -count=1 -short -race -timeout 120s ./bootstrap/ || rc=$$?; \
+	echo "--- Testing ./deployment/aws/lib (-tags=gobridge_all) ---"; \
+	go -C deployment/aws/lib test -tags gobridge_all -count=1 -short -race -timeout 120s ./... || rc=$$?; \
+	echo "--- Testing ./deployment/aws/lib (-tags=gobridge_amqp091) ---"; \
+	go -C deployment/aws/lib test -tags gobridge_amqp091 -count=1 -short -race -timeout 120s ./bootstrap/ || rc=$$?; \
 	exit $$rc; } 2>&1 | tee reports/test-unit.log; \
 	rc=$$?; \
 	echo ""; \
@@ -288,7 +288,7 @@ test-integration: audit-timings audit-test-timings ## Run all tests including in
 	fi; \
 	exit $$rc'
 
-# Local deployment proof: the aws-filebased-config CDK profile deployed against
+# Local deployment proof: the AWS CDK profile (deployment/aws) deployed against
 # local emulation and driven end to end. No AWS account and no credentials —
 # the emulators, the CDK CLI wrapper and the runtime image are all provisioned
 # here, so a clean checkout with Docker and Node can run it.
@@ -308,12 +308,12 @@ test-local-deploy: audit-timings audit-test-timings ## Build each embedded-confi
 		PATH="$(CURDIR)/$(LOCAL_DEPLOY_TOOLS)/node_modules/.bin:$$PATH" \
 		GOBRIDGE_INT_LOCAL=1 \
 		JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 \
-		go -C deployment/aws-filebased-config/cdk test -count=1 -timeout=180m -v \
+		go -C deployment/aws/cdk test -count=1 -timeout=180m -v \
 			-tags=integration_local -run="$(value LOCAL_DEPLOY_RUN)" ./integration/... 2>&1 | tee reports/test-local-deploy.log; \
 		rc=$$?; \
 		if ! grep -q "^=== RUN " reports/test-local-deploy.log || grep -q "no tests to run" reports/test-local-deploy.log; then echo "No local deployment tests matched the selector"; rc=1; fi; \
 		echo ""; \
-		echo "command:  go test -tags=integration_local ./integration/... (deployment/aws-filebased-config/cdk)"; \
+		echo "command:  go test -tags=integration_local ./integration/... (deployment/aws/cdk)"; \
 		if [ $$rc -eq 0 ]; then echo "status:   PASS"; else echo "status:   FAIL"; fi; \
 		echo "tests:    $$(grep -cE "^(    )*--- (PASS|FAIL|SKIP):" reports/test-local-deploy.log || true)"; \
 		echo "duration: $$(( $$(date +%s) - start ))s"; \
@@ -705,7 +705,7 @@ audit-test-timings: ## Check for new time.Sleep or Gosched spin-polling in test 
 		'time\.Sleep\(' . ; \
 		rg --no-heading -n -g '!*_test.go' -g '!testutil/wait/*' -g '!testutil/dockerexec/*' \
 		'time\.Sleep\(' testutil ports/storetest ports/configstoretest tests/testutil \
-		deployment/aws-filebased-config/cdk/integration ; } \
+		deployment/aws/cdk/integration ; } \
 		| sort \
 		| awk -f scripts/audit-timing-filter.awk); \
 	if [ -n "$$VIOLATIONS" ]; then \

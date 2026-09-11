@@ -12,7 +12,7 @@ There are two families:
   routing, and adapter behavior. Run locally against brokers in `tests/`.
 - **CDK deployment scenarios** (`cdk/01..05-*.md`) — packaging and operating
   GoBridge on AWS ECS Fargate using the L3 constructs in
-  `deployment/aws-filebased-config/cdk`.
+  `deployment/aws/cdk`.
 
 ## How to read a scenario
 
@@ -124,7 +124,7 @@ the boundary between the two on the wire.
 
 Distinct from the runtime scenarios above: these focus on packaging GoBridge
 as a container and operating it on AWS ECS Fargate using the L3 constructs in
-`deployment/aws-filebased-config/cdk`. They progress from a single-task
+`deployment/aws/cdk`. They progress from a single-task
 quickstart to a multi-bridge cluster.
 
 - **CDK 1. Quickstart with Default VPC** ([cdk/01-quickstart-default-vpc.md](cdk/01-quickstart-default-vpc.md)) — One-command stack with a fresh VPC, EFS, and a single Fargate task.

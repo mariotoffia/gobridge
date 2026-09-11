@@ -17,7 +17,7 @@ configuration seeder sidecar, init container, download script, or separate
 configuration image is required.
 
 Terms are defined in the [project glossary](../../UBIQUITOUS.md) and the
-[profile glossary](../../deployment/aws-filebased-config/UBIQUITOUS.md).
+[profile glossary](../../deployment/aws/UBIQUITOUS.md).
 
 ## Control-plane startup
 
@@ -58,7 +58,7 @@ bootstrap or network startup; inspecting embedded identity needs no API key.
 ## Build an initial document into the binary
 
 Both `cmd/gobridge` and the AWS profile command,
-`deployment/aws-filebased-config/lib/cmd/gobridge-filebased`, use `go:embed` to
+`deployment/aws/lib/cmd/gobridge-aws`, use `go:embed` to
 read the fixed `initial-config.base64` file into `main.initialConfigBase64`.
 The checked-in file is empty by default. Their entry points decode the value
 and pass the logical document through the port-based initializer.
@@ -126,10 +126,11 @@ Changing whitespace in the embedded document changes this digest.
 
 ### CDK-built images
 
-The AWS Cloud Development Kit (CDK) `ImageFromGoBuild` path automatically
+The AWS Cloud Development Kit (CDK) Go build — the default when `Image` is
+unset, or `gobridge.ImageFromGoBuild` — automatically
 embeds the parsed `BridgeConfig` already supplied to the facade. There is no
 second config prop, separate Amazon S3 config asset, or runtime S3 download
-grant. `BridgeYamlAsset(path)` names a local authoring input, not a runtime
+grant. `gobridge.ConfigFile(path)` names a local authoring input, not a runtime
 S3 configuration source.
 
 The Docker build context contains `initial-config-<rawSHA>.base64` as pure data.
@@ -150,7 +151,7 @@ Without an embedded document, `ImageFromGoBuild` still uses
 environment variables.
 
 After compilation, the generated build runs
-`/gobridge-filebased -initial-config-digest` and requires the result to match
+`/gobridge-aws -initial-config-digest` and requires the result to match
 the staged document's SHA-256 hash. A missing probe, failed probe, or mismatched
 hash fails the image build. Custom commands must provide the fixed embed file,
 consume it through `go:embed`, and support this probe when config is embedded.
@@ -168,7 +169,7 @@ needs a profile binary that links them. See the
 
 Amazon Elastic Container Registry (ECR) and other registry images are
 consumer-built. CDK cannot modify an image supplied by `ImageFromRegistry` or
-`ImageFromEcrRepository`. The consumer owns that image build. It can contain
+`ImageFromEcr`. The consumer owns that image build. It can contain
 its own embedded initial document, consume an existing target, or wait for
 an operator to create the target.
 
@@ -384,13 +385,13 @@ client's account and region:
 - Permission or service errors: report the error, not “no match.”
 
 CDK keeps `IQueue` handles for precise message-operation grants and resource
-dependencies. Call `QueueRegistry.AddQueue` first, then
-`BindQueueTags(name, tags, prefix)` to bind a selector to that handle.
-`ResolveQueue` matches declarations to handles without making AWS calls;
+dependencies. List the queue in the construct's `Queues` prop and its selector
+under the same key in `QueueTags`.
+The construct matches declarations to those handles without making AWS calls;
 runtime discovery independently checks actual queues.
-For CDK-owned queues, `BindQueueTags` applies the tags. For imported queues,
+For CDK-owned queues, the construct applies the tags. For imported queues,
 the producer must already apply them. A prefix must match the physical name,
-not the registry alias. `QueueRef.PhysicalName`, `QueueTags`, and
+not the map key. `QueueRef.PhysicalName`, `QueueTags`, and
 `QueueNamePrefix` expose these distinct values; see the
 [CDK reference and example](cdk-constructs.md#sqs-references).
 Only tag mode needs the additional discovery metadata reads.

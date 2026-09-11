@@ -9,7 +9,7 @@
 // store outside the compiled families fail at decoding with an unknown-kind error.
 //
 // The AWS image ghcr.io/mariotoffia/gobridge is the other shipped composition
-// root, deployment/aws-filebased-config/lib/cmd/gobridge-filebased: MQTT, SQS
+// root, deployment/aws/lib/cmd/gobridge-aws: MQTT, SQS
 // and HTTP transports, DynamoDB stores, secrets from SSM.
 package main
 

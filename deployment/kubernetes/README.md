@@ -15,7 +15,7 @@ ConfigMap reload, SIGTERM drain and restart — by `TestKubernetesProfile` in
 
 | | Shipped AWS image | Kubernetes profile |
 |---|---|---|
-| Binary | `gobridge-filebased` (`deployment/aws-filebased-config`) | `gobridge` (`cmd/gobridge`) |
+| Binary | `gobridge-aws` (`deployment/aws`) | `gobridge` (`cmd/gobridge`) |
 | Image | `ghcr.io/mariotoffia/gobridge`, published **by digest** with every stable `cmd/gobridge/vX.Y.Z` release; `latest` guarded | built from source with this `Dockerfile`, pushed to **your** registry, pinned by digest |
 | Transports | MQTT, AWS SQS, HTTP | MQTT |
 | Stores | memory, SQLite, DynamoDB | memory, SQLite |

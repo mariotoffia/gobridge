@@ -278,7 +278,7 @@ var reg = func() *ports.Registry {
 
 func TestBuildRegisteredKinds_Live(t *testing.T) {
 	// The live CDK composition root, relative to this module dir.
-	src := filepath.Join("..", "..", "deployment", "aws-filebased-config",
+	src := filepath.Join("..", "..", "deployment", "aws",
 		"cdk", "internal", "source", "source.go")
 	got, err := buildRegisteredKinds(src)
 	if err != nil {

@@ -174,7 +174,7 @@ may need a process restart to complete takeover.
 - Scale out when no healthy standby remains or the survivor is saturated. A
   declared objective at or below 60 seconds requires a healthy continuously
   polling warm standby. In the shipped AWS deployment model the
-  [`GoBridgeDynamoDBHA` CDK construct](../../deployment/aws-filebased-config/cdk/constructs/gobridgedynamodbha)
+  [`GoBridgeDynamoDBHA` CDK construct](../../deployment/aws/cdk/constructs/gobridgedynamodbha)
   now enforces this — at least two workers (`WorkerDesiredCount` may never be
   below two) spread across a required two AZs — so any single task loss leaves a
   continuously polling standby. Only a standalone (non-CDK) deployment still

@@ -348,7 +348,7 @@ func WithAllowDestructiveReload(allow bool) SupervisorOption {
 // bridge/ unit tests, the integration cluster-rollout suite over real DynamoDB,
 // and the long-running multi-process UC-CR proofs (ADR 0013).
 //
-// It is opt-in. The Supervisor is one RolloutHost; the shipped file-based
+// It is opt-in. The Supervisor is one RolloutHost; the shipped AWS
 // bootstrap.App is the other, both driving the same barrier
 // through a bridge.ClusterRolloutDriver. A deployment that does not wire it keeps
 // the ADR 0012 whole-cohort replacement procedure.

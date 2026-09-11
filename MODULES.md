@@ -41,7 +41,7 @@ also be wired in that version; local workspace success does not prove it. See
    The release tool strips these per-tag at publish time — do not remove them by hand.
 3. `make dev` — the module joins the workspace automatically.
 4. **If it is published** (anything under `adapters/`, `processors/`, or `httpapi`,
-   `cmd/gobridge`, root, or the three `deployment/aws-filebased-config/*` profile
+   `cmd/gobridge`, root, or the three `deployment/aws/*` profile
    modules): add it to
    [`scripts/release/modules.json`](scripts/release/modules.json) with its dependency
    `layer` (a module may only require lower layers). `make lint` runs `make

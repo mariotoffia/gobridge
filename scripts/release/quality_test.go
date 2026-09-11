@@ -400,11 +400,10 @@ go 1.25.0
 	//
 	// Fetching the module path alone leaves go.sum without entries for what the
 	// CDK's own code imports, and the build that follows fails on every one of
-	// them, so the fetch must name the package. gobridgecdk reaches every
-	// facade; gobridgesingle is the path a consumer's stack actually names.
+	// them, so the fetch must name the package. gobridge is the path a
+	// consumer's stack names, and it reaches every facade.
 	wantBuilt := []string{
-		cdk + "/gobridgecdk",
-		cdk + "/constructs/gobridgesingle",
+		cdk + "/gobridge",
 	}
 	if len(built) != len(wantBuilt) {
 		t.Errorf("smoke built %v, want exactly %v", built, wantBuilt)
@@ -424,7 +423,7 @@ go 1.25.0
 	// out of the module zip. Resolving the tag proves the manifest; only a
 	// build proves the published source compiles from the proxy.
 	profileCommand := manifest.ModulePrefix +
-		"/deployment/aws-filebased-config/lib/cmd/gobridge-filebased"
+		"/deployment/aws/lib/cmd/gobridge-aws"
 	if want := profileCommand + "@" + testReleaseVersion; !slices.Contains(installed, want) {
 		t.Errorf("smoke did not install %s; installed %v", want, installed)
 	}
