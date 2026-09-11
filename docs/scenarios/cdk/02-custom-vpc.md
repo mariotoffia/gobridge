@@ -286,10 +286,15 @@ The full stack listing for this scenario is on its own page: [Custom VPC — com
 ### Reusing an Existing EFS Filesystem
 
 When the platform team provides a shared EFS filesystem, pass it directly to
-`GoBridgeEfsConfigProps.FileSystem`. The construct creates only the access point
-and skips filesystem creation.
+`GoBridgeEfsConfigProps.FileSystem`. The construct creates control and worker
+access points at `/` and skips filesystem creation.
 
 ```go
+import (
+    "github.com/aws/aws-cdk-go/awscdk/v2/awsefs"
+    cdkconstructs "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs"
+)
+
 existingFs := awsefs.FileSystem_FromFileSystemAttributes(stack, jsii.String("SharedEfs"),
     &awsefs.FileSystemAttributes{
         FileSystemId: jsii.String("fs-0abc1234def56789a"),
@@ -301,8 +306,8 @@ existingFs := awsefs.FileSystem_FromFileSystemAttributes(stack, jsii.String("Sha
     },
 )
 
-efsConfig := gbcdk.NewGoBridgeEfsConfig(stack, jsii.String("Efs"),
-    &gbcdk.GoBridgeEfsConfigProps{
+efsConfig := cdkconstructs.NewGoBridgeEfsConfig(stack, jsii.String("Efs"),
+    &cdkconstructs.GoBridgeEfsConfigProps{
         Vpc:        vpc,
         FileSystem: existingFs,
     },
@@ -331,16 +336,18 @@ missing subnets before deploying the GoBridge stack.
 
 ### Shared EFS Across Services
 
-Multiple services can share one EFS filesystem with separate access points.
-Each access point scopes its root directory, providing logical isolation.
+Multiple services can share one EFS filesystem, but GoBridge's control and worker
+access points both expose `/`; `GoBridgeEfsConfigProps` has no configurable
+access-point path. Another service can use a narrower path, but that does not
+confine GoBridge to its own directory. Use a separate filesystem when services
+require filesystem isolation.
 
 ```go
-// GoBridge access point at /gobridge
-gobridgeEfs := gbcdk.NewGoBridgeEfsConfig(stack, jsii.String("GoBridgeEfs"),
-    &gbcdk.GoBridgeEfsConfigProps{
-        Vpc:             vpc,
-        FileSystem:      sharedFs,
-        AccessPointPath: jsii.String("/gobridge"),
+// GoBridge's control and worker access points both expose the filesystem root.
+gobridgeEfs := cdkconstructs.NewGoBridgeEfsConfig(stack, jsii.String("GoBridgeEfs"),
+    &cdkconstructs.GoBridgeEfsConfigProps{
+        Vpc:        vpc,
+        FileSystem: sharedFs,
     },
 )
 

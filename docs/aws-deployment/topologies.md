@@ -126,7 +126,10 @@ The key/index shapes are the adapter contracts, not deployment inventions:
 | Rollout coordination (`<bridge.id>-rollouts`, **only with `MemberSlots`**) | `PK` string hash key; no sort key or indexes -- the rollout aggregate is one row | **Disabled.** The row holds the cohort's last committed config artifact, the point every restarting member recovers to. |
 
 The data API is `DynamoDBHAData`, returned by `bridge.Data()`. It exposes the
-lease, outbox, and managed-subscription table objects, names, and ARNs.
+lease, outbox, and managed-subscription table objects, names, and ARNs, plus the
+rollout coordination table when `MemberSlots` is configured. `RolloutTable()`,
+`RolloutTableName()`, and `RolloutTableARN()` return nil when no rollout table
+is provisioned.
 
 On-demand billing is appropriate for bursty takeover and outage recovery, but it
 does not eliminate hot keys. A single Exclusive MQTT session concentrates the
