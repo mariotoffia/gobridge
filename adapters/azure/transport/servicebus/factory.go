@@ -186,3 +186,5 @@ func (f *Factory) AddressValidator() ports.AddressValidator { return nil }
 func (f *Factory) VisibilityTimeout() time.Duration {
 	return 30 * time.Second
 }
+
+var _ ports.TransportFactory = (*Factory)(nil)
