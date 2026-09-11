@@ -12,6 +12,25 @@ Part of the [AWS Deployment Overview](overview.md).
 
 ---
 
+## Config Source by Topology
+
+Topology selects how tasks coordinate; `Bootstrap.ConfigSource` separately
+selects where they read and write the bridge document.
+
+| Facade | `file` | `dynamodb` | EFS |
+|--------|--------|------------|-----|
+| `GoBridgeSingle` | Default | Supported | Only for file config or SQLite store paths |
+| `GoBridgeCluster` | Required | Rejected at synth and runtime validation | Required |
+| `GoBridgeDynamoDBHA` | Default | Supported | None with DynamoDB config and DynamoDB stores |
+
+Empty `config_source` means `file` in every topology. With either source, only
+control may initialize or update config; workers are read-only. DynamoDB config
+uses one shared CAS-versioned item in a facade-owned table, separate from the
+HA data and rollout tables. Switching the source does not migrate the old
+document. See [configuration storage](storage-and-secrets.md).
+
+## Replicated and Coordinated Deployments
+
 The CDK library deliberately exposes two different multi-task profiles:
 
 | Facade | Coordination model | Intended use | Failover objective |
@@ -94,7 +113,9 @@ activated without needing Full readiness. See
 ## Coordinated HA data plane
 
 `GoBridgeDynamoDBHA` creates three encrypted, point-in-time-recoverable,
-delete-protected, retained `PAY_PER_REQUEST` tables — four with `MemberSlots`.
+delete-protected, retained `PAY_PER_REQUEST` data tables, plus a rollout table
+with `MemberSlots`. Selecting `config_source: dynamodb` adds a separate retained
+config table; it is not part of the data-table count below.
 The key/index shapes are the adapter contracts, not deployment inventions:
 
 | Table | Schema | TTL invariant |
@@ -104,8 +125,11 @@ The key/index shapes are the adapter contracts, not deployment inventions:
 | Managed subscriptions (`gobridge-managed-subscriptions` default) | `storage_identity` string hash key | Disabled; exact MQTT filter history is durable. |
 | Rollout coordination (`<bridge.id>-rollouts`, **only with `MemberSlots`**) | `PK` string hash key; no sort key or indexes -- the rollout aggregate is one row | **Disabled.** The row holds the cohort's last committed config artifact, the point every restarting member recovers to. |
 
-The data API is `DynamoDBHAData`, returned by `bridge.Data()`. It is the only HA
-facade surface exposing table objects, names, and ARNs.
+The data API is `DynamoDBHAData`, returned by `bridge.Data()`. It exposes the
+lease, outbox, and managed-subscription table objects, names, and ARNs, plus the
+rollout coordination table when `MemberSlots` is configured. `RolloutTable()`,
+`RolloutTableName()`, and `RolloutTableARN()` return nil when no rollout table
+is provisioned.
 
 On-demand billing is appropriate for bursty takeover and outage recovery, but it
 does not eliminate hot keys. A single Exclusive MQTT session concentrates the

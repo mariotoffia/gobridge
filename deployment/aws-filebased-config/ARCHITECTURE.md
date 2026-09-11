@@ -2,14 +2,10 @@
 
 ## Overview
 
-Internal architecture of the deployment profile: Go module layering, CDK construct composition, single vs cluster topology, the synth-time validation pipeline ("tier B"), and why peer discovery is EFS-mediated instead of Cloud Map. End-to-end AWS architecture (VPC, ALB) lives in [docs/aws-deployment/overview.md](../../docs/aws-deployment/overview.md), which maps to the topology, storage, image, construct, and IAM (JSON policy) pages beside it. The DDD mapping lives in [../../DDD.md](../../DDD.md) and the local glossary in [UBIQUITOUS.md](./UBIQUITOUS.md).
-
-> Sections and table rows marked **(planned)** describe the target
-> architecture of work in flight; each marker is removed when the behavior it
-> describes lands. Unmarked text describes the code as it is.
+Internal architecture of the deployment profile: Go module layering, CDK construct composition, config and image sources, deployment topologies, and the synth-time validation pipeline ("tier B"). End-to-end AWS architecture (VPC, ALB) lives in [docs/aws-deployment/overview.md](../../docs/aws-deployment/overview.md), which maps to the topology, storage, image, construct, and IAM (JSON policy) pages beside it. The DDD mapping lives in [../../DDD.md](../../DDD.md) and the local glossary in [UBIQUITOUS.md](./UBIQUITOUS.md).
 
 The profile supports two **config sources** for the hot-reloadable bridge
-config: `file` (YAML on EFS) and
+config: `file` (YAML or JSON, mounted from EFS in CDK deployments) and
 `dynamodb` (a single CAS-versioned `current` item read by
 `adapters/aws/config/dynamodb`). The bootstrap config selects the source; the
 name "filebased" in the module path predates this generalization.
@@ -33,14 +29,19 @@ flowchart LR
     CORE["github.com/mariotoffia/gobridge/*<br/>(bridge, runtime, ports, httpapi, adapters)"]
 
     CDK --> INFRA
+    CDK --> CORE
     LIB --> INFRA
     LIB --> CORE
 ```
 
-**Dependency rule.** `infra/` imports nothing outside the standard library — CDK consumers never pull in the runtime tree, and the runtime never imports CDK. `lib/model/BootstrapConfig` and `infra.BootstrapConfig` are intentional duplicates so each module can stand alone; equivalence is guarded by tests.
+**Dependency rule.** `infra/` imports nothing outside the standard library, so
+apps can import bootstrap types without the runtime or CDK dependency tree.
+Both CDK validation and `lib/` use core packages, but the runtime never imports
+CDK. `lib/model.BootstrapConfig` is an alias of `infra.BootstrapConfig`, not a
+second schema.
 
 **Publication.** `infra`, `lib` and `cdk` are all release-train members —
-`lib` because the default image source compiles its command from the module
+`lib` because `ImageFromGoBuild` compiles its default command from the module
 proxy. Published copies carry no `replace` directives and pin released sibling
 versions, which is what lets an external app build without a repository
 checkout; the development tree carries local `replace` directives that the
@@ -57,7 +58,7 @@ release tool strips at publish time. See the
 | `cdk/constructs/` (`efs_config.go`) | `GoBridgeEfsConfig` shared EFS + access points. |
 | `cdk/constructs/gobridgealbattachment/` | `GoBridgeALBAttachment` listener-rule wiring. |
 | `cdk/constructs/gobridgealarms/` | `GoBridgeAlarms` opinionated CloudWatch bundle. |
-| `cdk/gobridgecdk/` | Public facade: `BridgeYamlAsset`, `BridgeYamlInline`, sealed `BridgeConfigSource`, `LookupBridge`, `BridgeRef`. |
+| `cdk/gobridgecdk/` | Public facade: `BridgeYamlAsset`, `BridgeYamlInline`, sealed `BridgeConfigSource` and `BridgeImageSource`, image constructors, `LookupBridge`, `BridgeRef`. |
 | `cdk/bridgecfg/` | Fluent builder for `*ports.BridgeConfig`. |
 | `cdk/registry/` | `QueueRegistry`, `SsmParamRegistry` and their typed `Ref` accessors. |
 | `cdk/ssmexports/` | Functional options (`IncludeARNs()`) for the cross-stack export contract. |
@@ -114,7 +115,8 @@ config yaml was that topology's only remaining filesystem use.
 ## Runtime config sources
 
 `Bootstrap.ConfigSource` selects the runtime configuration source; empty means
-`file`. Single and DynamoDB HA support both sources. A DynamoDB source creates
+`file` in every topology, including DynamoDB HA. Single and DynamoDB HA support
+both sources; `filesystem_replicated` accepts only `file`. A DynamoDB source creates
 one facade-owned config table with string `PK`/`SK`, on-demand billing,
 point-in-time recovery, AWS-managed encryption and retention on deletion or
 replacement. It has no TTL. The facade stamps its table-name token into a copy
@@ -153,8 +155,7 @@ producer between filesystem-backed and EFS-free config.
 | Admin API writes | `parser.FileStore` guarded by the single-writer rule (control node only) | The loader itself — a `ports.ConditionalConfigStore`; control-only authority despite CAS capability |
 | Topology limits | all | `filesystem_replicated` rejected (workers boot from the shared filesystem by definition) |
 
-The profile always runs exactly one `config.Layer` (a base, never an
-overlay): the admin config transaction API and the rollout candidate digest
+The profile runs exactly one base `config.Layer`: admin transactions and the rollout candidate digest
 both require a single writer identity for the effective config.
 
 ## Image source
@@ -169,10 +170,9 @@ constructs use its identical internal alias to avoid the lookup/ALB import cycle
 | `ImageFromEcrRepository(repo, tag)` | Consumer-managed ECR. |
 | `ImageFromGoBuild(props)` | `DockerImageAsset` building a writable copy of a compatible published module with the facade's config in its fixed embed file; no Git checkout. Without embedded config it uses `go install`. Nil `BuildTags` derives optional families through `DeriveBuildTags`. |
 
-The profile binary's base families are aws, mqtt, native stores and http;
-`gobridge_amqp091`, `gobridge_amqp10` and `gobridge_azure` are additive
-compile-time families shared with the `cmd/gobridge` tag convention
-(`PLUGIN.md`). Each has a tagged file plus inverse stub in `lib/bootstrap`,
+The profile always links AWS, MQTT, native stores and HTTP, with additive
+`gobridge_amqp091`, `gobridge_amqp10` and `gobridge_azure` families (`PLUGIN.md`).
+Each has a tagged file plus inverse stub in `lib/bootstrap`,
 and `plugins.go` is the single place that enumerates them:
 `registerOptionalDecoders` extends the decoder registry and
 `wireOptionalTransports` extends the transport factory map, both before the
@@ -189,29 +189,18 @@ but must implement the profile's bootstrap and health check.
 When config is embedded, they must provide the fixed `initial-config.base64`
 file consumed through `go:embed` and support `-initial-config-digest`.
 
-The generated Dockerfile stamps `main.version` with the module version and
-`main.gitSHA` with `module@<version>`, identifying the published source without
-claiming to know its Git commit. Digest-pinned builder/runtime bases and a nonroot
-user match the root Dockerfile. The temporary context is always staged into the
-cloud assembly before removal, even if app-wide asset staging is disabled.
-It carries `initial-config-<rawSHA>.base64` as pure payload data, with the hash
-computed over the unencoded serialized document. The configured-image build
-downloads the requested package through Go tooling, copies its owning module
-to a writable directory, fills the command's fixed embed file, then runs
-`go build` with small metadata flags. The module cache stays unchanged.
-Both commands use `go:embed` for `main.initialConfigBase64`. Payload bytes
-never enter command arguments or the child environment. The build verifies
-`/gobridge-filebased -initial-config-digest` against the staged document's SHA-256
-hash. Both entry points handle the probe before runtime or network startup,
-printing the hash rather than the document. An older command that ignores the
-fixed-file contract or lacks the probe cannot silently produce a passing build.
-Registry and ECR images are
-unchanged by CDK; consumers build their own initial document or supply the
-target separately. `BridgeConfig` still declares validation and grants.
-`Platform` supports `linux/amd64` and `linux/arm64`; the same selection configures
-Docker and the Fargate task. Both builder and runtime overrides
-must support that platform. Registry/ECR constructors target
-`linux/amd64`.
+The build stages `initial-config-<rawSHA>.base64` into the cloud assembly, fills
+the fixed embed file in a writable module copy, and verifies the resulting
+`-initial-config-digest` against the unencoded document's SHA-256. The probe
+prints only the hash and runs before runtime/network startup. The module cache
+is unchanged; payload bytes never enter flags or environment variables.
+Digest-pinned bases, nonroot execution, and module-version metadata identify the
+build inputs. `Platform` selects `linux/amd64` or `linux/arm64` for Docker and
+Fargate together; registry/ECR constructors target `linux/amd64`.
+Registry/ECR images are unchanged by CDK; consumers supply their own initial
+document or target. `BridgeConfig` still drives validation and grants.
+See the [image-build contract](../../docs/aws-deployment/cdk-constructs.md#runtime-image-source)
+for staging, metadata, platform overrides, and custom-command requirements.
 
 ## Single vs Cluster
 
@@ -233,7 +222,12 @@ flowchart LR
     ALB -. admin + healthz + receivers .-> CTRL
 ```
 
-One Fargate service, `DesiredCount=1`, deployment policy `MinHealthyPercent=0 / MaxHealthyPercent=100` (full drain before replace — eliminates concurrent EFS RW writers across rolling deploys). The control role gets EFS `ClientMount`+`ClientWrite`; SSM/Logs grants are derived from the parsed yaml.
+The diagram shows the file-backed variant. One Fargate service runs with
+`DesiredCount=1` and deployment policy `MinHealthyPercent=0 / MaxHealthyPercent=100`
+(full drain before replacement). When EFS is needed, control receives
+`ClientMount`+`ClientWrite`. With DynamoDB config and no SQLite paths, the
+filesystem and its grants are omitted. SSM/Logs grants are derived from the
+parsed config.
 
 ### `GoBridgeCluster`
 
@@ -467,7 +461,7 @@ covers creation races, operator creation, artifact visibility, and SQS selection
 | Stale runtime on watch shutdown | `Stop` waits for `watchWg` before tearing down dependencies. |
 | Bad new runtime in prepare/commit | Old runtime stopped *before* commit; `recoverPrevious` re-attempts. |
 | Concurrent EFS RW writers across deploys | Control deploy policy `MinHealthyPercent=0 / MaxHealthyPercent=100`. |
-| Worker writes via admin API | Defence in depth: EFS mount `readOnly:true` AND ALB rule routes admin paths to control TG only. |
+| Worker config writes | Runtime `ConfigReadOnly` rejects writes for both sources; file mounts are read-only and DynamoDB config-table grants are read-only. ALB admin paths route to control only. |
 | Multiple facades in same stack | `cdk/constructs/internal/singleton` synth-time scope scan. |
 | Missing `QueueRegistry` / `SsmParamRegistry` entry | Tier B Phase 2 aggregates via `Annotations.of(scope).addError(...)` — every missing reference reported in one synth, with typed remediation message. |
 | Literal credential in embedded config | Allowed; artifact readers can recover it. Base64 is not secrecy. |
@@ -483,6 +477,18 @@ covers creation races, operator creation, artifact visibility, and SQS selection
 - **Custom CDK wiring**: compose `BridgeYamlInline(cfg)` over a hand-built `*ports.BridgeConfig` from `cdk/bridgecfg/`. The facades (`GoBridgeSingle` / `GoBridgeCluster` / `GoBridgeDynamoDBHA`) are the supported integration boundary; **bypassing them by composing `cdk/constructs/internal/gobridgebase` directly is not supported** — the package is internal precisely so the singleton / tier-B / mount-policy invariants stay enforceable.
 - **Custom transport/store**: not exposed via `App` — build a sibling deployment profile. The AMQP 0-9-1, AMQP 1.0 and Azure Service Bus families are compile-time opt-ins via the shared `gobridge_<family>` build tags; custom plugins still need their own composition.
 - **Custom image pipeline**: pass `ImageFromRegistry` / `ImageFromEcrRepository` to keep building the image yourself; `ImageFromGoBuild` is the zero-checkout build path once a compatible module is published.
+
+## Rejected Alternatives
+
+| Alternative | Why this profile does not use it |
+|-------------|---------------------------------|
+| Select the config backend only through an application option | Bootstrap must declare the source so CDK can provision the same backend and grant access to it. |
+| Separate configuration seeder container or Lambda | Adds an artifact and startup dependency. The control process already owns strict creation through `ports.ConfigInitializer`. |
+| Initialize with `SaveIfVersion(..., 0)` | Version-zero CAS may adopt a versionless row. Initialization must preserve every existing document. |
+| Consumer-owned config table | The facades own the table, bootstrap table name, and role-scoped grants as one deployment contract. |
+| Generic CloudFormation token substitution inside embedded config | Stable physical names and native SQS tag selection avoid embedding unresolved tokens or adding a second deployment phase. |
+| Require a repository checkout for CDK image builds | Replace-free published modules let external apps build the command without cloning. Local checkout builds remain available through the root Makefile. |
+| One fixed plugin set for every image | The profile keeps a base set and additive family tags. Consumers may also supply their own registry or ECR image. |
 
 ## Related Docs
 

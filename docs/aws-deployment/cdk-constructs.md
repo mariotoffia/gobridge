@@ -103,6 +103,8 @@ tooling, locates its owning module, and copies it to a writable build directory.
 It fills the command's fixed embed file in that copy, then runs `go build`
 with small version/commit linker flags. The module cache stays unchanged.
 Without embedded config, the build retains `go install package@version`.
+Both paths stamp `main.version` with the module version and `main.gitSHA` with
+`module@<version>`. This identifies the published source, not a known Git commit.
 
 Config bytes never enter the command arguments or child environment.
 There is no payload-bearing `GOENV`/`GOFLAGS` path, separate S3 config asset,
@@ -142,11 +144,12 @@ the cached `efs-id` lookup in `cdk.context.json` after deploying the producer.
 
 ## GoBridgeEfsConfigProps
 
+Both control and worker access points expose `/`; their paths are not configurable.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `Vpc` | `awsec2.IVpc` | *required* | VPC for EFS mount targets. |
 | `FileSystem` | `awsefs.IFileSystem` | new filesystem | Existing EFS filesystem to reuse. |
-| `AccessPointPath` | `*string` | `/gobridge` | POSIX path inside EFS. |
 | `PosixUID` | `*string` | `"1000"` | POSIX user ID for the access points. |
 | `PosixGID` | `*string` | `"1000"` | POSIX group ID for the access points. |
 | `RemovalPolicy` | `interface{}` | `RETAIN` | What happens to the filesystem on stack deletion. |

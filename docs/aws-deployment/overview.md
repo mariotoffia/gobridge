@@ -1,6 +1,6 @@
 # AWS Deployment Overview
 
-GoBridge runs on AWS as ECS Fargate services with EFS for configuration,
+GoBridge runs on AWS as ECS Fargate services with file or DynamoDB configuration,
 SSM Parameter Store for secrets, and an optional DynamoDB-coordinated HA
 profile. This page covers the end-to-end architecture; the topologies, storage,
 image, CDK constructs, and IAM policies each have their own page, listed under
@@ -13,8 +13,8 @@ For configuration details specific to AWS, see [Configuration on AWS](configurat
 
 ## Architecture
 
-The diagram below shows the full AWS architecture for a file-based GoBridge
-deployment. Every component is created or referenced by the CDK constructs
+The diagram below shows the shared AWS components and the two config choices.
+Tasks use the source selected in bootstrap, not both. Every component is created or referenced by the CDK constructs
 described in [CDK Construct Library](cdk-constructs.md).
 
 ```mermaid
@@ -30,13 +30,14 @@ flowchart TD
     end
 
     ECR[ECR\nContainer Registry] --> ECS
+    DDB[(DynamoDB\nconfig item)] -. dynamodb source .-> ECS
     SSM[SSM Parameter Store\nSecureString secrets] --> ECS
     CW[CloudWatch Logs\n& Metrics] --- ECS
 
     ALB --> T1
     ALB --> T2
-    T1 -- NFS mount --> EFS
-    T2 -- NFS mount --> EFS
+    T1 -. file source: NFS mount .-> EFS
+    T2 -. file source: NFS mount .-> EFS
 
     Client([External Clients]) --> ALB
 
@@ -48,18 +49,26 @@ flowchart TD
 
 | Component | Role |
 |-----------|------|
-| **ECR** | Stores the `gobridge-filebased` container image. |
+| **Container image** | `ImageFromGoBuild` builds a compatible published Go module into an ECR asset with embedded initial config. Registry/ECR constructors use a consumer-built image unchanged. |
 | **VPC** | Isolates the Fargate tasks in private subnets with NAT egress. |
 | **ECS Fargate** | Runs the bridge container without EC2 instance management. |
-| **EFS** | Provides a shared, hot-reloadable config file mount across all replicas. |
+| **EFS** | Provides the watched file config and any SQLite store paths. Omitted when neither needs a filesystem. |
+| **DynamoDB config table** | Optional alternative to file config for Single and DynamoDB HA: one versioned document, CAS updates, and poll or Streams observation. Separate from HA message-state tables. |
 | **ALB** | Terminates TLS and routes HTTP traffic to the admin, monitor, or transport ports. |
 | **SSM Parameter Store** | Holds API keys and credentials as `SecureString` parameters. |
 | **CloudWatch** | Collects structured logs and optional custom metrics. |
 
----
+Empty `config_source` defaults to `file` in all topologies. The
+filesystem-replicated topology supports file only. DynamoDB HA with DynamoDB
+config and DynamoDB data stores uses no EFS.
+
+With valid bootstrap, missing config leaves the control plane live and the data
+plane idle, not ready. Only control may create an absent target from optional
+embedded config; existing documents are never overwritten by initialization,
+and workers remain read-only. No configuration seeder container or S3 config
+asset is required. See [initial configuration](config-initialization.md).
 
 ---
-
 ## Page map
 
 This overview covers the architecture and points at the rest. Each page below is
@@ -69,8 +78,8 @@ self-contained.
 |------|--------|
 | [Deployment Topologies](topologies.md) | Single, cluster, and DynamoDB-coordinated HA; identity rules, task roles, alarms, failover proof. |
 | [Compute and Runtime Metrics](compute.md) | Why ECS Fargate, task sizing, and the runtime metrics backend. |
-| [Storage and Secrets](storage-and-secrets.md) | EFS for configuration, SSM Parameter Store for secrets, DynamoDB stores, DevMode guard. |
-| [Container Image](container-image.md) | Production Dockerfile and the ECR lifecycle policy. |
+| [Storage and Secrets](storage-and-secrets.md) | File or DynamoDB configuration, conditional EFS, SSM secrets, DynamoDB data stores, DevMode guard. |
+| [Container Image](container-image.md) | Published-module and local image builds, embedded config, and the ECR lifecycle policy. |
 | [CDK Construct Library](cdk-constructs.md) | Construct overview, props, and a complete usage example. |
 | [IAM Least Privilege](iam.md) | Task-role and execution-role policies, statement by statement. |
 

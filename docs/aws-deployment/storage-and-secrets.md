@@ -7,6 +7,10 @@ document on EFS or in a DynamoDB config table, the credentials in SSM Parameter 
 message state in DynamoDB — with the access design and operator
 responsibilities each one carries.
 
+Config source and message-state stores are independent choices. Empty
+`config_source` selects `file` even for DynamoDB HA; the DynamoDB data stores
+do not select the config backend.
+
 Part of the [AWS Deployment Overview](overview.md).
 
 ---
@@ -26,6 +30,10 @@ is no TTL. The adapter stores the versioned JSON config at
 which is separate from their message-state and rollout tables. Streams mode
 adds a `KEYS_ONLY` stream; the watcher reads the current item after notification.
 See [config-source IAM grants](iam.md#config-source-grants).
+
+The source polls every 30 seconds by default, or uses Streams when selected.
+The same loader supplies admin config persistence with compare-and-swap updates;
+stale versions fail rather than overwrite a concurrent change.
 
 An optional embedded initial document lets the control process create an absent
 item at version 1. Creation uses `ports.ConfigInitializer.CreateIfAbsent`, not
@@ -47,13 +55,18 @@ revision is not deleted by switching sources and can still incur charges.
 
 ## EFS for Configuration
 
-### Why EFS Over Alternatives
+The `file` source uses EFS in CDK deployments. The runtime library can also read a
+local YAML or JSON file; `config_file_path` is unused and must be empty for the
+DynamoDB source.
+
+### Choosing a Config Backend
 
 | Alternative | Limitation |
 |-------------|-----------|
-| **Environment variables** | 4 KiB per variable, 32 KiB total. Bridge configs routinely exceed this. |
+| **Environment variables** | Static per task revision; used for bootstrap settings rather than hot-reloadable bridge config. |
 | **Embedded initial document** | Creates an absent target at initial startup; not a watched backend or an update mechanism. |
-| **EFS** | Shared POSIX filesystem. Poll watcher detects changes within seconds; no restart required. |
+| **EFS** | Shared POSIX file with polling; file updates require one control writer. Required by `filesystem_replicated`. |
+| **DynamoDB** | Versioned config item with CAS updates and poll or Streams observation. Supported by Single and DynamoDB HA; avoids EFS when data stores need no filesystem. |
 
 GoBridge uses a **poll watcher** (default interval: 1 second) to detect config
 file changes on the mounted EFS volume. When the file changes, the runtime
@@ -74,14 +87,14 @@ explicitly. An S3 configuration adapter is deferred.
 
 ### Access Point Design
 
-The CDK `GoBridgeEfsConfig` construct creates an EFS access point with these
+The CDK `GoBridgeEfsConfig` construct creates control and worker access points with these
 defaults:
 
 | Setting | Default | Source |
 |---------|---------|--------|
 | POSIX UID | `1000` | `GoBridgeEfsConfigProps.PosixUID` |
 | POSIX GID | `1000` | `GoBridgeEfsConfigProps.PosixGID` |
-| Access point path | `/gobridge` | `GoBridgeEfsConfigProps.AccessPointPath` |
+| Access point path | `/` | Fixed by the construct for both roles |
 | Directory permissions | `755` | Set in `CreateAcl` |
 
 The EFS access point enforces this POSIX identity for every file operation
@@ -93,12 +106,11 @@ and still reads and writes `bridge.yaml` through the access point.
 
 These two paths serve different purposes:
 
-- **`AccessPointPath`** (`/gobridge` by default) -- the directory *inside* the
-  EFS filesystem where config files live. This is set when the access point is
-  created and is fixed for the life of the filesystem.
+- **Access point path** (`/`) -- the directory inside EFS exposed to the
+  container. The construct exposes the filesystem root for both roles.
 - **`MountPath`** (`/var/lib/gobridge` by default, `infra.DefaultMountPath`) --
   the directory *inside the container* where EFS is mounted. The container sees
-  `/var/lib/gobridge/bridge.yaml`, but EFS stores it at `/gobridge/bridge.yaml`.
+  `/var/lib/gobridge/bridge.yaml`, but EFS stores it at `/bridge.yaml`.
 
 The `BootstrapConfig.ConfigFilePath` should reference the container mount path,
 for example `/var/lib/gobridge/bridge.yaml`.

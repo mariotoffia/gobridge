@@ -6,16 +6,20 @@ Terms specific to this deployment profile. Additive to the project-wide [UBIQUIT
 
 ## Configuration
 
-There are exactly **two** configuration artifacts. The `bootstrap` package tracks two *states* of the bridge config (`logicalRef`, `appliedRef`) which only differ when a reload was rejected.
+There are exactly **two** configuration artifacts: bootstrap config and bridge
+config. An embedded initial document is a copy of the bridge config, not a third
+layer. The `bootstrap` package tracks the observed logical state and the applied
+runtime state separately; they can differ while a change awaits activation or
+after a rejected reload, and both are cleared after safe standalone idling.
 
 | Term | Meaning |
 |---|---|
 | **Bootstrap config** | Deployment-owned runtime parameters (`infra.BootstrapConfig`). Static per task revision. Delivered via env var `GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` or file `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`. Distinct from `ports.BridgeConfig`. |
-| **Bridge config** | The application's `ports.BridgeConfig` (YAML on EFS or JSON in a DynamoDB config item). Hot-reloadable. The same artifact whether in the selected source, in `logicalRef`, or in `appliedRef`. |
+| **Bridge config** | The application's hot-reloadable `ports.BridgeConfig`: YAML or JSON from a file, or JSON in a DynamoDB config item. CDK file deployments mount the file from EFS; the library can use a local file. `logicalRef` and `appliedRef` track snapshots of this artifact. |
 | **Config table** | Facade-owned DynamoDB table for the `dynamodb` config source: string `PK`/`SK`, one item at `config#<bridge_id>` / `current`, on-demand billing, PITR and retention. Shared by every HA task definition and separate from the HA data and rollout tables. CDK overwrites `ConfigDynamoDB.TableName` in an owned settings copy. |
 | **Config source** | Bootstrap selector `ConfigSource`: `file` (default) or `dynamodb`. Each supplies one base `config.Layer` and the matching admin `ports.ConfigStore`; the DynamoDB loader also implements `ports.ConditionalConfigStore`. |
-| **Logical state** | The bridge config last *seen* in the selected config source and parsed successfully (`logicalRef`). Updated even when the subsequent runtime swap is rejected. |
-| **Applied state** | The bridge config the *currently running* runtime was built from (`appliedRef`). On the happy path equals logical state. Diverges only after a failed reload — then logical = rejected new config, applied = last good. Used by `Stop` for `DrainTimeout` and by `recoverPrevious`. |
+| **Logical state** | The latest selected-source bridge config handed to runtime activation (`logicalRef`), without resolved secrets. It may differ from applied state during a rollout or after a rejected swap. |
+| **Applied state** | The logical bridge config the currently installed runtime was built from (`appliedRef`), or nil while idle. On successful convergence it equals logical state; a rejected update retains the last good applied config. Used by `Stop` for `DrainTimeout` and by `recoverPrevious`. |
 | **ContainerMemoryBytes** | Bootstrap container hard limit. Defaults to 1 GiB outside CDK; the CDK base always overwrites it from the effective Fargate task `MemoryMiB`, preventing runtime accounting from diverging from the deployed limit. |
 | **ReservedMemoryBytes** | Bootstrap reservation for non-MQTT runtime memory. Together with the AWS MQTT memory profile's 25% ingress reservation, it must leave at least 20% of `ContainerMemoryBytes` as headroom. |
 | **AWS MQTT memory profile** | Runtime bootstrap policy applied to initial config and every reload: divide 25% of container memory across unique built MQTT sessions that can ingest and derive each default Receive Maximum with the Paho ingress byte model. Every Persistent/Exclusive session referenced by a declared sender consumes one deduplicated share with route concurrency zero even when no route references that sender, because resumed durable state may deliver stale backlog; an Ephemeral sender-only session consumes no share. |
@@ -43,14 +47,14 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 | Term | Meaning |
 |---|---|
 | **Topology** | Deployment shape. `single` = one replica owns config writes. `filesystem_replicated` = N independent replicas read the same EFS and cross-instance coordination features are rejected. `dynamodb_coordinated_ha` (`TopologyDynamoDBCoordinatedHA`) = coordinated active/warm-standby ECS tasks using DynamoDB lease, shared outbox, and managed-subscription history stores. |
-| **NodeRole** | Per-replica identity. `control` (default) or `worker`. Declared in bootstrap; only control asserts single-writer authority for a file ConfigStore. A DynamoDB config store uses CAS regardless of role. |
+| **NodeRole** | Per-replica configuration authority: `control` (default) or `worker`. Only control may initialize or update config. File writes require the single-writer guard; DynamoDB updates use CAS. Workers remain read-only for either source, even though their data-store grants may permit writes. |
 | **Filesystem profile guard** | `validateFilesystemProfile` — rejects `shared_outbox` and `route.session` when topology is `filesystem_replicated`. |
 | **GoBridgeDynamoDBHA** | Separate coordinated active/warm-standby CDK facade for topology `dynamodb_coordinated_ha`; it reuses `internal/gobridgebase.New`, provisions one control task and at least two worker tasks, and does not change `GoBridgeCluster`. |
 | **DynamoDBHAProps** | Input contract for `GoBridgeDynamoDBHA`, including the shared bridge config, ECS/VPC placement, and registries. |
 | **DynamoDB HA config expectation** | Deployment-owned exact lease/outbox/managed-subscription table names plus canonical bridge-config SHA-256 fingerprint stamped into bootstrap by `GoBridgeDynamoDBHA`; every HA process checks the selected-source logical config against it before planning stores or transports. |
-| **DynamoDBHAData** | Data output owned by `GoBridgeDynamoDBHA`; the sole profile API exposing the lease, shared-outbox, and managed-subscription table objects, names, and ARNs. |
+| **DynamoDBHAData** | Data output owned by `GoBridgeDynamoDBHA`; exposes the lease, shared-outbox, and managed-subscription table objects, names, and ARNs, plus the rollout coordination table when `MemberSlots` is configured. `RolloutTable()`, `RolloutTableName()`, and `RolloutTableARN()` return nil otherwise. |
 | **FailureToFullDuration** | External failover-probe CloudWatch metric in the deployment metrics namespace. One sample is the milliseconds from the conservative pre-`StopTask` timestamp through exact-holder `STOPPED`, owner plus fencing-version change, and the different successor reaching `ServiceLevelFull`. It has no runtime dimensions; warm/cold percentiles are reported separately by the credentialed harness. Missing samples are non-breaching for the alarm, while release proof must query and find its exact sample. |
-| **NodeRole (current configuration authority)** | Supersedes the earlier write-authority description: workers remain read-only for file and DynamoDB config; CAS capability does not authorize worker writes or initialization. |
+| **NodeRole (current configuration authority)** | Historical clarification of `NodeRole`: CAS capability does not authorize worker config writes or initialization. |
 | **Deployment baseline content digest** | Content-only HA baseline identity for both file and DynamoDB sources, using the [project definition](../../UBIQUITOUS.md#deployment--seeding-deploymentaws-filebased-config); committed artifacts retain their actual stored version and full digest. |
 
 ## Reload Mechanics
@@ -76,27 +80,28 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 
 | Term | Meaning |
 |---|---|
-| **Access point path** | POSIX path *inside* EFS exposed by the access point. Default `/gobridge`. Set on the access point at creation; immutable thereafter. |
-| **Config mount path** | Path *inside the container* where the EFS access point is mounted when the config source or SQLite store paths require EFS. Default `/var/lib/gobridge` (single canonical constant `infra.DefaultMountPath`; the Phase-1 store-path validator, the ECS mount, and the seeder all derive from it). |
-| **Config file path** | Absolute path the bootstrap polls for the bridge config. Combines mount path + filename, e.g. `/var/lib/gobridge/bridge.yaml`. |
+| **Access point path** | POSIX path inside EFS exposed by the access point. The construct creates both control and worker access points at `/`; the path is fixed for the access point's lifetime. |
+| **Config mount path** | Path inside the container where EFS is mounted when file config or SQLite store paths require it. Default `/var/lib/gobridge` (`infra.DefaultMountPath`); the store-path validator, ECS mount, and runtime file path use this same root. |
+| **Config file path** | `BootstrapConfig.ConfigFilePath`, used only with `config_source: file`. An absolute file path for loading, polling, and admin persistence; CDK defaults it to `<MountPath>/bridge.yaml` and requires it below the mount. Library callers may use a local path. Must be empty for DynamoDB. |
 | **Config mount path (current users)** | The runtime config path and SQLite store paths derive from the mount; the earlier seeder reference is historical, since initialization now runs in the control process. |
 
 ## CDK
 
-The original **Embedded initial config** row describes the superseded
-linker/Go-environment-file build path. The native-file definition in this table
-is current; earlier rows remain as glossary history.
+The native-file embedding and local config materialization definitions below
+are current. Removed build and distribution mechanisms are explicitly marked
+as historical.
 
 | Term | Meaning |
 |---|---|
 | **L2 construct** | `GoBridgeSingle`, `GoBridgeCluster`, `GoBridgeDynamoDBHA`, `GoBridgeAlarms`. Composable; consumers wire their own VPC / cluster / ALB. There is no L3 stack — see [ARCHITECTURE.md](ARCHITECTURE.md). |
 | **Exposure** | `infra.Exposure` flags (`Admin`, `Monitor`, `TransportHTTP`) selecting which container ports get mapped. Admin :8080 is always mapped (health check requirement) regardless of `Admin`. |
-| **BridgeConfigSource** | Sealed type representing the source of bridge YAML supplied to a `GoBridgeSingle`, `GoBridgeCluster`, or `GoBridgeDynamoDBHA`. Two constructors: `BridgeYamlAsset(path)` (file → S3 asset) and `BridgeYamlInline(*ports.BridgeConfig)` (in-memory builder output). Construct unwraps internally. Lives in `cdk/gobridgecdk/`. |
+| **BridgeConfigSource** | Sealed synth-time config input to all three facades. `BridgeYamlAsset(path)` reads a local document; `BridgeYamlInline(*ports.BridgeConfig)` supplies typed config. Both drive validation, grants, and optional Go-build embedding without a separate S3 config asset. Distinct from the bootstrap-selected runtime config source. |
 | **BridgeImageSource** | Sealed image input to all three facades, re-exported from `cdk/internal/imgsource.Source`. `ImageFromRegistry(ref)` preserves a digest-pinned reference; `ImageFromEcrRepository(repo, tag)` uses a consumer-managed ECR tag or digest; `ImageFromGoBuild(props)` stages an embedded Dockerfile for a published command. The internal constructors are `NewRegistry`, `NewEcrRepository`, and `NewGoBuild`; `Materialize` creates the CDK image and `RuntimePlatform` aligns the Fargate task with it. |
 | **ImageGoBuildProps** | Build settings, re-exported from `imgsource.GoBuildProps`: required published lib-module `Version`, optional command `Package`, `BuildTags`, digest-pinned `GoImage` and `BaseImage`, and `Platform` (`linux/amd64` by default, or `linux/arm64`). The command must support this profile's bootstrap and health check. |
 | **DeriveBuildTags** | Sorted, deduplicated optional family tags derived from bridge-config transport and store discriminators. Base AWS, MQTT, native stores and HTTP require no extra tags. Unknown kinds and processor registrations without a profile mapping fail synth. Nil `BuildTags` invokes derivation; an explicit empty slice adds no tags. Aliases follow root `PLUGIN.md`. |
+| **Profile base set** | Plugin families always linked into `gobridge-filebased`: AWS, MQTT, native stores, and HTTP. AMQP 0-9-1, AMQP 1.0, and Azure Service Bus are additive `gobridge_amqp091`, `gobridge_amqp10`, and `gobridge_azure` tags; `gobridge_all` selects all three optional families. OTel is not wired by this profile. See [PLUGIN.md](../../PLUGIN.md#binary-composition-build-tags). |
 | **BridgeConfigSource (current materialization)** | Supersedes the earlier S3-asset description: `BridgeYamlAsset` reads a local document and `BridgeYamlInline` supplies typed config; both drive validation and grants, and `ImageFromGoBuild` embeds the parsed result without a separate S3 config asset. |
-| **Embedded initial config** | Logical document carried in linker string `main.initialConfigBase64`; CDK stages it in `initial-config-<hash>.goenv`, while registry images remain consumer-owned and unchanged. |
+| **Embedded initial config** | Logical document compiled into `main.initialConfigBase64` through the fixed `initial-config.base64` file and `go:embed`. The earlier linker-string and `.goenv` mechanisms are removed; registry/ECR images remain consumer-owned and unchanged. |
 | **Embedded initial config digest** | SHA-256 of decoded embedded bytes, inspected with `-initial-config-digest` before runtime or network startup and checked by the Go-build image path without printing the document. |
 | **Embedded initial config (native file)** | Supersedes the linker/Go-environment-file path: both commands use `go:embed` on fixed `initial-config.base64`, empty by default; CDK stages pure data in `initial-config-<rawSHA>.base64`, hashes the unencoded serialized document, and fills the command's file in a writable module copy before `go build`. |
 | **Local embed overlay** | `scripts/buildconfig` output that maps the fixed command embed file to a generated Base64 payload for Make and Docker builds without changing original source files or passing payload bytes in flags or environment variables. |
@@ -128,7 +133,7 @@ The row is retained as glossary history, not as a supported API.
 
 | Term | Meaning |
 |---|---|
-| **OnConfigDrift** | Drift-handling policy applied by the seeder init container against the current EFS file or DynamoDB config item. `SeedOnce` (control default) seeds iff absent and warns on drift; `Overwrite` uses the CDK source of truth (DynamoDB writes CAS-bump the row and JSON version); `AbortDeploy` is read-only and exits 10 on mismatch; `AdoptValid` (worker default) adopts valid drift without writes. DynamoDB semantic hashes use actual `data` and ignore only top-level `version`. Configured via `SeederMode` / `ControlSeederMode` and `WorkerSeederMode`; DynamoDB worker modes must remain read-only. |
+| **OnConfigDrift** | Removed API, retained as history. The former seeder applied drift policy to the EFS file or DynamoDB item: `SeedOnce` (control default) created only absent config and warned on drift; `Overwrite` used the CDK source of truth, CAS-bumping both the DynamoDB row and JSON version; `AbortDeploy` was read-only and exited `10` on mismatch; `AdoptValid` (worker default) adopted valid drift without writes. DynamoDB semantic hashes used actual `data` and ignored only top-level `version`. The removed props were `SeederMode`, `ControlSeederMode`, and `WorkerSeederMode`; DynamoDB worker modes had to remain read-only. |
 | **OnConfigDrift (superseded)** | No maintained drift-mode API or seeder container remains; initialization creates only an absent document, existing config wins, and workers never initialize. |
 
 ### Cross-stack lookup

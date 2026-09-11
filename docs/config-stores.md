@@ -182,12 +182,14 @@ Pass this to the watcher with `WithWatchConfig(baseCfg.ConfigWatch)`.
 Stores the full `BridgeConfig` as a single DynamoDB item with version-based change detection. Useful for centralized configuration management in AWS environments.
 
 > **A DynamoDB layer is a base, not an overlay on a file.** Wire it as the config
-> source a bridge assembles itself from programmatically. It is deliberately not
-> reachable as an overlay under the shipped `aws-filebased-config` deployment
-> profile, which runs a single `file` layer: that profile's admin config
-> transaction API reads and writes the base document, so an overlay changing
-> underneath it would make the running config and the document the API commits to
-> two different things — see [Overlays and the admin config API do not
+> source programmatically, or select `config_source: dynamodb` in the shipped
+> AWS deployment profile's bootstrap config. Single and DynamoDB HA support it;
+> `filesystem_replicated` supports file only. The profile runs exactly one base
+> layer, either `file` (the default) or `dynamodb`, and gives the admin API that
+> same source's store. It does not support overlays: an overlay changing
+> underneath a transaction could make the running config differ from the document
+> the API commits. See [AWS configuration](aws-deployment/configuration.md) and
+> [Overlays and the admin config API do not
 > compose](configuration-overview.md#overlays-and-the-admin-config-api-do-not-compose).
 
 ### API
@@ -246,12 +248,14 @@ The table uses **pay-per-request** billing. `EnsureTable` creates the table idem
 
 ### Behaviour
 
-- Implements `ports.Loader`, `ports.Reloader`, `ports.ConfigStore`, and `ports.ConditionalConfigStore`.
+- Implements `ports.Loader`, `ports.Reloader`, `ports.ConfigStore`, `ports.ConditionalConfigStore`, `ports.ConfigInitializer`, and `ports.ConfigObserver`.
 - **Load**: `GetItem` by PK/SK (strongly consistent), parse JSON from `data`, and set `BridgeConfig.Version` from the row's authoritative `version` attribute. An absent version is zero; malformed or negative versions fail with `shared.ErrInvalidConfig`.
 - **Watch** (`ModePoll`): a strongly-consistent `GetItem` at each poll interval compares the `version` attribute; the full item is re-parsed only when the version changes. `ModeStreams` consumes Streams records instead. Channel is closed on context cancellation.
 - Poll-cycle failures (version read or Load) are logged at **Warn**, rate-limited to one per minute, and escalate to **Error** after 10 consecutive failures — the Error states that config updates are NOT being applied, so a broken IAM policy or deleted table does not hide at Warn forever.
 - **Save**: Reads the current stored version, then conditionally writes the next version. Both the JSON document and row attribute receive the new version, and the caller's `Version` is updated after success.
 - **SaveIfVersion**: Writes only if the stored version matches the supplied expected version, then advances it by one. Expected version zero can create an absent row or adopt a versionless row. A mismatch returns `shared.ErrVersionMismatch` without changing the stored document or caller's version. Use this method when editing a previously loaded config.
+- **CreateIfAbsent**: Creates only a completely absent item, at version 1. Existing items, including invalid or versionless documents, remain untouched. Control startup and the initial-create admin API use this stricter operation, not version-zero CAS.
+- **Observe**: Reports the initial source state and ordered present, missing, and read-error observations through the existing watcher. The AWS profile uses this path to keep missing config idle, distinguish deletion from read failure, and preserve deletion/recreation order. A missing backend table is an error, not an absent document. See [initialization and runtime state](aws-deployment/config-initialization.md#observation-and-runtime-state).
 - Both save methods reject payloads over 390 KiB before `PutItem`, reserving room for the other attributes under DynamoDB's 400 KiB item limit.
 - **Validate** and **Merge**: Use `config.ValidateWithWarnings` and `config.DefaultMerge`, including advisory warnings and non-mutating overlay merges.
 - Returns `shared.ErrNotFound` when no config item exists.
