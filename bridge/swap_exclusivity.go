@@ -34,10 +34,10 @@ import (
 // Three probes find where a config claims an identity, because none of them
 // sees every exclusive session:
 //
-//   - The config declares exclusivity — session_mode: exclusive, or a route
-//     inline session, which is always single-owner. AMQP 1.0 obeys the
-//     single-use exclusive-session rule without advertising the capability,
-//     so only this probe sees it.
+//   - The config declares exclusivity — see exclusiveSessionIDs: a session
+//     declared session_mode: exclusive, a route inline session, or a session
+//     a route binding names. AMQP 1.0 obeys the single-use exclusive-session
+//     rule without advertising the capability, so only this probe sees it.
 //   - A transport factory advertises ports.CapExclusiveIdentity. MQTT does so
 //     always; amqp091 only once it has already built an exclusive consumer.
 //   - A factory reports exclusivity from a receiver config. This is the only
@@ -71,33 +71,25 @@ func RequiresSerializedSwap(current, next *ports.BridgeConfig, transports map[st
 }
 
 // exclusiveTransportKinds runs the three probes against one config and returns
-// the transport kind of every exclusive identity it finds. An inline route
-// session whose session cannot be resolved is still exclusive, under an empty
-// kind.
+// the transport kind of every exclusive identity it finds. An exclusive session
+// whose SessionDef cannot be resolved still counts, under an empty kind.
 func exclusiveTransportKinds(cfg *ports.BridgeConfig, transports map[string]ports.TransportFactory) []string {
 	if cfg == nil {
 		return nil
 	}
 	var kinds []string
-	for i := range cfg.Sessions {
-		sd := &cfg.Sessions[i]
-		if sd.SessionMode == string(connectivity.SessionExclusive) {
-			kinds = append(kinds, sd.Transport)
-			continue
-		}
-		if tf, ok := transports[sd.Transport]; ok && slices.Contains(tf.Capabilities(), ports.CapExclusiveIdentity) {
-			kinds = append(kinds, sd.Transport)
-		}
-	}
-	for i := range cfg.Routes {
-		if cfg.Routes[i].Session == nil {
-			continue
-		}
+	for _, id := range exclusiveSessionIDs(cfg) {
 		kind := ""
-		if sd := findSession(cfg, cfg.Routes[i].Session.SessionID); sd != nil {
+		if sd := findSession(cfg, id); sd != nil {
 			kind = sd.Transport
 		}
 		kinds = append(kinds, kind)
+	}
+	for i := range cfg.Sessions {
+		sd := &cfg.Sessions[i]
+		if tf, ok := transports[sd.Transport]; ok && slices.Contains(tf.Capabilities(), ports.CapExclusiveIdentity) {
+			kinds = append(kinds, sd.Transport)
+		}
 	}
 	for i := range cfg.Receivers {
 		recv := &cfg.Receivers[i]
@@ -111,6 +103,37 @@ func exclusiveTransportKinds(cfg *ports.BridgeConfig, transports map[string]port
 		}
 	}
 	return kinds
+}
+
+// exclusiveSessionIDs lists every session the builder runs under an exclusive,
+// lease-managed manager: a session declared session_mode: exclusive, a route's
+// inline session, and a session named by a binding a route uses. The last two
+// get an exclusive manager whatever their SessionDef declares — wireRoutes
+// registers a binding's session with an exclusive, connect-after-lease config.
+// A binding no route uses gets no manager. An ID can repeat, and a route
+// inline session without one still counts, as "".
+func exclusiveSessionIDs(cfg *ports.BridgeConfig) []string {
+	if cfg == nil {
+		return nil
+	}
+	var ids []string
+	for i := range cfg.Sessions {
+		if cfg.Sessions[i].SessionMode == string(connectivity.SessionExclusive) {
+			ids = append(ids, cfg.Sessions[i].ID)
+		}
+	}
+	for i := range cfg.Routes {
+		route := &cfg.Routes[i]
+		if route.Session != nil {
+			ids = append(ids, route.Session.SessionID)
+		}
+		for _, bindingID := range route.Bindings {
+			if binding := findBinding(cfg, bindingID); binding != nil && binding.SessionID != "" {
+				ids = append(ids, binding.SessionID)
+			}
+		}
+	}
+	return ids
 }
 
 // attachedTransportKinds lists every transport kind a config attaches

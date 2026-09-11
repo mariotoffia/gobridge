@@ -203,3 +203,66 @@ func TestDetectSwapMode_LeavingExclusiveSerializes(t *testing.T) {
 		assert.Equal(t, SwapOverlap, newSup(nil).detectSwapMode(receiver(false)))
 	})
 }
+
+// bindingOnlyConfig is a route whose only session is the one its binding names.
+// No SessionDef declares session_mode: exclusive, yet wireRoutes runs that
+// session under an exclusive, lease-managed manager that connects only after
+// acquiring its lease — the same kind of manager a route inline session gets.
+// bindingSession empties the binding's session_id, which leaves a plain
+// sender on the same transport and session.
+func bindingOnlyConfig(bindingSession bool) *ports.BridgeConfig {
+	sessionID := ""
+	if bindingSession {
+		sessionID = "s1"
+	}
+	return &ports.BridgeConfig{
+		Sessions: []ports.SessionDef{{ID: "s1", Transport: "fake"}},
+		Senders:  []ports.SenderDef{{ID: "tx", Transport: "fake", SessionID: "s1"}},
+		Bindings: []ports.BindingDef{{ID: "b1", SenderID: "tx", SessionID: sessionID, Address: "out"}},
+		Routes:   []ports.RouteDef{{ID: "r1", ReceiverID: "rx", Bindings: []string{"b1"}}},
+	}
+}
+
+// TestDetectSwapMode_SessionNamedByRouteBindingIsExclusive covers the third
+// config-declared form of exclusivity: a session named by a route binding.
+// Overlapping a swap onto or off such a session would run two lease-managed
+// managers for one session identity at once.
+func TestDetectSwapMode_SessionNamedByRouteBindingIsExclusive(t *testing.T) {
+	// Capability-silent and hook-free, so only the binding can claim anything.
+	newSup := func(running *ports.BridgeConfig) *Supervisor {
+		s := NewSupervisor()
+		s.RegisterTransport("fake", &fakeTransportFactory{})
+		s.cfg = running
+		return s
+	}
+
+	t.Run("EnteringSelectsPrepareCommit", func(t *testing.T) {
+		assert.Equal(t, SwapPrepareCommit, newSup(nil).detectSwapMode(bindingOnlyConfig(true)))
+	})
+
+	t.Run("LeavingOnAKeptTransportSelectsPrepareCommit", func(t *testing.T) {
+		assert.Equal(t, SwapPrepareCommit, newSup(bindingOnlyConfig(true)).detectSwapMode(bindingOnlyConfig(false)))
+	})
+
+	t.Run("BindingNoRouteUsesClaimsNothing", func(t *testing.T) {
+		unused := bindingOnlyConfig(true)
+		unused.Routes[0].Bindings = nil
+		assert.Equal(t, SwapOverlap, newSup(nil).detectSwapMode(unused))
+	})
+
+	t.Run("BindingWithoutSessionClaimsNothing", func(t *testing.T) {
+		assert.Equal(t, SwapOverlap, newSup(bindingOnlyConfig(false)).detectSwapMode(bindingOnlyConfig(false)))
+	})
+}
+
+// TestHasExclusiveSessions_SessionNamedByRouteBinding pins the builder's own
+// definition, which its warning about a process-local lease store relies on:
+// a clustered deployment whose only exclusive sessions come from bindings is
+// exactly as exposed to split-brain as one using route inline sessions.
+func TestHasExclusiveSessions_SessionNamedByRouteBinding(t *testing.T) {
+	cfg := bindingOnlyConfig(true)
+	assert.True(t, hasExclusiveSessions(cfg), "a session named by a route binding runs an exclusive, lease-managed manager")
+
+	cfg.Routes[0].Bindings = nil
+	assert.False(t, hasExclusiveSessions(cfg), "a binding no route uses gets no manager")
+}

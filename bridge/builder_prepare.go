@@ -327,26 +327,11 @@ func isDistributedFactory(sf ports.StoreFactory) bool {
 }
 
 // hasExclusiveSessions reports whether the blueprint configures any exclusive
-// (single-owner, lease-managed) session: either a session declared with
-// session_mode: exclusive, or a route carrying an inline session block (which
-// is always a lease-managed single-owner session). Such sessions rely on the
-// LeaseStore to arbitrate ownership; a process-local lease store cannot do so
-// across replicas.
+// (single-owner, lease-managed) session, in any of the forms exclusiveSessionIDs
+// lists. Such sessions rely on the LeaseStore to arbitrate ownership; a
+// process-local lease store cannot do so across replicas.
 func hasExclusiveSessions(cfg *ports.BridgeConfig) bool {
-	if cfg == nil {
-		return false
-	}
-	for i := range cfg.Sessions {
-		if cfg.Sessions[i].SessionMode == string(connectivity.SessionExclusive) {
-			return true
-		}
-	}
-	for i := range cfg.Routes {
-		if cfg.Routes[i].Session != nil {
-			return true
-		}
-	}
-	return false
+	return len(exclusiveSessionIDs(cfg)) > 0
 }
 
 func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error) {

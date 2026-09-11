@@ -96,8 +96,10 @@ transport the incoming config still uses — an ordinary consumer is refused
 beside an exclusive one that is still attached. A config claims an identity
 when:
 
-- the config declares it — `session_mode: exclusive`, or a route `session`
-  block, which is always single-owner (this is how AMQP 1.0 is caught);
+- the config declares it — `session_mode: exclusive`, a route `session` block,
+  or a session a route binding names by `session_id`. The last two always run a
+  single-owner, lease-managed session whatever the session's own mode says
+  (this is how AMQP 1.0 is caught);
 - the transport advertises `CapExclusiveIdentity` — MQTT always, where two
   connections with one client ID disconnect each other;
 - the transport reports it from a receiver's config — an exclusive AMQP 0-9-1

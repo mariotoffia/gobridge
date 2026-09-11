@@ -233,7 +233,7 @@ Split the build into two phases. **Prepare** validates the config and builds sto
 
 ### SwapAuto (Default)
 
-Asks `bridge.RequiresSerializedSwap` whether the new config claims an exclusive broker identity, or the running config holds one on a transport the new config still uses (an ordinary consumer is refused beside an exclusive one that is still attached, while a transport dropped altogether keeps Overlap). A config claims an identity when the config declares it (`session_mode: exclusive`, or a route `session` block), a factory declares `CapExclusiveIdentity`, or a factory reports it from a receiver config (an exclusive AMQP 0-9-1 consumer, a pinned Service Bus `session_id`). If so, the supervisor uses PrepareCommit; otherwise Overlap. This is the recommended default -- it adapts automatically to the transports in use.
+Asks `bridge.RequiresSerializedSwap` whether the new config claims an exclusive broker identity, or the running config holds one on a transport the new config still uses (an ordinary consumer is refused beside an exclusive one that is still attached, while a transport dropped altogether keeps Overlap). A config claims an identity when the config declares it (`session_mode: exclusive`, a route `session` block, or a session a route binding names by `session_id` — the last two always run a single-owner, lease-managed session), a factory declares `CapExclusiveIdentity`, or a factory reports it from a receiver config (an exclusive AMQP 0-9-1 consumer, a pinned Service Bus `session_id`). If so, the supervisor uses PrepareCommit; otherwise Overlap. This is the recommended default -- it adapts automatically to the transports in use.
 
 ## Cluster Semantics and Limitations
 
