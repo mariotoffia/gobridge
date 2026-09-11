@@ -102,9 +102,9 @@ version you name, copies its owning module to a writable directory, fills the
 fixed embed file, runs `go build`, and pushes the image to your CDK bootstrap
 asset repository. **A malformed `Version` fails at synth; a version that does
 not exist, or an unreachable module proxy, fails during `cdk deploy` — after a
-stack update has begun.** An AMQP or Azure Service Bus config is worse again:
-the profile binary links only AWS, MQTT, native stores and HTTP, the extra
-build tag is accepted silently, and the task fails at startup.
+stack update has begun.** An AMQP or Azure Service Bus config needs no extra
+step: the build derives its `gobridge_amqp091`, `gobridge_amqp10` or
+`gobridge_azure` tag from the config, and the binary links that transport.
 
 The result is the same multi-stage, `CGO_ENABLED=0` (pure-Go SQLite via
 `modernc.org/sqlite`), distroless/static-debian12 image running as nonroot UID

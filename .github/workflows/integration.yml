@@ -1,0 +1,59 @@
+name: Integration
+
+permissions:
+  contents: read
+
+# The Docker-backed suite is the longest check by a wide margin (~20 minutes
+# against ~11 for everything in ci.yml), so pull requests opt in with the
+# `test-integration` label. Pushes to main and manual dispatches always run
+# it; a pull request merged without the label is covered by the main run that
+# follows.
+#
+# This is its own workflow so that a label event starts nothing but this job:
+# listening for `labeled` in ci.yml re-ran every check on any label change.
+# There is deliberately no concurrency group. Cancelling an in-flight run in
+# favour of a label event whose job then skips would leave the head commit
+# untested; the ceiling here is duplicate work, never a lost check. A pull
+# request opened with the label already applied receives both `opened` and
+# `labeled` and runs the suite twice.
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+    # `labeled` is not a default type. Without it the label would sit inert
+    # until the next push, which reads as a broken label.
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+jobs:
+  integration:
+    # A label event about some other label repeats nothing: its outcome could
+    # only duplicate a run the pull request already has or has opted out of.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'test-integration') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'test-integration'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25'
+
+      # Nothing longrunning-tagged runs in the cloud. The MQTT ingress memory
+      # proof and the separate-process failover proof are part of
+      # `make test-long-running`, which is a developer-machine run.
+      - name: Run Docker-backed integration tests
+        run: make test-integration
+
+      - name: Upload integration-test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: integration-test-reports
+          path: reports/
+          if-no-files-found: ignore

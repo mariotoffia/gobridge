@@ -58,8 +58,8 @@ Tags compose: `-tags gobridge_mqtt,gobridge_native` selects the Kubernetes
 image's default set; `-tags gobridge_aws,gobridge_otel` selects SQS, DynamoDB
 and OTel without MQTT or SQLite. The admin/monitor API does not need
 `gobridge_http`; that tag selects the message transport. No tag registers
-processors or switches the file config source or credential backend. The
-separate AWS file-based deployment profile owns its own wiring.
+processors or switches the config source or credential backend. The AWS
+file-based profile owns its wiring: base set plus the AMQP and Azure tags.
 
 `gobridge -version` prints `gobridge <version> (<gitSHA>) families=[...]`,
 with sorted family names and `dev` for unstamped metadata. Usage also lists

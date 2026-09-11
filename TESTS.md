@@ -449,7 +449,7 @@ the same shape. Do not inline its logic.
 | Command | Scope and requirements |
 |---|---|
 | `make test` | Uncached unit tests + timing audits; must pass on every save. Includes `cmd/gobridge` untagged and with `-tags gobridge_all`. |
-| `make test-integration` | Uncached unit + integration; Docker required, mandatory in CI. Includes `cmd/gobridge` with `gobridge_all` and without `-short`. |
+| `make test-integration` | Uncached unit + integration; Docker required. CI runs it on every push to `main` and on pull requests labelled `test-integration`. Includes `cmd/gobridge` with `gobridge_all` and without `-short`. |
 | `make test-local-deploy` | AWS profile end to end on emulators (`integration_local`); Docker + Node, no AWS account or credentials. Rebuilds the runtime image and provisions its CDK CLI under `.tools/`. `LOCAL_DEPLOY_RUN` selects tests; see the [deployment test index](docs/internals/testing-slow-suites.md#56-deployment-tests) for the DynamoDB-config proof. |
 | `make test-long-running` | `longrunning` suite; Docker required, may take hours. |
 | `make test-release-gate` | Named release subset plus the finite-cgroup proof; developer machine, never CI. |

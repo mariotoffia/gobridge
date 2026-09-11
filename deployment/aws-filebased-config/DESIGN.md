@@ -12,8 +12,7 @@
 ## Scope — the four problems
 
 The approved initialization direction supersedes the earlier seeder design.
-Implementation is in progress. Public-module publication and optional profile
-families remain future work; this document does not mark their gates complete.
+Implementation is in progress; the documentation sweep is the last open piece.
 The current implementation keeps `deployment/aws-filebased-config` paths.
 
 1. **The profile is misnamed and file-bound.** A complete DynamoDB config

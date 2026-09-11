@@ -16,8 +16,9 @@ on:
         default: '5m'
   # Nightly schedule paused on request. Re-enable by uncommenting; GitHub only
   # honours `schedule:` from the default branch, so this must be changed on
-  # main to take effect. The full suite still runs on every push and PR, and
-  # can be triggered on demand via workflow_dispatch.
+  # main to take effect. The jobs here run on every push and pull request and on
+  # demand via workflow_dispatch; the Docker-backed integration suite lives in
+  # integration.yml.
   # schedule:
   #   - cron: '17 2 * * *'
 
@@ -57,6 +58,7 @@ jobs:
           go -C cmd/gobridge vet ./...
           go -C cmd/gobridge build -tags gobridge_all -o gobridge.out ./...
           go -C cmd/gobridge vet -tags gobridge_all ./...
+          go -C deployment/aws-filebased-config/lib vet -tags gobridge_all ./...
 
       # Fails fast, and names the exact file:line, when a pull request breaks a
       # link, an anchor, a reference table, or the page-length threshold. The
@@ -81,31 +83,6 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: unit-test-reports
-          path: reports/
-          if-no-files-found: ignore
-
-  integration:
-    runs-on: ubuntu-latest
-    timeout-minutes: 80
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version: '1.25'
-
-      # Nothing longrunning-tagged runs in the cloud. The MQTT ingress memory
-      # proof and the separate-process failover proof are part of
-      # `make test-long-running`, which is a developer-machine run.
-      - name: Run Docker-backed integration tests
-        run: make test-integration
-
-      - name: Upload integration-test reports
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: integration-test-reports
           path: reports/
           if-no-files-found: ignore
 

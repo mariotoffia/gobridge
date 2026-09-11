@@ -32,12 +32,14 @@ const (
 
 	// SwapPrepareCommit validates config and builds stores while old
 	// runs, but defers session/receiver/sender creation until after
-	// the old runtime stops. Safe for exclusive MQTT client-ids.
+	// the old runtime stops. Required whenever a session claims an
+	// exclusive broker identity: an MQTT client ID, an exclusive AMQP
+	// consumer, a pinned Service Bus session.
 	SwapPrepareCommit
 
-	// SwapAuto inspects the new config's sessions and their transport
-	// factory capabilities. If any transport declares
-	// CapExclusiveIdentity, PrepareCommit is used; otherwise Overlap.
+	// SwapAuto selects PrepareCommit when RequiresSerializedSwap finds an
+	// exclusive broker identity in the new config, or held by the running
+	// config on a transport the new config still uses, and Overlap otherwise.
 	SwapAuto
 )
 
@@ -1451,56 +1453,15 @@ func (s *Supervisor) detectSwapMode(cfg *ports.BridgeConfig) SwapMode {
 		return s.swapMode
 	}
 
-	// A config that DECLARES exclusivity is serialized regardless of whether its
-	// transport factory advertises CapExclusiveIdentity. amqp10 obeys the
-	// single-use exclusive-session rule but does NOT advertise the capability
-	// (UBIQUITOUS.md:111, PLUGIN.md:173-176), so the capability/hook probes below
-	// miss it — and applyOverlap builds (and opens) the new exclusive session
-	// before stopping the old one, colliding on the broker identity. hasExclusive
-	// Sessions inspects exactly the two config-declared exclusive forms: a named
-	// session with session_mode: exclusive, and a route inline session (always
-	// exclusive per ports/blueprint.go:359). A single such declaration anywhere
-	// forces the serialized prepare-commit swap.
-	if hasExclusiveSessions(cfg) {
-		return SwapPrepareCommit
-	}
-
+	// s.cfg is still the running config here: applyConfig replaces it only
+	// once the swap it is choosing a mode for has succeeded.
 	s.mu.RLock()
 	transports := maps.Clone(s.transports)
+	running := s.cfg
 	s.mu.RUnlock()
 
-	for _, sess := range cfg.Sessions {
-		tf, ok := transports[sess.Transport]
-		if !ok {
-			continue
-		}
-		if slices.Contains(tf.Capabilities(), ports.CapExclusiveIdentity) {
-			return SwapPrepareCommit
-		}
-	}
-	// Capabilities() only reports exclusivity once a factory has already
-	// BUILT an exclusive receiver, so the loop above misses the FIRST reconfig
-	// that INTRODUCES one (config A: no exclusive → config B: exclusive on the
-	// same queue). That swap would still run Overlap, attaching the new
-	// exclusive consumer while the old consumer holds the queue → broker 403 →
-	// terminal teardown. Detect it up front from the incoming receiver configs
-	// via the optional per-transport hook.
-	for i := range cfg.Receivers {
-		recv := &cfg.Receivers[i]
-		transport := recv.Transport
-		if transport == "" {
-			if sd := findSession(cfg, recv.SessionID); sd != nil {
-				transport = sd.Transport
-			}
-		}
-		tf, ok := transports[transport]
-		if !ok {
-			continue
-		}
-		if d, ok := tf.(exclusiveIdentityConfigDetector); ok &&
-			d.ConfigRequiresExclusiveIdentity(recv.Config) {
-			return SwapPrepareCommit
-		}
+	if RequiresSerializedSwap(running, cfg, transports) {
+		return SwapPrepareCommit
 	}
 	return SwapOverlap
 }

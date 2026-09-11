@@ -139,6 +139,12 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 	httpFactory := httptransport.NewFactory(httpOpts...)
 	transports["http"] = httpFactory
 
+	// Optional families (AMQP 0-9-1, AMQP 1.0, Azure Service Bus) are selected
+	// at build time and extend the same map before it is registered, so an
+	// alias they add reaches the builder through the single loop below and is
+	// visible to detectSwapMode like any base-set transport.
+	wireOptionalTransports(transports, a.logger, a.metricsExporter)
+
 	for name, factory := range transports {
 		builder.RegisterTransportFactory(name, factory)
 	}
@@ -160,17 +166,14 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 	}
 }
 
-func (r *factoryRegistry) detectSwapMode(cfg *ports.BridgeConfig) swapMode {
-	for _, session := range cfg.Sessions {
-		factory, ok := r.transports[session.Transport]
-		if !ok {
-			continue
-		}
-		for _, capability := range factory.Capabilities() {
-			if capability == ports.CapExclusiveIdentity {
-				return swapModePrepareCommit
-			}
-		}
+// detectSwapMode asks the same question the Supervisor asks, through the same
+// predicate: this root drives its own swap, so a probe added there must not
+// have to be re-added here. current is the running config and next the one
+// replacing it: an exclusive identity the running config holds on a transport
+// next still uses conflicts with next as surely as one next claims itself.
+func (r *factoryRegistry) detectSwapMode(current, next *ports.BridgeConfig) swapMode {
+	if bridge.RequiresSerializedSwap(current, next, r.transports) {
+		return swapModePrepareCommit
 	}
 	return swapModeOverlap
 }

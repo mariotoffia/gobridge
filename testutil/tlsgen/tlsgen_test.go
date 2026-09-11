@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -201,4 +202,20 @@ func TestGenerate_LeafDoesNotChainToAForeignCA(t *testing.T) {
 		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	})
 	require.Error(t, err, "a foreign-signed leaf must not verify against the trusted CA")
+}
+
+// Backdating for clock skew moves NotBefore only. A validity shorter than the
+// allowance must still produce an ordered window that ends ValidFor after the
+// moment the certificate was minted. Both bounds derive from one internal
+// timestamp, and certificate second precision truncates each by the same
+// fraction, so the window is exactly the five-minute backdate plus the
+// one-minute validity — asserted without reading the wall clock.
+func TestGenerate_ShortValidityStaysOrderedAndExpiresOnTime(t *testing.T) {
+	r, err := tlsgen.Generate(tlsgen.Options{ValidFor: time.Minute})
+	require.NoError(t, err)
+
+	cert := parseCert(t, r.CertPEM)
+	assert.True(t, cert.NotBefore.Before(cert.NotAfter), "the validity window must be ordered")
+	assert.Equal(t, 6*time.Minute, cert.NotAfter.Sub(cert.NotBefore),
+		"the window is the five-minute clock-skew backdate plus the one-minute validity")
 }

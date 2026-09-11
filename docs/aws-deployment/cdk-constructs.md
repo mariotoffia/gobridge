@@ -76,14 +76,14 @@ modules; the `v0.3.x` profile tags are not a complete set and no released train
 has published `lib`
 ([RELEASE.md](../../RELEASE.md#canonical-release-graph)).
 
-**Optional families are not wired in the profile binary.** The default `Package`
-links AWS, MQTT, native stores and HTTP only, and `lib` declares no `//go:build`
-family files at any version. A derived `gobridge_amqp091`, `gobridge_amqp10` or
-`gobridge_azure` tag therefore selects nothing: `go build` accepts a tag no file
-declares and produces a binary without that transport, and the digest probe
-hashes bytes without parsing them, so the mismatch surfaces at container startup
-rather than at build. Use a custom `Package` for those transports, or a pinned
-registry image.
+**Optional families.** The default `Package` always links AWS, MQTT, native
+stores and HTTP. `lib` adds AMQP 0-9-1, AMQP 1.0 and Azure Service Bus through
+tagged family files, so a derived or explicit `gobridge_amqp091`,
+`gobridge_amqp10` or `gobridge_azure` tag links that transport; every `lib`
+version a train publishes carries those files. Tags are not checked against the
+config: an explicit `BuildTags` slice that omits a family the config uses still
+builds, and the config then fails to decode at container startup. The startup
+log names every kind the binary can decode.
 A custom `Package` must implement this profile's bootstrap and health-check
 contract, provide `initial-config.base64` consumed through `go:embed`, and
 support the build's `-initial-config-digest` probe. The standard commands embed

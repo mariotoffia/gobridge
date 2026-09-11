@@ -23,6 +23,7 @@ func (a *App) Start(ctx context.Context) error {
 	if err := a.cfg.Validate(); err != nil {
 		return err
 	}
+	logPluginKinds(a.logger, a.pluginRegistry)
 
 	if a.parameterResolver == nil {
 		resolver, err := newSSMParameterResolver(ctx, a.cfg)
