@@ -237,7 +237,7 @@ test: audit-timings audit-test-timings ## Run unit tests (no Docker, integration
 	echo "--- Testing ./deployment/aws-filebased-config/lib (-tags=gobridge_all) ---"; \
 	go -C deployment/aws-filebased-config/lib test -tags gobridge_all -count=1 -short -race -timeout 120s ./... || rc=$$?; \
 	echo "--- Testing ./deployment/aws-filebased-config/lib (-tags=gobridge_amqp091) ---"; \
-	go -C deployment/aws-filebased-config/lib test -tags gobridge_amqp091 -count=1 -short -timeout 120s ./bootstrap/ || rc=$$?; \
+	go -C deployment/aws-filebased-config/lib test -tags gobridge_amqp091 -count=1 -short -race -timeout 120s ./bootstrap/ || rc=$$?; \
 	exit $$rc; } 2>&1 | tee reports/test-unit.log; \
 	rc=$$?; \
 	echo ""; \
