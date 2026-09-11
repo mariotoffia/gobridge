@@ -162,10 +162,13 @@ func TestDetectSwapMode_LeavingExclusiveSerializes(t *testing.T) {
 			{ID: "rx", Transport: "cfgexcl", Config: &exclRxConfig{excl: excl}},
 		}}
 	}
+	// A sender references the session, as in any real config: the builder skips
+	// a session nothing references, so an unreferenced one would attach nothing.
 	session := func(mode string) *ports.BridgeConfig {
-		return &ports.BridgeConfig{Sessions: []ports.SessionDef{
-			{ID: "s1", Transport: "cfgexcl", SessionMode: mode},
-		}}
+		return &ports.BridgeConfig{
+			Sessions: []ports.SessionDef{{ID: "s1", Transport: "cfgexcl", SessionMode: mode}},
+			Senders:  []ports.SenderDef{{ID: "tx", SessionID: "s1"}},
+		}
 	}
 
 	t.Run("ExclusiveReceiverToNonExclusiveSelectsPrepareCommit", func(t *testing.T) {
@@ -184,6 +187,17 @@ func TestDetectSwapMode_LeavingExclusiveSerializes(t *testing.T) {
 		// Nothing in the new runtime can contend for an identity held on a
 		// transport it no longer uses, so the zero-downtime swap stays.
 		next := &ports.BridgeConfig{Receivers: []ports.ReceiverDef{{ID: "rx", Transport: "fake"}}}
+		assert.Equal(t, SwapOverlap, newSup(receiver(true)).detectSwapMode(next))
+	})
+
+	t.Run("UnusedSessionDeclarationDoesNotKeepTheTransport", func(t *testing.T) {
+		// The builder skips a session nothing references, so a stale declaration
+		// left on the exclusive transport attaches nothing and cannot contend
+		// for the identity the old runtime holds.
+		next := &ports.BridgeConfig{
+			Sessions:  []ports.SessionDef{{ID: "stale", Transport: "cfgexcl"}},
+			Receivers: []ports.ReceiverDef{{ID: "rx", Transport: "fake"}},
+		}
 		assert.Equal(t, SwapOverlap, newSup(receiver(true)).detectSwapMode(next))
 	})
 

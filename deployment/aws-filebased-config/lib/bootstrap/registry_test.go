@@ -212,8 +212,13 @@ func TestDetectSwapMode_PrepareCommitWhenReceiverConfigDeclaresExclusive(t *test
 // hands them, so none of them would notice it handing over nothing; this test
 // fails the moment it does.
 func TestApp_SwapModeWeighsTheRunningConfig(t *testing.T) {
+	// A sender references the session, as in any real config: the builder skips
+	// a session nothing references, so an unreferenced one would attach nothing.
 	session := func(mode string) *ports.BridgeConfig {
-		return &ports.BridgeConfig{Sessions: []ports.SessionDef{{ID: "s1", Transport: "sqs", SessionMode: mode}}}
+		return &ports.BridgeConfig{
+			Sessions: []ports.SessionDef{{ID: "s1", Transport: "sqs", SessionMode: mode}},
+			Senders:  []ports.SenderDef{{ID: "tx", SessionID: "s1"}},
+		}
 	}
 	app := NewApp(testBootstrapConfig(), WithDynamoDBClient(nil))
 	next := session("shared")

@@ -142,14 +142,20 @@ func exclusiveSessionIDs(cfg *ports.BridgeConfig) []string {
 }
 
 // attachedTransportKinds lists every transport kind a config attaches
-// something to: its sessions, receivers and senders.
+// something to: its receivers, its senders, and every session something
+// references. The builder skips a session nothing references
+// (buildSessionsWithURIs), so a stale declaration attaches nothing and does not
+// keep its transport in use.
 func attachedTransportKinds(cfg *ports.BridgeConfig) []string {
 	if cfg == nil {
 		return nil
 	}
+	referenced := referencedSessionIDs(cfg)
 	kinds := make([]string, 0, len(cfg.Sessions)+len(cfg.Receivers)+len(cfg.Senders))
 	for i := range cfg.Sessions {
-		kinds = append(kinds, cfg.Sessions[i].Transport)
+		if referenced[cfg.Sessions[i].ID] {
+			kinds = append(kinds, cfg.Sessions[i].Transport)
+		}
 	}
 	for i := range cfg.Receivers {
 		kinds = append(kinds, resolvedTransport(cfg, cfg.Receivers[i].Transport, cfg.Receivers[i].SessionID))
