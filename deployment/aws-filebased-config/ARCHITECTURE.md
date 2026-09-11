@@ -4,12 +4,15 @@
 
 Internal architecture of the deployment profile: Go module layering, CDK construct composition, single vs cluster topology, the synth-time validation pipeline ("tier B"), and why peer discovery is EFS-mediated instead of Cloud Map. End-to-end AWS architecture (VPC, ALB) lives in [docs/aws-deployment/overview.md](../../docs/aws-deployment/overview.md), which maps to the topology, storage, image, construct, and IAM (JSON policy) pages beside it. The DDD mapping lives in [../../DDD.md](../../DDD.md) and the local glossary in [UBIQUITOUS.md](./UBIQUITOUS.md).
 
+> Sections and table rows marked **(planned)** describe the target
+> architecture of work in flight; each marker is removed when the behavior it
+> describes lands. Unmarked text describes the code as it is.
+
 The profile supports two **config sources** for the hot-reloadable bridge
 config: `file` (YAML on EFS) and
 `dynamodb` (a single CAS-versioned `current` item read by
-`adapters/aws/config/dynamodb`). The bootstrap config selects the source, and an
-empty `config_source` means `file` in every topology, the DynamoDB HA facade
-included. The name "filebased" in the module path predates this generalization.
+`adapters/aws/config/dynamodb`). The bootstrap config selects the source; the
+name "filebased" in the module path predates this generalization.
 
 Design goals:
 
@@ -480,23 +483,6 @@ covers creation races, operator creation, artifact visibility, and SQS selection
 - **Custom CDK wiring**: compose `BridgeYamlInline(cfg)` over a hand-built `*ports.BridgeConfig` from `cdk/bridgecfg/`. The facades (`GoBridgeSingle` / `GoBridgeCluster` / `GoBridgeDynamoDBHA`) are the supported integration boundary; **bypassing them by composing `cdk/constructs/internal/gobridgebase` directly is not supported** — the package is internal precisely so the singleton / tier-B / mount-policy invariants stay enforceable.
 - **Custom transport/store**: not exposed via `App` — build a sibling deployment profile. The AMQP 0-9-1, AMQP 1.0 and Azure Service Bus families are compile-time opt-ins via the shared `gobridge_<family>` build tags; custom plugins still need their own composition.
 - **Custom image pipeline**: pass `ImageFromRegistry` / `ImageFromEcrRepository` to keep building the image yourself; `ImageFromGoBuild` is the zero-checkout build path once a compatible module is published.
-
-## Rejected Alternatives
-
-Decisions the profile's current shape rests on, each with the alternative it
-turned down. Revisit one only with a reason its rationale does not already
-cover.
-
-| Area | Alternative | Why rejected |
-|---|---|---|
-| Config source selection | An `App` option (`WithConfigLayer(layer, store)`) instead of a bootstrap field | Moves source selection out of the deployment contract into code the CDK cannot see; the CDK must stamp table names and derive IAM from the same declaration. Kept as a test seam only. |
-| Initial configuration | A separate config seeder container or Lambda | Adds a runtime artifact and a startup dependency; strict creation belongs behind the target port in the control process. |
-| Initial configuration | `SaveIfVersion(..., 0)` to create the document | It can adopt a legacy versionless row, and strict creation must never overwrite an existing document. |
-| Config table ownership | A consumer-owned (bring-your-own) table | The facade owns the config table and its grants; importing a table can be a separate API later. |
-| Embedded queue references | A generic CloudFormation token resolver | Stable physical names and native SQS tag discovery cover embedded queue references without a second deployment phase. |
-| Image source | Publish a ready image per release and default `Image` to it | A published image carries one plugin set; `ImageFromGoBuild` with build tags covers minimal and extended binaries through the same construct. Registry pinning stays available through `ImageFromRegistry`. |
-| Image source | A repository checkout path prop instead of `DockerImageAsset` | Reintroduces the clone requirement for external consumers. Local checkout builds remain the root `make docker-build` flow. |
-| Module publication | Keep the modules internal and tell consumers to vendor and `replace` | That was the undocumented status quo and the main blocker to external reuse. |
 
 ## Related Docs
 
