@@ -448,7 +448,7 @@ published tags); root `Dockerfile` (`ARG GO_BUILD_TAGS=""` →
 
 - [x] Failing tagged tests per family in `registry_wiring_test.go` style
   (alias→same-factory `require.Same`; decoder kinds present) —
-  `go -C deployment/aws/lib test -tags gobridge_amqp091 -run FactoryRegistry -v`;
+  `go -C deployment/aws-filebased-config/lib test -tags gobridge_amqp091 -run Registry -v`;
   untagged run asserts families absent → implement → all four combinations
   green → `docker build --build-arg GO_BUILD_TAGS=gobridge_amqp091 .` builds
   → `make lint && make test` → commit —

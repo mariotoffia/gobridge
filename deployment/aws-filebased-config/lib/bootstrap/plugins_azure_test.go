@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/adapters/azure/transport/servicebus"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -39,4 +40,28 @@ func TestFactoryRegistry_AzureAliasesShareOneFactory(t *testing.T) {
 	qualified, ok := reg.transports["azure.servicebus"]
 	require.True(t, ok, "azure.servicebus transport factory must be wired when the family is selected")
 	require.Same(t, short, qualified, "alias must resolve to the same factory instance")
+}
+
+// TestFactoryRegistry_AzurePinnedSessionSerializesTheSwap proves a receiver
+// pinned to one Service Bus session reaches this root's swap-mode detection.
+// Service Bus advertises no exclusive-identity capability — the pin lives in
+// one receiver's config — so overlapping the swap would leave the incoming
+// receiver retrying session-cannot-be-locked against the outgoing runtime's
+// drain, and failing its route when the retries run out first.
+func TestFactoryRegistry_AzurePinnedSessionSerializesTheSwap(t *testing.T) {
+	app := NewApp(testBootstrapConfig(), WithDynamoDBClient(nil))
+	cfg := &ports.BridgeConfig{
+		Sessions: []ports.SessionDef{{ID: "sess", Transport: "servicebus"}},
+		Receivers: []ports.ReceiverDef{{
+			ID:        "rx",
+			SessionID: "sess",
+			Config: &servicebus.Config{Receiver: servicebus.ReceiverParams{
+				QueueName: "q", SessionID: "pinned-1",
+			}},
+		}},
+	}
+
+	reg := app.newFactoryRegistry(cfg)
+
+	require.Equal(t, swapModePrepareCommit, reg.detectSwapMode(cfg))
 }

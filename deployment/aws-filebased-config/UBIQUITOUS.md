@@ -59,7 +59,7 @@ There are exactly **two** configuration artifacts. The `bootstrap` package track
 |---|---|
 | **Swap mode** | Strategy used by `applyLogicalConfig` to replace the running runtime. |
 | **Overlap swap** (`swapModeOverlap`) | Build + Start new runtime, install, then Stop old. Default. |
-| **Prepare/commit swap** (`swapModePrepareCommit`) | Used when `bridge.RequiresSerializedSwap` reports an exclusive broker identity in the config — declared exclusivity, an advertised `ports.CapExclusiveIdentity`, or a factory reporting it from a receiver config. Stop old → `Complete` → Start new → install. |
+| **Prepare/commit swap** (`swapModePrepareCommit`) | Used when `bridge.RequiresSerializedSwap` reports an exclusive broker identity in the config — declared exclusivity, an advertised `ports.CapExclusiveIdentity`, or a factory reporting it from a receiver config (an exclusive amqp091 consumer, a Service Bus receiver pinned to one `session_id`). Stop old → `Complete` → Start new → install. |
 | **Runtime plan** | `runtimePlan` struct: bundles logical + resolved configs, swap mode, registry, and either a `bridge.BuildPlan` or a built `*runtime.Runtime`. |
 | **Recover previous** | `recoverPrevious(ctx, oldApplied)` — best-effort rebuild from last-good applied config when a prepare/commit swap fails mid-flight. |
 

@@ -119,6 +119,29 @@ func (f *Factory) NewSender(ctx context.Context, spec ports.SenderSpec, session 
 	return f.send.NewSender(ctx, spec, session)
 }
 
+// ConfigRequiresExclusiveIdentity reports whether the given RECEIVER plugin
+// config pins one Service Bus session. A pinned session is a broker-side
+// single-holder lock, so a reconfiguration must serialize rather than run the
+// outgoing and incoming receivers side by side: the outgoing one holds the
+// lock for the length of its drain, while the incoming one only retries
+// session-cannot-be-locked on a shorter budget before failing its route.
+// Capabilities cannot answer this — pinning is a property of one receiver's
+// config, not of the transport — so the swap-mode probe asks here instead.
+//
+// UseSessions is deliberately not a pin: it accepts whatever session is free
+// and rotates, so two receivers coexist on different sessions. Decode failure
+// or a nil config reports false, never a false positive.
+func (f *Factory) ConfigRequiresExclusiveIdentity(cfg ports.PluginConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	c, err := configFromSpec(cfg)
+	if err != nil {
+		return false
+	}
+	return c.Receiver.SessionID != ""
+}
+
 // Capabilities returns the transport-WIDE capabilities for Azure Service
 // Bus. These describe the PeekLock (default) source, matching the SQS
 // transport's set:
