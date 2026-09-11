@@ -35,6 +35,14 @@ Treat these as hard rules — they are grep-able conventions, not machine-checke
 
 Everything else (naming, layering, plugin-config shape, ACL boundary, aggregate convention, timing rules, registry symmetry, gofmt / go vet / golangci-lint rules) is enforced by `make lint` and `make test`. Do not restate those rules in PR feedback — point at the failing checker.
 
+## MUST: Never delete `main` or a release branch
+
+`main` and every `release/vMAJOR.MINOR.PATCH` branch are permanent, locally and
+on `origin`. A release branch carries the per-module release commits that its
+tags point at, and those commits never reach `main`. When you clean up merged
+branches, skip these. Any other local branch may be deleted once its work is on
+`main` or on a remote branch or tag.
+
 ## MUST: Never reference a planning document
 
 Comments, test names, file names and docs MUST NOT carry review or task
