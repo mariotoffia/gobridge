@@ -105,13 +105,18 @@ func exclusiveTransportKinds(cfg *ports.BridgeConfig, transports map[string]port
 	return kinds
 }
 
-// exclusiveSessionIDs lists every session the builder runs under an exclusive,
-// lease-managed manager: a session declared session_mode: exclusive, a route's
-// inline session, and a session named by a binding a route uses. The last two
-// get an exclusive manager whatever their SessionDef declares — wireRoutes
-// registers a binding's session with an exclusive, connect-after-lease config.
-// A binding no route uses gets no manager. An ID can repeat, and a route
-// inline session without one still counts, as "".
+// exclusiveSessionIDs lists every session the config makes exclusive: a session
+// declared session_mode: exclusive, a route's inline session, and a session
+// named by a binding a route uses. The last two run an exclusive,
+// connect-after-lease manager whatever their SessionDef declares — wireRoutes
+// registers a binding's session that way — while a binding no route uses gets
+// no manager and is not listed.
+//
+// A declared-exclusive session nothing references is listed even though the
+// builder skips it. That config is degenerate (the builder already warns), and
+// counting it errs toward the serialized swap and the lease-store warning — the
+// same stance routeExclusiveLeaseIdentities takes. An ID can repeat, and a
+// route inline session without one still counts, as "".
 func exclusiveSessionIDs(cfg *ports.BridgeConfig) []string {
 	if cfg == nil {
 		return nil
