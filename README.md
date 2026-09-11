@@ -32,8 +32,8 @@ Full documentation: **<https://mariotoffia.github.io/gobridge/>**
 ### Production (container image / composition root)
 
 The shipped **production** image is **`ghcr.io/mariotoffia/gobridge`**, the
-AWS file-based composition root
-`deployment/aws-filebased-config/lib/cmd/gobridge-filebased`. Every stable
+AWS composition root
+`deployment/aws/lib/cmd/gobridge-aws`. Every stable
 `cmd/gobridge/vX.Y.Z` release pushes it **by digest** and attaches the verified
 digest to that release as `gobridge-image-digest.txt`; the one mutable tag,
 `latest`, is promoted from that same scanned digest only when the release is
@@ -43,7 +43,7 @@ the highest stable one. Deploy from the digest, never from `latest` — see
 AWS SQS and HTTP transports plus native (memory/SQLite) and DynamoDB stores,
 resolves its secrets through SSM, and is the binary the AWS ECS/EFS profile
 runs: see the **[Deployment Guide](docs/deployment-guide.md)** and the
-**[AWS file-based profile](deployment/aws-filebased-config/README.md)**.
+**[AWS profile](deployment/aws/README.md)**.
 
 **Kubernetes and other non-AWS platforms** run the maintained
 **[Kubernetes profile](deployment/kubernetes/README.md)**: a Dockerfile and one
@@ -125,24 +125,23 @@ go get github.com/mariotoffia/gobridge/adapters/aws/store
 ### Consuming from your own CDK app
 
 Deploying GoBridge on ECS from your own AWS CDK app needs no clone of this
-repository and no `replace` directive. Two modules of the AWS deployment
-profile are imported directly:
+repository and no `replace` directive. Add the CDK module:
 
 ```bash
-go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk@vX.Y.Z
-go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra@vX.Y.Z
+go get github.com/mariotoffia/gobridge/deployment/aws/cdk@vX.Y.Z
 ```
 
-`cdk` carries the facade constructs (`gobridgesingle`, `gobridgecluster`,
-`gobridgedynamodbha`) and the `gobridgecdk` image sources; `infra` carries
-`BootstrapConfig` and the other declaration types those constructs take. A
-third profile module, `.../lib`, is the bridge binary itself — you never import
-it, but `gobridgecdk.ImageFromGoBuild` builds it from the module proxy at the
-version you name, which is why it is published on the same train.
+Import `github.com/mariotoffia/gobridge/deployment/aws/cdk/gobridge` and call
+`gobridge.NewSingle`, `NewCluster` or `NewHA` with a VPC and
+`gobridge.ConfigFile("bridge.yaml")`. Leave `Image` empty and the construct
+builds the bridge binary (`.../lib`) at the same version during `cdk deploy`,
+linking only the transports the config uses. List the queues and SSM
+parameters the config uses in `Queues` and `Secrets`; the tasks are granted
+exactly those.
 
-Use one `vX.Y.Z` for both lines, and pick a version whose train includes the
-profile modules — the `v0.3.x` profile tags predate the train and are not a
-complete set ([RELEASE.md](RELEASE.md#canonical-release-graph)). Walkthrough:
+Pick a version whose train includes the profile modules — the `v0.3.x` profile
+tags predate the train and are not a complete set
+([RELEASE.md](RELEASE.md#canonical-release-graph)). Walkthrough:
 [CDK quickstart](docs/scenarios/cdk/01-quickstart-default-vpc.md).
 
 ## Documentation

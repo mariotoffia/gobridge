@@ -9,12 +9,12 @@ cloud-specific guidance, see [What's Next](#whats-next).
 > platform-neutral image.** `ghcr.io/mariotoffia/gobridge` (published by digest
 > with every stable command release, `latest` guarded — see
 > [Pin Images by Digest](container-deployment.md#pin-images-by-digest)) runs
-> `deployment/aws-filebased-config` and is bound to AWS. It **requires** SSM to
+> `deployment/aws` and is bound to AWS. It **requires** SSM to
 > resolve secrets — `admin_api_key_param` is mandatory
-> (`deployment/aws-filebased-config/lib/model/bootstrap.go`), the SSM
-> resolver runs at startup (`deployment/aws-filebased-config/lib/bootstrap/secrets.go`),
+> (`deployment/aws/lib/model/bootstrap.go`), the SSM
+> resolver runs at startup (`deployment/aws/lib/bootstrap/secrets.go`),
 > and it builds a DynamoDB client unconditionally
-> (`deployment/aws-filebased-config/lib/bootstrap/app.go`). On Kubernetes and
+> (`deployment/aws/lib/bootstrap/app.go`). On Kubernetes and
 > other non-AWS platforms run the maintained
 > [Kubernetes profile](../deployment/kubernetes/README.md), which packages the
 > reference binary (MQTT transport, memory/SQLite stores, `file://`
@@ -120,11 +120,11 @@ tells the runtime where to find the bridge config and how to resolve secrets.
 ### Three Delivery Methods
 
 1. **Mounted file** -- Write a bootstrap JSON file to the container filesystem
-   and set `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE` to its path. This is the
+   and set `GOBRIDGE_AWS_BOOTSTRAP_FILE` to its path. This is the
    recommended approach for container orchestrators that support config
    volumes (ECS task definitions, Kubernetes ConfigMaps).
 
-2. **Inline environment variable** -- Set `GOBRIDGE_FILEBASED_BOOTSTRAP_JSON`
+2. **Inline environment variable** -- Set `GOBRIDGE_AWS_BOOTSTRAP_JSON`
    to the full JSON content. Useful for small configs in environments where
    file mounts are awkward.
 
@@ -134,8 +134,8 @@ tells the runtime where to find the bridge config and how to resolve secrets.
 
 ### Bootstrap Config Fields
 
-The bootstrap loader reads **JSON** (from `GOBRIDGE_FILEBASED_BOOTSTRAP_JSON`
-or the file named by `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`) — it is not YAML:
+The bootstrap loader reads **JSON** (from `GOBRIDGE_AWS_BOOTSTRAP_JSON`
+or the file named by `GOBRIDGE_AWS_BOOTSTRAP_FILE`) — it is not YAML:
 
 ```json
 {
@@ -382,7 +382,7 @@ Two built-in adapters are available:
 
 > **The shipped AWS file-based image accepts only `noop` or `cloudwatch` for its
 > `metrics_exporter`** — those are the sole values its bootstrap wires
-> (`deployment/aws-filebased-config/lib/bootstrap/metrics.go`), and any other
+> (`deployment/aws/lib/bootstrap/metrics.go`), and any other
 > value is rejected at startup. **For OTLP, build `cmd/gobridge` with
 > `gobridge_otel`** and set `OTEL_EXPORTER_OTLP_ENDPOINT` or the signal-specific
 > metrics/traces endpoint variables. It is not reachable from the stock AWS

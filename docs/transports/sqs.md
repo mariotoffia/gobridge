@@ -187,19 +187,23 @@ metadata permissions; send, receive, delete, and visibility grants must remain
 scoped to the exact intended queue. URL/name modes need no tag-discovery grants.
 Name resolution requires `sqs:GetQueueUrl`.
 
-**CDK registration.** Keep the actual `awssqs.IQueue` in `QueueRegistry`. Call
-`AddQueue("orders", queue)`, then
-`BindQueueTags("orders", map[string]string{"application": "orders"}, "")`
+**CDK registration.** List the actual `awssqs.IQueue` in the construct's
+`Queues` prop and its selector under the same key in `QueueTags`:
+`Queues["orders"] = queue` and
+`QueueTags["orders"] = gobridge.QueueTags{Tags: map[string]string{"application": "orders"}}`.
+For the `bridgecfg` builder, also add the queue to a helper
+`registry.NewQueueRegistry()` with `AddQueue("orders", queue)`, call
+`BindQueueTags("orders", map[string]string{"application": "orders"}, "")`,
 and check the returned error before passing `Ref("orders")` to the builder.
-The registry alias is not a physical queue name. The builder uses explicit
+The map key is not a physical queue name. The builder uses explicit
 selector bindings or a known physical name, never an automatically generated
-`QueueUrl` token. For an owned queue, binding applies the selector tags through
-CDK. For an imported queue, binding is an explicit contract that its producer
+`QueueUrl` token. For an owned queue, the construct applies the selector tags.
+For an imported queue, the selector is an explicit contract that its producer
 applies those tags; CDK neither scans AWS nor assumes imported tags are visible.
-Synth validation requires one registered queue for each selector, while runtime
-discovery also detects additional matching queues outside the registry.
+Synth validation requires one listed queue for each selector, while runtime
+discovery also detects additional matching queues outside `Queues`.
 
-Registry resolution honors explicit `region`; otherwise CDK uses the consuming
+Queue resolution honors explicit `region`; otherwise CDK uses the consuming
 task stack's region (ECS supplies it to the SDK environment). A custom credential
 profile does not erase that known region. It rejects known
 region/account mismatches before granting access, and keeps the complete SQS
@@ -210,7 +214,7 @@ account: `ListQueues` cannot discover another account's queues.
 For the normal task-role/default-credential path, the consuming stack supplies
 the expected account. A configured profile, `credentials_uri`, or custom endpoint
 makes the credential account unknown to CDK. Unresolved stack/queue environments
-are also unknown. In those cases registry binding is the caller's assertion that
+are also unknown. In those cases listing the queue is the caller's assertion that
 the queue is in the actual runtime discovery scope; synth does not inspect
 credentials or query AWS to prove that assertion. Deployment-specific SDK-chain
 overrides outside plugin config must be reviewed against this default-credential

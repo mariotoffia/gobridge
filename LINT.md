@@ -96,7 +96,7 @@ Locate the offending file:line in the named report. Apply the fix.
 | `aclcheck` | `reports/aclcheck.log` | Move the SDK-touching code into an `acl_*.go` file. Also fires on export-confinement: an SDK-originated type in an exported signature — return/accept a domain type instead. |
 | `aggcheck` | `reports/aggcheck.log` | Move the type into `*_aggregate.go` and add `Validate() error`. |
 | `cfgshape` | `reports/cfgshape.log` | Define a typed `ports.PluginConfig`, register the decoder in `register.go`, type-assert at the adapter boundary. |
-| `registrychk` | `reports/registrychk.log` | Add the `With<Kind>*` builder under `deployment/aws-filebased-config/cdk/bridgecfg/` and `cdk/constructs/internal/grants/<kind>.go`. |
+| `registrychk` | `reports/registrychk.log` | Add the `With<Kind>*` builder under `deployment/aws/cdk/bridgecfg/` and `cdk/constructs/internal/grants/<kind>.go`. |
 | `pluginsym` | `reports/pluginsym.log` | Keep decoder, literal factory and seed wiring in the same tagged family file; fix its constraint or inverse stub per [PLUGIN.md](PLUGIN.md#per-file-registration-symmetry). Untagged files register nothing. |
 | `gofmt` | `reports/gofmt.log` | Run `make lint-fix`. |
 | `go vet` | `reports/go-vet.log` | Fix the reported issue at file:line. |

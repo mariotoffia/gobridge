@@ -10,6 +10,33 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Changed — the AWS deployment profile is `deployment/aws`, imported as one package
+
+Breaking for every consumer of the old paths; there is no compatibility shim.
+
+- **The profile moved from `deployment/aws-filebased-config` to `deployment/aws`.**
+  The modules are `github.com/mariotoffia/gobridge/deployment/aws/{cdk,infra,lib}`.
+  The old name described only the first config source, while the profile also
+  reads config from DynamoDB and builds a binary shaped by the config.
+- **The binary is `gobridge-aws`**, and its bootstrap variables are
+  `GOBRIDGE_AWS_BOOTSTRAP_JSON` and `GOBRIDGE_AWS_BOOTSTRAP_FILE`. They replace
+  `gobridge-filebased` and `GOBRIDGE_FILEBASED_BOOTSTRAP_*`; a task definition
+  written outside CDK must use the new names.
+- **A CDK app adds the `cdk` module and imports `cdk/gobridge`.** That package
+  carries `NewSingle`, `NewCluster`, `NewHA`, `NewALBAttachment`, `NewAlarms`,
+  `NewEfsConfig`, `ConfigFile`, `ConfigInline`, the image constructors, `Lookup`
+  and aliases for every prop type. `infra` arrives through `go mod tidy`.
+- **`Image` is optional.** A nil image builds `lib/cmd/gobridge-aws` at the `cdk`
+  version the app depends on, with the transport families the config uses.
+  `ImageFromGoBuild`'s `Version` is optional for the same reason; an app built
+  against a local `replace` must still set it, and synth says so.
+- **Queues and secrets are plain maps.** `SingleProps`, `ClusterProps` and
+  `DynamoDBHAProps` replace `QueueRegistry` and `SsmParamRegistry` with
+  `Queues`, `QueueTags` and `Secrets`, and synth errors name those props. The
+  `bridgecfg` builder still takes `registry` references.
+- **The unused `lib/infra` package is removed.** Bootstrap types live only in
+  `infra`.
+
 ### Changed — the SQS egress size ceiling follows the service's 1 MiB default
 
 - **`max_message_bytes` now defaults to 1 MiB (1048576), not 256 KiB.** Amazon

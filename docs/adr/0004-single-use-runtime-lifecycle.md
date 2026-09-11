@@ -37,7 +37,7 @@ and `/live` fails closed.
 - **Wedge = swap failed AND recovery failed.** In the file-based bootstrap, the
   process is WEDGED only when a prepare/commit swap failed **and** the recovery
   back to the previous runtime also failed (`wedged atomic.Bool`,
-  `deployment/aws-filebased-config/lib/bootstrap/app.go`). `Run` exits
+  `deployment/aws/lib/bootstrap/app.go`). `Run` exits
   non-zero once terminal (`ErrRuntimeTerminal`, `app.go`), driven by a
   terminal backstop poll (`defaultTerminalPollInterval = 5s`, `app.go`).
 

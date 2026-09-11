@@ -214,7 +214,7 @@ When an environment variable is set, the test utility uses the existing service 
 
 ### Local deployment proof
 
-`make test-local-deploy` deploys the `aws-filebased-config` CDK profile against
+`make test-local-deploy` deploys the AWS CDK profile (`deployment/aws`) against
 local emulation and drives the running system. It needs Docker and Node, no AWS
 account and no credentials: it builds the runtime image, installs the CDK CLI
 and its local wrapper under `.tools/`, stands the emulators on one Docker

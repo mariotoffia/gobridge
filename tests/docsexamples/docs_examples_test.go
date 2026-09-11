@@ -4,7 +4,7 @@
 // real two-stage config parser (config/parser.Parse) with a plugin
 // registry containing every in-repo transport and store decoder — the
 // same composition a production binary performs (see cmd/gobridge and
-// deployment/aws-filebased-config/lib/bootstrap).
+// deployment/aws/lib/bootstrap).
 //
 // Classification: a fenced ```yaml block is a COMPLETE blueprint
 // (UBIQUITOUS.md — "BridgeConfig", the aggregate root of the
@@ -160,7 +160,7 @@ func isCompleteBridgeConfig(body string) bool {
 
 // newFullRegistry composes the plugin-config registry the way a
 // production composition root does (cmd/gobridge/main.go,
-// deployment/aws-filebased-config/lib/bootstrap/config.go), extended
+// deployment/aws/lib/bootstrap/config.go), extended
 // with every remaining in-repo Register so docs may reference any
 // shipped transport or store kind: mqtt/mqtt.paho, sqs/aws.sqs,
 // servicebus (+ fully-qualified form), amqp091, amqp10, http, memory,

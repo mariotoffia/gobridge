@@ -104,7 +104,7 @@ linters:
         - github.com/mariotoffia/gobridge/ports.Watcher
         - github.com/mariotoffia/gobridge/ports.Span
         - github.com/mariotoffia/gobridge/ports.Tracer
-        # Bootstrap exporter selection (deployment/aws-filebased-config/
+        # Bootstrap exporter selection (deployment/aws/
         # lib/bootstrap): the composition root picks a MetricsExporter
         # implementation from config; callers must not know which.
         - github.com/mariotoffia/gobridge/ports.MetricsExporter
@@ -136,7 +136,7 @@ linters:
         - github.com/mariotoffia/gobridge/adapters/aws/metrics/cloudwatch.cloudWatchAPI
         - github.com/mariotoffia/gobridge/adapters/aws/transport/sqs.sqsAPI
         - github.com/mariotoffia/gobridge/adapters/azure/transport/servicebus.asbAPI
-        - github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/bootstrap.parameterResolver
+        - github.com/mariotoffia/gobridge/deployment/aws/lib/bootstrap.parameterResolver
 
         # 6. Third-party SDK interfaces we cannot avoid returning.
         - go.opentelemetry.io/otel/metric.Int64Counter
@@ -538,7 +538,7 @@ linters:
       # default secret-scheme allow-list. These are documented
       # architectural exemptions, scoped to the CDK module path.
       - linters: [gochecknoglobals, gochecknoinits]
-        path: "^deployment/aws-filebased-config/cdk/"
+        path: "^deployment/aws/cdk/"
 
       # CredentialAdmin is a coordination interface that legitimately
       # exceeds five methods. Whitelist explicitly so the threshold

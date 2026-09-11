@@ -9,51 +9,52 @@ Part of the [AWS Deployment Overview](overview.md).
 
 ---
 
-The GoBridge CDK constructs are written in Go and live at:
+An external CDK app runs `go get github.com/mariotoffia/gobridge/deployment/aws/cdk@vX.Y.Z`
+and imports one package:
 
 ```text
-github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs
+github.com/mariotoffia/gobridge/deployment/aws/cdk/gobridge
 ```
 
-The shared infrastructure types (zero external dependencies) live at:
-
-```text
-github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra
-```
+It re-exports the constructs under `cdk/constructs` and the bootstrap settings
+from the `infra` module, which `go mod tidy` adds.
 
 ## Construct Overview
 
-The library provides an EFS config construct plus three façade constructs, each
+The library provides an EFS config construct plus façade constructs, each
 deploying a complete profile:
 
-| Construct | Package | Purpose |
-|-----------|---------|---------|
-| `GoBridgeEfsConfig` | `cdk/constructs` | EFS filesystem + access point for config mounting. |
-| `GoBridgeSingle` | `cdk/constructs/gobridgesingle` | One control Fargate task, optional EFS mount, no worker, no clustering. |
-| `GoBridgeCluster` | `cdk/constructs/gobridgecluster` | Independent filesystem scale-out: one control task plus workers. |
-| `GoBridgeDynamoDBHA` | `cdk/constructs/gobridgedynamodbha` | DynamoDB-coordinated active/warm-standby: one control plus at least two workers and three owned tables. |
+| Constructor | Props | Purpose |
+|-------------|-------|---------|
+| `gobridge.NewEfsConfig` | `EfsConfigProps` | EFS filesystem + access point for config mounting. |
+| `gobridge.NewSingle` | `SingleProps` | One control Fargate task, optional EFS mount, no worker, no clustering. |
+| `gobridge.NewCluster` | `ClusterProps` | Independent filesystem scale-out: one control task plus workers. |
+| `gobridge.NewHA` | `HAProps` | DynamoDB-coordinated active/warm-standby: one control plus at least two workers and three owned tables. |
 
-The constructors are `NewGoBridgeSingle(scope, id, *SingleProps)`,
-`NewGoBridgeCluster(scope, id, *ClusterProps)`, and
-`NewGoBridgeDynamoDBHA(scope, id, *DynamoDBHAProps)`. There is no `GoBridgeService` or
+Each constructor takes `(scope, id string, props)`. There is no `GoBridgeService` or
 `GoBridgeStack` construct and no `GoBridgeServiceProps` type.
 
 ## Runtime image source
 
-All three facades require `Image`, a sealed `gobridgecdk.BridgeImageSource`.
-Existing `awsecs.ContainerImage` values are no longer accepted. Choose one of:
+`Image` is optional on every facade. Left nil, the facade builds GoBridge during
+`cdk deploy` at the same version as the `cdk` module the app depends on,
+linking only the transport families the bridge config uses. To choose
+differently, set a sealed `gobridge.Image`; `awsecs.ContainerImage` values are
+not accepted:
 
 | Constructor | Use |
 |-------------|-----|
-| `gobridgecdk.ImageFromRegistry(ref)` | A registry reference pinned with `@sha256:<digest>`. The reference is preserved exactly; mutable tags alone fail synth. |
-| `gobridgecdk.ImageFromEcrRepository(repo, tag)` | A consumer-managed `awsecr.IRepository` with an explicit tag or SHA-256 digest. CDK grants the execution role pull access. Prefer immutable tags or digests. |
-| `gobridgecdk.ImageFromGoBuild(props)` | Builds a downloaded module copy with the facade's parsed `BridgeConfig` in its fixed embed file; uses `go install package@version` only without embedded config. No Git checkout. |
+| `gobridge.ImageFromRegistry(ref)` | A registry reference pinned with `@sha256:<digest>`. The reference is preserved exactly; mutable tags alone fail synth. |
+| `gobridge.ImageFromEcr(repo, tag)` | A consumer-managed `awsecr.IRepository` with an explicit tag or SHA-256 digest. CDK grants the execution role pull access. Prefer immutable tags or digests. |
+| `gobridge.ImageFromGoBuild(props)` | Builds a downloaded module copy with the facade's parsed `BridgeConfig` in its fixed embed file; uses `go install package@version` only without embedded config. No Git checkout. |
 
-`ImageGoBuildProps.Version` is required: supply a published profile version,
-not `main` or `latest`. The profile `lib` module rides the same release train
-as `cdk` and `infra`, so the version you already use for
-`go get .../cdk@vX.Y.Z` is the one to pass here. `Package` defaults to
-`github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/cmd/gobridge-filebased`.
+`GoBuild.Version` is optional. Empty takes the `cdk` module version from the
+app's build information; synth fails when that module is replaced or is not a
+released version. Set `Version` only when the app builds against a local
+`replace`, and then name a published profile version, not `main` or `latest`.
+The profile `lib` module rides the same release train as `cdk` and `infra`.
+`Package` defaults to
+`github.com/mariotoffia/gobridge/deployment/aws/lib/cmd/gobridge-aws`.
 The embedded Dockerfile uses digest-pinned Go and distroless nonroot bases;
 `GoImage` and `BaseImage` overrides must also be digest-pinned. Synth stages the
 context into the cloud assembly before cleaning up its temporary directory,
@@ -90,7 +91,7 @@ support the build's `-initial-config-digest` probe. The standard commands embed
 that file in `main.initialConfigBase64` and decode it before initialization.
 
 After compilation, the generated build runs
-`/gobridge-filebased -initial-config-digest` and compares its output with the
+`/gobridge-aws -initial-config-digest` and compares its output with the
 SHA-256 hash of the staged document bytes. The probe exits before runtime or
 network startup and reveals only the hash. A missing probe or mismatched hash
 fails the build. A missing fixed embed file also fails; an older package cannot
@@ -134,15 +135,15 @@ See [strict creation](config-initialization.md#strict-creation).
 
 EFS is needed only for file config or parsed SQLite paths. `EfsConfig()` returns
 nil otherwise, including when an unused `EfsConfig` prop was supplied. Pass that
-value unchanged to `GoBridgeAlarms`: the EFS alarm is omitted when no filesystem
-exists. ALB SSM exports with `IncludeARNs()` omit `efs-id` for EFS-free facades;
-the URL and cluster/ALB exports are unchanged. `LookupBridge(..., IncludeARNs())`
+value unchanged to `gobridge.NewAlarms`: the EFS alarm is omitted when no filesystem
+exists. ALB SSM exports with `gobridge.IncludeARNs()` omit `efs-id` for EFS-free facades;
+the URL and cluster/ALB exports are unchanged. `gobridge.Lookup(..., gobridge.IncludeARNs())`
 uses an optional synth-time SSM lookup for EFS presence and returns nil from
 `EfsID()` until that lookup resolves, or when the producer has no filesystem.
 When changing the producer between filesystem-backed and EFS-free config, refresh
 the cached `efs-id` lookup in `cdk.context.json` after deploying the producer.
 
-## GoBridgeEfsConfigProps
+## EfsConfigProps
 
 Both control and worker access points expose `/`; their paths are not configurable.
 
@@ -159,11 +160,12 @@ Both control and worker access points expose `/`; their paths are not configurab
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `Vpc` | `awsec2.IVpc` | *required* | VPC for the task and EFS mount targets. |
-| `Image` | `gobridgecdk.BridgeImageSource` | *required* | Sealed runtime image from `ImageFromRegistry`, `ImageFromEcrRepository`, or `ImageFromGoBuild`. |
-| `Bootstrap` | `infra.BootstrapConfig` | *required* | Runtime config; `NodeRole` forced to `control`. |
-| `BridgeConfig` | `source.Source` | *required* | Sealed config from `gobridgecdk.BridgeYamlAsset`/`BridgeYamlInline`. |
-| `QueueRegistry` | `*registry.QueueRegistry` | conditionally required | Resolves SQS queue names in the config. |
-| `SsmParamRegistry` | `*registry.SsmParamRegistry` | conditionally required | Resolves SSM parameter URIs in the config. |
+| `Image` | `gobridge.Image` | Go build at the app's `cdk` version | Sealed runtime image from `ImageFromRegistry`, `ImageFromEcr`, or `ImageFromGoBuild`. |
+| `Bootstrap` | `gobridge.Bootstrap` | *required* | Runtime config; `NodeRole` forced to `control`. |
+| `BridgeConfig` | `gobridge.Config` | *required* | Sealed config from `gobridge.ConfigFile`/`ConfigInline`. |
+| `Queues` | `map[string]awssqs.IQueue` | conditionally required | Every SQS queue the config references. A reference matches the queue's physical name; the key is a label. |
+| `QueueTags` | `map[string]gobridge.QueueTags` | `nil` | Tag selector per `Queues` key; only when the config uses `queue_tags`. |
+| `Secrets` | `map[string]awsssm.IParameter` | conditionally required | Every SSM parameter the config references, keyed by path (`/app/key` or `pms://app/key`). |
 | `ManagedSubscriptionBaselines` | `map[string][]string` | required per durable subscribing session | For every persistent or exclusive MQTT session that subscribes, the exact filters its broker identity already holds; an empty list attests a new identity. Validated at synth, stamped into the bootstrap document as `managed_subscription_baselines`, and seeded by the runtime at every boot. See [SQLite stores on the config mount](storage-and-secrets.md#sqlite-stores-on-the-config-mount). |
 | `CPU` | `*float64` | `512` | Fargate CPU units. |
 | `MemoryMiB` | `*float64` | `1024` | Fargate memory (MiB). |
@@ -174,14 +176,14 @@ no auto-scaling.
 
 ## ClusterProps (selected)
 
-`ClusterProps` shares `Vpc`, `Image`, `Bootstrap`, `BridgeConfig`, the
-registries, `CPU`, `MemoryMiB`, and `MountPath` with `SingleProps` (applied to
-both services), plus:
+`ClusterProps` shares `Vpc`, `Image`, `Bootstrap`, `BridgeConfig`, `Queues`,
+`QueueTags`, `Secrets`, `CPU`, `MemoryMiB`, and `MountPath` with `SingleProps`
+(applied to both services), plus:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `WorkerDesiredCount` | `*float64` | `2` | Worker task count (must be ≥ 1). |
-| `AutoScaling` | `*AutoScalingProps` | `nil` (off) | Opt-in worker CPU target-tracking (`{Min, Max, TargetCPU}`, `TargetCPU` `0` → 70). |
+| `AutoScaling` | `*gobridge.AutoScaling` | `nil` (off) | Opt-in worker CPU target-tracking (`{Min, Max, TargetCPU}`, `TargetCPU` `0` → 70). |
 
 The control task always runs a single copy (`DesiredCount` is hard-coded to 1).
 Auto-scaling applies to the worker service only and is off unless `AutoScaling`
@@ -189,8 +191,8 @@ is set.
 
 ## DynamoDBHAProps (selected)
 
-`DynamoDBHAProps` shares the common VPC, image, bootstrap, config, registry,
-sizing, and EFS fields. Its `WorkerDesiredCount` defaults to `2` and must be a
+`gobridge.HAProps` (the `DynamoDBHAProps` type) shares the common VPC, image,
+bootstrap, config, queue, secret, sizing, and EFS fields. Its `WorkerDesiredCount` defaults to `2` and must be a
 resolved finite integer greater than or equal to `2`; unresolved numeric tokens
 are rejected. It has no worker auto-scaling surface. Table names and the
 deployment-profile fingerprint are derived from the admitted bridge config and
@@ -235,44 +237,52 @@ valid config. There are no seeder-mode or seeder-image props.
 ### SQS references
 
 Embedded Amazon Simple Queue Service (SQS) config names a physical queue or
-selects one by tags and an optional name prefix. A registry alias is not a
-physical queue name. For example, alias `orders` may refer to physical queue
-`orders-prod`; only `orders-prod` may appear as `queue_name`.
+selects one by tags and an optional name prefix. List every referenced queue in
+`Queues`. A `queue_name` reference matches the listed queue with that physical
+name, so the map key is only a label; the physical name is the clearest key. A
+config that names a key instead of the physical name fails synth. A `queue_tags`
+reference matches the `QueueTags` entry under the same key as its queue.
 
 | API | Contract |
 |---|---|
-| `QueueRegistry.AddQueue(name, queue)` | Registers an `IQueue` under a logical alias for grants and dependencies. |
-| `QueueRegistry.BindQueueTags(name, tags, prefix)` | Binds a literal selector to an already registered queue; returns an error for invalid or conflicting declarations. |
-| `QueueRegistry.ResolveQueue(cfg sqs.Config)` | Returns `(QueueRef, error)` by matching the declared reference to registered handles, without AWS calls; ambiguous or missing name/tag mappings fail. |
+| `Queues[name] = queue` | Lists an `IQueue` for grants and dependencies. |
+| `QueueTags[name] = gobridge.QueueTags{Tags, NamePrefix}` | Binds a literal selector to the queue under the same key; invalid or conflicting selectors fail synth. |
 | `QueueRef.PhysicalName()` | Returns the known physical name, never an alias or unresolved token; empty means the name is unknown at synth. |
 | `QueueRef.QueueTags()` | Returns an isolated copy of the explicitly bound selector. |
 | `QueueRef.QueueNamePrefix()` | Returns the optional discovery prefix bound to that selector. |
 
-Register a queue before binding its selector:
+The construct takes the maps. The `bridgecfg` builder takes a `QueueRef` from a
+helper `registry.QueueRegistry`, so a builder-authored config lists the queue in both:
 
 ```go
 queue := awssqs.NewQueue(stack, jsii.String("Orders"), &awssqs.QueueProps{
     QueueName: jsii.String("orders-prod"),
 })
-queues := registry.NewQueueRegistry()
-queues.AddQueue("orders", queue)
-if err := queues.BindQueueTags("orders", map[string]string{
-    "application": "gobridge",
-    "purpose":     "orders",
-}, "orders-"); err != nil {
-    panic(err)
+selector := gobridge.QueueTags{
+    Tags:       map[string]string{"application": "gobridge", "purpose": "orders"},
+    NamePrefix: "orders-",
 }
 
-// Use this sender declaration in your bridgecfg builder chain.
+// Construct props: grants, dependencies and synth validation.
+queues := map[string]awssqs.IQueue{"orders-prod": queue}
+queueTags := map[string]gobridge.QueueTags{"orders-prod": selector}
+
+// Builder references: the same queue and selector under the same key.
+refs := registry.NewQueueRegistry()
+refs.AddQueue("orders-prod", queue)
+if err := refs.BindQueueTags("orders-prod", selector.Tags, selector.NamePrefix); err != nil {
+    panic(err)
+}
 builder := bridgecfg.New("orders-bridge").
-    WithSQSSender("orders-out", queues.Ref("orders"))
+    WithSQSSender("orders-out", refs.Ref("orders-prod"))
 ```
 
-Pass `queues` as the facade's `QueueRegistry`. `BindQueueTags` applies tags
-to CDK-owned queues. For an imported queue, it asserts that the producer has
-already applied them; CDK cannot change the imported resource's tags.
+Pass `queues` and `queueTags` as the facade's `Queues` and `QueueTags`. The
+construct applies the tags to CDK-owned queues. For an imported queue, the
+selector asserts that the producer has already applied them; CDK cannot change
+the imported resource's tags.
 The prefix must match the deployed physical name. For generated names,
-pass an empty prefix unless you can guarantee that match.
+leave `NamePrefix` empty unless you can guarantee that match.
 
 `WithSQSReceiver` and `WithSQSSender` prefer the bound tags. Without tags they
 use `PhysicalName()`. A generated name that is unknown at synth needs an
@@ -293,8 +303,8 @@ The facade's shared base calls `GrantSQSConfig`, which uses `ResolveQueue`
 for receiver, sender, and binding references. It keeps exact queue handles for
 message-operation grants and resource dependencies. Only tag mode adds
 `ListQueues` and `ListQueueTags` metadata reads; name mode uses `GetQueueUrl`.
-Direct URLs remain available for non-embedded config. An unregistered direct
-URL leaves message-operation grants to the consumer.
+Direct URLs remain available for non-embedded config. A direct URL whose queue
+is not in `Queues` leaves message-operation grants to the consumer.
 
 See [runtime selection](config-initialization.md#queue-references-in-embedded-documents)
 and [discovery grants](iam.md#sqs-discovery-grants).
@@ -311,32 +321,28 @@ remain visible to readers of the binary and build artifacts.
 
 ```go
 import (
-    gobridgesingle "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
-    "github.com/aws/jsii-runtime-go"
+    "github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
+
+    "github.com/mariotoffia/gobridge/deployment/aws/cdk/gobridge"
 )
 
-qr := registry.NewQueueRegistry()
-qr.AddQueue("inbound", inboundQueue)
-
 // cfg is a *ports.BridgeConfig (build it with the bridgecfg builder).
-single := gobridgesingle.NewGoBridgeSingle(stack, jsii.String("Bridge"), &gobridgesingle.SingleProps{
-    Vpc:   vpc,
-    Image: gobridgecdk.ImageFromRegistry("123456789.dkr.ecr.eu-west-1.amazonaws.com/gobridge@sha256:<digest>"),
-    Bootstrap: infra.BootstrapConfig{
+// With Image unset, the facade builds GoBridge at the app's cdk module version.
+single := gobridge.NewSingle(stack, "Bridge", &gobridge.SingleProps{
+    Vpc: vpc,
+    Bootstrap: gobridge.Bootstrap{
         BridgeID:         "my-bridge",
         ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",
         AdminAPIKeyParam: "/myapp/admin-key",
     },
-    BridgeConfig:  gobridgecdk.BridgeYamlInline(cfg),
-    QueueRegistry: qr,
+    BridgeConfig: gobridge.ConfigInline(cfg),
+    // The key is a label; the config's reference matches the queue's physical name.
+    Queues: map[string]awssqs.IQueue{"inbound": inboundQueue},
 })
 _ = single
 ```
 
-For a control + worker pair, use `gobridgecluster.NewGoBridgeCluster` with
+For a control + worker pair, use `gobridge.NewCluster` with
 `ClusterProps` (add `WorkerDesiredCount` and, optionally, `AutoScaling`).
 
 See [CDK Scenarios](../scenarios/cdk/) for complete, runnable examples.

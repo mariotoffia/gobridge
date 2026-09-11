@@ -3,9 +3,9 @@
 ## Overview
 
 The full stack wires the imported VPC and ECS cluster into the
-`gobridgecluster.NewGoBridgeCluster` facade (control + worker tasks sharing one
+`gobridge.NewCluster` facade (control + worker tasks sharing one
 EFS filesystem, chosen here because we want more than one replica), then binds
-it to the shared ALB listener with the `gobridgealbattachment` construct — the
+it to the shared ALB listener with `gobridge.NewALBAttachment` — the
 attachment owns the target groups and listener rules, so you do not wire them by
 hand.
 
@@ -25,10 +25,7 @@ import (
     "github.com/aws/constructs-go/constructs/v10"
     "github.com/aws/jsii-runtime-go"
 
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgealbattachment"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgecluster"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+    "github.com/mariotoffia/gobridge/deployment/aws/cdk/gobridge"
 )
 
 func NewCustomVpcStack(scope constructs.Construct, id string) awscdk.Stack {
@@ -55,27 +52,27 @@ func NewCustomVpcStack(scope constructs.Construct, id string) awscdk.Stack {
 
     // --- GoBridge cluster facade (control + workers, shared EFS) ---
 
-    src := gobridgecdk.BridgeYamlAsset("bridge.yaml")
+    src := gobridge.ConfigFile("bridge.yaml")
     workers := float64(2)
 
-    bridge := gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Bridge"),
-        &gobridgecluster.ClusterProps{
+    bridge := gobridge.NewCluster(stack, "Bridge",
+        &gobridge.ClusterProps{
             Vpc:     vpc,
             Cluster: cluster, // reuse the imported ECS cluster
-            Image: gobridgecdk.ImageFromRegistry(
+            Image: gobridge.ImageFromRegistry(
                 "123456789012.dkr.ecr.eu-west-1.amazonaws.com/gobridge@sha256:<digest>"),
-            Bootstrap: infra.BootstrapConfig{
+            // NewCluster forces topology filesystem_replicated.
+            Bootstrap: gobridge.Bootstrap{
                 BridgeID:         "gobridge-mqtt",
                 ConfigFilePath:   "/var/lib/gobridge/bridge.yaml",
                 AdminAPIKeyParam: "/gobridge/prod/admin-api-key",
-                Topology:         infra.TopologyFilesystemReplicated,
             },
             BridgeConfig:       src,
             CPU:                jsii.Number(1024),
             MemoryMiB:          jsii.Number(2048),
             WorkerDesiredCount: &workers,
             // Autoscaling is opt-in and applies to the worker service only.
-            AutoScaling: &gobridgecluster.AutoScalingProps{
+            AutoScaling: &gobridge.AutoScaling{
                 Min:       2,
                 Max:       6,
                 TargetCPU: 65,
@@ -92,8 +89,8 @@ func NewCustomVpcStack(scope constructs.Construct, id string) awscdk.Stack {
         },
     )
 
-    gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Attach"),
-        &gobridgealbattachment.AttachmentProps{
+    gobridge.NewALBAttachment(stack, "Attach",
+        &gobridge.ALBAttachmentProps{
             Cluster:      bridge,
             Listener:     listener,
             Vpc:          vpc,

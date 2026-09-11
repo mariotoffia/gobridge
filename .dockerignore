@@ -1,4 +1,4 @@
-# Docker build context excludes. The image builds the gobridge-filebased
+# Docker build context excludes. The image builds the gobridge-aws
 # binary with GOWORK=off, which pulls in the repo-root module plus the
 # adapters/httpapi/processors/testutil/deployment-infra modules via relative
 # replace directives — so DO NOT exclude Go source directories here. Only

@@ -28,7 +28,7 @@
 ./bridge/keystone_lifecycle_test.go:88:				time.Sleep(time.Millisecond) // OTHER: pace the bounded Terminal() sampling loop (exits on stopPoll)
 ./bridge/supervisor_fakes_test.go:337:		time.Sleep(5 * time.Millisecond) // STARTUP: supervisor runtime init poll
 ./bridge/supervisor_fakes_test.go:354:		time.Sleep(5 * time.Millisecond) // STARTUP: supervisor route convergence poll
-./deployment/aws-filebased-config/lib/bootstrap/transport_server_test.go:60:	time.Sleep(10 * time.Millisecond) // SYNC: ensure atomic handler swap is visible to next request
+./deployment/aws/lib/bootstrap/transport_server_test.go:60:	time.Sleep(10 * time.Millisecond) // SYNC: ensure atomic handler swap is visible to next request
 ./domain/clock/clocktest/fake_test.go:412:	time.Sleep(200 * time.Millisecond) // OTHER: real-time component of clocktest.Fake tests
 ./domain/clock/clocktest/fake_test.go:466:	time.Sleep(200 * time.Millisecond) // OTHER: real-time component of clocktest.Fake tests
 ./domain/clock/clocktest/fake_test.go:523:	time.Sleep(200 * time.Millisecond) // OTHER: real-time component of clocktest.Fake tests

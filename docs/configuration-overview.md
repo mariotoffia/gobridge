@@ -149,7 +149,7 @@ cfg, err := mgr.Load(ctx)
 
 An overlay layer is a **programmatic-API** pattern. It is reachable through
 `config.NewManager` as above, and it is deliberately **not** wired by the shipped
-`aws-filebased-config` deployment profile, which runs a single `file` layer.
+`deployment/aws` deployment profile, which runs a single `file` layer.
 
 The reason is that the admin config transaction API writes one document. Its
 store is the **base** document: it loads that document, merges the operator's

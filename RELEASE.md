@@ -39,14 +39,14 @@ The repository currently has **34 published modules**:
 | Layer | Count | Contents |
 |---|---:|---|
 | 0 | 1 | Root module |
-| 1 | 27 | Direct-root adapter/processor leaf modules, plus `deployment/aws-filebased-config/infra` |
+| 1 | 27 | Direct-root adapter/processor leaf modules, plus `deployment/aws/infra` |
 | 2 | 3 | `adapters/aws/store`, `adapters/native/store`, and `httpapi` |
-| 3 | 2 | `deployment/aws-filebased-config/cdk` and `deployment/aws-filebased-config/lib` |
+| 3 | 2 | `deployment/aws/cdk` and `deployment/aws/lib` |
 | 4 | 1 | `cmd/gobridge` |
 
 The published set is the root module, every module under `adapters/` and
 `processors/`, `httpapi`, `cmd/gobridge`, and the three AWS deployment-profile
-modules `deployment/aws-filebased-config/{infra,lib,cdk}`. Everything else
+modules `deployment/aws/{infra,lib,cdk}`. Everything else
 under `tests/`, `testutil/`, `scripts/`, and `deployment/` is internal-only and
 is never tagged. The manifest declares only the test-helper modules required to
 compile published-module tests as pseudo-version bootstrap exceptions; that
@@ -272,7 +272,7 @@ genuine defect still fails twice and stops the train.
 
 No layer can start until every tag in the layer below it is green and visible,
 so the final `cmd/gobridge` tag is reached only after both layer-3 modules,
-`deployment/aws-filebased-config/cdk` and `deployment/aws-filebased-config/lib`,
+`deployment/aws/cdk` and `deployment/aws/lib`,
 which in turn wait on all three layer-2 tags. If a tagged workflow fails, stop. Do not retag; diagnose and start a new
 patch train.
 
@@ -297,11 +297,9 @@ exact local tag commits, and run:
 go mod init example.com/gobridge-release-smoke
 go get github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho@vX.Y.Z
 go list github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho
-go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk@vX.Y.Z
-go build github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk
-go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle@vX.Y.Z
-go build github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle
-go install github.com/mariotoffia/gobridge/deployment/aws-filebased-config/lib/cmd/gobridge-filebased@vX.Y.Z
+go get github.com/mariotoffia/gobridge/deployment/aws/cdk/gobridge@vX.Y.Z
+go build github.com/mariotoffia/gobridge/deployment/aws/cdk/gobridge
+go install github.com/mariotoffia/gobridge/deployment/aws/lib/cmd/gobridge-aws@vX.Y.Z
 go install github.com/mariotoffia/gobridge/cmd/gobridge@vX.Y.Z
 ```
 
@@ -311,7 +309,7 @@ and in the generated consumer go.mod.
 The `lib` module is resolved *and* its command is installed. Nothing a consumer
 writes imports it, so resolution proves only that the tag exists and that its
 published manifest carries no `replace`. What a consumer actually runs is a
-`go build` of `lib/cmd/gobridge-filebased` inside the `ImageFromGoBuild` Docker
+`go build` of `lib/cmd/gobridge-aws` inside the `ImageFromGoBuild` Docker
 build at deploy time — after a stack update has begun. The strict per-module
 gate compiles that tree from the staged manifest, but only this install
 compiles it from the published module zip, which is the artifact the consumer
@@ -321,12 +319,10 @@ generated consumer manifest.
 The CDK steps **build** rather than list. `cdk` is not in `cmd/gobridge`'s
 dependency graph, so nothing else in the train compiles it from outside the
 repository, and resolution alone would not catch a published manifest that no
-longer satisfies the constructs' own imports. `gobridgecdk` imports
-`gobridgealbattachment` and `ssmexports` and reaches every facade transitively,
-so building it alone already compiles the whole public surface.
-`constructs/gobridgesingle` is built as well because it is the import path a
-consumer's stack actually names, and a broken direct fetch of that path is the
-first thing a reader would hit.
+longer satisfies the constructs' own imports. `gobridge` is the one package a
+consumer's stack imports, and it imports every facade, the config and image
+sources, the ALB attachment, the alarms and `ssmexports`, so building it
+compiles the whole public surface from the path a reader would hit first.
 
 The CDK steps fetch the **package** path, not the module path. `go get
 module@version` records the requirement but not the `go.sum` entries for what

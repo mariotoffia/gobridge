@@ -26,7 +26,7 @@
     {"path": "adapters/native/store/sqliteoutbox", "layer": 1},
     {"path": "adapters/otel/metrics", "layer": 1},
     {"path": "adapters/otel/tracing", "layer": 1},
-    {"path": "deployment/aws-filebased-config/infra", "layer": 1},
+    {"path": "deployment/aws/infra", "layer": 1},
     {"path": "processors/circuitbreaker", "layer": 1},
     {"path": "processors/filter", "layer": 1},
     {"path": "processors/tenant", "layer": 1},
@@ -36,8 +36,8 @@
     {"path": "adapters/native/store", "layer": 2},
     {"path": "httpapi", "layer": 2},
 
-    {"path": "deployment/aws-filebased-config/cdk", "layer": 3},
-    {"path": "deployment/aws-filebased-config/lib", "layer": 3},
+    {"path": "deployment/aws/cdk", "layer": 3},
+    {"path": "deployment/aws/lib", "layer": 3},
 
     {"path": "cmd/gobridge", "layer": 4}
   ],

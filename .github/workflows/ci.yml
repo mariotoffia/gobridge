@@ -58,7 +58,7 @@ jobs:
           go -C cmd/gobridge vet ./...
           go -C cmd/gobridge build -tags gobridge_all -o gobridge.out ./...
           go -C cmd/gobridge vet -tags gobridge_all ./...
-          go -C deployment/aws-filebased-config/lib vet -tags gobridge_all ./...
+          go -C deployment/aws/lib vet -tags gobridge_all ./...
 
       # Fails fast, and names the exact file:line, when a pull request breaks a
       # link, an anchor, a reference table, or the page-length threshold. The
@@ -146,7 +146,7 @@ jobs:
           if-no-files-found: ignore
 
   # Smoke-build the production runtime image so the Dockerfile cannot rot.
-  # No push: this only proves the multi-stage build (static gobridge-filebased
+  # No push: this only proves the multi-stage build (static gobridge-aws
   # on distroless nonroot) still compiles and assembles.
   docker:
     runs-on: ubuntu-latest
@@ -165,7 +165,7 @@ jobs:
           context: .
           push: false
           load: true
-          tags: gobridge-filebased:ci
+          tags: gobridge-aws:ci
           build-args: |
             VERSION=ci
             GIT_SHA=${{ github.sha }}
@@ -176,7 +176,7 @@ jobs:
         run: |
           # No monitor server is running, so the probe must exit non-zero
           # rather than crash — this proves the -healthcheck flag is wired.
-          if docker run --rm -e GOBRIDGE_FILEBASED_BOOTSTRAP_JSON='{"bridge_id":"ci","config_file_path":"/var/lib/gobridge/bridge.yaml"}' gobridge-filebased:ci -healthcheck; then
+          if docker run --rm -e GOBRIDGE_AWS_BOOTSTRAP_JSON='{"bridge_id":"ci","config_file_path":"/var/lib/gobridge/bridge.yaml"}' gobridge-aws:ci -healthcheck; then
             echo "::error::healthcheck unexpectedly succeeded with no server"
             exit 1
           fi

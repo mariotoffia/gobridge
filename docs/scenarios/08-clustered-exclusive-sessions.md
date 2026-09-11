@@ -259,7 +259,7 @@ opens the broker connection, and a missing row is "history unknown", not "no
 history", so the session will not start until the row exists. Seed it once per
 durable session with an attestation of what the broker already holds — on the
 AWS profile from `ManagedSubscriptionBaselines`
-([data tables](../../deployment/aws-filebased-config/README.md#data-tables)),
+([data tables](../../deployment/aws/README.md#data-tables)),
 elsewhere as the [durable sessions page](../transports/mqtt-durable-sessions.md#managed-subscription-history)
 lists. An empty attestation is only for a `client_id` that is genuinely new.
 
@@ -462,7 +462,7 @@ The blueprint itself contains no replica count or peer-health inventory at
 preflight, so config validation alone cannot prove that a healthy warm standby
 exists — never present configuration validation as that proof. The shipped AWS
 deployment model now enforces the invariant outside the blueprint: the
-[`GoBridgeDynamoDBHA` CDK construct](../../deployment/aws-filebased-config/cdk/constructs/gobridgedynamodbha)
+[`GoBridgeDynamoDBHA` CDK construct](../../deployment/aws/cdk/constructs/gobridgedynamodbha)
 deploys one control task plus at least two workers (`WorkerDesiredCount` may
 never be below two) across a required two-AZ subnet spread, so any single task
 loss leaves at least one continuously polling warm standby. A deployment that

@@ -139,10 +139,10 @@ hard-coded to 1). It is opt-in: pass `AutoScaling` on `ClusterProps`. When
 ```go
 workers := float64(2)
 
-bridge := gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Bridge"),
-    &gobridgecluster.ClusterProps{
+bridge := gobridge.NewCluster(stack, "Bridge",
+    &gobridge.ClusterProps{
         WorkerDesiredCount: &workers,
-        AutoScaling: &gobridgecluster.AutoScalingProps{
+        AutoScaling: &gobridge.AutoScaling{
             Min:       2,
             Max:       8,
             TargetCPU: 70,
@@ -238,7 +238,7 @@ Organize parameters under a path prefix for clean IAM scoping:
 Reference them in the bootstrap config:
 
 ```go
-Bootstrap: infra.BootstrapConfig{
+Bootstrap: gobridge.Bootstrap{
     BridgeID: "gobridge-prod", ConfigFilePath: "/var/lib/gobridge/bridge.yaml",
     PollInterval: "5s", AdminAPIKeyParam: "/gobridge/prod/admin-api-key",
     MonitorAPIKeyParam: "/gobridge/prod/monitor-api-key",
@@ -387,7 +387,7 @@ flowchart LR
    restoring intake. On failure, keep intake stopped and roll the entire cohort
    back through the same procedure.
 
-Updating an embedded document or changing `BridgeYamlAsset` is not a target
+Updating an embedded document or changing `ConfigFile` is not a target
 write. Do not delete the target as a rollout shortcut: confirmed absence requires
 process exit and replacement after clustered activation, not live idle.
 Uncertain teardown also exits. Read failures retain last-success processing

@@ -305,10 +305,10 @@ Adapter-owned names for the lease / outbox / DLQ / managed-subscription persiste
 | **WithSchemaPreflightAdvisory** | DynamoDB store `FactoryOption` (`awsstore.WithSchemaPreflightAdvisory`). Explicit dev/emulator opt-out that downgrades the build-time DynamoDB schema preflight from fail-closed (the production default) to advisory: when `DescribeTable` cannot VERIFY the target table — a control-plane throttle, a least-privilege role lacking `dynamodb:DescribeTable` (AccessDenied), or an emulator without `DescribeTable` — the factory logs a loud WARN and builds the store anyway. A confirmed schema mismatch (`shared.ErrInvalidConfig`) stays FATAL regardless of the flag. |
 | **ClaimIndex / `claim_sort`** | dynamodboutbox claim GSI (`claimIndexName = "ClaimIndex"`) and its range key (`attrClaimSort = "claim_sort"`). `claim_sort` encodes `(created_at millis, seq)` as a zero-padded, lexicographically-sortable string, stamped by Persist and REMOVED at a terminal transition (Complete/Expire), so the sparse `ClaimIndex` (`hash=PK, range=claim_sort`, `ScanIndexForward=true`) returns a partition's claimable records oldest-first and Claim stops after `limit` instead of scanning the whole partition (`c13-claim-quadratic`). Optional — an absent index degrades Claim to a whole-partition scan — but a present `ClaimIndex` MUST be `Projection: ALL` or preflight rejects it at startup, because the claim query filters on a non-key attribute. |
 
-## Deployment / seeding (`deployment/aws-filebased-config`)
+## Deployment / seeding (`deployment/aws`)
 
 AWS deployment constructs, config sources, image builds, and durable baselines.
-The module path remains `deployment/aws-filebased-config`, but configuration can
+The module path remains `deployment/aws`, but configuration can
 come from a file or DynamoDB. See
 [docs/aws-deployment/overview.md](docs/aws-deployment/overview.md).
 
@@ -320,8 +320,8 @@ configuration creation. Current startup behavior is defined by
 | Term | Meaning |
 |---|---|
 | **Config source** | Bootstrap-selected backend for one authoritative bridge config: `file` or `dynamodb`. Empty selects `file` in every topology. Single and DynamoDB HA accept either; filesystem-replicated deployments accept only file. Workers remain read-only for both. |
-| **BridgeImageSource** | Sealed CDK image input: `ImageFromRegistry`, `ImageFromEcrRepository`, or `ImageFromGoBuild`. The Go-build path embeds the facade's logical config in a compatible published command; registry/ECR images are unchanged. See the [profile glossary](deployment/aws-filebased-config/UBIQUITOUS.md#cdk). |
-| **Profile base set** | AWS, MQTT, native-store, and HTTP families always linked into `gobridge-filebased`. AMQP 0-9-1, AMQP 1.0, and Azure Service Bus are optional build-tag families; the reference `cmd/gobridge` instead starts with no plugin families. See [PLUGIN.md](PLUGIN.md#binary-composition-build-tags). |
+| **BridgeImageSource** | Sealed CDK image input (`gobridge.Image`): `ImageFromRegistry`, `ImageFromEcr`, or `ImageFromGoBuild`; a nil image selects the Go build at the app's `cdk` module version. The Go-build path embeds the facade's logical config in a compatible published command; registry/ECR images are unchanged. See the [profile glossary](deployment/aws/UBIQUITOUS.md#cdk). |
+| **Profile base set** | AWS, MQTT, native-store, and HTTP families always linked into `gobridge-aws`. AMQP 0-9-1, AMQP 1.0, and Azure Service Bus are optional build-tag families; the reference `cmd/gobridge` instead starts with no plugin families. See [PLUGIN.md](PLUGIN.md#binary-composition-build-tags). |
 | **AdoptValid** | Removed worker seeder mode, retained as history. This was the worker default: it required a parseable EFS `bridge.yaml` and adopted it as-is, whether written by the CDK seed or an admin config transaction, without failing on hash drift from the deployed asset. Absent or unparseable config failed. Workers now observe config directly and never initialize it. |
 | **AbortDeploy** | Removed worker seeder mode, retained as history. This was an explicit `WorkerSeederMode` opt-in: it aborted startup unless EFS `bridge.yaml` existed and its canonical hash matched the deployed asset exactly. Current HA admission and rollout rules replace this image-level drift policy. |
 | **SeedOnce** | Removed control seeder mode, retained as history. This was the control default: it wrote the asset only when the target was absent, otherwise kept existing config and warned on hash drift. Current control initialization uses strict `ConfigInitializer` creation, without a seeder container. |

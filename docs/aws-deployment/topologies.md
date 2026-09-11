@@ -266,7 +266,7 @@ Optional `GOBRIDGE_INT_HA_SAMPLES` controls separate warm/cold sample counts
 (1–20, default 1). Run:
 
 ```bash
-cd deployment/aws-filebased-config/cdk
+cd deployment/aws/cdk
 GOBRIDGE_INT_HA=1 go test -count=1 -v -tags=integration_aws -run TestHA_FailoverStopsVerifiedLeaseholder ./integration
 ```
 

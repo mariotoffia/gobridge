@@ -131,7 +131,7 @@ func classifyClusterReload(oldCfg, newCfg *ports.BridgeConfig) (clusterReloadDis
 }
 
 // ClusterReloadDisposition is how a composition root that hosts the rollout
-// barrier itself (e.g. the shipped file-based bootstrap.App) must treat a clustered
+// barrier itself (e.g. the shipped AWS bootstrap.App) must treat a clustered
 // live reload. The Supervisor applies this classification through its own internal
 // guard; a bespoke host consults ClassifyClusterReload and acts on the result.
 type ClusterReloadDisposition int

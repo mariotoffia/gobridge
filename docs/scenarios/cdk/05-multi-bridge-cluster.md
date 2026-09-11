@@ -74,7 +74,7 @@ parameters, etc.) are aggregated through `Annotations.addError`.
 
 ## Control vs Worker
 
-Both task definitions receive the same `infra.BootstrapConfig`; the cluster facade **forces**
+Both task definitions receive the same `gobridge.Bootstrap`; the cluster facade **forces**
 the `NodeRole` per service (`control` for the singleton, `worker` for the scaled service). You
 do not set `NodeRole` yourself.
 
@@ -101,13 +101,13 @@ hard-coded and **not** exposed as caller-tunable props.
 
 ## Deploying the Cluster
 
-Wire the VPC, ECS cluster, image, registries and bootstrap, then hand them to
-`gobridgecluster.NewGoBridgeCluster`. The facade owns the EFS filesystem, both task
+Wire the VPC, ECS cluster, image, queues, secrets and bootstrap, then hand them to
+`gobridge.NewCluster`. The facade owns the EFS filesystem, both task
 definitions, IAM, log groups and the worker autoscaling target.
 
 The registry image must carry its own embedded initial config, consume an
 existing target, or wait for operator creation. CDK cannot modify it.
-`ImageFromGoBuild` instead embeds the parsed facade config automatically,
+Leaving `Image` unset instead embeds the parsed facade config automatically,
 building the profile command from the published `lib` module — which no
 released train has published yet. See
 [initial configuration](../../aws-deployment/config-initialization.md).
@@ -123,10 +123,7 @@ import (
     "github.com/aws/aws-cdk-go/awscdk/v2/awsssm"
     "github.com/aws/jsii-runtime-go"
 
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgecluster"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/registry"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+    "github.com/mariotoffia/gobridge/deployment/aws/cdk/gobridge"
 )
 
 func main() {
@@ -139,43 +136,42 @@ func main() {
         Vpc: vpc, ContainerInsights: jsii.Bool(true),
     })
 
-    // Logical name → CDK handle for queues referenced by yaml.
-    queues := registry.NewQueueRegistry()
-    queues.AddQueue("orders-in",
-        awssqs.Queue_FromQueueArn(stack, jsii.String("OrdersIn"),
-            jsii.String("arn:aws:sqs:eu-west-1:123456789012:orders-in")))
-    queues.AddQueue("orders-out",
-        awssqs.Queue_FromQueueArn(stack, jsii.String("OrdersOut"),
-            jsii.String("arn:aws:sqs:eu-west-1:123456789012:orders-out")))
+    // Physical queue name referenced by yaml → CDK handle.
+    queues := map[string]awssqs.IQueue{
+        "orders-in": awssqs.Queue_FromQueueArn(stack, jsii.String("OrdersIn"),
+            jsii.String("arn:aws:sqs:eu-west-1:123456789012:orders-in")),
+        "orders-out": awssqs.Queue_FromQueueArn(stack, jsii.String("OrdersOut"),
+            jsii.String("arn:aws:sqs:eu-west-1:123456789012:orders-out")),
+    }
 
-    // Logical name → CDK handle for SSM SecureString parameters referenced by yaml.
-    params := registry.NewSsmParamRegistry()
-    params.AddParameter("/gobridge/cluster/admin-api-key",
-        awsssm.StringParameter_FromSecureStringParameterAttributes(stack,
+    // SSM path referenced by yaml → CDK handle for the SecureString parameter.
+    secrets := map[string]awsssm.IParameter{
+        "/gobridge/cluster/admin-api-key": awsssm.StringParameter_FromSecureStringParameterAttributes(stack,
             jsii.String("AdminKey"), &awsssm.SecureStringParameterAttributes{
                 ParameterName: jsii.String("/gobridge/cluster/admin-api-key"),
-            }))
+            }),
+    }
 
-    bridge := gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Bridge"),
-        &gobridgecluster.ClusterProps{
+    bridge := gobridge.NewCluster(stack, "Bridge",
+        &gobridge.ClusterProps{
             Vpc:     vpc,
             Cluster: cluster,
-            Image: gobridgecdk.ImageFromRegistry(
+            Image: gobridge.ImageFromRegistry(
                 // Pin the digest from the release's gobridge-image-digest.txt
                 // asset — see "Pin Images by Digest" in the deployment guide.
                 "ghcr.io/mariotoffia/gobridge@sha256:<digest>"),
-            Bootstrap: infra.BootstrapConfig{
+            Bootstrap: gobridge.Bootstrap{
                 // NodeRole is forced per service by the facade — do not set it.
                 AdminAddr:        ":8080",
                 MonitorAddr:      ":8081",
                 TransportHTTPAddr: ":8082",
                 PollInterval:     "2s",
             },
-            BridgeConfig:       gobridgecdk.BridgeYamlAsset("config/bridge.yaml"),
-            QueueRegistry:      queues,
-            SsmParamRegistry:   params,
+            BridgeConfig:       gobridge.ConfigFile("config/bridge.yaml"),
+            Queues:             queues,
+            Secrets:            secrets,
             WorkerDesiredCount: jsii.Number(3),
-            AutoScaling: &gobridgecluster.AutoScalingProps{
+            AutoScaling: &gobridge.AutoScaling{
                 Min: 2, Max: 10, TargetCPU: 60,
             },
         },
@@ -192,16 +188,21 @@ Two paths produce the sealed `BridgeConfig` source consumed by the cluster facad
 
 ```go
 // (a) Local YAML for validation, grants, and optional Go-build embedding.
-src := gobridgecdk.BridgeYamlAsset("config/bridge.yaml")
+src := gobridge.ConfigFile("config/bridge.yaml")
 
-// (b) Typed builder — assembled in Go, marshalled at synth time.
+// (b) Typed builder — assembled in Go, marshalled at synth time. The helper
+// registry only hands the builder queue references; the construct still needs
+// each queue in Queues under the same key.
+refs := registry.NewQueueRegistry()
+refs.AddQueue("orders-in", queues["orders-in"])
+refs.AddQueue("orders-out", queues["orders-out"])
 cfg, err := bridgecfg.New("gobridge-cluster").
-    WithSQSReceiver("orders-in", queues.Ref("orders-in")).
-    WithSQSSender("ingest", queues.Ref("orders-out")).
+    WithSQSReceiver("orders-in", refs.Ref("orders-in")).
+    WithSQSSender("ingest", refs.Ref("orders-out")).
     WithRoute("orders-in", "ingest"). // synthesises binding "ingest-binding"
     Build()
 if err != nil { panic(err) }
-src := gobridgecdk.BridgeYamlInline(cfg)
+src := gobridge.ConfigInline(cfg)
 ```
 
 Both factories return the same opaque token. The yaml file (Snippet a) for a cluster:
@@ -250,25 +251,27 @@ sender rather than a previously-declared binding.
 ### Select a queue by tags
 
 The example above uses physical queue names. To select the imported output
-queue by tags, bind a selector before building the config:
+queue by tags, add a selector under its `Queues` key in the cluster props:
 
 ```go
-if err := queues.BindQueueTags("orders-out", map[string]string{
-    "application": "gobridge",
-    "purpose":     "orders-output",
-}, "orders-"); err != nil {
-    panic(err)
-}
+QueueTags: map[string]gobridge.QueueTags{
+    "orders-out": {
+        Tags:       map[string]string{"application": "gobridge", "purpose": "orders-output"},
+        NamePrefix: "orders-",
+    },
+},
 ```
 
 The producer must apply these tags to the imported queue. For CDK-owned queues,
-`BindQueueTags` applies them. Build again using `queues.Ref("orders-out")`;
+the construct applies them. For the typed builder, bind the same selector with
+`refs.BindQueueTags("orders-out", tags, "orders-")`, check its error, and build
+again using `refs.Ref("orders-out")`;
 the sender now carries `queue_tags` and `queue_name_prefix`, and `WithRoute`
 uses `address: sqs:queue` for its generated binding. Hand-authored YAML needs
 the same marker. It means “use the configured queue”; the URL stays runtime-only.
 
 `QueueRef.PhysicalName()` returns the known physical name, while `Name()` is
-the registry alias. `QueueTags()` and `QueueNamePrefix()` expose the selector.
+the key the queue was added under. `QueueTags()` and `QueueNamePrefix()` expose the selector.
 The facade uses `ResolveQueue` to retain exact grants and dependencies.
 See the [CDK queue reference](../../aws-deployment/cdk-constructs.md#sqs-references)
 for generated names, ambiguous selectors, and discovery permissions.
@@ -276,17 +279,17 @@ for generated names, ambiguous selectors, and discovery permissions.
 ### Optional: ALB attachment + alarms
 
 ```go
-attachment := gobridgealbattachment.NewGoBridgeALBAttachment(stack, jsii.String("Attach"),
-    &gobridgealbattachment.AttachmentProps{
+attachment := gobridge.NewALBAttachment(stack, "Attach",
+    &gobridge.ALBAttachmentProps{
         Cluster:      bridge,
         Listener:     listener, // consumer-managed elbv2.IApplicationListener
         Vpc:          vpc,
-        BridgeConfig: gobridgecdk.BridgeYamlAsset("config/bridge.yaml"),
+        BridgeConfig: gobridge.ConfigFile("config/bridge.yaml"),
         BasePriority: 200,      // reserves listener rule range [200, 299]
     })
 
-gobridgealarms.NewGoBridgeAlarms(stack, jsii.String("Alarms"),
-    &gobridgealarms.AlarmsProps{
+gobridge.NewAlarms(stack, "Alarms",
+    &gobridge.AlarmsProps{
         Cluster:    bridge,
         Efs:        bridge.EfsConfig(),
         Attachment: attachment,
@@ -296,7 +299,7 @@ gobridgealarms.NewGoBridgeAlarms(stack, jsii.String("Alarms"),
 
 ### EFS access split
 
-The cluster facade owns the EFS filesystem (or the `*GoBridgeEfsConfig` you pass via
+The cluster facade owns the EFS filesystem (or the `*gobridge.EfsConfig` you pass via
 `EfsConfig`), both access points, the per-service mount specifications and the IAM grants on
 each task role. You do **not** create access points, mount points or IAM policy statements
 yourself — RW (control) vs RO (worker) is enforced at IAM and at the ECS volume level by the
@@ -343,15 +346,15 @@ Watchers must retain delete/recreate ordering.
 ## Scaling Workers
 
 Worker autoscaling is target-tracking on ECS service CPU. Opt in by passing
-`AutoScaling: &gobridgecluster.AutoScalingProps{...}`; off when nil. The control task is
+`AutoScaling: &gobridge.AutoScaling{...}`; off when nil. The control task is
 **not** scalable (`DesiredCount=1` is a runtime invariant).
 
 ```go
-gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Bridge"),
-    &gobridgecluster.ClusterProps{
+gobridge.NewCluster(stack, "Bridge",
+    &gobridge.ClusterProps{
         // ... required props ...
         WorkerDesiredCount: jsii.Number(3),
-        AutoScaling: &gobridgecluster.AutoScalingProps{
+        AutoScaling: &gobridge.AutoScaling{
             Min: 2, Max: 10, TargetCPU: 60,
         },
     },
@@ -461,7 +464,7 @@ that every member applied it.
 The singleton-per-stack constraint forbids a third `GoBridgeCluster` (or `GoBridgeSingle`)
 inside the same stack. Deploy a canary as a **separate stack** pointing at a separate config
 target. Once the canary passes, promote the validated document through the
-production cohort-replacement procedure. Changing `BridgeYamlAsset` or the
+production cohort-replacement procedure. Changing `ConfigFile` or the
 image's embedded document alone does not update an existing target.
 
 ## What's Next
@@ -474,7 +477,7 @@ image's embedded document alone does not update an existing target.
   alerting for clustered deployments.
 - [HTTP API Guide](../../aws-deployment/http-api.md) — admin API config transactions. The
   single control task avoids sticky-session complexity.
-- [aws-filebased-config ARCHITECTURE](../../../deployment/aws-filebased-config/ARCHITECTURE.md)
+- [deployment/aws ARCHITECTURE](../../../deployment/aws/ARCHITECTURE.md)
   — internal layering of the cluster facade, RW/RO EFS split, initialization lifecycle.
-- [aws-filebased-config UBIQUITOUS](../../../deployment/aws-filebased-config/UBIQUITOUS.md) —
+- [deployment/aws UBIQUITOUS](../../../deployment/aws/UBIQUITOUS.md) —
   canonical terminology (LeaseStore, EcsEndpointResolver, tier-B validation).

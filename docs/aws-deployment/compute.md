@@ -40,7 +40,7 @@ The CDK facades default to **512 CPU / 1024 MiB**. The single-task profile
 (`GoBridgeSingle`) runs exactly one task and has no auto-scaling. The independent
 scale-out profile (`GoBridgeCluster`) runs one control task plus
 `WorkerDesiredCount` workers (default 2); its worker CPU auto-scaling is opt-in
-through `AutoScalingProps`. The coordinated profile (`GoBridgeDynamoDBHA`) runs
+through `AutoScaling`. The coordinated profile (`GoBridgeDynamoDBHA`) runs
 one control plus at least two workers and requires a resolved finite integral
 worker count of at least two. Unresolved CDK numeric tokens are rejected because
 they cannot prove warm capacity. Size every
@@ -53,8 +53,8 @@ warm task for the full takeover load. Override sizing with `CPU` and `MemoryMiB`
 ## Runtime Metrics
 
 The bootstrap config selects the runtime metrics backend. The loader reads
-`BootstrapConfig` from `GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` (or a file named by
-`GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`) as **JSON** — it is not YAML.
+`BootstrapConfig` from `GOBRIDGE_AWS_BOOTSTRAP_JSON` (or a file named by
+`GOBRIDGE_AWS_BOOTSTRAP_FILE`) as **JSON** — it is not YAML.
 
 | Bootstrap key | Values / default | Effect |
 |---------------|------------------|--------|

@@ -54,9 +54,9 @@ flowchart LR
 ## Bootstrap Config Reference
 
 The bootstrap config is defined by the `BootstrapConfig` struct in
-`deployment/aws-filebased-config/infra/bootstrap.go`. You supply it as
-inline JSON via the `GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` environment variable
-or as a file path via `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`.
+`deployment/aws/infra/bootstrap.go`. You supply it as
+inline JSON via the `GOBRIDGE_AWS_BOOTSTRAP_JSON` environment variable
+or as a file path via `GOBRIDGE_AWS_BOOTSTRAP_FILE`.
 
 With valid bootstrap settings, the control plane starts live but not ready and
 the data plane stays idle until a valid bridge document can activate. An
@@ -303,7 +303,7 @@ Hot-reload mechanics and the production update procedure are on their own page: 
 
 The CDK construct serializes the entire `BootstrapConfig` as a JSON string
 and injects it into the ECS task definition as the
-`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` environment variable. At startup, the
+`GOBRIDGE_AWS_BOOTSTRAP_JSON` environment variable. At startup, the
 bootstrap library reads and parses this variable.
 
 ### Complete Example
@@ -333,8 +333,8 @@ bootstrap library reads and parses this variable.
 
 The bootstrap library checks environment variables in this order:
 
-1. `GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` -- inline JSON string. Used when set.
-2. `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE` -- path to a JSON file on disk.
+1. `GOBRIDGE_AWS_BOOTSTRAP_JSON` -- inline JSON string. Used when set.
+2. `GOBRIDGE_AWS_BOOTSTRAP_FILE` -- path to a JSON file on disk.
 
 If neither is set, startup fails with an error. The inline JSON approach is
 preferred for ECS because it avoids an additional file mount and keeps
@@ -342,7 +342,7 @@ the bootstrap config versioned with the task definition.
 
 ### File Size Limit
 
-The bootstrap config file (when using `GOBRIDGE_FILEBASED_BOOTSTRAP_FILE`)
+The bootstrap config file (when using `GOBRIDGE_AWS_BOOTSTRAP_FILE`)
 is limited to **1 MiB** to prevent accidental or malicious memory exhaustion.
 
 ---

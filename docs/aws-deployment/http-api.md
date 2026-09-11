@@ -53,7 +53,7 @@ Override default addresses with the `admin_addr`, `monitor_addr`, and
 >   see `adapters/http/transport/receiver.go`).
 >
 > The root `Dockerfile` defines a container `HEALTHCHECK` that runs the binary
-> directly (`["/usr/local/bin/gobridge-filebased", "-healthcheck"]`) — the
+> directly (`["/usr/local/bin/gobridge-aws", "-healthcheck"]`) — the
 > distroless image ships no shell, `curl`, or `wget`, so probe the binary, not a
 > URL tool. The `-healthcheck` flag hits the local monitor `/live` endpoint.
 

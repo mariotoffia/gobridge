@@ -75,7 +75,7 @@ const defaultApplyDeadline = 90 * time.Second
 //     just applied in-band. The commit's durable write changes the file's
 //     content hash, so the watcher re-emits the same config; without this skip
 //     every commit would cost a SECOND full stop→rebuild→start swap seconds
-//     after the first — the double-rebuild lesson from the filebased fix.
+//     after the first — the double-rebuild lesson from the AWS profile fix.
 //
 // run is the single writer to changes(); applyCommitted and onSwap are called
 // from other goroutines (the httpapi handler and the Supervisor's Run loop).

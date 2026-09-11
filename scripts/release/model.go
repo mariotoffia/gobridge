@@ -21,24 +21,23 @@ const (
 	manifestRelativePath = "scripts/release/modules.json"
 	rootModulePath       = "."
 	finalModulePath      = "cmd/gobridge"
-	cdkModulePath        = "deployment/aws-filebased-config/cdk"
-	cdkInfraModulePath   = "deployment/aws-filebased-config/infra"
-	libModulePath        = "deployment/aws-filebased-config/lib"
+	cdkModulePath        = "deployment/aws/cdk"
+	cdkInfraModulePath   = "deployment/aws/infra"
+	libModulePath        = "deployment/aws/lib"
 
 	// libCommandPackage is the profile binary the CDK's default image source
 	// compiles inside its Docker build. Nothing a consumer writes imports it,
 	// so only installing it from the proxy proves the published module zip
 	// still builds; a resolvable tag does not.
-	libCommandPackage = "cmd/gobridge-filebased"
+	libCommandPackage = "cmd/gobridge-aws"
 )
 
 // cdkSmokePackages are the CDK packages an external stack writes against.
-// gobridgesingle is the facade a stack instantiates; building it reaches
-// bridgecfg, registry, the shared constructs and the infra types. gobridgecdk
-// carries the image sources and the sealed BridgeImageSource those facades
-// take, and no facade imports it in non-test code, so it has to be built on
-// its own or the whole public image-source surface stays uncompiled.
-var cdkSmokePackages = []string{"gobridgecdk", "constructs/gobridgesingle"}
+// gobridge is the one package a stack imports, and it imports every facade,
+// the image and config sources, the ALB attachment, the alarms and the SSM
+// exports, so building it compiles the whole public surface from the path a
+// consumer actually names.
+var cdkSmokePackages = []string{"gobridge"}
 
 // publishedDeploymentModules are the only modules under deployment/ that are
 // tagged and consumable. Everything else there is internal wiring for the

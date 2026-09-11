@@ -17,7 +17,7 @@ which one you are using decides what you still have to author.
 
 | Source | What it is | What it covers |
 |--------|-----------|----------------|
-| **CDK bundle** (`GoBridgeAlarms`) | A construct in `deployment/aws-filebased-config/cdk`, wired into the shipped deployment profiles. | Deployment health (ECS, EFS, ALB, DynamoDB tables) plus the runtime rollup signals for the profile it is attached to. The complete list is [below](#alarms-the-cdk-bundle-provisions). |
+| **CDK bundle** (`GoBridgeAlarms`) | A construct in `deployment/aws/cdk`, wired into the shipped deployment profiles. | Deployment health (ECS, EFS, ALB, DynamoDB tables) plus the runtime rollup signals for the profile it is attached to. The complete list is [below](#alarms-the-cdk-bundle-provisions). |
 | **`DefaultAlarms()`** | A Go helper in `adapters/aws/metrics/cloudwatch`, applied with `EnsureAlarms`. For deployments that do **not** use the CDK bundle. | Runtime alarms on outbox depth (warning and critical), DLQ entries, DLQ depth, lease expiries, lease-acquire failures, SQS visibility extensions, dropped messages, and sustained expiry. |
 | **Hand-authored** | Anything you write yourself, in CDK or the console. | Everything else — including the signals listed under [Alarms you must author yourself](#alarms-you-must-author-yourself). |
 

@@ -27,9 +27,7 @@ import (
     "github.com/aws/constructs-go/constructs/v10"
     "github.com/aws/jsii-runtime-go"
 
-    gobridgecluster "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgecluster"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk"
-    "github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra"
+    "github.com/mariotoffia/gobridge/deployment/aws/cdk/gobridge"
 )
 
 func NewProductionStack(scope constructs.Construct, id string, props *awscdk.StackProps) awscdk.Stack {
@@ -68,17 +66,17 @@ func NewProductionStack(scope constructs.Construct, id string, props *awscdk.Sta
 
     // --- GoBridge cluster (control + autoscaled workers, EFS, log retention built in) ---
     workers := float64(2)
-    src := gobridgecdk.BridgeYamlAsset("bridge.yaml")
-    bridge := gobridgecluster.NewGoBridgeCluster(stack, jsii.String("Bridge"),
-        &gobridgecluster.ClusterProps{
+    src := gobridge.ConfigFile("bridge.yaml")
+    bridge := gobridge.NewCluster(stack, "Bridge",
+        &gobridge.ClusterProps{
             Vpc: vpc,
-            Image: gobridgecdk.ImageFromRegistry(
+            Image: gobridge.ImageFromRegistry(
                 "123456789012.dkr.ecr.eu-west-1.amazonaws.com/gobridge@sha256:<digest>"),
-            Bootstrap: infra.BootstrapConfig{
+            // NewCluster forces topology filesystem_replicated.
+            Bootstrap: gobridge.Bootstrap{
                 BridgeID: "gobridge-prod", ConfigFilePath: "/var/lib/gobridge/bridge.yaml",
                 PollInterval: "5s", AdminAPIKeyParam: "/gobridge/prod/admin-api-key",
                 MonitorAPIKeyParam: "/gobridge/prod/monitor-api-key",
-                Topology: infra.TopologyFilesystemReplicated,
                 // Publish runtime metrics to CloudWatch (grants PutMetricData
                 // scoped to the namespace).
                 MetricsExporter: "cloudwatch",
@@ -87,7 +85,7 @@ func NewProductionStack(scope constructs.Construct, id string, props *awscdk.Sta
             CPU:                jsii.Number(512),
             MemoryMiB:          jsii.Number(1024),
             WorkerDesiredCount: &workers,
-            AutoScaling: &gobridgecluster.AutoScalingProps{
+            AutoScaling: &gobridge.AutoScaling{
                 Min: 2, Max: 8, TargetCPU: 70,
             },
             LogRetention: awslogs.RetentionDays_ONE_MONTH,

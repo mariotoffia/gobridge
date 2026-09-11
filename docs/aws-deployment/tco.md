@@ -294,7 +294,7 @@ Set retention based on environment to control storage costs:
 | Production | 90 days | Compliance and incident investigation |
 
 The CDK construct defaults to `ONE_WEEK`. Override via the `LogRetention`
-prop on `gobridgecluster.ClusterProps` (applied to both the control and
+prop on `gobridge.ClusterProps` (applied to both the control and
 worker services).
 
 ### Reducing Observability Costs
@@ -397,12 +397,12 @@ bringing the total to approximately $76/month.
 
 A high-availability cluster with a dedicated control task, two worker tasks,
 VPC endpoints, and full observability. Sizing matches the
-`gobridgecluster.GoBridgeCluster` construct defaults: one control Fargate
+`gobridge.NewCluster` construct defaults: one control Fargate
 task (RW EFS, `DesiredCount=1` hard-coded) plus `WorkerDesiredCount=2`
 worker tasks (RO EFS), each at 0.5 vCPU / 1 GiB. Override per-cluster via
 `ClusterProps.CPU`, `ClusterProps.MemoryMiB`, and
 `ClusterProps.WorkerDesiredCount`; opt the worker service into target-tracking
-CPU autoscaling by setting `ClusterProps.AutoScaling` (`AutoScalingProps{Min,
+CPU autoscaling by setting `ClusterProps.AutoScaling` (`gobridge.AutoScaling{Min,
 Max, TargetCPU}`).
 
 | Component | Configuration | Monthly cost |

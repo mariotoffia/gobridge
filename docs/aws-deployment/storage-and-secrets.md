@@ -17,7 +17,7 @@ Part of the [AWS Deployment Overview](overview.md).
 
 ## DynamoDB for Configuration
 
-Select `Bootstrap.ConfigSource = infra.ConfigSourceDynamoDB` on `GoBridgeSingle`
+Select `Bootstrap.ConfigSource = gobridge.ConfigSourceDynamoDB` on `GoBridgeSingle`
 or `GoBridgeDynamoDBHA`, and leave `ConfigFilePath` empty. The facade creates one
 config table and replaces any caller-supplied `ConfigDynamoDB.TableName` in a
 copied settings value. A nil `ConfigDynamoDB` is allowed as a CDK input; it gets
@@ -87,13 +87,13 @@ explicitly. An S3 configuration adapter is deferred.
 
 ### Access Point Design
 
-The CDK `GoBridgeEfsConfig` construct creates control and worker access points with these
+The CDK `gobridge.NewEfsConfig` construct creates control and worker access points with these
 defaults:
 
 | Setting | Default | Source |
 |---------|---------|--------|
-| POSIX UID | `1000` | `GoBridgeEfsConfigProps.PosixUID` |
-| POSIX GID | `1000` | `GoBridgeEfsConfigProps.PosixGID` |
+| POSIX UID | `1000` | `EfsConfigProps.PosixUID` |
+| POSIX GID | `1000` | `EfsConfigProps.PosixGID` |
 | Access point path | `/` | Fixed by the construct for both roles |
 | Directory permissions | `755` | Set in `CreateAcl` |
 
@@ -281,13 +281,13 @@ custom endpoints in production, the bootstrap validator **rejects**
 
 ```go
 // This passes validation -- DevMode enables the custom endpoint.
-bootstrap := infra.BootstrapConfig{
+bootstrap := gobridge.Bootstrap{
     SSMEndpoint: "http://localhost:4566",
     DevMode:     true,
 }
 
 // This FAILS validation -- SSMEndpoint without DevMode is rejected.
-bootstrap := infra.BootstrapConfig{
+bootstrap := gobridge.Bootstrap{
     SSMEndpoint: "http://localhost:4566",
 }
 ```

@@ -1,13 +1,13 @@
 // Command registrychk enforces that every AWS-deployable plugin kind
 // registered into the CDK plugin registry has matching CDK helpers in
-// the deployment/aws-filebased-config/cdk tree.
+// the deployment/aws/cdk tree.
 //
 // For each AWS-deployable canonical kind it asserts that
 //
 //   - A bridgecfg builder symbol exists with prefix "With<Kind>*"
-//     under deployment/aws-filebased-config/cdk/bridgecfg/.
+//     under deployment/aws/cdk/bridgecfg/.
 //   - A grants helper file exists at
-//     deployment/aws-filebased-config/cdk/constructs/internal/grants/
+//     deployment/aws/cdk/constructs/internal/grants/
 //     when the kind requires IAM grants.
 //
 // Pure non-AWS kinds (azure.*, amqp.*, amqp091, amqp10, servicebus)
@@ -104,8 +104,8 @@ var nonAWSExact = map[string]bool{
 
 func main() {
 	var (
-		bridgecfgDir = flag.String("bridgecfg-dir", "", "path to deployment/aws-filebased-config/cdk/bridgecfg (default: derived from cwd)")
-		grantsDir    = flag.String("grants-dir", "", "path to deployment/aws-filebased-config/cdk/constructs/internal/grants (default: derived from cwd)")
+		bridgecfgDir = flag.String("bridgecfg-dir", "", "path to deployment/aws/cdk/bridgecfg (default: derived from cwd)")
+		grantsDir    = flag.String("grants-dir", "", "path to deployment/aws/cdk/constructs/internal/grants (default: derived from cwd)")
 		registrySrc  = flag.String("registry-src", "", "path to the CDK composition root that constructs the plugin registry (default: derived from cwd)")
 		verbose      = flag.Bool("v", false, "print skipped (non-AWS) kinds")
 	)
@@ -117,13 +117,13 @@ func main() {
 		os.Exit(2)
 	}
 	if *bridgecfgDir == "" {
-		*bridgecfgDir = filepath.Join(cwd, "deployment", "aws-filebased-config", "cdk", "bridgecfg")
+		*bridgecfgDir = filepath.Join(cwd, "deployment", "aws", "cdk", "bridgecfg")
 	}
 	if *grantsDir == "" {
-		*grantsDir = filepath.Join(cwd, "deployment", "aws-filebased-config", "cdk", "constructs", "internal", "grants")
+		*grantsDir = filepath.Join(cwd, "deployment", "aws", "cdk", "constructs", "internal", "grants")
 	}
 	if *registrySrc == "" {
-		*registrySrc = filepath.Join(cwd, "deployment", "aws-filebased-config", "cdk", "internal", "source", "source.go")
+		*registrySrc = filepath.Join(cwd, "deployment", "aws", "cdk", "internal", "source", "source.go")
 	}
 
 	registered, err := buildRegisteredKinds(*registrySrc)

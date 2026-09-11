@@ -9,7 +9,7 @@ load and recovery. Build-input checks verify how initial config enters an image.
 
 A deployment test deploys the shipped CDK profile and drives the running system,
 so it proves what synth assertions assume. They live in
-`deployment/aws-filebased-config/cdk/integration/` and are the one place build
+`deployment/aws/cdk/integration/` and are the one place build
 tags are correct: they gate not "is Docker here" but cost.
 
 | Tag | Backend | Gate |
