@@ -8,9 +8,8 @@ Manager (SSM) Parameter Store supplies runtime credentials when configured.
 Consumers compose Cloud Development Kit (CDK) constructs inside their own
 stack; there is no wrapper stack.
 
-The runtime can embed an initial logical document and create an absent target
-at first startup. Existing config is never overwritten by initialization.
-No configuration seeder container or S3 config download is required. See
+An embedded initial document can create only an absent target, never overwrite
+existing config. No configuration seeder or S3 config download is required. See
 [initial configuration](../../docs/aws-deployment/config-initialization.md).
 
 ## Module Layout
@@ -22,7 +21,7 @@ No configuration seeder container or S3 config download is required. See
 | `cdk/bridgecfg/`                              | Fluent `*Builder` for `*ports.BridgeConfig`. |
 | `cdk/registry/`                               | `QueueRegistry` / `SsmParamRegistry` mapping logical names → CDK handles.               |
 | `cdk/constructs/`                             | `GoBridgeEfsConfig` (shared EFS + 2 access points).                                     |
-| `cdk/constructs/gobridgesingle/`              | `GoBridgeSingle` — one Fargate task, RW EFS.                                            |
+| `cdk/constructs/gobridgesingle/`              | `GoBridgeSingle` — one Fargate task with file or DynamoDB config; EFS only when needed. |
 | `cdk/constructs/gobridgecluster/`             | `GoBridgeCluster` — independent filesystem-replicated scale-out (no coordinated failover). |
 | `cdk/constructs/gobridgedynamodbha/`          | `GoBridgeDynamoDBHA` — DynamoDB-coordinated active/warm-standby HA.                     |
 | `cdk/constructs/gobridgealbattachment/`       | `GoBridgeALBAttachment` — derives target groups + listener rules from the deployed yaml.|
@@ -31,27 +30,43 @@ No configuration seeder container or S3 config download is required. See
 | `cdk/integration/`                            | `//go:build integration_aws` end-to-end tests (opt-in).                                 |
 | `lib/`                                        | Runtime bootstrap library + binary `gobridge-filebased`.                                |
 
-`infra/` is intentionally dependency-free so CDK consumers never pull the runtime tree.
+`infra/` is intentionally dependency-free so importing bootstrap types does not
+pull in the runtime tree. The CDK module also uses core packages for validation.
+
+## Consuming from Your Own CDK App
+
+Use the published Go modules in your own CDK app; no GoBridge checkout or local
+`replace` directives are required. Replace `vX.Y.Z` with a compatible published
+train version:
+
+```bash
+go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/gobridgecdk@vX.Y.Z
+go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/cdk/constructs/gobridgesingle@vX.Y.Z
+go get github.com/mariotoffia/gobridge/deployment/aws-filebased-config/infra@vX.Y.Z
+```
+
+`infra`, `lib`, and `cdk` publish without local replacements. `ImageFromGoBuild`
+requires a published `lib` version supporting native embedding and the selected
+families. No released train has published `lib` yet; partial `v0.3.x` tags do not
+suffice. See [release prerequisites](../../RELEASE.md#canonical-release-graph)
+and the [complete quickstart](../../docs/scenarios/cdk/01-quickstart-default-vpc.md).
+
+The module paths, `gobridge-filebased` binary name, and
+`GOBRIDGE_FILEBASED_BOOTSTRAP_*` variables are unchanged for both config sources.
 
 ## Public Constructs
 
 | Construct | Package | Purpose |
 |-----------|---------|---------|
-| `GoBridgeSingle` | `cdk/constructs/gobridgesingle` | One Fargate control task with RW EFS. `DesiredCount=1` (deploy 0/100). |
+| `GoBridgeSingle` | `cdk/constructs/gobridgesingle` | One Fargate control task with file or DynamoDB config and conditional EFS. `DesiredCount=1` (deploy 0/100). |
 | `GoBridgeCluster` | `cdk/constructs/gobridgecluster` | Control task (RW) + N worker tasks (RO) sharing one EFS. Replicated **scale-out**, **not** HA failover (no single-active lease owner). Default workers = 2; optional CPU autoscaling. |
 | `GoBridgeDynamoDBHA` | `cdk/constructs/gobridgedynamodbha` | One config-control task plus at least two workers using DynamoDB lease, shared outbox, and exact managed-subscription history for coordinated active/warm-standby failover. |
 | `GoBridgeEfsConfig` | `cdk/constructs` | EFS file system + control & worker access points (always-on encryption, ELASTIC throughput, RETAIN). |
 | `GoBridgeALBAttachment` | `cdk/constructs/gobridgealbattachment` | Two target groups + listener rules derived from yaml admin paths and HTTP receivers. Reserves `[BasePriority, BasePriority+99]`. |
 | `GoBridgeAlarms` | `cdk/constructs/gobridgealarms` | Base ECS/EFS/ALB alarms plus HA warm-standby, DynamoDB, lease, outbox, DLQ, and externally measured failure-to-Full alarms. SNS-routed. |
 
-Supporting:
-
-| Package | Surface |
-|---------|---------|
-| `cdk/gobridgecdk` | `BridgeYamlAsset(path) BridgeConfigSource`, `BridgeYamlInline(*ports.BridgeConfig) BridgeConfigSource`, `LookupBridge(scope, id, prefix, opts...) *BridgeRef`. |
-| `cdk/bridgecfg` | `bridgecfg.New(name).With…().Build() (*ports.BridgeConfig, error)`; explicit `ScanForPlaintextSecrets` utility, not a default policy. |
-| `cdk/registry` | `NewQueueRegistry`, `AddQueue`, `BindQueueTags(name, tags, prefix)`, `ResolveQueue`; `NewSsmParamRegistry` and `AddParameter`. |
-| `cdk/ssmexports` | `IncludeARNs()` option for `WithSSMExports`. |
+See the [construct reference](../../docs/aws-deployment/cdk-constructs.md) for
+public props, image sources, and supporting config, registry, and lookup APIs.
 
 ## Coordinated HA: `GoBridgeDynamoDBHA`
 
@@ -81,22 +96,10 @@ The shared config must pass these synth-time checks:
   node-local broker outage. A declared objective that leaves the decision unmade
   would silently exclude that failure mode.
 
-The facade runs the builder admission path at synth time with a nil SDK client,
-so validation performs no AWS calls. It admits the objective against BOTH
-failure modes -- owner death and, when `broker_health_step_down` is enabled, the
-node-local broker path. The owner-death budget is:
-
-```text
-lease_ttl
-+ 2 * max(1ms, ceil(1.25 * acquire_poll_interval))
-+ (1 + ceil(lease_ttl / min_jittered_poll)) * renew_call_timeout
-+ complete post-takeover transport activation
-+ startup_allowance
-<= failover_slo
-```
-
-The broker-path budget, and both shipped lease profiles evaluated at their
-defaults, are in [Failover budget](../../docs/failover-budget.md).
+The facade runs builder admission at synth time without AWS calls. It checks
+the owner-death budget and, when `broker_health_step_down` is enabled, the
+node-local broker-path budget against `failover_slo`. The exact formulas and
+evaluated lease profiles are in [Failover budget](../../docs/failover-budget.md).
 
 The profile forces bootstrap topology `dynamodb_coordinated_ha`, enables the
 CloudWatch exporter, stamps the admitted canonical config fingerprint plus exact
@@ -106,7 +109,7 @@ identity: every warm standby must use the same stable Exclusive MQTT
 `client_id`, broker-session settings, and managed-subscription storage
 identity. Per-task MQTT suffixes are rejected because they would strand the
 failed holder broker queue. On every process initial apply, bootstrap compares
-the EFS-loaded config with those deployment-owned identities and fingerprint
+the selected-source config with those deployment-owned identities and fingerprint
 before it plans any store or transport. Existing target config cannot bypass
 synth admission.
 
@@ -170,7 +173,7 @@ correct but O(backlog) scan fallback.
 
 The facade provisions one control service task and a worker service with a
 minimum desired count of two. Every task participates in lease acquisition;
-`control` only identifies the EFS config writer. Therefore a three-task steady
+`control` identifies config-write authority for either source. Therefore a three-task steady
 state has one active holder and at least two warm candidates. Worker counts
 below two are rejected. `WorkerDesiredCount` must be a resolved finite integral
 number at least two; unresolved CDK tokens fail because synth cannot prove the
@@ -341,7 +344,10 @@ Producer side (the bridge stack):
 attachment.WithSSMExports("/bridges/prod", ssmexports.IncludeARNs())
 ```
 
-Publishes (under the chosen prefix): `admin-url`, `healthz-url`, `manifest-version`, plus `alb-arn`, `cluster-arn`, `efs-id` when `IncludeARNs()` is set.
+Publishes (under the chosen prefix): `admin-url`, `healthz-url`, `manifest-version`,
+plus `alb-arn` and `cluster-arn` when `IncludeARNs()` is set. `efs-id` is published
+only when EFS exists; see the
+[optional EFS lookup](../../docs/aws-deployment/cdk-constructs.md#runtime-config-source).
 
 Consumer side (any other stack / account that can read those parameters):
 
@@ -376,10 +382,11 @@ Tag-selected bindings use `sqs:queue`; CDK retains handles for grants. See
 **`GoBridgeSingle`**
 
 - One ECS Fargate service, `DesiredCount=1`, deployment policy `MinHealthyPercent=0 / MaxHealthyPercent=100` (full drain before replace — eliminates concurrent EFS RW writers).
-- One control EFS access point mounted RW.
+- A control EFS access point mounted RW when file config or SQLite store paths need it.
+- A retained, on-demand config table when `config_source: dynamodb`; control receives read/write access.
 - ECS cluster auto-created when `Cluster` is nil; Container Insights on for the auto-created cluster.
 - One bridge container; optional embedded initialization runs inside control.
-- Task SG → EFS SG NFS:2049 ingress; IAM grants for EFS client access, SSM `GetParameter`, KMS decrypt (when `EfsKmsKey` is set).
+- NFS:2049 ingress and EFS/KMS grants only when EFS is used; SSM grants follow configured parameter references.
 - CloudWatch Logs group (default retention one month, RETAIN).
 
 **`GoBridgeCluster`**
@@ -394,7 +401,7 @@ Tag-selected bindings use `sqs:queue`; CDK retains handles for grants. See
 > take over for each other. Coordinated failover is provided separately by `GoBridgeDynamoDBHA`; selecting that facade is an explicit topology change, not an upgrade of `GoBridgeCluster`. See the `GoBridgeCluster` type doc
 > (`cdk/constructs/gobridgecluster/cluster.go`) for the full advisory.
 
-- All of the above, plus:
+- The file-backed control resources above, plus:
 - Worker ECS Fargate service (`WorkerDesiredCount` default `2`, standard rolling deploy, optional CPU target-tracking via `AutoScalingProps`).
 - Shared EFS file system with **two** access points (control RW, worker RO); RW/RO split enforced at IAM + ECS volume level.
 - Workers read current config and never initialize or overwrite it. Missing
@@ -403,7 +410,11 @@ Tag-selected bindings use `sqs:queue`; CDK retains handles for grants. See
   not an image-level drift mode.
 - Separate task SGs (`ControlSecurityGroup`, `WorkerSecurityGroup`) both granted EFS ingress.
 
-**`GoBridgeEfsConfig`** — created automatically by any facade when `EfsConfig` is nil; can be passed in to share one filesystem across facades (within the singleton-per-stack rule) or to override KMS / throughput / removal policy / backup.
+**`GoBridgeEfsConfig`** — created automatically when file config or SQLite paths
+require EFS and `EfsConfig` is nil. It can be supplied to share a filesystem
+(within the singleton-per-stack rule) or override KMS / throughput / removal
+policy / backup. Empty `config_source` means file in every topology. DynamoDB HA
+with DynamoDB config and DynamoDB data stores has no EFS resources.
 
 ## Constraints
 
@@ -446,17 +457,11 @@ Authenticated `POST /api/v1/admin/config` creates absent config; see
 
 Options: `WithLogger`, `WithLogLevelVar`, `WithParameterResolver`, `WithCredentialStore`, `WithDynamoDBClient`, `WithShutdownTimeout`, `WithTerminalPollInterval`. Binary: `lib/cmd/gobridge-filebased`.
 
-**Terminal-runtime backstop.** `App.Run` polls the active runtime and returns
-`ErrRuntimeTerminal` (exiting the process non-zero) once the runtime enters an
-unrecoverable terminal state, so the orchestrator restarts the task instead of
-leaving a "running" container that bridges nothing. The container image also
-ships a self-probing health check: the CDK task definition sets
-`HealthCheck.Command = ["CMD", "/usr/local/bin/gobridge-filebased", "-healthcheck"]`
-(the binary GETs its own monitor `/live` endpoint, which 503s on terminal) and
-`StopTimeout = 60s` (> the 30s drain budget, so in-flight drains are not
-SIGKILLed). Override via `HealthCheckCommand`, `DisableHealthCheck`,
-`StopTimeout` and `ContainerUser` on the base props (exposed through the
-facades' internal base).
+**Terminal-runtime backstop.** `App.Run` returns `ErrRuntimeTerminal` for an
+unrecoverable runtime, causing non-zero process exit and task replacement.
+The image's `-healthcheck` probes monitor `/live`; CDK also sets a 60-second
+stop timeout to allow draining. See
+[container health checks](../../docs/aws-deployment/container-image.md).
 
 **Hot log level.** `bridge.log_level` in the reloaded `bridge.yaml` retunes
 verbosity at runtime when the binary wires a `*slog.LevelVar` via
@@ -464,18 +469,11 @@ verbosity at runtime when the binary wires a `*slog.LevelVar` via
 needed. Recognized values: `debug`, `info`, `warn`, `error` (unknown/empty
 leaves the level unchanged).
 
-**Container image.** Built by the repository-root `Dockerfile`
-(`make docker-build`): a static, CGO-free `gobridge-filebased` on
-`distroless/static:nonroot` (runs as uid:gid `65532:65532`, no shell/curl/wget).
-Both base images are pinned by top-level multi-platform OCI index digest
-(`linux/amd64` + `linux/arm64`); refresh them only through a reviewed change per
-[DEVELOPMENT.md](../../DEVELOPMENT.md) (Base image digests). A source rebuild is
-reproducible only to the extent the pinned bases, the locked module `go.sum`, and
-the Go toolchain are fixed — nothing here claims bit-for-bit reproducibility
-beyond those. Published **by digest** to `ghcr.io/mariotoffia/gobridge` by the
-release workflow on stable `cmd/gobridge/vX.Y.Z` tags; the digest is the
-`gobridge-image-digest.txt` asset of that release and the only version-to-image
-association ([RELEASE.md](../../RELEASE.md#image-publication)).
+**Container image.** The root `Dockerfile` (`make docker-build`) builds a static,
+CGO-free, nonroot `gobridge-filebased` with digest-pinned bases. CDK can instead
+build a compatible published module through `ImageFromGoBuild`.
+See [build options](../../docs/aws-deployment/container-image.md) and
+[release image digests](../../RELEASE.md#image-publication).
 
 ## Integration Tests
 

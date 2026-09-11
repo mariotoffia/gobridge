@@ -2,7 +2,7 @@
 
 ## Overview
 
-GoBridge uses a two-layer configuration model that separates deployment
+GoBridge uses two configuration artifacts that separate deployment
 concerns from application concerns. The **bootstrap config** controls
 infrastructure-level settings (listen addresses, SSM parameter references,
 topology). The **bridge config** defines the message routing logic (receivers,
@@ -15,6 +15,9 @@ For architecture overview, see [AWS Overview](overview.md).
 ---
 
 ## Two Config Layers
+
+These are two kinds of input, not an overlay stack. The bootstrap settings select
+exactly one runtime `config.Layer` for the bridge document.
 
 ```mermaid
 flowchart LR
@@ -64,6 +67,9 @@ uncertain teardown requires process exit and replacement. Read failures retain
 the last successful config as degraded.
 See [initial configuration and observations](config-initialization.md).
 
+An omitted or empty `config_source` means `file` in every topology, including
+DynamoDB HA. Set it explicitly to `dynamodb` to select the config table; choosing
+DynamoDB message stores alone does not change the config source.
 DynamoDB polling defaults to 30 seconds.
 Streams mode requires an enabled table stream and stream-read permissions; the
 adapter falls back to polling when streams are unavailable. Library callers can
@@ -77,12 +83,12 @@ stores and derived streams client share its connection settings.
 | `bridge_id` | `string` | Yes | -- | Deployment identity used to select the config document and identify the control plane before a valid document activates. |
 | `config_source` | `string` | No | `"file"` | Bridge config source: `"file"` or `"dynamodb"`. Empty normalizes to `"file"`. Single and DynamoDB HA CDK facades provision the config table and role-scoped grants; the filesystem-replicated facade rejects DynamoDB at synth. Only control may initialize an absent document; workers remain read-only. No seeder container or S3 config asset is used. |
 | `config_dynamodb` | `object` | For DynamoDB | -- | DynamoDB config-source settings: `table_name` (required at runtime; CDK provisions and overwrites it), `watch_mode` (`"poll"` by default or `"streams"`), and `stream_poll_interval` (optional positive Go duration for the streams `GetRecords` cadence). Must be absent for the file source. |
-| `config_file_path` | `string` | For file | -- | Absolute path to the bridge config YAML as seen inside the container (the EFS mount point), e.g. `/var/lib/gobridge/bridge.yaml`. Required for the file source and must be empty for DynamoDB. |
+| `config_file_path` | `string` | For file | -- | Absolute path to bridge YAML or JSON. CDK defaults it to `<MountPath>/bridge.yaml` and requires it below the EFS mount; library callers may use a local file. Required at runtime for the file source and must be empty for DynamoDB. |
 | `admin_api_key_param` | `string` | Yes | -- | SSM parameter name or `pms://` URI for the admin API key. Resolved at startup and on every config reload. The value is a single key or a JSON map of named keys — see [Admin key parameter value](#admin-key-parameter-value). |
 | `node_role` | `string` | No | `"control"` | Configuration authority: `"control"` or `"worker"`. Only control may initialize or update shared config. File control uses the single-writer guard; DynamoDB updates use compare-and-swap (CAS). Workers have read-only config access in runtime wiring and deployed grants. The role does not select the monitor's failover role (`active`, `standby`, or `standalone`); either task family may process messages after activation. |
 | `topology` | `string` | No | `"single"` | Deployment topology: `"single"` (one replica), `"filesystem_replicated"` (N replicas sharing EFS), or `"dynamodb_coordinated_ha"` (the active/warm-standby profile stamped by `GoBridgeDynamoDBHA`). The HA value additionally requires the four `dynamodb_ha_*` identities below. |
 | `member_id` | `string` | No | `""` | This node's STABLE identity in a coordinated cluster rollout cohort. Required whenever the logical config sets `bridge.cluster.rollout: coordinated`, and it MUST appear verbatim in that config's `bridge.cluster.members`: the barrier freezes the roster as its membership epoch and counts acknowledgements against it, so an absent or drifting id aborts every rollout. Unlike `instance_id` it MUST survive a restart -- it is the cohort identity a restarted task rejoins under. Stamped per slot by `GoBridgeDynamoDBHA` when `MemberSlots` is set; empty for every non-coordinated deployment, including the autoscaled worker shape, whose interchangeable tasks have no such identity. |
-| `dynamodb_ha_lease_table_name` | `string` | No | `""` | Deployment-owned expectation: the physical DynamoDB table backing `stores.lease`. Stamped only by `GoBridgeDynamoDBHA`; the runtime refuses to boot a logical config whose lease table differs, so a tampered or stale EFS document cannot bypass synth-time admission. Required when `topology` is `"dynamodb_coordinated_ha"`. |
+| `dynamodb_ha_lease_table_name` | `string` | No | `""` | Deployment-owned expectation: the physical DynamoDB table backing `stores.lease`. Stamped only by `GoBridgeDynamoDBHA`; the runtime refuses to boot a logical config whose lease table differs, so a tampered or stale document from either config source cannot bypass synth-time admission. Required when `topology` is `"dynamodb_coordinated_ha"`. |
 | `dynamodb_ha_outbox_table_name` | `string` | No | `""` | As above, for `stores.outbox`. Required when `topology` is `"dynamodb_coordinated_ha"`, and must differ from the other two table names. |
 | `dynamodb_ha_managed_subscriptions_table_name` | `string` | No | `""` | As above, for `stores.managed_subscriptions`. Required when `topology` is `"dynamodb_coordinated_ha"`, and must differ from the other two table names. |
 | `dynamodb_ha_config_fingerprint` | `string` | No | `""` | 64-character SHA-256 hex of the IMMUTABLE deployment profile: `deployment_mode`, the `bridge.cluster` shape, and the identity of every deployment-owned store. It is NOT a hash of the whole document, so every later operator config change still matches it while every deployment-provisioned change moves it. Required (and validated for shape) when `topology` is `"dynamodb_coordinated_ha"`. |
@@ -168,7 +174,7 @@ empty). No CloudWatch write permission is granted for the `noop` exporter.
 
 ## Bridge Config on EFS
 
-The bridge config YAML lives on an EFS file system mounted into every Fargate
+With `config_source: file`, the bridge config lives on EFS mounted into every Fargate
 task through an EFS access point. The access point pins a POSIX owner and
 exposes the file-system root, so every task reads the config at the same
 in-container path. A typical mapping:
@@ -347,15 +353,17 @@ The `topology` field in the bootstrap config controls how multiple bridge
 replicas coordinate. Choose the topology that matches your availability and
 feature requirements.
 
-| Feature | `single` | `filesystem_replicated` |
-|---------|----------|-------------------------|
-| Replicas | 1 | N |
-| Config source | EFS or DynamoDB (control writes) | EFS (shared, control writes) |
-| `shared_outbox` routes | Yes | No |
-| Route session leases | Yes | No |
-| `deployment_mode: clustered` | Yes | Yes |
-| `bridge.cluster.endpoints` | Optional | Recommended |
-| Config update propagation | Normal standalone reload rules | Detection within `poll_interval`; clustered changes require cohort replacement |
+| Feature | `single` | `filesystem_replicated` | `dynamodb_coordinated_ha` |
+|---------|----------|-------------------------|---------------------------|
+| Replicas | 1 | Control + N workers | Control + at least 2 workers |
+| Config source | `file` (default) or `dynamodb` | `file` only | `file` (default) or `dynamodb` |
+| Config writes | Control only | Control only; workers read-only | Control only; workers read-only, including with CAS |
+| EFS | Required for file config or SQLite paths | Required | Omitted with DynamoDB config and DynamoDB stores |
+| `shared_outbox` routes | Yes | No | Required for coordinated routes |
+| Route session leases | Yes | No | Required for coordinated routes |
+| `deployment_mode: clustered` | Yes | Yes | Required |
+| `bridge.cluster.endpoints` | Optional | Optional | Static endpoints rejected; ECS resolver supplies them |
+| Config update propagation | Normal standalone reload rules | Poll detection; clustered changes require cohort replacement | Source watch plus coordinated rollout with static member slots; otherwise cohort replacement |
 
 ### Single Topology
 
@@ -373,7 +381,8 @@ coordinated high availability, with these restrictions:
 
 - **No `shared_outbox` routes.** Durable outbox delivery requires distributed
   state coordination. Use `direct_hold` delivery mode instead, or switch to
-  the HA/DynamoDB config profile.
+  the `GoBridgeDynamoDBHA` topology. Config source and message-state stores are
+  separate choices.
 - **No route session leases.** Lease-based route ownership requires a shared
   lease store. Routes run on all replicas simultaneously.
 
@@ -383,6 +392,14 @@ session definitions, the reload is rejected with a descriptive error.
 
 See [CDK Scenario 5](../scenarios/cdk/05-multi-bridge-cluster.md) for a
 `filesystem_replicated` deployment example.
+
+### DynamoDB-Coordinated HA Topology
+
+`GoBridgeDynamoDBHA` uses DynamoDB lease, outbox, and managed-subscription stores
+for active/warm-standby coordination. It accepts either config source; selecting
+`dynamodb` for config removes EFS when no SQLite paths are used. The config table
+is separate from the HA data tables and the optional rollout table. See
+[topology and worker-shape rules](topologies.md).
 
 ---
 
