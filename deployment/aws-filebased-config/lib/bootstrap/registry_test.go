@@ -46,7 +46,7 @@ func TestDetectSwapMode_OverlapWhenNoExclusiveIdentity(t *testing.T) {
 		},
 	}
 
-	mode := reg.detectSwapMode(reg.cfg)
+	mode := reg.detectSwapMode(nil, reg.cfg)
 	assert.Equal(t, swapModeOverlap, mode)
 }
 
@@ -62,7 +62,7 @@ func TestDetectSwapMode_PrepareCommitWhenExclusiveIdentity(t *testing.T) {
 		},
 	}
 
-	mode := reg.detectSwapMode(reg.cfg)
+	mode := reg.detectSwapMode(nil, reg.cfg)
 	assert.Equal(t, swapModePrepareCommit, mode)
 }
 
@@ -76,7 +76,7 @@ func TestDetectSwapMode_UnknownTransportSkipped(t *testing.T) {
 		transports: map[string]ports.TransportFactory{},
 	}
 
-	mode := reg.detectSwapMode(reg.cfg)
+	mode := reg.detectSwapMode(nil, reg.cfg)
 	assert.Equal(t, swapModeOverlap, mode)
 }
 
@@ -168,7 +168,7 @@ func TestDetectSwapMode_PrepareCommitWhenSessionDeclaresExclusive(t *testing.T) 
 		},
 	}
 
-	assert.Equal(t, swapModePrepareCommit, reg.detectSwapMode(reg.cfg))
+	assert.Equal(t, swapModePrepareCommit, reg.detectSwapMode(nil, reg.cfg))
 }
 
 // TestDetectSwapMode_PrepareCommitWhenRouteCarriesInlineSession covers the
@@ -184,7 +184,7 @@ func TestDetectSwapMode_PrepareCommitWhenRouteCarriesInlineSession(t *testing.T)
 		transports: map[string]ports.TransportFactory{},
 	}
 
-	assert.Equal(t, swapModePrepareCommit, reg.detectSwapMode(reg.cfg))
+	assert.Equal(t, swapModePrepareCommit, reg.detectSwapMode(nil, reg.cfg))
 }
 
 // TestDetectSwapMode_PrepareCommitWhenReceiverConfigDeclaresExclusive pins the
@@ -204,5 +204,23 @@ func TestDetectSwapMode_PrepareCommitWhenReceiverConfigDeclaresExclusive(t *test
 		},
 	}
 
-	assert.Equal(t, swapModePrepareCommit, reg.detectSwapMode(reg.cfg))
+	assert.Equal(t, swapModePrepareCommit, reg.detectSwapMode(nil, reg.cfg))
+}
+
+// TestApp_SwapModeWeighsTheRunningConfig pins that the applier feeds the running
+// config into the swap decision. Registry-level tests pass whatever the applier
+// hands them, so none of them would notice it handing over nothing; this test
+// fails the moment it does.
+func TestApp_SwapModeWeighsTheRunningConfig(t *testing.T) {
+	session := func(mode string) *ports.BridgeConfig {
+		return &ports.BridgeConfig{Sessions: []ports.SessionDef{{ID: "s1", Transport: "sqs", SessionMode: mode}}}
+	}
+	app := NewApp(testBootstrapConfig(), WithDynamoDBClient(nil))
+	next := session("shared")
+	reg := app.newFactoryRegistry(next)
+
+	assert.Equal(t, swapModeOverlap, app.swapModeFor(reg, next), "first apply: nothing is running to overlap")
+
+	app.appliedRef.Set(session("exclusive"))
+	assert.Equal(t, swapModePrepareCommit, app.swapModeFor(reg, next), "leaving an exclusive session must serialize")
 }

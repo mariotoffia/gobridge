@@ -90,8 +90,11 @@ runtime is stopped. This provides zero-downtime for stateless transports
 like HTTP and SQS where multiple concurrent listeners are safe.
 
 **Prepare/commit mode**: The old runtime is stopped first, then the new
-runtime is built and started. It is selected whenever a session claims an
-exclusive broker identity, which two runtimes cannot hold at once:
+runtime is built and started. It is selected when the incoming config claims
+an exclusive broker identity, or when the running config holds one on a
+transport the incoming config still uses — an ordinary consumer is refused
+beside an exclusive one that is still attached. A config claims an identity
+when:
 
 - the config declares it — `session_mode: exclusive`, or a route `session`
   block, which is always single-owner (this is how AMQP 1.0 is caught);
@@ -100,9 +103,12 @@ exclusive broker identity, which two runtimes cannot hold at once:
 - the transport reports it from a receiver's config — an exclusive AMQP 0-9-1
   consumer, or a Service Bus receiver pinned to one `session_id`.
 
+A transport the incoming config no longer uses cannot contend for anything the
+old runtime holds on it, so dropping a transport altogether keeps overlap.
+
 ```mermaid
 flowchart TD
-    DETECT[Config change detected] --> CHECK{Any exclusive\nbroker identity?}
+    DETECT[Config change detected] --> CHECK{New config exclusive,\nor old one exclusive on a\ntransport still in use?}
     CHECK -- No --> OVERLAP[Overlap Mode]
     CHECK -- Yes --> PREPARE[Prepare/Commit Mode]
 

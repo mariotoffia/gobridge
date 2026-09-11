@@ -63,5 +63,5 @@ func TestFactoryRegistry_AzurePinnedSessionSerializesTheSwap(t *testing.T) {
 
 	reg := app.newFactoryRegistry(cfg)
 
-	require.Equal(t, swapModePrepareCommit, reg.detectSwapMode(cfg))
+	require.Equal(t, swapModePrepareCommit, reg.detectSwapMode(nil, cfg))
 }

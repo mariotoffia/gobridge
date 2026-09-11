@@ -136,3 +136,70 @@ func TestDetectSwapMode_ConfigDeclaredExclusiveOnSilentTransport(t *testing.T) {
 		assert.Equal(t, SwapOverlap, s.detectSwapMode(cfg))
 	})
 }
+
+// TestDetectSwapMode_LeavingExclusiveSerializes covers the reverse transition:
+// the running config holds an exclusive identity and the incoming one does
+// not. Nothing in the incoming config claims exclusivity, yet an overlapping
+// swap starts the new consumer while the old exclusive one is still attached,
+// and the broker refuses it. The running config has to count. A factory latch
+// cannot stand in for it: a composition root that builds fresh factories for
+// every swap never sees one set.
+func TestDetectSwapMode_LeavingExclusiveSerializes(t *testing.T) {
+	// Capability-silent, hook-only factory: the running config is the sole
+	// source of exclusivity in every case below. The same instance is also
+	// registered under an alias, the way amqp091 and amqp.amqp091 share one.
+	newSup := func(running *ports.BridgeConfig) *Supervisor {
+		s := NewSupervisor()
+		excl := &configExclusiveTransportFactory{}
+		s.RegisterTransport("cfgexcl", excl)
+		s.RegisterTransport("cfgexcl.alias", excl)
+		s.RegisterTransport("fake", &fakeTransportFactory{})
+		s.cfg = running
+		return s
+	}
+	receiver := func(excl bool) *ports.BridgeConfig {
+		return &ports.BridgeConfig{Receivers: []ports.ReceiverDef{
+			{ID: "rx", Transport: "cfgexcl", Config: &exclRxConfig{excl: excl}},
+		}}
+	}
+	session := func(mode string) *ports.BridgeConfig {
+		return &ports.BridgeConfig{Sessions: []ports.SessionDef{
+			{ID: "s1", Transport: "cfgexcl", SessionMode: mode},
+		}}
+	}
+
+	t.Run("ExclusiveReceiverToNonExclusiveSelectsPrepareCommit", func(t *testing.T) {
+		assert.Equal(t, SwapPrepareCommit, newSup(receiver(true)).detectSwapMode(receiver(false)))
+	})
+
+	t.Run("DeclaredExclusiveSessionToSharedSelectsPrepareCommit", func(t *testing.T) {
+		assert.Equal(t, SwapPrepareCommit, newSup(session("exclusive")).detectSwapMode(session("shared")))
+	})
+
+	t.Run("NonExclusiveOnBothSidesStaysOverlap", func(t *testing.T) {
+		assert.Equal(t, SwapOverlap, newSup(receiver(false)).detectSwapMode(receiver(false)))
+	})
+
+	t.Run("DroppingTheTransportAltogetherStaysOverlap", func(t *testing.T) {
+		// Nothing in the new runtime can contend for an identity held on a
+		// transport it no longer uses, so the zero-downtime swap stays.
+		next := &ports.BridgeConfig{Receivers: []ports.ReceiverDef{{ID: "rx", Transport: "fake"}}}
+		assert.Equal(t, SwapOverlap, newSup(receiver(true)).detectSwapMode(next))
+	})
+
+	t.Run("AliasOfTheSameFactoryIsTheSameTransport", func(t *testing.T) {
+		next := &ports.BridgeConfig{Receivers: []ports.ReceiverDef{
+			{ID: "rx", Transport: "cfgexcl.alias", Config: &exclRxConfig{excl: false}},
+		}}
+		assert.Equal(t, SwapPrepareCommit, newSup(receiver(true)).detectSwapMode(next))
+	})
+
+	t.Run("SenderAloneKeepsTheTransportInUse", func(t *testing.T) {
+		next := &ports.BridgeConfig{Senders: []ports.SenderDef{{ID: "tx", Transport: "cfgexcl"}}}
+		assert.Equal(t, SwapPrepareCommit, newSup(session("exclusive")).detectSwapMode(next))
+	})
+
+	t.Run("FirstApplyHasNoRunningConfig", func(t *testing.T) {
+		assert.Equal(t, SwapOverlap, newSup(nil).detectSwapMode(receiver(false)))
+	})
+}

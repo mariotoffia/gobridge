@@ -38,9 +38,8 @@ const (
 	SwapPrepareCommit
 
 	// SwapAuto selects PrepareCommit when RequiresSerializedSwap finds an
-	// exclusive broker identity in the new config — declared by the config
-	// itself, advertised as CapExclusiveIdentity, or reported by a transport
-	// factory from a receiver config — and Overlap otherwise.
+	// exclusive broker identity in the new config, or held by the running
+	// config on a transport the new config still uses, and Overlap otherwise.
 	SwapAuto
 )
 
@@ -1454,11 +1453,14 @@ func (s *Supervisor) detectSwapMode(cfg *ports.BridgeConfig) SwapMode {
 		return s.swapMode
 	}
 
+	// s.cfg is still the running config here: applyConfig replaces it only
+	// once the swap it is choosing a mode for has succeeded.
 	s.mu.RLock()
 	transports := maps.Clone(s.transports)
+	running := s.cfg
 	s.mu.RUnlock()
 
-	if RequiresSerializedSwap(cfg, transports) {
+	if RequiresSerializedSwap(running, cfg, transports) {
 		return SwapPrepareCommit
 	}
 	return SwapOverlap

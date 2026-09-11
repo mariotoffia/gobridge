@@ -92,6 +92,14 @@ const (
 	skipBaselineSeed = false
 )
 
+// swapModeFor decides how to replace the running runtime with next. The decision
+// is a property of the transition rather than of the incoming config alone, so
+// the applied config is always part of it. Applies are serialized within the
+// process, so appliedRef is the runtime this plan will replace.
+func (a *App) swapModeFor(registry *factoryRegistry, next *ports.BridgeConfig) swapMode {
+	return registry.detectSwapMode(a.appliedRef.Get(), next)
+}
+
 func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfig, seed bool) (*runtimePlan, error) {
 	epoch := a.observationEpoch.Load()
 	if observed, ok := ctx.Value(repositoryEpochKey{}).(uint64); ok {
@@ -119,7 +127,7 @@ func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfi
 			return nil, err
 		}
 	}
-	mode := registry.detectSwapMode(inputs.RuntimeConfig)
+	mode := a.swapModeFor(registry, inputs.RuntimeConfig)
 
 	plan := &runtimePlan{
 		epoch:    epoch,

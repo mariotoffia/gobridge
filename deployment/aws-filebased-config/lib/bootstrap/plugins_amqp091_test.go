@@ -61,5 +61,30 @@ func TestFactoryRegistry_AMQP091ExclusiveReceiverSerializesTheSwap(t *testing.T)
 
 	reg := app.newFactoryRegistry(cfg)
 
-	require.Equal(t, swapModePrepareCommit, reg.detectSwapMode(cfg))
+	require.Equal(t, swapModePrepareCommit, reg.detectSwapMode(nil, cfg))
+}
+
+// TestFactoryRegistry_AMQP091LeavingExclusiveSerializesTheSwap covers the reverse
+// transition. The incoming receiver is no longer exclusive, so nothing in the
+// new config claims an identity — but the running exclusive consumer is still
+// attached when an overlapping swap starts the new one, and RabbitMQ refuses a
+// second consumer on a queue in exclusive use. The factory is fresh for this
+// plan, so no capability latch remembers the old consumer either.
+func TestFactoryRegistry_AMQP091LeavingExclusiveSerializesTheSwap(t *testing.T) {
+	app := NewApp(testBootstrapConfig(), WithDynamoDBClient(nil))
+	receiver := func(exclusive bool) *ports.BridgeConfig {
+		return &ports.BridgeConfig{
+			Sessions: []ports.SessionDef{{ID: "sess", Transport: "amqp091"}},
+			Receivers: []ports.ReceiverDef{{
+				ID:        "rx",
+				SessionID: "sess",
+				Config:    &amqp091.Config{Receiver: amqp091.ReceiverParams{QueueName: "q", Exclusive: exclusive}},
+			}},
+		}
+	}
+	running, next := receiver(true), receiver(false)
+
+	reg := app.newFactoryRegistry(next)
+
+	require.Equal(t, swapModePrepareCommit, reg.detectSwapMode(running, next))
 }

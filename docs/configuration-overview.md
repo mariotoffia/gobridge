@@ -448,7 +448,7 @@ How the Supervisor transitions between old and new runtimes:
 |------|-----------|-----------|
 | `SwapOverlap` | Build new while old runs, then swap | Stateless transports (SQS) |
 | `SwapPrepareCommit` | Validate first, stop old, then build new | Exclusive broker identities: MQTT client IDs, exclusive AMQP consumers, pinned Service Bus sessions |
-| `SwapAuto` (default) | Asks `RequiresSerializedSwap`: declared exclusivity, `CapExclusiveIdentity`, or a receiver-config hook | Recommended default |
+| `SwapAuto` (default) | Asks `RequiresSerializedSwap`: exclusivity in the new config, or held by the running config on a transport the new one keeps | Recommended default |
 
 ## What's Next
 

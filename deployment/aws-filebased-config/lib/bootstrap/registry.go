@@ -168,9 +168,11 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 
 // detectSwapMode asks the same question the Supervisor asks, through the same
 // predicate: this root drives its own swap, so a probe added there must not
-// have to be re-added here.
-func (r *factoryRegistry) detectSwapMode(cfg *ports.BridgeConfig) swapMode {
-	if bridge.RequiresSerializedSwap(cfg, r.transports) {
+// have to be re-added here. current is the running config and next the one
+// replacing it: an exclusive identity the running config holds on a transport
+// next still uses conflicts with next as surely as one next claims itself.
+func (r *factoryRegistry) detectSwapMode(current, next *ports.BridgeConfig) swapMode {
+	if bridge.RequiresSerializedSwap(current, next, r.transports) {
 		return swapModePrepareCommit
 	}
 	return swapModeOverlap
