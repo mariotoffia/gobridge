@@ -425,7 +425,7 @@ Tag-selected bindings use `sqs:queue`; CDK retains handles for grants. See
 
 ## Runtime Library
 
-`lib/bootstrap.NewApp(cfg, opts...)` loads `BootstrapConfig` from env (`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` or `…_FILE`, max 1 MiB), watches the selected config source (`file` on EFS or `dynamodb`), reloads bridge config without restart, resolves `pms://` SSM secrets, applies the MQTT ingress memory profile on every initial load/reload, and starts the admin / monitor / transport HTTP servers plus a `bridge.Runtime` with the `mqtt`, `sqs`, `http` transports and `memory`, `sqlite`, `dynamodb` stores. Clustered configs also register the existing ECS task-metadata endpoint resolver. Reload uses `swapModeOverlap` by default; `swapModePrepareCommit` when any transport advertises `CapExclusiveIdentity`.
+`lib/bootstrap.NewApp(cfg, opts...)` loads `BootstrapConfig` from env (`GOBRIDGE_FILEBASED_BOOTSTRAP_JSON` or `…_FILE`, max 1 MiB), watches the selected config source (`file` on EFS or `dynamodb`), reloads bridge config without restart, resolves `pms://` SSM secrets, applies the MQTT ingress memory profile on every initial load/reload, and starts the admin / monitor / transport HTTP servers plus a `bridge.Runtime` with the `mqtt`, `sqs`, `http` transports and `memory`, `sqlite`, `dynamodb` stores. Clustered configs also register the existing ECS task-metadata endpoint resolver. Reload uses `swapModeOverlap` by default; `swapModePrepareCommit` when `bridge.RequiresSerializedSwap` finds an exclusive broker identity in the new config.
 
 The file source keeps polling and the control-only single-writer guard. The
 DynamoDB source uses one loader for loading, watching and CAS-safe control

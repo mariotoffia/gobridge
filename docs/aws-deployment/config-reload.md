@@ -81,21 +81,28 @@ coordinated boot/barrier decisions, or to recovery of the last good runtime.
 ### Swap Modes
 
 When a config change is detected, the bootstrap library must swap the old
-runtime for the new one. The swap strategy is **auto-detected** based on the
-transport capabilities declared by the registered factories.
+runtime for the new one. The swap strategy is **auto-detected** from the new
+config through `bridge.RequiresSerializedSwap`, the same check the Supervisor
+uses.
 
 **Overlap mode** (default): The new runtime is started first, then the old
 runtime is stopped. This provides zero-downtime for stateless transports
 like HTTP and SQS where multiple concurrent listeners are safe.
 
 **Prepare/commit mode**: The old runtime is stopped first, then the new
-runtime is built and started. This is required for transports that declare
-the `CapExclusiveIdentity` capability (e.g. MQTT), where two simultaneous
-connections with the same client ID would cause disconnects.
+runtime is built and started. It is selected whenever a session claims an
+exclusive broker identity, which two runtimes cannot hold at once:
+
+- the config declares it — `session_mode: exclusive`, or a route `session`
+  block, which is always single-owner (this is how AMQP 1.0 is caught);
+- the transport advertises `CapExclusiveIdentity` — MQTT always, where two
+  connections with one client ID disconnect each other;
+- the transport reports it from a receiver's config — an exclusive AMQP 0-9-1
+  consumer, or a Service Bus receiver pinned to one `session_id`.
 
 ```mermaid
 flowchart TD
-    DETECT[Config change detected] --> CHECK{Any session transport\nhas CapExclusiveIdentity?}
+    DETECT[Config change detected] --> CHECK{Any exclusive\nbroker identity?}
     CHECK -- No --> OVERLAP[Overlap Mode]
     CHECK -- Yes --> PREPARE[Prepare/Commit Mode]
 

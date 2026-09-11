@@ -32,12 +32,15 @@ const (
 
 	// SwapPrepareCommit validates config and builds stores while old
 	// runs, but defers session/receiver/sender creation until after
-	// the old runtime stops. Safe for exclusive MQTT client-ids.
+	// the old runtime stops. Required whenever a session claims an
+	// exclusive broker identity: an MQTT client ID, an exclusive AMQP
+	// consumer, a pinned Service Bus session.
 	SwapPrepareCommit
 
-	// SwapAuto inspects the new config's sessions and their transport
-	// factory capabilities. If any transport declares
-	// CapExclusiveIdentity, PrepareCommit is used; otherwise Overlap.
+	// SwapAuto selects PrepareCommit when RequiresSerializedSwap finds an
+	// exclusive broker identity in the new config — declared by the config
+	// itself, advertised as CapExclusiveIdentity, or reported by a transport
+	// factory from a receiver config — and Overlap otherwise.
 	SwapAuto
 )
 

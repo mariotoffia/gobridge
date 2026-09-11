@@ -217,15 +217,15 @@ flowchart TD
 
     subgraph SwapAuto ["SwapAuto (default)"]
         direction TB
-        A1["Inspect transport capabilities"]
-        A1 -->|"CapExclusiveIdentity found"| A2["Use PrepareCommit"]
-        A1 -->|"No exclusive transports"| A3["Use Overlap"]
+        A1["RequiresSerializedSwap(new config)"]
+        A1 -->|"exclusive identity found"| A2["Use PrepareCommit"]
+        A1 -->|"none"| A3["Use Overlap"]
     end
 ```
 
 ### SwapOverlap
 
-Build the new runtime completely while the old one is still running. Then stop the old runtime and start the new one. This minimizes downtime because the new runtime is fully constructed before the old one shuts down. Best for stateless transports like SQS or Azure Service Bus where there is no conflict in having two instances alive briefly.
+Build the new runtime completely while the old one is still running. Then stop the old runtime and start the new one. This minimizes downtime because the new runtime is fully constructed before the old one shuts down. Best for stateless transports like SQS, or Azure Service Bus without a pinned session, where there is no conflict in having two instances alive briefly.
 
 ### SwapPrepareCommit
 
@@ -233,7 +233,7 @@ Split the build into two phases. **Prepare** validates the config and builds sto
 
 ### SwapAuto (Default)
 
-Inspects all transport factories referenced by the new config's sessions. If any factory declares `CapExclusiveIdentity`, the supervisor uses PrepareCommit. Otherwise it uses Overlap. This is the recommended default -- it adapts automatically to the transports in use.
+Asks `bridge.RequiresSerializedSwap` whether any session in the new config claims an exclusive broker identity: the config declares it (`session_mode: exclusive`, or a route `session` block), a factory declares `CapExclusiveIdentity`, or a factory reports it from a receiver config (an exclusive AMQP 0-9-1 consumer, a pinned Service Bus `session_id`). If so, the supervisor uses PrepareCommit; otherwise Overlap. This is the recommended default -- it adapts automatically to the transports in use.
 
 ## Cluster Semantics and Limitations
 
@@ -411,4 +411,4 @@ sup := bridge.NewSupervisor(
 )
 ```
 
-Use this when SwapAuto picks the wrong mode -- for example, a custom transport that requires exclusive access but does not declare `CapExclusiveIdentity`.
+Use this when SwapAuto picks the wrong mode -- for example, a custom transport that requires exclusive access but neither declares `CapExclusiveIdentity` nor implements `ConfigRequiresExclusiveIdentity`, under a config that does not mark the session exclusive.

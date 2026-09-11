@@ -449,7 +449,7 @@ write outcomes without compensating deletion. See
 | `runtime` | `bootstrap.App` owns the active `*runtime.Runtime`; swap mode mirrors runtime semantics. |
 | `config` | `Initialize` handles strict creation; `Manager.Observe` reports source state and `NotifyIdle` acknowledges completed runtime quiescence. |
 | `httpapi` | Config transactions persist through `parser.FileStore` or the shared DynamoDB loader; runtime apply and rollout coordination use the same paths for either source. |
-| `ports` | `ports.CapExclusiveIdentity` drives swap-mode selection. |
+| `ports` | `ports.CapExclusiveIdentity` is one input to swap-mode selection; `bridge.RequiresSerializedSwap` decides. |
 
 See [../../DDD.md](../../DDD.md) for the project model and
 [UBIQUITOUS.md](./UBIQUITOUS.md) for profile terms. The
