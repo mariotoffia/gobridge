@@ -2,10 +2,12 @@ package bootstrap
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -72,14 +74,22 @@ func TestPluginKindsLog_NamesExactlyWhatThisBuildDecodes(t *testing.T) {
 
 	logPluginKinds(slog.New(slog.NewJSONHandler(&buf, nil)), newDefaultPluginRegistry())
 
+	// Decode the logged array rather than search the text: a qualified alias
+	// such as "amqp.amqp091" contains its short kind, so a substring match
+	// would let one discriminator stand in for the other.
+	var line struct {
+		Kinds []string `json:"kinds"`
+	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &line))
+
 	for _, kind := range []string{"mqtt", "mqtt.paho", "sqs", "aws.sqs", "http", "memory", "sqlite", "dynamodb"} {
-		assert.Contains(t, buf.String(), kind, "the base set is always linked and must always be named")
+		assert.Contains(t, line.Kinds, kind, "the base set is always linked and must always be named")
 	}
 	for _, kind := range optionalFamilyKinds() {
 		if linkedOptionalKinds[kind] {
-			assert.Contains(t, buf.String(), kind)
+			assert.Contains(t, line.Kinds, kind)
 		} else {
-			assert.NotContains(t, buf.String(), kind)
+			assert.NotContains(t, line.Kinds, kind)
 		}
 	}
 }
