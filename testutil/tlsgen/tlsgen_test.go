@@ -205,18 +205,17 @@ func TestGenerate_LeafDoesNotChainToAForeignCA(t *testing.T) {
 }
 
 // Backdating for clock skew moves NotBefore only. A validity shorter than the
-// allowance must still produce an ordered window that expires exactly when the
-// caller asked. Certificates carry second precision, so expiry is bounded by
-// the time around the call rather than compared for equality.
+// allowance must still produce an ordered window that ends ValidFor after the
+// moment the certificate was minted. Both bounds derive from one internal
+// timestamp, and certificate second precision truncates each by the same
+// fraction, so the window is exactly the five-minute backdate plus the
+// one-minute validity — asserted without reading the wall clock.
 func TestGenerate_ShortValidityStaysOrderedAndExpiresOnTime(t *testing.T) {
-	before := time.Now()
 	r, err := tlsgen.Generate(tlsgen.Options{ValidFor: time.Minute})
 	require.NoError(t, err)
-	after := time.Now()
 
 	cert := parseCert(t, r.CertPEM)
 	assert.True(t, cert.NotBefore.Before(cert.NotAfter), "the validity window must be ordered")
-	assert.True(t, cert.NotBefore.Before(before), "NotBefore is backdated for clock skew")
-	assert.False(t, cert.NotAfter.Before(before.Add(time.Minute).Truncate(time.Second)), "expiry must not move earlier")
-	assert.False(t, cert.NotAfter.After(after.Add(time.Minute)), "expiry must not move later")
+	assert.Equal(t, 6*time.Minute, cert.NotAfter.Sub(cert.NotBefore),
+		"the window is the five-minute clock-skew backdate plus the one-minute validity")
 }
