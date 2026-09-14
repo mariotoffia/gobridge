@@ -313,7 +313,7 @@ bytes. Refresh both files together:
 
 | Stage | Image | Pinned index digest |
 |-------|-------|---------------------|
-| build | `golang:1.25-bookworm` | `sha256:ea341baa9bd5ba6784f6d7161ace70544349a6242d54d34a0fbfd2c4d51c9d58` |
+| build | `golang:1.25-bookworm` | `sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437` |
 | runtime | `gcr.io/distroless/static-debian12:nonroot` | `sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b` |
 
 Both indexes were verified to include `linux/amd64` and `linux/arm64`.

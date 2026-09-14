@@ -10,6 +10,25 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Removed — the project publishes no container image
+
+- **`ghcr.io/mariotoffia/gobridge` is retired.** The release workflow's image,
+  digest-association and `latest`-promotion jobs are gone, together with the
+  release tool's image subcommands, the `RELEASE_IMAGE*` variables and the
+  `release-image-*` Make targets. That job had failed on every train since
+  v0.3.4 while the documentation claimed the image was published.
+- **Nothing depended on it.** A CDK app builds the bridge during `cdk deploy`
+  and pushes it into its own account's CDK bootstrap ECR repository;
+  `ImageFromRegistry` and `ImageFromEcr` run an image you publish yourself. The
+  Kubernetes profile builds from `deployment/kubernetes/Dockerfile` and pushes
+  to your own registry.
+- **`make docker-build` still builds locally**, now tagged `gobridge-aws` by
+  default rather than a registry path. Override `IMAGE` to push elsewhere.
+- **The pinned Go builder moved** to the current `golang:1.25-bookworm` digest,
+  which carries the Go 1.25.14 standard library and clears the vulnerabilities
+  the old pin had accumulated. It is used by local builds and by the image the
+  CDK builds for you.
+
 ## [0.4.0] - 2026-09-14
 
 The first train after 0.3.6, and the first complete one to publish the AWS
@@ -1730,7 +1749,7 @@ consumable.
   stores and rejects configurations using anything else. Build a composition
   root for real deployments.
 - The published container image is a release candidate. The production approval
-  described in [RELEASE.md](RELEASE.md#image-publication) is a separate,
+  described in [RELEASE.md](RELEASE.md#production-approval) is a separate,
   credentialed step.
 - The AWS SSM credential adapter and the CloudWatch metrics adapter have no
   integration coverage in CI: their tests depend on LocalStack, which requires a

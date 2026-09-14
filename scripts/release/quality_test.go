@@ -461,46 +461,6 @@ func TestSmokePackagePaths_ExistOnDisk(t *testing.T) {
 	}
 }
 
-func TestLatestStableCommandVersion_DelayedOldTrainCannotPromote(t *testing.T) {
-	t.Parallel()
-
-	manifest := fixtureManifest()
-	runner := qualityRunner(func(_ context.Context, request commandRequest) ([]byte, error) {
-		if request.Name != "git" {
-			return nil, fmt.Errorf("unexpected command %s", request.Name)
-		}
-		if len(request.Args) > 0 && request.Args[0] == "rev-parse" {
-			return []byte("0123456789abcdef0123456789abcdef01234567\n"), nil
-		}
-		if len(request.Args) > 1 && request.Args[1] == "--tags" {
-			return []byte(strings.Join([]string{
-				"0123456789abcdef0123456789abcdef01234567\trefs/tags/cmd/gobridge/v0.3.0",
-				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/tags/cmd/gobridge/v0.4.0-rc.1",
-				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\trefs/tags/cmd/gobridge/v0.4.0",
-			}, "\n")), nil
-		}
-		return []byte(
-			"0123456789abcdef0123456789abcdef01234567\trefs/tags/cmd/gobridge/v0.3.0\n",
-		), nil
-	})
-
-	promote, highest, err := latestStableCommandVersion(
-		context.Background(),
-		runner,
-		"/repo",
-		manifest,
-		"v0.3.0",
-		"origin",
-		"0123456789abcdef0123456789abcdef01234567",
-	)
-	if err != nil {
-		t.Fatalf("latestStableCommandVersion() error = %v", err)
-	}
-	if promote || highest != "v0.4.0" {
-		t.Fatalf("promote=%v highest=%q, want false/v0.4.0", promote, highest)
-	}
-}
-
 func TestReleaseWorkflow_HardenedPublicationGraph(t *testing.T) {
 	t.Parallel()
 
@@ -513,16 +473,7 @@ func TestReleaseWorkflow_HardenedPublicationGraph(t *testing.T) {
 		"validate:",
 		"external-consumer-smoke:",
 		"github-release:",
-		"Build and push image content by digest",
-		"Inspect image platform children",
-		"Scan linux/amd64 child",
-		"Scan linux/arm64 child",
-		"release-latest-version",
-		"Validate or create exact digest association",
 		"timeout-minutes:",
-		"version: v0.35.0",
-		"moby/buildkit:v0.31.1@sha256:",
-		"tonistiigi/binfmt:qemu-v10.2.3@sha256:",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("release workflow missing %q", want)
@@ -532,15 +483,6 @@ func TestReleaseWorkflow_HardenedPublicationGraph(t *testing.T) {
 	smokeJob := strings.Index(text, "\n  external-consumer-smoke:")
 	if releaseJob < 0 || smokeJob < 0 || releaseJob < smokeJob {
 		t.Error("GitHub Release job must follow and depend on external smoke")
-	}
-	if strings.Count(text, "uses: aquasecurity/trivy-action@") != 2 {
-		t.Error("release workflow must scan both platform children with pinned Trivy actions")
-	}
-	buildDigest := strings.Index(text, "Build and push image content by digest")
-	scanArm64 := strings.Index(text, "Scan linux/arm64 child")
-	promoteLatest := strings.Index(text, "Revalidate associated digest and promote guarded latest")
-	if buildDigest < 0 || scanArm64 < buildDigest || promoteLatest < scanArm64 {
-		t.Error("latest promotion must occur only after digest-only build and both child scans")
 	}
 }
 
@@ -679,24 +621,9 @@ func TestReleaseWorkflow_DigestOnlyAndProtectedTagPolicy(t *testing.T) {
 		"github.event.deleted",
 		"github.event.forced",
 		"github.ref_protected",
-		"push-by-digest=true",
-		"name-canonical=true",
-		"gobridge-image-digest.txt",
-		"verify-remote-release-tag",
-		"tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0",
-		"moby/buildkit:v0.31.1@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("release workflow missing %q", want)
-		}
-	}
-	for _, forbidden := range []string{
-		"candidate-${{ github.sha }}",
-		"Refuse or resume stable semver tag",
-		"tags: ghcr.io/mariotoffia/gobridge:",
-	} {
-		if strings.Contains(text, forbidden) {
-			t.Errorf("release workflow retains mutable image tag behavior %q", forbidden)
 		}
 	}
 }

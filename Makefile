@@ -12,15 +12,15 @@
 .PHONY: docker-build
 .PHONY: verify-release-preparation verify-published-modules verify-release-tag
 .PHONY: release-modules stage-published-module stage-release-bootstrap derive-release-bootstrap
-.PHONY: smoke-released-modules release-latest-version verify-remote-release-tag
-.PHONY: release-image-association verify-release-image-digest release-image-upload-decision
+.PHONY: smoke-released-modules verify-remote-release-tag
 
 GOBRIDGE_GO_CACHE ?= /tmp/gobridge-go-build-cache
 export GOCACHE ?= $(GOBRIDGE_GO_CACHE)
 
-# Container image coordinates (override on the command line, e.g.
-# `make docker-build IMAGE=ghcr.io/mariotoffia/gobridge IMAGE_TAG=v1.2.3`).
-IMAGE      ?= ghcr.io/mariotoffia/gobridge
+# Container image coordinates for the local build. This project publishes no
+# image; push to your own registry by overriding IMAGE (e.g.
+# `make docker-build IMAGE=myregistry.example.com/gobridge IMAGE_TAG=v1.2.3`).
+IMAGE      ?= gobridge-aws
 IMAGE_TAG  ?= dev
 
 # The runtime image tag the local deployment proof deploys. It is built by
@@ -42,14 +42,9 @@ RELEASE_COMMIT            ?=
 RELEASE_REMOTE            ?= origin
 RELEASE_API_URL           ?= https://api.github.com
 RELEASE_REPOSITORY        ?=
-RELEASE_IMAGE             ?= ghcr.io/mariotoffia/gobridge
-RELEASE_IMAGE_DIGEST      ?=
-RELEASE_INITIAL_IMAGE_DIGEST ?=
-RELEASE_CURRENT_IMAGE_DIGEST ?=
 export RELEASE_LAYER RELEASE_FORMAT RELEASE_VERSION RELEASE_TAG RELEASE_MODULE
 export RELEASE_BOOTSTRAP_COMMIT RELEASE_COMMIT RELEASE_REMOTE
-export RELEASE_API_URL RELEASE_REPOSITORY RELEASE_IMAGE RELEASE_IMAGE_DIGEST
-export RELEASE_INITIAL_IMAGE_DIGEST RELEASE_CURRENT_IMAGE_DIGEST
+export RELEASE_API_URL RELEASE_REPOSITORY
 
 VERSION ?=
 CONFIRM ?= 0
@@ -166,36 +161,11 @@ smoke-released-modules: ## Test a stable cmd tag from a fresh external module; r
 	@test -n "$$RELEASE_TAG" || { echo "ERROR: RELEASE_TAG=cmd/gobridge/vX.Y.Z is required"; exit 2; }
 	@cd scripts/release && GOWORK=off go run . smoke --repo ../.. --tag "$$RELEASE_TAG"
 
-release-latest-version: ## Report whether RELEASE_VERSION is the highest stable cmd/gobridge tag
-	@test -n "$$RELEASE_VERSION" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
-	@test -n "$$RELEASE_COMMIT" || { echo "ERROR: RELEASE_COMMIT is required"; exit 2; }
-	@cd scripts/release && GOWORK=off go run . latest --repo ../.. \
-		--version "$$RELEASE_VERSION" --commit "$$RELEASE_COMMIT" --remote "$$RELEASE_REMOTE"
-
 verify-remote-release-tag: ## Re-resolve RELEASE_TAG on RELEASE_REMOTE and require RELEASE_COMMIT
 	@test -n "$$RELEASE_TAG" || { echo "ERROR: RELEASE_TAG is required"; exit 2; }
 	@test -n "$$RELEASE_COMMIT" || { echo "ERROR: RELEASE_COMMIT is required"; exit 2; }
 	@cd scripts/release && GOWORK=off go run . remote-tag --repo ../.. \
 		--tag "$$RELEASE_TAG" --commit "$$RELEASE_COMMIT" --remote "$$RELEASE_REMOTE"
-
-release-image-association: ## Fetch and validate the command release image-digest asset
-	@test -n "$$RELEASE_REPOSITORY" || { echo "ERROR: RELEASE_REPOSITORY is required"; exit 2; }
-	@test -n "$$RELEASE_TAG" || { echo "ERROR: RELEASE_TAG is required"; exit 2; }
-	@cd scripts/release && GOWORK=off go run . image-association \
-		--api-url "$$RELEASE_API_URL" --repository "$$RELEASE_REPOSITORY" \
-		--tag "$$RELEASE_TAG" --image "$$RELEASE_IMAGE"
-
-verify-release-image-digest: ## Require RELEASE_IMAGE_DIGEST to exist under RELEASE_IMAGE
-	@test -n "$$RELEASE_IMAGE_DIGEST" || { echo "ERROR: RELEASE_IMAGE_DIGEST is required"; exit 2; }
-	@cd scripts/release && GOWORK=off go run . registry-digest \
-		--image "$$RELEASE_IMAGE" --digest "$$RELEASE_IMAGE_DIGEST"
-
-release-image-upload-decision: ## Decide whether the exact digest asset may be uploaded
-	@test -n "$$RELEASE_IMAGE_DIGEST" || { echo "ERROR: RELEASE_IMAGE_DIGEST is required"; exit 2; }
-	@cd scripts/release && GOWORK=off go run . image-decision \
-		--digest "$$RELEASE_IMAGE_DIGEST" \
-		--initial-digest "$$RELEASE_INITIAL_IMAGE_DIGEST" \
-		--current-digest "$$RELEASE_CURRENT_IMAGE_DIGEST"
 
 # ============================================================================
 # Test targets

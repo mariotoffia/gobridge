@@ -5,11 +5,12 @@ networking, health checks, observability, and scaling. The concepts apply
 wherever you run GoBridge; the concrete artifact differs by how you build it. For
 cloud-specific guidance, see [What's Next](#whats-next).
 
-> **The shipped container image is the AWS file-based deployment profile, not a
-> platform-neutral image.** `ghcr.io/mariotoffia/gobridge` (published by digest
-> with every stable command release, `latest` guarded — see
-> [Pin Images by Digest](container-deployment.md#pin-images-by-digest)) runs
-> `deployment/aws` and is bound to AWS. It **requires** SSM to
+> **The AWS deployment profile is not a platform-neutral image.** The project
+> publishes no image; on AWS the CDK constructs build one into your own account
+> at deploy time (and the repository root `Dockerfile` builds the same thing
+> locally — see
+> [Container and Orchestrator Deployment](container-deployment.md)). That image
+> runs `deployment/aws` and is bound to AWS. It **requires** SSM to
 > resolve secrets — `admin_api_key_param` is mandatory
 > (`deployment/aws/lib/model/bootstrap.go`), the SSM
 > resolver runs at startup (`deployment/aws/lib/bootstrap/secrets.go`),
@@ -21,8 +22,8 @@ cloud-specific guidance, see [What's Next](#whats-next).
 > credentials, API keys from a Secret) with explicit
 > `GO_BUILD_TAGS=gobridge_mqtt,gobridge_native` and is tested end to end.
 > Select other reference-binary transports with build tags; no fork is needed
-> for supported families. The GoBridge core and library are portable; the
-> stock image is AWS-bound.
+> for supported families. The GoBridge core and library are portable; the AWS
+> profile binary is AWS-bound.
 
 ## Reference Binary and Composition Root
 

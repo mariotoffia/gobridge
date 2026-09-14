@@ -157,9 +157,9 @@ func main() {
             Vpc:     vpc,
             Cluster: cluster,
             Image: gobridge.ImageFromRegistry(
-                // Pin the digest from the release's gobridge-image-digest.txt
-                // asset — see "Pin Images by Digest" in the deployment guide.
-                "ghcr.io/mariotoffia/gobridge@sha256:<digest>"),
+                // An image you built and pushed, pinned by digest. Leave Image
+                // unset to have CDK build and push one at deploy time.
+                "myregistry.example.com/gobridge@sha256:<digest>"),
             Bootstrap: gobridge.Bootstrap{
                 // NodeRole is forced per service by the facade — do not set it.
                 AdminAddr:        ":8080",

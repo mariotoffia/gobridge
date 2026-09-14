@@ -8,9 +8,10 @@
 // selects MQTT and native memory/SQLite stores. Configs naming a transport or
 // store outside the compiled families fail at decoding with an unknown-kind error.
 //
-// The AWS image ghcr.io/mariotoffia/gobridge is the other shipped composition
-// root, deployment/aws/lib/cmd/gobridge-aws: MQTT, SQS
-// and HTTP transports, DynamoDB stores, secrets from SSM.
+// deployment/aws/lib/cmd/gobridge-aws is the other composition root: MQTT, SQS
+// and HTTP transports, DynamoDB stores, secrets from SSM. The project publishes
+// no container image for either root; the AWS CDK constructs build that one
+// during cdk deploy, and deployment/kubernetes builds this one from source.
 package main
 
 import (

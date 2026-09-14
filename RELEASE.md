@@ -96,8 +96,7 @@ after this change.
    version with `go list -m -json <module>@<commit>`. The release tool verifies
    the returned origin commit and downloaded helper go.mod.
 7. **Never move a module tag.** A failed public module release is corrected with
-   a new patch train, not by deleting or recreating a tag. Container releases
-   have no semver registry tag; their immutable identity is the recorded digest.
+   a new patch train, not by deleting or recreating a tag.
 
 ## Required GitHub tag ruleset
 
@@ -115,8 +114,7 @@ The event check is the first job, before checkout. Every privileged boundary
 re-resolves both lightweight and annotated tags from `origin` with
 `git ls-remote`, peels annotated tags, and requires the remote commit to remain
 the original validated `github.sha`. A disappeared or moved tag fails GitHub
-Release creation, digest publication, digest-asset upload, and `latest`
-promotion.
+Release creation.
 
 ## Verification modes
 
@@ -343,8 +341,7 @@ but current deployments have no runtime dependency on it.
 
 Consumer builds may embed YAML or JSON with `INITIAL_CONFIG_FILE`. Treat the
 resulting binary, image, build context, and cache as copies of that document.
-Literal credentials are permitted; Base64 does not conceal them. A shared
-public runtime image should not be confused with a consumer's configured image.
+Literal credentials are permitted; Base64 does not conceal them.
 See [initial configuration](docs/aws-deployment/config-initialization.md).
 
 Both command packages must publish the fixed `initial-config.base64` file,
@@ -354,64 +351,21 @@ a writable directory, fill the embed file, then build and verify its digest.
 No Git checkout or payload-bearing flags/environment are used. Local Make and
 Docker builds use the standard-library `scripts/buildconfig` overlay instead.
 
-## Image publication
+## No container image
 
-Only a successful stable `cmd/gobridge/vX.Y.Z` workflow can publish an image.
-Root, adapter, processor, deployment, internal, and prerelease tags cannot enter
-the image job. Image publication creates a **release candidate**, not production
-approval.
-
-The workflow uses immutable action commit SHAs, Buildx v0.35.0,
-`moby/buildkit:v0.31.1@sha256:6b59b7df63a8cb9902736f9ddf7fcff8261613d3e7449b8ea8b7537fc399c03a`,
-and
-`tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0`.
-It:
-
-1. pushes the multi-platform image **by digest only** with BuildKit exporter
-   `push-by-digest=true,name-canonical=true`, SBOM, and
-   `provenance: mode=max`; no candidate or semver container tag is created;
-2. validates the image index digest and requires exactly one runnable
-   `linux/amd64` child and one runnable `linux/arm64` child;
-3. scans **both exact child digests**, never a mutable tag, using Trivy Action
-   v0.36.0 pinned to commit
-   `ed142fd0673e97e23eac54620cfb913e5ce36c25`;
-4. fails on any HIGH or CRITICAL OS/library vulnerability, including unfixed
-   findings;
-5. records `ghcr.io/mariotoffia/gobridge@sha256:...` in the workflow summary
-   and attaches `gobridge-image-digest.txt` to the matching command GitHub
-   Release after the image succeeds;
-6. immediately queries protected remote Git tags inside the serialized image
-   job and moves the sole mutable tag, `latest`, only when this release is the
-   highest stable
-   `cmd/gobridge/vX.Y.Z`; delayed older jobs leave `latest` unchanged.
-
-Reruns first fetch `gobridge-image-digest.txt` from the exact command GitHub
-Release. If no association exists, the workflow builds and publishes by digest.
-If one exists, the workflow resumes from that immutable recorded digest without
-rebuilding. It re-inspects the recorded index in GHCR, requires the exact two
-runnable platform children, and rescans both exact child digests before
-`latest` can move. This is deliberate: maximum BuildKit provenance contains
-build-specific attestation metadata, so two valid builds need not have the same
-top-level OCI index digest. Authentication, network, malformed asset, wrong
-image, a missing registry digest, or a failed child scan fails closed. Before
-upload, the workflow fetches the asset again: the same digest is an idempotent
-association, a different digest fails, and a duplicate-name upload failure
-closes the final race.
-
-Release permissions are split by boundary. The build/resume/dual-scan job has
-`contents: read` plus `packages: write`. A minimal pinned `github-script` job
-has only `contents: write`, performs no checkout, Docker, BuildKit, QEMU, Trivy,
-or repository command, and persists/revalidates the exact digest asset. A final
-serialized `latest` job has `contents: read` plus `packages: write`, revalidates
-the associated registry digest and protected highest tag, and performs no build
-or scan. No job combines `contents: write` with `packages: write`.
-
-GHCR does not document immutable tag enforcement or conditional OCI tag
-creation, so a version-to-image association is **only** the digest asset on the
-command GitHub Release, never `ghcr.io/...:vX.Y.Z`. `latest` is not part of the
-build and is promoted from the exact scanned digest without rebuilding. GitHub
+The release train ends at the `cmd/gobridge` tag. Nothing in it builds, pushes,
+scans, or promotes a container image, and the project publishes none. GitHub
 Releases remain per-module; the final command release is created only after
 strict train validation and both external consumer resolution passes succeed.
+
+Consumers build their own image. On AWS a CDK facade with no `Image` set builds
+the profile command from the published `deployment/aws/lib` module during
+`cdk deploy` and pushes it into the account's own ECR asset repository; off AWS,
+`deployment/kubernetes/Dockerfile` (or the repository root `Dockerfile`) builds
+one for the consumer's registry. Pin whichever you run by digest —
+[pin images by digest](docs/container-deployment.md#pin-images-by-digest).
+
+## Production approval
 
 Production approval is a separate post-merge, credentialed gate. Deploy the AWS
 DynamoDB HA fixture in the protected target environment, stop the verified
@@ -424,6 +378,6 @@ The fixtures build per-fixture embedded images through `ImageFromGoBuild`;
 registry-image overrides are not accepted. Record each built image digest with
 its module version and the proof evidence. The source-tag workflow cannot
 supply that repository-specific AWS account, VPC, broker, secrets, or release
-role. Do not describe or promote the published image as production-approved
-until this external proof and the remaining controls in the production-readiness
+role. Do not describe or promote a release train as production-approved until
+this external proof and the remaining controls in the production-readiness
 release sequence are complete.

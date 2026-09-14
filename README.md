@@ -31,23 +31,26 @@ Full documentation: **<https://mariotoffia.github.io/gobridge/>**
 
 ### Production (container image / composition root)
 
-The shipped **production** image is **`ghcr.io/mariotoffia/gobridge`**, the
-AWS composition root
-`deployment/aws/lib/cmd/gobridge-aws`. Every stable
-`cmd/gobridge/vX.Y.Z` release pushes it **by digest** and attaches the verified
-digest to that release as `gobridge-image-digest.txt`; the one mutable tag,
-`latest`, is promoted from that same scanned digest only when the release is
-the highest stable one. Deploy from the digest, never from `latest` — see
-[Pin Images by Digest](docs/container-deployment.md#pin-images-by-digest) and
-**[RELEASE.md](RELEASE.md#image-publication)**. The image registers the MQTT,
-AWS SQS and HTTP transports plus native (memory/SQLite) and DynamoDB stores,
-resolves its secrets through SSM, and is the binary the AWS ECS/EFS profile
-runs: see the **[Deployment Guide](docs/deployment-guide.md)** and the
-**[AWS profile](deployment/aws/README.md)**.
+The project publishes no container image. You run one you build, and there are
+two supported ways to get it.
+
+**On AWS**, the CDK constructs build it for you. Leave `Image` unset on a facade
+and `cdk deploy` builds the AWS composition root
+`deployment/aws/lib/cmd/gobridge-aws` from the published `deployment/aws/lib`
+module with Docker, then pushes the result into your account's CDK bootstrap
+ECR asset repository; the ECS task definition runs it by digest. That binary
+registers the MQTT, AWS SQS and HTTP transports plus native (memory/SQLite) and
+DynamoDB stores and resolves its secrets through SSM: see the
+**[Deployment Guide](docs/deployment-guide.md)** and the
+**[AWS profile](deployment/aws/README.md)**. To run an image you published
+yourself instead, pass `gobridge.ImageFromRegistry("…@sha256:<digest>")` or
+`gobridge.ImageFromEcr(repo, tag)` — always pinned by digest, see
+[Container and Orchestrator Deployment](docs/container-deployment.md).
 
 **Kubernetes and other non-AWS platforms** run the maintained
-**[Kubernetes profile](deployment/kubernetes/README.md)**: a Dockerfile and one
-manifest around the reference binary below (MQTT transport, memory/SQLite
+**[Kubernetes profile](deployment/kubernetes/README.md)**: a Dockerfile you
+build and push to your own registry, and one manifest around the reference
+binary below (MQTT transport, memory/SQLite
 stores, `file://` credentials, HTTP API keys from a Secret), tested end to end
 through probes, traffic, reload, SIGTERM and restart. Its Dockerfile defaults
 `GO_BUILD_TAGS` to `gobridge_mqtt,gobridge_native`. Select additional supported

@@ -7,25 +7,30 @@ were nested under health checks, which is not where a reader looks for them.
 
 ## Pin Images by Digest
 
-Every stable `cmd/gobridge/vX.Y.Z` release pushes `ghcr.io/mariotoffia/gobridge`
-**by digest** and attaches the verified digest to that command release as
-`gobridge-image-digest.txt`; no `vX.Y.Z` container tag exists. One mutable tag
-exists — `latest` — promoted after the vulnerability scan from the exact
-released digest, and only when the release is the highest stable command
-release, so a re-run of an older release never moves it
-([RELEASE.md](../RELEASE.md#image-publication)).
+The GoBridge project publishes no container image. The image you run is one you
+build: the repository root `Dockerfile` for the AWS profile binary
+(`gobridge-aws`), or `deployment/kubernetes/Dockerfile` for the reference binary
+(`cmd/gobridge`).
 
-`latest` is for an interactive `docker pull`. A task definition, pod spec, CDK
-construct or `Dockerfile` **must** reference the digest
-(`ghcr.io/mariotoffia/gobridge@sha256:...`): a moving tag makes a rebuild
-non-reproducible and can pull an unexpected image on the next deploy. The same
-rule applies to the `Dockerfile` base images. Take the digest from the release
-asset; to see what `latest` currently resolves to:
+On AWS you normally do not build it by hand. A CDK facade with no `Image` set
+builds the image during `cdk deploy` and pushes it into your account's CDK
+bootstrap ECR asset repository, and the task definition then references that
+image by digest — pinning is automatic
+([CDK image sources](aws-deployment/cdk-constructs.md#runtime-image-source)).
+
+Everywhere else, push your build to your own registry and record the digest it
+prints:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/mariotoffia/gobridge:latest \
+docker push myregistry.example.com/gobridge:2025-09-01
+docker buildx imagetools inspect myregistry.example.com/gobridge:2025-09-01 \
   --format '{{.Manifest.Digest}}'
 ```
+
+A task definition, pod spec, CDK construct or `Dockerfile` **must** reference
+that digest (`myregistry.example.com/gobridge@sha256:...`), never a tag: a
+moving tag makes a rebuild non-reproducible and can pull an unexpected image on
+the next deploy. The same rule applies to the `Dockerfile` base images.
 
 The [image upgrade/rollback runbook](runbooks/upgrade-rollback-and-sqlite-durability.md#pin-images-by-digest)
 covers upgrading and rolling back between digests.
@@ -47,7 +52,8 @@ covers upgrading and rolling back between digests.
 }
 ```
 
-The image ships no shell, `curl`, or `wget`, so the health check invokes the
+The images built from the supplied Dockerfiles ship no shell, `curl`, or
+`wget`, so the health check invokes the
 binary's `-healthcheck` flag (which probes the local monitor `/live` endpoint).
 The CDK facades set `stopTimeout` to 60s; size it above `shutdown_timeout`.
 
@@ -110,11 +116,11 @@ to give GoBridge enough time to drain before the orchestrator sends `SIGKILL`.
 
 ## Kubernetes and Non-AWS Docker
 
-The published image (`ghcr.io/mariotoffia/gobridge`, see
-[Pin Images by Digest](#pin-images-by-digest)) is the **AWS file-based
-profile**: it reads its bootstrap from env/SSM and builds a DynamoDB client
-unconditionally. It is **not** a general off-AWS image — running it outside AWS
-without SSM and the expected bootstrap will not work.
+The image built from the repository root `Dockerfile` — the same one the CDK
+facades build for you — runs the **AWS profile**: it reads its
+bootstrap from env/SSM and builds a DynamoDB client unconditionally. It is
+**not** a general off-AWS image — running it outside AWS without SSM and the
+expected bootstrap will not work.
 
 Off AWS, run the maintained **[Kubernetes profile](../deployment/kubernetes/README.md)**
 instead: a Dockerfile that builds the reference binary (`cmd/gobridge` — MQTT
@@ -160,7 +166,7 @@ mode, which also covers network filesystems that drop inotify events.
   the next TLS handshake. The API keys may come from the environment
   (`GOBRIDGE_ADMIN_API_KEY`, `GOBRIDGE_MONITOR_API_KEY`) so the ConfigMap never
   carries them. See the [`http:` field reference](http-api.md#http-api-configuration).
-- **The AWS file-based profile (the shipped image) does not honor the `http:`
+- **The AWS profile (`gobridge-aws`) does not honor the `http:`
   block.** It sources the admin/monitor listen addresses, CORS origins, and API
   keys from the bootstrap config (env/SSM) rather than `bridge.yaml`
   (`deployment/aws/lib/bootstrap/app.go`), and it sets
