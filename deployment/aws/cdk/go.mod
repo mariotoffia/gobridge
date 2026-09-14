@@ -22,16 +22,16 @@ require (
 	github.com/aws/constructs-go/constructs/v10 v10.8.1
 	github.com/aws/jsii-runtime-go v1.139.0
 	github.com/eclipse/paho.golang v0.23.0
-	github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb v0.0.0
-	github.com/mariotoffia/gobridge/adapters/aws/store v0.3.6
-	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0-00010101000000-000000000000
-	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0-00010101000000-000000000000
-	github.com/mariotoffia/gobridge/adapters/native/store v0.0.0-00010101000000-000000000000
-	github.com/mariotoffia/gobridge/deployment/aws/infra v0.0.0
-	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-20260507130243-4750750b6096
-	github.com/mariotoffia/gobridge/testutil/flocilocal v0.0.0-00010101000000-000000000000
-	github.com/mariotoffia/gobridge/testutil/mqttlocal v0.0.0
-	github.com/mariotoffia/gobridge/testutil/testcontent v0.0.0
+	github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb v0.4.1
+	github.com/mariotoffia/gobridge/adapters/aws/store v0.4.1
+	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.4.1
+	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.4.1
+	github.com/mariotoffia/gobridge/adapters/native/store v0.4.1
+	github.com/mariotoffia/gobridge/deployment/aws/infra v0.4.1
+	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-20260914091107-c3a56aed2c61
+	github.com/mariotoffia/gobridge/testutil/flocilocal v0.0.0-20260914091107-c3a56aed2c61
+	github.com/mariotoffia/gobridge/testutil/mqttlocal v0.0.0-20260914091107-c3a56aed2c61
+	github.com/mariotoffia/gobridge/testutil/testcontent v0.0.0-20260914091107-c3a56aed2c61
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -55,15 +55,15 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq v0.3.6 // indirect
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.3.6 // indirect
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions v0.3.6 // indirect
-	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.3.6 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions v0.0.0 // indirect
-	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq v0.4.1 // indirect
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease v0.4.1 // indirect
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions v0.4.1 // indirect
+	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox v0.4.1 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq v0.4.1 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.4.1 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq v0.4.1 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions v0.4.1 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox v0.4.1 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
@@ -80,8 +80,8 @@ require (
 	github.com/cdklabs/awscdk-asset-awscli-go/awscliv1/v2 v2.2.293 // indirect
 	github.com/cdklabs/awscdk-asset-node-proxy-agent-go/nodeproxyagentv6/v2 v2.1.2 // indirect
 	github.com/fatih/color v1.19.0 // indirect
-	github.com/mariotoffia/gobridge v0.0.0
-	github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm v0.0.0
+	github.com/mariotoffia/gobridge v0.4.1
+	github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm v0.4.1
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/yuin/goldmark v1.8.5 // indirect
@@ -95,47 +95,3 @@ require (
 	golang.org/x/tools/godoc v0.1.0-deprecated // indirect
 	gopkg.in/yaml.v3 v3.0.1
 )
-
-replace github.com/mariotoffia/gobridge/deployment/aws/infra => ../infra
-
-replace github.com/mariotoffia/gobridge => ../../..
-
-replace github.com/mariotoffia/gobridge/adapters/aws/config/dynamodb => ../../../adapters/aws/config/dynamodb
-
-replace github.com/mariotoffia/gobridge/adapters/aws/transport/sqs => ../../../adapters/aws/transport/sqs
-
-replace github.com/mariotoffia/gobridge/adapters/aws/store => ../../../adapters/aws/store
-
-replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbdlq => ../../../adapters/aws/store/dynamodbdlq
-
-replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodblease => ../../../adapters/aws/store/dynamodblease
-
-replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox => ../../../adapters/aws/store/dynamodboutbox
-
-replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions => ../../../adapters/aws/store/dynamodbmanagedsubscriptions
-
-replace github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho => ../../../adapters/mqtt/transport/paho
-
-replace github.com/mariotoffia/gobridge/adapters/native/store => ../../../adapters/native/store
-
-replace github.com/mariotoffia/gobridge/adapters/native/store/memorydlq => ../../../adapters/native/store/memorydlq
-
-replace github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox => ../../../adapters/native/store/memoryoutbox
-
-replace github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq => ../../../adapters/native/store/sqlitedlq
-
-replace github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox => ../../../adapters/native/store/sqliteoutbox
-
-replace github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions => ../../../adapters/native/store/sqlitemanagedsubscriptions
-
-replace github.com/mariotoffia/gobridge/testutil/wait => ../../../testutil/wait
-
-replace github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm => ../../../adapters/aws/credentials/ssm
-
-replace github.com/mariotoffia/gobridge/testutil/mqttlocal => ../../../testutil/mqttlocal
-
-replace github.com/mariotoffia/gobridge/testutil/ddblocal => ../../../testutil/ddblocal
-
-replace github.com/mariotoffia/gobridge/testutil/flocilocal => ../../../testutil/flocilocal
-
-replace github.com/mariotoffia/gobridge/testutil/testcontent => ../../../testutil/testcontent
