@@ -10,6 +10,13 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-14
+
+The first train after 0.3.6, and the first complete one to publish the AWS
+deployment-profile modules. The profile moves to `deployment/aws` and an
+external CDK app now adds one module and imports one package. The rest is the
+accumulated work since 0.3.6.
+
 ### Changed — the AWS deployment profile is `deployment/aws`, imported as one package
 
 Breaking for every consumer of the old paths; there is no compatibility shim.
@@ -1729,7 +1736,8 @@ consumable.
   integration coverage in CI: their tests depend on LocalStack, which requires a
   licence token that is not configured. Set `LOCALSTACK_AUTH_TOKEN` to run them.
 
-[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.4.0
 [0.3.3]: https://github.com/mariotoffia/gobridge/releases/tag/v0.3.3
 [0.3.2]: https://github.com/mariotoffia/gobridge/releases/tag/v0.3.2
 [0.3.1]: https://github.com/mariotoffia/gobridge/releases/tag/v0.3.1
