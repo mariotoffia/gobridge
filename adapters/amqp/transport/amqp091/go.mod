@@ -2,16 +2,10 @@ module github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091
 
 go 1.25.0
 
-replace github.com/mariotoffia/gobridge => ../../../..
-
-replace github.com/mariotoffia/gobridge/testutil/rabbitmqlocal => ../../../../testutil/rabbitmqlocal
-
-replace github.com/mariotoffia/gobridge/testutil/wait => ../../../../testutil/wait
-
 require (
-	github.com/mariotoffia/gobridge v0.0.0
-	github.com/mariotoffia/gobridge/testutil/rabbitmqlocal v0.0.0
-	github.com/mariotoffia/gobridge/testutil/wait v0.0.0
+	github.com/mariotoffia/gobridge v0.4.1
+	github.com/mariotoffia/gobridge/testutil/rabbitmqlocal v0.0.0-20260914091107-c3a56aed2c61
+	github.com/mariotoffia/gobridge/testutil/wait v0.0.0-20260914091107-c3a56aed2c61
 	github.com/rabbitmq/amqp091-go v1.13.0
 	github.com/stretchr/testify v1.11.1
 	gopkg.in/yaml.v3 v3.0.1
