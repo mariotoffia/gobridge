@@ -132,7 +132,10 @@ wait_for_release_workflow() {
 wait_for_layer_workflows() {
   local tags=("$@")
   local start now snapshot tag state pending missing run_id
-  declare -A retried=()
+  # The already-retried tags, as a space-delimited set rather than an
+  # associative array: macOS ships bash 3.2, which has none, and a release is
+  # run from a maintainer's machine as often as from CI. Tags carry no spaces.
+  local retried=" "
   start="$(date +%s)"
   while :; do
     snapshot="$(gh run list --workflow release.yml --limit 100 \
@@ -148,15 +151,15 @@ wait_for_layer_workflows() {
         completed/success) ;;
         "")               missing=$((missing + 1)); pending=$((pending + 1)) ;;
         completed/*)
-          if [ -n "${retried[$tag]:-}" ]; then
-            die "release workflow ${state#completed/} for $tag after one re-run"
-          fi
+          case "$retried" in
+            *" $tag "*) die "release workflow ${state#completed/} for $tag after one re-run" ;;
+          esac
           run_id="$(printf '%s\n' "$snapshot" | awk -F'\t' -v t="$tag" '$1==t {print $4; exit}')"
           [ -n "$run_id" ] || die "release workflow ${state#completed/} for $tag (no run id to retry)"
           echo "-- ${tag}: workflow ${state#completed/}; re-running once (run ${run_id})"
           gh run rerun "$run_id" >/dev/null 2>&1 \
             || die "release workflow ${state#completed/} for $tag; re-run could not be started"
-          retried[$tag]=1
+          retried="${retried}${tag} "
           pending=$((pending + 1))
           ;;
         *)                pending=$((pending + 1)) ;;
