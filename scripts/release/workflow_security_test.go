@@ -7,6 +7,11 @@ import (
 	"testing"
 )
 
+// The release workflow publishes module tags only. It builds no container
+// image, so the privileged boundary that remains is the one job that can write
+// repository contents: the GitHub Release. It must stay free of checkout, Make
+// and Docker, because a release body is written from validated job outputs
+// rather than from anything the tagged source could influence.
 func TestReleaseWorkflow_SeparatesPrivilegedJobs(t *testing.T) {
 	t.Parallel()
 
@@ -15,112 +20,48 @@ func TestReleaseWorkflow_SeparatesPrivilegedJobs(t *testing.T) {
 		t.Fatalf("read release workflow: %v", err)
 	}
 	workflow := string(data)
-	release := workflowJobBlock(t, workflow, "github-release", "image")
-	image := workflowJobBlock(t, workflow, "image", "image-association")
-	association := workflowJobBlock(t, workflow, "image-association", "latest-promotion")
-	latest := workflowJobBlock(t, workflow, "latest-promotion", "")
+	release := workflowJobBlock(t, workflow, "github-release", "")
 
 	requireWorkflowText(t, release, "contents: write", "actions/github-script@", "softprops/action-gh-release@")
 	forbidWorkflowText(t, release, "actions/checkout", "make ", "docker", "trivy")
-
-	requireWorkflowText(t, image, "contents: read", "packages: write", "persist-credentials: false")
-	forbidWorkflowText(t, image, "contents: write")
-
-	requireWorkflowText(t, association, "contents: write", "needs:", "- image", "actions/github-script@")
-	forbidWorkflowText(
-		t,
-		association,
-		"packages: write",
-		"docker",
-		"trivy",
-		"setup-qemu",
-		"setup-buildx",
-		"build-push",
-		"actions/checkout",
-		"go run",
-		"make ",
-	)
-
-	requireWorkflowText(
-		t,
-		latest,
-		"contents: read",
-		"packages: write",
-		"- image-association",
-		"persist-credentials: false",
-	)
-	forbidWorkflowText(t, latest, "contents: write", "build-push", "trivy", "setup-qemu")
 
 	for _, name := range []string{
 		"tag-policy",
 		"validate",
 		"external-consumer-smoke",
 		"github-release",
-		"image",
-		"image-association",
-		"latest-promotion",
 	} {
 		block := workflowJobBlock(t, workflow, name, nextReleaseJob(name))
+		if strings.Contains(block, "packages: write") {
+			t.Errorf("job %s requests packages:write, but nothing publishes a container image", name)
+		}
 		if strings.Contains(block, "contents: write") && strings.Contains(block, "packages: write") {
 			t.Errorf("job %s combines contents:write with packages:write", name)
 		}
 	}
 }
 
-func TestReleaseWorkflow_ResumesAndRescansRecordedDigest(t *testing.T) {
+// Nothing in the release path may reintroduce image publication: no registry
+// login, no buildx, no scanner, no digest asset.
+func TestReleaseWorkflow_PublishesNoContainerImage(t *testing.T) {
 	t.Parallel()
 
 	data, err := os.ReadFile(filepath.Join(repositoryRootForTest(t), ".github", "workflows", "release.yml"))
 	if err != nil {
 		t.Fatalf("read release workflow: %v", err)
 	}
-	image := workflowJobBlock(t, string(data), "image", "image-association")
-	requireWorkflowText(
-		t,
-		image,
-		"- name: Build and push image content by digest\n"+
-			"        if: steps.association.outputs.exists != 'true'\n"+
-			"        id: build",
-		`digest="$RECORDED_DIGEST"`,
-		`echo "mode=resumed" >> "$GITHUB_OUTPUT"`,
-		`docker buildx imagetools inspect "$IMAGE@$DIGEST" --raw`,
-	)
 	forbidWorkflowText(
 		t,
-		image,
-		`[ "$RECORDED_DIGEST" != "$BUILT_DIGEST" ]`,
-		"recorded release digest differs from rebuilt tagged source",
-		"mode=rebuilt-verified",
+		string(data),
+		"docker/login-action",
+		"docker/setup-buildx-action",
+		"docker/setup-qemu-action",
+		"docker/build-push-action",
+		"aquasecurity/trivy-action",
+		"gobridge-image-digest.txt",
+		"push-by-digest",
+		"ghcr.io",
 	)
-	login := strings.Index(image, "Log in to GHCR")
-	association := strings.Index(image, "Fetch existing command release image association")
-	build := strings.Index(image, "Build and push image content by digest")
-	selectDigest := strings.Index(image, "Select immutable image digest")
-	inspect := strings.Index(image, "Inspect image platform children")
-	if login < 0 || association < login || build < association ||
-		selectDigest < build || inspect < selectDigest {
-		t.Error("image association must control the optional build before digest selection and inspection")
-	}
-}
-
-func TestReleaseWorkflow_RejectsUnscannedRunnableChildren(t *testing.T) {
-	t.Parallel()
-
-	data, err := os.ReadFile(filepath.Join(repositoryRootForTest(t), ".github", "workflows", "release.yml"))
-	if err != nil {
-		t.Fatalf("read release workflow: %v", err)
-	}
-	image := workflowJobBlock(t, string(data), "image", "image-association")
-	requireWorkflowText(
-		t,
-		image,
-		`runnable_count="$(jq '[.manifests[] |`,
-		`select(.platform.os != "unknown" or .platform.architecture != "unknown")] |`,
-		`if [ "$runnable_count" -ne 2 ]`,
-	)
-	if strings.Contains(image, `select(.annotations["vnd.docker.reference.type"] != "attestation-manifest")`) {
-		t.Fatal("release workflow trusts mutable annotations to classify non-runnable image children")
-	}
 }
 
 func workflowJobBlock(t *testing.T, workflow, name, next string) string {
@@ -167,9 +108,6 @@ func nextReleaseJob(name string) string {
 		"validate",
 		"external-consumer-smoke",
 		"github-release",
-		"image",
-		"image-association",
-		"latest-promotion",
 	}
 	for index, candidate := range order {
 		if candidate == name && index+1 < len(order) {

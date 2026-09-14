@@ -25,7 +25,7 @@
 ARG BINARY_MODULE=cmd/gobridge
 
 # ---- build stage ------------------------------------------------------------
-FROM golang:1.25-bookworm@sha256:ea341baa9bd5ba6784f6d7161ace70544349a6242d54d34a0fbfd2c4d51c9d58 AS build
+FROM golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437 AS build
 ARG BINARY_MODULE
 ARG GO_BUILD_TAGS="gobridge_mqtt,gobridge_native"
 ARG INITIAL_CONFIG_FILE=""

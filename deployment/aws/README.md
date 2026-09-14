@@ -251,7 +251,7 @@ access to the verified successor task. Missing CloudWatch samples fail the proof
 This credentialed proof is a mandatory **post-merge external production-
 approval gate**. The source-tag workflow does not own a repository-specific AWS
 account, protected environment, VPC, broker, or release role and therefore does
-not run it. Image publication produces a release candidate, not production
+not run it. A released module train produces a release candidate, not production
 approval. Record the failover samples and CloudWatch evidence before promoting
 that candidate for production use.
 
@@ -468,9 +468,10 @@ leaves the level unchanged).
 
 **Container image.** The root `Dockerfile` (`make docker-build`) builds a static,
 CGO-free, nonroot `gobridge-aws` with digest-pinned bases. CDK can instead
-build a compatible published module through `ImageFromGoBuild`.
+build a compatible published module through `ImageFromGoBuild` and push it to
+your account's ECR asset repository. The project publishes no image of its own.
 See [build options](../../docs/aws-deployment/container-image.md) and
-[release image digests](../../RELEASE.md#image-publication).
+[pin images by digest](../../docs/container-deployment.md#pin-images-by-digest).
 
 ## Integration Tests
 

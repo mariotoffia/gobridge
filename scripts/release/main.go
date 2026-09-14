@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -253,41 +252,6 @@ func runCLI(
 		}
 		return writeOutput(output, "External consumer smoke PASS for %s.\n", *tag)
 
-	case "latest":
-		flags := flag.NewFlagSet("latest", flag.ContinueOnError)
-		flags.SetOutput(io.Discard)
-		repoFlag := flags.String("repo", "", "repository root")
-		version := flags.String("version", "", "stable cmd/gobridge version")
-		remote := flags.String("remote", "origin", "Git remote")
-		commit := flags.String("commit", "", "validated final-module tag commit")
-		if err := parseCommandFlags(flags, args[1:]); err != nil {
-			return err
-		}
-		repo, manifest, err := commandContext(*repoFlag)
-		if err != nil {
-			return err
-		}
-		if err := requireFlags(map[string]string{
-			"commit":  *commit,
-			"remote":  *remote,
-			"version": *version,
-		}); err != nil {
-			return err
-		}
-		promote, highest, err := latestStableCommandVersion(
-			ctx,
-			runner,
-			repo,
-			manifest,
-			*version,
-			*remote,
-			*commit,
-		)
-		if err != nil {
-			return err
-		}
-		return writeOutput(output, "promote=%t\nhighest=%s\n", promote, highest)
-
 	case "remote-tag":
 		flags := flag.NewFlagSet("remote-tag", flag.ContinueOnError)
 		flags.SetOutput(io.Discard)
@@ -323,81 +287,6 @@ func runCLI(
 			return err
 		}
 		return writeOutput(output, "Remote tag %s matches %s.\n", *tag, *commit)
-
-	case "image-association":
-		flags := flag.NewFlagSet("image-association", flag.ContinueOnError)
-		flags.SetOutput(io.Discard)
-		apiURL := flags.String("api-url", "https://api.github.com", "GitHub API URL")
-		repository := flags.String("repository", "", "GitHub owner/repository")
-		tag := flags.String("tag", "", "command release tag")
-		image := flags.String("image", "", "container image name")
-		if err := parseCommandFlags(flags, args[1:]); err != nil {
-			return err
-		}
-		if err := requireFlags(map[string]string{
-			"api-url":    *apiURL,
-			"image":      *image,
-			"repository": *repository,
-			"tag":        *tag,
-		}); err != nil {
-			return err
-		}
-		association, err := fetchImageAssociation(
-			ctx,
-			&http.Client{Timeout: moduleQueryTimeout},
-			*apiURL,
-			*repository,
-			*tag,
-			*image,
-			os.Getenv("GITHUB_TOKEN"),
-		)
-		if err != nil {
-			return err
-		}
-		return writeOutput(
-			output,
-			"exists=%t\ndigest=%s\n",
-			association.Exists,
-			association.Digest,
-		)
-
-	case "registry-digest":
-		flags := flag.NewFlagSet("registry-digest", flag.ContinueOnError)
-		flags.SetOutput(io.Discard)
-		image := flags.String("image", "", "container image name")
-		digest := flags.String("digest", "", "container image digest")
-		if err := parseCommandFlags(flags, args[1:]); err != nil {
-			return err
-		}
-		if err := requireFlags(map[string]string{
-			"digest": *digest,
-			"image":  *image,
-		}); err != nil {
-			return err
-		}
-		return verifyRegistryDigest(ctx, runner, *image, *digest)
-
-	case "image-decision":
-		flags := flag.NewFlagSet("image-decision", flag.ContinueOnError)
-		flags.SetOutput(io.Discard)
-		digest := flags.String("digest", "", "container image digest")
-		initialDigest := flags.String("initial-digest", "", "initial release asset digest")
-		currentDigest := flags.String("current-digest", "", "current release asset digest")
-		if err := parseCommandFlags(flags, args[1:]); err != nil {
-			return err
-		}
-		if err := requireFlag("digest", *digest); err != nil {
-			return err
-		}
-		upload, err := decideImageAssociationUpload(
-			imageAssociation{Exists: *initialDigest != "", Digest: *initialDigest},
-			imageAssociation{Exists: *currentDigest != "", Digest: *currentDigest},
-			*digest,
-		)
-		if err != nil {
-			return err
-		}
-		return writeOutput(output, "upload=%t\n", upload)
 
 	default:
 		return usageError()
@@ -706,7 +595,6 @@ func requireFlags(values map[string]string) error {
 func usageError() error {
 	return errors.New(
 		"usage: release <source|list|strict-all|strict-tag|strict-module|" +
-			"stage-module|stage-bootstrap|derive-bootstrap|smoke|latest|remote-tag|" +
-			"image-association|registry-digest|image-decision> [flags]",
+			"stage-module|stage-bootstrap|derive-bootstrap|smoke|remote-tag> [flags]",
 	)
 }

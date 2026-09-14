@@ -237,7 +237,7 @@ admitted config, not operator-chosen strings, so the zeros above are a shape
 placeholder. Each field is described in the
 [bootstrap field reference](../aws-deployment/configuration.md#field-reference).
 
-That is all. The shipped image performs the rollout itself — there is nothing to
+That is all. The bridge performs the rollout itself — there is nothing to
 run per change beyond writing the new config. Post it to the config source and
 the cohort rolls it out.
 

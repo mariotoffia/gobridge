@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"golang.org/x/mod/module"
-	"golang.org/x/mod/semver"
 )
 
 const (
@@ -1726,98 +1725,6 @@ func resolveSmokeModule(
 		return fmt.Errorf("smoke module %s contains exclude directives", query)
 	}
 	return nil
-}
-
-func latestStableCommandVersion(
-	ctx context.Context,
-	runner commandRunner,
-	repo string,
-	manifest releaseManifest,
-	currentVersion string,
-	remote string,
-	expectedCommit string,
-) (bool, string, error) {
-	if err := validateStableVersion(currentVersion); err != nil {
-		return false, "", err
-	}
-	currentTag := tagFor(finalModulePath, currentVersion)
-	localCommit, err := tagCommitAtHead(
-		ctx,
-		runner,
-		repo,
-		currentTag,
-	)
-	if err != nil {
-		return false, "", fmt.Errorf("re-checking current final-module tag: %w", err)
-	}
-	if localCommit != expectedCommit {
-		return false, "", fmt.Errorf(
-			"current final-module tag commit %s does not match validated commit %s",
-			localCommit,
-			expectedCommit,
-		)
-	}
-	if err := verifyRemoteTagCommit(
-		ctx,
-		runner,
-		repo,
-		remote,
-		currentTag,
-		expectedCommit,
-	); err != nil {
-		return false, "", fmt.Errorf("re-checking remote final-module tag: %w", err)
-	}
-	output, err := runner.run(ctx, commandRequest{
-		Dir:     repo,
-		Name:    "git",
-		Args:    []string{"ls-remote", "--tags", remote, "refs/tags/" + finalModulePath + "/v*"},
-		Timeout: gitCommandTimeout,
-	})
-	if err != nil {
-		return false, "", fmt.Errorf("listing final-module release tags: %w", err)
-	}
-
-	highest := ""
-	currentFound := false
-	seen := make(map[string]struct{})
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 2 || !isFullCommitHash(fields[0]) {
-			return false, "", fmt.Errorf("malformed remote tag listing row %q", line)
-		}
-		if strings.HasSuffix(fields[1], "^{}") {
-			continue
-		}
-		tag, found := strings.CutPrefix(fields[1], "refs/tags/")
-		if !found {
-			continue
-		}
-		entry, version, err := manifest.moduleForTag(tag)
-		if err != nil || entry.Path != finalModulePath {
-			continue
-		}
-		if _, duplicate := seen[version]; duplicate {
-			continue
-		}
-		seen[version] = struct{}{}
-		if version == currentVersion {
-			currentFound = true
-		}
-		if highest == "" || semver.Compare(version, highest) > 0 {
-			highest = version
-		}
-	}
-	if highest == "" {
-		return false, "", errors.New("no stable cmd/gobridge release tag exists")
-	}
-	if !currentFound {
-		return false, highest, fmt.Errorf(
-			"current version %s has no stable %s tag",
-			currentVersion,
-			finalModulePath,
-		)
-	}
-	return currentVersion == highest, highest, nil
 }
 
 func pathIsInside(parent, child string) (bool, error) {

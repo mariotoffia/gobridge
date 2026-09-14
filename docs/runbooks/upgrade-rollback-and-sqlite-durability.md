@@ -34,24 +34,26 @@ image is restarted by the orchestrator rather than left wedged
 
 ### Pin images by digest
 
-Deploy by digest (`ghcr.io/mariotoffia/gobridge@sha256:...`), never by tag.
-Every stable `cmd/gobridge/vX.Y.Z` release pushes the image by digest and
-attaches that digest to the release as `gobridge-image-digest.txt` — that asset
-is the authoritative version-to-image association, because no `vX.Y.Z`
-container tag exists. The one mutable tag, `latest`, is promoted from the
-released digest only when the release is the highest stable one; it is a
-convenience for `docker pull`, and a task definition or pod spec that names it
-can change under you on the next deploy. The same rule applies to the base
-images in the `Dockerfile` (`FROM ...@sha256:...`). To confirm what `latest`
-currently resolves to before you compare it against the asset:
+Deploy by digest (`myregistry.example.com/gobridge@sha256:...`), never by tag.
+The GoBridge project publishes no image: you build and push your own — the
+repository root `Dockerfile` for the AWS profile binary,
+`deployment/kubernetes/Dockerfile` for the reference binary — so the digest that
+push prints is the authoritative version-to-image association. Record it
+alongside the GoBridge version it contains. A task definition or pod spec that
+names a tag can change under you on the next deploy. The same rule applies to
+the base images in the `Dockerfile` (`FROM ...@sha256:...`). To read back the
+digest behind a tag you pushed:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/mariotoffia/gobridge:latest \
+docker buildx imagetools inspect myregistry.example.com/gobridge:<tag> \
   --format '{{json .Manifest.Digest}}'
 ```
 
-Rolling back is redeploying the previous release's digest
-([RELEASE.md](../../RELEASE.md#image-publication)).
+Rolling back is redeploying the previous digest. On AWS, where a CDK facade
+with no `Image` set builds the image during `cdk deploy`, roll back by
+deploying the previous version of your CDK app: the facade then builds from the
+profile module version that app depends on
+([pin images by digest](../container-deployment.md#pin-images-by-digest)).
 
 ## SQLite store durability
 

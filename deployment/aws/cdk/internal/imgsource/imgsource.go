@@ -60,7 +60,7 @@ const (
 	defaultPackage = "github.com/mariotoffia/gobridge/deployment/aws/lib/cmd/gobridge-aws"
 	// These multi-platform index digests are shared with the root Dockerfile.
 	// Both were verified against their registries for amd64 and arm64.
-	defaultGoImage   = "golang:1.25-bookworm@sha256:ea341baa9bd5ba6784f6d7161ace70544349a6242d54d34a0fbfd2c4d51c9d58"
+	defaultGoImage   = "golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437"
 	defaultBaseImage = "gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b"
 
 	// Numeric prerelease identifiers cannot have leading zeroes; identifiers

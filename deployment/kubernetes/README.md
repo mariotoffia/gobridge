@@ -11,12 +11,12 @@ every integration run — image build, init container, probes, traffic, a
 ConfigMap reload, SIGTERM drain and restart — by `TestKubernetesProfile` in
 `tests/integration` (`make test-integration`).
 
-## What it is, and what the AWS image is
+## What it is, and what the AWS profile is
 
-| | Shipped AWS image | Kubernetes profile |
+| | AWS profile | Kubernetes profile |
 |---|---|---|
 | Binary | `gobridge-aws` (`deployment/aws`) | `gobridge` (`cmd/gobridge`) |
-| Image | `ghcr.io/mariotoffia/gobridge`, published **by digest** with every stable `cmd/gobridge/vX.Y.Z` release; `latest` guarded | built from source with this `Dockerfile`, pushed to **your** registry, pinned by digest |
+| Image | built by the CDK constructs during `cdk deploy` into **your** account's ECR asset repository (or from the repository root `Dockerfile`), referenced by digest | built from source with this `Dockerfile`, pushed to **your** registry, pinned by digest |
 | Transports | MQTT, AWS SQS, HTTP | MQTT |
 | Stores | memory, SQLite, DynamoDB | memory, SQLite |
 | Secrets | SSM Parameter Store (`admin_api_key_param` is mandatory) | a Secret through `GOBRIDGE_ADMIN_API_KEY` / `GOBRIDGE_MONITOR_API_KEY`; `file://` credentials from a mounted Secret |
@@ -24,7 +24,7 @@ ConfigMap reload, SIGTERM drain and restart — by `TestKubernetesProfile` in
 | HTTP API | addresses and keys from bootstrap, TLS at the ALB | explicit process flags or legacy boot-file `http:` settings; optional in-process TLS |
 | Clustering | DynamoDB HA facade | single replica per StatefulSet (no distributed lease store in this adapter set) |
 
-The AWS image cannot run here: it resolves its secrets through SSM and builds a
+The AWS profile cannot run here: it resolves its secrets through SSM and builds a
 DynamoDB client unconditionally. The Kubernetes column describes the default
 tag set, not the limit of the reference binary. Add supported families with
 `GO_BUILD_TAGS`; see [PLUGIN.md](../../PLUGIN.md#binary-composition-build-tags).
