@@ -4,8 +4,8 @@ go 1.25.0
 
 require (
 	github.com/fsnotify/fsnotify v1.10.1
-	github.com/mariotoffia/gobridge v0.0.0
-	github.com/mariotoffia/gobridge/testutil/wait v0.0.0-20260827121207-e4131f9ac111
+	github.com/mariotoffia/gobridge v0.4.1
+	github.com/mariotoffia/gobridge/testutil/wait v0.0.0-20260914091107-c3a56aed2c61
 )
 
 require (
@@ -14,5 +14,3 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/mariotoffia/gobridge => ../../../..
