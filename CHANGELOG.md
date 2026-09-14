@@ -10,6 +10,12 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-14
+
+Retires the project's container image. Nothing in the repository needed one: on
+AWS the CDK builds the bridge into your own account during `cdk deploy`, and
+every other platform builds from the supplied Dockerfiles.
+
 ### Removed — the project publishes no container image
 
 - **`ghcr.io/mariotoffia/gobridge` is retired.** The release workflow's image,
@@ -1755,7 +1761,8 @@ consumable.
   integration coverage in CI: their tests depend on LocalStack, which requires a
   licence token that is not configured. Set `LOCALSTACK_AUTH_TOKEN` to run them.
 
-[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/mariotoffia/gobridge/releases/tag/v0.4.1
 [0.4.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.4.0
 [0.3.3]: https://github.com/mariotoffia/gobridge/releases/tag/v0.3.3
 [0.3.2]: https://github.com/mariotoffia/gobridge/releases/tag/v0.3.2
