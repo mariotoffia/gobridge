@@ -12,7 +12,7 @@ the envelope* and *out of the envelope*. To follow a message from MQTT to SQS,
 read "MQTT into the envelope", then "What every route does", then "SQS out of
 the envelope".
 
-The envelope has five parts:
+The envelope has six parts:
 
 | Part | What it is |
 |---|---|
@@ -20,6 +20,7 @@ The envelope has five parts:
 | subject | An optional logical name for the event, such as `order.created`. It is not a topic or queue name. See [Subject vs. Address](transport-configuration.md#subject-vs-address). |
 | payload | The message body, as bytes. No transport changes it. |
 | headers | A map of name to value. Values keep a type: text, number, true/false, time or bytes. |
+| creation time | When the message was created. Transports that carry a send time set it; otherwise it is the receive time. |
 | expiry | An optional time after which the message is dead-lettered or dropped instead of delivered. |
 
 The full envelope definition is in
@@ -36,15 +37,26 @@ rules explain most surprises.
   example by forging a tenant). A route that receives only from another trusted
   GoBridge can keep the bridge-to-bridge headers with `trust_bridge_headers:
   true` (see [Routes and Runtime Reference](routes-and-runtime-reference.md)).
-- **Some `x-bridge.*` headers are removed even then.** They are private
-  bookkeeping and never leave the process: `x-bridge.route-id`,
-  `x-bridge.route-override`, `x-bridge.source-id`, `x-bridge.content-type`,
-  `x-bridge.generated-id` and `x-bridge.correlation-data`.
+  That setting keeps only what the receiving transport passed on. Each
+  transport already drops most `x-bridge.*` properties itself and keeps only the
+  few named in its table below.
+- **Some `x-bridge.*` headers are never sent under their own name.** They
+  are private bookkeeping: `x-bridge.route-id`, `x-bridge.route-override`,
+  `x-bridge.source-id`, `x-bridge.content-type`, `x-bridge.generated-id` and
+  `x-bridge.correlation-data`. The route removes all six even with
+  `trust_bridge_headers: true`. A sending transport may still put a value into
+  its own native field: MQTT turns `x-bridge.content-type` into Content Type and
+  `x-bridge.correlation-data` into Correlation Data.
 - **A new `x-bridge.correlation-id` is created** when none survived. With the
   default settings it is always a fresh random value. It is not the
   publisher's correlation value.
 - **`traceparent` and `tracestate` always pass through.** They do not start
   with `x-bridge.`, so W3C trace context survives every hop.
+- **Retry counts from another transport are removed.** A route keeps only the
+  retry-count header of the transport it receives from
+  (`sqs.ApproximateReceiveCount`, `asb.delivery-count` or
+  `amqp10.delivery-count`) and removes the others. Otherwise a publisher could
+  forge one and make its message look over the retry limit.
 - **Other headers pass through unchanged**, including the transport-specific
   ones such as `mqtt.topic` or `sqs.SenderId`. Whether the sending transport can
   carry each one is decided in its table below.
@@ -82,13 +94,16 @@ How headers become attributes:
   numbers, such as `amqp10.delivery-count`.
 - **Skipped on purpose.** Headers starting with `sqs.`, the private bookkeeping
   headers listed above, and a header named `Subject`.
-- **Invalid names.** SQS accepts letters, digits, `_`, `-` and `.`. A name with
-  any other character, starting with `AWS.` or `Amazon.`, or with a leading,
+- **Invalid names.** SQS accepts names of up to 256 characters made of
+  letters, digits, `_`, `-` and `.`. A longer name, a name with any other
+  character, a name starting with `AWS.` or `Amazon.`, or a name with a leading,
   trailing or doubled `.` is dropped without being counted.
 - **FIFO queues.** `x-bridge.ordering-key` and `x-bridge.dedup-id` become the
-  message group ID and deduplication ID instead of attributes. The route removes
-  both on arrival by default, so the sender's configured group ID and its own
-  hash are normally used.
+  message group ID and deduplication ID instead of attributes. An SQS FIFO
+  receiver fills them from the incoming message's own group and deduplication
+  IDs, and AMQP 1.0 from the application properties of those names. The route
+  removes both on arrival unless `trust_bridge_headers: true`, so by default the
+  sender's configured group ID and its own hash are used.
 
 SQS allows ten attributes per message, and the `Subject` attribute counts as
 one of them. When more headers qualify, the sender keeps them in this order and
@@ -122,11 +137,17 @@ smaller. Dropped attributes are counted on `SQSDroppedAttributes`. See
 | user property `gobridge.subject` | subject | Used up, so it never becomes a header. Ignored when unsafe or over 256 bytes. An ordinary publisher does not send it, so the subject is usually empty. |
 | Content Type | header `x-bridge.content-type` | Removed by the route on arrival, so it never reaches a sending transport. |
 | Response Topic | header `mqtt.response-topic` | |
-| Correlation Data | header `x-bridge.correlation-id` (text) or `x-bridge.correlation-data` (binary) | Both are removed by the route on arrival. The value survives only as the identity. |
+| Correlation Data | header `x-bridge.correlation-id` when it is text, else `x-bridge.correlation-data` holding the bytes as unpadded URL-safe base64 text | The route removes both on arrival unless `trust_bridge_headers: true`, and always removes `x-bridge.correlation-data`. By default the value survives only as the identity. |
 | Message Expiry Interval | expiry | Receive time plus the interval. |
-| other user properties | headers of the same name | Dropped: names starting with `x-bridge.`, the names `mqtt.topic`, `mqtt.qos` and `mqtt.retained`, and keys or values over 256 bytes, not valid UTF-8, or containing control characters. At most 128 properties per publish. When a name repeats, the last value wins. |
+| other user properties | headers of the same name | Dropped: names starting with `x-bridge.`, the names `mqtt.topic`, `mqtt.qos` and `mqtt.retained`, and keys or values over 256 bytes, not valid UTF-8, or containing control characters. When a name repeats, the last value wins. |
 
-Oversized and unsafe properties are counted on `MQTTIngressHeaderDropped`.
+A publish with more than 128 user properties is not converted at all. The whole
+publish is dropped as poison and counted on `MQTTIngressPoisonDropped`. The same
+happens when the payload is over `max_payload_bytes`.
+
+Other user properties that are too long or unsafe are counted on
+`MQTTIngressHeaderDropped`. A `mqtt.message-id` or `gobridge.subject` value that
+is too long or unsafe is ignored without being counted.
 
 ### MQTT out of the envelope
 
@@ -169,7 +190,8 @@ options.
 | `amqp10.message-id` header, else identity | `message-id` property | A producer can therefore choose the AMQP `message-id`. |
 | payload | body | One data section. |
 | subject | `subject` property | The `amqp10.subject` header is never used for this. |
-| `amqp10.correlation-id`, `amqp10.content-type`, `amqp10.content-encoding`, `amqp10.to`, `amqp10.reply-to`, `amqp10.group-id`, `amqp10.group-sequence`, `amqp10.reply-to-group-id` headers | properties of the same name | Text values only, except `group-sequence`, which takes a whole number. |
+| `amqp10.correlation-id` header | `correlation-id` property | Any value AMQP accepts as an ID, such as text or bytes, is passed as it is. |
+| `amqp10.content-type`, `amqp10.content-encoding`, `amqp10.to`, `amqp10.reply-to`, `amqp10.group-id`, `amqp10.group-sequence`, `amqp10.reply-to-group-id` headers | properties of the same name | Text values only, except `group-sequence`, which takes a whole number. |
 | `amqp10.creation-time` header (a time), else creation time | `creation-time` property | A message received over AMQP keeps its original creation time. |
 | expiry | `absolute-expiry-time` property | |
 | sender `durable` | `durable` header | `true` unless the sender sets `durable: false`. |
@@ -177,7 +199,9 @@ options.
 | other headers | application properties of the same name | Headers starting with `amqp10.` and the private bookkeeping headers are not sent. |
 
 The broker's answer decides what happens next. Accepted settles the message.
-Released or Modified is a temporary failure and is retried. Rejected is a
+Released or Modified is a temporary failure and is retried. Rejected depends on
+the error condition the broker attaches: `amqp:resource-limit-exceeded` is
+treated as throttling and retried, while a rejection with no condition is a
 permanent failure. See [AMQP 1.0](transports/amqp10.md) for the options.
 
 ## Crossing transports: what to expect
@@ -187,10 +211,12 @@ notice first.
 
 **SQS to MQTT or AMQP**
 
-- **SQS details reach the broker.** Every `sqs.*` header is passed on. MQTT
-  sends the text ones as user properties, including `sqs.SenderId`, which is the
-  AWS identity that sent the SQS message. AMQP sends all of them as application
-  properties.
+- **SQS details reach the broker.** The route keeps the `sqs.*` headers, and
+  each sending transport sends what it can carry. MQTT sends the text ones as
+  user properties, including `sqs.SenderId`, which is the AWS identity that sent
+  the SQS message. `sqs.SentTimestamp` (a time) and
+  `sqs.ApproximateReceiveCount` (a number) are not text, so MQTT drops them.
+  AMQP sends all of them as application properties.
 - **A `Subject` attribute is sent twice.** Once as the subject, and once as a
   user property or application property named `Subject`.
 - **Correlation is not carried over.** The broker sees a new random
@@ -207,8 +233,11 @@ notice first.
   When the publisher sends no ID, deduplicate on a key inside the payload.
 - **MQTT has no `Subject` attribute** unless the publisher sent
   `gobridge.subject`. The topic is in `mqtt.topic`.
-- **The publisher's Correlation Data and Content Type do not arrive.** Both are
-  removed on arrival. Ask the publisher to send them as ordinary user properties
-  if the consumer needs them.
+- **MQTT Correlation Data and Content Type do not arrive** with the default
+  settings, because MQTT stores them in `x-bridge.*` headers that the route
+  removes. Ask the publisher to send them as ordinary user properties if the
+  consumer needs them.
+- **AMQP 1.0 `correlation-id` and `content-type` do arrive**, as the attributes
+  `amqp10.correlation-id` and `amqp10.content-type`.
 - **Some headers do not fit.** Ten attributes is a small budget. Headers late in
   the order above are dropped first.
