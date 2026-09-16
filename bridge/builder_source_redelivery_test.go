@@ -30,15 +30,6 @@ type redeliveryVerdictConfig struct {
 	refuse     string
 }
 
-type bestEffortVerdictConfig struct{ redeliveryVerdictConfig }
-
-func (c *bestEffortVerdictConfig) BestEffortDirectHoldTopics(
-	session ports.SessionSpec, subscriptions []connectivity.SubscriptionPlan,
-) ([]string, string) {
-	c.sawSession = session.ID
-	return []string{subscriptions[0].Topic}, ""
-}
-
 func TestBuilder_BestEffortDoesNotClaimRedelivery(t *testing.T) {
 	verdict := &bestEffortVerdictConfig{redeliveryVerdictConfig: redeliveryVerdictConfig{refuse: "best effort"}}
 	cfg := directHoldConfigWithVerdict(&verdict.redeliveryVerdictConfig)

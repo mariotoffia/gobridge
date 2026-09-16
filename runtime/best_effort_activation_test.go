@@ -77,6 +77,28 @@ func TestBestEffortActivation_OncePerSuccessfulStart(t *testing.T) {
 	}
 }
 
+func TestBestEffortActivation_OtherModesAreSilent(t *testing.T) {
+	for _, outbox := range []bool{false, true} {
+		t.Run(map[bool]string{false: "strong source", true: "shared outbox"}[outbox], func(t *testing.T) {
+			logs := &bestEffortLogBuffer{}
+			rt := runtime.New(runtime.WithLogger(slog.New(slog.NewJSONHandler(logs, nil))),
+				runtime.WithOutboxStore(NewFakeOutboxStore()), runtime.WithLeaseStore(NewFakeLeaseStore()))
+			cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+			if outbox {
+				cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
+				cfg.SourceBestEffortTopics = []string{"readings/#"}
+				cfg.Bindings = []routing.DestinationBinding{{ID: "out", SessionID: sessCfg.SessionID}}
+				sessCfg.Exclusive = true
+			}
+			require.NoError(t, rt.AddRoute(cfg, rx, tx, sess, sessCfg))
+			t.Cleanup(func() { assert.NoError(t, rt.Stop(context.Background())) })
+			require.NoError(t, rt.Start(t.Context()))
+			require.NoError(t, rt.Stop(context.Background()))
+			assert.Empty(t, logs.lines())
+		})
+	}
+}
+
 func TestBestEffortActivation_FailedStartIsSilent(t *testing.T) {
 	logs := &bestEffortLogBuffer{}
 	rt := runtime.New(runtime.WithLogger(slog.New(slog.NewJSONHandler(logs, nil))))
