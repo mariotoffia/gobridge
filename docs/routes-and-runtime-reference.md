@@ -24,7 +24,7 @@ Routes define the message flow from a receiver through processors to bindings.
 ### Delivery modes
 
 `direct_hold` settles the source only once the destination has accepted, so its
-precondition is that the source **redelivers a message it was never told to
+normal recovery precondition is that the source **redelivers a message it was never told to
 settle** -- that is what makes the crash window between the send and the settle
 recoverable. Sources that provide it: SQS, Azure Service Bus in PeekLock, AMQP
 0-9-1, AMQP 1.0, and MQTT on a route whose session survives the process and whose
@@ -33,6 +33,14 @@ subscriptions are QoS 1 or 2 (see
 admitted on the other argument -- the caller is still holding the request, so
 nothing has been settled and the retry is theirs. A route the runtime turns down
 is named at config load with the precondition it failed.
+
+MQTT also admits explicitly configured QoS 0 subscriptions as **best effort**.
+Mixed QoS 0/1 or 0/2 still needs a resuming effective session for the stronger
+subscriptions; an all-QoS-0 receiver may use an otherwise-valid ephemeral
+session. This typed adapter admission is not source-redelivery capability or a
+general opt-out. A DLQ store or explicit `allow_retry_drop: true` with compatible
+terminal drop policies is still required. See
+[MQTT admission](transports/mqtt.md#source-redelivery-and-what-it-admits).
 
 An MQTT route that meets it needs no outbox, no lease and no outbox partition; it
 holds the broker delivery instead of copying it into a store. Reaching for
@@ -135,13 +143,13 @@ by:
 |---|---|
 | The outbox partition is at capacity, or its depth query failed | The message queued behind a slow drainer. It was never attempted, so it must not arrive at the cap already exhausted and be poisoned on its first real failure |
 | The outbox write exceeded the store-operation deadline | The store was slow. The same message is written the moment it recovers |
-| The DLQ store refused the record | The DLQ backend is unhealthy. The message is redelivered so the evidence can be written, but the message did not fail again |
+| The DLQ store refused the record | The DLQ backend is unhealthy. A retry-capable source redelivers so the evidence can be written; an unsupported retry uses the counted terminal fallback |
 | The bridge cancelled the delivery -- shutdown, a reconfiguration swap, a route restart, including a panic that happened while it was being torn down | The bridge stopped its own work. Nothing was learned about the message |
 
 A cancelled delivery is left **unsettled**: it is never acknowledged, dropped or
-written to the DLQ, so the source redelivers it after the restart. This holds
-even under `on_permanent_failure: drop`, and it is the reason a rolling restart
-does not discard in-flight messages.
+written to the DLQ. A source capable of redelivery can recover it after restart.
+This holds even under `on_permanent_failure: drop`; cancellation is not evidence
+of a bad message. QoS 0 still has an unavoidable loss window.
 
 ### `routes[].session` -- Route Session Management
 

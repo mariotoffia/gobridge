@@ -43,6 +43,25 @@ What can be done about it is decided by whether the broker session RESUMES:
 
 All three count on `MQTTReceiverEmitRejected`, separated by its `outcome` tag.
 
+**An accepted delivery that later fails is different from an emit rejection.**
+The runner accepts asynchronously, so a later send or DLQ failure does not reach
+the receiver's emit-error counter. For actual QoS 0, Retry returns
+`ErrNotSupported`. The runner uses the existing DLQ fallback or an explicitly
+permitted no-DLQ drop (`MessagesDropped{reason=retry_unsupported}`).
+If bounded DLQ persistence also fails, it records exactly one terminal loss as
+`MessagesDropped{reason=retry_unsupported_dlq_failed}` and surfaces the error.
+`DLQWriteFailures` still records failed persistence; no `DLQEntries` success is
+invented. The delivery releases its route slot and does not request a session
+recycle. Generated IDs may first enter the existing `unstable_identity` terminal
+path; a failed DLQ there reaches the same unsupported-retry fallback.
+
+Recovery is decided by the actual delivery. A publisher's QoS 0 packet through
+a QoS 1 subscription still cannot recover. Conversely, supported QoS 1/2 Retry
+on a resuming session leaves the packet unsettled after failed DLQ persistence.
+Cancellation abandons the delivery without terminal success/drop accounting;
+only a source capable of redelivery can recover that abandoned input.
+A process killed abruptly cannot emit a counter for its in-flight crash gap.
+
 Recovery applies these safety bounds without introducing a recovery-specific
 config knob:
 

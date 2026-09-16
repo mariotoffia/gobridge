@@ -3,6 +3,8 @@ package docsexamples_test
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,6 +13,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
 	cfgparser "github.com/mariotoffia/gobridge/config/parser"
+	"github.com/mariotoffia/gobridge/runtime"
 )
 
 const mqttBestEffortBlueprint = `
@@ -80,6 +83,7 @@ func TestMQTTBestEffortBuilder_EffectiveSessions(t *testing.T) {
 							if rt != nil {
 								t.Cleanup(func() { assert.NoError(t, rt.Stop(context.Background())) })
 							}
+
 							switch {
 							case mode == "exclusive":
 								require.Error(t, err)
@@ -98,6 +102,104 @@ func TestMQTTBestEffortBuilder_EffectiveSessions(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestMQTTBestEffortScenario_ActualExamples(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "docs/scenarios/24-mqtt-mixed-qos-to-sqs.md"))
+	require.NoError(t, err)
+	var accepted, rejected int
+	for _, block := range extractYAMLBlocks(string(data)) {
+		if !isCompleteBridgeConfig(block.body) {
+			continue
+		}
+		t.Run(block.heading, func(t *testing.T) {
+			cfg, err := cfgparser.Parse(strings.NewReader(block.body), cfgparser.FormatYAML, newFullRegistry(t))
+			require.NoError(t, err)
+			redirectFileStores(t, cfg, realTempDir(t))
+			rt, err := newExampleBuilder(t, cfg).Build(t.Context())
+			if block.skip {
+				rejected++
+				require.Error(t, err)
+				var validation *runtime.ValidationError
+				require.ErrorAs(t, err, &validation)
+				assert.Contains(t, err.Error(), "ingress session")
+				assert.Contains(t, err.Error(), "clean_start")
+				assert.NotContains(t, err.Error(), "is QoS 0")
+				assert.Contains(t, string(data), err.Error(), "the scenario must quote the actual rejection")
+				assert.Nil(t, rt)
+				return
+			}
+			accepted++
+			require.NoError(t, err)
+			t.Cleanup(func() { assert.NoError(t, rt.Stop(context.Background())) })
+		})
+	}
+	assert.Equal(t, 2, accepted)
+	assert.Equal(t, 1, rejected)
+}
+
+func TestMQTTBestEffortBuilder_InvalidConfiguration(t *testing.T) {
+	for _, tc := range []struct{ name, from, to string }{
+		{"missing session", "session_id: ingress", "session_id: absent"},
+		{"missing config", "client_id: mixed-qos", "client_id: ''"},
+		{"empty subscriptions", "topics:\n      - {topic: \"readings/#\", qos: 0}\n      - {topic: \"alarms/#\", qos: 1}", "topics: []"},
+		{"empty filter", `"readings/#"`, `""`},
+		{"invalid filter", `"readings/#"`, `"readings/#/bad"`},
+		{"negative QoS", "qos: 0", "qos: -1"},
+		{"QoS above maximum", "qos: 0", "qos: 3"},
+		{"QoS wraps to zero", "qos: 0", "qos: 4"},
+		{"unknown mode", "session_mode: persistent", "session_mode: invalid"},
+		{"fanout", "delivery_mode: direct_hold", "delivery_mode: direct_hold\n    dispatch_mode: fan_out"},
+		{"ownership", "allow_unfenced: true", "allow_unfenced: false"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := strings.ReplaceAll(mqttBestEffortBlueprint, tc.from, tc.to)
+			require.NotEqual(t, mqttBestEffortBlueprint, text)
+			cfg, err := cfgparser.Parse(strings.NewReader(text), cfgparser.FormatYAML, newFullRegistry(t))
+			if err != nil {
+				return
+			}
+			redirectFileStores(t, cfg, realTempDir(t))
+			rt, err := newExampleBuilder(t, cfg).Build(t.Context())
+			if rt != nil {
+				t.Cleanup(func() { assert.NoError(t, rt.Stop(context.Background())) })
+			}
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestMQTTBestEffortBuilder_DurableStrongNeedsNoRetryDrop(t *testing.T) {
+	for _, qos := range []int{1, 2} {
+		for _, expiry := range []int{0, 600} {
+			t.Run(fmt.Sprintf("qos=%d/expiry=%d", qos, expiry), func(t *testing.T) {
+				text := strings.NewReplacer(
+					"qos: 0", fmt.Sprintf("qos: %d", qos),
+					"qos: 1", fmt.Sprintf("qos: %d", qos),
+					"session_expiry_interval: 600", fmt.Sprintf("session_expiry_interval: %d", expiry),
+				).Replace(mqttBestEffortBlueprint)
+				text += "      on_permanent_failure: drop\n      on_expired: drop\n"
+				cfg, err := cfgparser.Parse(strings.NewReader(text), cfgparser.FormatYAML, newFullRegistry(t))
+				require.NoError(t, err)
+				cfg.Stores.DLQ = nil
+				redirectFileStores(t, cfg, realTempDir(t))
+				rt, err := newExampleBuilder(t, cfg).Build(t.Context())
+				require.NoError(t, err)
+				t.Cleanup(func() { assert.NoError(t, rt.Stop(context.Background())) })
+			})
+		}
+	}
+}
+
+func TestMQTTBestEffortBuilder_DurableHistoryStillRequired(t *testing.T) {
+	cfg, err := cfgparser.Parse(strings.NewReader(mqttBestEffortBlueprint), cfgparser.FormatYAML, newFullRegistry(t))
+	require.NoError(t, err)
+	cfg.Stores.ManagedSubscriptions = nil
+	redirectFileStores(t, cfg, realTempDir(t))
+	rt, err := newExampleBuilder(t, cfg).Build(t.Context())
+	require.Error(t, err)
+	assert.Nil(t, rt)
+	assert.Contains(t, err.Error(), "managed_subscriptions")
 }
 
 func TestMQTTBestEffortBuilder_FailureSinks(t *testing.T) {
