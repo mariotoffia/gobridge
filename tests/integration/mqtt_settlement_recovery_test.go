@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +22,14 @@ import (
 )
 
 func TestMQTTSettlementRecovery(t *testing.T) {
+	for _, qos := range []int{1, 2} {
+		t.Run(fmt.Sprintf("qos=%d", qos), func(t *testing.T) {
+			testMQTTSettlementRecovery(t, qos)
+		})
+	}
+}
+
+func testMQTTSettlementRecovery(t *testing.T, qos int) {
 	brokerURL := mqttlocal.BrokerURL(t)
 	topic := "prod-ready/settlement-recovery/" + mqttlocal.UniqueClientID("topic")
 	clientID := mqttlocal.UniqueClientID("settlement-recovery-bridge")
@@ -74,7 +83,7 @@ func TestMQTTSettlementRecovery(t *testing.T) {
 	}
 	sessionCfg := runtimesession.DefaultConfig(clientID, false)
 	sessionCfg.Plan = connectivity.SessionPlan{
-		Subscriptions:       []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}},
+		Subscriptions:       []connectivity.SubscriptionPlan{{Topic: topic, QoS: qos}},
 		ExpectedReceiverIDs: []string{receiverID},
 	}
 	if err := rt.AddRoute(route, receiver, sender, sess, &sessionCfg); err != nil {
@@ -95,7 +104,7 @@ func TestMQTTSettlementRecovery(t *testing.T) {
 	wait.RequireReceive(t, receiver.Started(), 5*time.Second)
 	wait.RequireReceive(t, metrics.reconciled, 5*time.Second)
 
-	publishRecoveryMessage(t, brokerURL, topic, originalID)
+	publishRecoveryMessage(t, brokerURL, topic, originalID, qos)
 	wait.RequireReceive(t, dlq.attempted, 5*time.Second)
 	wait.RequireReceive(t, receiver.retryReturned, 5*time.Second)
 	if id := wait.RequireReceive(t, receiver.received, 5*time.Second); id != originalID {
@@ -117,7 +126,7 @@ func TestMQTTSettlementRecovery(t *testing.T) {
 	requireRecoveryID(t, recoveryCtx, "original redelivery sender success", sender.succeeded, originalID)
 	requireRecoveryID(t, recoveryCtx, "original redelivery ack", receiver.acked, originalID)
 
-	publishRecoveryMessage(t, brokerURL, topic, laterID)
+	publishRecoveryMessage(t, brokerURL, topic, laterID, qos)
 	requireRecoveryID(t, recoveryCtx, "later publish receive", receiver.received, laterID)
 	requireRecoveryID(t, recoveryCtx, "later publish sender success", sender.succeeded, laterID)
 	requireRecoveryID(t, recoveryCtx, "later publish ack", receiver.acked, laterID)
@@ -170,11 +179,11 @@ func recoveryRemaining(t *testing.T, ctx context.Context) time.Duration {
 	return remaining
 }
 
-func publishRecoveryMessage(t *testing.T, brokerURL, topic, id string) {
+func publishRecoveryMessage(t *testing.T, brokerURL, topic, id string, qos int) {
 	t.Helper()
 	publishRawMQTT(t, brokerURL, mqttlocal.UniqueClientID("settlement-recovery-publisher"), &pahov5.Publish{
 		Topic:   topic,
-		QoS:     1,
+		QoS:     byte(qos),
 		Payload: []byte(id),
 		Properties: &pahov5.PublishProperties{User: pahov5.UserProperties{{
 			Key:   paho.HeaderMessageID,
