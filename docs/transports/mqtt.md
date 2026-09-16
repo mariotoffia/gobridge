@@ -1,6 +1,7 @@
 # MQTT (Paho)
 
 > Part of the [Transport Configuration Reference](../transport-configuration.md).
+> For the attributes, properties and identity a message carries on each side, see [Message Mapping](../message-mapping.md).
 
 **Transport name:** `mqtt`
 **Factory:** `paho.NewFactory(logger)`
