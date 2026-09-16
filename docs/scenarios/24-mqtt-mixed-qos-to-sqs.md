@@ -275,7 +275,7 @@ store and an exclusive drain-session partition, not just a `delivery_mode`
 change. It adds a store write per message and does not recover a crash before
 Persist or traffic missed while an ephemeral subscriber was disconnected.
 
-### Part B: Ephemeral readings-only is accepted
+### Part C: Ephemeral readings-only is accepted
 
 QoS 0 never needed a durable broker session. Keep the failure sink:
 
