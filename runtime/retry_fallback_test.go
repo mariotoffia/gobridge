@@ -35,6 +35,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -149,51 +153,101 @@ func TestDirectHold_RetryUnsupported_FallsToDLQ(t *testing.T) {
 	}
 }
 
-// TestDirectHold_RetryUnsupported_DLQAlsoFails_ReturnsError validates that
-// when both del.Retry (ErrNotSupported) and the DLQ fallback write fail,
-// the delivery is neither acked nor successfully retried.
-//
-// Data flow:
-// ───────────────────────────────────────────────────────────────
-//
-//	Sender → ErrUnavailable → del.Retry → ErrNotSupported
-//	      → DLQ.Route → ✗ (WriteErr)
-//	      → error returned
-//
-// ───────────────────────────────────────────────────────────────
-//
-// Assertions:
-//   - Delivery is NOT acked
-//   - DLQ has no entries
-func TestDirectHold_RetryUnsupported_DLQAlsoFails_ReturnsError(t *testing.T) {
-	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
+func TestDirectHold_RetryUnsupported_DLQAlsoFails_CountsTerminalLoss(t *testing.T) {
+	rec := &ports.RecordingExporter{}
+	hook := &recordingHook{}
+	store := NewFakeDLQStore()
+	storeFailure := errors.New("DLQ unavailable")
+	store.WriteErr = storeFailure
+	clk := clocktest.NewAt(time.Unix(0, 0))
+	_, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
+		cfg.Policy.MaxInFlight = 1
+		cfg.Clock = clk
+		cfg.Metrics = rec
+		cfg.Hook = hook
+		cfg.DLQ = dlq.NewFromConfig(dlq.Config{
+			Store: store, Clock: clk, Metrics: rec, WriteMaxAttempts: 1,
+		})
 	})
 	sender.SendErr = shared.ErrUnavailable
-	dlqStore.WriteErr = errors.New("store down")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go func() { _ = runner.Run(ctx) }()
-
-	del := NewFakeDelivery(func() *messaging.Envelope {
-		e := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-both-fail", Payload: []byte("data")})
-		_ = e.SetExpiry(time.Now().Add(time.Hour))
-		return e
-	}())
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{
+		ID: "failed-delivery", Payload: []byte("payload"),
+	}))
 	del.RetryFnErr = shared.ErrNotSupported
 
-	_ = receiver.Emit(ctx, del)
+	err := runner.HandleDelivery(t.Context(), del)
 
-	waitFor(t, 2*time.Second, "delivery retried", del.IsRetried)
-	time.Sleep(50 * time.Millisecond) // NEGATIVE: verify delivery is not acked when both retry and DLQ fail
+	require.ErrorIs(t, err, storeFailure)
+	assert.True(t, del.IsAcked())
+	assert.Zero(t, store.Count())
+	assert.Zero(t, runner.InFlight())
+	assert.Empty(t, rec.FindEntries(shared.MetricDLQEntries))
+	drops := rec.FindEntries(shared.MetricMessagesDropped)
+	require.Len(t, drops, 1)
+	assert.EqualValues(t, 1, drops[0].IValue)
+	assert.Contains(t, drops[0].Tags, shared.Tag{Key: shared.TagKeyReason, Value: "retry_unsupported_dlq_failed"})
+	require.Len(t, hook.Settled(), 1)
+	assert.ErrorIs(t, hook.Settled()[0].Err, storeFailure)
+	assert.True(t, hook.Settled()[0].Terminal)
 
-	if del.IsAcked() {
-		t.Fatal("delivery should NOT be acked when both retry and DLQ fail")
-	}
-	if dlqStore.Count() != 0 {
-		t.Fatalf("expected 0 DLQ entries (write failed), got %d", dlqStore.Count())
+	sender.SendErr = nil
+	next := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{ID: "following-delivery"}))
+	require.NoError(t, runner.HandleDelivery(t.Context(), next))
+	assert.True(t, next.IsAcked())
+	assert.Equal(t, 1, sender.SentCount())
+}
+
+func TestRetryUnsupported_FailedDLQAcrossDispatchBranches(t *testing.T) {
+	for _, phase := range []string{"processor", "resolver", "expired", "filtered", "replay cap", "outbox persist"} {
+		t.Run(phase, func(t *testing.T) {
+			clk := clocktest.NewAt(time.Unix(1000, 0))
+			rec := &ports.RecordingExporter{}
+			hook := &recordingHook{}
+			failure := errors.New("DLQ unavailable")
+			store := NewFakeDLQStore()
+			store.WriteErr = failure
+			_, sender, _, outbox, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
+				cfg.Clock, cfg.Metrics, cfg.Hook = clk, rec, hook
+				cfg.DLQ = dlq.NewFromConfig(dlq.Config{Store: store, Clock: clk, Metrics: rec, WriteMaxAttempts: 1})
+				cfg.Policy.MaxReplayAttempts = 3
+				switch phase {
+				case "processor":
+					cfg.Processors = []ports.Processor{&FakeProcessor{NameVal: "reject", ProcessErr: shared.ErrInvalidPayload}}
+				case "resolver":
+					cfg.Resolver = &FakeResolver{ResolveErr: shared.ErrInvalidTopic}
+				case "filtered":
+					cfg.Policy.OnFiltered = routing.FilteredDLQ
+					cfg.Processors = []ports.Processor{&FakeProcessor{NameVal: "filter", ProcessErr: shared.ErrMessageFiltered}}
+				case "outbox persist":
+					cfg.Policy.DeliveryMode = routing.DeliverySharedOutbox
+					cfg.Bindings = []routing.DestinationBinding{{ID: "b", SessionID: "drain"}}
+					cfg.Resolver = &FakeResolver{Plans: []routing.DispatchPlan{{BindingID: "b", Address: "queue"}}}
+				}
+			})
+			env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "failed", CreatedAt: time.Unix(1, 0)})
+			if phase == "expired" {
+				require.NoError(t, env.SetExpiry(time.Unix(999, 0)))
+			}
+			if phase == "replay cap" {
+				env.SetHeader("sqs.ApproximateReceiveCount", 3)
+				sender.SendErr = shared.ErrUnavailable
+			}
+			outbox.PersistErr = shared.ErrUnavailable
+			delivery := NewFakeDelivery(env)
+			delivery.RetryFnErr = shared.ErrNotSupported
+			require.ErrorIs(t, runner.HandleDelivery(t.Context(), delivery), failure)
+			assert.True(t, delivery.IsAcked())
+			require.Len(t, hook.Settled(), 1)
+			assert.ErrorIs(t, hook.Settled()[0].Err, failure)
+			require.Len(t, rec.FindEntries(shared.MetricMessagesDropped), 1)
+			assert.Contains(t, rec.FindEntries(shared.MetricMessagesDropped)[0].Tags,
+				shared.Tag{Key: shared.TagKeyReason, Value: "retry_unsupported_dlq_failed"})
+			assert.Empty(t, rec.FindEntries(shared.MetricDLQEntries))
+			assert.Empty(t, rec.FindEntries(shared.MetricMessagesExpired))
+			assert.Empty(t, rec.FindEntries(shared.MetricMessagesFiltered))
+			assert.Zero(t, runner.InFlight())
+		})
 	}
 }
 
