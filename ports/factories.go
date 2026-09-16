@@ -180,11 +180,8 @@ type CapabilityConfig interface {
 // unacknowledged delivery) and on the QoS of the subscriptions the route runs
 // with (at-most-once delivery is never repeated). Both are supplied here.
 //
-// It is what admits an MQTT route to direct_hold. That mode settles the source
-// only after the destination has accepted, so its precondition is "the source can
-// be left unsettled and will redeliver" — which a QoS 1 subscription on a session
-// the broker keeps does provide, and which nothing about visibility windows can
-// express.
+// Redelivery supports recoverable direct_hold and exempts the source from the
+// unsupported-retry fallback guard. Best-effort admission is a separate fact.
 type SourceRedeliveryConfig interface {
 	// SourceRedeliversUnsettled reports whether a delivery this receiver hands the
 	// bridge is redelivered when the process dies before settling it. The string is
@@ -192,6 +189,17 @@ type SourceRedeliveryConfig interface {
 	// is false: it has to name WHICH precondition failed, because the two have
 	// different fixes.
 	SourceRedeliversUnsettled(session SessionSpec, subscriptions []connectivity.SubscriptionPlan) (bool, string)
+}
+
+// BestEffortDirectHoldConfig identifies configured best-effort subscriptions
+// that may use direct_hold without claiming source redelivery. An empty list
+// grants no exception. A refusal explains a failed admission precondition.
+// This does not waive retry-fallback, ownership, or terminal-policy validation.
+type BestEffortDirectHoldConfig interface {
+	BestEffortDirectHoldTopics(
+		session SessionSpec,
+		subscriptions []connectivity.SubscriptionPlan,
+	) (topics []string, refusal string)
 }
 
 // IngressMemoryConfig is an optional typed PluginConfig capability for a
