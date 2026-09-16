@@ -32,7 +32,7 @@ MQTT quality of service (QoS) describes delivery on the MQTT hop:
 
 - **QoS 0:** send once, with no acknowledgement or broker redelivery.
 - **QoS 1:** keep the message until acknowledged; duplicates are possible.
-- **QoS 2:** avoid duplicates on that MQTT connection, not end-to-end.
+- **QoS 2:** deliver exactly once on the MQTT hop; this is not end-to-end delivery.
 
 `direct_hold` waits for the destination to accept a message before acknowledging
 it to the source. **QoS 0 subscriptions are accepted**, alone or mixed with
