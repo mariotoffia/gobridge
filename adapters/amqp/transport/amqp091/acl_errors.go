@@ -61,8 +61,10 @@ func mapAMQPCode(e *amqp.Error) *shared.BridgeError {
 		return shared.ErrNotFound.Wrap(e)
 	case 405, 530: // not-allowed
 		return shared.ErrForbidden.Wrap(e)
-	case 406, 540: // not-implemented
-		return shared.ErrNotSupported.Wrap(e)
+	case 406, 540: // precondition-failed, not-implemented
+		// A failed protocol operation is not an unsupported local primitive:
+		// settlement may already be latched, so terminal fallback is unsafe.
+		return shared.ErrProtocolError.Wrap(e)
 	case 504: // channel-error
 		return shared.ErrUnavailable.Wrap(e)
 	case 541: // internal-error

@@ -21,6 +21,9 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 - Count terminal loss when actual delivery retry is unsupported and bounded
   DLQ persistence also fails, preserving the persistence error and releasing
   route capacity. Do not recycle MQTT for QoS 0 or drop recoverable QoS 1/2.
+- Map broker AMQP `not-implemented` and AMQP 0-9-1 precondition failures to
+  `PROTOCOL_ERROR` (still permanent), not unsupported local retry. A failed
+  protocol settlement remains recoverable rather than falsely counted as lost.
 - Add [scenario 24](docs/scenarios/24-mqtt-mixed-qos-to-sqs.md) with runnable
   mixed/ephemeral configurations, managed-subscription initialization, and
   explicit crash-loss boundaries.

@@ -29,14 +29,14 @@ func TestMapError_AMQPCodes(t *testing.T) {
 		{"access-refused", 403, shared.ErrNotAuthorized},
 		{"not-found", 404, shared.ErrNotFound},
 		{"not-allowed", 405, shared.ErrForbidden},
-		{"not-implemented-406", 406, shared.ErrNotSupported},
+		{"precondition-failed", 406, shared.ErrProtocolError},
 		{"frame-error", 501, shared.ErrProtocolError},
 		{"syntax-error", 502, shared.ErrProtocolError},
 		{"command-invalid", 503, shared.ErrProtocolError},
 		{"channel-error", 504, shared.ErrUnavailable},
 		{"unexpected-frame", 505, shared.ErrProtocolError},
 		{"not-allowed-530", 530, shared.ErrForbidden},
-		{"not-implemented-540", 540, shared.ErrNotSupported},
+		{"not-implemented", 540, shared.ErrProtocolError},
 		{"internal-error", 541, shared.ErrUnavailable},
 		{"unknown-code", 999, shared.ErrUnavailable},
 	}
@@ -129,7 +129,7 @@ func TestMapError_IsRecoverable(t *testing.T) {
 		{"not_found", MapError(&amqp.Error{Code: 404}), false},
 		{"protocol_error", MapError(&amqp.Error{Code: 501}), false},
 		{"forbidden", MapError(&amqp.Error{Code: 405}), false},
-		{"not_supported", MapError(&amqp.Error{Code: 406}), false},
+		{"precondition_failed", MapError(&amqp.Error{Code: 406}), false},
 	}
 
 	for _, tt := range tests {

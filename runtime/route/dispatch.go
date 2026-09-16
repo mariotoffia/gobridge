@@ -778,6 +778,8 @@ func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, e
 // retryOrFallbackUncharged attempts del.Retry; if the source transport does not
 // support retry (ErrNotSupported), it falls back to DLQ routing with
 // category "retry_unsupported" so the message is not silently lost.
+// Per ports.Delivery, ErrNotSupported means no source-redelivery primitive,
+// never a failed protocol settlement whose message can still be redelivered.
 //
 // It does NOT spend the message's replay budget. Use it for a retry the message
 // did not cause: a full outbox partition, an outbox depth query that failed, or

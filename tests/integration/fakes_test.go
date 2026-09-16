@@ -4,6 +4,9 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	amqp10sdk "github.com/Azure/go-amqp"
 
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
@@ -53,3 +56,61 @@ func (h *bestEffortHook) settled() []ports.DeliveryOutcome {
 var _ ports.Sender = bestEffortSender(nil)
 var _ ports.DLQStore = (*bestEffortDLQ)(nil)
 var _ ports.DeliveryHook = (*bestEffortHook)(nil)
+
+type failedAMQP10Settler struct {
+	failure  error
+	accepts  atomic.Int32
+	releases atomic.Int32
+	modifies atomic.Int32
+}
+
+func (s *failedAMQP10Settler) AcceptMessage(context.Context, *amqp10sdk.Message) error {
+	s.accepts.Add(1)
+	return s.failure
+}
+
+func (s *failedAMQP10Settler) ReleaseMessage(context.Context, *amqp10sdk.Message) error {
+	s.releases.Add(1)
+	return s.failure
+}
+
+func (s *failedAMQP10Settler) ModifyMessage(context.Context, *amqp10sdk.Message, *amqp10sdk.ModifyMessageOptions) error {
+	s.modifies.Add(1)
+	return s.failure
+}
+
+type failedAMQP091Acknowledger struct {
+	failure error
+	acks    atomic.Int32
+	nacks   atomic.Int32
+}
+
+func (a *failedAMQP091Acknowledger) Ack(uint64, bool) error {
+	a.acks.Add(1)
+	return a.failure
+}
+
+func (a *failedAMQP091Acknowledger) Nack(uint64, bool, bool) error {
+	a.nacks.Add(1)
+	return a.failure
+}
+
+func (a *failedAMQP091Acknowledger) Reject(uint64, bool) error { return a.failure }
+
+type observedRetryDelivery struct {
+	ports.Delivery
+	acks    atomic.Int32
+	retries atomic.Int32
+}
+
+func (d *observedRetryDelivery) Ack(ctx context.Context) error {
+	d.acks.Add(1)
+	return d.Delivery.Ack(ctx)
+}
+
+func (d *observedRetryDelivery) Retry(ctx context.Context, after time.Duration, reason error) error {
+	d.retries.Add(1)
+	return d.Delivery.Retry(ctx, after, reason)
+}
+
+var _ ports.Delivery = (*observedRetryDelivery)(nil)
