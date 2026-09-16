@@ -1,6 +1,7 @@
 # AWS SQS
 
 > Part of the [Transport Configuration Reference](../transport-configuration.md).
+> For the attributes, properties and identity a message carries on each side, see [Message Mapping](../message-mapping.md).
 
 **Transport name:** `sqs`
 **Factory:** `sqs.NewFactory(logger)`

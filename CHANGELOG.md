@@ -10,6 +10,15 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Added — one page for what a message looks like on each side
+
+- **`docs/message-mapping.md`** shows, per transport, how an SQS message, an
+  MQTT 5 publish and an AMQP 1.0 message become the envelope and back:
+  identity, subject, payload, headers and expiry. It also lists what a
+  consumer notices when a message crosses from one transport to another, such
+  as `x-bridge.*` headers being removed on arrival and `sqs.*` headers reaching
+  a broker.
+
 ## [0.4.1] - 2026-09-14
 
 Retires the project's container image. Nothing in the repository needed one: on

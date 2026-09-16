@@ -31,6 +31,7 @@ walks a working bridge end to end. Then skim the
 | [Failover Budget](failover-budget.md) | What exclusive-session failover costs, and what admission checks |
 | [Programmatic API](programmatic-api.md) | Delivery hooks, the builder, runtime lifecycle |
 | [Transport Configuration](transport-configuration.md) | Options common to every transport |
+| [Message Mapping](message-mapping.md) | What a message looks like on each side: attributes, properties, identity and subject per transport |
 | [Processors and Stores](processors-and-stores.md) | Filter, transform, circuit breaker, tenant |
 | [Store Backends](store-backends.md) | Memory, SQLite and DynamoDB for each store role, and the pairing rules |
 | [Config Stores](config-stores.md) | Where configuration is read from and written to |
