@@ -42,16 +42,18 @@ general opt-out. A DLQ store or explicit `allow_retry_drop: true` with compatibl
 terminal drop policies is still required. See
 [MQTT admission](transports/mqtt.md#source-redelivery-and-what-it-admits).
 
-An MQTT route that meets it needs no outbox, no lease and no outbox partition; it
-holds the broker delivery instead of copying it into a store. Reaching for
-`shared_outbox` there adds a second durable hop in series for the same crash
-window, and moves the durable copy out of the broker into a store the operator
-now has to run. The ingress session needs no `session` block and no binding
-naming it either: the receiver's own binding to the session is what connects it
-and reconciles its subscriptions, with no lease and no partition. What a durable
-session still needs is `stores.managed_subscriptions` -- the exact record of the
-filters it installed on the broker -- with its baseline seeded before the first
-start (see [MQTT durable sessions](transports/mqtt-durable-sessions.md#managed-subscription-history)).
+For an **actual QoS 1/2 delivery on a resuming MQTT session**, `direct_hold`
+holds the broker delivery until target acceptance instead of copying it to an
+outbox. That source-side recovery needs no outbox or outbox partition.
+This does not apply to QoS 0: only `shared_outbox` protects it **after successful
+durable persistence**; neither mode recovers QoS 0 lost before that boundary.
+
+A persistent receiver-only ingress needs no lease, route `session` block, or
+binding naming its session: the receiver's own session reference connects and
+reconciles it. Exclusive ownership still needs lease-bearing wiring and cannot
+be receiver-only ingress. Every durable session with subscriptions also needs
+`stores.managed_subscriptions` and its initial baseline
+([MQTT durable sessions](transports/mqtt-durable-sessions.md#managed-subscription-history)).
 
 - **`direct_hold`** -- Source held open until egress completes. No inter-instance fencing; destinations must handle duplicates idempotently in clustered mode. When a `resolver` is configured, multiple bindings are allowed -- the resolver selects one per message. **Rejected at config load for a clustered exclusive route whose ingress is the HTTP transport:** a request forwarded to an owner that has just stepped down can be sent by the old owner while the new owner handles a retry (forwarded HTTP requests skip the ownership re-check, and `direct_hold` carries no fencing token at the sender boundary), a bounded duplicate-send window across failover. Use `shared_outbox` for that class. Non-clustered or non-HTTP-exclusive `direct_hold` routes are unaffected.
 - **`shared_outbox`** -- Source acknowledged after persisting to outbox. Outbox drainer delivers asynchronously. Requires `stores.outbox`.

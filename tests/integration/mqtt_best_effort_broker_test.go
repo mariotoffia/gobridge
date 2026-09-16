@@ -35,7 +35,7 @@ func TestMQTTBestEffortBroker_MixedToSQS(t *testing.T) {
 	brokerURL := mqttlocal.BrokerURL(t)
 	for _, qos := range []byte{1, 2} {
 		t.Run(fmt.Sprintf("qos=0+%d", qos), func(t *testing.T) {
-			queue, client := setupSQSQueue(t, "mixed-qos")
+			queue, _ := setupSQSQueue(t, "mixed-qos")
 			t.Setenv("AWS_ACCESS_KEY_ID", "test")
 			t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 			reg := ports.NewRegistry()
@@ -85,7 +85,34 @@ func TestMQTTBestEffortBroker_MixedToSQS(t *testing.T) {
 					Properties: &pahov5.PublishProperties{User: pahov5.UserProperties{{Key: paho.HeaderMessageID, Value: "alarm"}}}},
 				&pahov5.Publish{Topic: topic + "/readings", QoS: 0, Payload: []byte("reading")},
 			)
-			assert.ElementsMatch(t, []string{"alarm", "reading"}, pollSQS(t, client, queue, 2, 30*time.Second))
+			receiver := newSQSReceiver(t, queue)
+			receiveCtx, cancelReceive := context.WithTimeout(t.Context(), 30*time.Second)
+			bodies := make(chan string, 2)
+			done := make(chan error, 1)
+			go func() {
+				done <- receiver.Run(receiveCtx, func(ctx context.Context, delivery ports.Delivery) error {
+					if err := delivery.Ack(ctx); err != nil {
+						return err
+					}
+					select {
+					case bodies <- string(delivery.Envelope().Payload()):
+						return nil
+					case <-receiveCtx.Done(): // Ack has already canceled the delivery context.
+						return receiveCtx.Err()
+					}
+				})
+			}()
+			t.Cleanup(func() {
+				cancelReceive()
+				err := wait.RequireReceive(t, done, 5*time.Second)
+				if err != nil {
+					assert.ErrorIs(t, err, context.Canceled)
+				}
+			})
+			assert.ElementsMatch(t, []string{"alarm", "reading"}, []string{
+				wait.RequireReceive(t, bodies, 30*time.Second),
+				wait.RequireReceive(t, bodies, 30*time.Second),
+			})
 		})
 	}
 }

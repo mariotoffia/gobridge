@@ -456,32 +456,24 @@ func TestHandleResolveError_RetryUnsupported_FallsToDLQ(t *testing.T) {
 //   - Delivery is NOT acked
 //   - DLQ has no entries
 func TestDirectHold_RetrySupported_NoFallback(t *testing.T) {
-	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
+	rec := &ports.RecordingExporter{}
+	hook := &recordingHook{}
+	_, sender, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
+		cfg.Clock = clocktest.NewAt(time.Unix(1000, 0))
+		cfg.Metrics = rec
+		cfg.Hook = hook
 	})
 	sender.SendErr = shared.ErrUnavailable
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go func() { _ = runner.Run(ctx) }()
-
-	del := NewFakeDelivery(func() *messaging.Envelope {
-		e := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-retry-supported", Payload: []byte("data")})
-		_ = e.SetExpiry(time.Now().Add(time.Hour))
-		return e
-	}())
-	// RetryFnErr defaults to nil — retry succeeds
-
-	_ = receiver.Emit(ctx, del)
-
-	waitFor(t, 2*time.Second, "delivery retried", del.IsRetried)
-	time.Sleep(50 * time.Millisecond) // NEGATIVE: verify delivery is not acked when retry succeeds (redelivery expected)
-
-	if del.IsAcked() {
-		t.Fatal("delivery should NOT be acked when retry succeeds (redelivery expected)")
-	}
-	if dlqStore.Count() != 0 {
-		t.Fatalf("expected 0 DLQ entries, got %d", dlqStore.Count())
-	}
+	del := NewFakeDelivery(messaging.MustEnvelope(messaging.EnvelopeInput{
+		ID: "msg-retry-supported", Payload: []byte("data"),
+	}))
+	require.NoError(t, runner.HandleDelivery(t.Context(), del))
+	assert.True(t, del.IsRetried())
+	assert.False(t, del.IsAcked())
+	assert.Zero(t, dlqStore.Count())
+	assert.Empty(t, hook.Settled())
+	assert.Empty(t, rec.FindEntries(shared.MetricMessagesDropped))
+	assert.Empty(t, rec.FindEntries(shared.MetricDLQEntries))
+	assert.Zero(t, runner.InFlight())
 }

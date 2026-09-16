@@ -25,10 +25,10 @@ import (
 )
 
 func TestMQTTDirectHoldCrashRecovery(t *testing.T) {
-	brokerURL := mqttlocal.BrokerURL(t)
 	t.Cleanup(mqttlocal.Shutdown)
-	queue, _ := setupSQSQueue(t, "mqtt-crash")
 	t.Cleanup(flocilocal.Shutdown)
+	brokerURL := mqttlocal.BrokerURL(t)
+	queue, _ := setupSQSQueue(t, "mqtt-crash")
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
@@ -109,6 +109,8 @@ routes:
 	}
 	publish("held-alarm", 1, "/alarms")
 	publish("held-reading", 0, "/readings")
+	// Receipt precedes target acceptance. Only SIGKILL and a new child with
+	// the same durable identity can prove recovery across process death.
 	child.awaitToken(t, "MQTT_HELD:held-alarm", 15*time.Second)
 	child.awaitToken(t, "MQTT_HELD:held-reading", 15*time.Second)
 	assert.NotContains(t, child.capturedOutput(), "MQTT_ACCEPTED:")

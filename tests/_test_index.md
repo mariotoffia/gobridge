@@ -6,6 +6,15 @@ AWS config-source construct tests are listed in [their focused index](_test_inde
 
 | name | description | type | group | status |
 |------|-------------|------|-------|--------|
+| [TestMQTTBestEffortBuilder_EffectiveSessions](docsexamples/mqtt_best_effort_test.go) | typed admission, aliases, effective sessions and failure sinks | unit | mqtt | pass |
+| [TestBestEffortActivation_OncePerSuccessfulStart](../runtime/best_effort_activation_test.go) | best-effort disclosure only at successful activation | unit | runtime | pass |
+| [TestMQTTBestEffortDelivery_TerminalOutcomes](integration/mqtt_best_effort_delivery_test.go) | real Paho delivery outcomes, failed DLQ accounting and subsequent progress | unit | mqtt | pass |
+| [TestAMQPRetryFailure_FailedDispositionDoesNotDrop](integration/amqp_retry_failure_test.go) | failed AMQP dispositions retain protocol errors without terminal loss | unit | amqp | pass |
+| [TestAMQP10RetryFailure_ReleaseAndModifyPreserveProtocolError](integration/amqp_retry_failure_test.go) | immediate and delayed protocol refusals are not unsupported local retry | unit | amqp | pass |
+| [TestMQTTBestEffortBroker_MixedToSQS](integration/mqtt_best_effort_broker_test.go) | mixed QoS crosses real local MQTT/SQS with deadline-bound collection | integration | mqtt | pass |
+| [TestMQTTBestEffortBroker_PublisherZeroThroughSubscriptionOne](integration/mqtt_best_effort_broker_test.go) | actual packet QoS governs fallback and avoids session recovery | integration | mqtt | pass |
+| [TestMQTTScenarioBootstrap_ActualWiring](docsexamples/mqtt_bootstrap_test.go) | execute published construction; removing either native registration fails | integration | docs | pass |
+| [TestMQTTDirectHoldCrashRecovery](longrunning/mqtt_direct_hold_crash_test.go) | receipt, hold, owned-child SIGKILL, new child and SQS producer accounting | long-running | mqtt | pass |
 | TestEnvelope_HasExpiry | validates envelope expiry detection | unit | domain | pass |
 | TestEnvelope_IsExpired | validates envelope expired check | unit | domain | pass |
 | TestEnvelope_RemainingTTL | validates envelope remaining TTL calculation | unit | domain | pass |
