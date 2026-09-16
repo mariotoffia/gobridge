@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
@@ -27,6 +28,19 @@ type redeliveryVerdictConfig struct {
 	sawSession string
 	sawTopics  []string
 	refuse     string
+}
+
+func TestBuilder_BestEffortDoesNotClaimRedelivery(t *testing.T) {
+	verdict := &bestEffortVerdictConfig{redeliveryVerdictConfig: redeliveryVerdictConfig{refuse: "best effort"}}
+	cfg := directHoldConfigWithVerdict(&verdict.redeliveryVerdictConfig)
+	cfg.Receivers[0].SetDecoded(verdict, nil)
+	cfg.Receivers[0].Transport = "custom-source"
+	builder := NewBuilder(cfg).RegisterTransportFactory("custom-source", &noCapabilityTransport{})
+	facts := builder.sourceRouteFacts(&cfg.Receivers[0])
+	assert.Equal(t, []string{"sensors/#"}, facts.BestEffortTopics)
+	assert.NotContains(t, facts.Capabilities, ports.CapSourceRedelivery)
+	assert.Equal(t, "src-session", verdict.sawSession)
+	assert.Equal(t, "best effort", facts.RedeliveryRefusal)
 }
 
 func (c *redeliveryVerdictConfig) Kind() string    { return "sqs" }

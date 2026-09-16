@@ -48,6 +48,7 @@ Scenarios where the receiver and sender speak different protocols and the
 runtime owns the translation.
 
 - **3. MQTT-to-SQS Cross-Transport Bridge** ([03-mqtt-to-sqs.md](03-mqtt-to-sqs.md)) — Subscribes to an MQTT topic and forwards each message to an SQS queue.
+- **24. Mixed MQTT QoS to SQS** ([24-mqtt-mixed-qos-to-sqs.md](24-mqtt-mixed-qos-to-sqs.md)) — Mixes recoverable alarms and best-effort readings on a direct-hold route.
 - **21. Cross-Protocol AMQP Bridge** ([21-amqp-cross-protocol.md](21-amqp-cross-protocol.md)) — Bridges AMQP 0.9.1 and AMQP 1.0 endpoints with header and property mapping.
 
 ### Routing & filtering
@@ -137,8 +138,8 @@ quickstart to a multi-bridge cluster.
 
 Reverse index for readers who already know which broker they need to bridge.
 
-- **MQTT** — [1](01-mqtt-to-mqtt.md), [3](03-mqtt-to-sqs.md), [4](04-fanout-with-filtering.md), [8](08-clustered-exclusive-sessions.md), [23](23-coordinated-cluster-rollout.md)
-- **AWS SQS** — [2](02-sqs-to-sqs.md), [3](03-mqtt-to-sqs.md), [12](12-dynamic-destination-routing.md)
+- **MQTT** — [1](01-mqtt-to-mqtt.md), [3](03-mqtt-to-sqs.md), [4](04-fanout-with-filtering.md), [8](08-clustered-exclusive-sessions.md), [23](23-coordinated-cluster-rollout.md), [24](24-mqtt-mixed-qos-to-sqs.md)
+- **AWS SQS** — [2](02-sqs-to-sqs.md), [3](03-mqtt-to-sqs.md), [12](12-dynamic-destination-routing.md), [24](24-mqtt-mixed-qos-to-sqs.md)
 - **Azure Service Bus** — [11](11-multi-tenant-azure-servicebus.md)
 - **RabbitMQ / AMQP 0.9.1** — [19](19-rabbitmq-to-rabbitmq.md), [21](21-amqp-cross-protocol.md)
 - **AMQP 1.0 (Artemis / Amazon MQ)** — [20](20-amqp10-artemis-bridge.md), [21](21-amqp-cross-protocol.md)
@@ -150,6 +151,7 @@ Reverse index for readers who already know which broker they need to bridge.
 Reverse index for readers who know which capability they need to evaluate.
 
 - **SharedOutbox (durable delivery)** — [5](05-durable-shared-outbox.md)
+- **Direct-hold recovery and best effort** — [24](24-mqtt-mixed-qos-to-sqs.md)
 - **DLQ + HTTP admin API** — [7](07-dlq-with-http-api.md)
 - **Circuit breaker** — [6](06-transform-circuit-breaker.md), [16](16-adapter-resilience-patterns.md)
 - **Custom processor** — [17](17-custom-processor.md)

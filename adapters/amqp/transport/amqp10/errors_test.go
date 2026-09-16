@@ -34,7 +34,7 @@ func TestMapError_AMQPConditions(t *testing.T) {
 		{"amqp:link:transfer-limit-exceeded", shared.ErrCodeThrottled},
 		{"amqp:link:message-size-exceeded", shared.ErrCodePayloadTooLarge},
 		{"amqp:internal-error", shared.ErrCodeUnavailable},
-		{"amqp:not-implemented", shared.ErrCodeNotSupported},
+		{"amqp:not-implemented", shared.ErrCodeProtocolError},
 		{"amqp:invalid-field", shared.ErrCodeInvalidPayload},
 		{"amqp:decode-error", shared.ErrCodeProtocolError},
 	}

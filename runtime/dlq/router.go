@@ -27,8 +27,8 @@ import (
 // [Router.Route] writes synchronously and returns only once the entry is
 // durably confirmed (or permanently failed after bounded retries). Callers
 // MUST treat a non-nil return as "DLQ evidence is not durable" and refuse to
-// settle (ACK/Complete) the source delivery or outbox record. This keeps the
-// failure evidence at least as durable as the message it describes.
+// settle a recoverable source delivery or outbox record. An unrecoverable
+// source instead requires explicit terminal-loss accounting by its caller.
 type Router struct {
 	store             ports.DLQStore
 	writeTimeout      time.Duration
@@ -160,8 +160,8 @@ func (r *Router) SetTokenFn(fn func(sessionID string) (persistence.LeaseToken, b
 // Route classifies err and writes a DLQ entry for env synchronously,
 // returning only once the write is durably confirmed (nil) or has
 // permanently failed after bounded retries (non-nil). A non-nil return
-// means the evidence is NOT durable; the caller must not settle the source
-// delivery or outbox record so the message is redelivered or reclaimed.
+// means the evidence is NOT durable; the caller must preserve a recoverable
+// source delivery or outbox record, or explicitly count unrecoverable loss.
 //
 // The address parameter is the transport destination address that was
 // the target of the failed delivery (e.g. MQTT topic, SQS queue URL,

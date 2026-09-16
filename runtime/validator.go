@@ -214,8 +214,11 @@ func validateDirectHold(ve *ValidationError, prefix string, entry *routeEntry, p
 	// outbox, a lease and a store for a crash window that is identical either way.
 	// The HTTP branch stands apart because its "source" is a caller holding an
 	// open request: nothing is settled until the response, so the caller retries.
+	// A typed best-effort admission permits weaker subscriptions without making
+	// them redeliver; the independent retry-fallback guard still applies.
 	if !hasCapability(entry.config.SourceCapabilities, ports.CapSourceRedelivery) &&
-		!hasCapability(entry.config.SourceCapabilities, ports.CapHTTPEndpoint) {
+		!hasCapability(entry.config.SourceCapabilities, ports.CapHTTPEndpoint) &&
+		len(entry.config.SourceBestEffortTopics) == 0 {
 		reason := prefix + "direct_hold invalid: the source does not redeliver an unsettled message, " +
 			"so a crash between the send and the settle loses it"
 		if entry.config.SourceRedeliveryRefusal != "" {

@@ -21,9 +21,8 @@ import (
 //   - the SUBSCRIPTION must be QoS 1 or 2. QoS 0 is at-most-once: the broker
 //     sends once and keeps nothing, so there is nothing to redeliver.
 //
-// Both must hold. The bridge asks this before admitting a route to direct_hold,
-// which settles the source only once the destination has accepted — a mode whose
-// entire safety argument is that the unsettled message comes back.
+// Both must hold for source redelivery. Best-effort direct_hold admission is
+// separate: accepting QoS 0 must not claim recovery or waive failure-sink checks.
 
 var _ ports.SourceRedeliveryConfig = (*Config)(nil)
 
@@ -73,3 +72,41 @@ func (c *Config) SourceRedeliversUnsettled(
 	}
 	return true, ""
 }
+
+// BestEffortDirectHoldTopics admits QoS 0 without weakening the effective
+// session requirements of any QoS 1/2 subscriptions on the same receiver.
+func (c *Config) BestEffortDirectHoldTopics(
+	session ports.SessionSpec,
+	subscriptions []connectivity.SubscriptionPlan,
+) ([]string, string) {
+	sessionCfg, err := configFromSpec(session.Config)
+	if err != nil {
+		return nil, "the ingress session carries no MQTT configuration"
+	}
+	if err := sessionCfg.ValidateEffectiveSession(session.SessionMode); err != nil {
+		return nil, fmt.Sprintf("the ingress session %q is invalid: %v", session.ID, err)
+	}
+	if len(subscriptions) == 0 {
+		return nil, "the receiver declares no subscriptions"
+	}
+	var topics []string
+	var strong []connectivity.SubscriptionPlan
+	for _, subscription := range subscriptions {
+		if err := ValidateMQTTSubscription(subscription.Topic, subscription.QoS); err != nil {
+			return nil, fmt.Sprintf("invalid subscription: %v", err)
+		}
+		if subscription.QoS == 0 {
+			topics = append(topics, subscription.Topic)
+		} else {
+			strong = append(strong, subscription)
+		}
+	}
+	if len(strong) > 0 {
+		if redelivers, refusal := c.SourceRedeliversUnsettled(session, strong); !redelivers {
+			return nil, refusal
+		}
+	}
+	return topics, ""
+}
+
+var _ ports.BestEffortDirectHoldConfig = (*Config)(nil)
