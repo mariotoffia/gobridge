@@ -138,7 +138,9 @@ func mapAMQPCondition(amqpErr *amqp.Error) *shared.BridgeError {
 	case "amqp:internal-error":
 		return shared.ErrUnavailable.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	case "amqp:not-implemented":
-		return shared.ErrNotSupported.Wrap(amqpErr).WithMessage(amqpErr.Description)
+		// A peer refused an attempted protocol operation. ErrNotSupported
+		// instead promises an unlatched local operation and permits fallback.
+		return shared.ErrProtocolError.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	case "amqp:invalid-field":
 		return shared.ErrInvalidPayload.Wrap(amqpErr).WithMessage(amqpErr.Description)
 	case "amqp:decode-error":

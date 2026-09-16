@@ -1,8 +1,10 @@
 package paho_test
 
 import (
+	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	paho "github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho"
@@ -27,6 +29,68 @@ func redeliverySession(mode connectivity.SessionMode, cleanStart bool, expiry ui
 	cfg.Session.CleanStart = cleanStart
 	cfg.Session.SessionExpiryInterval = expiry
 	return ports.SessionSpec{ID: "ingress", Transport: "mqtt", SessionMode: mode, Config: &cfg}
+}
+
+func TestBestEffortDirectHoldTopics_EffectiveSession(t *testing.T) {
+	receiver := paho.DefaultConfig()
+	for _, mode := range []connectivity.SessionMode{"", connectivity.SessionEphemeral, connectivity.SessionPersistent, connectivity.SessionExclusive} {
+		for _, clean := range []bool{false, true} {
+			for _, expiry := range []uint32{0, 600} {
+				for _, qos := range []int{0, 1, 2} {
+					t.Run(fmt.Sprintf("%s/clean=%t/expiry=%d/strong=%d", mode, clean, expiry, qos), func(t *testing.T) {
+						session := redeliverySession(mode, clean, expiry)
+						subs := []connectivity.SubscriptionPlan{{Topic: "readings/#", QoS: 0}, {Topic: "alarms/#", QoS: qos}}
+						topics, refusal := receiver.BestEffortDirectHoldTopics(session, subs)
+						durable := mode == connectivity.SessionExclusive || (mode == connectivity.SessionPersistent && !clean)
+						switch {
+						case qos == 0:
+							assert.Equal(t, []string{"readings/#", "alarms/#"}, topics)
+							assert.Empty(t, refusal)
+						case durable:
+							assert.Equal(t, []string{"readings/#"}, topics)
+							assert.Empty(t, refusal)
+						default:
+							assert.Empty(t, topics)
+							assert.Contains(t, refusal, "ingress session")
+							assert.Contains(t, refusal, "clean_start")
+						}
+						redelivers, _ := receiver.SourceRedeliversUnsettled(session, subs)
+						assert.False(t, redelivers)
+						subs[0], subs[1] = subs[1], subs[0]
+						reversed, reason := receiver.BestEffortDirectHoldTopics(session, subs)
+						assert.ElementsMatch(t, topics, reversed)
+						assert.Equal(t, refusal, reason)
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestBestEffortDirectHoldTopics_InvalidConfiguration(t *testing.T) {
+	receiver := paho.DefaultConfig()
+	valid := redeliverySession(connectivity.SessionEphemeral, false, 0)
+	for _, tc := range []struct {
+		name    string
+		session ports.SessionSpec
+		subs    []connectivity.SubscriptionPlan
+	}{
+		{"missing session", ports.SessionSpec{}, subscribedAt(0)},
+		{"typed nil configuration", ports.SessionSpec{Config: (*paho.Config)(nil)}, subscribedAt(0)},
+		{"invalid mode", redeliverySession("invalid", false, 0), subscribedAt(0)},
+		{"empty subscriptions", valid, nil},
+		{"empty topic", valid, []connectivity.SubscriptionPlan{{QoS: 0}}},
+		{"invalid filter", valid, []connectivity.SubscriptionPlan{{Topic: "bad/#/suffix", QoS: 0}}},
+		{"negative QoS", valid, subscribedAt(-1)},
+		{"QoS above maximum", valid, subscribedAt(3)},
+		{"QoS would wrap to zero", valid, subscribedAt(4)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			topics, refusal := receiver.BestEffortDirectHoldTopics(tc.session, tc.subs)
+			assert.Empty(t, topics)
+			assert.NotEmpty(t, refusal)
+		})
+	}
 }
 
 func subscribedAt(qos int) []connectivity.SubscriptionPlan {

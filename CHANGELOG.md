@@ -19,6 +19,24 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   as `x-bridge.*` headers being removed on arrival and `sqs.*` headers reaching
   a broker.
 
+### Fixed — mixed MQTT QoS on direct-hold routes
+
+- Admit otherwise-valid QoS 0 subscriptions, alone or mixed with QoS 1/2.
+  Stronger subscriptions still require a resuming effective session; persistent
+  expiry defaulting and exclusive normalization are unchanged.
+- Keep best-effort admission separate from source redelivery. Configured QoS 0
+  still needs a DLQ store or explicit retry-drop permission with compatible
+  terminal policies. Log each best-effort subscription once at activation.
+- Count terminal loss when actual delivery retry is unsupported and bounded
+  DLQ persistence also fails, preserving the persistence error and releasing
+  route capacity. Do not recycle MQTT for QoS 0 or drop recoverable QoS 1/2.
+- Map broker AMQP `not-implemented` and AMQP 0-9-1 precondition failures to
+  `PROTOCOL_ERROR` (still permanent), not unsupported local retry. A failed
+  protocol settlement remains recoverable rather than falsely counted as lost.
+- Add [scenario 24](docs/scenarios/24-mqtt-mixed-qos-to-sqs.md) with runnable
+  mixed/ephemeral configurations, managed-subscription initialization, and
+  explicit crash-loss boundaries.
+
 ## [0.4.1] - 2026-09-14
 
 Retires the project's container image. Nothing in the repository needed one: on

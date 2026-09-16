@@ -1,7 +1,6 @@
 # MQTT (Paho)
 
-> Part of the [Transport Configuration Reference](../transport-configuration.md).
-> For the attributes, properties and identity a message carries on each side, see [Message Mapping](../message-mapping.md).
+> Part of the [Transport Configuration Reference](../transport-configuration.md). For the attributes, properties and identity a message carries on each side, see [Message Mapping](../message-mapping.md).
 
 **Transport name:** `mqtt`
 **Factory:** `paho.NewFactory(logger)`
@@ -29,27 +28,41 @@ shapes that work named.
 
 ## Source redelivery, and what it admits
 
-MQTT does not declare `source_redelivery` transport-wide, because whether the
-broker still holds a delivery this process never acknowledged is not a property
-of MQTT. The adapter connects with manual acknowledgement and withholds the
-PUBACK until the runtime settles the delivery, so what remains is whether the
-broker kept anything to send again. Two things decide it, and both are per route:
+MQTT quality of service (QoS) describes delivery on the MQTT hop:
 
-- **The session must survive the process.** `session_mode: persistent` with
-  `clean_start: false`, or `session_mode: exclusive` (which always resumes). An
-  ephemeral session, or a persistent one that clean-starts, hands a restarted
-  process a fresh broker session and everything the old one held is gone.
-- **Every subscription the route runs with must be QoS 1 or 2.** QoS 0 is
-  at-most-once: the broker sends once and keeps nothing.
+- **QoS 0:** send once, with no acknowledgement or broker redelivery.
+- **QoS 1:** keep the message until acknowledged; duplicates are possible.
+- **QoS 2:** deliver exactly once on the MQTT hop; this is not end-to-end delivery.
 
-When both hold, the route may use `direct_hold` and needs **no outbox, no lease
-and no outbox partition** -- it holds the broker delivery rather than copying it
-into a store. When either fails, `direct_hold` is refused at config load with a
-message naming which one, because they have different fixes. A durable session
-with subscriptions separately owes the broker an exact record of the filters it
-installed, so it still needs `stores.managed_subscriptions`
+`direct_hold` waits for the destination to accept a message before acknowledging
+it to the source. **QoS 0 subscriptions are accepted**, alone or mixed with
+QoS 1/2. Their messages remain best effort: a crash can lose them. The actual
+packet uses the lower of publisher and subscription QoS, so even a QoS 1
+subscription can receive QoS 0.
+
+If **any subscription requests QoS 1/2**, the effective session must resume with
+positive expiry: `persistent` with `clean_start: false`, or `exclusive`.
+An ephemeral or persistent-clean-start session is refused with a session-related
+error. Expiry omitted or set to zero on persistent/exclusive takes the existing
+86400-second default; exclusive forces effective clean start to false.
+All-QoS-0 receivers do not need session durability. Ordinary session, topic,
+ownership, and failure-sink validation still applies.
+
+A persistent receiver-only ingress needs **no outbox, lease or outbox partition**.
+Exclusive needs lease-bearing wiring and cannot be receiver-only ingress.
+Durable sessions still need `stores.managed_subscriptions` for exact filter history
 ([ADR 0003](../adr/0003-mqtt-persistent-session-hygiene.md)) whatever its
 delivery mode.
+
+Configured QoS 0 does not claim `source_redelivery` and does not waive the
+failure sink. Configure a DLQ (dead-letter queue) store, or explicitly choose
+`allow_retry_drop: true` with `on_permanent_failure: drop`,
+`on_expired: drop`, and no `on_filtered: dlq`. On successful runtime activation,
+one INFO line per configured QoS 0 subscription identifies the route, receiver,
+and topic and explains the crash-loss window. Validation alone emits no line.
+
+See [scenario 24](../scenarios/24-mqtt-mixed-qos-to-sqs.md) and the existing
+[QoS-zero overlay limitation](../configuration-overview.md#layered-configuration).
 
 The [guarantee matrix](mqtt-behavior.md#source-to-destination-guarantee-matrix)
 sets out what each combination loses or duplicates.

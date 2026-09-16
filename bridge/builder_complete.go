@@ -381,6 +381,8 @@ func (b *Builder) wireRoutes(
 			SourceAutoExtend:        source.AutoExtend,
 			SourceTransport:         source.Transport,
 			SourceRedeliveryRefusal: source.RedeliveryRefusal,
+			SourceBestEffortTopics:  source.BestEffortTopics,
+			SourceReceiverID:        routeDef.ReceiverID,
 			SourceSessionID:         sourceSessionID,
 		}
 

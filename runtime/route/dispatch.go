@@ -635,9 +635,8 @@ func (r *RouteRunner) handleProcessorError(ctx context.Context, del ports.Delive
 // drops-with-metric under OnPermanentFailure=drop or when no DLQ store is
 // configured, and settles the delivery exactly once. category tags both the
 // poison message and the DLQ/drop metric. It returns a non-nil error only when
-// the DLQ write itself failed, in which case the delivery is left unsettled and
-// routed through retryOrFallback so the source redelivers rather than silently
-// dropping a poison message that could not be persisted.
+// the DLQ write itself failed, in which case retryOrFallback preserves a
+// recoverable source or explicitly counts an unsupported-retry terminal loss.
 // replayCapPoison builds the poison BridgeError and the drop/DLQ metric category
 // for a message reaching a terminal replay decision. A numeric cap hit keeps the
 // caller's category and a "receive count N >= max" reason. An UNCOUNTABLE
@@ -717,8 +716,8 @@ func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery
 // errDeliveryAbandoned marks a delivery the runtime stopped working on because
 // the BRIDGE killed its own delivery context — a SIGTERM, a reconfiguration
 // swap that outran the drain budget, or a receiver cancelling its route. The
-// message never got a complete attempt, so it is left UNSETTLED and the source
-// redelivers it.
+// message never got a complete attempt, so it is left UNSETTLED. Recovery
+// depends on whether the source can redeliver.
 var errDeliveryAbandoned = errors.New("delivery abandoned: the bridge cancelled its own delivery context")
 
 // abandonIfCancelled is the guard every RECOVERABLE dispatch branch runs first.
@@ -779,6 +778,8 @@ func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, e
 // retryOrFallbackUncharged attempts del.Retry; if the source transport does not
 // support retry (ErrNotSupported), it falls back to DLQ routing with
 // category "retry_unsupported" so the message is not silently lost.
+// Per ports.Delivery, ErrNotSupported means no source-redelivery primitive,
+// never a failed protocol settlement whose message can still be redelivered.
 //
 // It does NOT spend the message's replay budget. Use it for a retry the message
 // did not cause: a full outbox partition, an outbox depth query that failed, or
@@ -788,9 +789,15 @@ func (r *RouteRunner) retryOrFallback(ctx context.Context, del ports.Delivery, e
 // already reached and poisons — DLQ'd, or DROPPED under
 // on_permanent_failure=drop — a message that never failed.
 func (r *RouteRunner) retryOrFallbackUncharged(ctx context.Context, del ports.Delivery, env *messaging.Envelope, after time.Duration, reason error) error {
+	if abandoned := r.abandonIfCancelled(ctx, env, "retry delivery", reason); abandoned != nil {
+		return abandoned
+	}
 	retryErr := r.retryDelivery(ctx, del, after, reason)
 	if retryErr == nil || !errors.Is(retryErr, shared.ErrNotSupported) {
 		return retryErr
+	}
+	if abandoned := r.abandonIfCancelled(ctx, env, "retry delivery", retryErr); abandoned != nil {
+		return abandoned
 	}
 	attempts := receiveCount(env) + 1
 	if !r.dlq.HasStore() {
@@ -806,9 +813,16 @@ func (r *RouteRunner) retryOrFallbackUncharged(ctx context.Context, del ports.De
 		return r.settleTerminal(ctx, del, env, reason, attempts)
 	}
 	if dlqErr := r.dlq.Route(ctx, env, r.routeID, "", "", "", "", reason, 0); dlqErr != nil {
-		// Write failed: return the error so the caller does NOT ack; the
-		// source redelivers. DLQWriteFailures is emitted inside the router.
-		return fmt.Errorf("runtime: route-runner: retry unsupported and write dlq: %w", dlqErr)
+		if abandoned := r.abandonIfCancelled(ctx, env, "write dlq", dlqErr); abandoned != nil {
+			return abandoned
+		}
+		failure := fmt.Errorf("runtime: route-runner: retry unsupported and write dlq: %w", dlqErr)
+		r.emitDrop("retry_unsupported_dlq_failed")
+		if r.logger != nil {
+			r.logger.Warn("message dropped: retry unsupported and DLQ persistence failed",
+				"route", r.routeID, "envelope_id", env.ID(), "error", dlqErr)
+		}
+		return errors.Join(failure, r.settleTerminal(ctx, del, env, failure, attempts))
 	}
 	r.emitDLQ("retry_unsupported")
 	return r.settleTerminal(ctx, del, env, reason, attempts)

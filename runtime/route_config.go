@@ -78,6 +78,12 @@ type RouteConfig struct {
 	// ports.SourceRedeliveryConfig; optional for programmatic callers.
 	SourceRedeliveryRefusal string
 
+	// SourceBestEffortTopics carries the typed adapter's best-effort direct_hold
+	// admission. It never implies CapSourceRedelivery or waives failure sinks.
+	// SourceReceiverID identifies the receiver in the activation disclosure.
+	SourceBestEffortTopics []string
+	SourceReceiverID       string
+
 	// SourceSessionID is the id of the session this route's receiver subscribes
 	// through, when the source is a stateful transport. The runtime installs the
 	// ingress settlement barrier for this route on that session, so a session

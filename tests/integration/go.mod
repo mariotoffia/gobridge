@@ -51,6 +51,7 @@ require (
 )
 
 require (
+	github.com/Azure/go-amqp v1.7.0
 	github.com/aws/aws-sdk-go-v2 v1.45.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.36 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.35 // indirect
@@ -71,9 +72,13 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091 v0.4.1
+	github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10 v0.4.1
+	github.com/mariotoffia/gobridge/adapters/native/store v0.4.1
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions v0.0.0
 	github.com/mariotoffia/gobridge/testutil/mqttlocal v0.0.0
+	github.com/rabbitmq/amqp091-go v1.13.0
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1
@@ -84,3 +89,9 @@ replace github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubsc
 replace github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbrollout => ../../adapters/aws/store/dynamodbrollout
 
 replace github.com/mariotoffia/gobridge/testutil/mqttlocal => ../../testutil/mqttlocal
+
+replace github.com/mariotoffia/gobridge/adapters/native/store => ../../adapters/native/store
+
+replace github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10 => ../../adapters/amqp/transport/amqp10
+
+replace github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp091 => ../../adapters/amqp/transport/amqp091

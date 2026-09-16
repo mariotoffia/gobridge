@@ -558,7 +558,26 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		})
 	}
 
+	rt.logBestEffortSubscriptions()
 	return nil
+}
+
+func (rt *Runtime) logBestEffortSubscriptions() {
+	if rt.logger == nil {
+		return
+	}
+	for _, entry := range rt.entries {
+		if entry.config.Policy.WithDefaults().DeliveryMode != routing.DeliveryDirectHold {
+			continue
+		}
+		for _, topic := range entry.config.SourceBestEffortTopics {
+			rt.logger.Info("direct_hold subscription is best-effort; QoS 0 messages may be lost if the process stops",
+				"route_id", entry.config.ID,
+				"receiver_id", entry.config.SourceReceiverID,
+				"topic", topic,
+			)
+		}
+	}
 }
 
 // drainerFingerprint captures the drain-relevant inputs a shared_outbox drainer

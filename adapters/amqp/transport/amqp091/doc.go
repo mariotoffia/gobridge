@@ -165,7 +165,7 @@
 //   - 403 (access-refused)            -> ErrNotAuthorized  (permanent)
 //   - 404 (not-found)                 -> ErrNotFound       (permanent)
 //   - 405 (not-allowed), 530          -> ErrForbidden      (permanent)
-//   - 406, 540 (not-implemented)      -> ErrNotSupported   (permanent)
+//   - 406, 540 (precondition-failed, not-implemented) -> ErrProtocolError (permanent)
 //   - 501, 502, 503, 505 (protocol)   -> ErrProtocolError  (permanent)
 //   - 504 (channel-error), 541        -> ErrUnavailable    (transient)
 //

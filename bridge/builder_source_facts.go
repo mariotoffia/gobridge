@@ -36,6 +36,9 @@ type routeSourceFacts struct {
 	// RedeliveryRefusal is the transport's own account of why this route's source
 	// will not redeliver, and empty when it will or when it has no opinion.
 	RedeliveryRefusal string
+	// BestEffortTopics admits only the configured weaker subscriptions, without
+	// promising source recovery or suppressing retry-fallback validation.
+	BestEffortTopics []string
 }
 
 // sourceRouteFacts resolves the source facts for one route's receiver. A nil
@@ -97,18 +100,20 @@ func (b *Builder) sourceRouteFacts(recvDef *ports.ReceiverDef) routeSourceFacts 
 	// the receiver binds to and on the QoS of its subscriptions, neither of which
 	// is in the receiver's own options. The transport answers it here, so
 	// direct_hold is admitted on the question it actually depends on.
-	rc, ok := recvDef.Config.(ports.SourceRedeliveryConfig)
-	if !ok {
-		return facts
-	}
 	ingress := ports.SessionSpec{}
 	if sd := findSession(b.cfg, recvDef.SessionID); sd != nil {
 		ingress = sessionSpecFrom(*sd)
 	}
-	if redelivers, refusal := rc.SourceRedeliversUnsettled(ingress, receiverSpecFrom(*recvDef).Subscriptions); redelivers {
-		facts.Capabilities = append(facts.Capabilities, ports.CapSourceRedelivery)
-	} else {
-		facts.RedeliveryRefusal = refusal
+	subscriptions := receiverSpecFrom(*recvDef).Subscriptions
+	if bc, ok := recvDef.Config.(ports.BestEffortDirectHoldConfig); ok {
+		facts.BestEffortTopics, facts.RedeliveryRefusal = bc.BestEffortDirectHoldTopics(ingress, subscriptions)
+	}
+	if rc, ok := recvDef.Config.(ports.SourceRedeliveryConfig); ok {
+		if redelivers, refusal := rc.SourceRedeliversUnsettled(ingress, subscriptions); redelivers {
+			facts.Capabilities = append(facts.Capabilities, ports.CapSourceRedelivery)
+		} else if facts.RedeliveryRefusal == "" {
+			facts.RedeliveryRefusal = refusal
+		}
 	}
 	return facts
 }
