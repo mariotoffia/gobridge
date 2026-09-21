@@ -399,6 +399,7 @@ type deepHealthSessionResponse struct {
 	SubscriptionsWanted      int      `json:"subscriptions_wanted"`
 	SubscriptionsActive      int      `json:"subscriptions_active"`
 	ActiveTopics             []string `json:"active_topics,omitempty"`
+	BestEffortTopics         []string `json:"best_effort_topics,omitempty"`
 	Ready                    bool     `json:"ready"`
 	ServiceLevel             string   `json:"service_level"`
 	UnsettledCount           int      `json:"unsettled_count"`
@@ -426,9 +427,7 @@ func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 		// old error field while exposing whether startup is waiting or rejected.
 		body := map[string]any{"error": "runtime not available", "running": false,
 			"healthy": false, "empty": true, "ready_for_traffic": false, "level": ports.LevelLive.String()}
-		if s.cfg.ConfigWatchProvider != nil {
-			body["config_watch"] = s.cfg.ConfigWatchProvider()
-		}
+		body["config_watch"] = s.cfg.ConfigWatchProvider()
 		writeJSON(w, http.StatusServiceUnavailable, body)
 		return
 	}
@@ -458,6 +457,7 @@ func (s *Server) handleDeepHealth(w http.ResponseWriter, r *http.Request) {
 			SubscriptionsWanted:      sh.SubscriptionsWanted,
 			SubscriptionsActive:      sh.SubscriptionsActive,
 			ActiveTopics:             sh.ActiveTopics,
+			BestEffortTopics:         sh.BestEffortTopics,
 			Ready:                    sh.Ready,
 			ServiceLevel:             string(sh.ServiceLevel),
 			UnsettledCount:           sh.UnsettledCount,

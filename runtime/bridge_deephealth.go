@@ -143,6 +143,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 			SubscriptionsActive:      sh.SubscriptionsActive,
 			SubscriptionsSatisfied:   sh.SubscriptionsSatisfied,
 			ActiveTopics:             sh.ActiveTopics,
+			BestEffortTopics:         sh.BestEffortTopics,
 			Ready:                    sh.Ready,
 			ServiceLevel:             sh.ServiceLevel,
 			UnsettledCount:           sh.UnsettledCount,
