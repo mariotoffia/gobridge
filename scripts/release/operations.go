@@ -333,6 +333,12 @@ func validatePublishedSet(repo string, manifest releaseManifest) error {
 	if err != nil {
 		return err
 	}
+	// A declared bootstrap helper lives under testutil/ and is staged with a
+	// pseudo-version instead of being tagged, so finding it on disk is not a
+	// module missing from the published set.
+	discovered = slices.DeleteFunc(discovered, func(modulePath string) bool {
+		return slices.Contains(manifest.Bootstrap, modulePath)
+	})
 	declared := make([]string, 0, len(manifest.Published))
 	for _, entry := range manifest.Published {
 		declared = append(declared, entry.Path)
@@ -378,7 +384,11 @@ func discoverPublishedModules(repo string) ([]string, error) {
 		}
 		result = append(result, fixed)
 	}
-	for _, tree := range []string{"adapters", "processors"} {
+	// testutil/ modules are published so an outside project can start the same
+	// brokers and emulators in its own integration tests. A root-owned helper
+	// package (dockerexec, netfault, tlsgen, wait) has no go.mod and is not a
+	// module, so the walk does not see it.
+	for _, tree := range []string{"adapters", "processors", "testutil"} {
 		treeRoot, err := secureJoin(repoRoot, tree)
 		if err != nil {
 			return nil, fmt.Errorf("published module tree %s: %w", tree, err)

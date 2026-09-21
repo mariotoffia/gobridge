@@ -46,8 +46,9 @@ func TestReleaseManifest_ModuleForTag(t *testing.T) {
 		ModulePrefix: "github.com/mariotoffia/gobridge",
 		Published: []publishedModule{
 			{Path: ".", Layer: 0},
-			{Path: "adapters/mqtt/transport/paho", Layer: 1},
-			{Path: "cmd/gobridge", Layer: 2},
+			{Path: "testutil/example", Layer: 1},
+			{Path: "adapters/mqtt/transport/paho", Layer: 2},
+			{Path: "cmd/gobridge", Layer: 3},
 		},
 		Bootstrap: []string{"testutil/wait"},
 	}
@@ -66,7 +67,14 @@ func TestReleaseManifest_ModuleForTag(t *testing.T) {
 			wantPath:    "adapters/mqtt/transport/paho",
 			wantVersion: "v0.3.0",
 		},
+		{
+			name:        "test helper",
+			tag:         "testutil/example/v0.3.0",
+			wantPath:    "testutil/example",
+			wantVersion: "v0.3.0",
+		},
 		{name: "internal helper", tag: "testutil/wait/v0.3.0", wantErr: true},
+		{name: "internal tests module", tag: "tests/integration/v0.3.0", wantErr: true},
 		{name: "unknown module", tag: "deployment/example/v0.3.0", wantErr: true},
 		{name: "prerelease", tag: "cmd/gobridge/v0.3.0-rc.1", wantErr: true},
 	}
@@ -193,7 +201,7 @@ exclude example.com/dependency v1.2.2
 func TestInspectModule_RejectsUndeclaredAndNonLowerDependencies(t *testing.T) {
 	t.Parallel()
 
-	manifest := releaseManifest{
+	adapters := releaseManifest{
 		ModulePrefix: "github.com/mariotoffia/gobridge",
 		Published: []publishedModule{
 			{Path: ".", Layer: 0},
@@ -202,27 +210,57 @@ func TestInspectModule_RejectsUndeclaredAndNonLowerDependencies(t *testing.T) {
 		},
 		Bootstrap: []string{"testutil/wait"},
 	}
+	helpers := releaseManifest{
+		ModulePrefix: "github.com/mariotoffia/gobridge",
+		Published: []publishedModule{
+			{Path: ".", Layer: 0},
+			{Path: "testutil/example", Layer: 1},
+			{Path: "adapters/example", Layer: 2},
+		},
+	}
 
 	tests := []struct {
 		name       string
+		manifest   releaseManifest
+		modulePath string
 		dependency string
+		wantDetail string
 	}{
-		{name: "same layer", dependency: "github.com/mariotoffia/gobridge/adapters/second"},
-		{name: "undeclared sibling", dependency: "github.com/mariotoffia/gobridge/testutil/other"},
+		{
+			name:       "same layer",
+			manifest:   adapters,
+			modulePath: "adapters/first",
+			dependency: "github.com/mariotoffia/gobridge/adapters/second",
+			wantDetail: "lower layer",
+		},
+		{
+			name:       "undeclared sibling",
+			manifest:   adapters,
+			modulePath: "adapters/first",
+			dependency: "github.com/mariotoffia/gobridge/testutil/other",
+			wantDetail: "undeclared repository sibling",
+		},
+		{
+			name:       "helper requires an adapter above it",
+			manifest:   helpers,
+			modulePath: "testutil/example",
+			dependency: "github.com/mariotoffia/gobridge/adapters/example",
+			wantDetail: "lower layer",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := inspectModule(manifest, moduleManifest{
-				Path: "adapters/first",
+			_, err := inspectModule(tt.manifest, moduleManifest{
+				Path: tt.modulePath,
 				Requires: []moduleRequirement{
 					{Path: tt.dependency, Version: "v0.3.0"},
 				},
 			}, "v0.3.0")
-			if err == nil {
-				t.Fatalf("inspectModule() error = nil, want dependency error for %q", tt.dependency)
+			if err == nil || !strings.Contains(err.Error(), tt.wantDetail) {
+				t.Fatalf("inspectModule() error = %v, want %q for %q", err, tt.wantDetail, tt.dependency)
 			}
 		})
 	}

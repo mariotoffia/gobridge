@@ -47,6 +47,12 @@ func TestReleaseManifest_Validate(t *testing.T) {
 			},
 		},
 		{
+			name: "tests module published",
+			mutate: func(manifest *releaseManifest) {
+				manifest.Published[1].Path = "tests/integration"
+			},
+		},
+		{
 			name: "bootstrap outside testutil",
 			mutate: func(manifest *releaseManifest) {
 				manifest.Bootstrap = []string{"tests/helper"}
@@ -80,7 +86,8 @@ func TestIsInternalOnlyPath_PublishesOnlyTheDeclaredDeploymentModules(t *testing
 		"deployment/aws":       true,
 		"deployment":           true,
 		"scripts/release":      true,
-		"testutil/wait":        true,
+		"testutil/mqttlocal":   false,
+		"tests/integration":    true,
 		"adapters/example":     false,
 	}
 	for modulePath, want := range tests {
@@ -129,7 +136,7 @@ replace github.com/mariotoffia/gobridge => ../..
 	}
 	for _, want := range []string{
 		"Release source preflight PASS.",
-		"Published modules: 7; layer 0=1; layer 1=2; layer 2=1; layer 3=2; layer 4=1",
+		"Published modules: 8; layer 0=1; layer 1=1; layer 2=2; layer 3=1; layer 4=2; layer 5=1",
 		"exact-v0.0.0: 1",
 		"local-replace: 1",
 		"strict release gates reject it",
@@ -144,19 +151,28 @@ func TestRunCLI_ListUsesCanonicalManifest(t *testing.T) {
 	t.Parallel()
 
 	repo, _ := writeFixtureRepository(t, true)
-	var output bytes.Buffer
-	if err := runCLI(
-		context.Background(),
-		[]string{"list", "--repo", repo, "--layer", "1", "--format", "tag", "--version", testReleaseVersion},
-		&output,
-		&recordingRunner{},
-	); err != nil {
-		t.Fatalf("runCLI(list) error = %v", err)
+	list := func(layer string) string {
+		t.Helper()
+
+		var output bytes.Buffer
+		if err := runCLI(
+			context.Background(),
+			[]string{"list", "--repo", repo, "--layer", layer, "--format", "tag", "--version", testReleaseVersion},
+			&output,
+			&recordingRunner{},
+		); err != nil {
+			t.Fatalf("runCLI(list) error = %v", err)
+		}
+		return output.String()
 	}
+
 	want := "adapters/example/v0.3.0\n" +
 		"deployment/aws/infra/v0.3.0\n"
-	if got := output.String(); got != want {
+	if got := list("2"); got != want {
 		t.Fatalf("runCLI(list) output = %q, want %q", got, want)
+	}
+	if got := list("1"); got != "testutil/example/v0.3.0\n" {
+		t.Fatalf("runCLI(list) helper layer output = %q", got)
 	}
 }
 
@@ -424,14 +440,14 @@ func TestListModules_AllFormats(t *testing.T) {
 		{format: "path", want: "adapters/example\ndeployment/aws/infra"},
 		{format: "import", want: "github.com/mariotoffia/gobridge/adapters/example\ngithub.com/mariotoffia/gobridge/deployment/aws/infra"},
 		{format: "tag", version: testReleaseVersion, want: "adapters/example/v0.3.0\ndeployment/aws/infra/v0.3.0"},
-		{format: "tsv", want: "1\tadapters/example\tgithub.com/mariotoffia/gobridge/adapters/example\n1\tdeployment/aws/infra\tgithub.com/mariotoffia/gobridge/deployment/aws/infra"},
+		{format: "tsv", want: "2\tadapters/example\tgithub.com/mariotoffia/gobridge/adapters/example\n2\tdeployment/aws/infra\tgithub.com/mariotoffia/gobridge/deployment/aws/infra"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.format, func(t *testing.T) {
 			t.Parallel()
 
 			var output bytes.Buffer
-			if err := listModules(manifest, 1, tt.format, tt.version, &output); err != nil {
+			if err := listModules(manifest, 2, tt.format, tt.version, &output); err != nil {
 				t.Fatalf("listModules() error = %v", err)
 			}
 			if strings.TrimSpace(output.String()) != tt.want {
@@ -608,6 +624,27 @@ func TestValidatePublishedSet_RejectsUnlistedAdapter(t *testing.T) {
 	err := validatePublishedSet(repo, manifest)
 	if err == nil || !strings.Contains(err.Error(), "adapters/extra") {
 		t.Fatalf("validatePublishedSet() error = %v, want unlisted adapter", err)
+	}
+}
+
+// A helper module under testutil/ is published so an outside project can start
+// the same brokers in its own tests. A root-owned helper package (no go.mod,
+// like testutil/dockerexec) is part of the root module and is not a module.
+func TestDiscoverPublishedModules_IncludesTestutilModules(t *testing.T) {
+	t.Parallel()
+
+	repo, _ := writeFixtureRepository(t, false)
+	writeTestFile(t, filepath.Join(repo, "testutil", "plain", "plain.go"), "package plain\n")
+
+	discovered, err := discoverPublishedModules(repo)
+	if err != nil {
+		t.Fatalf("discoverPublishedModules() error = %v", err)
+	}
+	if !slices.Contains(discovered, "testutil/example") {
+		t.Errorf("discovered = %v, missing testutil/example", discovered)
+	}
+	if slices.Contains(discovered, "testutil/plain") {
+		t.Errorf("discovered = %v, contains root-owned package testutil/plain", discovered)
 	}
 }
 
@@ -949,12 +986,13 @@ func fixtureManifest() releaseManifest {
 		ModulePrefix: "github.com/mariotoffia/gobridge",
 		Published: []publishedModule{
 			{Path: ".", Layer: 0},
-			{Path: "adapters/example", Layer: 1},
-			{Path: "deployment/aws/infra", Layer: 1},
-			{Path: "httpapi", Layer: 2},
-			{Path: "deployment/aws/cdk", Layer: 3},
-			{Path: "deployment/aws/lib", Layer: 3},
-			{Path: "cmd/gobridge", Layer: 4},
+			{Path: "testutil/example", Layer: 1},
+			{Path: "adapters/example", Layer: 2},
+			{Path: "deployment/aws/infra", Layer: 2},
+			{Path: "httpapi", Layer: 3},
+			{Path: "deployment/aws/cdk", Layer: 4},
+			{Path: "deployment/aws/lib", Layer: 4},
+			{Path: "cmd/gobridge", Layer: 5},
 		},
 	}
 }
@@ -969,11 +1007,20 @@ func writeFixtureRepository(t *testing.T, writeManifest bool) (string, releaseMa
 
 go 1.25.0
 `,
-		"adapters/example/go.mod": `module github.com/mariotoffia/gobridge/adapters/example
+		"testutil/example/go.mod": `module github.com/mariotoffia/gobridge/testutil/example
 
 go 1.25.0
 
 require github.com/mariotoffia/gobridge v0.3.0
+`,
+		"adapters/example/go.mod": `module github.com/mariotoffia/gobridge/adapters/example
+
+go 1.25.0
+
+require (
+	github.com/mariotoffia/gobridge v0.3.0
+	github.com/mariotoffia/gobridge/testutil/example v0.3.0
+)
 `,
 		"httpapi/go.mod": `module github.com/mariotoffia/gobridge/httpapi
 

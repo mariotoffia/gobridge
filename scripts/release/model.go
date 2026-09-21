@@ -260,7 +260,7 @@ func isInternalOnlyPath(modulePath string) bool {
 	if slices.Contains(publishedDeploymentModules, modulePath) {
 		return false
 	}
-	for _, prefix := range []string{"deployment", "scripts", "tests", "testutil"} {
+	for _, prefix := range []string{"deployment", "scripts", "tests"} {
 		if modulePath == prefix || strings.HasPrefix(modulePath, prefix+"/") {
 			return true
 		}
