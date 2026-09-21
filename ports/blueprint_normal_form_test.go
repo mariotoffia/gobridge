@@ -1,6 +1,7 @@
 package ports_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -305,6 +306,21 @@ func TestContentNormalForm_ConditionValuesFollowTheRuntimeCoercion(t *testing.T)
 	// Two integers the runtime cannot tell apart are one rule here as well, so
 	// an update between them is not a change.
 	assert.Equal(t, valueOf(withValue(int64(9007199254740992))), valueOf(withValue(int64(9007199254740993))))
+
+	// The runtime compares -0.0 and 0.0 as one float; the projection would write
+	// them as "-0" and "0", so the normal form writes both as the plain zero.
+	negativeZero := math.Copysign(0, -1)
+	assert.Equal(t, float64(0), valueOf(withValue(negativeZero)))
+	assert.True(t, math.Signbit(negativeZero), "the fixture really is a negative zero")
+	assert.False(t, math.Signbit(valueOf(withValue(negativeZero)).(float64)))
+	assert.Equal(t, []any{float64(0)}, valueOf(withValue([]float64{negativeZero})))
+
+	// The typed lists the runtime knows become lists of the same normalised
+	// elements; any other slice is what the runtime makes of it, a string.
+	assert.Equal(t, []any{float64(1)}, valueOf(withValue([]int{1})))
+	assert.Equal(t, []any{"a"}, valueOf(withValue([]string{"a"})))
+	assert.Equal(t, ports.EmptyConditionList{EmptyList: true}, valueOf(withValue([]string{})))
+	assert.Equal(t, "[1 2]", valueOf(withValue([]int64{1, 2})))
 
 	input := withValue(map[string]any{"k": "v"})
 	ports.ContentNormalForm(input)

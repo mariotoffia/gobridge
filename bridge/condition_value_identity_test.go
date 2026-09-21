@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -53,4 +54,7 @@ func TestConfigContentIdentity_ConditionValuesThatMatchDifferentlyStayDistinct(t
 	// integers the runtime cannot tell apart (it compares float64) are one rule.
 	require.False(t, configContentEqual(ruleWithValue("[]"), emptyList))
 	require.True(t, configContentEqual(ruleWithValue(int64(9007199254740992)), ruleWithValue(int64(9007199254740993))))
+
+	// A negative zero and a zero are one float to the runtime, so one rule here.
+	require.True(t, configContentEqual(ruleWithValue(math.Copysign(0, -1)), ruleWithValue(0.0)))
 }

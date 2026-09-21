@@ -181,11 +181,15 @@ type EmptyConditionList struct {
 //   - a string and a bool keep their kind;
 //   - every number, including a decoded JSON number, becomes the float64 the
 //     runtime compares with, so two integers the runtime cannot tell apart are
-//     one rule here as well;
-//   - a list keeps its element kinds, each element written by the same rule;
-//     an empty list becomes EmptyConditionList;
-//   - anything else — a map, a struct — becomes the string fmt.Sprint gives,
-//     which is exactly what the runtime compares for such a value.
+//     one rule here as well; a negative zero becomes the plain zero, because
+//     the runtime compares the two as equal while a JSON projection would
+//     write "-0" and "0";
+//   - the lists the runtime knows — []any, []string, []float64 and []int —
+//     become lists of the same normalised elements; an empty one becomes
+//     EmptyConditionList;
+//   - anything else — a map, a struct, any other slice — becomes the string
+//     fmt.Sprint gives, which is exactly what the runtime compares for such a
+//     value.
 //
 // fmt.Sprint writes map keys in sorted order, so the result is deterministic.
 func normalConditionValue(v any) any {
@@ -196,35 +200,54 @@ func normalConditionValue(v any) any {
 	// this package carries no JSON dependency) is the float64 the runtime uses.
 	if n, ok := v.(interface{ Float64() (float64, error) }); ok {
 		if f, err := n.Float64(); err == nil {
-			return f
+			return plainFloat(f)
 		}
 		return fmt.Sprint(v)
+	}
+	switch items := v.(type) {
+	case []any:
+		return normalConditionList(len(items), func(i int) any { return items[i] })
+	case []string:
+		return normalConditionList(len(items), func(i int) any { return items[i] })
+	case []float64:
+		return normalConditionList(len(items), func(i int) any { return items[i] })
+	case []int:
+		return normalConditionList(len(items), func(i int) any { return items[i] })
 	}
 	rv := reflect.ValueOf(v)
 	switch rv.Kind() {
 	case reflect.String, reflect.Bool:
 		return v
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return float64(rv.Int())
+		return plainFloat(float64(rv.Int()))
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return float64(rv.Uint())
+		return plainFloat(float64(rv.Uint()))
 	case reflect.Float32, reflect.Float64:
-		return rv.Float()
-	case reflect.Slice:
-		if rv.Len() == 0 {
-			return EmptyConditionList{EmptyList: true}
-		}
-		if items, ok := v.([]any); ok {
-			out := make([]any, len(items))
-			for i, item := range items {
-				out[i] = normalConditionValue(item)
-			}
-			return out
-		}
-		return v // a typed list keeps its element kinds as written
+		return plainFloat(rv.Float())
 	default:
 		return fmt.Sprint(v)
 	}
+}
+
+// plainFloat returns f with a negative zero written as the plain zero.
+func plainFloat(f float64) float64 {
+	if f == 0 {
+		return 0
+	}
+	return f
+}
+
+// normalConditionList writes the n elements at(i) as a list of normalised
+// elements, or EmptyConditionList when there are none.
+func normalConditionList(n int, at func(int) any) any {
+	if n == 0 {
+		return EmptyConditionList{EmptyList: true}
+	}
+	out := make([]any, n)
+	for i := range out {
+		out[i] = normalConditionValue(at(i))
+	}
+	return out
 }
 
 // canonicalDuration rewrites raw in time.Duration's own spelling. dflt is the
