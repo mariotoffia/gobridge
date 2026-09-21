@@ -81,10 +81,10 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   the `bridge.shutdown_timeout` / `bridge.drain_timeout` defaults are written
   out. So a rollback that restores the running content, a re-save by another
   writer, or a generator that reorders lists or writes defaults out keeps every
-  session connected. Lists whose order is the meaning — a route's bindings and
-  processors, a resolver's rules, a receiver's subscriptions, the cluster
-  roster, plugin options — are still compared by position, and a document that
-  cannot be normalised still counts as a change.
+  session connected. The cluster roster is compared as the set it is. Lists
+  whose order is the meaning — a route's bindings and processors, a resolver's
+  rules, a receiver's subscriptions, plugin options — are still compared by
+  position, and a document that cannot be normalised still counts as a change.
 - **One shared normal form for all three checks.** The Supervisor's no-op
   check, the configuration manager's desired-versus-running fingerprint and the
   AWS runtime's skip check all use it, so they can no longer disagree about

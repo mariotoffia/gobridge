@@ -1,6 +1,7 @@
 package ports_test
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 
@@ -13,6 +14,17 @@ import (
 // sharedPlugin is a pointer-typed PluginConfig so a test can prove the normal
 // form carries the decoded plugin options through by identity, untouched.
 type sharedPlugin struct{ broker string }
+
+// Named types a hand-built rule could carry as a condition value. The runtime
+// stringifies every one of them, so the normal form must as well.
+type (
+	namedInt    int
+	namedBool   bool
+	namedString string
+	floatNamed  string
+)
+
+func (floatNamed) Float64() (float64, error) { return 1, nil }
 
 func (*sharedPlugin) Kind() string    { return "shared" }
 func (*sharedPlugin) Validate() error { return nil }
@@ -134,7 +146,16 @@ func TestContentNormalForm_KeepsOrderSensitiveListsPositional(t *testing.T) {
 	assert.Equal(t, []string{"p2", "p1"}, routeB.Processors, "a processor chain runs in order")
 	assert.Equal(t, "b2", routeB.Resolver.Rules[0].BindingID, "rules are evaluated in order")
 	assert.Equal(t, "t/2", got.Receivers[1].Topics[0].Topic, "subscriptions stay as written")
-	assert.Equal(t, []string{"node-b", "node-a"}, got.Bridge.Cluster.Members, "the roster stays as written")
+}
+
+// The cluster roster is a set everywhere the bridge reads it (admission,
+// preflight and the coordinator all sort it), so it is sorted here too and a
+// reordered roster is the same cohort.
+func TestContentNormalForm_SortsTheClusterRoster(t *testing.T) {
+	input := normalFormFixture(nil)
+	got := ports.ContentNormalForm(input)
+	assert.Equal(t, []string{"node-a", "node-b"}, got.Bridge.Cluster.Members)
+	assert.Equal(t, []string{"node-b", "node-a"}, input.Bridge.Cluster.Members, "the input is never modified")
 }
 
 func TestContentNormalForm_CanonicalDurationSpelling(t *testing.T) {
@@ -317,6 +338,15 @@ func TestContentNormalForm_ConditionValuesFollowTheRuntimeCoercion(t *testing.T)
 	assert.True(t, math.Signbit(negativeZero), "the fixture really is a negative zero")
 	assert.False(t, math.Signbit(valueOf(withValue(negativeZero)).(float64)))
 	assert.Equal(t, []any{float64(0)}, valueOf(withValue([]float64{negativeZero})))
+
+	// Only the exact concrete types the runtime special-cases are numbers or
+	// bools here; a named type, or any other type with a Float64 method, is
+	// what the runtime makes of it, the string fmt.Sprint gives.
+	assert.Equal(t, float64(7), valueOf(withValue(json.Number("7"))), "a decoded JSON number is the float the runtime compares")
+	assert.Equal(t, "7", valueOf(withValue(namedInt(7))))
+	assert.Equal(t, "true", valueOf(withValue(namedBool(true))))
+	assert.Equal(t, "alpha", valueOf(withValue(floatNamed("alpha"))), "a Float64 method on another type means nothing to the runtime")
+	assert.Equal(t, "alpha", valueOf(withValue(namedString("alpha"))))
 
 	// The typed lists the runtime knows become lists of the same normalised
 	// elements; any other slice is what the runtime makes of it, a string.

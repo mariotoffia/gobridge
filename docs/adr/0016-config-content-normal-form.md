@@ -55,20 +55,24 @@ The normal form:
 - sorts `Sessions`, `Receivers`, `Senders`, `Bindings` and `Routes` by id,
   stably, because every other part of the document refers to their entries by
   id and their position carries no meaning;
+- sorts the cluster roster (`bridge.cluster.members`) as well, because the
+  bridge treats it as a set everywhere it reads it: deployment admission,
+  the reload preflight and the rollout coordinator all sort it;
 - keeps every other list in its written order, because there the order is the
   meaning: a route's bindings (the first one is the primary session), its
-  processor chain, a resolver's rules, a receiver's subscriptions, the cluster
-  roster, and anything inside a plugin's own options;
+  processor chain, a resolver's rules, a receiver's subscriptions, and anything
+  inside a plugin's own options;
 - writes every duration field in `time.Duration`'s own spelling, so `30000ms`
   and `30s` are one value. A value that cannot be parsed is kept as written, so
   it still takes part in the comparison and a document that cannot be brought
   into the normal form counts as a change (fail safe);
 - writes a resolver rule's condition value the way the runtime coerces it,
-  exactly as `runtime.Val` does: nil stays nil, a string and a bool keep their
-  kind, every number becomes the `float64` the runtime compares (so two
-  integers the runtime cannot tell apart are one rule here too), a list keeps
-  its element kinds, and anything else, a map for instance, becomes the string
-  `fmt.Sprint` gives. An empty list becomes a private marker value that neither
+  exactly as `runtime.Val` does, on the same concrete types: nil stays nil, a
+  string and a bool keep their kind, every built-in number and a decoded JSON
+  number become the `float64` the runtime compares (so two integers the
+  runtime cannot tell apart are one rule here too), the four list types the
+  runtime knows keep their element kinds, and anything else, a map or a named
+  type for instance, becomes the string `fmt.Sprint` gives. An empty list becomes a private marker value that neither
   a document nor a caller can carry, so an empty map, an empty list, a literal
   string and an absent value are all different rules in the identity, as they
   are different matches at runtime, and the empty-collection rule below cannot

@@ -24,10 +24,11 @@ import (
 //     guard), so leaving it out here does not weaken that ordering.
 //   - Sessions, Receivers, Senders, Bindings and Routes are sorted by id,
 //     stably. Every other part of the document refers to these entries by id,
-//     so their position carries no meaning. Every OTHER list keeps its written
-//     order: a route's bindings (the first one is the primary session), its
-//     processor chain, a resolver's rules, a receiver's subscriptions, the
-//     cluster roster, and anything inside a plugin's own options.
+//     so their position carries no meaning. The cluster roster is sorted as
+//     well, because the bridge reads it as a set. Every OTHER list keeps its
+//     written order: a route's bindings (the first one is the primary
+//     session), its processor chain, a resolver's rules, a receiver's
+//     subscriptions, and anything inside a plugin's own options.
 //   - Every duration field is rewritten in time.Duration's own spelling, so
 //     "30000ms" and "30s" are one value. A value time.ParseDuration cannot read
 //     is kept as written: it still takes part in the comparison, so a document
@@ -94,6 +95,12 @@ func normalBridgeSettings(b BridgeSettings) BridgeSettings {
 	b.MaxDrainTimeout = canonicalDuration(b.MaxDrainTimeout, 0)
 	if b.Cluster != nil {
 		c := *b.Cluster
+		// The roster is a set everywhere the bridge reads it (deployment
+		// admission, the reload preflight and the rollout coordinator all sort
+		// it), so a reordered roster is the same cohort.
+		if len(c.Members) > 0 {
+			c.Members = slices.Sorted(slices.Values(c.Members))
+		}
 		// ConfirmWindowDuration treats an empty, zero or negative window alike,
 		// but the validator accepts only an empty or positive one, so a written
 		// zero stays distinct from an omitted window here (see canonicalDuration).
@@ -203,37 +210,58 @@ func normalConditionValue(v any) any {
 	if _, ok := v.(emptyConditionList); ok {
 		return v
 	}
-	// A decoded JSON number (encoding/json's Number, matched by its method set so
-	// this package carries no JSON dependency) is the float64 the runtime uses.
-	if n, ok := v.(interface{ Float64() (float64, error) }); ok {
-		if f, err := n.Float64(); err == nil {
-			return plainFloat(f)
-		}
-		return fmt.Sprint(v)
-	}
-	switch items := v.(type) {
-	case []any:
-		return normalConditionList(len(items), func(i int) any { return items[i] })
-	case []string:
-		return normalConditionList(len(items), func(i int) any { return items[i] })
-	case []float64:
-		return normalConditionList(len(items), func(i int) any { return items[i] })
-	case []int:
-		return normalConditionList(len(items), func(i int) any { return items[i] })
-	}
-	rv := reflect.ValueOf(v)
-	switch rv.Kind() {
-	case reflect.String, reflect.Bool:
+	// The switch names the exact concrete types the runtime special-cases. A
+	// named type — even one whose underlying type is a number, or one that
+	// happens to have a Float64 method — is not one of them, and the runtime
+	// stringifies it, so it falls through to fmt.Sprint below.
+	switch val := v.(type) {
+	case string, bool:
 		return v
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return plainFloat(float64(rv.Int()))
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return plainFloat(float64(rv.Uint()))
-	case reflect.Float32, reflect.Float64:
-		return plainFloat(rv.Float())
-	default:
-		return fmt.Sprint(v)
+	case float64:
+		return plainFloat(val)
+	case float32:
+		return plainFloat(float64(val))
+	case int:
+		return plainFloat(float64(val))
+	case int8:
+		return plainFloat(float64(val))
+	case int16:
+		return plainFloat(float64(val))
+	case int32:
+		return plainFloat(float64(val))
+	case int64:
+		return plainFloat(float64(val))
+	case uint:
+		return plainFloat(float64(val))
+	case uint8:
+		return plainFloat(float64(val))
+	case uint16:
+		return plainFloat(float64(val))
+	case uint32:
+		return plainFloat(float64(val))
+	case uint64:
+		return plainFloat(float64(val))
+	case []any:
+		return normalConditionList(len(val), func(i int) any { return val[i] })
+	case []string:
+		return normalConditionList(len(val), func(i int) any { return val[i] })
+	case []float64:
+		return normalConditionList(len(val), func(i int) any { return val[i] })
+	case []int:
+		return normalConditionList(len(val), func(i int) any { return val[i] })
 	}
+	// A decoded JSON number is the float64 the runtime compares with. It is
+	// matched by its exact type, named without importing encoding/json so this
+	// package carries no JSON dependency; when it cannot be parsed the runtime
+	// keeps its text, which is what fmt.Sprint gives below.
+	if t := reflect.TypeOf(v); t.PkgPath() == "encoding/json" && t.Name() == "Number" {
+		if n, ok := v.(interface{ Float64() (float64, error) }); ok {
+			if f, err := n.Float64(); err == nil {
+				return plainFloat(f)
+			}
+		}
+	}
+	return fmt.Sprint(v)
 }
 
 // plainFloat returns f with a negative zero written as the plain zero.
