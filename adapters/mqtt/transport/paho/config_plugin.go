@@ -29,11 +29,12 @@ var (
 )
 
 // Config is the typed PluginConfig for the MQTT (Eclipse Paho)
-// transport. It nests session/sender role configs and is shared
+// transport. It nests session/sender/subscription role configs and is shared
 // across SessionSpec.Config / ReceiverSpec.Config / SenderSpec.Config.
 type Config struct {
-	Session SessionOptions `mapstructure:"session" yaml:"session" json:"session"`
-	Sender  SenderOptions  `mapstructure:"sender" yaml:"sender" json:"sender"`
+	Session      SessionOptions      `mapstructure:"session" yaml:"session" json:"session"`
+	Sender       SenderOptions       `mapstructure:"sender" yaml:"sender" json:"sender"`
+	Subscription SubscriptionOptions `mapstructure:"subscription" yaml:"subscription" json:"subscription"`
 
 	// CredentialsURIRef is the optional URI consulted by the bridge's
 	// credential store at build time. Resolved material is applied
@@ -139,6 +140,9 @@ func (c Config) Validate() error {
 	if err := c.validateDurations(); err != nil {
 		return err
 	}
+	if err := c.Subscription.validate(); err != nil {
+		return err
+	}
 	if err := c.Session.Will.Validate(); err != nil {
 		return err
 	}
@@ -188,6 +192,7 @@ func (c Config) validateDurations() error {
 		{"session.unmatched_grace", c.Session.UnmatchedGrace},
 		{"sender.timeout", c.Sender.Timeout},
 		{"sender.throttle_retry_after", c.Sender.ThrottleRetryAfter},
+		{"subscription.qos_recheck_interval", c.Subscription.QoSRecheckInterval},
 	}
 	for _, d := range durations {
 		if d.value < 0 {
