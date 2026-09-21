@@ -121,7 +121,7 @@ func (r *RouteRunner) resolveRawPlans(ctx context.Context, env *messaging.Envelo
 
 		addr, err := RenderAddress(b.Address, env.Headers())
 		if err != nil {
-			return nil, shared.ErrInvalidTopic.
+			return nil, shared.ErrAddressTemplate.
 				WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
 		}
 

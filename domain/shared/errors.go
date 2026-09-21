@@ -53,6 +53,10 @@ const (
 	ErrCodeInvalidConfig   ErrorCode = "INVALID_CONFIG"
 	ErrCodePayloadTooLarge ErrorCode = "PAYLOAD_TOO_LARGE"
 	ErrCodeInvalidTopic    ErrorCode = "INVALID_TOPIC"
+	// ErrCodeAddressTemplate flags a binding address template that cannot be
+	// rendered for this message, e.g. a {placeholder} with no header value.
+	// It is Rejected: the message lacks the data, so retrying never helps.
+	ErrCodeAddressTemplate ErrorCode = "ADDRESS_TEMPLATE"
 	ErrCodeProtocolError   ErrorCode = "PROTOCOL_ERROR"
 	ErrCodeSchemaViolation ErrorCode = "SCHEMA_VIOLATION"
 	ErrCodeMessageExpired  ErrorCode = "MESSAGE_EXPIRED"
@@ -253,6 +257,10 @@ var (
 	ErrInvalidTopic = &BridgeError{
 		Code: ErrCodeInvalidTopic, Class: ErrorRejected,
 		Message: "invalid topic",
+	}
+	ErrAddressTemplate = &BridgeError{
+		Code: ErrCodeAddressTemplate, Class: ErrorRejected,
+		Message: "address template cannot be rendered",
 	}
 	ErrProtocolError = &BridgeError{
 		Code: ErrCodeProtocolError, Class: ErrorPermanent,

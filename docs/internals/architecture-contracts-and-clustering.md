@@ -51,7 +51,7 @@ All errors in the bridge pipeline are structured as `shared.BridgeError` with an
 
 **Permanent (not retriable; DLQ per route `FailureAction`):** `NOT_AUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID_CONFIG`, `PROTOCOL_ERROR`, `QOS_NOT_SUPPORTED`
 
-**Rejected (payload-level; dropped without DLQ):** `INVALID_PAYLOAD`, `PAYLOAD_TOO_LARGE`, `INVALID_TOPIC`, `SCHEMA_VIOLATION`, `MESSAGE_FILTERED`
+**Rejected (payload-level; dropped without DLQ):** `INVALID_PAYLOAD`, `PAYLOAD_TOO_LARGE`, `INVALID_TOPIC`, `ADDRESS_TEMPLATE`, `SCHEMA_VIOLATION`, `MESSAGE_FILTERED`
 
 **Expired (per route `ExpiredAction`):** `MESSAGE_EXPIRED`
 

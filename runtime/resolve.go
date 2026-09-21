@@ -47,7 +47,7 @@ func (r *BindingResolver) Resolve(_ context.Context, env *messaging.Envelope) ([
 
 		addr, err := route.RenderAddress(b.Address, env.Headers())
 		if err != nil {
-			return nil, shared.ErrInvalidTopic.
+			return nil, shared.ErrAddressTemplate.
 				WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
 		}
 
@@ -257,7 +257,7 @@ func (r *RuleResolver) planForBinding(bindingID string, env *messaging.Envelope)
 
 	addr, err := route.RenderAddress(b.Address, env.Headers())
 	if err != nil {
-		return nil, shared.ErrInvalidTopic.
+		return nil, shared.ErrAddressTemplate.
 			WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
 	}
 

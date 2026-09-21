@@ -46,6 +46,7 @@ The runtime emits these metrics automatically when a `MetricsExporter` is config
 | `MessagesReceived` | Counter | `route_id` | Messages accepted for a route |
 | `MessagesSent` | Counter | `route_id` | Messages dispatched to a sender |
 | `MessagesDropped` | Counter | `route_id` | Messages dropped (retry unsupported, no DLQ) -- the SILENT-LOSS signal; alarmed by default (`MessagesDropped > 0`) |
+| `AddressTemplateErrors` | Counter | `route_id` | Messages DLQ'd or dropped because a binding address `{placeholder}` had no header value (error code `ADDRESS_TEMPLATE`) |
 | `MessagesExpired` | Counter | `route_id` | Messages dropped by TTL under `on_expired=drop` -- alarmed by default when sustained |
 | `RouteErrors` | Counter | `route_id` | Recoverable route errors |
 | `DeliveryE2ELatency` | Timer | `route_id` | End-to-end delivery time per message |

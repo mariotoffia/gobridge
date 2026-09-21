@@ -19,6 +19,21 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   as `x-bridge.*` headers being removed on arrival and `sqs.*` headers reaching
   a broker.
 
+### Fixed — a missing address-template placeholder is rejected, not retried
+
+- A binding address `{placeholder}` with no header value now fails with the
+  new rejected error code `ADDRESS_TEMPLATE` instead of `INVALID_TOPIC`. The
+  message is DLQ'd (or dropped under `on_permanent_failure: drop`) once and
+  never retried. DLQ filters or alarms keyed on `INVALID_TOPIC` for template
+  failures must switch to `ADDRESS_TEMPLATE`.
+- New counter `AddressTemplateErrors` (`route_id`) counts these messages on
+  both the DLQ and the drop path.
+- HTTP ingress answers `400 Bad Request` with the cause's message when a
+  request is settled terminally with any `rejected`-class cause, instead of
+  `200`. The idempotency key is not recorded, so a corrected resend is
+  processed. Success (`200`), retry (`500`) and terminal causes of other
+  classes (`200`) are unchanged.
+
 ### Fixed — mixed MQTT QoS on direct-hold routes
 
 - Admit otherwise-valid QoS 0 subscriptions, alone or mixed with QoS 1/2.

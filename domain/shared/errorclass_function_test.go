@@ -45,6 +45,7 @@ func TestErrorCodeToClass_IsAFunction(t *testing.T) {
 		shared.ErrInvalidPayload,
 		shared.ErrPayloadTooLarge,
 		shared.ErrInvalidTopic,
+		shared.ErrAddressTemplate,
 		shared.ErrProtocolError,
 		shared.ErrSchemaViolation,
 		shared.ErrMessageExpired,
