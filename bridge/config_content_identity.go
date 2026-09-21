@@ -64,12 +64,15 @@ func configContentEqual(a, b *ports.BridgeConfig) bool {
 // digest this project writes is computed from, and what configContentEqual
 // compares. ok is false on a marshal error so the caller can fail closed.
 func configCanonicalBytes(cfg *ports.BridgeConfig) ([]byte, bool) {
-	return canonicalProjection(ports.ContentNormalForm(cfg))
+	return canonicalProjection(ports.ContentNormalForm(cfg), encodeCanonical)
 }
 
-// legacyConfigCanonicalBytes returns the same projection taken over cfg AS
-// WRITTEN, without the normal form — the identity releases before the normal
-// form computed.
+// legacyConfigCanonicalBytes returns the projection releases before the content
+// normal form computed: the same traversal taken over cfg AS WRITTEN, with each
+// value encoded by encodeLegacy rather than by the current encoder. Both halves
+// are deliberate — the document is not normalised, and the numbers in it are
+// rounded through float64 — because the result has to be the bytes those
+// releases hashed, not a better projection of the same configuration.
 //
 // It exists only to READ digests those releases recorded durably: the digest on
 // a cluster rollout row and the one on the committed-config artifact. An
@@ -84,9 +87,9 @@ func configCanonicalBytes(cfg *ports.BridgeConfig) ([]byte, bool) {
 //
 // It can be deleted once no cohort can still hold a record written before the
 // normal form: every rollout row and committed-config artifact in the fleet has
-// been rewritten by a release that has it.
+// been rewritten by a release that has it. Delete encodeLegacy with it.
 func legacyConfigCanonicalBytes(cfg *ports.BridgeConfig) ([]byte, bool) {
-	return canonicalProjection(cfg)
+	return canonicalProjection(cfg, encodeLegacy)
 }
 
 // recordedDigestMatches reports whether cfg is the configuration that recorded
@@ -97,8 +100,11 @@ func legacyConfigCanonicalBytes(cfg *ports.BridgeConfig) ([]byte, bool) {
 // and both records were written over a document whose Version was that number.
 //
 // It accepts cfg's own digest and, for records written before the content normal
-// form existed, cfg's legacy digest (see legacyConfigCanonicalBytes). The legacy
-// projection includes the version number, so it is taken over a COPY of cfg put
+// form existed, cfg's legacy digest (see legacyConfigCanonicalBytes). That older
+// spelling is recomputed exactly as the release that wrote the record computed
+// it, down to the float64 rounding of an integer wider than 2^53, because the
+// only thing a recorded digest can be compared against is the bytes its writer
+// hashed. It includes the version number, so it is taken over a COPY of cfg put
 // back to recordedVersion; the caller's config is never modified.
 //
 // A legacy match, once made, is REMEMBERED on the barrier as "this recorded
@@ -188,6 +194,12 @@ func (b *rolloutBarrier) rememberLegacy(recorded, identity string) {
 // walks — the blueprint tags the Config fields json:"-", so a plugin-only change
 // would otherwise be invisible. ok is false on a marshal error.
 //
+// encode writes one value: encodeCanonical for the identity this release
+// computes, encodeLegacy for the one it only reads back. The traversal is shared
+// so the two spellings cannot drift apart in which values they cover or in what
+// order they cover them — they differ in how a single value is written, and in
+// nothing else.
+//
 // The projection must be stable across a save and a reload, because that is the
 // only reason it exists: a cohort agrees on a change by comparing this value,
 // and the member proposing it holds the config in memory while every other
@@ -196,12 +208,12 @@ func (b *rolloutBarrier) rememberLegacy(recorded, identity string) {
 // collection that is absent and one that is empty the same content — see that
 // function for why a save-and-reload round trip otherwise gives one change two
 // identities, and what is deliberately NOT collapsed.
-func canonicalProjection(cfg *ports.BridgeConfig) ([]byte, bool) {
+func canonicalProjection(cfg *ports.BridgeConfig, encode func(*bytes.Buffer, any) bool) ([]byte, bool) {
 	if cfg == nil {
 		return nil, true
 	}
 	var buf bytes.Buffer
-	if !encodeCanonical(&buf, shared.RevealSecrets(cfg)) {
+	if !encode(&buf, shared.RevealSecrets(cfg)) {
 		return nil, false
 	}
 	ok := true
@@ -212,7 +224,7 @@ func canonicalProjection(cfg *ports.BridgeConfig) ([]byte, bool) {
 		// Each value is written followed by a newline, so the ordered stream of
 		// plugin payloads is self-delimiting; a plugin config that carries
 		// nothing encodes as "null", preserving its structural position.
-		if !encodeCanonical(&buf, shared.RevealSecrets(pc)) {
+		if !encode(&buf, shared.RevealSecrets(pc)) {
 			ok = false
 		}
 	})
@@ -241,6 +253,45 @@ func encodeCanonical(buf *bytes.Buffer, value any) bool {
 	dec.UseNumber()
 	var tree any
 	if err := dec.Decode(&tree); err != nil {
+		return false
+	}
+	normalized, keep := ports.WithoutEmptyCollections(tree)
+	if !keep {
+		buf.WriteString("null\n")
+		return true
+	}
+	out, err := json.Marshal(normalized)
+	if err != nil {
+		return false
+	}
+	buf.Write(out)
+	buf.WriteByte('\n')
+	return true
+}
+
+// encodeLegacy appends one value to buf the way the projection up to release
+// v0.4.1 wrote it: marshalled, read back into a tree whose numbers are float64,
+// reduced by ports.WithoutEmptyCollections, marshalled again, newline.
+//
+// This function is a FOSSIL. Reading a number back as a float64 rounds any
+// integer wider than 2^53 — an int64 option such as a transport's maximum body
+// size — before it is hashed, and that rounding is baked into the digests those
+// releases wrote onto rollout rows and committed-config artifacts. Reproducing
+// it is the entire point. "Fixing" the rounding would make an upgraded member
+// compute a digest that no record in the fleet carries, and it would reject the
+// very records this path exists to recognise, so nothing in here may be
+// corrected, tidied or shared with encodeCanonical. It is deleted whole,
+// together with the legacy fallback, once no cohort can still hold such a
+// record.
+//
+// It reports false on a marshal error so the caller can fail closed.
+func encodeLegacy(buf *bytes.Buffer, value any) bool {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	var tree any
+	if err := json.Unmarshal(raw, &tree); err != nil {
 		return false
 	}
 	normalized, keep := ports.WithoutEmptyCollections(tree)

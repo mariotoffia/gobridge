@@ -132,8 +132,11 @@ the moment of it:
   document when that document is the committed content in another form.
 
 The raw-document digest is never written again; the first commit on the new
-release replaces the record. The fallback can be removed once no cohort can
-still hold a record written before the normal form.
+release replaces the record. The reader that reproduces it is a fossil: it
+recomputes the old projection byte for byte, including the way it rounded
+integers above 2^53 through `float64`, and it must never be corrected, or a
+valid old record would stop matching. The fallback can be removed once no
+cohort can still hold a record written before the normal form.
 
 **The committed artifact's version is still checked, separately.** The digest
 leaves the version out, so on its own it no longer proves that a decoded

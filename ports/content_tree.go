@@ -32,8 +32,11 @@ package ports
 //     a meaning of its own; if one ever does, that plugin's options need a
 //     value that is not an empty collection to carry it.
 //   - Scalars pass through untouched, so the caller decides how numbers are
-//     represented. Every projection in this project decodes with
-//     json.Decoder.UseNumber so an integer is never rounded through float64.
+//     represented. Every current projection in this project decodes with
+//     json.Decoder.UseNumber so an integer is never rounded through float64;
+//     the one exception is the bridge's reader of digests recorded by releases
+//     before the normal form, which reproduces their float64 rounding on
+//     purpose.
 func WithoutEmptyCollections(value any) (any, bool) {
 	switch typed := value.(type) {
 	case nil:
