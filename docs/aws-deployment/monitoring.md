@@ -126,6 +126,7 @@ gauge reports a current value and is read with `Maximum`. Reading a gauge with
 | `MessagesReceived` | `route_id` | Count | Messages received from transports |
 | `MessagesSent` | `route_id` | Count | Messages sent successfully (ingress ack and outbox drain) |
 | `MessagesDropped` | `route_id`, `reason` | Count | A terminal drop settled WITHOUT a DLQ record and WITHOUT a successful send: permanent, rejected, or retry-unsupported under a drop policy, or a missing DLQ store. Not a filter, not an expiry. |
+| `AddressTemplateErrors` | `route_id` | Count | A message terminated (DLQ'd or dropped) because a binding address template could not be rendered, typically a `{placeholder}` whose header the producer did not send. Counted once per message, on top of `DLQEntries` or `MessagesDropped`. The DLQ entry carries error code `ADDRESS_TEMPLATE`. |
 | `MessagesFiltered` | `route_id`, `processor` | Count | A processor deliberately discarded the message (`ErrMessageFiltered`) under `OnFiltered=drop` — a policy discard, distinct from a fault drop. `processor` is omitted when the drop is unattributed. |
 | `MessagesExpired` | `route_id` | Count | Message expired before delivery under `OnExpired=drop`. The drain-path bulk sweep also tags `session_id`. |
 | `RouteErrors` | `route_id` | Count | Delivery errors by route |

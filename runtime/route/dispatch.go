@@ -24,7 +24,7 @@ func (r *RouteRunner) sendDirectHoldForBinding(ctx context.Context, del ports.De
 			if addr != "" {
 				rendered, err := RenderAddress(addr, env.Headers())
 				if err != nil {
-					addrErr := shared.ErrInvalidTopic.
+					addrErr := shared.ErrAddressTemplate.
 						WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
 					return r.handleResolveError(ctx, del, env, addrErr)
 				}
@@ -679,6 +679,10 @@ func (r *RouteRunner) handleResolveError(ctx context.Context, del ports.Delivery
 	be, ok := shared.AsBridgeError(err)
 	if ok && be.Class != shared.ErrorTransient {
 		attempts := receiveCount(env) + 1
+		if be.Code == shared.ErrCodeAddressTemplate {
+			r.metrics.Counter(shared.MetricAddressTemplateErrors, 1,
+				shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
+		}
 		if r.dropOnPermanentFailure() {
 			// on_permanent_failure=drop, or no DLQ store: a rejected/permanent
 			// resolve error would otherwise be DLQ'd against the operator's drop
@@ -1094,9 +1098,11 @@ func (r *RouteRunner) emitExpired() {
 // terminalFailureRecorder is the out-of-band, trusted channel a runtime-internal
 // SYNTHETIC delivery uses to learn that its message was settled TERMINALLY
 // without ever being delivered — dropped by policy, filtered, expired, or
-// written to the DLQ. Only deliveries constructed inside the runtime
-// (Runtime.Inject / InjectRedrive) implement it; a transport delivery never
-// does, because its source already learns the outcome from the Ack itself.
+// written to the DLQ. Deliveries constructed inside the runtime
+// (Runtime.Inject / InjectRedrive) implement it. A transport delivery may
+// implement it too when its source must answer the producer differently for
+// a terminal failure than for a delivery (the HTTP receiver answers 400 for a
+// rejected message instead of 200).
 //
 // It exists because a synthetic Ack ALWAYS succeeds. Without this signal an
 // admin DLQ redrive whose replay was dropped or re-DLQ'd reads as a successful
@@ -1109,7 +1115,7 @@ type terminalFailureRecorder interface {
 }
 
 // noteTerminalFailure reports a non-delivering terminal settle to a delivery
-// that asked to hear about it. It is a no-op for every transport delivery.
+// that asked to hear about it. It is a no-op for a delivery that does not.
 func (r *RouteRunner) noteTerminalFailure(del ports.Delivery, cause error) {
 	if cause == nil {
 		return
@@ -1151,7 +1157,7 @@ func (r *RouteRunner) sharedOutbox(ctx context.Context, del ports.Delivery, env 
 					if addr != "" {
 						rendered, err := RenderAddress(addr, env.Headers())
 						if err != nil {
-							addrErr := shared.ErrInvalidTopic.
+							addrErr := shared.ErrAddressTemplate.
 								WithMessage(fmt.Sprintf("binding %q: address template error: %v", b.ID, err))
 							return r.handleResolveError(ctx, del, env, addrErr)
 						}

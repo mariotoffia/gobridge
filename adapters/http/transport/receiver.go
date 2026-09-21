@@ -379,6 +379,13 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.cfg.metrics.Timer(MetricHTTPIngressLatency, r.cfg.clock.Since(start), r.tag())
 		if result.err != nil {
 			writeError(w, http.StatusInternalServerError, "processing failed")
+		} else if be, ok := shared.AsBridgeError(result.terminal); ok && be.Class == shared.ErrorRejected &&
+			be.Code != shared.ErrCodeMessageFiltered {
+			// The message itself is bad and was DLQ'd or dropped: tell the
+			// producer, and do not record the key so a corrected resend is
+			// processed rather than swallowed as a duplicate. A filter drop
+			// is operator policy, not a bad request, so it stays 200.
+			writeError(w, http.StatusBadRequest, be.Message)
 		} else {
 			// Record the idempotency key ONLY on success so a client
 			// retry after a failure is re-processed rather than swallowed.

@@ -277,6 +277,10 @@ func TestBindingResolver_AddressTemplateError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing template variable")
 	}
+	be, ok := shared.AsBridgeError(err)
+	if !ok || be.Code != shared.ErrCodeAddressTemplate || be.Class != shared.ErrorRejected {
+		t.Fatalf("err = %v, want a rejected %s BridgeError", err, shared.ErrCodeAddressTemplate)
+	}
 }
 
 // ---------------------------------------------------------------------------

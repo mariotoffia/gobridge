@@ -15,7 +15,8 @@ canonical names, see the **shared kernel** rows in
 > **Recovery actions** below are operator-side. The runtime already
 > retries `transient` codes per the route's `BackoffPolicy`, sends
 > `permanent` codes to the DLQ (when configured), routes `expired` codes
-> through the route's `ExpiredAction`, and drops `rejected` codes silently.
+> through the route's `ExpiredAction`, and never retries `rejected` codes: DLQ'd when a store exists and
+> `on_permanent_failure` is not `drop`, otherwise dropped with a metric (`MESSAGE_FILTERED` follows `on_filtered`).
 > Manual recovery only applies after the automated path is exhausted or
 > when the underlying cause must be fixed at the source.
 
@@ -277,6 +278,12 @@ it at runtime too.
   context; fix the destination resolver or binding template that
   produced it.
 
+### `ADDRESS_TEMPLATE`
+
+* **When you see it.** A binding address `{placeholder}` has no header value for the message. It is DLQ'd (or dropped) once, never retried; HTTP ingress answers `400`.
+* **Likely cause.** The producer stopped sending a header the address depends on, or the template names the wrong header.
+* **Recovery.** Watch `AddressTemplateErrors` (`route_id`); fix the producer or the template, then redrive the DLQ entries.
+
 ### `PROTOCOL_ERROR`
 
 * **When you see it.** The broker reported a protocol-level violation
@@ -440,11 +447,11 @@ it at runtime too.
 * **Recovery.** No action required. The runtime treats it as an
   idempotent no-op.
 
-## Rejected codes (silent drop)
+## Rejected codes (not retried)
 
-The runtime drops these envelopes without sending them to the DLQ (the
-envelope is being deliberately filtered or rejected as malformed input
-the bridge cannot meaningfully retain).
+Retrying cannot fix these, so the runtime settles them at once: to the DLQ
+when a store exists and `on_permanent_failure` is not `drop`, otherwise
+dropped with a metric. `MESSAGE_FILTERED` follows `on_filtered` instead.
 
 ### `MESSAGE_FILTERED`
 
@@ -486,7 +493,7 @@ The adapter and runtime diagnostic counters — what each one means when it clim
 |---|---|---|
 | `TIMEOUT`, `CONNECTION_LOST`, `UNAVAILABLE`, `THROTTLED`, `BROKER_BUSY`, `TEMPORARY_AUTH_FAILURE`, `NO_ROUTE_OWNER`, `FORWARD_FAILED`, `PROCESSOR_TIMEOUT` | `transient` | Only after retries exhausted |
 | `NOT_AUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID_CONFIG`, `PROTOCOL_ERROR`, `QOS_NOT_SUPPORTED`, `NOT_SUPPORTED`, `VERSION_MISMATCH`, `ALREADY_EXISTS`, `STALE_FENCING_TOKEN`, `DUPLICATE_RECORD`, `PROCESSOR_PANIC`, `INTERNAL`, `INVALID_OUTBOX_RECORD`, `OUTBOX_NOT_CLAIMABLE`, `OUTBOX_NOT_IN_CLAIMED_STATE`, `OUTBOX_ALREADY_TERMINAL`, `NO_BINDING_MATCH`, `POISON_MESSAGE` | `permanent` | Yes (per route `FailureAction`) |
-| `INVALID_PAYLOAD`, `PAYLOAD_TOO_LARGE`, `INVALID_TOPIC`, `SCHEMA_VIOLATION`, `MESSAGE_FILTERED` | `rejected` | No (silent drop) |
+| `INVALID_PAYLOAD`, `PAYLOAD_TOO_LARGE`, `INVALID_TOPIC`, `ADDRESS_TEMPLATE`, `SCHEMA_VIOLATION`, `MESSAGE_FILTERED` | `rejected` | Yes, never retried, when a DLQ store exists and `on_permanent_failure` is not `drop`; otherwise dropped with a `MessagesDropped` metric. `MESSAGE_FILTERED` follows `on_filtered` instead (default `drop`) |
 | `MESSAGE_EXPIRED` | `expired` | Per route `ExpiredAction` |
 
 The authoritative source is [`domain/shared/errors.go`](../domain/shared/errors.go);

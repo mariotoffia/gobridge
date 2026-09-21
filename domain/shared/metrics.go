@@ -238,6 +238,12 @@ const (
 	// in-flight it closes the conservation law received = sent + dropped + dlq +
 	// inflight, so a rising Dropped is the single signal for silent message loss.
 	MetricMessagesDropped = "MessagesDropped"
+	// MetricAddressTemplateErrors counts messages terminated (dropped or DLQ'd)
+	// because a binding address template could not be rendered — typically a
+	// {placeholder} whose header the producer did not send. It is counted once
+	// per message, route_id-tagged, on top of the drop/DLQ counter, so a
+	// producer that stopped sending a routing header is visible on its own.
+	MetricAddressTemplateErrors = "AddressTemplateErrors"
 	// MetricMessagesFiltered counts messages a processor deliberately dropped
 	// (shared.ErrMessageFiltered) under OnFiltered=drop — a POLICY discard, not a
 	// fault. Split from MessagesDropped so an intentional filter rate never masks

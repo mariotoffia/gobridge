@@ -121,6 +121,14 @@ re-stamped on the trusted side; a client cannot inject them via the reserved
 - **Body limit → 413.** A body exceeding `max_body_size` returns
   `413 Request Entity Too Large`, distinct from the `400` used for malformed
   JSON or trailing tokens.
+- **Rejected message → 400.** When the pipeline settles a request terminally
+  with a `rejected`-class cause (for example `ADDRESS_TEMPLATE`, a binding
+  address `{placeholder}` with no header value), the message has been DLQ'd or
+  dropped and the receiver answers `400 Bad Request` with the cause's message.
+  The idempotency key is not recorded, so a corrected resend is processed. The
+  exception is `MESSAGE_FILTERED`: a filter drop is operator policy, not a bad
+  request, so it answers `200` and records the key as before. A terminal cause
+  of any other class still answers `200`.
 - **Automatic envelope ID.** HTTP ingress generates a process-unique envelope
   ID of the form `http-<instance-entropy>-<unixnano>-<counter>` when the
   request omits `id`; the 8-byte crypto/rand instance entropy prevents
