@@ -94,19 +94,20 @@ type reloadPipeline struct {
 	admin chan adminApply
 
 	mu sync.Mutex
-	// lastAppliedFingerprint is the content identity (see fingerprint) of the
-	// config the applier last applied in-band, or "" when the config the
-	// runtime currently runs was NOT set by an in-band commit. run clears it
-	// whenever it forwards ANY config to the Supervisor (that config becomes
-	// what the runtime runs, so a prior in-band fingerprint is now stale —
-	// skipping against it would strand the runtime on an old config while disk
-	// holds a new one);
+	// lastAppliedFingerprint identifies the DOCUMENT the applier last applied
+	// in-band (see fingerprint), or "" when the config the runtime currently
+	// runs was NOT set by an in-band commit. run clears it whenever it forwards
+	// ANY config to the Supervisor (that config becomes what the runtime runs,
+	// so a prior in-band fingerprint is now stale — skipping against it would
+	// strand the runtime on an old config while disk holds a new one);
 	// applyCommitted re-records it after a successful in-band apply. The file
-	// watcher re-emits the committed config once after the commit's durable
-	// write; run skips that single re-emit when its fingerprint matches, so a
-	// commit costs exactly one runtime swap. Recorded only on a successful
-	// apply, so a failed in-band apply is still retried by the watcher (the
-	// historical safety net).
+	// watcher re-emits the committed document once after the commit's durable
+	// write; run skips that single re-emit, so a commit costs exactly one
+	// runtime swap. Only that exact document is skipped: a document that says
+	// the same thing at another version is forwarded, and the Supervisor
+	// decides whether it is a change (ADR 0016) and adopts it when it is not.
+	// Recorded only on a successful apply, so a failed in-band apply is still
+	// retried by the watcher (the historical safety net).
 	lastAppliedFingerprint string
 	// waiters resolves an applyCommitted call once the Supervisor reports the
 	// swap outcome for its config. Keyed by config pointer identity: onSwap
@@ -227,11 +228,11 @@ func (p *reloadPipeline) run(ctx context.Context, fileChanges <-chan *ports.Brid
 				continue
 			}
 			if p.isRedundantFileReload(cfg) {
-				// The watcher re-emitted the config an admin commit just applied
-				// in-band. The manager already recorded THIS pointer as
+				// The watcher re-emitted the exact document an admin commit just
+				// applied in-band. The manager already recorded THIS pointer as
 				// desiredConfig, so skipping the swap without acking would pin
 				// ReconfigurePending true forever for a config the runtime
-				// already runs. The runtime runs this exact content — ack it as
+				// already runs. The runtime runs this exact document — ack it as
 				// applied so desired-vs-running divergence clears.
 				if p.notifier != nil {
 					p.notifier.NotifyApplyResult(cfg, nil)

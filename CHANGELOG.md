@@ -90,7 +90,10 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   AWS runtime's skip check all use it, so they can no longer disagree about
   what counts as a change. The cluster rollout's candidate and committed-artifact
   digests (`bridge.ConfigArtifactDigest`) are taken over the same form;
-  `bridge.DeploymentBaselineContentDigest` is now the same value.
+  `bridge.DeploymentBaselineContentDigest` is now the same value. The
+  `gobridge` command's reload pipeline keeps an exact-document check for one
+  purpose only, recognising the watcher's re-emit of the document an admin
+  apply just wrote; any other document reaches the Supervisor, which decides.
 - **A no-op reload adopts the new document.** The runtime is kept, but the
   applied configuration and the reported `config_version` follow the source's
   version number.

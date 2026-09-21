@@ -2,23 +2,26 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 
-	"github.com/mariotoffia/gobridge/bridge"
 	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// How the reload pipeline recognises a config it is already running.
+// How the reload pipeline recognises the file watcher's echo of its own write.
 //
 // An admin commit applies in-band AND writes the file the watcher is watching,
-// so the watcher re-emits that config moments later. Without a way to recognise
-// it, every commit would cost a second full stop→rebuild→start swap. The
-// recognition is a content identity, not a byte comparison: two documents that
-// describe the same bridge answer the same, however each of them was written.
+// so the watcher re-emits that document moments later. Without a way to
+// recognise it, every commit would cost a second full stop→rebuild→start swap.
+// That is the only thing this file answers: is this reload the very document
+// the applier just wrote? It is not the question "is this a change?" — that one
+// belongs to the Supervisor, which compares the content normal form (ADR 0016)
+// and adopts an equivalent document instead of rebuilding for it.
 
-// recordApplied stores the canonical fingerprint of the just-applied committed
-// config so run can skip the watcher's re-emit of it.
+// recordApplied stores the fingerprint of the just-applied committed document so
+// run can skip the watcher's re-emit of it.
 func (p *reloadPipeline) recordApplied(cfg *ports.BridgeConfig) {
 	fp := p.canonicalFingerprint(cfg)
 	if fp == "" {
@@ -30,14 +33,15 @@ func (p *reloadPipeline) recordApplied(cfg *ports.BridgeConfig) {
 }
 
 // isRedundantFileReload reports whether cfg (a config parsed from disk by the
-// watcher) describes the configuration the applier last applied in-band.
+// watcher) is the exact document the applier last applied in-band — the echo of
+// the commit's own durable write, which the runtime is already running.
 //
-// The comparison is over the content normal form (ADR 0016), not over the
-// document's bytes: a document that differs only in its version number, in the
-// order of its sessions, receivers, senders, bindings or routes, in how a
-// duration is spelled, or in whether shutdown_timeout and drain_timeout are
-// written out rather than left to their default, is the configuration already
-// running and costs no swap. Any other difference is a change and is forwarded.
+// Only that exact document is dropped. Anything else is forwarded, even a
+// document that describes the same bridge under a different version number or
+// with its lists written in another order: whether such a document is a change
+// is the Supervisor's decision, taken over the content normal form (ADR 0016).
+// A document that is no change is adopted there, so the version the bridge
+// reports follows the file — which cannot happen if this shortcut swallows it.
 func (p *reloadPipeline) isRedundantFileReload(cfg *ports.BridgeConfig) bool {
 	fp := fingerprint(cfg)
 	if fp == "" {
@@ -64,19 +68,24 @@ func (p *reloadPipeline) canonicalFingerprint(cfg *ports.BridgeConfig) string {
 	return fingerprint(canonical)
 }
 
-// fingerprint returns the content identity of cfg: the one value this project
-// compares configurations by (bridge.ConfigArtifactDigest, taken over the
-// content normal form — ADR 0016). Two documents that describe the same bridge
-// have the same fingerprint, however each was written.
+// fingerprint identifies the document, not what it says: a hash of the bytes cfg
+// marshals to, so two configs with the same fingerprint write the same file.
+// Comparing documents is deliberate — the skip exists to catch one re-emitted
+// document, and a document that merely says the same thing must still reach the
+// Supervisor to be adopted.
 //
-// A nil config, and one that cannot be canonicalised, have no fingerprint. The
+// A nil config, and one that cannot be marshalled, have no fingerprint. The
 // empty string fails open: such a config is applied, never skipped.
 func fingerprint(cfg *ports.BridgeConfig) string {
-	digest, err := bridge.ConfigArtifactDigest(cfg)
+	if cfg == nil {
+		return ""
+	}
+	data, err := cfgparser.MarshalYAML(cfg)
 	if err != nil {
 		return ""
 	}
-	return digest
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // reparse projects cfg through the config store's wire form and back, matching

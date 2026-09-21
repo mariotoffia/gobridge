@@ -159,12 +159,15 @@ func reorderedContentTestConfig(version int, logLevel string) *ports.BridgeConfi
 	return cfg
 }
 
-// TestReloadPipeline_RedundantReloadComparesContentNotBytes pins what makes a
-// file reload redundant: the document says the same thing as the one the applier
-// last applied in-band, not that it repeats its bytes. The check runs over the
-// content normal form (ADR 0016), so a raised version number and a reordered
-// id-keyed list are not changes — while a real edit still is, and is applied.
-func TestReloadPipeline_RedundantReloadComparesContentNotBytes(t *testing.T) {
+// TestReloadPipeline_RedundantReloadIsOnlyTheExactDocument pins what the skip is
+// for: the watcher re-emits the exact document an in-band apply just wrote, and
+// that single re-emit is what gets dropped. Every other document is forwarded —
+// including one that says the same thing under a raised version or with its
+// id-keyed lists written in another order. Whether such a document is a change
+// is the Supervisor's question (it compares content — ADR 0016) and it adopts
+// the new document when it is not, so the version the bridge reports follows
+// the file instead of being stranded on the version the applier wrote.
+func TestReloadPipeline_RedundantReloadIsOnlyTheExactDocument(t *testing.T) {
 	reg := ports.NewRegistry()
 	require.NoError(t, reg.Register(contentTestTransport, func(ports.RawConfig) (ports.PluginConfig, error) {
 		return nil, nil
@@ -172,20 +175,23 @@ func TestReloadPipeline_RedundantReloadComparesContentNotBytes(t *testing.T) {
 	p := newReloadPipeline(reg, discardLogger())
 	applied := contentTestConfig(1, "info")
 	p.recordApplied(applied)
-	require.True(t, p.isRedundantFileReload(applied),
-		"precondition: the applied config must have been recorded")
+
+	reEmit, err := reparse(applied, reg)
+	require.NoError(t, err)
+	require.True(t, p.isRedundantFileReload(reEmit),
+		"the watcher's re-emit of the applied document is the one reload that is skipped")
 
 	for _, tc := range []struct {
-		name      string
-		reloaded  *ports.BridgeConfig
-		redundant bool
+		name     string
+		reloaded *ports.BridgeConfig
 	}{
-		{"the same content under a raised version", contentTestConfig(2, "info"), true},
-		{"the same content with its id-keyed lists reordered", reorderedContentTestConfig(1, "info"), true},
-		{"a real edit", contentTestConfig(1, "debug"), false},
+		{"the same content under a raised version", contentTestConfig(2, "info")},
+		{"the same content with its id-keyed lists reordered", reorderedContentTestConfig(1, "info")},
+		{"a real edit", contentTestConfig(1, "debug")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.redundant, p.isRedundantFileReload(tc.reloaded))
+			assert.False(t, p.isRedundantFileReload(tc.reloaded),
+				"a document other than the one just applied in-band must reach the Supervisor")
 		})
 	}
 }

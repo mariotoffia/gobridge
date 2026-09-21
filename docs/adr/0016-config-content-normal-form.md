@@ -89,6 +89,14 @@ happens to look like a duration, such as `ack_after`, is compared as written.
 `bridge.ConfigArtifactDigest`. The name is kept because the AWS deployment
 stamps it (`dynamodb_ha_baseline_config_digest`).
 
+One check is deliberately not a content check. The `gobridge` command's reload
+pipeline recognises the file watcher's re-emit of the very document an admin
+apply just wrote, so that document is not applied twice; it compares the
+document, not the content. Anything else, including an equivalent document at
+another version, is forwarded, and the Supervisor's no-op path decides and
+adopts it. A content comparison there would acknowledge such a document to the
+manager without the Supervisor ever seeing it.
+
 **A no-op reload adopts the document.** When the new configuration has the
 running configuration's normal form, the runtime is kept and every session stays
 connected, but the new document becomes the applied configuration: the
