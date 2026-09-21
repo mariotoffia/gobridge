@@ -25,7 +25,6 @@ replace (
 	github.com/mariotoffia/gobridge/testutil/ddblocal => ../../testutil/ddblocal
 	github.com/mariotoffia/gobridge/testutil/rabbitmqlocal => ../../testutil/rabbitmqlocal
 	github.com/mariotoffia/gobridge/testutil/sqslocal => ../../testutil/sqslocal
-	github.com/mariotoffia/gobridge/testutil/wait => ../../testutil/wait
 )
 
 require (

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/release/run.sh — one-command, dependency-ordered release train.
-# Mechanizes RELEASE.md §1–§5. Dry-run by default; CONFIRM=1 pushes immutable tags.
+# Mechanizes RELEASE.md §1–§4. Dry-run by default; CONFIRM=1 pushes immutable tags.
 #
 # Env: VERSION=vX.Y.Z (required)  CONFIRM=1 (publish)  DRY_RUN=1 (default; forced 1 unless CONFIRM=1)
 #      REMOTE=origin
@@ -12,7 +12,7 @@ REMOTE="${REMOTE:-origin}"
 if [ "$CONFIRM" = "1" ]; then DRY_RUN="${DRY_RUN:-0}"; else DRY_RUN=1; fi
 
 # Polling pacing. 20s across a whole layer keeps API usage far below the
-# 5000/hour limit even for the 26-module layer.
+# 5000/hour limit even for the 27-module layer.
 WORKFLOW_POLL_SECONDS="${WORKFLOW_POLL_SECONDS:-20}"
 WORKFLOW_APPEAR_GRACE="${WORKFLOW_APPEAR_GRACE:-180}"
 WORKFLOW_BUDGET="${WORKFLOW_BUDGET:-5400}"
@@ -67,7 +67,7 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 # =====================================================================
-# LIVE PUBLISH — mechanizes RELEASE.md §1–§5. One-way; never retag.
+# LIVE PUBLISH — mechanizes RELEASE.md §1–§4. One-way; never retag.
 # =====================================================================
 wait_for_proxy() {
   local module="$1"
@@ -108,9 +108,9 @@ wait_for_release_workflow() {
 #
 # The obvious implementation — a `gh run watch` per tag, backgrounded — spawns
 # one independent poller per module, each hitting the API every few seconds.
-# For a 26-module layer that exhausted the 5000/hour limit mid-train and failed
-# the layer on HTTP 403, even though the workflows themselves were healthy. The
-# observer, not the work, was the problem.
+# For the 27-module adapter layer (layer 2) that exhausted the 5000/hour limit
+# mid-train and failed the layer on HTTP 403, even though the workflows
+# themselves were healthy. The observer, not the work, was the problem.
 #
 # `gh run list` returns every run's state in a single response, so the polling
 # cost is constant regardless of how many modules a layer holds.
@@ -127,8 +127,9 @@ wait_for_release_workflow() {
 # adapters/aws/store and adapters/native/store, consistently take longer to
 # appear on proxy.golang.org than a leaf module does — long enough to exhaust
 # the verifier's own propagation budget — and that alone cost the v0.3.4,
-# v0.3.5 and v0.3.6 trains their layer 2. The re-run happens minutes later,
-# by which time the module has indexed. A genuine defect still fails twice.
+# v0.3.5 and v0.3.6 trains their store-aggregate layer (layer 3 today). The
+# re-run happens minutes later, by which time the module has indexed. A genuine
+# defect still fails twice.
 wait_for_layer_workflows() {
   local tags=("$@")
   local start now snapshot tag state pending missing run_id
@@ -196,8 +197,7 @@ publish_module() { # module dir
   if tag_published "$tag"; then
     echo "-- ${tag} already published; verifying and continuing"
   else
-    make stage-published-module RELEASE_MODULE="$module" RELEASE_VERSION="$VERSION" \
-      ${BOOTSTRAP_COMMIT:+RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"}
+    make stage-published-module RELEASE_MODULE="$module" RELEASE_VERSION="$VERSION"
     if [ "$module" = "." ]; then
       git add go.mod go.sum 2>/dev/null || true
     else
@@ -219,10 +219,10 @@ tag_for() { # module dir -> tag
 #
 # A layer means "these modules do not depend on each other" — that is the whole
 # reason the DAG has layers. Publishing them one at a time made each tag wait a
-# full workflow round-trip (~150s) before the next was even pushed, so 26
-# independent layer-1 modules cost over an hour of pure queueing. Layers must
-# still be sequential: staging a layer-2 module runs `go mod tidy`, which has to
-# resolve its layer-1 siblings at this version from the public proxy.
+# full workflow round-trip (~150s) before the next was even pushed, so the 27
+# independent modules of the adapter layer cost over an hour of pure queueing.
+# Layers must still be sequential: staging a module runs `go mod tidy`, which
+# has to resolve its lower-layer siblings at this version from the public proxy.
 #
 # Staging stays sequential because it edits the working tree and commits; only
 # the waiting is parallel, which is the part that actually took the time. Every
@@ -242,8 +242,7 @@ publish_layer() { # layer number
     if tag_published "$tag"; then
       echo "-- ${tag} already published; will verify"
     else
-      make stage-published-module RELEASE_MODULE="$module" RELEASE_VERSION="$VERSION" \
-        ${BOOTSTRAP_COMMIT:+RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"}
+      make stage-published-module RELEASE_MODULE="$module" RELEASE_VERSION="$VERSION"
       if [ "$module" = "." ]; then
         git add go.mod go.sum 2>/dev/null || true
       else
@@ -291,22 +290,23 @@ publish_layer() { # layer number
 echo "== §2 root =="
 publish_module .
 
-# §3 bootstrap internal test helpers
-echo "== §3 bootstrap =="
-make stage-release-bootstrap RELEASE_VERSION="$VERSION"
-git add testutil/*/go.mod
-git diff --cached --quiet || git commit -m "release: bootstrap test helpers for ${VERSION}"
+# Push the branch as soon as the root is tagged, so a rejected push fails while
+# the root is the only tag, and origin keeps the branch even if a layer fails.
 git push "$REMOTE" "HEAD:refs/heads/${branch}"
-BOOTSTRAP_COMMIT="$(git rev-parse HEAD)"
-make derive-release-bootstrap RELEASE_VERSION="$VERSION" RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"
 
-# §4 layers 1..N — sequential between layers, concurrent within each
+# §3 layers 1..N — sequential between layers, concurrent within each
 for layer in $(seq 1 "$MAX_LAYER"); do
-  echo "== §4 layer ${layer} =="
+  echo "== §3 layer ${layer} =="
   publish_layer "$layer"
 done
 
-# §5 final public proof
-echo "== §5 smoke =="
+# The other half of that pair. The tags already carried every per-module
+# release commit to the remote, but the branch ref itself is what this project
+# keeps permanently on origin. Pushing it again once the last layer is done
+# moves the remote branch off the root commit and onto the final release one.
+git push "$REMOTE" "HEAD:refs/heads/${branch}"
+
+# §4 final public proof
+echo "== §4 smoke =="
 make smoke-released-modules RELEASE_TAG="cmd/gobridge/${VERSION}"
 echo "Release ${VERSION} complete."

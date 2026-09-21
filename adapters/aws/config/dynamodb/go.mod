@@ -9,7 +9,6 @@ require (
 	github.com/aws/smithy-go v1.28.1
 	github.com/mariotoffia/gobridge v0.0.0
 	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-00010101000000-000000000000
-	github.com/mariotoffia/gobridge/testutil/wait v0.0.0-20260827121207-e4131f9ac111
 )
 
 require (

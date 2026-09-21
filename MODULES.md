@@ -36,13 +36,13 @@ also be wired in that version; local workspace success does not prove it. See
 1. Create the module directory with a `go.mod`
    (`github.com/mariotoffia/gobridge/<path>`), following [PLUGIN.md](PLUGIN.md) for
    adapters/processors.
-2. Until the first release tag of a sibling it depends on exists, add the bootstrap
+2. Until the first release tag of a sibling it depends on exists, add the local
    `replace` directives so it builds standalone (see an existing sibling's `go.mod`).
    The release tool strips these per-tag at publish time — do not remove them by hand.
 3. `make dev` — the module joins the workspace automatically.
-4. **If it is published** (anything under `adapters/`, `processors/`, or `httpapi`,
-   `cmd/gobridge`, root, or the three `deployment/aws/*` profile
-   modules): add it to
+4. **If it is published** (anything under `adapters/`, `processors/` or
+   `testutil/`, `httpapi`, `cmd/gobridge`, root, or the three `deployment/aws/*`
+   profile modules): add it to
    [`scripts/release/modules.json`](scripts/release/modules.json) with its dependency
    `layer` (a module may only require lower layers). `make lint` runs `make
    modules-check` and **fails** if you forget this step.
@@ -74,10 +74,11 @@ land on:
 gh release edit v0.3.0 --title "GoBridge v0.3.0" --notes-file <notes.md>
 ```
 
-`make release` mechanizes the whole train in dependency order (root → bootstrap
-helpers → layer 1 → 2 → 3 → external-consumer smoke), waiting for each tag's workflow
-and proxy propagation. It is safe by default: **dry-run unless `CONFIRM=1`**, and it
-refuses to run on a dirty tree, a non-`release/*` branch, or a malformed version.
+`make release` mechanizes the whole train in dependency order (root → test
+helpers → layer 2 → 3 → 4 → `cmd/gobridge` → external-consumer smoke), waiting
+for each tag's workflow and proxy propagation. It is safe by default: **dry-run
+unless `CONFIRM=1`**, and it refuses to run on a dirty tree, a non-`release/*`
+branch, or a malformed version.
 
 **If a step fails:** stop. Do **not** delete or move a tag (policy in
 [RELEASE.md](RELEASE.md#policy)). Diagnose, then start a new patch train
@@ -86,6 +87,7 @@ refuses to run on a dirty tree, a non-`release/*` branch, or a malformed version
 After a successful train, consumers can:
 
 ```bash
-go get github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho@v0.3.0
-go install github.com/mariotoffia/gobridge/cmd/gobridge@v0.3.0
+go get github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho@vX.Y.Z
+go install github.com/mariotoffia/gobridge/cmd/gobridge@vX.Y.Z
+go get github.com/mariotoffia/gobridge/testutil/mqttlocal@vX.Y.Z
 ```

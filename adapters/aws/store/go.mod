@@ -37,5 +37,4 @@ replace (
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbmanagedsubscriptions => ./dynamodbmanagedsubscriptions
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodboutbox => ./dynamodboutbox
 	github.com/mariotoffia/gobridge/testutil/ddblocal => ../../../testutil/ddblocal
-	github.com/mariotoffia/gobridge/testutil/wait => ../../../testutil/wait
 )

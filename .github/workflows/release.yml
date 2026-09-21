@@ -114,7 +114,7 @@ jobs:
       - external-consumer-smoke
     # One release per version, not one per module. Every module still gets its
     # tag, its strict verification and its proxy check; only the root module
-    # gets a human-facing Release page, because 31 of them is noise nobody
+    # gets a human-facing Release page, because 40 of them is noise nobody
     # reads and the root tag is the version users actually pin.
     if: needs.validate.outputs.path == '.'
     runs-on: ubuntu-latest

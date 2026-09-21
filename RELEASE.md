@@ -34,23 +34,25 @@ make release-modules RELEASE_FORMAT=tsv
 make release-modules RELEASE_LAYER=1
 ```
 
-The repository currently has **34 published modules**:
+The repository currently has **41 published modules**:
 
 | Layer | Count | Contents |
 |---|---:|---|
 | 0 | 1 | Root module |
-| 1 | 27 | Direct-root adapter/processor leaf modules, plus `deployment/aws/infra` |
-| 2 | 3 | `adapters/aws/store`, `adapters/native/store`, and `httpapi` |
-| 3 | 2 | `deployment/aws/cdk` and `deployment/aws/lib` |
-| 4 | 1 | `cmd/gobridge` |
+| 1 | 7 | Test helper modules under `testutil/` |
+| 2 | 27 | Direct-root adapter/processor leaf modules, plus `deployment/aws/infra` |
+| 3 | 3 | `adapters/aws/store`, `adapters/native/store`, and `httpapi` |
+| 4 | 2 | `deployment/aws/cdk` and `deployment/aws/lib` |
+| 5 | 1 | `cmd/gobridge` |
 
-The published set is the root module, every module under `adapters/` and
-`processors/`, `httpapi`, `cmd/gobridge`, and the three AWS deployment-profile
-modules `deployment/aws/{infra,lib,cdk}`. Everything else
-under `tests/`, `testutil/`, `scripts/`, and `deployment/` is internal-only and
-is never tagged. The manifest declares only the test-helper modules required to
-compile published-module tests as pseudo-version bootstrap exceptions; that
-does not make them tagged releases.
+The published set is the root module, every module under `adapters/`,
+`processors/` and `testutil/`, `httpapi`, `cmd/gobridge`, and the three AWS
+deployment-profile modules `deployment/aws/{infra,lib,cdk}`. Everything else
+under `tests/`, `scripts/`, and `deployment/` is internal-only and is never
+tagged.
+
+The test helper modules sit on layer 1 because they require only the root and
+the adapters' tests require them; see [Test helper modules](#test-helper-modules).
 
 The deployment-profile modules are published because an external CDK app writes
 its own stack against the constructs, those constructs take `infra` types as
@@ -58,8 +60,8 @@ arguments, and the default `ImageFromGoBuild` image source builds the profile
 command out of `lib` from the module proxy at the train version. All three must
 resolve publicly or the documented quickstart in `docs/scenarios/cdk/` cannot
 compile — and cannot build its image — outside this repository. `cdk` and `lib`
-both sit above the layer-2 store aggregates they require, which is why
-`cmd/gobridge` moved to layer 4 — the final module must be alone on the highest
+both sit above the layer-3 store aggregates they require, which is why
+`cmd/gobridge` sits on layer 5 — the final module must be alone on the highest
 layer.
 
 Optional profile-family wiring must still be available for any family a bridge
@@ -71,10 +73,40 @@ every family. See
 the train at `v0.3.4` and carry real tags — `infra` `v0.3.4`-`v0.3.6`, `cdk`
 `v0.3.4` and `v0.3.6` (no `v0.3.5`). `lib` has never been tagged at any version,
 so no `v0.3.x` names a complete profile set. Those tags also predate the sealed
-image sources by two weeks: `ImageFromGoBuild` does not exist in `cdk/v0.3.6`. They stay in place — policy 7 forbids moving or
+image sources by two weeks: `ImageFromGoBuild` does not exist in `cdk/v0.3.6`. They stay in place — policy 6 forbids moving or
 deleting a tag — and they must not be referenced from documentation or consumer
 instructions. The first usable profile version is the first train published
 after this change.
+
+## Test helper modules
+
+The modules under `testutil/` start the brokers and emulators the test suite
+needs and wait until they are ready: `mqttlocal` (Mosquitto), `rabbitmqlocal`
+(RabbitMQ, AMQP 0-9-1), `artemislocal` (Apache Artemis, AMQP 1.0), `asblocal`
+(Azure Service Bus emulator), `flocilocal` (Floci, an AWS emulator for SQS,
+SSM, CloudWatch and more), `ddblocal` (DynamoDB Local), and `testcontent`
+(sent-versus-received message verification). A project that builds its own
+composition root can use them in its own integration tests:
+
+```bash
+go get github.com/mariotoffia/gobridge/testutil/mqttlocal@vX.Y.Z
+```
+
+The readiness helper `testutil/wait`, the Docker wrapper
+`testutil/dockerexec`, the TCP fault-injection proxy `testutil/netfault` and
+the TLS certificate generator `testutil/tlsgen` are packages of the root
+module, so they come with `go get github.com/mariotoffia/gobridge@vX.Y.Z`.
+
+**Their compatibility promise is lighter than the runtime modules'.** The
+helpers carry the same version as everything else, so pin them to the version
+of the runtime modules you use. A helper's exported Go API may change in any
+release when the test suite needs it, with no deprecation period. Every such
+change is listed in [CHANGELOG.md](CHANGELOG.md) under the release it ships
+in; read that entry before moving a test suite to a new version.
+
+The first helper tags are created by the first train published after this
+change. No earlier version has them, so `go get …/testutil/<helper>@v0.4.1`
+and older still fail.
 
 ## Policy
 
@@ -91,11 +123,7 @@ after this change.
 5. **No unresolved placeholders.** Exact `v0.0.0`, all-zero or malformed
    pseudo-versions, undeclared repository siblings, and versions outside the
    selected train fail the strict gate.
-6. **Internal helper pseudo-versions come from Go.** Never construct a
-   timestamp/hash manually. Push the bootstrap commit first, then derive every
-   version with `go list -m -json <module>@<commit>`. The release tool verifies
-   the returned origin commit and downloaded helper go.mod.
-7. **Never move a module tag.** A failed public module release is corrected with
+6. **Never move a module tag.** A failed public module release is corrected with
    a new patch train, not by deleting or recreating a tag.
 
 ## Required GitHub tag ruleset
@@ -120,9 +148,8 @@ Release creation.
 
 The source-safe gate runs on every CI build and validates the release DAG plus
 the tooling itself. It reports the in-repo manifest inventory (local `replace`
-directives, `v0.0.0` requirements, helper pseudo-versions) — those are the
-**development** shape and are expected on `main`; the release tool strips them
-per-tag at publish time:
+directives, `v0.0.0` requirements) — those are the **development** shape and are
+expected on `main`; the release tool strips them per-tag at publish time:
 
 ```bash
 make verify-release-preparation
@@ -228,37 +255,28 @@ wait_for_release_workflow "$VERSION"
 wait_for_proxy github.com/mariotoffia/gobridge
 ```
 
-### 3. Bootstrap internal test helpers from a reachable commit
-
-The helpers that import root-owned test support must require the root version
-just published. Their local replacements remain for workspace development.
-Push the commit before deriving pseudo-versions; an unpushed commit is rejected.
+As soon as the root tag is public, push the release branch too. If the remote
+rejects that push — branch protection on `release/*`, say — the train stops
+while the root is the only tag, and the branch is on `origin` even if a later
+layer fails.
 
 ```bash
-make stage-release-bootstrap RELEASE_VERSION="$VERSION"
-git add testutil/*/go.mod
-git commit -m "release: bootstrap test helpers for ${VERSION}"
 git push origin "HEAD:refs/heads/${RELEASE_BRANCH}"
-
-BOOTSTRAP_COMMIT="$(git rev-parse HEAD)"
-make derive-release-bootstrap \
-  RELEASE_VERSION="$VERSION" \
-  RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"
 ```
 
-`derive-release-bootstrap` executes the authoritative Go query for every helper
-and prints the exact returned pseudo-version. `stage-published-module` repeats
-those queries before writing a helper requirement; no timestamp or abbreviated
-hash is accepted from operator input.
-
-### 4. Stage, tag, and push each dependency layer
+### 3. Stage, tag, and push each dependency layer
 
 This dependency-ordered stage/tag/push/wait loop is mechanized by
 [`scripts/release/run.sh`](scripts/release/run.sh), invoked as `make release
 VERSION=vX.Y.Z CONFIRM=1`. See [MODULES.md §3](MODULES.md#3-cut-a-release-make-it-go-get-able).
-Run `make release VERSION=vX.Y.Z` first (dry-run) to review the per-layer plan. The
-surrounding sections (§1 waits, §2 root, §3 bootstrap above; §5 smoke below) document what each step does;
-`run.sh` performs them in order and must not be bypassed to retag.
+Run `make release VERSION=vX.Y.Z` first (dry-run) to review the per-layer plan.
+The surrounding sections (§1 waits, §2 root above; §4 smoke below) document what
+each step does; `run.sh` performs them in order and must not be bypassed to
+retag.
+
+Layer 1 is the seven test-helper modules. Each requires only the root, and
+the adapters' tests require them, so they are tagged and visible on the proxy
+before any adapter is staged.
 
 Propagation is not uniform. A leaf module appears on proxy.golang.org in about
 a minute; `adapters/aws/store` and `adapters/native/store`, whose directories
@@ -269,12 +287,22 @@ failed on propagation alone must not cost an entire new version train. A
 genuine defect still fails twice and stops the train.
 
 No layer can start until every tag in the layer below it is green and visible,
-so the final `cmd/gobridge` tag is reached only after both layer-3 modules,
-`deployment/aws/cdk` and `deployment/aws/lib`,
-which in turn wait on all three layer-2 tags. If a tagged workflow fails, stop. Do not retag; diagnose and start a new
-patch train.
+so the final `cmd/gobridge` tag is reached only after both layer-4 modules,
+`deployment/aws/cdk` and `deployment/aws/lib`, which in turn wait on all three
+layer-3 tags. If a tagged workflow fails, stop. Do not retag; diagnose and
+start a new patch train.
 
-### 5. Final public proof
+Once the last layer is green, push the release branch again. Every per-module
+release commit has already reached `origin` as part of a tag, but the branch
+ref is what this project keeps permanently — a `release/*` branch is never
+deleted — so this second push moves the remote branch off the root commit of
+§2 and onto the last release commit.
+
+```bash
+git push origin "HEAD:refs/heads/${RELEASE_BRANCH}"
+```
+
+### 4. Final public proof
 
 The stable `cmd/gobridge/vX.Y.Z` workflow runs this only after the complete
 strict train succeeds:

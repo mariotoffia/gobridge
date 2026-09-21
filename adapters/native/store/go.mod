@@ -37,5 +37,4 @@ replace (
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq => ./sqlitedlq
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions => ./sqlitemanagedsubscriptions
 	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox => ./sqliteoutbox
-	github.com/mariotoffia/gobridge/testutil/wait => ../../../testutil/wait
 )

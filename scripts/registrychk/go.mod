@@ -80,8 +80,6 @@ replace github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubsc
 
 replace github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox => ../../adapters/native/store/sqliteoutbox
 
-replace github.com/mariotoffia/gobridge/testutil/wait => ../../testutil/wait
-
 replace github.com/mariotoffia/gobridge/testutil/ddblocal => ../../testutil/ddblocal
 
 replace github.com/mariotoffia/gobridge/testutil/mqttlocal => ../../testutil/mqttlocal

@@ -13,8 +13,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"golang.org/x/mod/module"
 )
 
 const (
@@ -176,9 +174,8 @@ func runModuleChecks(ctx context.Context, runner commandRunner, moduleDir string
 }
 
 type repositoryState struct {
-	Modules             map[string]moduleManifest
-	Violations          []manifestViolation
-	BootstrapViolations []manifestViolation
+	Modules    map[string]moduleManifest
+	Violations []manifestViolation
 }
 
 func validateTagPushEvent(created, deleted, forced, protected bool) error {
@@ -206,7 +203,6 @@ func inspectRepository(repo string, manifest releaseManifest, releaseVersion str
 		Modules: make(map[string]moduleManifest, len(manifest.Published)),
 	}
 	var errs []error
-	usedBootstrap := make(map[string]struct{})
 	for _, entry := range manifest.Published {
 		moduleFile, err := readModuleManifest(repo, manifest, entry.Path)
 		if err != nil {
@@ -219,28 +215,9 @@ func inspectRepository(repo string, manifest releaseManifest, releaseVersion str
 			errs = append(errs, err)
 		}
 		state.Violations = append(state.Violations, violations...)
-		recordBootstrapReferences(manifest, moduleFile, usedBootstrap)
-	}
-
-	declaredBootstrap := manifest.bootstrapSet()
-	for modulePath := range usedBootstrap {
-		if !hasKey(declaredBootstrap, modulePath) {
-			errs = append(errs, fmt.Errorf("used bootstrap module %q is not declared", modulePath))
-		}
-	}
-	for _, modulePath := range manifest.Bootstrap {
-		if !hasKey(usedBootstrap, modulePath) {
-			errs = append(errs, fmt.Errorf("declared bootstrap module %q is not referenced by a published manifest", modulePath))
-		}
-		violations, err := inspectBootstrapModule(repo, manifest, modulePath, releaseVersion)
-		if err != nil {
-			errs = append(errs, err)
-		}
-		state.BootstrapViolations = append(state.BootstrapViolations, violations...)
 	}
 
 	slices.SortFunc(state.Violations, compareViolations)
-	slices.SortFunc(state.BootstrapViolations, compareViolations)
 	return state, errors.Join(errs...)
 }
 
@@ -248,84 +225,6 @@ func compareViolations(left, right manifestViolation) int {
 	leftKey := strings.Join([]string{left.Module, string(left.Kind), left.Dependency, left.Version}, "\x00")
 	rightKey := strings.Join([]string{right.Module, string(right.Kind), right.Dependency, right.Version}, "\x00")
 	return strings.Compare(leftKey, rightKey)
-}
-
-func recordBootstrapReferences(
-	manifest releaseManifest,
-	moduleFile moduleManifest,
-	used map[string]struct{},
-) {
-	bootstrap := manifest.bootstrapSet()
-	for _, requirement := range moduleFile.Requires {
-		if modulePath, sibling := siblingPath(manifest.ModulePrefix, requirement.Path); sibling && hasKey(bootstrap, modulePath) {
-			used[modulePath] = struct{}{}
-		}
-	}
-	for _, replacement := range moduleFile.Replaces {
-		if modulePath, sibling := siblingPath(manifest.ModulePrefix, replacement.OldPath); sibling && hasKey(bootstrap, modulePath) {
-			used[modulePath] = struct{}{}
-		}
-	}
-}
-
-func inspectBootstrapModule(
-	repo string,
-	manifest releaseManifest,
-	modulePath string,
-	releaseVersion string,
-) ([]manifestViolation, error) {
-	filename, err := secureJoin(repo, modulePath, "go.mod")
-	if err != nil {
-		return nil, fmt.Errorf("resolving bootstrap manifest %s: %w", modulePath, err)
-	}
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, fmt.Errorf("reading bootstrap manifest %s: %w", filename, err)
-	}
-	parsed, err := parseModuleManifest(filename, data)
-	if err != nil {
-		return nil, err
-	}
-	parsed.Path = modulePath
-	expectedModule := manifest.importPath(modulePath)
-	if parsed.Module != expectedModule {
-		return nil, fmt.Errorf("%s declares module %q, want %q", filename, parsed.Module, expectedModule)
-	}
-
-	var violations []manifestViolation
-	var errs []error
-	for _, requirement := range parsed.Requires {
-		dependencyPath, sibling := siblingPath(manifest.ModulePrefix, requirement.Path)
-		if !sibling {
-			continue
-		}
-		if dependencyPath != rootModulePath {
-			errs = append(errs, fmt.Errorf(
-				"bootstrap module %s requires unsupported repository sibling %s",
-				modulePath,
-				requirement.Path,
-			))
-			continue
-		}
-		violations = append(violations, versionViolations(
-			modulePath,
-			requirement,
-			true,
-			false,
-			releaseVersion,
-		)...)
-	}
-	for _, replacement := range parsed.Replaces {
-		if replacement.NewVersion == "" {
-			violations = append(violations, manifestViolation{
-				Module:     modulePath,
-				Kind:       violationLocalReplace,
-				Dependency: replacement.OldPath,
-				Detail:     replacement.NewPath,
-			})
-		}
-	}
-	return violations, errors.Join(errs...)
 }
 
 func validatePublishedSet(repo string, manifest releaseManifest) error {
@@ -378,7 +277,11 @@ func discoverPublishedModules(repo string) ([]string, error) {
 		}
 		result = append(result, fixed)
 	}
-	for _, tree := range []string{"adapters", "processors"} {
+	// testutil/ modules are published so an outside project can start the same
+	// brokers and emulators in its own integration tests. A root-owned helper
+	// package (dockerexec, netfault, tlsgen, wait) has no go.mod and is not a
+	// module, so the walk does not see it.
+	for _, tree := range []string{"adapters", "processors", "testutil"} {
 		treeRoot, err := secureJoin(repoRoot, tree)
 		if err != nil {
 			return nil, fmt.Errorf("published module tree %s: %w", tree, err)
@@ -414,59 +317,6 @@ type listedModule struct {
 	}
 }
 
-func deriveBootstrapVersions(
-	ctx context.Context,
-	runner commandRunner,
-	manifest releaseManifest,
-	repo string,
-	commit string,
-	releaseVersion string,
-) (map[string]string, error) {
-	if err := validateStableVersion(releaseVersion); err != nil {
-		return nil, err
-	}
-	if !isFullCommitHash(commit) {
-		return nil, fmt.Errorf("bootstrap commit %q is not a full 40-character hexadecimal commit", commit)
-	}
-
-	versions := make(map[string]string, len(manifest.Bootstrap))
-	for _, modulePath := range manifest.Bootstrap {
-		importPath := manifest.importPath(modulePath)
-		query := importPath + "@" + commit
-		toolDir, err := secureJoin(repo, "scripts/release")
-		if err != nil {
-			return nil, fmt.Errorf("resolving release tool directory: %w", err)
-		}
-		// Same propagation race as a published tag: the bootstrap commit was
-		// pushed moments ago, so the proxy may not have fetched it yet. Wait on
-		// the observable state rather than treating "not indexed yet" as a
-		// broken helper.
-		listed, err := awaitBootstrapResolution(ctx, runner, toolDir, query, importPath, commit)
-		if err != nil {
-			return nil, err
-		}
-		if !isUsablePseudoVersion(listed.Version) {
-			return nil, fmt.Errorf(
-				"go list returned non-pseudo or zero pseudo-version %q for internal helper %s",
-				listed.Version,
-				importPath,
-			)
-		}
-		if !strings.HasPrefix(commit, mustPseudoRevision(listed.Version)) {
-			return nil, fmt.Errorf(
-				"go list returned pseudo-version %q whose revision does not match %s",
-				listed.Version,
-				commit,
-			)
-		}
-		if err := validateResolvedBootstrapGoMod(manifest, listed.GoMod, releaseVersion); err != nil {
-			return nil, fmt.Errorf("resolved bootstrap module %s: %w", importPath, err)
-		}
-		versions[modulePath] = listed.Version
-	}
-	return versions, nil
-}
-
 func isFullCommitHash(value string) bool {
 	if len(value) != 40 {
 		return false
@@ -477,48 +327,6 @@ func isFullCommitHash(value string) bool {
 		}
 	}
 	return true
-}
-
-func isUsablePseudoVersion(version string) bool {
-	return module.IsPseudoVersion(version) && !isAllZeroPseudoVersion(version)
-}
-
-func mustPseudoRevision(version string) string {
-	revision, err := module.PseudoVersionRev(version)
-	if err != nil {
-		panic(fmt.Sprintf("validated pseudo-version %q has no revision: %v", version, err))
-	}
-	return revision
-}
-
-func validateResolvedBootstrapGoMod(
-	manifest releaseManifest,
-	filename string,
-	releaseVersion string,
-) error {
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return fmt.Errorf("reading downloaded go.mod %s: %w", filename, err)
-	}
-	parsed, err := parseModuleManifest(filename, data)
-	if err != nil {
-		return err
-	}
-	for _, requirement := range parsed.Requires {
-		dependencyPath, sibling := siblingPath(manifest.ModulePrefix, requirement.Path)
-		if !sibling {
-			continue
-		}
-		if dependencyPath != rootModulePath || requirement.Version != releaseVersion {
-			return fmt.Errorf(
-				"requires %s@%s, want only root module at %s",
-				requirement.Path,
-				requirement.Version,
-				releaseVersion,
-			)
-		}
-	}
-	return nil
 }
 
 func validateSmokeTag(manifest releaseManifest, tag string) (string, error) {
@@ -777,7 +585,6 @@ func resolveSiblingRequirements(
 	repo string,
 	manifest releaseManifest,
 	moduleFile moduleManifest,
-	releaseVersion string,
 ) error {
 	queries := make(map[string]string)
 	for _, requirement := range moduleFile.Requires {
@@ -839,23 +646,6 @@ func resolveSiblingRequirements(
 					expectedCommit,
 				)
 			}
-		} else if hasKey(manifest.bootstrapSet(), modulePath) {
-			if !isUsablePseudoVersion(version) {
-				return fmt.Errorf("bootstrap dependency %s does not use a valid pseudo-version", query)
-			}
-			if listed.Origin.Hash == "" || !strings.HasPrefix(listed.Origin.Hash, mustPseudoRevision(version)) {
-				return fmt.Errorf(
-					"bootstrap dependency %s resolved from unexpected origin %q",
-					query,
-					listed.Origin.Hash,
-				)
-			}
-			if listed.GoMod == "" {
-				return fmt.Errorf("bootstrap dependency %s did not report its downloaded go.mod", query)
-			}
-			if err := validateResolvedBootstrapGoMod(manifest, listed.GoMod, releaseVersion); err != nil {
-				return fmt.Errorf("bootstrap dependency %s: %w", query, err)
-			}
 		}
 	}
 	return nil
@@ -876,96 +666,6 @@ var (
 	modulePropagationBudget = defaultModulePropagationBudget
 	modulePropagationPoll   = defaultModulePropagationPoll
 )
-
-// awaitBootstrapResolution resolves an internal helper at a just-pushed commit,
-// retrying while the proxy has not indexed that commit yet.
-//
-// Identical reasoning to awaitModuleResolution: a helper whose commit is not
-// yet fetched looks exactly like a helper that does not exist, and only one of
-// those is a real fault. A resolved module reporting the wrong path or a
-// different origin commit is returned immediately — waiting cannot fix either.
-func awaitBootstrapResolution(
-	ctx context.Context,
-	runner commandRunner,
-	toolDir string,
-	query string,
-	importPath string,
-	commit string,
-) (listedModule, error) {
-	deadline := time.Now().Add(modulePropagationBudget)
-	var lastErr error
-	for attempt := 1; ; attempt++ {
-		listed, err, fatal := tryResolveBootstrap(ctx, runner, toolDir, query, importPath, commit)
-		if err == nil {
-			return listed, nil
-		}
-		if fatal {
-			return listedModule{}, err
-		}
-		lastErr = err
-		if time.Now().After(deadline) {
-			return listedModule{}, fmt.Errorf(
-				"internal helper %s did not become resolvable at commit %s within %s (%d attempts): %w",
-				importPath, commit, modulePropagationBudget, attempt, lastErr,
-			)
-		}
-		fmt.Fprintf(
-			os.Stderr,
-			"release: waiting for proxy to publish %s (attempt %d): %v\n",
-			query, attempt, err,
-		)
-		select {
-		case <-ctx.Done():
-			return listedModule{}, ctx.Err()
-		case <-time.After(modulePropagationPoll):
-		}
-	}
-}
-
-// tryResolveBootstrap performs one attempt. The bool reports whether the error
-// is fatal, meaning retrying cannot help.
-func tryResolveBootstrap(
-	ctx context.Context,
-	runner commandRunner,
-	toolDir string,
-	query string,
-	importPath string,
-	commit string,
-) (listedModule, error, bool) {
-	output, err := runner.run(ctx, commandRequest{
-		Dir:     toolDir,
-		Env:     publicModuleEnvironment(),
-		Name:    "go",
-		Args:    []string{"list", "-m", "-json", query},
-		Timeout: moduleQueryTimeout,
-	})
-	if err != nil {
-		return listedModule{}, fmt.Errorf(
-			"deriving %s pseudo-version after commit %s is reachable: %w", importPath, commit, err,
-		), false
-	}
-	var listed listedModule
-	if err := json.Unmarshal(output, &listed); err != nil {
-		return listedModule{}, fmt.Errorf("decoding go list result for %s: %w", importPath, err), true
-	}
-	if listed.Path != importPath {
-		return listedModule{}, fmt.Errorf("go list returned module %q for %q", listed.Path, importPath), true
-	}
-	if listed.Origin.Hash == "" {
-		return listedModule{}, fmt.Errorf("go list reported no origin commit for %s", importPath), false
-	}
-	if listed.Origin.Hash != commit {
-		return listedModule{}, fmt.Errorf(
-			"go list resolved %s at origin %q, want reachable commit %q", importPath, listed.Origin.Hash, commit,
-		), true
-	}
-	if listed.GoMod == "" {
-		return listedModule{}, fmt.Errorf(
-			"go list did not report a downloaded go.mod for internal helper %s", importPath,
-		), false
-	}
-	return listed, nil, false
-}
 
 func awaitModuleResolution(
 	ctx context.Context,
@@ -1141,7 +841,7 @@ func strictModule(
 			return err
 		}
 	}
-	if err := resolveSiblingRequirements(ctx, runner, repo, manifest, moduleFile, version); err != nil {
+	if err := resolveSiblingRequirements(ctx, runner, repo, manifest, moduleFile); err != nil {
 		return err
 	}
 	moduleDir, err := secureJoin(repo, modulePath)
@@ -1168,15 +868,6 @@ func strictAll(
 	if len(state.Violations) != 0 {
 		return violationsError("published module set", state.Violations)
 	}
-	blockingBootstrap := make([]manifestViolation, 0, len(state.BootstrapViolations))
-	for _, violation := range state.BootstrapViolations {
-		if violation.Kind != violationLocalReplace {
-			blockingBootstrap = append(blockingBootstrap, violation)
-		}
-	}
-	if len(blockingBootstrap) != 0 {
-		return violationsError("test-helper bootstrap set", blockingBootstrap)
-	}
 	if err := verifyAllTrainTags(ctx, runner, repo, manifest, version); err != nil {
 		return err
 	}
@@ -1187,7 +878,7 @@ func strictAll(
 	}
 	for _, entry := range manifest.Published {
 		moduleFile := state.Modules[entry.Path]
-		if err := resolveSiblingRequirements(ctx, runner, repo, manifest, moduleFile, version); err != nil {
+		if err := resolveSiblingRequirements(ctx, runner, repo, manifest, moduleFile); err != nil {
 			return fmt.Errorf("%s: %w", entry.Path, err)
 		}
 		moduleDir, err := secureJoin(repo, entry.Path)
@@ -1216,7 +907,6 @@ func stagePublishedModule(
 	manifest releaseManifest,
 	modulePath string,
 	version string,
-	bootstrapCommit string,
 ) error {
 	target, ok := manifest.publishedByPath()[modulePath]
 	if !ok {
@@ -1238,26 +928,7 @@ func stagePublishedModule(
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", filename, err)
 	}
-	parsed, err := parseModuleManifest(filename, data)
-	if err != nil {
-		return err
-	}
-
-	bootstrapVersions := existingBootstrapVersions(manifest, parsed)
-	if bootstrapCommit != "" {
-		bootstrapVersions, err = deriveBootstrapVersions(
-			ctx,
-			runner,
-			manifest,
-			repo,
-			bootstrapCommit,
-			version,
-		)
-		if err != nil {
-			return err
-		}
-	}
-	staged, err := stageModuleManifest(manifest, filename, data, version, bootstrapVersions)
+	staged, err := stageModuleManifest(manifest, filename, data, version)
 	if err != nil {
 		return err
 	}
@@ -1274,57 +945,6 @@ func stagePublishedModule(
 		return fmt.Errorf("tidying staged module %s: %w", modulePath, err)
 	}
 	return strictModule(ctx, runner, repo, manifest, modulePath, version, false)
-}
-
-func existingBootstrapVersions(
-	manifest releaseManifest,
-	moduleFile moduleManifest,
-) map[string]string {
-	bootstrap := manifest.bootstrapSet()
-	result := make(map[string]string)
-	for _, requirement := range moduleFile.Requires {
-		modulePath, sibling := siblingPath(manifest.ModulePrefix, requirement.Path)
-		if sibling && hasKey(bootstrap, modulePath) && isUsablePseudoVersion(requirement.Version) {
-			result[modulePath] = requirement.Version
-		}
-	}
-	return result
-}
-
-func stageBootstrapModules(repo string, manifest releaseManifest, version string) ([]string, error) {
-	if err := validateStableVersion(version); err != nil {
-		return nil, err
-	}
-	type stagedFile struct {
-		filename string
-		data     []byte
-	}
-	var staged []stagedFile
-	var changed []string
-	for _, modulePath := range manifest.Bootstrap {
-		filename, err := secureJoin(repo, modulePath, "go.mod")
-		if err != nil {
-			return nil, fmt.Errorf("resolving bootstrap manifest %s: %w", modulePath, err)
-		}
-		data, err := os.ReadFile(filename)
-		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", filename, err)
-		}
-		updated, didChange, err := stageBootstrapManifest(manifest, filename, data, version)
-		if err != nil {
-			return nil, err
-		}
-		if didChange {
-			staged = append(staged, stagedFile{filename: filename, data: updated})
-			changed = append(changed, modulePath)
-		}
-	}
-	for _, file := range staged {
-		if err := writeFileAtomically(file.filename, file.data); err != nil {
-			return nil, err
-		}
-	}
-	return changed, nil
 }
 
 func writeFileAtomically(filename string, data []byte) error {

@@ -10,6 +10,41 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Added — the test helpers are published modules
+
+- **`go get github.com/mariotoffia/gobridge/testutil/<helper>@vX.Y.Z` works
+  from the first train after this change.** The seven helper modules
+  (`artemislocal`, `asblocal`, `ddblocal`, `flocilocal`, `mqttlocal`,
+  `rabbitmqlocal`, `testcontent`) are tagged on every train at the same
+  version as everything else, as release layer 1. A project that builds its
+  own composition root can start the same brokers and emulators in its
+  integration tests instead of writing its own container setup and readiness
+  polling. They carry a lighter compatibility promise than the runtime
+  modules; see [Test helper modules](RELEASE.md#test-helper-modules).
+
+### Changed — `testutil/wait` is a package of the core module
+
+- `testutil/wait` is no longer a separate module. Its import path is
+  unchanged and it ships with `github.com/mariotoffia/gobridge`, so nothing
+  extra is needed to use `wait.Until` in a test. Inside this repository the
+  fourteen `go.mod` files that required it no longer do.
+- Release layers are renumbered: the helpers are layer 1, the former layer 1
+  is layer 2, and so on up to `cmd/gobridge` on layer 5. Tag names do not
+  change.
+- `make dev` now works inside a worktree nested under the checkout (such as
+  `.worktrees/`): it pins `GOWORK` to the worktree instead of finding the
+  parent checkout's `go.work`.
+
+### Removed — the release train's bootstrap step
+
+- The pseudo-version bootstrap for test helpers (`make stage-release-bootstrap`,
+  `make derive-release-bootstrap`, `bootstrap_modules` in
+  `scripts/release/modules.json`, and the matching RELEASE.md section) is gone.
+  It existed only to break the cycle between the root's tests, the helpers
+  and the adapters' tests; with `wait` inside the root and the helpers tagged
+  before the adapters, every sibling requirement is a plain train version.
+  `modules.json` is schema 2 and rejects unknown keys.
+
 ### Added — one page for what a message looks like on each side
 
 - **`docs/message-mapping.md`** shows, per transport, how an SQS message, an
