@@ -12,7 +12,7 @@ REMOTE="${REMOTE:-origin}"
 if [ "$CONFIRM" = "1" ]; then DRY_RUN="${DRY_RUN:-0}"; else DRY_RUN=1; fi
 
 # Polling pacing. 20s across a whole layer keeps API usage far below the
-# 5000/hour limit even for the 26-module layer.
+# 5000/hour limit even for the 27-module layer.
 WORKFLOW_POLL_SECONDS="${WORKFLOW_POLL_SECONDS:-20}"
 WORKFLOW_APPEAR_GRACE="${WORKFLOW_APPEAR_GRACE:-180}"
 WORKFLOW_BUDGET="${WORKFLOW_BUDGET:-5400}"

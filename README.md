@@ -80,7 +80,7 @@ For richer setups, see the [scenarios index](docs/scenarios/) (durable outbox, c
 
 ## Installation
 
-**One version for everything.** GoBridge publishes 34 modules from this
+**One version for everything.** GoBridge publishes 41 modules from this
 repository, and every one of them carries the *same* version. There is no
 compatibility matrix to consult and no per-module changelog to cross-check: pick
 a version, use it everywhere, and the pieces are guaranteed to be the set that
@@ -123,7 +123,20 @@ go get github.com/mariotoffia/gobridge/adapters/native/store
 
 # DynamoDB stores
 go get github.com/mariotoffia/gobridge/adapters/aws/store
+
+# Test helpers: local brokers and emulators for your own integration tests
+go get github.com/mariotoffia/gobridge/testutil/mqttlocal      # Mosquitto (MQTT)
+go get github.com/mariotoffia/gobridge/testutil/rabbitmqlocal  # RabbitMQ (AMQP 0-9-1)
+go get github.com/mariotoffia/gobridge/testutil/artemislocal   # Apache Artemis (AMQP 1.0)
+go get github.com/mariotoffia/gobridge/testutil/asblocal       # Azure Service Bus emulator
+go get github.com/mariotoffia/gobridge/testutil/flocilocal     # Floci AWS emulator (SQS, SSM, CloudWatch, ...)
+go get github.com/mariotoffia/gobridge/testutil/ddblocal       # DynamoDB Local
+go get github.com/mariotoffia/gobridge/testutil/testcontent    # sent-vs-received message verification
 ```
+
+The readiness helper `testutil/wait` ships inside the core module. The test
+helpers follow a lighter compatibility promise than the runtime modules; see
+[Test helper modules](RELEASE.md#test-helper-modules).
 
 ### Consuming from your own CDK app
 
@@ -201,7 +214,7 @@ gobridge/
 │   └── otel/         OpenTelemetry metrics and tracing
 ├── processors/       Filter, transform, circuit breaker, tenant
 ├── cmd/gobridge/     Example binary
-└── testutil/         Docker test helpers (DynamoDB, SQS, ASB, RabbitMQ, Artemis, S3)
+└── testutil/         Test helpers: published broker/emulator modules, plus root-owned wait, dockerexec, netfault, tlsgen
 ```
 
 ## Transports
