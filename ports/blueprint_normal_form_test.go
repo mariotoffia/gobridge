@@ -291,13 +291,20 @@ func TestContentNormalForm_ConditionValuesFollowTheRuntimeCoercion(t *testing.T)
 
 	assert.Nil(t, valueOf(withValue(nil)))
 	assert.Equal(t, "x", valueOf(withValue("x")))
-	assert.Equal(t, 7, valueOf(withValue(7)))
+	assert.Equal(t, float64(7), valueOf(withValue(7)), "every number is the float64 the runtime compares")
+	assert.Equal(t, float64(7), valueOf(withValue(int64(7))))
 	assert.Equal(t, true, valueOf(withValue(true)))
-	assert.Equal(t, []any{"1", 2}, valueOf(withValue([]any{"1", 2})), "a list keeps its element kinds")
+	assert.Equal(t, []any{"1", float64(2)}, valueOf(withValue([]any{"1", 2})), "a list keeps its element kinds, numbers as float64")
 	assert.Equal(t, "map[]", valueOf(withValue(map[string]any{})))
 	assert.Equal(t, "map[a:x b:1]", valueOf(withValue(map[string]any{"b": 1, "a": "x"})))
-	assert.Equal(t, "[]", valueOf(withValue([]any{})))
+	assert.Equal(t, ports.EmptyConditionList{EmptyList: true}, valueOf(withValue([]any{})),
+		"an empty list becomes a marker no document can carry, so it is neither absent nor the string \"[]\"")
+	assert.NotEqual(t, valueOf(withValue("[]")), valueOf(withValue([]any{})))
 	assert.Equal(t, []any{"map[]"}, valueOf(withValue([]any{map[string]any{}})), "the rule reaches into list elements")
+
+	// Two integers the runtime cannot tell apart are one rule here as well, so
+	// an update between them is not a change.
+	assert.Equal(t, valueOf(withValue(int64(9007199254740992))), valueOf(withValue(int64(9007199254740993))))
 
 	input := withValue(map[string]any{"k": "v"})
 	ports.ContentNormalForm(input)

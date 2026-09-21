@@ -63,13 +63,16 @@ The normal form:
   and `30s` are one value. A value that cannot be parsed is kept as written, so
   it still takes part in the comparison and a document that cannot be brought
   into the normal form counts as a change (fail safe);
-- writes a resolver rule's condition value the way the runtime coerces it: nil,
-  scalars and lists keep their kind, and anything else, a map for instance,
-  becomes the string `fmt.Sprint` gives, exactly as `runtime.Val` does. An
-  empty list is written the same way. So an empty map, an empty list and an
-  absent value are three different rules in the identity, as they are three
-  different matches at runtime, and the empty-collection rule below cannot
-  fold them together;
+- writes a resolver rule's condition value the way the runtime coerces it,
+  exactly as `runtime.Val` does: nil stays nil, a string and a bool keep their
+  kind, every number becomes the `float64` the runtime compares (so two
+  integers the runtime cannot tell apart are one rule here too), a list keeps
+  its element kinds, and anything else, a map for instance, becomes the string
+  `fmt.Sprint` gives. An empty list becomes a marker value no document can
+  carry (`ports.EmptyConditionList`), so an empty map, an empty list, a literal
+  string and an absent value are all different rules in the identity, as they
+  are different matches at runtime, and the empty-collection rule below cannot
+  fold any of them together;
 - writes out the two defaults `ports` itself defines, `bridge.shutdown_timeout`
   and `bridge.drain_timeout`, for a value that is left out (the 30 seconds their
   accessors fall back to). A written value is kept as written, an explicit zero

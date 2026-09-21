@@ -162,19 +162,30 @@ func normalRules(rules []RuleDef) []RuleDef {
 	return out
 }
 
+// EmptyConditionList is the value ContentNormalForm writes for a resolver rule
+// whose condition value is an empty list. At runtime an empty list matches
+// nothing, an absent value matches null and a literal string "[]" matches a
+// field with that text, so the three must stay three different rules in the
+// identity. A projection that reduces empty collections would not tell an
+// empty list from an absent value, and a string could be written in a
+// document, so the marker is a typed value no document can carry.
+type EmptyConditionList struct {
+	EmptyList bool `json:"empty_list"`
+}
+
 // normalConditionValue writes a rule's condition value the way the runtime's
 // coercion (runtime.Val) reads it, so the identity of a rule follows how the
 // rule behaves:
 //
 //   - nil stays nil: it is the kind that matches a null field;
-//   - a string, a bool and every number keep their kind, and a decoded JSON
-//     number becomes the float64 the runtime compares with;
+//   - a string and a bool keep their kind;
+//   - every number, including a decoded JSON number, becomes the float64 the
+//     runtime compares with, so two integers the runtime cannot tell apart are
+//     one rule here as well;
 //   - a list keeps its element kinds, each element written by the same rule;
-//   - anything else — a map, a struct, and an EMPTY list — becomes the string
-//     fmt.Sprint gives, which is exactly what the runtime compares for a map.
-//     An empty list is written that way for a different reason: a projection
-//     that reduces empty collections would otherwise not tell it from an absent
-//     value, and at runtime the two match differently.
+//     an empty list becomes EmptyConditionList;
+//   - anything else — a map, a struct — becomes the string fmt.Sprint gives,
+//     which is exactly what the runtime compares for such a value.
 //
 // fmt.Sprint writes map keys in sorted order, so the result is deterministic.
 func normalConditionValue(v any) any {
@@ -191,14 +202,17 @@ func normalConditionValue(v any) any {
 	}
 	rv := reflect.ValueOf(v)
 	switch rv.Kind() {
-	case reflect.String, reflect.Bool,
-		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-		reflect.Float32, reflect.Float64:
+	case reflect.String, reflect.Bool:
 		return v
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return float64(rv.Uint())
+	case reflect.Float32, reflect.Float64:
+		return rv.Float()
 	case reflect.Slice:
 		if rv.Len() == 0 {
-			return fmt.Sprint(v)
+			return EmptyConditionList{EmptyList: true}
 		}
 		if items, ok := v.([]any); ok {
 			out := make([]any, len(items))

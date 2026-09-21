@@ -48,4 +48,9 @@ func TestConfigContentIdentity_ConditionValuesThatMatchDifferentlyStayDistinct(t
 
 	// The same rule written twice is still one rule.
 	require.True(t, configContentEqual(ruleWithValue(map[string]any{"a": 1}), ruleWithValue(map[string]any{"a": 1})))
+
+	// A literal string "[]" is a different rule from an empty list, and two
+	// integers the runtime cannot tell apart (it compares float64) are one rule.
+	require.False(t, configContentEqual(ruleWithValue("[]"), emptyList))
+	require.True(t, configContentEqual(ruleWithValue(int64(9007199254740992)), ruleWithValue(int64(9007199254740993))))
 }
