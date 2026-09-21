@@ -20,11 +20,14 @@ func TestResumeRejectsStaleObservationGeneration(t *testing.T) {
 	observations, err := manager.Observe(ctx)
 	require.NoError(t, err)
 	t.Cleanup(func() { cancel(); manager.Stop() })
-	observe := func(version int) *ports.BridgeConfig {
-		source.changes <- ports.ConfigObservation{Kind: ports.ConfigPresent, Config: &ports.BridgeConfig{Version: version, Bridge: ports.BridgeSettings{ID: "resume-generation"}}}
+	// Each observation carries its own log level: a raised version number alone
+	// is the same configuration, so only a real edit makes the second
+	// observation a change the manager tracks as pending.
+	observe := func(version int, logLevel string) *ports.BridgeConfig {
+		source.changes <- ports.ConfigObservation{Kind: ports.ConfigPresent, Config: &ports.BridgeConfig{Version: version, Bridge: ports.BridgeSettings{ID: "resume-generation", LogLevel: logLevel}}}
 		return wait.RequireReceive(t, observations, time.Second).Config
 	}
-	initial := observe(1)
+	initial := observe(1, "info")
 	pipeline := newReloadPipeline(ports.NewRegistry(), nil, withApplyResultNotifier(manager))
 	swapped := make(chan bridge.SwapEvent, 1)
 	sup := bridge.NewSupervisor(bridge.WithReconfigStrategy(bridge.NewDirectStrategy()), bridge.WithOnSwap(func(ev bridge.SwapEvent) { pipeline.onSwap(ev); swapped <- ev }))
@@ -41,7 +44,7 @@ func TestResumeRejectsStaleObservationGeneration(t *testing.T) {
 	current.Store(session)
 	controller := observedController{current: &current, absent: &absent, generation: &generation, manager: manager}
 	require.NoError(t, controller.StopBridge(ctx))
-	next := observe(2)
+	next := observe(2, "debug")
 	session.recordObservation(next, 0)
 	changes <- next
 	require.True(t, wait.RequireReceive(t, swapped, time.Second).Deferred)

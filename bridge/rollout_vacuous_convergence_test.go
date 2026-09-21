@@ -36,6 +36,10 @@ func windowedApplier(t *testing.T, version int) (*rolloutApplier, *fakeRolloutHo
 
 	host := newFakeRolloutHost(soloWindowConfig(0, time.Minute))
 	candidate := soloWindowConfig(version, time.Minute)
+	// The candidate has to change what the member runs, not only the version
+	// number: a document that says the same thing as the running one is applied
+	// without a swap, so the provisional swap under test would never happen.
+	candidate.Bindings[0].Address = "addr/windowed"
 	digest, ok := configCanonicalBytesDigest(candidate)
 	require.True(t, ok)
 

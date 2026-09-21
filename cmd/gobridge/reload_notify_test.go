@@ -128,9 +128,10 @@ func TestReloadPipeline_RedundantFileReload_AcksDesiredConfig(t *testing.T) {
 	}
 	t.Cleanup(mgr.Stop)
 
-	// The manager observes a new desired config (v2) and emits it. It is NOT yet
-	// applied through the manager's ack path, so divergence is now pending.
-	watchCh <- testConfig("bridge-demo", 2, "info")
+	// The manager observes a new desired config (v2, a real edit to the log
+	// level) and emits it. It is NOT yet applied through the manager's ack path,
+	// so divergence is now pending.
+	watchCh <- testConfig("bridge-demo", 2, "debug")
 	desired := receiveConfig(t, out) // EXACT pointer the manager recorded as desiredConfig
 	if !mgr.ReconfigurePending() {
 		t.Fatal("precondition: an emitted-but-unacked desired config must be pending")

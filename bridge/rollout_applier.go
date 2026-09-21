@@ -222,13 +222,18 @@ func (a *rolloutApplier) step(ctx context.Context) error {
 // agreed to run. It costs one canonicalisation per poll. The gate is the
 // fallback for the one config that cannot be canonicalised at all, which no
 // config loaded through the normal path can be.
+//
+// The row's digest may have been written by a release older than this one, so
+// the older spelling of the same configuration is accepted here as well
+// (recordedDigestMatches); otherwise an upgraded member would report itself
+// diverged from a cohort it is running in step with.
 func (a *rolloutApplier) observedState(r persistence.Rollout) (staged, applied bool) {
 	_, staged = a.barrier.candidate(r.ConfigDigest())
-	digest, ok := configCanonicalBytesDigest(a.host.Config())
-	if !ok {
+	running := a.host.Config()
+	if _, ok := configCanonicalBytes(running); !ok {
 		return staged, a.gate.applied >= r.Generation()
 	}
-	return staged, digest == r.ConfigDigest()
+	return staged, a.barrier.recordedDigestMatches(running, r.ConfigDigest(), r.ConfigVersion())
 }
 
 // vote runs the pre-build gate for an undecided rollout and records this node's

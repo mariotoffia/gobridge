@@ -127,10 +127,12 @@ type BootstrapConfig struct {
 	// deployment's own baseline instead of whatever the mutable config source
 	// happens to hold at that moment.
 	//
-	// Both sources use DeploymentBaselineContentDigest, excluding only the
-	// top-level Version because initialization assigns that counter independently
-	// of the embedded document.
-	// The committed artifact still stores the actual source version and full digest.
+	// Both sources use DeploymentBaselineContentDigest. Like every digest in the
+	// bridge since ADR 0016 it is taken over the configuration's content normal
+	// form, which leaves the top-level Version out — initialization assigns that
+	// counter independently of the embedded document, so the stamp must not
+	// depend on it. The committed artifact still stores the actual source
+	// version; its digest is the same value as this stamp.
 	//
 	// It is deliberately NOT the same value as DynamoDBHAConfigFingerprint: the
 	// fingerprint is the IMMUTABLE deployment profile (which every later committed

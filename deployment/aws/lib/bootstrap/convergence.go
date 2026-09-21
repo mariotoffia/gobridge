@@ -71,9 +71,8 @@ func (a *App) startConvergenceWatch(parent context.Context, rt *goruntime.Runtim
 	}
 
 	budget := a.convergenceBudget(cfg)
-	version := cfg.Version
 	a.watchWg.Go(func() {
-		a.runConvergenceWatch(ctx, rt, version, budget)
+		a.runConvergenceWatch(ctx, rt, budget)
 	})
 }
 
@@ -108,7 +107,13 @@ func (a *App) convergenceBudget(cfg *ports.BridgeConfig) time.Duration {
 // budget expiry it latches the applied-but-not-converged degraded state (and
 // flips MetricConfigDegraded to 1), then KEEPS watching so a later genuine
 // convergence clears it — per-session supervision retries forever.
-func (a *App) runConvergenceWatch(ctx context.Context, rt *goruntime.Runtime, configVersion int, budget time.Duration) {
+//
+// It carries no config version of its own. A reload that says the same thing as
+// the running one keeps this runtime and only adopts the new document, so the
+// version the App reports as applied can move while this watch runs. Every
+// diagnostic below therefore reads the version at the moment it is written,
+// which is what CurrentAppliedConfig reports to the operator at that moment.
+func (a *App) runConvergenceWatch(ctx context.Context, rt *goruntime.Runtime, budget time.Duration) {
 	deadline := a.clk.Now().Add(budget)
 	timer := a.clk.NewTimer(bootstrapConvergencePollInterval)
 	defer timer.Stop()
@@ -119,10 +124,11 @@ func (a *App) runConvergenceWatch(ctx context.Context, rt *goruntime.Runtime, co
 			return
 		}
 		if rt.ReadinessLevel(ctx) >= bootstrapConvergenceReadyLevel {
-			a.clearConvergenceDegraded(rt, configVersion)
+			a.clearConvergenceDegraded(rt)
 			return
 		}
 		if !marked && !a.clk.Now().Before(deadline) {
+			configVersion := a.appliedConfigVersion()
 			reason := fmt.Sprintf(
 				"config version %d applied but transport sessions have not converged (want at least %s) "+
 					"within the %s activation budget; the reload committed while the transport cannot reach "+
@@ -172,9 +178,24 @@ func (a *App) markConvergenceDegraded(rt *goruntime.Runtime, reason string) bool
 	return true
 }
 
+// appliedConfigVersion reports the version of the config the App has applied, or
+// 0 when it has applied none.
+func (a *App) appliedConfigVersion() int {
+	applied := a.appliedRef.Get()
+	if applied == nil {
+		return 0
+	}
+	return applied.Version
+}
+
 // clearConvergenceDegraded clears the degraded state iff rt is still installed and
 // the mark belongs to this runtime.
-func (a *App) clearConvergenceDegraded(rt *goruntime.Runtime, configVersion int) {
+//
+// The version logged is read here, for the same reason the mark reads it where it
+// writes its reason: it must name the document the App holds now, not one a
+// skipped reload has already adopted in its place.
+func (a *App) clearConvergenceDegraded(rt *goruntime.Runtime) {
+	configVersion := a.appliedConfigVersion()
 	a.convergenceMu.Lock()
 	owned := a.convergenceRt == rt && a.convergenceDegraded
 	if owned {

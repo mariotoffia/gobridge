@@ -401,10 +401,17 @@ during the write→propose window cannot be distinguished from the baseline.
 The AWS HA profile supplies `dynamodb_ha_baseline_config_digest` to establish
 the generation-zero committed artifact. This is separate from creating an
 absent config-source document. Both file and DynamoDB baseline matching use
-`bridge.DeploymentBaselineContentDigest`, normalizing only the top-level version
-to zero because initialization assigns target version 1 independently of the
-embedded version. The committed artifact retains its actual stored version and
-full, version-sensitive `bridge.ConfigArtifactDigest`.
+`bridge.DeploymentBaselineContentDigest`. Since ADR 0016 every digest — the
+candidate digest on the rollout row, the committed artifact's digest and the
+baseline stamp — is taken over the configuration's content normal form
+(`ports.ContentNormalForm`): the version number is left out, the id-keyed lists
+are sorted, durations are compared by value. So the baseline stamp and the
+committed artifact's `bridge.ConfigArtifactDigest` are the same value, and
+initialization assigning target version 1 independently of the embedded version
+does not change either. The artifact still stores its actual version. A record
+written by a release before the normal form carries a digest of the raw
+document; readers accept that digest as well, so an upgrade keeps its recovery
+point until the first commit rewrites the record.
 
 **Initial configuration and deletion.** Only control may initialize an absent
 source document, through strict `CreateIfAbsent`, at version 1. Existing
@@ -467,8 +474,11 @@ The design decisions ship as ADRs:
 [0013 — Coordinated cluster config rollout](../../adr/0013-coordinated-cluster-config-rollout.md)
 (supersedes 0012 for live-safe deltas) and
 [0014 — Confirm window: provisional commit with deadman revert](../../adr/0014-confirm-window-provisional-commit.md)
-(extends 0013). Those are authoritative for shipped behavior; this section
-replaces the earlier draft ADR that was promoted verbatim at ship time.
+(extends 0013). [0016 — Configuration content identity: compare the normal
+form, not the bytes](../../adr/0016-config-content-normal-form.md) defines the
+identity the candidate digest, the committed artifact and the no-op check all
+share. Those are authoritative for shipped behavior; this section replaces the
+earlier draft ADR that was promoted verbatim at ship time.
 
 ## 13. Open questions — resolved, retained for provenance
 

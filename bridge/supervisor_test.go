@@ -695,11 +695,11 @@ func TestSupervisorClusteredReload(t *testing.T) {
 		assert.Same(t, oldRt, s.Runtime(), "the running runtime instance must be untouched")
 	})
 
-	t.Run("version-only change to a clustered deployment is still refused", func(t *testing.T) {
-		// Finding 7 boundary: the project treats BridgeConfig.Version as part of
-		// content identity (config.configFingerprint json-encodes it), so a
-		// version-only bump is NOT a no-op — it is a real reconfiguration and, on
-		// a clustered deployment, must still fail closed.
+	t.Run("version-only change to a clustered deployment is a no-op", func(t *testing.T) {
+		// The version number is a writer's counter, not part of what the cohort
+		// runs, so raising it changes nothing the clustered guard has to refuse.
+		// The re-emit is a no-op: the runtime keeps serving and the document that
+		// describes it is adopted.
 		onSwap, swaps := swapChan(1)
 		s := newTestSupervisor(WithOnSwap(onSwap))
 		ch := make(chan *ports.BridgeConfig, 1)
@@ -714,10 +714,10 @@ func TestSupervisorClusteredReload(t *testing.T) {
 		require.True(t, sendConfig(ch, bumped, time.Second))
 
 		ev := awaitSwap(t, swaps)
-		require.Error(t, ev.Error, "a version-only change is content, not a no-op, so a clustered reload must be refused")
-		assert.Contains(t, ev.Error.Error(), "clustered")
+		require.NoError(t, ev.Error, "a version-only change says nothing new about what the cohort runs")
 		assert.Same(t, oldRt, s.Runtime(), "the running runtime instance must be untouched")
-		assert.Equal(t, 0, s.Config().Version, "the applied config version must not advance")
+		assert.True(t, oldRt.IsRunning(), "the current runtime must keep serving")
+		assert.Equal(t, 7, s.Config().Version, "the document describing the running content is adopted")
 	})
 
 	t.Run("no-op clustered reload stays accepted without a swap", func(t *testing.T) {

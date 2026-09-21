@@ -101,10 +101,11 @@ func TestSupervisorReload_OneRouteChangeRestartsEverySession(t *testing.T) {
 	assert.Equal(t, 2, s.Config().Version)
 }
 
-// TestSupervisorReload_NoOpConfigKeepsSessionsRunning is the boundary of the pin:
-// the ONLY delta that does not restart every session is a whole-config no-op.
-// Anything narrower than "nothing changed" still costs a full restart, which is
-// exactly why operators must batch config changes.
+// TestSupervisorReload_NoOpConfigKeepsSessionsRunning is the boundary of the
+// pin: the ONLY delta that does not restart every session is a document that
+// says the same thing as the running one. Anything that changes what the bridge
+// actually runs costs a full restart, which is exactly why operators must batch
+// config changes.
 func TestSupervisorReload_NoOpConfigKeepsSessionsRunning(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, ef := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
@@ -124,24 +125,56 @@ func TestSupervisorReload_NoOpConfigKeepsSessionsRunning(t *testing.T) {
 	assert.True(t, rt.IsRunning(), "the running runtime is preserved across a no-op re-emit")
 }
 
-// TestSupervisorReload_VersionOnlyBumpRestartsEverySession pins the case an
-// operator hits by accident: the no-op check canonicalises the WHOLE config, and
-// Version is part of it, so a bookkeeping version bump with byte-identical
-// content is an accepted delta and costs a full restart like any other.
-func TestSupervisorReload_VersionOnlyBumpRestartsEverySession(t *testing.T) {
+// TestSupervisorReload_VersionOnlyBumpKeepsSessionsRunning pins the case an
+// operator hits by accident: the version number is a writer's counter for
+// avoiding lost updates, not something the bridge runs, so raising it while the
+// content stays the same costs no restart at all. The new document is still
+// adopted, so Config() reports the version that describes what is running.
+func TestSupervisorReload_VersionOnlyBumpKeepsSessionsRunning(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, ef := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
 	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, twoSessionReloadConfig(1, "topic/r2"), ch)
 	defer func() { cancel(); <-errCh }()
 
+	rt := s.Runtime()
+	require.NotNil(t, rt)
+
 	require.True(t, sendConfig(ch, twoSessionReloadConfig(2, "topic/r2"), time.Second))
 	ev := awaitSwap(t, swaps)
 	require.NoError(t, ev.Error)
 
 	sessions, _, _ := ef.Counts()
-	assert.Equal(t, 4, sessions,
-		"a version-only bump is not a content no-op; it rebuilds every session")
+	assert.Equal(t, 2, sessions, "a version-only bump builds no replacement session")
+	assert.Same(t, rt, s.Runtime(), "the running runtime instance is kept")
+	assert.True(t, rt.IsRunning(), "and it keeps serving")
+	assert.Equal(t, 2, s.Config().Version, "the document describing the running content is adopted")
+}
+
+// TestSupervisorReload_ReorderedListsKeepSessionsRunning pins the other shape a
+// generator produces by accident: the same sessions, receivers, senders,
+// bindings and routes written in a different order. Every one of those lists is
+// keyed by id and referred to by id, so their order says nothing about what the
+// bridge runs and reordering them is not a reconfiguration.
+func TestSupervisorReload_ReorderedListsKeepSessionsRunning(t *testing.T) {
+	onSwap, swaps := swapChan(1)
+	s, ef := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
+	ch := make(chan *ports.BridgeConfig, 1)
+	cancel, errCh := quickSupervisorRun(s, twoSessionReloadConfig(1, "topic/r2"), ch)
+	defer func() { cancel(); <-errCh }()
+
+	rt := s.Runtime()
+	require.NotNil(t, rt)
+
+	reordered := reversedIDKeyedLists(twoSessionReloadConfig(1, "topic/r2"))
+	require.True(t, sendConfig(ch, reordered, time.Second))
+	ev := awaitSwap(t, swaps)
+	require.NoError(t, ev.Error)
+
+	sessions, _, _ := ef.Counts()
+	assert.Equal(t, 2, sessions, "a reordered document builds no replacement session")
+	assert.Same(t, rt, s.Runtime(), "the running runtime instance is kept")
+	assert.True(t, rt.IsRunning(), "and it keeps serving")
 }
 
 // BenchmarkSupervisorReload_FullSessionRestart measures the SUPERVISOR's own

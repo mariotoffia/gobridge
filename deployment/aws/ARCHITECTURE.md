@@ -288,10 +288,12 @@ are rejected; the bootstrap composition root registers `EcsEndpointResolver`
 for clustered configs.
 
 The generation-zero baseline uses `bridge.DeploymentBaselineContentDigest`
-for both file and DynamoDB sources. It normalizes only the top-level version
-for recognition, since initialization assigns target version 1 independently
-of the embedded version. The committed artifact retains the actual stored
-version and full `bridge.ConfigArtifactDigest`.
+for both file and DynamoDB sources. Like every digest in the bridge since
+ADR 0016 it is taken over the configuration's content normal form, which
+leaves the top-level version out, so initialization assigning target version 1
+independently of the embedded version does not change the identity. The
+committed artifact retains the actual stored version; its
+`bridge.ConfigArtifactDigest` is the same value as the baseline stamp.
 
 `GoBridgeAlarms` reads this facade to add warm-standby, DynamoDB, existing
 runtime lease/outbox/DLQ, and external `FailureToFullDuration` alarms. The

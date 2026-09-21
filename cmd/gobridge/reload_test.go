@@ -3,8 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/ports"
@@ -99,6 +103,96 @@ func TestReloadPipeline_SkipsWatcherReEmitOfInBandCommit(t *testing.T) {
 		t.Fatalf("expected the redundant watcher re-emit to be skipped and the external edit forwarded; "+
 			"got a config with fingerprint %s (external=%s, reEmit=%s)",
 			fingerprint(got), fingerprint(external), fingerprint(reEmit))
+	}
+}
+
+// contentTestTransport is the plugin kind the content-identity config below
+// hangs its sessions, receivers, senders and bindings on. Its decoder carries no
+// options, which is all the redundant-reload check needs: what is compared is
+// the shape of the document, not what a transport does with it.
+const contentTestTransport = "content-test"
+
+// contentTestConfig builds a config whose id-keyed lists each carry two entries,
+// so a test can reorder them and still describe the same bridge.
+func contentTestConfig(version int, logLevel string) *ports.BridgeConfig {
+	return &ports.BridgeConfig{
+		Version: version,
+		Bridge: ports.BridgeSettings{
+			ID:             "bridge-demo",
+			DeploymentMode: "standalone",
+			LogLevel:       logLevel,
+		},
+		Sessions: []ports.SessionDef{
+			{ID: "session-a", Transport: contentTestTransport},
+			{ID: "session-b", Transport: contentTestTransport},
+		},
+		Receivers: []ports.ReceiverDef{
+			{ID: "receiver-a", SessionID: "session-a"},
+			{ID: "receiver-b", SessionID: "session-b"},
+		},
+		Senders: []ports.SenderDef{
+			{ID: "sender-a", SessionID: "session-a"},
+			{ID: "sender-b", SessionID: "session-b"},
+		},
+		Bindings: []ports.BindingDef{
+			{ID: "binding-a", SenderID: "sender-a", Address: "queue-a"},
+			{ID: "binding-b", SenderID: "sender-b", Address: "queue-b"},
+		},
+		Routes: []ports.RouteDef{
+			{ID: "route-a", ReceiverID: "receiver-a", Bindings: []string{"binding-a"}},
+			{ID: "route-b", ReceiverID: "receiver-b", Bindings: []string{"binding-b"}},
+		},
+	}
+}
+
+// reorderedContentTestConfig returns the same bridge with every id-keyed list
+// written in the opposite order. Each of those lists is referred to by id
+// everywhere else in the document, so the order it is written in carries no
+// meaning.
+func reorderedContentTestConfig(version int, logLevel string) *ports.BridgeConfig {
+	cfg := contentTestConfig(version, logLevel)
+	slices.Reverse(cfg.Sessions)
+	slices.Reverse(cfg.Receivers)
+	slices.Reverse(cfg.Senders)
+	slices.Reverse(cfg.Bindings)
+	slices.Reverse(cfg.Routes)
+	return cfg
+}
+
+// TestReloadPipeline_RedundantReloadIsOnlyTheExactDocument pins what the skip is
+// for: the watcher re-emits the exact document an in-band apply just wrote, and
+// that single re-emit is what gets dropped. Every other document is forwarded —
+// including one that says the same thing under a raised version or with its
+// id-keyed lists written in another order. Whether such a document is a change
+// is the Supervisor's question (it compares content — ADR 0016) and it adopts
+// the new document when it is not, so the version the bridge reports follows
+// the file instead of being stranded on the version the applier wrote.
+func TestReloadPipeline_RedundantReloadIsOnlyTheExactDocument(t *testing.T) {
+	reg := ports.NewRegistry()
+	require.NoError(t, reg.Register(contentTestTransport, func(ports.RawConfig) (ports.PluginConfig, error) {
+		return nil, nil
+	}))
+	p := newReloadPipeline(reg, discardLogger())
+	applied := contentTestConfig(1, "info")
+	p.recordApplied(applied)
+
+	reEmit, err := reparse(applied, reg)
+	require.NoError(t, err)
+	require.True(t, p.isRedundantFileReload(reEmit),
+		"the watcher's re-emit of the applied document is the one reload that is skipped")
+
+	for _, tc := range []struct {
+		name     string
+		reloaded *ports.BridgeConfig
+	}{
+		{"the same content under a raised version", contentTestConfig(2, "info")},
+		{"the same content with its id-keyed lists reordered", reorderedContentTestConfig(1, "info")},
+		{"a real edit", contentTestConfig(1, "debug")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.False(t, p.isRedundantFileReload(tc.reloaded),
+				"a document other than the one just applied in-band must reach the Supervisor")
+		})
 	}
 }
 

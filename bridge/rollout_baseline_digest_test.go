@@ -10,24 +10,24 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-func TestDeploymentBaselineContentDigest_IgnoresOnlySourceVersion(t *testing.T) {
+// The two digest contracts are ONE identity now: the content normal form leaves
+// the version number out, so the deployment baseline and the rollout artifact
+// recognize a document by exactly the same value. What they recognize is the
+// content — a real edit still gives a different digest, and neither call touches
+// the config it is handed.
+func TestBaselineDigests_AreOneVersionIndependentContentIdentity(t *testing.T) {
 	cfg := configWithSessionPlugin(t, &roundTripConfig{ClientID: "c", KeepAlive: 30})
 	want, err := DeploymentBaselineContentDigest(cfg)
 	require.NoError(t, err)
-	artifacts := map[string]bool{}
 	for _, version := range []int{0, 1, 8, 99} {
 		cfg.Version = version
-		before, err := ConfigArtifactDigest(cfg)
+		artifact, err := ConfigArtifactDigest(cfg)
 		require.NoError(t, err)
-		got, err := DeploymentBaselineContentDigest(cfg)
+		baseline, err := DeploymentBaselineContentDigest(cfg)
 		require.NoError(t, err)
-		assert.Equal(t, want, got)
+		assert.Equal(t, artifact, baseline, "both calls answer with the same content identity")
+		assert.Equal(t, want, baseline, "the version number is not part of the content")
 		assert.Equal(t, version, cfg.Version, "recognition must not mutate the actual config")
-		after, err := ConfigArtifactDigest(cfg)
-		require.NoError(t, err)
-		assert.Equal(t, before, after)
-		assert.False(t, artifacts[after], "artifact identity must still distinguish version %d", version)
-		artifacts[after] = true
 	}
 
 	for name, change := range map[string]func(*ports.BridgeConfig){

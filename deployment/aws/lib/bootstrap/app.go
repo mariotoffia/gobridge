@@ -228,9 +228,9 @@ type App struct {
 	mu      sync.Mutex
 	started bool
 
-	// lastAppliedFingerprint is the canonical content hash (see
-	// configFingerprint) of the last config that applyLogicalConfig applied
-	// successfully. It makes reloads idempotent: the poll watcher re-emits a
+	// lastAppliedFingerprint is the content identity (see parsedFingerprint) of
+	// the last config that applyLogicalConfig applied successfully. It makes
+	// reloads idempotent: the poll watcher re-emits a
 	// config after every on-disk change — including the admin-commit write
 	// that applyCommittedConfig already applied in-band — and a blind
 	// re-apply would trigger a SECOND full stop→rebuild→start swap (and, in

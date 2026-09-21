@@ -412,9 +412,11 @@ func TestCandidateConfigDigest_IsStableAcrossIndependentLoads(t *testing.T) {
 	require.True(t, bok)
 	assert.Equal(t, a, b, "content-identical configs must produce one digest cohort-wide")
 
-	other, ok := configCanonicalBytesDigest(liveSafeCandidate(100))
+	edited := liveSafeCandidate(99)
+	edited.Bindings[0].Address = "addr/elsewhere"
+	other, ok := configCanonicalBytesDigest(edited)
 	require.True(t, ok)
-	assert.NotEqual(t, a, other, "a version bump is a content change and must be visible in the digest")
+	assert.NotEqual(t, a, other, "a change to what the cohort runs must be visible in the digest")
 }
 
 // TestCandidateConfigDigest_SecretValuesParticipate records the DECISION about

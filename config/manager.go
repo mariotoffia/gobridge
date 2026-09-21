@@ -3,7 +3,6 @@ package config
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -109,22 +108,35 @@ type Manager struct {
 	// the boot config yet.
 	applyResultSeen bool
 	// desiredFingerprint / runningFingerprint correlate an emitted (desired)
-	// config with the apply result reported for it by CONTENT, not by the
-	// operator-controlled BridgeConfig.Version. Version is NOT unique: an
-	// external writer can change config CONTENT while leaving the version field
-	// unchanged (or two commits can reuse a number), so keying desired-vs-running
-	// on Version HIDES a real divergence after a failed swap — the manager would
-	// see appliedVersion == runningVersion and wrongly report "converged". These
-	// SHA-256 fingerprints are taken over the REVEALED config (secrets included)
-	// so any content change — including a secret-only edit — is detected. The
-	// fingerprint ALSO covers each decoded PluginConfig's options: those live in
-	// the `Config` fields tagged json:"-" on the blueprint, so a plain
-	// json.Marshal of the config DROPS them and a change confined to a plugin's
-	// options (or a plugin secret) at an unchanged Version would be INVISIBLE —
-	// see configFingerprint, which projects each plugin's decoded options back in.
-	// desiredFingerprint
-	// is the last config EMITTED downstream; runningFingerprint is the last one the
-	// applier CONFIRMED. ReconfigurePending is their inequality.
+	// config with the apply result reported for it by CONTENT IDENTITY: a SHA-256
+	// over the config's content normal form (ports.ContentNormalForm, ADR 0016).
+	// Version is NOT unique — an external writer can change config CONTENT while
+	// leaving the version field unchanged, and two commits can reuse a number —
+	// so keying desired-vs-running on it HIDES a real divergence after a failed
+	// swap: the manager would see appliedVersion == runningVersion and wrongly
+	// report "converged".
+	//
+	// The normal form makes two documents that MEAN the same thing compare equal,
+	// so an update that only looks different never reads as a divergence: the
+	// version number is left out, the sessions, receivers, senders, bindings and
+	// routes are put in id order (their written position carries no meaning —
+	// the rest of the document refers to them by id), every duration is rewritten
+	// in one spelling so "30000ms" and "30s" are one value, and the two defaults
+	// ports owns — shutdown_timeout and drain_timeout — are written out, so
+	// leaving one out and writing its default are the same document.
+	//
+	// The fingerprints are taken over the REVEALED config (secrets included) so a
+	// real content change — including a secret-only edit — is detected. They ALSO
+	// cover each decoded PluginConfig's options: those live in the `Config` fields
+	// tagged json:"-" on the blueprint, so a plain json.Marshal of the config
+	// DROPS them and a change confined to a plugin's options (or a plugin secret)
+	// would be INVISIBLE — see configFingerprint, which projects each plugin's
+	// decoded options back in. A config that cannot be fingerprinted at all fails
+	// closed (see desiredHashErr): it can never read as converged.
+	//
+	// desiredFingerprint is the last config EMITTED downstream; runningFingerprint
+	// is the last one the applier CONFIRMED. ReconfigurePending is their
+	// inequality.
 	desiredFingerprint [sha256.Size]byte
 	runningFingerprint [sha256.Size]byte
 	// desiredConfig is the EXACT *ports.BridgeConfig pointer the manager last
@@ -592,20 +604,38 @@ func (m *Manager) AdoptRunning(cfg *ports.BridgeConfig) {
 	m.lastApplyErr = nil
 }
 
-// configFingerprint returns a stable content fingerprint of the FULL logical
-// config, used to detect whether the running config still matches the desired
-// one WITHOUT relying on the operator-controlled, non-unique BridgeConfig.Version.
+// configFingerprint returns the CONTENT IDENTITY of a config: a stable SHA-256
+// over the config's content normal form (ports.ContentNormalForm, ADR 0016),
+// used to detect whether the running config still matches the desired one
+// WITHOUT relying on the operator-controlled, non-unique BridgeConfig.Version.
+//
+// Hashing the normal form instead of the document as it happens to be written
+// means an update that changes nothing the bridge runs produces the SAME
+// fingerprint and is therefore never mistaken for a real change. The normal
+// form leaves out the version number, puts the sessions, receivers, senders,
+// bindings and routes in id order (every other part of the document refers to
+// them by id, so their position carries no meaning), rewrites every duration in
+// one spelling so "30000ms" and "30s" are one value, and writes out the two
+// defaults ports owns — shutdown_timeout and drain_timeout — so leaving one out
+// and writing its default are the same document. Anything that does change what
+// the bridge runs still changes the fingerprint.
 //
 // It hashes two things into one SHA-256, over the REVEALED config (secrets
 // included) so a secret-only edit is detected:
 //
-//  1. the top-level blueprint via encoding/json — structure plus every
-//     non-plugin field (HTTP admin keys, cluster endpoints, routing, ...). This
-//     step DROPS every typed PluginConfig, because the `Config` fields are tagged
-//     json:"-" on the blueprint (ports.blueprint.go);
-//  2. each decoded PluginConfig's options, in a fixed traversal order, so a
-//     change confined to a plugin's options (or a plugin secret) at an unchanged
-//     Version still changes the fingerprint.
+//  1. the normalised top-level blueprint — structure plus every non-plugin field
+//     (HTTP admin keys, cluster endpoints, routing, ...). This step DROPS every
+//     typed PluginConfig, because the `Config` fields are tagged json:"-" on the
+//     blueprint (ports.blueprint.go);
+//  2. each decoded PluginConfig's options, in a fixed traversal order over the
+//     SAME normalised copy so the plugin payloads follow the id-ordered lists,
+//     so a change confined to a plugin's options (or a plugin secret) still
+//     changes the fingerprint.
+//
+// Both go in through writeContentProjection, so a collection that is absent and
+// one that is empty are the same content here as they are in the bridge's
+// content identity — the two cannot disagree about a config, however a plugin
+// happened to tag its option struct.
 //
 // encoding/json emits map keys in sorted order and struct fields in declaration
 // order, so equal content always produces equal bytes. It returns an error when
@@ -618,16 +648,14 @@ func configFingerprint(cfg *ports.BridgeConfig) ([sha256.Size]byte, error) {
 	if cfg == nil {
 		return out, nil
 	}
+	// The normal form is a copy; cfg itself is never modified.
+	normal := ports.ContentNormalForm(cfg)
 	h := sha256.New()
-	enc := json.NewEncoder(h)
-	if err := enc.Encode(shared.RevealSecrets(cfg)); err != nil {
+	if err := writeContentProjection(h, shared.RevealSecrets(normal)); err != nil {
 		return out, fmt.Errorf("config manager: fingerprint bridge config: %w", err)
 	}
-	if err := forEachPluginConfig(cfg, func(pc ports.PluginConfig) error {
-		// enc.Encode writes each value followed by a newline, so the ordered
-		// stream of plugin payloads is self-delimiting. A nil PluginConfig encodes
-		// as "null", preserving its structural position.
-		if err := enc.Encode(shared.RevealSecrets(pc)); err != nil {
+	if err := forEachPluginConfig(normal, func(pc ports.PluginConfig) error {
+		if err := writeContentProjection(h, shared.RevealSecrets(pc)); err != nil {
 			return fmt.Errorf("config manager: fingerprint plugin config: %w", err)
 		}
 		return nil
@@ -639,9 +667,13 @@ func configFingerprint(cfg *ports.BridgeConfig) ([sha256.Size]byte, error) {
 }
 
 // forEachPluginConfig visits every decoded PluginConfig on the blueprint in a
-// fixed, deterministic order (matching the parser's wire projection). The order
-// is part of the fingerprint contract: two configs that differ only in the
-// position of an otherwise-identical plugin option must fingerprint differently.
+// fixed, deterministic order (matching the parser's wire projection), so the
+// same document always yields the same stream of plugin payloads.
+// configFingerprint hands it the content normal form, whose id-keyed lists are
+// already in id order, so moving a session (or any other id-keyed entry) within
+// the document does not move its plugin options in that stream. The order of
+// the lists the normal form leaves alone — a receiver's subscriptions, for
+// example — is still part of the fingerprint.
 func forEachPluginConfig(cfg *ports.BridgeConfig, fn func(ports.PluginConfig) error) error {
 	for _, sc := range []*ports.StoreConfig{cfg.Stores.Lease, cfg.Stores.Outbox, cfg.Stores.DLQ, cfg.Stores.ManagedSubscriptions} {
 		if sc == nil {

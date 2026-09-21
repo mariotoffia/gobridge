@@ -34,6 +34,9 @@ func TestManager_AdoptRunning_ReconcilesABarrierDrivenSwap(t *testing.T) {
 	// the manager is correctly pending.
 	v2 := minimalValidConfig("bridge1")
 	v2.Version = 2
+	// Desired-vs-running compares CONTENT, so the deferred delta has to be a real
+	// change: a config that only raised its version number is still v1.
+	v2.Bridge.InstanceID = "barrier-v2"
 	mgr.recordAppliedVersion(v2)
 	require.True(t, mgr.ReconfigurePending(), "v2 desired, only v1 confirmed running")
 
@@ -43,6 +46,7 @@ func TestManager_AdoptRunning_ReconcilesABarrierDrivenSwap(t *testing.T) {
 	// running stays at v1 and pending stays latched.
 	v2applied := minimalValidConfig("bridge1")
 	v2applied.Version = 2
+	v2applied.Bridge.InstanceID = "barrier-v2" // same content as the desired v2, different pointer
 	require.NotSame(t, v2, v2applied, "the barrier applies a config the manager did not emit")
 	mgr.NotifyApplyResult(v2applied, nil)
 	rv, _ := mgr.RunningVersion()

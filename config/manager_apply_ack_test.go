@@ -83,6 +83,11 @@ func TestManager_Watch_FailedSwap_KeepsManagerConsistentWithRuntime(t *testing.T
 	// runtime).
 	v2 := minimalValidConfig("bridge1")
 	v2.Version = 2
+	// Desired-vs-running compares CONTENT, so a config that only raised its
+	// version number is the same desired config. Give v2 a real change
+	// (InstanceID is merge-only, not validated) so the failed swap below is a
+	// genuine divergence.
+	v2.Bridge.InstanceID = "failed-swap-v2"
 	watchCh <- v2
 	select {
 	case got := <-out:
@@ -147,9 +152,12 @@ func TestManager_NotifyApplyResult_StateMachine(t *testing.T) {
 	require.Equal(t, 5, rv)
 	require.False(t, mgr.ReconfigurePending())
 
-	// Manager emits a newer desired v6 (distinct content).
+	// Manager emits a newer desired v6. It has to differ in CONTENT, not only in
+	// the version number: the desired-vs-running check compares content, so a
+	// version-only bump would still be the v5 that is already running.
 	v6 := minimalValidConfig("bridge1")
 	v6.Version = 6
+	v6.Bridge.InstanceID = "state-machine-v6"
 	mgr.recordAppliedVersion(v6)
 	require.True(t, mgr.ReconfigurePending(), "v6 desired, only v5 confirmed running")
 

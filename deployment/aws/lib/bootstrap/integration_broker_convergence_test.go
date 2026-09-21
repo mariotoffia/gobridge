@@ -131,6 +131,8 @@ func TestReconfig1_ConvergenceWatch_BrokerUnreachable_MarksDegraded(t *testing.T
 	app.metricsExporter = rec
 	app.runtimeRef.Set(rt)
 	app.convergenceRt = rt
+	// The watch names the applied config in its diagnostics, so give the App one.
+	app.appliedRef.Set(&ports.BridgeConfig{Version: 7})
 
 	// A REALISTIC budget (bypassing the 60s floor but comfortably ABOVE the ~2s a
 	// healthy session takes to reach LevelSubscribed against a real broker): the
@@ -143,7 +145,7 @@ func TestReconfig1_ConvergenceWatch_BrokerUnreachable_MarksDegraded(t *testing.T
 	watchCtx, watchCancel := context.WithCancel(context.Background())
 	defer watchCancel()
 	done := make(chan struct{})
-	go func() { defer close(done); app.runConvergenceWatch(watchCtx, rt, 7, 3*time.Second) }()
+	go func() { defer close(done); app.runConvergenceWatch(watchCtx, rt, 3*time.Second) }()
 
 	require.Eventually(t, func() bool {
 		degraded, _ := app.degradedConfigWatch()
@@ -183,7 +185,7 @@ func TestReconfig1_ConvergenceWatch_BrokerReachable_StaysConverged(t *testing.T)
 	// clears/returns without ever marking degraded.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	app.runConvergenceWatch(ctx, rt, 8, 60*time.Second)
+	app.runConvergenceWatch(ctx, rt, 60*time.Second)
 
 	degraded, _ := app.degradedConfigWatch()
 	require.False(t, degraded, "a converged session must never be marked applied-but-not-converged")

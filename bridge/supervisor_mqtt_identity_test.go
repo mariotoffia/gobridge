@@ -14,27 +14,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// durableIdentityTestConfig stands in for a transport whose session claims a
+// durable broker identity, such as an MQTT client id. Identity and Domains are
+// EXPORTED because a real transport carries them as written options: they are
+// part of the config's content, so changing one is a reload the supervisor sees
+// rather than a document that says the same thing as the running one.
 type durableIdentityTestConfig struct {
-	identity string
-	domains  []string
+	Identity string   `json:"identity"`
+	Domains  []string `json:"domains,omitempty"`
 	err      error
 }
 
 func (durableIdentityTestConfig) Kind() string    { return "identity" }
 func (durableIdentityTestConfig) Validate() error { return nil }
 func (c durableIdentityTestConfig) DurableSessionIdentity(connectivity.SessionMode) (string, error) {
-	return c.identity, c.err
+	return c.Identity, c.err
 }
 
 func (c durableIdentityTestConfig) DurableSessionIdentityDomains(connectivity.SessionMode) ([]string, error) {
-	if c.domains != nil {
-		return c.domains, c.err
+	if c.Domains != nil {
+		return c.Domains, c.err
 	}
-	return []string{c.identity}, c.err
+	return []string{c.Identity}, c.err
 }
 func (c durableIdentityTestConfig) FreezePluginConfig() ports.PluginConfig {
 	frozen := c
-	frozen.domains = append([]string(nil), c.domains...)
+	frozen.Domains = append([]string(nil), c.Domains...)
 	return frozen
 }
 
@@ -45,7 +50,7 @@ func configWithDurableSessionIdentity(version int, identity string) *ports.Bridg
 		ID:          "stable-session",
 		Transport:   "identity",
 		SessionMode: "persistent",
-		Config:      durableIdentityTestConfig{identity: identity},
+		Config:      durableIdentityTestConfig{Identity: identity},
 	}}
 	cfg.Senders[0].Transport = "identity"
 	cfg.Senders[0].SessionID = "stable-session"
@@ -133,7 +138,7 @@ func TestSupervisor_InPlaceSessionIdentityMutationUsesAppliedSnapshot(t *testing
 	// Mutate the caller-held object that Supervisor previously retained directly,
 	// then submit that same pointer as a reload.
 	cfg.Version = 2
-	cfg.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-b"}
+	cfg.Sessions[0].Config = durableIdentityTestConfig{Identity: "opaque-b"}
 	require.True(t, sendConfig(changes, cfg, time.Second))
 
 	ev := awaitSwap(t, swaps)
@@ -147,10 +152,10 @@ func TestSupervisor_InPlaceSessionIdentityMutationUsesAppliedSnapshot(t *testing
 
 func TestDurableSessionIdentityChanged_RejectsDuplicateIdentityOnStartupAndReload(t *testing.T) {
 	duplicate := configWithDurableSessionIdentity(2, "opaque-a")
-	duplicate.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-a", domains: []string{"shared-domain"}}
+	duplicate.Sessions[0].Config = durableIdentityTestConfig{Identity: "opaque-a", Domains: []string{"shared-domain"}}
 	duplicate.Sessions = append(duplicate.Sessions, ports.SessionDef{
 		ID: "duplicate-session", Transport: "identity", SessionMode: "persistent",
-		Config: durableIdentityTestConfig{identity: "opaque-b", domains: []string{"shared-domain"}},
+		Config: durableIdentityTestConfig{Identity: "opaque-b", Domains: []string{"shared-domain"}},
 	})
 	duplicate.Senders = append(duplicate.Senders, ports.SenderDef{
 		ID: "duplicate-sender", Transport: "identity", SessionID: "duplicate-session",
@@ -171,10 +176,10 @@ func TestSupervisor_DuplicateDurableIdentityRejectedBeforeInitialBuild(t *testin
 	s.RegisterTransport("identity", factory)
 
 	cfg := configWithDurableSessionIdentity(1, "opaque-a")
-	cfg.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-a", domains: []string{"shared-domain"}}
+	cfg.Sessions[0].Config = durableIdentityTestConfig{Identity: "opaque-a", Domains: []string{"shared-domain"}}
 	cfg.Sessions = append(cfg.Sessions, ports.SessionDef{
 		ID: "duplicate-session", Transport: "identity", SessionMode: "persistent",
-		Config: durableIdentityTestConfig{identity: "opaque-b", domains: []string{"shared-domain"}},
+		Config: durableIdentityTestConfig{Identity: "opaque-b", Domains: []string{"shared-domain"}},
 	})
 	cfg.Senders = append(cfg.Senders, ports.SenderDef{
 		ID: "duplicate-sender", Transport: "identity", SessionID: "duplicate-session",
@@ -199,7 +204,7 @@ func TestSupervisor_DuplicateDurableIdentityReloadRejectedBeforeBuild(t *testing
 	s.RegisterTransport("identity", factory)
 
 	oldCfg := configWithDurableSessionIdentity(1, "opaque-a")
-	oldCfg.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-a", domains: []string{"shared-domain"}}
+	oldCfg.Sessions[0].Config = durableIdentityTestConfig{Identity: "opaque-a", Domains: []string{"shared-domain"}}
 	changes := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, oldCfg, changes)
 	defer func() { cancel(); <-errCh }()
@@ -207,10 +212,10 @@ func TestSupervisor_DuplicateDurableIdentityReloadRejectedBeforeBuild(t *testing
 	oldRuntime := s.Runtime()
 	beforeSessions, _, _ := factory.Counts()
 	newCfg := configWithDurableSessionIdentity(2, "opaque-a")
-	newCfg.Sessions[0].Config = durableIdentityTestConfig{identity: "opaque-a", domains: []string{"shared-domain"}}
+	newCfg.Sessions[0].Config = durableIdentityTestConfig{Identity: "opaque-a", Domains: []string{"shared-domain"}}
 	newCfg.Sessions = append(newCfg.Sessions, ports.SessionDef{
 		ID: "duplicate-session", Transport: "identity", SessionMode: "persistent",
-		Config: durableIdentityTestConfig{identity: "different-state", domains: []string{"shared-domain"}},
+		Config: durableIdentityTestConfig{Identity: "different-state", Domains: []string{"shared-domain"}},
 	})
 	newCfg.Senders = append(newCfg.Senders, ports.SenderDef{
 		ID: "duplicate-sender", Transport: "identity", SessionID: "duplicate-session",
@@ -241,12 +246,12 @@ func (*typedNilDurableIdentityConfig) DurableSessionIdentityDomains(connectivity
 func TestSnapshotDurableSessionIdentities_RejectsOverlappingEndpointDomainsOnly(t *testing.T) {
 	cfg := configWithDurableSessionIdentity(1, "state-a")
 	cfg.Sessions[0].Config = durableIdentityTestConfig{
-		identity: "state-a", domains: []string{"endpoint-a", "endpoint-b"},
+		Identity: "state-a", Domains: []string{"endpoint-a", "endpoint-b"},
 	}
 	cfg.Sessions = append(cfg.Sessions, ports.SessionDef{
 		ID: "second-session", Transport: "identity", SessionMode: "persistent",
 		Config: durableIdentityTestConfig{
-			identity: "state-b", domains: []string{"endpoint-a", "endpoint-c"},
+			Identity: "state-b", Domains: []string{"endpoint-a", "endpoint-c"},
 		},
 	})
 	cfg.Senders = append(cfg.Senders, ports.SenderDef{
@@ -257,7 +262,7 @@ func TestSnapshotDurableSessionIdentities_RejectsOverlappingEndpointDomainsOnly(
 	require.Error(t, err, "one overlapping broker endpoint plus client identity must collide")
 
 	cfg.Sessions[1].Config = durableIdentityTestConfig{
-		identity: "state-b", domains: []string{"endpoint-c", "endpoint-d"},
+		Identity: "state-b", Domains: []string{"endpoint-c", "endpoint-d"},
 	}
 	_, err = snapshotDurableSessionIdentities(cfg)
 	require.NoError(t, err, "non-overlapping broker endpoints must not collide")
@@ -377,6 +382,10 @@ func TestSupervisor_FreezesProposalBeforeIdentityPreflightAndBuild(t *testing.T)
 	started := make(chan struct{})
 	proceed := make(chan struct{})
 	newCfg := configWithDurableSessionIdentity(2, "stable-state")
+	// The plugin's identity state is private to the adapter, so it is invisible
+	// to the content comparison; without a visible edit this document would say
+	// the same thing as the running one and no preflight would run at all.
+	newCfg.Bindings[0].Address = "addr/reloaded"
 	proposed := &mutableIdentityTestConfig{
 		identityParts: []string{"broker-a"}, dependency: dependency,
 		domainStarted: started, domainContinue: proceed,

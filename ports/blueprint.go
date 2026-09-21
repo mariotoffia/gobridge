@@ -179,6 +179,11 @@ func (c ClusterConfig) ConfirmWindowDuration() time.Duration {
 	return d
 }
 
+// defaultBridgeTimeout is the value ShutdownTimeout and DrainTimeout resolve to
+// when unset. ContentNormalForm writes it out for the same two fields, so the
+// accessor and the content identity can never disagree about the default.
+const defaultBridgeTimeout = 30 * time.Second
+
 // ShutdownTimeoutDuration parses the shutdown timeout string, falling back to
 // 30s when the string is empty OR malformed. The duration strings on
 // BridgeSettings are validated (malformed or non-positive values rejected) by
@@ -188,7 +193,7 @@ func (c ClusterConfig) ConfirmWindowDuration() time.Duration {
 func (b BridgeSettings) ShutdownTimeoutDuration() time.Duration {
 	d, _ := time.ParseDuration(b.ShutdownTimeout)
 	if d == 0 {
-		return 30 * time.Second
+		return defaultBridgeTimeout
 	}
 	return d
 }
@@ -197,7 +202,7 @@ func (b BridgeSettings) ShutdownTimeoutDuration() time.Duration {
 func (b BridgeSettings) DrainTimeoutDuration() time.Duration {
 	d, _ := time.ParseDuration(b.DrainTimeout)
 	if d == 0 {
-		return 30 * time.Second
+		return defaultBridgeTimeout
 	}
 	return d
 }

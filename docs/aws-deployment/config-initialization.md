@@ -266,15 +266,20 @@ and numeric condition types. Observed snapshots must not be mutated while in use
 
 The high-availability (HA) deployment baseline uses content identity, not the
 version supplied by the embedded source. Both file and DynamoDB sources use
-`bridge.DeploymentBaselineContentDigest`, which normalizes only the top-level
-`BridgeConfig.Version` to zero for comparison. Every editable field remains
-covered.
+`bridge.DeploymentBaselineContentDigest`. Every digest in the bridge is taken
+over the configuration's content normal form (`ports.ContentNormalForm`, ADR
+0016): the top-level `BridgeConfig.Version` is left out, the sessions,
+receivers, senders, bindings and routes are compared by id rather than by
+position, durations are compared by value, and the two bridge timeouts whose
+default the blueprint itself defines are written out. Every editable field
+remains covered.
 
 For example, an embedded document with `version: 17` creates an absent target
 at version 1. Both sources can recognize that content as the admitted baseline.
-The generation-zero committed artifact still stores version 1 and its full,
-version-sensitive `bridge.ConfigArtifactDigest`; baseline recognition never
-rewrites the artifact's version.
+The generation-zero committed artifact still stores version 1; its
+`bridge.ConfigArtifactDigest` is the same value as the baseline stamp, because
+neither depends on the version. Baseline recognition never rewrites the
+artifact's version.
 
 The `-initial-config-digest` build probe has a different purpose: it hashes the
 embedded bytes, including their original version and formatting. It proves the

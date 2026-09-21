@@ -18,7 +18,9 @@ import (
 )
 
 // Both targets assign the initial stored version independently of the embedded
-// document. The deployment baseline identifies content, not that target counter.
+// document. The deployment baseline identifies content, not that target counter,
+// and since every digest is taken over the content normal form (ADR 0016) the
+// committed artifact's digest is that same identity.
 func TestDynamoDBHA_BaselineDigest_SourceVersionIdentity(t *testing.T) {
 	for _, configSource := range []string{infra.ConfigSourceFile, infra.ConfigSourceDynamoDB} {
 		t.Run(configSource, func(t *testing.T) {
@@ -52,10 +54,8 @@ func TestDynamoDBHA_BaselineDigest_SourceVersionIdentity(t *testing.T) {
 						"CDK and runtime must use the same content identity")
 					assert.Equal(t, unversionedDigest, cfg.DynamoDBHABaselineConfigDigest,
 						"slot %s must recognize deployment content at YAML version %d", slot, version)
-					if version != 0 {
-						assert.NotEqual(t, fullDigest, contentDigest,
-							"committed artifacts must still identify their actual target version")
-					}
+					assert.Equal(t, fullDigest, contentDigest,
+						"the committed artifact's digest is the same content identity: the normal form leaves the version out")
 				}
 			}
 		})
