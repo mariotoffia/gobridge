@@ -148,8 +148,12 @@ func (b *rolloutBarrier) recordedDigestMatches(cfg *ports.BridgeConfig, recorded
 	if identity == recorded {
 		return true
 	}
-	if b.legacyStandsFor(recorded) == identity {
-		return true
+	if known := b.legacyStandsFor(recorded); known != "" {
+		// The digest is already tied to one identity. A lossy digest must never
+		// vouch for a second one, so a different identity fails closed here
+		// instead of falling through to the lossy comparison and overwriting
+		// the association.
+		return known == identity
 	}
 	atRecordedVersion := *cfg
 	atRecordedVersion.Version = recordedVersion

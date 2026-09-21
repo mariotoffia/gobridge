@@ -136,7 +136,10 @@ the moment of it:
   matches;
 - once a record has matched through the raw-document digest, the bridge
   remembers, for the life of the process, which normal-form identity that
-  digest stands for, so a later no-op that reorders the document still matches;
+  digest stands for, so a later no-op that reorders the document still
+  matches. From then on that digest answers only for that identity: the
+  raw-document digest is lossy, so it is never allowed to vouch for a second
+  configuration, and a colliding one fails closed;
 - at boot, only an exact normal-form match lets a member skip the artifact; a
   raw-document match is lossy (it could not tell two integers above 2^53
   apart) and never decides a boot by itself. Otherwise the committed artifact
