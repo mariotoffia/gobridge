@@ -194,9 +194,11 @@ func NewGoBridgeDynamoDBHA(scope constructs.Construct, id *string, props *Dynamo
 	// which is why it is not a hash of the whole document: doing that made every
 	// real change fail admission on every member after the cohort committed it.
 	//
-	// The baseline digest identifies THIS deployment content. Both target stores
-	// assign their initial version, so the baseline excludes that counter.
-	// The actual committed artifact still retains its full version identity.
+	// The baseline digest identifies THIS deployment content. It is taken over
+	// the configuration's content normal form (ADR 0016), which leaves the
+	// version counter out: both target stores assign their initial version, so
+	// the stamp must not depend on it. The committed artifact still stores its
+	// version; its digest is the same value as this stamp.
 	// A coordinated member uses it to seed the cohort's generation-zero
 	// committed artifact at boot, so a restart before the first rollout recovers to
 	// the config this deployment admitted rather than to whatever the mutable

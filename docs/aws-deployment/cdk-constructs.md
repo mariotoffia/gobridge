@@ -200,9 +200,12 @@ injected into bootstrap by the facade, not supplied independently by callers, as
 is the baseline config digest of the admitted document.
 
 For both file and DynamoDB sources, that baseline uses
-`bridge.DeploymentBaselineContentDigest`, excluding only the top-level version.
-Initialization assigns target version 1 independently of the embedded version.
-The actual committed artifact keeps its stored version and full digest.
+`bridge.DeploymentBaselineContentDigest`, taken over the configuration's
+content normal form (ADR 0016): the top-level version is left out, the id-keyed
+lists are compared by id and durations by value. Initialization assigns target
+version 1 independently of the embedded version without changing the identity.
+The actual committed artifact keeps its stored version; its digest is the same
+value as the stamp.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

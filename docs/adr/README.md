@@ -26,6 +26,7 @@ record remains available and links to its replacement.
 | [0013](0013-coordinated-cluster-config-rollout.md) | Coordinated cluster config rollout for live-safe deltas | accepted |
 | [0014](0014-confirm-window-provisional-commit.md) | Confirm window: provisional commit with deadman revert | accepted |
 | [0015](0015-dlq-redrive-inject-then-delete.md) | DLQ redrive inject-then-delete (at-least-once) | accepted |
+| [0016](0016-config-content-normal-form.md) | Configuration content identity: compare the normal form, not the bytes | accepted |
 
 ## Numbering
 

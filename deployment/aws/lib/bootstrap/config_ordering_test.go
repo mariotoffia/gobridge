@@ -242,10 +242,52 @@ func TestApp_DynamoDBConfig_RollbackUsesNewVersion(t *testing.T) {
 
 	// An admin rollback in DynamoDB restores the old content with a NEW CAS
 	// version; it must remain applicable despite the newer logical candidate.
+	// The content it restores is the content already running, so the runtime
+	// keeps serving and only the applied document changes.
+	running := app.CurrentRuntime()
 	rollback := configOrderingConfig(4, "info")
 	applyConfigOrderingUpdate(t, app, "admin", rollback)
+	assert.Same(t, running, app.CurrentRuntime(),
+		"a rollback to the running content must not disconnect every session")
 	assert.Equal(t, 4, app.CurrentAppliedConfig().Version)
 	assert.Equal(t, "info", app.CurrentAppliedConfig().Bridge.LogLevel)
+}
+
+// A document that says the same thing as the running one is not a change to what
+// the bridge runs: every DynamoDB write raises the version counter, and a
+// generator may write a default out rather than leave it out. The runtime keeps
+// serving, and the new document becomes the applied configuration so the applied
+// version is the one that now describes the running content (ADR 0016).
+func TestApp_SameContentUpdateKeepsRuntimeAndAdoptsVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rewrite func(*ports.BridgeConfig)
+	}{
+		{"only the version is raised", func(*ports.BridgeConfig) {}},
+		{"the drain default is written out", func(cfg *ports.BridgeConfig) {
+			cfg.Bridge.DrainTimeout = "30000ms"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := newConfigOrderingApp(t, deployinfra.ConfigSourceDynamoDB)
+			app.manager = config.NewManager(config.Layer{})
+			skipped := 0
+			app.onReloadSkipped = func() { skipped++ }
+			applyConfigOrderingUpdate(t, app, "watcher", configOrderingConfig(1, "info"))
+			running := app.CurrentRuntime()
+			fingerprint := app.lastAppliedFingerprint
+
+			update := configOrderingConfig(2, "info")
+			tc.rewrite(update)
+			applyConfigOrderingUpdate(t, app, "watcher", update)
+
+			assert.Equal(t, 1, skipped, "a document with the running content must not rebuild the runtime")
+			assert.Same(t, running, app.CurrentRuntime())
+			assert.Equal(t, 2, app.CurrentAppliedConfig().Version,
+				"the applied configuration adopts the document that now describes the running content")
+			assert.Equal(t, fingerprint, app.lastAppliedFingerprint)
+		})
+	}
 }
 
 func newConfigOrderingApp(t *testing.T, source string) *App {

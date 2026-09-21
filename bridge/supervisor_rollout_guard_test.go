@@ -29,7 +29,7 @@ func coordinatedClusteredCfg(id string) *ports.BridgeConfig {
 }
 
 // TestSupervisorCoordinatedRollout_LiveSafeDeltaFailsClosedUntilBarrierWired
-// proves the Phase-3 guard lift is SAFE while the barrier drive is unwired: a
+// proves the lifted cluster guard is SAFE while the barrier drive is unwired: a
 // live-safe delta in a coordinated cluster is recognized as coordinated-eligible
 // (distinct from the generic clustered refusal) but, because the proposer/
 // applier/coordinator goroutines are a later phase, it fails CLOSED — a visible
@@ -49,9 +49,10 @@ func TestSupervisorCoordinatedRollout_LiveSafeDeltaFailsClosedUntilBarrierWired(
 	oldCfg := s.Config()
 	require.NotNil(t, oldCfg)
 
-	// A live-safe delta (version-only bump) within the coordinated cluster.
+	// A live-safe delta within the coordinated cluster: the log level changes
+	// nothing the barrier classifies as replacement-required.
 	proposed := coordinatedClusteredCfg("r1")
-	proposed.Version = 99
+	proposed.Bridge.LogLevel = "debug"
 	require.True(t, sendConfig(ch, proposed, time.Second))
 
 	ev := awaitSwap(t, swaps)

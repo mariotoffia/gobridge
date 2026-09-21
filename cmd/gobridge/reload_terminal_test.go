@@ -284,8 +284,10 @@ func TestApplyCommitted_InFlightResolvesByPolling_ProductionContract(t *testing.
 
 	// The committed config reaches the manager and is emitted downstream; the
 	// EXACT emitted pointer is what the applier carries, so the manager can
-	// correlate the eventual result.
-	watchCh <- testConfig("bridge-demo", 2, "info")
+	// correlate the eventual result. It edits the log level, so it is a real
+	// change to what the bridge runs rather than the same content under a new
+	// version number.
+	watchCh <- testConfig("bridge-demo", 2, "debug")
 	desired := receiveConfig(t, out)
 
 	fake := clocktest.NewAt(time.Unix(0, 0))
@@ -372,7 +374,9 @@ func TestApplyCommitted_InFlightThenFailureIsPollable_ProductionContract(t *test
 	}
 	t.Cleanup(mgr.Stop)
 
-	watchCh <- testConfig("bridge-demo", 2, "info")
+	// A real edit to the log level, so the manager sees a change to what the
+	// bridge runs rather than the same content under a new version number.
+	watchCh <- testConfig("bridge-demo", 2, "debug")
 	desired := receiveConfig(t, out)
 
 	fake := clocktest.NewAt(time.Unix(0, 0))

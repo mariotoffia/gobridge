@@ -16,9 +16,9 @@ Local CDK template tests use the existing `!race` convention. They synthesize re
 | TestSingle_EFS_Conditional | verifies file and SQLite filesystem requirements | unit | deployment/cdk | pass |
 | TestSingle_EFSFree_Consumers | verifies alarms and optional SSM exports without EFS | unit | deployment/cdk | pass |
 | TestDynamoDBHA_ConfigTable_SharedGrants | verifies one config table and per-role IAM across all task definitions | unit | deployment/cdk | pass |
-| TestDynamoDBHA_BaselineDigest_SourceVersionIdentity | verifies actual static-slot stamps ignore only DynamoDB source versions and retain exact file identity | unit | deployment/cdk | pass |
+| TestDynamoDBHA_BaselineDigest_SourceVersionIdentity | verifies static-slot stamps ignore the source version for both sources and equal the committed artifact's content identity | unit | deployment/cdk | pass |
 | TestDynamoDBHA_BaselineDigest_IncludesEditableContent | verifies baseline stamps cover editable content excluded from deployment admission | unit | deployment/cdk | pass |
-| TestDeploymentBaselineContentDigest_IgnoresOnlySourceVersion | verifies version-independent recognition without config mutation or weaker artifact identity | unit | bridge | pass |
+| TestBaselineDigests_AreOneVersionIndependentContentIdentity | verifies the baseline and artifact digests are one version-independent content identity that still tracks edits without config mutation | unit | bridge | pass |
 | TestBaselineDigests_RejectUncanonicalizableConfig | rejects nil and malformed configs for both digest contracts | unit | bridge | pass |
 | TestApp_DynamoDBBaseline_SeedsTheStoredVersion | verifies default/explicit YAML versions recognize fresh and overwritten DynamoDB versions and persist complete generation-zero artifacts | unit | deployment/bootstrap | pass |
 | TestApp_DynamoDBBaseline_RejectsChangedContent | rejects an uncommitted edit despite matching deployment profile and a different source version | unit | deployment/bootstrap | pass |

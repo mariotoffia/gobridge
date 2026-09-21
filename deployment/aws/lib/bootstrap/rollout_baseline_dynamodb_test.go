@@ -61,7 +61,9 @@ func TestApp_DynamoDBBaseline_SeedsTheStoredVersion(t *testing.T) {
 			fullDigest, err := bridge.ConfigArtifactDigest(&stored)
 			require.NoError(t, err)
 			assert.Equal(t, fullDigest, committed.Digest)
-			assert.NotEqual(t, stamp, committed.Digest, "recognition identity is not artifact identity")
+			assert.Equal(t, stamp, committed.Digest,
+				"the deployment stamp and the committed artifact are the same content identity: "+
+					"the normal form leaves the version out, so the source's own version cannot change it")
 			assert.Equal(t, tc.yamlVersion, deployed.Version)
 			assert.Equal(t, tc.persisted, app.CurrentAppliedConfig().Version)
 			health := app.configWatchHealth()
@@ -130,14 +132,25 @@ func TestApp_DynamoDBBaseline_ReportsFullArtifactIdentity(t *testing.T) {
 	established, err := store.CommittedConfig(t.Context())
 	require.NoError(t, err)
 
+	// A later deploy admits a document with different content. The cohort has
+	// already established its baseline, so this member reports the artifact that
+	// stands rather than replacing it. Only a real edit can reach this branch: a
+	// raised version number alone is the same content identity.
 	logs.Reset()
-	stored.Version = 8 // same deployment content, but a different full artifact
-	require.NoError(t, app.seedRolloutBaseline(t.Context(), &stored))
+	changed := stored
+	changed.Version = 8
+	changed.Bridge.LogLevel = "debug"
+	changedStamp, err := bridge.DeploymentBaselineContentDigest(&changed)
+	require.NoError(t, err)
+	next := dynamoDBBaselineApp(t, store, &changed, changedStamp)
+	next.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	require.NoError(t, next.buildRolloutDriver(t.Context()))
+	require.NoError(t, next.seedRolloutBaseline(t.Context(), &changed))
 	assert.Contains(t, logs.String(), `"outcome":"superseded"`)
 	after, err := store.CommittedConfig(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, established, after, "an established baseline must never be rewritten")
-	assert.Equal(t, established.Digest, app.baselineRef.Load().Digest)
+	assert.Equal(t, established.Digest, next.baselineRef.Load().Digest)
 }
 
 func TestApp_FileBaseline_RecognizesAssignedVersion(t *testing.T) {
@@ -256,7 +269,10 @@ func TestFileInitializationBaselineRecognizesSourceOwnedVersion(t *testing.T) {
 			assert.Equal(t, tc.storedVersion, committed.ConfigVersion)
 			fullDigest, err := bridge.ConfigArtifactDigest(stored)
 			require.NoError(t, err)
-			assert.Equal(t, fullDigest, committed.Digest, "the committed artifact retains its real version-sensitive identity")
+			assert.Equal(t, fullDigest, committed.Digest,
+				"the stored document and the committed artifact are the same content identity: "+
+					"the normal form leaves the version out, so the version initialization assigned "+
+					"cannot change it")
 		})
 	}
 }

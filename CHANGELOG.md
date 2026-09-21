@@ -70,6 +70,37 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   operator policy and still answers `200` and records the key. Success (`200`),
   retry (`500`) and terminal causes of other classes (`200`) are unchanged.
 
+### Changed — an update that changes nothing no longer reconnects every session
+
+- **Configurations are compared by meaning, not by bytes.** Before replacing
+  the runtime, the bridge now brings the new and the running configuration into
+  one content normal form (`ports.ContentNormalForm`, [ADR 0016](docs/adr/0016-config-content-normal-form.md))
+  and skips the reload when the two agree. The version number is left out, the
+  sessions, receivers, senders, bindings and routes are compared by id rather
+  than by position, durations are compared by value (`30000ms` is `30s`), and
+  the `bridge.shutdown_timeout` / `bridge.drain_timeout` defaults are written
+  out. So a rollback that restores the running content, a re-save by another
+  writer, or a generator that reorders lists or writes defaults out keeps every
+  session connected. Lists whose order is the meaning — a route's bindings and
+  processors, a resolver's rules, a receiver's subscriptions, the cluster
+  roster, plugin options — are still compared by position, and a document that
+  cannot be normalised still counts as a change.
+- **One shared normal form for all three checks.** The Supervisor's no-op
+  check, the configuration manager's desired-versus-running fingerprint and the
+  AWS runtime's skip check all use it, so they can no longer disagree about
+  what counts as a change. The cluster rollout's candidate and committed-artifact
+  digests (`bridge.ConfigArtifactDigest`) are taken over the same form;
+  `bridge.DeploymentBaselineContentDigest` is now the same value.
+- **A no-op reload adopts the new document.** The runtime is kept, but the
+  applied configuration and the reported `config_version` follow the source's
+  version number.
+- **Upgrading a coordinated cohort needs no manual step.** Rollout rows and
+  committed-config artifacts written by v0.4.1 and earlier carry a digest of
+  the raw document; readers accept it as well, and the first commit on the new
+  release rewrites the records. Do not roll out a configuration change while
+  the cohort runs mixed releases across this boundary — see the
+  [rollout runbook](docs/runbooks/cluster-config-rollout.md#after-upgrading-past-v041-records-written-before-the-content-normal-form).
+
 ### Fixed — mixed MQTT QoS on direct-hold routes
 
 - Admit otherwise-valid QoS 0 subscriptions, alone or mixed with QoS 1/2.

@@ -192,6 +192,28 @@ either. The first member to boot on the document the deployment stamped
 re-establishes generation zero (see below), and the first committed change after
 that restores the normal recovery point.
 
+## After upgrading past v0.4.1: records written before the content normal form
+
+Since ADR 0016 every digest the rollout records — the candidate digest on the
+rollout row, the committed-config artifact's digest and the baseline stamp — is
+taken over the configuration's content normal form: the version number is left
+out, the sessions, receivers, senders, bindings and routes are compared by id
+rather than by position, and durations are compared by value. Releases up to
+and including v0.4.1 recorded a digest of the raw document instead.
+
+**Nothing has to be removed.** A member reading a record written by such a
+release accepts the old digest as well as the new one, so it still boots on the
+committed configuration and still reports `applied` correctly against the last
+rollout row. The first change the cohort commits on the new release rewrites
+both records with the new digest.
+
+**Do not roll out a configuration change while the cohort runs mixed releases
+across this boundary.** A member on the old release proposes a candidate under
+the old digest; a member on the new release stages the same document under the
+new one and never finds the row's candidate, so it stays silent and the rollout
+aborts at its deadline. The running configuration keeps serving; re-post the
+change once every member runs the new release.
+
 ## The generation-zero baseline
 
 A coordinated cohort recovers a restarting member to the config the cohort last

@@ -168,11 +168,14 @@ document cannot bypass synth-time admission:
 - **Baseline config digest** (`dynamodb_ha_baseline_config_digest`) — the content
   identity of the document this deployment admitted, including editable content.
   Both file and DynamoDB sources use `bridge.DeploymentBaselineContentDigest`,
-  normalizing only the top-level version to zero for comparison. Strict first
-  creation assigns target version 1 independently of the embedded version.
-  A coordinated member uses this identity to establish the cohort's generation-zero
-  committed artifact at startup. The artifact itself retains the actual source
-  version and full, version-sensitive digest; see
+  which — like every digest in the bridge since ADR 0016 — is taken over the
+  configuration's content normal form: the top-level version is left out, the
+  id-keyed lists are compared by id, durations by value. Strict first creation
+  therefore assigns target version 1 independently of the embedded version
+  without changing the identity. A coordinated member uses this identity to
+  establish the cohort's generation-zero committed artifact at startup. The
+  artifact itself retains the actual source version; its
+  `bridge.ConfigArtifactDigest` is the same value as this stamp; see
   [Cluster config rollout](../runbooks/cluster-config-rollout.md).
 
 Static `bridge.cluster.endpoints` are rejected by this profile. The bootstrap

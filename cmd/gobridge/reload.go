@@ -1,17 +1,13 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/mariotoffia/gobridge/bridge"
-	cfgparser "github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -98,12 +94,13 @@ type reloadPipeline struct {
 	admin chan adminApply
 
 	mu sync.Mutex
-	// lastAppliedFingerprint is the canonical content hash of the config the
-	// applier last applied in-band, or "" when the config the runtime currently
-	// runs was NOT set by an in-band commit. run clears it whenever it forwards
-	// ANY config to the Supervisor (that config becomes what the runtime runs,
-	// so a prior in-band fingerprint is now stale — skipping against it would
-	// strand the runtime on an old config while disk holds a new one);
+	// lastAppliedFingerprint is the content identity (see fingerprint) of the
+	// config the applier last applied in-band, or "" when the config the
+	// runtime currently runs was NOT set by an in-band commit. run clears it
+	// whenever it forwards ANY config to the Supervisor (that config becomes
+	// what the runtime runs, so a prior in-band fingerprint is now stale —
+	// skipping against it would strand the runtime on an old config while disk
+	// holds a new one);
 	// applyCommitted re-records it after a successful in-band apply. The file
 	// watcher re-emits the committed config once after the commit's durable
 	// write; run skips that single re-emit when its fingerprint matches, so a
@@ -484,73 +481,4 @@ func (p *reloadPipeline) failPendingWaiters() {
 		default:
 		}
 	}
-}
-
-// recordApplied stores the canonical fingerprint of the just-applied committed
-// config so run can skip the watcher's re-emit of it.
-func (p *reloadPipeline) recordApplied(cfg *ports.BridgeConfig) {
-	fp := p.canonicalFingerprint(cfg)
-	if fp == "" {
-		return
-	}
-	p.mu.Lock()
-	p.lastAppliedFingerprint = fp
-	p.mu.Unlock()
-}
-
-// isRedundantFileReload reports whether cfg (a config parsed from disk by the
-// watcher) is byte-identical, in canonical wire form, to the config the applier
-// last applied in-band.
-func (p *reloadPipeline) isRedundantFileReload(cfg *ports.BridgeConfig) bool {
-	fp := fingerprint(cfg)
-	if fp == "" {
-		return false
-	}
-	p.mu.Lock()
-	last := p.lastAppliedFingerprint
-	p.mu.Unlock()
-	return fp == last
-}
-
-// canonicalFingerprint fingerprints cfg as the file watcher will observe it —
-// after a parse round-trip. The applier holds the in-memory committed config;
-// the watcher re-emits Parse(MarshalYAML(cfg)) from the identical on-disk
-// projection (the config store writes MarshalYAML(cfg)). Canonicalising here so
-// both sides fingerprint Parse(MarshalYAML(cfg)) makes the match exact without
-// assuming a parse∘marshal fixed point. Returns "" when it cannot be computed
-// (fails open: the config is applied, not skipped).
-func (p *reloadPipeline) canonicalFingerprint(cfg *ports.BridgeConfig) string {
-	canonical, err := reparse(cfg, p.registry)
-	if err != nil || canonical == nil {
-		return ""
-	}
-	return fingerprint(canonical)
-}
-
-// fingerprint returns a stable content hash of cfg in canonical wire form. Two
-// configs with the same fingerprint marshal to identical bytes.
-func fingerprint(cfg *ports.BridgeConfig) string {
-	if cfg == nil {
-		return ""
-	}
-	data, err := cfgparser.MarshalYAML(cfg)
-	if err != nil {
-		return ""
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
-// reparse projects cfg through the config store's wire form and back, matching
-// exactly what the file watcher emits after the store persists a committed
-// config (Parse(MarshalYAML(cfg))).
-func reparse(cfg *ports.BridgeConfig, registry *ports.Registry) (*ports.BridgeConfig, error) {
-	if cfg == nil {
-		return nil, nil
-	}
-	data, err := cfgparser.MarshalYAML(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("marshal config: %w", err)
-	}
-	return cfgparser.Parse(bytes.NewReader(data), cfgparser.FormatYAML, registry)
 }

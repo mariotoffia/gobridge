@@ -29,10 +29,16 @@ import (
 // composition root supplies the policy: it seeds the baseline only for the
 // config document its deployment stamped, before the process becomes ready.
 
-// ConfigArtifactDigest returns the canonical content digest of cfg — the exact
-// identity the rollout row records for a candidate and the committed-config
-// artifact records for a commit. It includes Version. File-source deployments
-// also stamp it to recognize the exact document they admitted at startup.
+// ConfigArtifactDigest returns the content identity of cfg — the exact value
+// the rollout row records for a candidate and the committed-config artifact
+// records for a commit. File-source deployments also stamp it to recognize the
+// content they admitted at startup.
+//
+// It is taken over the content normal form (ADR 0016), so it leaves the version
+// number out and is unmoved by how the document happens to be written: the order
+// of the id-keyed lists, the spelling of a duration, and a default written out
+// rather than left out all give the same value. A real change to what the bridge
+// runs gives a different one.
 //
 // It is a pure function of the config document (see candidateConfigDigest), so
 // two members that loaded the same document compute the same value.
@@ -48,20 +54,16 @@ func ConfigArtifactDigest(cfg *ports.BridgeConfig) (string, error) {
 }
 
 // DeploymentBaselineContentDigest identifies deployment-admitted content when
-// the config source assigns its own Version, as the DynamoDB seeder does. It
-// normalizes only the top-level Version without modifying cfg; all other content,
-// including editable routes and plugin options, retains its canonical identity.
+// the config source assigns its own version number, as the DynamoDB seeder does.
 //
-// Use it only to recognize a deployment baseline, never to identify rollout
-// candidates or committed artifacts. Those must retain the actual stored Version
-// and the version-sensitive ConfigArtifactDigest.
+// It is the SAME value as ConfigArtifactDigest: since the content identity is
+// taken over the normal form, which leaves the version out, there is no longer
+// anything for this function to do on top of it. The name is kept because the
+// AWS deployment stamps it into the running infrastructure — the CDK construct
+// writes it as dynamodb_ha_baseline_config_digest — and a member reads that
+// stamp back to recognize the document its deployment admitted.
 func DeploymentBaselineContentDigest(cfg *ports.BridgeConfig) (string, error) {
-	if cfg == nil {
-		return ConfigArtifactDigest(cfg)
-	}
-	content := *cfg
-	content.Version = 0
-	return ConfigArtifactDigest(&content)
+	return ConfigArtifactDigest(cfg)
 }
 
 // CommittedBaseline reports the cohort's durable committed-config artifact as it

@@ -36,8 +36,7 @@ func TestSupervisorCoordinatedRollout_LiveSafeDeltaIsProposedToTheBarrier(t *tes
 	oldRt := s.Runtime()
 	require.NotNil(t, oldRt)
 
-	proposed := coordinatedClusteredCfg("r1")
-	proposed.Version = 99
+	proposed := liveSafeCandidate(99)
 	require.True(t, sendConfig(ch, proposed, time.Second))
 
 	ev := awaitSwap(t, swaps)
@@ -190,8 +189,7 @@ func TestSupervisorCoordinatedRollout_ForeignActiveRolloutFailsClosed(t *testing
 	oldRt := s.Runtime()
 	require.NotNil(t, oldRt)
 
-	proposed := coordinatedClusteredCfg("r1")
-	proposed.Version = 99
+	proposed := liveSafeCandidate(99)
 	require.True(t, sendConfig(ch, proposed, time.Second))
 
 	ev := awaitSwap(t, swaps)
@@ -223,8 +221,7 @@ func TestSupervisorCoordinatedRollout_PeerProposedSameDeltaJoins(t *testing.T) {
 	cancel, errCh := quickSupervisorRun(s, coordinatedClusteredCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
 
-	proposed := coordinatedClusteredCfg("r1")
-	proposed.Version = 99
+	proposed := liveSafeCandidate(99)
 
 	// A peer proposes the IDENTICAL candidate first (same canonical bytes).
 	raw, ok := configCanonicalBytes(proposed)
@@ -288,8 +285,7 @@ func TestSupervisorCoordinatedRollout_PeerEpochExcludesThisNodeFailsClosed(t *te
 	cancel, errCh := quickSupervisorRun(s, coordinatedClusteredCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
 
-	proposed := coordinatedClusteredCfg("r1")
-	proposed.Version = 99
+	proposed := liveSafeCandidate(99)
 	raw, ok := configCanonicalBytes(proposed)
 	require.True(t, ok)
 
