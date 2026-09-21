@@ -22,7 +22,6 @@ replace (
 	github.com/mariotoffia/gobridge/testutil/flocilocal => ../../testutil/flocilocal
 	github.com/mariotoffia/gobridge/testutil/rabbitmqlocal => ../../testutil/rabbitmqlocal
 	github.com/mariotoffia/gobridge/testutil/testcontent => ../../testutil/testcontent
-	github.com/mariotoffia/gobridge/testutil/wait => ../../testutil/wait
 )
 
 require (
@@ -46,7 +45,6 @@ require (
 	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/testutil/flocilocal v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/testutil/rabbitmqlocal v0.0.0
-	github.com/mariotoffia/gobridge/testutil/wait v0.0.0
 	github.com/stretchr/testify v1.11.1
 )
 

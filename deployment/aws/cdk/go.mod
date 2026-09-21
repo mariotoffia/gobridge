@@ -128,8 +128,6 @@ replace github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox => ..
 
 replace github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions => ../../../adapters/native/store/sqlitemanagedsubscriptions
 
-replace github.com/mariotoffia/gobridge/testutil/wait => ../../../testutil/wait
-
 replace github.com/mariotoffia/gobridge/adapters/aws/credentials/ssm => ../../../adapters/aws/credentials/ssm
 
 replace github.com/mariotoffia/gobridge/testutil/mqttlocal => ../../../testutil/mqttlocal

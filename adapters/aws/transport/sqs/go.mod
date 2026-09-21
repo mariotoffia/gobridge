@@ -8,7 +8,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.35
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.46.5
 	github.com/mariotoffia/gobridge v0.0.0
-	github.com/mariotoffia/gobridge/testutil/wait v0.0.0
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -30,7 +29,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace (
-	github.com/mariotoffia/gobridge => ../../../..
-	github.com/mariotoffia/gobridge/testutil/wait => ../../../../testutil/wait
-)
+replace github.com/mariotoffia/gobridge => ../../../..

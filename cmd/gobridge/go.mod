@@ -18,7 +18,6 @@ require (
 	github.com/mariotoffia/gobridge/adapters/otel/metrics v0.3.6
 	github.com/mariotoffia/gobridge/adapters/otel/tracing v0.3.6
 	github.com/mariotoffia/gobridge/httpapi v0.0.0-00010101000000-000000000000
-	github.com/mariotoffia/gobridge/testutil/wait v0.0.0
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -111,7 +110,6 @@ replace (
 	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions => ../../adapters/native/store/sqlitemanagedsubscriptions
 	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox => ../../adapters/native/store/sqliteoutbox
 	github.com/mariotoffia/gobridge/httpapi => ../../httpapi
-	github.com/mariotoffia/gobridge/testutil/wait => ../../testutil/wait
 )
 
 replace github.com/mariotoffia/gobridge/testutil/mqttlocal => ../../testutil/mqttlocal

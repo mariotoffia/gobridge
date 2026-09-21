@@ -48,7 +48,6 @@
     "testutil/flocilocal",
     "testutil/mqttlocal",
     "testutil/rabbitmqlocal",
-    "testutil/testcontent",
-    "testutil/wait"
+    "testutil/testcontent"
   ]
 }
