@@ -298,9 +298,12 @@ func TestContentNormalForm_ConditionValuesFollowTheRuntimeCoercion(t *testing.T)
 	assert.Equal(t, []any{"1", float64(2)}, valueOf(withValue([]any{"1", 2})), "a list keeps its element kinds, numbers as float64")
 	assert.Equal(t, "map[]", valueOf(withValue(map[string]any{})))
 	assert.Equal(t, "map[a:x b:1]", valueOf(withValue(map[string]any{"b": 1, "a": "x"})))
-	assert.Equal(t, ports.EmptyConditionList{EmptyList: true}, valueOf(withValue([]any{})),
-		"an empty list becomes a marker no document can carry, so it is neither absent nor the string \"[]\"")
-	assert.NotEqual(t, valueOf(withValue("[]")), valueOf(withValue([]any{})))
+	emptyList := valueOf(withValue([]any{}))
+	assert.NotNil(t, emptyList, "an empty list is not an absent value")
+	assert.NotEqual(t, valueOf(withValue("[]")), emptyList, "nor is it the string \"[]\"")
+	assert.NotEqual(t, valueOf(withValue([]any{"x"})), emptyList)
+	_, isSlice := emptyList.([]any)
+	assert.False(t, isSlice, "an empty list becomes a marker no document can carry, so a projection cannot fold it into an absent value")
 	assert.Equal(t, []any{"map[]"}, valueOf(withValue([]any{map[string]any{}})), "the rule reaches into list elements")
 
 	// Two integers the runtime cannot tell apart are one rule here as well, so
@@ -319,7 +322,7 @@ func TestContentNormalForm_ConditionValuesFollowTheRuntimeCoercion(t *testing.T)
 	// elements; any other slice is what the runtime makes of it, a string.
 	assert.Equal(t, []any{float64(1)}, valueOf(withValue([]int{1})))
 	assert.Equal(t, []any{"a"}, valueOf(withValue([]string{"a"})))
-	assert.Equal(t, ports.EmptyConditionList{EmptyList: true}, valueOf(withValue([]string{})))
+	assert.Equal(t, valueOf(withValue([]any{})), valueOf(withValue([]string{})), "every empty list the runtime knows is the same marker")
 	assert.Equal(t, "[1 2]", valueOf(withValue([]int64{1, 2})))
 
 	input := withValue(map[string]any{"k": "v"})

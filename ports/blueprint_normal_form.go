@@ -162,14 +162,16 @@ func normalRules(rules []RuleDef) []RuleDef {
 	return out
 }
 
-// EmptyConditionList is the value ContentNormalForm writes for a resolver rule
+// emptyConditionList is the value ContentNormalForm writes for a resolver rule
 // whose condition value is an empty list. At runtime an empty list matches
 // nothing, an absent value matches null and a literal string "[]" matches a
 // field with that text, so the three must stay three different rules in the
 // identity. A projection that reduces empty collections would not tell an
 // empty list from an absent value, and a string could be written in a
-// document, so the marker is a typed value no document can carry.
-type EmptyConditionList struct {
+// document, so the marker is a typed value no document can carry. It is
+// unexported so no caller can place it in a condition value either, where it
+// would collide with a real empty list.
+type emptyConditionList struct {
 	EmptyList bool `json:"empty_list"`
 }
 
@@ -186,7 +188,7 @@ type EmptyConditionList struct {
 //     write "-0" and "0";
 //   - the lists the runtime knows — []any, []string, []float64 and []int —
 //     become lists of the same normalised elements; an empty one becomes
-//     EmptyConditionList;
+//     the private empty-list marker;
 //   - anything else — a map, a struct, any other slice — becomes the string
 //     fmt.Sprint gives, which is exactly what the runtime compares for such a
 //     value.
@@ -198,7 +200,7 @@ func normalConditionValue(v any) any {
 	}
 	// A value this function wrote on an earlier pass is already in its final
 	// form; leaving it alone is what makes ContentNormalForm idempotent.
-	if _, ok := v.(EmptyConditionList); ok {
+	if _, ok := v.(emptyConditionList); ok {
 		return v
 	}
 	// A decoded JSON number (encoding/json's Number, matched by its method set so
@@ -243,10 +245,10 @@ func plainFloat(f float64) float64 {
 }
 
 // normalConditionList writes the n elements at(i) as a list of normalised
-// elements, or EmptyConditionList when there are none.
+// elements, or the private empty-list marker when there are none.
 func normalConditionList(n int, at func(int) any) any {
 	if n == 0 {
-		return EmptyConditionList{EmptyList: true}
+		return emptyConditionList{EmptyList: true}
 	}
 	out := make([]any, n)
 	for i := range out {

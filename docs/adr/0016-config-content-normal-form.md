@@ -68,8 +68,8 @@ The normal form:
   kind, every number becomes the `float64` the runtime compares (so two
   integers the runtime cannot tell apart are one rule here too), a list keeps
   its element kinds, and anything else, a map for instance, becomes the string
-  `fmt.Sprint` gives. An empty list becomes a marker value no document can
-  carry (`ports.EmptyConditionList`), so an empty map, an empty list, a literal
+  `fmt.Sprint` gives. An empty list becomes a private marker value that neither
+  a document nor a caller can carry, so an empty map, an empty list, a literal
   string and an absent value are all different rules in the identity, as they
   are different matches at runtime, and the empty-collection rule below cannot
   fold any of them together;
