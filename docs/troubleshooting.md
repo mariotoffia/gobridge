@@ -15,7 +15,8 @@ canonical names, see the **shared kernel** rows in
 > **Recovery actions** below are operator-side. The runtime already
 > retries `transient` codes per the route's `BackoffPolicy`, sends
 > `permanent` codes to the DLQ (when configured), routes `expired` codes
-> through the route's `ExpiredAction`, and drops `rejected` codes silently.
+> through the route's `ExpiredAction`, and never retries `rejected` codes: DLQ'd when a store exists and
+> `on_permanent_failure` is not `drop`, otherwise dropped with a metric (`MESSAGE_FILTERED` follows `on_filtered`).
 > Manual recovery only applies after the automated path is exhausted or
 > when the underlying cause must be fixed at the source.
 
@@ -446,7 +447,7 @@ it at runtime too.
 * **Recovery.** No action required. The runtime treats it as an
   idempotent no-op.
 
-## Rejected codes (silent drop)
+## Rejected codes (not retried)
 
 The runtime drops these envelopes without sending them to the DLQ (the
 envelope is being deliberately filtered or rejected as malformed input
