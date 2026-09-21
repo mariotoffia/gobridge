@@ -632,7 +632,7 @@ func smokeFixture(t *testing.T) (string, releaseManifest) {
 	t.Helper()
 
 	repo, manifest := writeFixtureRepository(t, false)
-	manifest.Published[2].Path = "adapters/mqtt/transport/paho"
+	setPublishedPath(t, &manifest, "adapters/example", "adapters/mqtt/transport/paho")
 	oldDir := filepath.Join(repo, "adapters", "example")
 	newDir := filepath.Join(repo, "adapters", "mqtt", "transport", "paho")
 	if err := os.MkdirAll(filepath.Dir(newDir), 0o755); err != nil {

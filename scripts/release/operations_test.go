@@ -139,6 +139,9 @@ replace github.com/mariotoffia/gobridge => ../..
 			t.Errorf("source output missing %q:\n%s", want, output.String())
 		}
 	}
+	if strings.Contains(strings.ToLower(output.String()), "bootstrap") {
+		t.Errorf("source output still mentions bootstrap:\n%s", output.String())
+	}
 }
 
 func TestRunCLI_ListUsesCanonicalManifest(t *testing.T) {
@@ -273,7 +276,7 @@ func TestRunCLI_Smoke(t *testing.T) {
 	t.Parallel()
 
 	repo, manifest := writeFixtureRepository(t, true)
-	manifest.Published[1].Path = "adapters/mqtt/transport/paho"
+	setPublishedPath(t, &manifest, "adapters/example", "adapters/mqtt/transport/paho")
 	oldDir := filepath.Join(repo, "adapters", "example")
 	newDir := filepath.Join(repo, "adapters", "mqtt", "transport", "paho")
 	if err := os.MkdirAll(filepath.Dir(newDir), 0o755); err != nil {
@@ -700,9 +703,9 @@ require github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.3.0
 		}
 		return nil
 	}
-	// The fixture uses adapters/example in its DAG, while the smoke commands
-	// intentionally target the real public Paho path.
-	manifest.Published[1].Path = "adapters/mqtt/transport/paho"
+	// The fixture declares adapters/example in its DAG, while the smoke
+	// commands intentionally target the real public Paho path.
+	setPublishedPath(t, &manifest, "adapters/example", "adapters/mqtt/transport/paho")
 	oldDir := filepath.Join(repo, "adapters", "example")
 	newDir := filepath.Join(repo, "adapters", "mqtt", "transport", "paho")
 	if err := os.MkdirAll(filepath.Dir(newDir), 0o755); err != nil {
@@ -838,6 +841,20 @@ func fixtureManifest() releaseManifest {
 			{Path: "cmd/gobridge", Layer: 5},
 		},
 	}
+}
+
+// setPublishedPath renames the declared module at oldPath so a test can point
+// the fixture at a real module directory without depending on entry order.
+func setPublishedPath(t *testing.T, manifest *releaseManifest, oldPath, newPath string) {
+	t.Helper()
+
+	for i := range manifest.Published {
+		if manifest.Published[i].Path == oldPath {
+			manifest.Published[i].Path = newPath
+			return
+		}
+	}
+	t.Fatalf("fixture manifest has no published module %q", oldPath)
 }
 
 func writeFixtureRepository(t *testing.T, writeManifest bool) (string, releaseManifest) {

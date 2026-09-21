@@ -255,6 +255,15 @@ wait_for_release_workflow "$VERSION"
 wait_for_proxy github.com/mariotoffia/gobridge
 ```
 
+As soon as the root tag is public, push the release branch too. If the remote
+rejects that push — branch protection on `release/*`, say — the train stops
+while the root is the only tag, and the branch is on `origin` even if a later
+layer fails.
+
+```bash
+git push origin "HEAD:refs/heads/${RELEASE_BRANCH}"
+```
+
 ### 3. Stage, tag, and push each dependency layer
 
 This dependency-ordered stage/tag/push/wait loop is mechanized by
@@ -283,11 +292,11 @@ so the final `cmd/gobridge` tag is reached only after both layer-4 modules,
 layer-3 tags. If a tagged workflow fails, stop. Do not retag; diagnose and
 start a new patch train.
 
-Once the last layer is green, push the release branch itself. Every per-module
+Once the last layer is green, push the release branch again. Every per-module
 release commit has already reached `origin` as part of a tag, but the branch
 ref is what this project keeps permanently — a `release/*` branch is never
-deleted — so pushing it after the final layer leaves the remote branch pointing
-at the last release commit instead of a mid-train one.
+deleted — so this second push moves the remote branch off the root commit of
+§2 and onto the last release commit.
 
 ```bash
 git push origin "HEAD:refs/heads/${RELEASE_BRANCH}"

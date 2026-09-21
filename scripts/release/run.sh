@@ -108,9 +108,9 @@ wait_for_release_workflow() {
 #
 # The obvious implementation — a `gh run watch` per tag, backgrounded — spawns
 # one independent poller per module, each hitting the API every few seconds.
-# For a 26-module layer that exhausted the 5000/hour limit mid-train and failed
-# the layer on HTTP 403, even though the workflows themselves were healthy. The
-# observer, not the work, was the problem.
+# For the 27-module adapter layer (layer 2) that exhausted the 5000/hour limit
+# mid-train and failed the layer on HTTP 403, even though the workflows
+# themselves were healthy. The observer, not the work, was the problem.
 #
 # `gh run list` returns every run's state in a single response, so the polling
 # cost is constant regardless of how many modules a layer holds.
@@ -127,8 +127,9 @@ wait_for_release_workflow() {
 # adapters/aws/store and adapters/native/store, consistently take longer to
 # appear on proxy.golang.org than a leaf module does — long enough to exhaust
 # the verifier's own propagation budget — and that alone cost the v0.3.4,
-# v0.3.5 and v0.3.6 trains their layer 2. The re-run happens minutes later,
-# by which time the module has indexed. A genuine defect still fails twice.
+# v0.3.5 and v0.3.6 trains their store-aggregate layer (layer 3 today). The
+# re-run happens minutes later, by which time the module has indexed. A genuine
+# defect still fails twice.
 wait_for_layer_workflows() {
   local tags=("$@")
   local start now snapshot tag state pending missing run_id
@@ -218,10 +219,10 @@ tag_for() { # module dir -> tag
 #
 # A layer means "these modules do not depend on each other" — that is the whole
 # reason the DAG has layers. Publishing them one at a time made each tag wait a
-# full workflow round-trip (~150s) before the next was even pushed, so 26
-# independent layer-1 modules cost over an hour of pure queueing. Layers must
-# still be sequential: staging a layer-2 module runs `go mod tidy`, which has to
-# resolve its layer-1 siblings at this version from the public proxy.
+# full workflow round-trip (~150s) before the next was even pushed, so the 27
+# independent modules of the adapter layer cost over an hour of pure queueing.
+# Layers must still be sequential: staging a module runs `go mod tidy`, which
+# has to resolve its lower-layer siblings at this version from the public proxy.
 #
 # Staging stays sequential because it edits the working tree and commits; only
 # the waiting is parallel, which is the part that actually took the time. Every
@@ -289,16 +290,20 @@ publish_layer() { # layer number
 echo "== §2 root =="
 publish_module .
 
+# Push the branch as soon as the root is tagged, so a rejected push fails while
+# the root is the only tag, and origin keeps the branch even if a layer fails.
+git push "$REMOTE" "HEAD:refs/heads/${branch}"
+
 # §3 layers 1..N — sequential between layers, concurrent within each
 for layer in $(seq 1 "$MAX_LAYER"); do
   echo "== §3 layer ${layer} =="
   publish_layer "$layer"
 done
 
-# The tags already carried every per-module release commit to the remote, but
-# the branch ref itself is what this project keeps permanently on origin.
-# Pushing it once the last layer is done points the remote branch at the final
-# release commit instead of a mid-train one.
+# The other half of that pair. The tags already carried every per-module
+# release commit to the remote, but the branch ref itself is what this project
+# keeps permanently on origin. Pushing it again once the last layer is done
+# moves the remote branch off the root commit and onto the final release one.
 git push "$REMOTE" "HEAD:refs/heads/${branch}"
 
 # §4 final public proof

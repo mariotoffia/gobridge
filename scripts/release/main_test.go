@@ -156,6 +156,47 @@ func TestInspectModule_FindsReleaseBlockingManifestEntries(t *testing.T) {
 	}
 }
 
+// A published helper pinned to a pseudo-version is a version mismatch once a
+// release version is being verified: every repository sibling must sit at the
+// train version, and there is no longer any pseudo-version exception.
+func TestInspectModule_RejectsPseudoVersionOnPublishedSibling(t *testing.T) {
+	t.Parallel()
+
+	manifest := releaseManifest{
+		ModulePrefix: "github.com/mariotoffia/gobridge",
+		Published: []publishedModule{
+			{Path: ".", Layer: 0},
+			{Path: "testutil/example", Layer: 1},
+			{Path: "adapters/example", Layer: 2},
+		},
+	}
+	module := moduleManifest{
+		Path: "adapters/example",
+		Requires: []moduleRequirement{
+			{Path: "github.com/mariotoffia/gobridge", Version: testReleaseVersion},
+			{
+				Path:    "github.com/mariotoffia/gobridge/testutil/example",
+				Version: "v0.0.0-20260716010101-0123456789ab",
+			},
+		},
+	}
+
+	violations, err := inspectModule(manifest, module, testReleaseVersion)
+	if err != nil {
+		t.Fatalf("inspectModule() error = %v", err)
+	}
+	var found bool
+	for _, violation := range violations {
+		if violation.Kind == violationVersionMismatch &&
+			violation.Dependency == "github.com/mariotoffia/gobridge/testutil/example" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("inspectModule() violations = %v, want %s for the helper", violations, violationVersionMismatch)
+	}
+}
+
 func TestInspectModule_RejectsRemoteReplaceAndExclude(t *testing.T) {
 	t.Parallel()
 

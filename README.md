@@ -87,9 +87,9 @@ a version, use it everywhere, and the pieces are guaranteed to be the set that
 was built, tested, and released together.
 
 ```bash
-go get github.com/mariotoffia/gobridge@v0.3.0
-go get github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho@v0.3.0
-go get github.com/mariotoffia/gobridge/adapters/aws/transport/sqs@v0.3.0
+go get github.com/mariotoffia/gobridge@vX.Y.Z
+go get github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho@vX.Y.Z
+go get github.com/mariotoffia/gobridge/adapters/aws/transport/sqs@vX.Y.Z
 ```
 
 If those three lines look boring, that is the point — mixing `v0.3.0` of the core
