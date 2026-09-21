@@ -29,10 +29,11 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 - New counter `AddressTemplateErrors` (`route_id`) counts these messages on
   both the DLQ and the drop path.
 - HTTP ingress answers `400 Bad Request` with the cause's message when a
-  request is settled terminally with any `rejected`-class cause, instead of
-  `200`. The idempotency key is not recorded, so a corrected resend is
-  processed. Success (`200`), retry (`500`) and terminal causes of other
-  classes (`200`) are unchanged.
+  request is settled terminally with a `rejected`-class cause other than
+  `MESSAGE_FILTERED`, instead of `200`. The idempotency key is not recorded, so
+  a corrected resend is processed. A filter drop (`MESSAGE_FILTERED`) is
+  operator policy and still answers `200` and records the key. Success (`200`),
+  retry (`500`) and terminal causes of other classes (`200`) are unchanged.
 
 ### Fixed — mixed MQTT QoS on direct-hold routes
 

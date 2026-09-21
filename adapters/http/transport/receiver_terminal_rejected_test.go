@@ -74,13 +74,16 @@ func TestReceiver_TerminalRejectedCause_Answers400AndDoesNotRecordKey(t *testing
 	}
 }
 
-func TestReceiver_TerminalCauseOtherClassOrSuccess_Answers200(t *testing.T) {
+func TestReceiver_TerminalCauseNotBadRequest_Answers200(t *testing.T) {
 	cases := []struct {
 		name  string
 		cause error
 	}{
 		{"success", nil},
 		{"permanent_terminal_cause", shared.ErrNotFound.WithMessage("no destination")},
+		// A filter drop is rejected-class but is operator policy, not a bad
+		// request: it keeps 200 and the recorded key.
+		{"filtered_terminal_cause", shared.ErrMessageFiltered.WithMessage("dropped by allow-list")},
 		{"plain_error_terminal_cause", context.DeadlineExceeded},
 	}
 	for _, tc := range cases {

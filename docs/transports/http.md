@@ -125,8 +125,10 @@ re-stamped on the trusted side; a client cannot inject them via the reserved
   with a `rejected`-class cause (for example `ADDRESS_TEMPLATE`, a binding
   address `{placeholder}` with no header value), the message has been DLQ'd or
   dropped and the receiver answers `400 Bad Request` with the cause's message.
-  The idempotency key is not recorded, so a corrected resend is processed. A
-  terminal cause of any other class still answers `200`.
+  The idempotency key is not recorded, so a corrected resend is processed. The
+  exception is `MESSAGE_FILTERED`: a filter drop is operator policy, not a bad
+  request, so it answers `200` and records the key as before. A terminal cause
+  of any other class still answers `200`.
 - **Automatic envelope ID.** HTTP ingress generates a process-unique envelope
   ID of the form `http-<instance-entropy>-<unixnano>-<counter>` when the
   request omits `id`; the 8-byte crypto/rand instance entropy prevents

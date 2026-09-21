@@ -492,7 +492,7 @@ The adapter and runtime diagnostic counters — what each one means when it clim
 |---|---|---|
 | `TIMEOUT`, `CONNECTION_LOST`, `UNAVAILABLE`, `THROTTLED`, `BROKER_BUSY`, `TEMPORARY_AUTH_FAILURE`, `NO_ROUTE_OWNER`, `FORWARD_FAILED`, `PROCESSOR_TIMEOUT` | `transient` | Only after retries exhausted |
 | `NOT_AUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID_CONFIG`, `PROTOCOL_ERROR`, `QOS_NOT_SUPPORTED`, `NOT_SUPPORTED`, `VERSION_MISMATCH`, `ALREADY_EXISTS`, `STALE_FENCING_TOKEN`, `DUPLICATE_RECORD`, `PROCESSOR_PANIC`, `INTERNAL`, `INVALID_OUTBOX_RECORD`, `OUTBOX_NOT_CLAIMABLE`, `OUTBOX_NOT_IN_CLAIMED_STATE`, `OUTBOX_ALREADY_TERMINAL`, `NO_BINDING_MATCH`, `POISON_MESSAGE` | `permanent` | Yes (per route `FailureAction`) |
-| `INVALID_PAYLOAD`, `PAYLOAD_TOO_LARGE`, `INVALID_TOPIC`, `ADDRESS_TEMPLATE`, `SCHEMA_VIOLATION`, `MESSAGE_FILTERED` | `rejected` | No (silent drop) |
+| `INVALID_PAYLOAD`, `PAYLOAD_TOO_LARGE`, `INVALID_TOPIC`, `ADDRESS_TEMPLATE`, `SCHEMA_VIOLATION`, `MESSAGE_FILTERED` | `rejected` | Yes, never retried, when a DLQ store exists and `on_permanent_failure` is not `drop`; otherwise dropped with a `MessagesDropped` metric. `MESSAGE_FILTERED` follows `on_filtered` instead (default `drop`) |
 | `MESSAGE_EXPIRED` | `expired` | Per route `ExpiredAction` |
 
 The authoritative source is [`domain/shared/errors.go`](../domain/shared/errors.go);

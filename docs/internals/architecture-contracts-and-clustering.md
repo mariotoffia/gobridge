@@ -51,7 +51,7 @@ All errors in the bridge pipeline are structured as `shared.BridgeError` with an
 
 **Permanent (not retriable; DLQ per route `FailureAction`):** `NOT_AUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID_CONFIG`, `PROTOCOL_ERROR`, `QOS_NOT_SUPPORTED`
 
-**Rejected (payload-level; dropped without DLQ):** `INVALID_PAYLOAD`, `PAYLOAD_TOO_LARGE`, `INVALID_TOPIC`, `ADDRESS_TEMPLATE`, `SCHEMA_VIOLATION`, `MESSAGE_FILTERED`
+**Rejected (payload-level; never retried; DLQ'd when a DLQ store exists and `on_permanent_failure` is not `drop`, otherwise dropped with a metric — `handleResolveError` and `handleProcessorError` in `runtime/route/dispatch.go`; `MESSAGE_FILTERED` follows `on_filtered`, default `drop`):** `INVALID_PAYLOAD`, `PAYLOAD_TOO_LARGE`, `INVALID_TOPIC`, `ADDRESS_TEMPLATE`, `SCHEMA_VIOLATION`, `MESSAGE_FILTERED`
 
 **Expired (per route `ExpiredAction`):** `MESSAGE_EXPIRED`
 
