@@ -449,9 +449,9 @@ it at runtime too.
 
 ## Rejected codes (not retried)
 
-The runtime drops these envelopes without sending them to the DLQ (the
-envelope is being deliberately filtered or rejected as malformed input
-the bridge cannot meaningfully retain).
+Retrying cannot fix these, so the runtime settles them at once: to the DLQ
+when a store exists and `on_permanent_failure` is not `drop`, otherwise
+dropped with a metric. `MESSAGE_FILTERED` follows `on_filtered` instead.
 
 ### `MESSAGE_FILTERED`
 
