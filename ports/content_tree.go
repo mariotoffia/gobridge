@@ -21,6 +21,19 @@ package ports
 // absent key and an empty one identical. Array ELEMENTS are never dropped —
 // position is meaning in an array — so an element that carries nothing stays as
 // a nil placeholder and a shorter array still differs from a longer one.
+//
+// Two boundaries of the rule, both deliberate:
+//
+//   - A decoded tree does not say which objects came from struct fields and
+//     which are data a plugin passes through verbatim (an AMQP argument table
+//     held in a map[string]any, for example), so the rule reaches into both.
+//     An entry in such a data map whose value is an empty table therefore
+//     compares like an absent entry. No shipped transport gives such an entry
+//     a meaning of its own; if one ever does, that plugin's options need a
+//     value that is not an empty collection to carry it.
+//   - Scalars pass through untouched, so the caller decides how numbers are
+//     represented. Every projection in this project decodes with
+//     json.Decoder.UseNumber so an integer is never rounded through float64.
 func WithoutEmptyCollections(value any) (any, bool) {
 	switch typed := value.(type) {
 	case nil:

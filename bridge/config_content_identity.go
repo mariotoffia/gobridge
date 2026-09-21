@@ -226,13 +226,21 @@ func canonicalProjection(cfg *ports.BridgeConfig) ([]byte, bool) {
 // collection reduced to the same form by ports.WithoutEmptyCollections — the
 // rule the configuration manager's fingerprint applies too — followed by a
 // newline. It reports false on a marshal error so the caller can fail closed.
+//
+// The value is read back as a tree so that rule can be applied to it, and every
+// number in that tree is carried as a json.Number and written out with the
+// digits it was written with. Nothing is rounded through float64, which cannot
+// tell an int64 option above 2^53 from its neighbour and would hand two
+// different configurations one identity.
 func encodeCanonical(buf *bytes.Buffer, value any) bool {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return false
 	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
 	var tree any
-	if err := json.Unmarshal(raw, &tree); err != nil {
+	if err := dec.Decode(&tree); err != nil {
 		return false
 	}
 	normalized, keep := ports.WithoutEmptyCollections(tree)

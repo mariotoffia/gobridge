@@ -84,6 +84,15 @@ one the same value (a document read back from a store turns a nil slice into
 an empty one), in the bridge's projection and in the manager's fingerprint
 alike, for the blueprint and for every plugin's options. A keyword field that
 happens to look like a duration, such as `ack_after`, is compared as written.
+Both projections decode numbers with `json.Decoder.UseNumber`, so an integer
+above 2^53 is never rounded through `float64` and two distinct values never
+share an identity. One boundary of the collapse rule is accepted: a decoded
+tree cannot tell an object that came from a struct field from a data map a
+plugin passes through verbatim (an AMQP argument table), so an entry in such a
+map whose value is an empty table compares like an absent entry. No shipped
+transport gives such an entry a meaning of its own; a precise, type-aware rule
+would need a reflective copy of every plugin's options and is not worth that
+for a case nothing uses.
 
 `bridge.DeploymentBaselineContentDigest` is now the same value as
 `bridge.ConfigArtifactDigest`. The name is kept because the AWS deployment

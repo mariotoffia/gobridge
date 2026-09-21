@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,6 +25,12 @@ import (
 // that adopted a config decoded from the durable committed artifact reporting a
 // change still outstanding that the bridge considers applied.
 //
+// The value is read back as a tree so that rule can be applied to it, and every
+// number in that tree is carried as a json.Number and written out with the
+// digits it was written with. Nothing is rounded through float64, which cannot
+// tell an int64 option above 2^53 from its neighbour and would fingerprint two
+// different configurations identically.
+//
 // Every failure is returned: a config that cannot be projected has no identity,
 // and the caller must fail closed rather than hash nothing.
 func writeContentProjection(out io.Writer, value any) error {
@@ -31,8 +38,10 @@ func writeContentProjection(out io.Writer, value any) error {
 	if err != nil {
 		return fmt.Errorf("render the content projection: %w", err)
 	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
 	var tree any
-	if err := json.Unmarshal(raw, &tree); err != nil {
+	if err := dec.Decode(&tree); err != nil {
 		return fmt.Errorf("re-read the content projection: %w", err)
 	}
 	projected := []byte("null")

@@ -146,3 +146,36 @@ func TestConfigFingerprint_AbsentAndEmptyPluginCollectionsAgree(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, fpMemory, fpPopulated, "a populated collection is a real change")
 }
+
+// wideIntPluginConfig carries an option wider than a float64 holds exactly:
+// above 2^53 a float64 has neighbours it cannot tell apart.
+type wideIntPluginConfig struct {
+	MaxBytes int64 `json:"max_bytes"`
+}
+
+func (wideIntPluginConfig) Kind() string    { return "wideint" }
+func (wideIntPluginConfig) Validate() error { return nil }
+
+// TestConfigFingerprint_LargeIntegersStayDistinct pins the fingerprint to the
+// digits an option was written with. Two int64 options one apart above 2^53 are
+// the same float64, so a projection that carried numbers as float64 would
+// fingerprint two different configurations identically — and the manager would
+// report a member converged while it runs the other one.
+func TestConfigFingerprint_LargeIntegersStayDistinct(t *testing.T) {
+	// The first pair of adjacent integers a float64 collapses onto one value.
+	const first = int64(1) << 53
+	const second = first + 1
+
+	fpFirst, err := configFingerprint(withSessionOption("bridge1", 1, wideIntPluginConfig{MaxBytes: first}))
+	require.NoError(t, err)
+	fpSecond, err := configFingerprint(withSessionOption("bridge1", 1, wideIntPluginConfig{MaxBytes: second}))
+	require.NoError(t, err)
+	require.NotEqual(t, fpFirst, fpSecond,
+		"two plugin options one apart are two configurations, however wide the number")
+
+	// The same option twice is still one configuration, so the difference above
+	// comes from the digits and not from every fingerprint differing.
+	fpAgain, err := configFingerprint(withSessionOption("bridge1", 1, wideIntPluginConfig{MaxBytes: first}))
+	require.NoError(t, err)
+	require.Equal(t, fpFirst, fpAgain, "the same option twice is the same configuration")
+}

@@ -3,6 +3,7 @@ package bridge
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/ports"
@@ -22,11 +23,14 @@ import (
 
 // roundTripConfig is a plugin config whose collections are the shapes a save and
 // a reload flip between: a nil slice becomes empty, and a nil map becomes empty.
+// MaxBytes is an option wider than a float64 holds exactly, so the projection's
+// handling of numbers is exercised too.
 type roundTripConfig struct {
 	BrokerURLs []string          `json:"broker_urls"`
 	Headers    map[string]string `json:"headers"`
 	ClientID   string            `json:"client_id"`
 	KeepAlive  int               `json:"keep_alive"`
+	MaxBytes   int64             `json:"max_bytes"`
 }
 
 func (c *roundTripConfig) Kind() string    { return "roundtrip" }
@@ -98,6 +102,38 @@ func TestConfigCanonicalBytes_RealDifferencesStillDiffer(t *testing.T) {
 			require.False(t, configContentEqual(base, other))
 		})
 	}
+}
+
+// TestConfigCanonicalBytes_LargeIntegersStayDistinct pins the projection to the
+// digits an option was written with. A float64 cannot tell 2^53 from its
+// successor, so a projection that carried numbers as float64 would hand two
+// different configurations one digest: the supervisor would skip a real change
+// as a no-op, and a cohort would agree on a digest that names both documents.
+func TestConfigCanonicalBytes_LargeIntegersStayDistinct(t *testing.T) {
+	// The first pair of adjacent integers a float64 collapses onto one value.
+	const first = int64(1) << 53
+	const second = first + 1
+
+	low := configWithSessionPlugin(t, &roundTripConfig{ClientID: "c", MaxBytes: first})
+	high := configWithSessionPlugin(t, &roundTripConfig{ClientID: "c", MaxBytes: second})
+
+	lowDigest, ok := configCanonicalBytesDigest(low)
+	require.True(t, ok)
+	highDigest, ok := configCanonicalBytesDigest(high)
+	require.True(t, ok)
+
+	assert.NotEqual(t, lowDigest, highDigest,
+		"two plugin options one apart are two configurations, however wide the number")
+	assert.False(t, configContentEqual(low, high),
+		"and the no-op reload check must see that change rather than skip it")
+
+	// The same option twice is still one configuration, so the difference above
+	// comes from the digits and not from every projection differing.
+	sameAgain := configWithSessionPlugin(t, &roundTripConfig{ClientID: "c", MaxBytes: first})
+	againDigest, ok := configCanonicalBytesDigest(sameAgain)
+	require.True(t, ok)
+	assert.Equal(t, lowDigest, againDigest)
+	assert.True(t, configContentEqual(low, sameAgain))
 }
 
 // TestConfigCanonicalBytes_ArrayPositionIsPreserved pins the one place the
