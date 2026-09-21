@@ -233,7 +233,7 @@ func (a *rolloutApplier) observedState(r persistence.Rollout) (staged, applied b
 	if _, ok := configCanonicalBytes(running); !ok {
 		return staged, a.gate.applied >= r.Generation()
 	}
-	return staged, recordedDigestMatches(running, r.ConfigDigest())
+	return staged, a.barrier.recordedDigestMatches(running, r.ConfigDigest(), r.ConfigVersion())
 }
 
 // vote runs the pre-build gate for an undecided rollout and records this node's

@@ -64,9 +64,13 @@ The normal form:
   it still takes part in the comparison and a document that cannot be brought
   into the normal form counts as a change (fail safe);
 - writes out the two defaults `ports` itself defines, `bridge.shutdown_timeout`
-  and `bridge.drain_timeout`, exactly as their accessors resolve them. Defaults
-  owned by other layers (the outbox drainer, the session runtime, a transport)
-  are not filled in; an unset value stays unset and compares as unset.
+  and `bridge.drain_timeout`, for a value that is left out (the 30 seconds their
+  accessors fall back to). A written value is kept as written, an explicit zero
+  included: the validator rejects a zero timeout, and equating it with the
+  default would let an invalid document be adopted as a no-op before validation
+  sees it. Defaults owned by other layers (the outbox drainer, the session
+  runtime, a transport) are not filled in; an unset value stays unset and
+  compares as unset.
 
 **Every content identity is taken over it.** `bridge.configContentEqual`, the
 rollout candidate and committed-artifact digest (`bridge.ConfigArtifactDigest`),
@@ -93,9 +97,22 @@ and a committed-config artifact written by an earlier release carry a digest of
 the raw document. When the bridge reads such a record it accepts either the
 normal-form digest or the digest of the raw document, so an upgraded member
 neither refuses to start on its committed configuration nor reports a false
-rollout divergence. The raw-document digest is never written again; the first
-commit on the new release replaces the record. The fallback can be removed once
-no cohort can still hold a record written before the normal form.
+rollout divergence. Three details make that hold after the upgrade, not only at
+the moment of it:
+
+- the raw-document digest is compared at the version the record names (both
+  records carry it), so a later re-save that only raised the version still
+  matches;
+- once a record has matched through the raw-document digest, the bridge
+  remembers, for the life of the process, which normal-form identity that
+  digest stands for, so a later no-op that reorders the document still matches;
+- at boot, once the committed artifact has been decoded and its integrity
+  verified, the member compares content, not digests, and boots on its own
+  document when that document is the committed content in another form.
+
+The raw-document digest is never written again; the first commit on the new
+release replaces the record. The fallback can be removed once no cohort can
+still hold a record written before the normal form.
 
 ## Consequences
 

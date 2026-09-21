@@ -133,6 +133,14 @@ type rolloutBarrier struct {
 	// answering is refused for all of them at once (rollout_ops.go).
 	ops *rolloutOps
 
+	// legacyMu guards legacyIdentity.
+	legacyMu sync.Mutex
+	// legacyIdentity maps a digest a pre-normal-form release recorded to the
+	// content identity of the configuration that digest names
+	// (recordedDigestMatches, config_content_identity.go). It goes together with
+	// the legacy fallback itself.
+	legacyIdentity map[string]string
+
 	// candMu guards the staged candidate below.
 	candMu sync.Mutex
 	// cand holds the candidate this node's OWN config source delivered, staged

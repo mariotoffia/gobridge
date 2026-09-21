@@ -30,11 +30,15 @@ import (
 //     "30000ms" and "30s" are one value. A value time.ParseDuration cannot read
 //     is kept as written: it still takes part in the comparison, so a document
 //     that cannot be normalised counts as a change (fail safe).
-//   - The two defaults ports itself defines are written out — shutdown_timeout
-//     and drain_timeout, exactly as their *Duration accessors resolve them — so
-//     a document that leaves one out and one that writes the default compare
-//     equal. Defaults owned by other layers (the outbox drainer, the session
-//     runtime, a transport) are NOT filled in; an unset value stays unset.
+//   - The two defaults ports itself defines are written out for a value that is
+//     LEFT OUT — shutdown_timeout and drain_timeout, the 30 seconds their
+//     *Duration accessors fall back to — so a document that omits one and one
+//     that writes the default compare equal. A value that is written, even a
+//     zero, is kept as written: the validator rejects a zero here, and equating
+//     it with the default would let an invalid document pass as a no-op before
+//     validation sees it. Defaults owned by other layers (the outbox drainer,
+//     the session runtime, a transport) are NOT filled in; an unset value stays
+//     unset.
 //
 // The result is deterministic: the same meaning gives the same value on every
 // run and on every node. cfg is never modified. The copy shares the decoded
@@ -84,7 +88,10 @@ func normalBridgeSettings(b BridgeSettings) BridgeSettings {
 	b.MaxDrainTimeout = canonicalDuration(b.MaxDrainTimeout, 0)
 	if b.Cluster != nil {
 		c := *b.Cluster
-		c.ConfirmWindow = canonicalConfirmWindow(c.ConfirmWindow)
+		// ConfirmWindowDuration treats an empty, zero or negative window alike,
+		// but the validator accepts only an empty or positive one, so a written
+		// zero stays distinct from an omitted window here (see canonicalDuration).
+		c.ConfirmWindow = canonicalDuration(c.ConfirmWindow, 0)
 		b.Cluster = &c
 	}
 	return b
@@ -123,9 +130,14 @@ func normalRoute(r RouteDef) RouteDef {
 }
 
 // canonicalDuration rewrites raw in time.Duration's own spelling. dflt is the
-// value an unset (empty or zero) field resolves to when ports owns that default;
-// a zero dflt means no default is filled in here and an unset value stays
-// unset. A string time.ParseDuration cannot read is returned as written.
+// value an OMITTED field resolves to when ports owns that default; a zero dflt
+// means no default is filled in here and an omitted value stays omitted.
+//
+// Only an omitted value receives the default. A written value is kept as
+// written, an explicit zero included: the validator rejects a zero timeout, and
+// equating it with the default would let an invalid document be adopted as a
+// no-op before validation sees it. A string time.ParseDuration cannot read is
+// also returned as written, so it still counts as a change.
 func canonicalDuration(raw string, dflt time.Duration) string {
 	if raw == "" {
 		if dflt > 0 {
@@ -136,26 +148,6 @@ func canonicalDuration(raw string, dflt time.Duration) string {
 	d, err := time.ParseDuration(raw)
 	if err != nil {
 		return raw
-	}
-	if d == 0 && dflt > 0 {
-		return dflt.String()
-	}
-	return d.String()
-}
-
-// canonicalConfirmWindow mirrors ClusterConfig.ConfirmWindowDuration: empty,
-// zero and negative all select the base protocol, so they normalise to the
-// same absent value. A malformed string is kept as written.
-func canonicalConfirmWindow(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	d, err := time.ParseDuration(raw)
-	if err != nil {
-		return raw
-	}
-	if d <= 0 {
-		return ""
 	}
 	return d.String()
 }

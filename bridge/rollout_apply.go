@@ -211,7 +211,7 @@ func (a *rolloutApplier) reconcileMissedCommit(ctx context.Context, decidedGen u
 	// Integrity: the reconstructed config must match the digest the artifact
 	// records, or the bytes are corrupt and must not be built. A config that
 	// cannot be canonicalised matches nothing, so it is kept out here too.
-	if !recordedDigestMatches(cfg, committed.Digest) {
+	if !a.barrier.recordedDigestMatches(cfg, committed.Digest, committed.ConfigVersion) {
 		if a.host.RolloutLogger() != nil {
 			a.host.RolloutLogger().Error("supervisor: the durable last-committed rollout artifact failed its digest "+
 				"check on reconcile; the running config is kept", "generation", committed.Generation)

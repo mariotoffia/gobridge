@@ -82,26 +82,79 @@ func legacyConfigCanonicalBytes(cfg *ports.BridgeConfig) ([]byte, bool) {
 }
 
 // recordedDigestMatches reports whether cfg is the configuration that recorded
-// names, where recorded is a digest READ BACK from a durable rollout record
-// that some release wrote earlier.
+// names, where recorded is a digest READ BACK from a durable rollout record that
+// some release wrote earlier. recordedVersion is the config version that record
+// names — persistence.Rollout.ConfigVersion for a rollout row,
+// persistence.CommittedRolloutConfig.ConfigVersion for the committed artifact —
+// and both records were written over a document whose Version was that number.
 //
-// It accepts cfg's own digest and, for records written before the content
-// normal form existed, cfg's legacy digest (see legacyConfigCanonicalBytes). A
-// config that cannot be canonicalised matches nothing: it has no identity to
-// compare, so the caller fails closed on it exactly as before.
-func recordedDigestMatches(cfg *ports.BridgeConfig, recorded string) bool {
+// It accepts cfg's own digest and, for records written before the content normal
+// form existed, cfg's legacy digest (see legacyConfigCanonicalBytes). The legacy
+// projection includes the version number, so it is taken over a COPY of cfg put
+// back to recordedVersion; the caller's config is never modified.
+//
+// A legacy match, once made, is REMEMBERED on the barrier as "this recorded
+// digest names that content" (see legacyStandsFor). The older spelling can only
+// be recomputed while the running document is still the raw form the old release
+// wrote: the match is established once, at boot from the decoded artifact or on
+// the first observation, and after that a no-op re-save — a new version number,
+// the same lists written in another order — changes the raw form without changing
+// a thing the cohort agreed to run. Without the memory that member would report
+// itself diverged from a cohort it is running in step with, and hold the fleet
+// divergence alarm open until the next real rollout.
+//
+// The memory is bounded and in-process: a cohort has one rollout row and one
+// committed artifact, so it holds at most those two entries, and nothing is
+// written to any store. It goes together with the legacy fallback itself.
+//
+// A config that cannot be canonicalised — or one that is absent — matches
+// nothing: it has no identity to compare, so the caller fails closed on it
+// exactly as before.
+func (b *rolloutBarrier) recordedDigestMatches(cfg *ports.BridgeConfig, recorded string, recordedVersion int) bool {
+	if cfg == nil {
+		return false
+	}
 	raw, ok := configCanonicalBytes(cfg)
 	if !ok {
 		return false
 	}
-	if candidateConfigDigest(raw) == recorded {
+	identity := candidateConfigDigest(raw)
+	if identity == recorded {
 		return true
 	}
-	legacy, ok := legacyConfigCanonicalBytes(cfg)
+	if b.legacyStandsFor(recorded) == identity {
+		return true
+	}
+	atRecordedVersion := *cfg
+	atRecordedVersion.Version = recordedVersion
+	legacy, ok := legacyConfigCanonicalBytes(&atRecordedVersion)
 	if !ok {
 		return false
 	}
-	return candidateConfigDigest(legacy) == recorded
+	if candidateConfigDigest(legacy) != recorded {
+		return false
+	}
+	b.rememberLegacy(recorded, identity)
+	return true
+}
+
+// legacyStandsFor returns the content identity this barrier established for a
+// recorded legacy digest, or "" when it has never matched that digest.
+func (b *rolloutBarrier) legacyStandsFor(recorded string) string {
+	b.legacyMu.Lock()
+	defer b.legacyMu.Unlock()
+	return b.legacyIdentity[recorded]
+}
+
+// rememberLegacy records that recorded, a digest written before the content
+// normal form, names the configuration whose content identity is identity.
+func (b *rolloutBarrier) rememberLegacy(recorded, identity string) {
+	b.legacyMu.Lock()
+	defer b.legacyMu.Unlock()
+	if b.legacyIdentity == nil {
+		b.legacyIdentity = map[string]string{}
+	}
+	b.legacyIdentity[recorded] = identity
 }
 
 // canonicalProjection renders cfg as the JSON projection of its EXPORTED fields

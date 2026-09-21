@@ -183,14 +183,26 @@ func TestContentNormalForm_FillsTheDefaultsPortsOwns(t *testing.T) {
 	assert.Empty(t, got.Bridge.MaxDrainTimeout)
 }
 
-func TestContentNormalForm_ConfirmWindowZeroAndAbsentAgree(t *testing.T) {
+// An explicit zero is a value the validator rejects, so the normal form must
+// keep it distinct from an omitted value: equating the two would let an invalid
+// document be adopted as a no-op before validation sees it.
+func TestContentNormalForm_ExplicitZeroIsNotTheDefault(t *testing.T) {
+	got := ports.ContentNormalForm(&ports.BridgeConfig{Bridge: ports.BridgeSettings{
+		ID:              "demo",
+		ShutdownTimeout: "0s",
+		DrainTimeout:    "0ms",
+		Cluster:         &ports.ClusterConfig{Rollout: "coordinated", ConfirmWindow: "0s"},
+	}})
+
+	assert.Equal(t, "0s", got.Bridge.ShutdownTimeout)
+	assert.Equal(t, "0s", got.Bridge.DrainTimeout)
+	assert.Equal(t, "0s", got.Bridge.Cluster.ConfirmWindow)
+
 	absent := ports.ContentNormalForm(&ports.BridgeConfig{Bridge: ports.BridgeSettings{
+		ID:      "demo",
 		Cluster: &ports.ClusterConfig{Rollout: "coordinated"},
 	}})
-	zero := ports.ContentNormalForm(&ports.BridgeConfig{Bridge: ports.BridgeSettings{
-		Cluster: &ports.ClusterConfig{Rollout: "coordinated", ConfirmWindow: "0s"},
-	}})
-	assert.Equal(t, absent.Bridge.Cluster, zero.Bridge.Cluster, "both select the base protocol")
+	assert.NotEqual(t, absent, got)
 }
 
 func TestContentNormalForm_KeepsUnparseableDurationAsWritten(t *testing.T) {

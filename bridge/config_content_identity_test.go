@@ -125,10 +125,59 @@ func TestRecordedDigestMatches_AcceptsTheNormalFormAndTheLegacyDigest(t *testing
 	require.NotEqual(t, normalForm, legacy,
 		"the fixture carries a version number, so the two digests must differ for this test to prove anything")
 
-	assert.True(t, recordedDigestMatches(cfg, normalForm),
+	assert.True(t, (&rolloutBarrier{}).recordedDigestMatches(cfg, normalForm, cfg.Version),
 		"a record this release wrote is read back by the normal-form digest")
-	assert.True(t, recordedDigestMatches(cfg, legacy),
+	assert.True(t, (&rolloutBarrier{}).recordedDigestMatches(cfg, legacy, cfg.Version),
 		"a record written before the normal form names the same configuration and must still be accepted")
+}
+
+// A record also names the VERSION it was taken over, and the older spelling
+// included that version. Recomputing it over the document the member happens to
+// run now would therefore stop matching the moment a no-op re-save bumped the
+// version, even though the member still runs exactly the recorded content.
+func TestRecordedDigestMatches_ComparesTheLegacyDigestAtTheRecordedVersion(t *testing.T) {
+	legacyBytes, ok := legacyConfigCanonicalBytes(identityFixture(3, "30s"))
+	require.True(t, ok)
+	recorded := candidateConfigDigest(legacyBytes)
+
+	// The same content after a no-op re-save was adopted as version 4.
+	adopted := identityFixture(4, "30s")
+
+	// A fresh barrier per call: an accepted match is remembered, and this test is
+	// about the recomputation rather than about that memory.
+	assert.True(t, (&rolloutBarrier{}).recordedDigestMatches(adopted, recorded, 3),
+		"the record was taken over version 3, so the older spelling is recomputed at version 3")
+	assert.False(t, (&rolloutBarrier{}).recordedDigestMatches(adopted, recorded, 4),
+		"recomputed at any other version the older spelling names a different document")
+}
+
+// The older spelling can only be recognised while the running document is still
+// the raw form the old release recorded. Once the barrier has matched it once, it
+// knows which content that record names and keeps recognising it through later
+// re-saves that rewrite the document without changing what it says.
+func TestRecordedDigestMatches_RemembersWhatALegacyDigestStandsFor(t *testing.T) {
+	asRecorded := identityFixture(3, "30s")
+	legacyBytes, ok := legacyConfigCanonicalBytes(asRecorded)
+	require.True(t, ok)
+	recorded := candidateConfigDigest(legacyBytes)
+
+	b := &rolloutBarrier{}
+	require.True(t, b.recordedDigestMatches(asRecorded, recorded, 3),
+		"precondition: the document as recorded is recognised by the older spelling")
+
+	// A no-op re-save: the same content, written back in another order and
+	// adopted as version 4.
+	resaved := reversedIDKeyedLists(identityFixture(4, "30s"))
+	assert.True(t, b.recordedDigestMatches(resaved, recorded, 3),
+		"the re-save changed the document's raw form, not the configuration it describes")
+
+	changed := reversedIDKeyedLists(identityFixture(4, "30s"))
+	changed.Bindings[0].Address = "out/elsewhere"
+	assert.False(t, b.recordedDigestMatches(changed, recorded, 3),
+		"a real content change is a different configuration, remembered record or not")
+
+	assert.False(t, (&rolloutBarrier{}).recordedDigestMatches(resaved, recorded, 3),
+		"a barrier that never matched the recorded document has nothing to recognise it by")
 }
 
 // A vote is the cohort's agreement on ONE candidate, so it is held to the
@@ -149,6 +198,6 @@ func TestRecordedDigestMatches_FailsClosedOnAnUncanonicalisableConfig(t *testing
 	malformed := &ports.BridgeConfig{Routes: []ports.RouteDef{{
 		Policy: ports.PolicyDef{Backoff: ports.BackoffDef{Multiplier: math.NaN()}},
 	}}}
-	assert.False(t, recordedDigestMatches(malformed, "any-recorded-digest"),
+	assert.False(t, (&rolloutBarrier{}).recordedDigestMatches(malformed, "any-recorded-digest", malformed.Version),
 		"a config with no identity at all matches nothing")
 }

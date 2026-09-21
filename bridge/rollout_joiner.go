@@ -87,7 +87,7 @@ func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Cont
 			"not be read at startup, so this node cannot tell whether its boot config is the one the cohort "+
 			"committed; refusing to start (config_version=%d): %w", cfg.Version, err)
 	}
-	if recordedDigestMatches(cfg, committed.Digest) {
+	if d.barrier.recordedDigestMatches(cfg, committed.Digest, committed.ConfigVersion) {
 		return cfg, nil // the boot config IS the last committed config
 	}
 	// The boot config differs from the committed artifact. Reconstruct the
@@ -108,10 +108,20 @@ func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Cont
 	// decodable-but-wrong artifact (bit-rot that still parses, or a non-digest-
 	// preserving codec) must not be booted as if it were the committed config.
 	// A config that cannot be canonicalised matches nothing, so it fails here too.
-	if !recordedDigestMatches(committedCfg, committed.Digest) {
+	if !d.barrier.recordedDigestMatches(committedCfg, committed.Digest, committed.ConfigVersion) {
 		return nil, fmt.Errorf("bridge: cluster.rollout: the durable last-committed config artifact "+
 			"(generation=%d) failed its digest check after decoding, so its bytes are not the config the "+
 			"cohort committed; refusing to start", committed.Generation)
+	}
+	// The digests disagreed, but the decoded artifact settles it on content: when
+	// the boot config says the same thing, this member's own document IS the
+	// committed configuration written another way — an artifact an older release
+	// recorded over the raw document, or a no-op re-save that renumbered or
+	// reordered it since. Boot on the member's own document; substituting an
+	// equivalent one would swap the document for no gain and leave the member
+	// running content its config source no longer holds.
+	if configContentEqual(committedCfg, cfg) {
+		return cfg, nil
 	}
 	d.stageBootConfig(cfg, bootDigest)
 	// A replacement-required delta cannot roll through the barrier. Boot on the
@@ -198,7 +208,7 @@ func (d *ClusterRolloutDriver) checkRolloutJoinerRule(ctx context.Context, cfg *
 		return fmt.Errorf("bridge: cannot compute the boot config digest to check it against the " +
 			"cluster rollout barrier; refusing to start")
 	}
-	if !recordedDigestMatches(cfg, r.ConfigDigest()) {
+	if !d.barrier.recordedDigestMatches(cfg, r.ConfigDigest(), r.ConfigVersion()) {
 		// The boot config is not the one this rollout carries, so this rollout
 		// says nothing about it. An in-flight rollout for a DIFFERENT candidate
 		// is the normal case for a member restarting mid-rollout: it boots the

@@ -204,8 +204,12 @@ and including v0.4.1 recorded a digest of the raw document instead.
 **Nothing has to be removed.** A member reading a record written by such a
 release accepts the old digest as well as the new one, so it still boots on the
 committed configuration and still reports `applied` correctly against the last
-rollout row. The first change the cohort commits on the new release rewrites
-both records with the new digest.
+rollout row. That stays true after an update that changes nothing — a re-save
+under a new version number, or the same document written in another order —
+because the old digest is compared at the version the record names and a member
+remembers which configuration an old digest stood for once it has matched. The
+first change the cohort commits on the new release rewrites both records with
+the new digest.
 
 **Do not roll out a configuration change while the cohort runs mixed releases
 across this boundary.** A member on the old release proposes a candidate under
