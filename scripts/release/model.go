@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,7 +61,6 @@ type releaseManifest struct {
 	Schema       int               `json:"schema"`
 	ModulePrefix string            `json:"module_prefix"`
 	Published    []publishedModule `json:"published_modules"`
-	Bootstrap    []string          `json:"bootstrap_modules"`
 }
 
 type publishedModule struct {
@@ -99,7 +99,6 @@ const (
 	violationAllZeroPseudo     violationKind = "all-zero-pseudo-version"
 	violationMalformedPseudo   violationKind = "malformed-pseudo-version"
 	violationVersionMismatch   violationKind = "release-version-mismatch"
-	violationBootstrapVersion  violationKind = "bootstrap-version-not-pseudo"
 	violationPublishedUnstable violationKind = "published-version-not-stable"
 )
 
@@ -136,8 +135,13 @@ func loadManifest(repo string) (releaseManifest, error) {
 		return releaseManifest{}, fmt.Errorf("reading release manifest %s: %w", filename, err)
 	}
 
+	// Unknown keys are a hard error: a manifest that still carries a retired key
+	// would otherwise be silently ignored and the release would run with a
+	// meaning the file does not have.
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
 	var manifest releaseManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
+	if err := decoder.Decode(&manifest); err != nil {
 		return releaseManifest{}, fmt.Errorf("decoding release manifest %s: %w", filename, err)
 	}
 	if err := manifest.validate(); err != nil {
@@ -148,8 +152,8 @@ func loadManifest(repo string) (releaseManifest, error) {
 
 func (m releaseManifest) validate() error {
 	var errs []error
-	if m.Schema != 1 {
-		errs = append(errs, fmt.Errorf("schema = %d, want 1", m.Schema))
+	if m.Schema != 2 {
+		errs = append(errs, fmt.Errorf("schema = %d, want 2", m.Schema))
 	}
 	if err := module.CheckPath(m.ModulePrefix); err != nil {
 		errs = append(errs, fmt.Errorf("module_prefix %q: %w", m.ModulePrefix, err))
@@ -202,28 +206,6 @@ func (m releaseManifest) validate() error {
 		if isInternalOnlyPath(entry.Path) {
 			errs = append(errs, fmt.Errorf("internal-only module %q is declared published", entry.Path))
 		}
-	}
-
-	bootstrap := make(map[string]struct{}, len(m.Bootstrap))
-	previousPath = ""
-	for i, modulePath := range m.Bootstrap {
-		if err := validateRelativeModulePath(modulePath); err != nil {
-			errs = append(errs, fmt.Errorf("bootstrap_modules[%d]: %w", i, err))
-		}
-		if !strings.HasPrefix(modulePath, "testutil/") {
-			errs = append(errs, fmt.Errorf("bootstrap module %q is not under testutil/", modulePath))
-		}
-		if _, exists := bootstrap[modulePath]; exists {
-			errs = append(errs, fmt.Errorf("duplicate bootstrap module %q", modulePath))
-		}
-		if _, exists := published[modulePath]; exists {
-			errs = append(errs, fmt.Errorf("bootstrap module %q is also declared published", modulePath))
-		}
-		if modulePath < previousPath {
-			errs = append(errs, errors.New("bootstrap_modules must be sorted by path"))
-		}
-		bootstrap[modulePath] = struct{}{}
-		previousPath = modulePath
 	}
 
 	return errors.Join(errs...)
@@ -295,7 +277,7 @@ func (m releaseManifest) moduleForTag(tag string) (publishedModule, string, erro
 	}
 	entry, ok := m.publishedByPath()[modulePath]
 	if !ok {
-		if slices.Contains(m.Bootstrap, modulePath) || isInternalOnlyPath(modulePath) {
+		if isInternalOnlyPath(modulePath) {
 			return publishedModule{}, "", fmt.Errorf("tag %q targets internal-only module %q", tag, modulePath)
 		}
 		return publishedModule{}, "", fmt.Errorf("tag %q does not map to a declared published module", tag)
@@ -307,14 +289,6 @@ func (m releaseManifest) publishedByPath() map[string]publishedModule {
 	result := make(map[string]publishedModule, len(m.Published))
 	for _, entry := range m.Published {
 		result[entry.Path] = entry
-	}
-	return result
-}
-
-func (m releaseManifest) bootstrapSet() map[string]struct{} {
-	result := make(map[string]struct{}, len(m.Bootstrap))
-	for _, modulePath := range m.Bootstrap {
-		result[modulePath] = struct{}{}
 	}
 	return result
 }
@@ -467,7 +441,6 @@ func inspectModule(
 		return nil, fmt.Errorf("module %q is not declared published", moduleFile.Path)
 	}
 	published := manifest.publishedByPath()
-	bootstrap := manifest.bootstrapSet()
 
 	violations := make([]manifestViolation, 0)
 	var structuralErrors []error
@@ -478,16 +451,13 @@ func inspectModule(
 				moduleFile.Path,
 				requirement,
 				false,
-				false,
 				"",
 			)...)
 			continue
 		}
 
 		target, isPublished := published[dependencyPath]
-		_, isBootstrap := bootstrap[dependencyPath]
-		switch {
-		case isPublished:
+		if isPublished {
 			if target.Layer >= current.Layer {
 				structuralErrors = append(structuralErrors, fmt.Errorf(
 					"%s requires %s at layer %d; dependencies must be in a lower layer than %d",
@@ -497,9 +467,7 @@ func inspectModule(
 					current.Layer,
 				))
 			}
-		case isBootstrap:
-			// Internal test helpers are the only declared pseudo-version exception.
-		default:
+		} else {
 			structuralErrors = append(structuralErrors, fmt.Errorf(
 				"%s requires undeclared repository sibling %s",
 				moduleFile.Path,
@@ -511,7 +479,6 @@ func inspectModule(
 			moduleFile.Path,
 			requirement,
 			isPublished,
-			isBootstrap,
 			releaseVersion,
 		)...)
 	}
@@ -520,13 +487,11 @@ func inspectModule(
 		dependencyPath, sibling := siblingPath(manifest.ModulePrefix, replacement.OldPath)
 		if sibling {
 			if _, isPublished := published[dependencyPath]; !isPublished {
-				if _, isBootstrap := bootstrap[dependencyPath]; !isBootstrap {
-					structuralErrors = append(structuralErrors, fmt.Errorf(
-						"%s replaces undeclared repository sibling %s",
-						moduleFile.Path,
-						dependencyPath,
-					))
-				}
+				structuralErrors = append(structuralErrors, fmt.Errorf(
+					"%s replaces undeclared repository sibling %s",
+					moduleFile.Path,
+					dependencyPath,
+				))
 			}
 		}
 		if replacement.NewVersion == "" {
@@ -562,7 +527,6 @@ func versionViolations(
 	modulePath string,
 	requirement moduleRequirement,
 	isPublished bool,
-	isBootstrap bool,
 	releaseVersion string,
 ) []manifestViolation {
 	base := manifestViolation{
@@ -593,9 +557,6 @@ func versionViolations(
 		violations = append(violations, base)
 	case isPublished && validateStableVersion(requirement.Version) != nil:
 		base.Kind = violationPublishedUnstable
-		violations = append(violations, base)
-	case isBootstrap && (!module.IsPseudoVersion(requirement.Version) || isAllZeroPseudoVersion(requirement.Version)):
-		base.Kind = violationBootstrapVersion
 		violations = append(violations, base)
 	}
 	return violations
@@ -635,7 +596,6 @@ func stageModuleManifest(
 	filename string,
 	data []byte,
 	releaseVersion string,
-	bootstrapVersions map[string]string,
 ) ([]byte, error) {
 	if err := validateStableVersion(releaseVersion); err != nil {
 		return nil, err
@@ -648,25 +608,16 @@ func stageModuleManifest(
 		return nil, fmt.Errorf("%s has no module directive", filename)
 	}
 	published := manifest.publishedByPath()
-	bootstrap := manifest.bootstrapSet()
 
 	updateRequirement := func(importPath string) error {
 		dependencyPath, sibling := siblingPath(manifest.ModulePrefix, importPath)
 		if !sibling {
 			return nil
 		}
-		switch {
-		case dependencyPath == rootModulePath || published[dependencyPath].Path != "":
-			return parsed.AddRequire(importPath, releaseVersion)
-		case hasKey(bootstrap, dependencyPath):
-			version := bootstrapVersions[dependencyPath]
-			if !module.IsPseudoVersion(version) || isAllZeroPseudoVersion(version) {
-				return fmt.Errorf("bootstrap module %s has invalid derived pseudo-version %q", dependencyPath, version)
-			}
-			return parsed.AddRequire(importPath, version)
-		default:
+		if dependencyPath != rootModulePath && published[dependencyPath].Path == "" {
 			return fmt.Errorf("requirement %s is an undeclared repository sibling", importPath)
 		}
+		return parsed.AddRequire(importPath, releaseVersion)
 	}
 
 	for _, requirement := range slices.Clone(parsed.Require) {
@@ -692,52 +643,4 @@ func stageModuleManifest(
 		return nil, fmt.Errorf("formatting %s: %w", filename, err)
 	}
 	return formatted, nil
-}
-
-func stageBootstrapManifest(
-	manifest releaseManifest,
-	filename string,
-	data []byte,
-	releaseVersion string,
-) ([]byte, bool, error) {
-	if err := validateStableVersion(releaseVersion); err != nil {
-		return nil, false, err
-	}
-	parsed, err := modfile.Parse(filename, data, nil)
-	if err != nil {
-		return nil, false, fmt.Errorf("parsing %s: %w", filename, err)
-	}
-	changed := false
-	for _, requirement := range parsed.Require {
-		dependencyPath, sibling := siblingPath(manifest.ModulePrefix, requirement.Mod.Path)
-		if !sibling {
-			continue
-		}
-		if dependencyPath != rootModulePath {
-			return nil, false, fmt.Errorf(
-				"bootstrap manifest %s requires unsupported repository sibling %s",
-				filename,
-				requirement.Mod.Path,
-			)
-		}
-		if requirement.Mod.Version != releaseVersion {
-			if err := parsed.AddRequire(requirement.Mod.Path, releaseVersion); err != nil {
-				return nil, false, fmt.Errorf("updating root requirement in %s: %w", filename, err)
-			}
-			changed = true
-		}
-	}
-	if !changed {
-		return slices.Clone(data), false, nil
-	}
-	formatted, err := parsed.Format()
-	if err != nil {
-		return nil, false, fmt.Errorf("formatting %s: %w", filename, err)
-	}
-	return formatted, true, nil
-}
-
-func hasKey[K comparable, V any](values map[K]V, key K) bool {
-	_, ok := values[key]
-	return ok
 }

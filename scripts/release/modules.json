@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "module_prefix": "github.com/mariotoffia/gobridge",
   "published_modules": [
     {"path": ".", "layer": 0},
@@ -48,6 +48,5 @@
     {"path": "deployment/aws/lib", "layer": 4},
 
     {"path": "cmd/gobridge", "layer": 5}
-  ],
-  "bootstrap_modules": []
+  ]
 }

@@ -11,7 +11,7 @@
 .PHONY: build-aclcheck build-aggcheck build-cfgshape build-registrychk build-pluginsym
 .PHONY: docker-build
 .PHONY: verify-release-preparation verify-published-modules verify-release-tag
-.PHONY: release-modules stage-published-module stage-release-bootstrap derive-release-bootstrap
+.PHONY: release-modules stage-published-module
 .PHONY: smoke-released-modules verify-remote-release-tag
 
 GOBRIDGE_GO_CACHE ?= /tmp/gobridge-go-build-cache
@@ -37,13 +37,12 @@ RELEASE_FORMAT           ?= path
 RELEASE_VERSION          ?=
 RELEASE_TAG              ?=
 RELEASE_MODULE           ?=
-RELEASE_BOOTSTRAP_COMMIT ?=
 RELEASE_COMMIT            ?=
 RELEASE_REMOTE            ?= origin
 RELEASE_API_URL           ?= https://api.github.com
 RELEASE_REPOSITORY        ?=
 export RELEASE_LAYER RELEASE_FORMAT RELEASE_VERSION RELEASE_TAG RELEASE_MODULE
-export RELEASE_BOOTSTRAP_COMMIT RELEASE_COMMIT RELEASE_REMOTE
+export RELEASE_COMMIT RELEASE_REMOTE
 export RELEASE_API_URL RELEASE_REPOSITORY
 
 VERSION ?=
@@ -142,23 +141,7 @@ release-modules: ## List canonical release modules (RELEASE_LAYER=-1, RELEASE_FO
 stage-published-module: ## Rewrite/tidy/check one module for release; requires RELEASE_MODULE and RELEASE_VERSION
 	@test -n "$$RELEASE_MODULE" || { echo "ERROR: RELEASE_MODULE is required"; exit 2; }
 	@test -n "$$RELEASE_VERSION" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
-	@cd scripts/release && if [ -n "$$RELEASE_BOOTSTRAP_COMMIT" ]; then \
-		GOWORK=off go run . stage-module --repo ../.. --module "$$RELEASE_MODULE" \
-			--version "$$RELEASE_VERSION" --bootstrap-commit "$$RELEASE_BOOTSTRAP_COMMIT"; \
-	else \
-		GOWORK=off go run . stage-module --repo ../.. --module "$$RELEASE_MODULE" \
-			--version "$$RELEASE_VERSION"; \
-	fi
-
-stage-release-bootstrap: ## Point internal test helpers at released root; requires RELEASE_VERSION
-	@test -n "$$RELEASE_VERSION" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
-	@cd scripts/release && GOWORK=off go run . stage-bootstrap --repo ../.. --version "$$RELEASE_VERSION"
-
-derive-release-bootstrap: ## Derive helper pseudo-versions via Go; requires RELEASE_VERSION and RELEASE_BOOTSTRAP_COMMIT
-	@test -n "$$RELEASE_VERSION" || { echo "ERROR: RELEASE_VERSION=vX.Y.Z is required"; exit 2; }
-	@test -n "$$RELEASE_BOOTSTRAP_COMMIT" || { echo "ERROR: RELEASE_BOOTSTRAP_COMMIT is required"; exit 2; }
-	@cd scripts/release && GOWORK=off go run . derive-bootstrap --repo ../.. \
-		--version "$$RELEASE_VERSION" --commit "$$RELEASE_BOOTSTRAP_COMMIT"
+	@cd scripts/release && GOWORK=off go run . stage-module --repo ../.. --module "$$RELEASE_MODULE" --version "$$RELEASE_VERSION"
 
 smoke-released-modules: ## Test a stable cmd tag from a fresh external module; requires RELEASE_TAG
 	@test -n "$$RELEASE_TAG" || { echo "ERROR: RELEASE_TAG=cmd/gobridge/vX.Y.Z is required"; exit 2; }

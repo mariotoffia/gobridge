@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/release/run.sh — one-command, dependency-ordered release train.
-# Mechanizes RELEASE.md §1–§5. Dry-run by default; CONFIRM=1 pushes immutable tags.
+# Mechanizes RELEASE.md §1–§4. Dry-run by default; CONFIRM=1 pushes immutable tags.
 #
 # Env: VERSION=vX.Y.Z (required)  CONFIRM=1 (publish)  DRY_RUN=1 (default; forced 1 unless CONFIRM=1)
 #      REMOTE=origin
@@ -67,7 +67,7 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 # =====================================================================
-# LIVE PUBLISH — mechanizes RELEASE.md §1–§5. One-way; never retag.
+# LIVE PUBLISH — mechanizes RELEASE.md §1–§4. One-way; never retag.
 # =====================================================================
 wait_for_proxy() {
   local module="$1"
@@ -196,8 +196,7 @@ publish_module() { # module dir
   if tag_published "$tag"; then
     echo "-- ${tag} already published; verifying and continuing"
   else
-    make stage-published-module RELEASE_MODULE="$module" RELEASE_VERSION="$VERSION" \
-      ${BOOTSTRAP_COMMIT:+RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"}
+    make stage-published-module RELEASE_MODULE="$module" RELEASE_VERSION="$VERSION"
     if [ "$module" = "." ]; then
       git add go.mod go.sum 2>/dev/null || true
     else
@@ -242,8 +241,7 @@ publish_layer() { # layer number
     if tag_published "$tag"; then
       echo "-- ${tag} already published; will verify"
     else
-      make stage-published-module RELEASE_MODULE="$module" RELEASE_VERSION="$VERSION" \
-        ${BOOTSTRAP_COMMIT:+RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"}
+      make stage-published-module RELEASE_MODULE="$module" RELEASE_VERSION="$VERSION"
       if [ "$module" = "." ]; then
         git add go.mod go.sum 2>/dev/null || true
       else
@@ -291,22 +289,13 @@ publish_layer() { # layer number
 echo "== §2 root =="
 publish_module .
 
-# §3 bootstrap internal test helpers
-echo "== §3 bootstrap =="
-make stage-release-bootstrap RELEASE_VERSION="$VERSION"
-git add testutil/*/go.mod
-git diff --cached --quiet || git commit -m "release: bootstrap test helpers for ${VERSION}"
-git push "$REMOTE" "HEAD:refs/heads/${branch}"
-BOOTSTRAP_COMMIT="$(git rev-parse HEAD)"
-make derive-release-bootstrap RELEASE_VERSION="$VERSION" RELEASE_BOOTSTRAP_COMMIT="$BOOTSTRAP_COMMIT"
-
-# §4 layers 1..N — sequential between layers, concurrent within each
+# §3 layers 1..N — sequential between layers, concurrent within each
 for layer in $(seq 1 "$MAX_LAYER"); do
-  echo "== §4 layer ${layer} =="
+  echo "== §3 layer ${layer} =="
   publish_layer "$layer"
 done
 
-# §5 final public proof
-echo "== §5 smoke =="
+# §4 final public proof
+echo "== §4 smoke =="
 make smoke-released-modules RELEASE_TAG="cmd/gobridge/${VERSION}"
 echo "Release ${VERSION} complete."

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
-	"strings"
 	"syscall"
 )
 
@@ -141,7 +139,6 @@ func runCLI(
 		repoFlag := flags.String("repo", "", "repository root")
 		modulePath := flags.String("module", "", "published module path")
 		version := flags.String("version", "", "stable release version")
-		bootstrapCommit := flags.String("bootstrap-commit", "", "reachable full commit for test-helper pseudo-versions")
 		if err := parseCommandFlags(flags, args[1:]); err != nil {
 			return err
 		}
@@ -159,7 +156,6 @@ func runCLI(
 			manifest,
 			*modulePath,
 			*version,
-			*bootstrapCommit,
 		); err != nil {
 			return err
 		}
@@ -169,68 +165,6 @@ func runCLI(
 			*modulePath,
 			*version,
 		)
-
-	case "stage-bootstrap":
-		flags := flag.NewFlagSet("stage-bootstrap", flag.ContinueOnError)
-		flags.SetOutput(io.Discard)
-		repoFlag := flags.String("repo", "", "repository root")
-		version := flags.String("version", "", "stable root release version")
-		if err := parseCommandFlags(flags, args[1:]); err != nil {
-			return err
-		}
-		repo, manifest, err := commandContext(*repoFlag)
-		if err != nil {
-			return err
-		}
-		if err := requireFlag("version", *version); err != nil {
-			return err
-		}
-		if err := verifyDependencyTag(ctx, runner, repo, tagFor(rootModulePath, *version)); err != nil {
-			return fmt.Errorf("bootstrap requires the root release first: %w", err)
-		}
-		if err := resolveModuleQuery(ctx, runner, repo, manifest.ModulePrefix, *version); err != nil {
-			return fmt.Errorf("root release is not publicly resolvable: %w", err)
-		}
-		changed, err := stageBootstrapModules(repo, manifest, *version)
-		if err != nil {
-			return err
-		}
-		if err := writeOutput(
-			output,
-			"Staged bootstrap manifests for %s: %s\n",
-			*version,
-			strings.Join(changed, ", "),
-		); err != nil {
-			return err
-		}
-		return writeOutput(output, "Commit and push this bootstrap commit before deriving pseudo-versions.\n")
-
-	case "derive-bootstrap":
-		flags := flag.NewFlagSet("derive-bootstrap", flag.ContinueOnError)
-		flags.SetOutput(io.Discard)
-		repoFlag := flags.String("repo", "", "repository root")
-		commit := flags.String("commit", "", "reachable full bootstrap commit")
-		version := flags.String("version", "", "stable root release version")
-		if err := parseCommandFlags(flags, args[1:]); err != nil {
-			return err
-		}
-		repo, manifest, err := commandContext(*repoFlag)
-		if err != nil {
-			return err
-		}
-		if err := requireFlags(map[string]string{"commit": *commit, "version": *version}); err != nil {
-			return err
-		}
-		versions, err := deriveBootstrapVersions(ctx, runner, manifest, repo, *commit, *version)
-		if err != nil {
-			return err
-		}
-		for _, modulePath := range manifest.Bootstrap {
-			if err := writeOutput(output, "%s\t%s\n", manifest.importPath(modulePath), versions[modulePath]); err != nil {
-				return err
-			}
-		}
-		return nil
 
 	case "smoke":
 		flags := flag.NewFlagSet("smoke", flag.ContinueOnError)
@@ -374,17 +308,10 @@ func runSourcePreflight(repo string, manifest releaseManifest, output io.Writer)
 			return err
 		}
 	}
-	if err := writeOutput(output, "\nInternal test-helper bootstrap modules: %d\n", len(manifest.Bootstrap)); err != nil {
+	if err := writeOutput(output, "\n"); err != nil {
 		return err
 	}
 	if err := printMigrationInventory(output, "Published manifest migration inventory", state.Violations); err != nil {
-		return err
-	}
-	if err := printMigrationInventory(
-		output,
-		"Bootstrap manifest preparation inventory",
-		state.BootstrapViolations,
-	); err != nil {
 		return err
 	}
 	if len(state.Violations) != 0 {
@@ -505,58 +432,6 @@ func printModuleOutputs(
 	)
 }
 
-func resolveModuleQuery(
-	ctx context.Context,
-	runner commandRunner,
-	repo string,
-	importPath string,
-	version string,
-) error {
-	query := importPath + "@" + version
-	expectedCommit, err := resolveTagCommit(ctx, runner, repo, version)
-	if err != nil {
-		return err
-	}
-	toolDir, err := secureJoin(repo, "scripts/release")
-	if err != nil {
-		return fmt.Errorf("resolving release tool directory: %w", err)
-	}
-	output, err := runner.run(ctx, commandRequest{
-		Dir:     toolDir,
-		Env:     publicModuleEnvironment(),
-		Name:    "go",
-		Args:    []string{"list", "-m", "-json", query},
-		Timeout: moduleQueryTimeout,
-	})
-	if err != nil {
-		return err
-	}
-	var listed listedModule
-	if err := jsonUnmarshal(output, &listed); err != nil {
-		return fmt.Errorf("decoding module resolution for %s: %w", query, err)
-	}
-	if listed.Path != importPath || listed.Version != version {
-		return fmt.Errorf("resolved %s as %s@%s", query, listed.Path, listed.Version)
-	}
-	if listed.Origin.Hash == "" || listed.Origin.Hash != expectedCommit {
-		return fmt.Errorf(
-			"resolved %s from origin %q, want tag commit %s",
-			query,
-			listed.Origin.Hash,
-			expectedCommit,
-		)
-	}
-	return nil
-}
-
-func jsonUnmarshal(data []byte, target any) error {
-	// Kept behind a small function so command parsing remains easy to unit test.
-	if err := json.Unmarshal(data, target); err != nil {
-		return fmt.Errorf("decoding JSON: %w", err)
-	}
-	return nil
-}
-
 func parseCommandFlags(flags *flag.FlagSet, args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parsing %s flags: %w", flags.Name(), err)
@@ -595,6 +470,6 @@ func requireFlags(values map[string]string) error {
 func usageError() error {
 	return errors.New(
 		"usage: release <source|list|strict-all|strict-tag|strict-module|" +
-			"stage-module|stage-bootstrap|derive-bootstrap|smoke|remote-tag> [flags]",
+			"stage-module|smoke|remote-tag> [flags]",
 	)
 }

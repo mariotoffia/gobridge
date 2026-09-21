@@ -52,12 +52,6 @@ func TestReleaseManifest_Validate(t *testing.T) {
 				manifest.Published[1].Path = "tests/integration"
 			},
 		},
-		{
-			name: "bootstrap outside testutil",
-			mutate: func(manifest *releaseManifest) {
-				manifest.Bootstrap = []string{"tests/helper"}
-			},
-		},
 	}
 
 	if err := valid.validate(); err != nil {
@@ -76,7 +70,7 @@ func TestReleaseManifest_Validate(t *testing.T) {
 	}
 }
 
-func TestIsInternalOnlyPath_PublishesOnlyTheDeclaredDeploymentModules(t *testing.T) {
+func TestIsInternalOnlyPath_PublishesDeploymentExceptionsAndTestutil(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]bool{
@@ -171,8 +165,9 @@ func TestRunCLI_ListUsesCanonicalManifest(t *testing.T) {
 	if got := list("2"); got != want {
 		t.Fatalf("runCLI(list) output = %q, want %q", got, want)
 	}
-	if got := list("1"); got != "testutil/example/v0.3.0\n" {
-		t.Fatalf("runCLI(list) helper layer output = %q", got)
+	wantHelpers := "testutil/example/v0.3.0\n"
+	if got := list("1"); got != wantHelpers {
+		t.Fatalf("runCLI(list) helper layer output = %q, want %q", got, wantHelpers)
 	}
 }
 
@@ -250,31 +245,6 @@ func TestRunCLI_VerificationAndStagingCommands(t *testing.T) {
 			},
 			wantOutput: "Staged and strictly verified adapters/example",
 		},
-		{
-			name: "stage bootstrap",
-			args: func(repo string) []string {
-				return []string{
-					"stage-bootstrap",
-					"--repo",
-					repo,
-					"--version",
-					testReleaseVersion,
-				}
-			},
-			prepare: func(t *testing.T, repo string, manifest *releaseManifest) {
-				t.Helper()
-				manifest.Bootstrap = []string{"testutil/wait"}
-				writeManifestFile(t, repo, *manifest)
-				writeTestFile(t, filepath.Join(repo, "testutil", "wait", "go.mod"), `module github.com/mariotoffia/gobridge/testutil/wait
-
-	go 1.25.0
-
-	require github.com/mariotoffia/gobridge v0.0.0
-	replace github.com/mariotoffia/gobridge => ../..
-	`)
-			},
-			wantOutput: "Staged bootstrap manifests",
-		},
 	}
 
 	for _, tt := range tests {
@@ -296,58 +266,6 @@ func TestRunCLI_VerificationAndStagingCommands(t *testing.T) {
 				t.Fatalf("runCLI() output = %q, want substring %q", output.String(), tt.wantOutput)
 			}
 		})
-	}
-}
-
-func TestRunCLI_DeriveBootstrap(t *testing.T) {
-	t.Parallel()
-
-	const (
-		commit = "0123456789abcdef0123456789abcdef01234567"
-		pseudo = "v0.0.0-20260716010101-0123456789ab"
-	)
-	repo, manifest := writeFixtureRepository(t, true)
-	manifest.Bootstrap = []string{"testutil/wait"}
-	writeManifestFile(t, repo, manifest)
-	helperMod := filepath.Join(repo, "downloaded-wait.mod")
-	writeTestFile(t, helperMod, `module github.com/mariotoffia/gobridge/testutil/wait
-
-go 1.25.0
-
-require github.com/mariotoffia/gobridge v0.3.0
-`)
-	listed := listedModule{
-		Path:    "github.com/mariotoffia/gobridge/testutil/wait",
-		Version: pseudo,
-		GoMod:   helperMod,
-	}
-	listed.Origin.Hash = commit
-	result, err := json.Marshal(listed)
-	if err != nil {
-		t.Fatalf("Marshal(listed) error = %v", err)
-	}
-	runner := &recordingRunner{outputs: [][]byte{result}}
-
-	var output bytes.Buffer
-	err = runCLI(
-		context.Background(),
-		[]string{
-			"derive-bootstrap",
-			"--repo",
-			repo,
-			"--commit",
-			commit,
-			"--version",
-			testReleaseVersion,
-		},
-		&output,
-		runner,
-	)
-	if err != nil {
-		t.Fatalf("runCLI(derive-bootstrap) error = %v", err)
-	}
-	if !strings.Contains(output.String(), "testutil/wait\t"+pseudo) {
-		t.Fatalf("derive output = %q", output.String())
 	}
 }
 
@@ -414,6 +332,8 @@ func TestRunCLI_RejectsMissingAndUnknownCommands(t *testing.T) {
 	for _, args := range [][]string{
 		nil,
 		{"unknown"},
+		{"stage-bootstrap"},
+		{"derive-bootstrap"},
 		{"strict-all"},
 		{"strict-all", "--version"},
 	} {
@@ -487,129 +407,63 @@ func TestExecRunner_RunsCommandWithEnvironment(t *testing.T) {
 	}
 }
 
-func TestInspectBootstrapModule_ReportsOnlyInternalPreparationDebt(t *testing.T) {
-	t.Parallel()
-
-	repo, manifest := writeFixtureRepository(t, false)
-	manifest.Bootstrap = []string{"testutil/wait"}
-	helperMod := filepath.Join(repo, "testutil", "wait", "go.mod")
-	writeTestFile(t, helperMod, `module github.com/mariotoffia/gobridge/testutil/wait
-
-	go 1.25.0
-
-	require github.com/mariotoffia/gobridge v0.0.0
-	replace github.com/mariotoffia/gobridge => ../..
-	`)
-
-	violations, err := inspectBootstrapModule(repo, manifest, "testutil/wait", "")
-	if err != nil {
-		t.Fatalf("inspectBootstrapModule() error = %v", err)
-	}
-	kinds := make([]violationKind, 0, len(violations))
-	for _, violation := range violations {
-		kinds = append(kinds, violation.Kind)
-	}
-	if !slices.Contains(kinds, violationExactZero) || !slices.Contains(kinds, violationLocalReplace) {
-		t.Fatalf("bootstrap violation kinds = %v", kinds)
-	}
-}
-
-func TestInspectRepository_TracksDeclaredBootstrapUsage(t *testing.T) {
-	t.Parallel()
-
-	const pseudo = "v0.0.0-20260716010101-0123456789ab"
-	repo, manifest := writeFixtureRepository(t, false)
-	manifest.Bootstrap = []string{"testutil/wait"}
-	writeTestFile(t, filepath.Join(repo, "adapters", "example", "go.mod"), `module github.com/mariotoffia/gobridge/adapters/example
-
-	go 1.25.0
-
-	require (
-		github.com/mariotoffia/gobridge v0.3.0
-		github.com/mariotoffia/gobridge/testutil/wait `+pseudo+`
-	)
-	`)
-	writeTestFile(t, filepath.Join(repo, "testutil", "wait", "go.mod"), `module github.com/mariotoffia/gobridge/testutil/wait
-
-	go 1.25.0
-
-	require github.com/mariotoffia/gobridge v0.3.0
-	replace github.com/mariotoffia/gobridge => ../..
-	`)
-
-	state, err := inspectRepository(repo, manifest, testReleaseVersion)
-	if err != nil {
-		t.Fatalf("inspectRepository() error = %v", err)
-	}
-	if len(state.Violations) != 0 {
-		t.Fatalf("published violations = %v", state.Violations)
-	}
-	if len(state.BootstrapViolations) != 1 ||
-		state.BootstrapViolations[0].Kind != violationLocalReplace {
-		t.Fatalf("bootstrap violations = %v", state.BootstrapViolations)
-	}
-}
-
-func TestResolveSiblingRequirements_ValidatesBootstrapOriginAndGoMod(t *testing.T) {
+func TestResolveSiblingRequirements_BindsPublishedSiblingToTagCommit(t *testing.T) {
 	t.Parallel()
 
 	const (
-		commit = "0123456789abcdef0123456789abcdef01234567"
-		pseudo = "v0.0.0-20260716010101-0123456789ab"
+		tagCommit   = "0123456789abcdef0123456789abcdef01234567"
+		otherCommit = "fedcba9876543210fedcba9876543210fedcba98"
 	)
-	repo := t.TempDir()
-	helperMod := filepath.Join(repo, "wait.mod")
-	writeTestFile(t, helperMod, `module github.com/mariotoffia/gobridge/testutil/wait
-
-	go 1.25.0
-
-	require github.com/mariotoffia/gobridge v0.3.0
-	`)
 	manifest := fixtureManifest()
-	manifest.Bootstrap = []string{"testutil/wait"}
-	rootResult, err := json.Marshal(listedModule{
-		Path:    manifest.ModulePrefix,
-		Version: testReleaseVersion,
-		Origin: struct {
-			Hash string
-		}{Hash: commit},
-	})
-	if err != nil {
-		t.Fatalf("Marshal(root result) error = %v", err)
-	}
-	helperResult := listedModule{
-		Path:    manifest.importPath("testutil/wait"),
-		Version: pseudo,
-		GoMod:   helperMod,
-	}
-	helperResult.Origin.Hash = commit
-	helperJSON, err := json.Marshal(helperResult)
-	if err != nil {
-		t.Fatalf("Marshal(helper result) error = %v", err)
-	}
-	runner := &recordingRunner{outputs: [][]byte{
-		rootResult,
-		[]byte(commit + "\n"),
-		nil,
-		helperJSON,
-	}}
+	helperImport := manifest.importPath("testutil/example")
 	moduleFile := moduleManifest{
 		Path: "adapters/example",
 		Requires: []moduleRequirement{
-			{Path: manifest.ModulePrefix, Version: testReleaseVersion},
-			{Path: manifest.importPath("testutil/wait"), Version: pseudo},
+			{Path: helperImport, Version: testReleaseVersion},
 		},
 	}
 
-	if err := resolveSiblingRequirements(
-		context.Background(),
-		runner,
-		repo,
-		manifest,
-		moduleFile,
-		testReleaseVersion,
-	); err != nil {
-		t.Fatalf("resolveSiblingRequirements() error = %v", err)
+	tests := []struct {
+		name    string
+		origin  string
+		wantErr string
+	}{
+		{name: "origin is the tag commit", origin: tagCommit},
+		{name: "origin is another commit", origin: otherCommit, wantErr: "resolved from origin"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			helperResult := listedModule{Path: helperImport, Version: testReleaseVersion}
+			helperResult.Origin.Hash = tt.origin
+			helperJSON, err := json.Marshal(helperResult)
+			if err != nil {
+				t.Fatalf("Marshal(helper result) error = %v", err)
+			}
+			runner := &recordingRunner{outputs: [][]byte{
+				helperJSON,
+				[]byte(tagCommit + "\n"),
+				nil,
+			}}
+
+			err = resolveSiblingRequirements(
+				context.Background(),
+				runner,
+				t.TempDir(),
+				manifest,
+				moduleFile,
+			)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("resolveSiblingRequirements() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("resolveSiblingRequirements() error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -676,29 +530,38 @@ func TestListModules_RejectsInvalidSelection(t *testing.T) {
 	}
 }
 
-func TestValidateResolvedBootstrapGoMod(t *testing.T) {
+func TestLoadManifest_RejectsUnknownKeysAndOldSchema(t *testing.T) {
 	t.Parallel()
 
-	repo := t.TempDir()
-	filename := filepath.Join(repo, "go.mod")
-	writeTestFile(t, filename, `module github.com/mariotoffia/gobridge/testutil/wait
-
-	go 1.25.0
-
-	require github.com/mariotoffia/gobridge v0.3.0
-	`)
-	manifest := fixtureManifest()
-	if err := validateResolvedBootstrapGoMod(manifest, filename, testReleaseVersion); err != nil {
-		t.Fatalf("validateResolvedBootstrapGoMod() error = %v", err)
+	tests := []struct {
+		name     string
+		manifest string
+		wantErr  string
+	}{
+		{
+			name: "bootstrap_modules key",
+			manifest: `{"schema": 2, "module_prefix": "github.com/mariotoffia/gobridge",
+  "published_modules": [{"path": ".", "layer": 0}, {"path": "cmd/gobridge", "layer": 1}],
+  "bootstrap_modules": ["testutil/wait"]}`,
+			wantErr: "bootstrap_modules",
+		},
+		{
+			name: "schema 1",
+			manifest: `{"schema": 1, "module_prefix": "github.com/mariotoffia/gobridge",
+  "published_modules": [{"path": ".", "layer": 0}, {"path": "cmd/gobridge", "layer": 1}]}`,
+			wantErr: "schema = 1, want 2",
+		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	writeTestFile(t, filename, strings.ReplaceAll(
-		string(mustReadTestFile(t, filename)),
-		"v0.3.0",
-		"v0.2.0",
-	))
-	if err := validateResolvedBootstrapGoMod(manifest, filename, testReleaseVersion); err == nil {
-		t.Fatal("validateResolvedBootstrapGoMod() error = nil for wrong root version")
+			repo := t.TempDir()
+			writeTestFile(t, filepath.Join(repo, filepath.FromSlash(manifestRelativePath)), tt.manifest)
+			if _, err := loadManifest(repo); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("loadManifest() error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -782,7 +645,6 @@ replace github.com/mariotoffia/gobridge => ../..
 		manifest,
 		"adapters/example",
 		testReleaseVersion,
-		"",
 	); err != nil {
 		t.Fatalf("stagePublishedModule() error = %v", err)
 	}
@@ -799,40 +661,6 @@ replace github.com/mariotoffia/gobridge => ../..
 	}
 	if !runner.hasGoCommand([]string{"mod", "tidy"}) {
 		t.Error("stagePublishedModule() did not run go mod tidy")
-	}
-}
-
-func TestStageBootstrapModules_UpdatesRootAndKeepsLocalReplace(t *testing.T) {
-	t.Parallel()
-
-	repo, manifest := writeFixtureRepository(t, false)
-	manifest.Bootstrap = []string{"testutil/wait"}
-	helperMod := filepath.Join(repo, "testutil", "wait", "go.mod")
-	writeTestFile(t, helperMod, `module github.com/mariotoffia/gobridge/testutil/wait
-
-go 1.25.0
-
-require github.com/mariotoffia/gobridge v0.0.0
-replace github.com/mariotoffia/gobridge => ../..
-`)
-
-	changed, err := stageBootstrapModules(repo, manifest, testReleaseVersion)
-	if err != nil {
-		t.Fatalf("stageBootstrapModules() error = %v", err)
-	}
-	if !slices.Equal(changed, []string{"testutil/wait"}) {
-		t.Fatalf("changed helpers = %v", changed)
-	}
-	data, err := os.ReadFile(helperMod)
-	if err != nil {
-		t.Fatalf("ReadFile(%s) error = %v", helperMod, err)
-	}
-	text := string(data)
-	if !strings.Contains(text, "github.com/mariotoffia/gobridge v0.3.0") {
-		t.Errorf("bootstrap go.mod does not require released root:\n%s", text)
-	}
-	if !strings.Contains(text, "replace github.com/mariotoffia/gobridge => ../..") {
-		t.Errorf("bootstrap go.mod lost allowed local replacement:\n%s", text)
 	}
 }
 
@@ -982,7 +810,7 @@ func TestPathIsInside(t *testing.T) {
 
 func fixtureManifest() releaseManifest {
 	return releaseManifest{
-		Schema:       1,
+		Schema:       2,
 		ModulePrefix: "github.com/mariotoffia/gobridge",
 		Published: []publishedModule{
 			{Path: ".", Layer: 0},
@@ -1091,16 +919,6 @@ func writeTestFile(t *testing.T, filename string, content string) {
 	if err := os.WriteFile(filename, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", filename, err)
 	}
-}
-
-func mustReadTestFile(t *testing.T, filename string) []byte {
-	t.Helper()
-
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		t.Fatalf("ReadFile(%s) error = %v", filename, err)
-	}
-	return data
 }
 
 type successfulReleaseRunner struct {

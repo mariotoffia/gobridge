@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"path/filepath"
 	"slices"
@@ -50,7 +49,6 @@ func TestReleaseManifest_ModuleForTag(t *testing.T) {
 			{Path: "adapters/mqtt/transport/paho", Layer: 2},
 			{Path: "cmd/gobridge", Layer: 3},
 		},
-		Bootstrap: []string{"testutil/wait"},
 	}
 
 	tests := []struct {
@@ -73,7 +71,7 @@ func TestReleaseManifest_ModuleForTag(t *testing.T) {
 			wantPath:    "testutil/example",
 			wantVersion: "v0.3.0",
 		},
-		{name: "internal helper", tag: "testutil/wait/v0.3.0", wantErr: true},
+		{name: "undeclared helper", tag: "testutil/wait/v0.3.0", wantErr: true},
 		{name: "internal tests module", tag: "tests/integration/v0.3.0", wantErr: true},
 		{name: "unknown module", tag: "deployment/example/v0.3.0", wantErr: true},
 		{name: "prerelease", tag: "cmd/gobridge/v0.3.0-rc.1", wantErr: true},
@@ -111,20 +109,20 @@ func TestInspectModule_FindsReleaseBlockingManifestEntries(t *testing.T) {
 		ModulePrefix: "github.com/mariotoffia/gobridge",
 		Published: []publishedModule{
 			{Path: ".", Layer: 0},
-			{Path: "adapters/example", Layer: 1},
+			{Path: "testutil/example", Layer: 1},
+			{Path: "adapters/example", Layer: 2},
 		},
-		Bootstrap: []string{"testutil/wait"},
 	}
 	module := moduleManifest{
 		Path: "adapters/example",
 		Requires: []moduleRequirement{
 			{Path: "github.com/mariotoffia/gobridge", Version: "v0.0.0"},
 			{
-				Path:    "github.com/mariotoffia/gobridge/testutil/wait",
+				Path:    "github.com/mariotoffia/gobridge/testutil/example",
 				Version: "v0.0.0-00010101000000-000000000000",
 			},
 			{
-				Path:    "github.com/mariotoffia/gobridge/testutil/wait",
+				Path:    "github.com/mariotoffia/gobridge/testutil/example",
 				Version: "v0.0.0-20260716010101-not-a-revision",
 			},
 		},
@@ -208,7 +206,6 @@ func TestInspectModule_RejectsUndeclaredAndNonLowerDependencies(t *testing.T) {
 			{Path: "adapters/first", Layer: 1},
 			{Path: "adapters/second", Layer: 1},
 		},
-		Bootstrap: []string{"testutil/wait"},
 	}
 	helpers := releaseManifest{
 		ModulePrefix: "github.com/mariotoffia/gobridge",
@@ -311,9 +308,9 @@ func TestStageModuleManifest_RewritesDeclaredDependenciesOnly(t *testing.T) {
 		ModulePrefix: "github.com/mariotoffia/gobridge",
 		Published: []publishedModule{
 			{Path: ".", Layer: 0},
-			{Path: "adapters/example", Layer: 1},
+			{Path: "testutil/example", Layer: 1},
+			{Path: "adapters/example", Layer: 2},
 		},
-		Bootstrap: []string{"testutil/wait"},
 	}
 	input := []byte(`module github.com/mariotoffia/gobridge/adapters/example
 
@@ -321,12 +318,13 @@ go 1.25.0
 
 require (
 	github.com/mariotoffia/gobridge v0.0.0
-	github.com/mariotoffia/gobridge/testutil/wait v0.0.0
+	github.com/mariotoffia/gobridge/testutil/example v0.0.0
+	github.com/stretchr/testify v1.11.1
 )
 
 replace (
 	github.com/mariotoffia/gobridge => ../..
-	github.com/mariotoffia/gobridge/testutil/wait => ../../testutil/wait
+	github.com/mariotoffia/gobridge/testutil/example => ../../testutil/example
 )
 `)
 
@@ -335,7 +333,6 @@ replace (
 		"adapters/example/go.mod",
 		input,
 		"v0.3.0",
-		map[string]string{"testutil/wait": "v0.0.0-20260716010101-0123456789ab"},
 	)
 	if err != nil {
 		t.Fatalf("stageModuleManifest() error = %v", err)
@@ -343,7 +340,8 @@ replace (
 	text := string(got)
 	for _, want := range []string{
 		"github.com/mariotoffia/gobridge v0.3.0",
-		"github.com/mariotoffia/gobridge/testutil/wait v0.0.0-20260716010101-0123456789ab",
+		"github.com/mariotoffia/gobridge/testutil/example v0.3.0",
+		"github.com/stretchr/testify v1.11.1",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("stageModuleManifest() output missing %q:\n%s", want, text)
@@ -351,58 +349,6 @@ replace (
 	}
 	if strings.Contains(text, "replace") {
 		t.Errorf("stageModuleManifest() retained local replace:\n%s", text)
-	}
-}
-
-func TestDeriveBootstrapVersions_UsesGoListCommitQuery(t *testing.T) {
-	t.Parallel()
-
-	const commit = "0123456789abcdef0123456789abcdef01234567"
-	repo := t.TempDir()
-	helperMod := filepath.Join(repo, "wait.mod")
-	writeTestFile(t, helperMod, `module github.com/mariotoffia/gobridge/testutil/wait
-
-go 1.25.0
-`)
-	listed := listedModule{
-		Path:    "github.com/mariotoffia/gobridge/testutil/wait",
-		Version: "v0.0.0-20260716010101-0123456789ab",
-		GoMod:   helperMod,
-	}
-	listed.Origin.Hash = commit
-	result, err := json.Marshal(listed)
-	if err != nil {
-		t.Fatalf("Marshal(listed) error = %v", err)
-	}
-	runner := &recordingRunner{
-		outputs: [][]byte{result},
-	}
-	manifest := releaseManifest{
-		ModulePrefix: "github.com/mariotoffia/gobridge",
-		Bootstrap:    []string{"testutil/wait"},
-	}
-
-	versions, err := deriveBootstrapVersions(
-		context.Background(),
-		runner,
-		manifest,
-		repo,
-		commit,
-		"v0.3.0",
-	)
-	if err != nil {
-		t.Fatalf("deriveBootstrapVersions() error = %v", err)
-	}
-	if got := versions["testutil/wait"]; got != "v0.0.0-20260716010101-0123456789ab" {
-		t.Fatalf("derived wait version = %q", got)
-	}
-	if len(runner.requests) != 1 {
-		t.Fatalf("go list commands = %d, want 1", len(runner.requests))
-	}
-	request := runner.requests[0]
-	wantQuery := "github.com/mariotoffia/gobridge/testutil/wait@" + commit
-	if request.Name != "go" || !slices.Equal(request.Args, []string{"list", "-m", "-json", wantQuery}) {
-		t.Fatalf("derive command = %s %v, want go list -m -json %s", request.Name, request.Args, wantQuery)
 	}
 }
 
