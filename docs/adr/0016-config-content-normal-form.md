@@ -76,10 +76,14 @@ The normal form:
 rollout candidate and committed-artifact digest (`bridge.ConfigArtifactDigest`),
 the configuration manager's fingerprint and the AWS runtime's skip check (which
 now calls `bridge.ConfigArtifactDigest`) all project the normal form. They can
-no longer disagree about what counts as a change. Their byte projections stay
-where they were: the bridge's JSON projection with empty collections collapsed,
-and the manager's plain JSON encoding. The shared part is the shape, not the
-encoder, because the inner ring deliberately carries no JSON dependency.
+no longer disagree about what counts as a change. Their JSON encoders stay
+where they were, because the inner ring deliberately carries no JSON
+dependency, but the second rule they apply to the decoded tree is shared as
+well: `ports.WithoutEmptyCollections` makes an absent collection and an empty
+one the same value (a document read back from a store turns a nil slice into
+an empty one), in the bridge's projection and in the manager's fingerprint
+alike, for the blueprint and for every plugin's options. A keyword field that
+happens to look like a duration, such as `ack_after`, is compared as written.
 
 `bridge.DeploymentBaselineContentDigest` is now the same value as
 `bridge.ConfigArtifactDigest`. The name is kept because the AWS deployment

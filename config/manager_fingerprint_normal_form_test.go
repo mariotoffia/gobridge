@@ -92,3 +92,57 @@ func TestConfigFingerprint_SameMeaningSameFingerprint(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, fpBase, fpBroker, "a different plugin option is a real change")
 }
+
+// collectionPluginConfig is a plugin config whose collections are tagged
+// WITHOUT omitempty, which is what most plugin option structs look like. A nil
+// slice is then written out as `[]` and a nil map as `{}`, and both come back
+// non-nil, so a config held in memory and the same config decoded from a
+// document differ in exactly this way and nothing else.
+type collectionPluginConfig struct {
+	BrokerURLs []string          `json:"broker_urls"`
+	Headers    map[string]string `json:"headers"`
+	ClientID   string            `json:"client_id"`
+}
+
+func (collectionPluginConfig) Kind() string    { return "collection" }
+func (collectionPluginConfig) Validate() error { return nil }
+
+// TestConfigFingerprint_AbsentAndEmptyPluginCollectionsAgree pins the
+// fingerprint to the same empty-collection rule the bridge's content identity
+// applies (ports.WithoutEmptyCollections, ADR 0016), down into each plugin's
+// decoded options.
+//
+// The two have to agree because they answer the same question about the same
+// config from different sides. After a barrier-driven swap the runtime serves a
+// config decoded from the durable committed artifact — where a nil collection
+// comes back empty — and AdoptRunning fingerprints it. If that fingerprint
+// differed from the desired one the manager took over the in-memory document,
+// ReconfigurePending would stay latched, and deep health would report a member
+// as not converged for as long as it runs a config the bridge itself considers
+// applied.
+func TestConfigFingerprint_AbsentAndEmptyPluginCollectionsAgree(t *testing.T) {
+	inMemory := withSessionOption("bridge1", 1, collectionPluginConfig{ClientID: "c"})
+	reloaded := withSessionOption("bridge1", 1, collectionPluginConfig{
+		BrokerURLs: []string{},
+		Headers:    map[string]string{},
+		ClientID:   "c",
+	})
+
+	fpMemory, err := configFingerprint(inMemory)
+	require.NoError(t, err)
+	fpReloaded, err := configFingerprint(reloaded)
+	require.NoError(t, err)
+	require.Equal(t, fpMemory, fpReloaded,
+		"a nil plugin collection and the empty one a reload produces are the same config; "+
+			"if they are not, a member that adopted the decoded artifact never reads as converged")
+
+	// The collapse must not reach further than that: a collection with something
+	// in it is not an absent one.
+	populated := withSessionOption("bridge1", 1, collectionPluginConfig{
+		BrokerURLs: []string{"tcp://broker:1883"},
+		ClientID:   "c",
+	})
+	fpPopulated, err := configFingerprint(populated)
+	require.NoError(t, err)
+	require.NotEqual(t, fpMemory, fpPopulated, "a populated collection is a real change")
+}

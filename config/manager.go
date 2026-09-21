@@ -3,7 +3,6 @@ package config
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -624,14 +623,19 @@ func (m *Manager) AdoptRunning(cfg *ports.BridgeConfig) {
 // It hashes two things into one SHA-256, over the REVEALED config (secrets
 // included) so a secret-only edit is detected:
 //
-//  1. the normalised top-level blueprint via encoding/json — structure plus
-//     every non-plugin field (HTTP admin keys, cluster endpoints, routing, ...).
-//     This step DROPS every typed PluginConfig, because the `Config` fields are
-//     tagged json:"-" on the blueprint (ports.blueprint.go);
+//  1. the normalised top-level blueprint — structure plus every non-plugin field
+//     (HTTP admin keys, cluster endpoints, routing, ...). This step DROPS every
+//     typed PluginConfig, because the `Config` fields are tagged json:"-" on the
+//     blueprint (ports.blueprint.go);
 //  2. each decoded PluginConfig's options, in a fixed traversal order over the
 //     SAME normalised copy so the plugin payloads follow the id-ordered lists,
 //     so a change confined to a plugin's options (or a plugin secret) still
 //     changes the fingerprint.
+//
+// Both go in through writeContentProjection, so a collection that is absent and
+// one that is empty are the same content here as they are in the bridge's
+// content identity — the two cannot disagree about a config, however a plugin
+// happened to tag its option struct.
 //
 // encoding/json emits map keys in sorted order and struct fields in declaration
 // order, so equal content always produces equal bytes. It returns an error when
@@ -647,15 +651,11 @@ func configFingerprint(cfg *ports.BridgeConfig) ([sha256.Size]byte, error) {
 	// The normal form is a copy; cfg itself is never modified.
 	normal := ports.ContentNormalForm(cfg)
 	h := sha256.New()
-	enc := json.NewEncoder(h)
-	if err := enc.Encode(shared.RevealSecrets(normal)); err != nil {
+	if err := writeContentProjection(h, shared.RevealSecrets(normal)); err != nil {
 		return out, fmt.Errorf("config manager: fingerprint bridge config: %w", err)
 	}
 	if err := forEachPluginConfig(normal, func(pc ports.PluginConfig) error {
-		// enc.Encode writes each value followed by a newline, so the ordered
-		// stream of plugin payloads is self-delimiting. A nil PluginConfig encodes
-		// as "null", preserving its structural position.
-		if err := enc.Encode(shared.RevealSecrets(pc)); err != nil {
+		if err := writeContentProjection(h, shared.RevealSecrets(pc)); err != nil {
 			return fmt.Errorf("config manager: fingerprint plugin config: %w", err)
 		}
 		return nil

@@ -19,6 +19,13 @@ import (
 // ADR 0016) rather than over the bytes a writer happened to produce, so a
 // document written by hand and the same document written back by a tool have
 // one identity instead of two.
+//
+// The second half of that identity — an absent collection and an empty one are
+// the same value — is ports.WithoutEmptyCollections, which the configuration
+// manager's fingerprint applies too. It lives in ports precisely so the two
+// cannot drift apart: a rule the bridge applied and the manager did not would
+// leave a member reporting a change outstanding that the bridge considers
+// already applied.
 
 // configContentEqual reports whether two configs are the SAME deployment for
 // the purpose of the no-op reload and clustered-reload decisions.
@@ -184,14 +191,11 @@ func (b *rolloutBarrier) rememberLegacy(recorded, identity string) {
 // The projection must be stable across a save and a reload, because that is the
 // only reason it exists: a cohort agrees on a change by comparing this value,
 // and the member proposing it holds the config in memory while every other
-// member reads the document that was written from it. Marshalling and re-parsing
-// does not preserve the difference between an absent collection and an empty one
-// — a nil slice is written out as `[]` and comes back non-nil — so a projection
-// that distinguished the two would give the same change two different
-// identities, and no member could ever join the proposer. Collapsing them is not
-// a loosening: in this config model an empty collection and an absent one both
-// mean "none", and nothing else is collapsed — an empty string, a zero and a
-// false are real values and stay.
+// member reads the document that was written from it. Every value it writes
+// therefore goes through ports.WithoutEmptyCollections, which is what makes a
+// collection that is absent and one that is empty the same content — see that
+// function for why a save-and-reload round trip otherwise gives one change two
+// identities, and what is deliberately NOT collapsed.
 func canonicalProjection(cfg *ports.BridgeConfig) ([]byte, bool) {
 	if cfg == nil {
 		return nil, true
@@ -219,8 +223,9 @@ func canonicalProjection(cfg *ports.BridgeConfig) ([]byte, bool) {
 }
 
 // encodeCanonical appends one value to buf as JSON with every absent and empty
-// collection reduced to the same form, followed by a newline. It reports false
-// on a marshal error so the caller can fail closed.
+// collection reduced to the same form by ports.WithoutEmptyCollections — the
+// rule the configuration manager's fingerprint applies too — followed by a
+// newline. It reports false on a marshal error so the caller can fail closed.
 func encodeCanonical(buf *bytes.Buffer, value any) bool {
 	raw, err := json.Marshal(value)
 	if err != nil {
@@ -230,7 +235,7 @@ func encodeCanonical(buf *bytes.Buffer, value any) bool {
 	if err := json.Unmarshal(raw, &tree); err != nil {
 		return false
 	}
-	normalized, keep := withoutEmptyCollections(tree)
+	normalized, keep := ports.WithoutEmptyCollections(tree)
 	if !keep {
 		buf.WriteString("null\n")
 		return true
@@ -242,46 +247,6 @@ func encodeCanonical(buf *bytes.Buffer, value any) bool {
 	buf.Write(out)
 	buf.WriteByte('\n')
 	return true
-}
-
-// withoutEmptyCollections returns value with nulls and empty collections removed,
-// and reports whether anything is left to record.
-//
-// Object keys whose value carries nothing are dropped, which is what makes an
-// absent key and an empty one identical. Array ELEMENTS are never dropped —
-// position is meaning in an array — so an element that carries nothing stays as
-// a null placeholder and a shorter array still differs from a longer one.
-func withoutEmptyCollections(value any) (any, bool) {
-	switch typed := value.(type) {
-	case nil:
-		return nil, false
-	case map[string]any:
-		out := make(map[string]any, len(typed))
-		for key, item := range typed {
-			if normalized, keep := withoutEmptyCollections(item); keep {
-				out[key] = normalized
-			}
-		}
-		if len(out) == 0 {
-			return nil, false
-		}
-		return out, true
-	case []any:
-		if len(typed) == 0 {
-			return nil, false
-		}
-		out := make([]any, 0, len(typed))
-		for _, item := range typed {
-			normalized, keep := withoutEmptyCollections(item)
-			if !keep {
-				normalized = nil
-			}
-			out = append(out, normalized)
-		}
-		return out, true
-	default:
-		return typed, true
-	}
 }
 
 // visitPluginConfigs visits every decoded PluginConfig on the blueprint in the

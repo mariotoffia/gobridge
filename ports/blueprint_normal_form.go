@@ -98,7 +98,8 @@ func normalBridgeSettings(b BridgeSettings) BridgeSettings {
 }
 
 func normalRoute(r RouteDef) RouteDef {
-	r.Policy.AckAfter = canonicalDuration(r.Policy.AckAfter, 0)
+	// Policy.AckAfter is a keyword (an acknowledgement boundary such as
+	// "outbox_persist"), not a duration, so it is compared as written.
 	r.Policy.ReplayBudget = canonicalDuration(r.Policy.ReplayBudget, 0)
 	r.Policy.SendTimeout = canonicalDuration(r.Policy.SendTimeout, 0)
 	r.Policy.DepthCacheTTL = canonicalDuration(r.Policy.DepthCacheTTL, 0)

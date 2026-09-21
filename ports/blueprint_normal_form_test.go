@@ -53,7 +53,7 @@ func normalFormFixture(plugin ports.PluginConfig) *ports.BridgeConfig {
 				Bindings:   []string{"b2", "b1"},
 				Processors: []string{"p2", "p1"},
 				Policy: ports.PolicyDef{
-					AckAfter:      "1000ms",
+					AckAfter:      "outbox_persist",
 					ReplayBudget:  "120s",
 					SendTimeout:   "5000ms",
 					DepthCacheTTL: "250ms",
@@ -147,7 +147,7 @@ func TestContentNormalForm_CanonicalDurationSpelling(t *testing.T) {
 	assert.Equal(t, "500ms", got.ConfigWatch.Debounce)
 
 	route := got.Routes[1]
-	assert.Equal(t, "1s", route.Policy.AckAfter)
+	assert.Equal(t, "outbox_persist", route.Policy.AckAfter, "ack_after is a keyword, not a duration; it is kept as written")
 	assert.Equal(t, "2m0s", route.Policy.ReplayBudget)
 	assert.Equal(t, "5s", route.Policy.SendTimeout)
 	assert.Equal(t, "250ms", route.Policy.DepthCacheTTL)

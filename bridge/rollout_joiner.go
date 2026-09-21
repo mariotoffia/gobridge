@@ -88,7 +88,13 @@ func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Cont
 			"committed; refusing to start (config_version=%d): %w", cfg.Version, err)
 	}
 	if d.barrier.recordedDigestMatches(cfg, committed.Digest, committed.ConfigVersion) {
-		return cfg, nil // the boot config IS the last committed config
+		// The boot config IS the last committed config, so this member boots it
+		// without ever reading the artifact's bytes. That leaves the artifact
+		// itself unchecked, and an unchecked corrupt record is one nobody sees
+		// until another member restarts onto a different config and refuses over
+		// it — so check it here and report what it finds.
+		d.reportInconsistentCommittedArtifact(committed)
+		return cfg, nil
 	}
 	// The boot config differs from the committed artifact. Reconstruct the
 	// committed config; fail closed if it cannot be rebuilt — booting on the wrong
@@ -155,6 +161,47 @@ func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Cont
 			"failed; refusing to start (committed generation=%d): %w", committed.Generation, err)
 	}
 	return frozen, nil
+}
+
+// reportInconsistentCommittedArtifact runs the durable last-committed artifact
+// through the same two integrity checks the recovery path applies — the record
+// has to name the config version its own bytes carry, and those bytes have to
+// match the digest it records — and logs when either fails. It is a no-op when
+// the record describes its own bytes, and when no codec is wired there is
+// nothing to decode with, so there is nothing to check.
+//
+// It LOGS rather than refusing to start because the member that reaches it is
+// booting its own document: the record's digest names that content, so the
+// artifact's bytes are never run here and a broken record cannot mis-boot this
+// member. Refusing would cost the cohort a member — and it would fix nothing,
+// because no config change repairs the record; the cohort's next commit rewrites
+// it. A member whose boot config is NOT the committed content does read those
+// bytes, and it still refuses to start on them.
+func (d *ClusterRolloutDriver) reportInconsistentCommittedArtifact(committed persistence.CommittedRolloutConfig) {
+	if d.barrier.decode == nil {
+		return
+	}
+	attrs := []any{"generation", committed.Generation, "record_config_version", committed.ConfigVersion}
+	decoded, err := d.barrier.decode(committed.ConfigBytes)
+	switch {
+	case err != nil:
+		attrs = append(attrs, "inconsistency", "the bytes could not be decoded", "error", err)
+	case !committedArtifactVersionMatches(decoded, committed):
+		attrs = append(attrs, "inconsistency", "the bytes hold a document at another config version",
+			"document_config_version", decoded.Version)
+	case !d.barrier.recordedDigestMatches(decoded, committed.Digest, committed.ConfigVersion):
+		attrs = append(attrs, "inconsistency", "the bytes do not match the digest the record carries")
+	default:
+		return // the record describes its own bytes
+	}
+	if logger := d.host.RolloutLogger(); logger != nil {
+		logger.Error("bridge: cluster.rollout: the durable last-committed config artifact is inconsistent. "+
+			"This member starts anyway: it boots its OWN document, which is the content the record's digest "+
+			"names, so it never runs the artifact's bytes. The record is unusable as it stands and no config "+
+			"change repairs it — the cohort's next commit rewrites it, and until then any member restarting "+
+			"onto a different config refuses to start on it; a cohort that is entirely down needs the record "+
+			"removed by hand first — see docs/runbooks/cluster-config-rollout.md", attrs...)
+	}
 }
 
 // checkCoordinatedRolloutPreflight is the startup gate for a coordinated

@@ -1,7 +1,9 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -72,6 +74,46 @@ func TestResolveBoot_RefusesAnArtifactWhoseDocumentVersionDiffersFromTheRecord(t
 	assert.Contains(t, err.Error(), "config version 5", "and the version the record claims")
 	assert.Contains(t, err.Error(), "docs/runbooks/cluster-config-rollout.md",
 		"the refusal points at the repair, as every other artifact refusal does")
+}
+
+// TestResolveBoot_MatchingContentStillReportsAnInconsistentArtifact pins the
+// case the refusal above never sees. When the boot config already matches the
+// digest the record names, the resolution boots it without decoding the
+// artifact's bytes at all — so a record that disagrees with its own bytes would
+// go unnoticed on this member and surface hours later, on whichever node
+// restarts next onto a different config. The member does not run those bytes
+// here, so it must not refuse to start over them; it boots and says so.
+func TestResolveBoot_MatchingContentStillReportsAnInconsistentArtifact(t *testing.T) {
+	var logs bytes.Buffer
+	store := memoryrollout.NewStore()
+	codec := newConfigCodecFake()
+
+	committedCfg := coordinatedClusteredCfg("r1")
+	committedCfg.Version = 3
+	seedVersionMismatchedArtifact(t, store, codec, committedCfg, 4, 5)
+
+	// A boot config saying exactly what the artifact's document says, so its
+	// digest is the one the record carries and the resolution takes the shortcut.
+	boot := coordinatedClusteredCfg("r1")
+	boot.Version = 3
+	host := newFakeRolloutHost(boot)
+	host.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	rc := testRolloutConfig(store, "node-a")
+	rc.Encode = codec.encode
+	rc.Decode = codec.decode
+	d := NewClusterRolloutDriver(host, rc)
+	require.NotNil(t, d)
+
+	resolved, err := d.ResolveBoot(context.Background(), boot)
+
+	require.NoError(t, err, "this member never runs the artifact's bytes, so a broken record must not stop it")
+	assert.Same(t, boot, resolved, "it boots its own document, which is the committed content")
+	out := logs.String()
+	assert.Contains(t, out, "level=ERROR", "an unusable durable record is an operator-visible error")
+	assert.Contains(t, out, "document_config_version=3", "the log names the version the document carries")
+	assert.Contains(t, out, "record_config_version=5", "and the version the record claims")
+	assert.Contains(t, out, "docs/runbooks/cluster-config-rollout.md",
+		"and points at the repair, as every other artifact report does")
 }
 
 // TestReconcileMissedCommit_KeepsTheRunningConfigWhenTheArtifactVersionDisagrees
