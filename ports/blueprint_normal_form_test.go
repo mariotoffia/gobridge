@@ -268,3 +268,38 @@ func TestContentNormalForm_EquivalentDocumentsAgree(t *testing.T) {
 	}
 	assert.NotEqual(t, ports.ContentNormalForm(handwritten), ports.ContentNormalForm(changed))
 }
+
+// A rule's condition value is compared the way the runtime coerces it: nil,
+// scalars and lists keep their kind, and anything else (a map, for instance)
+// is the string fmt.Sprint gives, so an empty map and an absent value are two
+// different rules, exactly as they are two different matches at runtime. An
+// empty list is written the same way so it stays distinct from an absent
+// value, which the projection would otherwise not tell apart.
+func TestContentNormalForm_ConditionValuesFollowTheRuntimeCoercion(t *testing.T) {
+	withValue := func(v any) *ports.BridgeConfig {
+		return &ports.BridgeConfig{Routes: []ports.RouteDef{{
+			ID: "r",
+			Resolver: &ports.ResolverDef{Type: "rules", Rules: []ports.RuleDef{{
+				BindingID: "b",
+				Match:     []ports.ConditionDef{{Field: "kind", Operator: "eq", Value: v}},
+			}}},
+		}}}
+	}
+	valueOf := func(cfg *ports.BridgeConfig) any {
+		return ports.ContentNormalForm(cfg).Routes[0].Resolver.Rules[0].Match[0].Value
+	}
+
+	assert.Nil(t, valueOf(withValue(nil)))
+	assert.Equal(t, "x", valueOf(withValue("x")))
+	assert.Equal(t, 7, valueOf(withValue(7)))
+	assert.Equal(t, true, valueOf(withValue(true)))
+	assert.Equal(t, []any{"1", 2}, valueOf(withValue([]any{"1", 2})), "a list keeps its element kinds")
+	assert.Equal(t, "map[]", valueOf(withValue(map[string]any{})))
+	assert.Equal(t, "map[a:x b:1]", valueOf(withValue(map[string]any{"b": 1, "a": "x"})))
+	assert.Equal(t, "[]", valueOf(withValue([]any{})))
+	assert.Equal(t, []any{"map[]"}, valueOf(withValue([]any{map[string]any{}})), "the rule reaches into list elements")
+
+	input := withValue(map[string]any{"k": "v"})
+	ports.ContentNormalForm(input)
+	assert.Equal(t, map[string]any{"k": "v"}, input.Routes[0].Resolver.Rules[0].Match[0].Value, "the input is never modified")
+}

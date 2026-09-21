@@ -107,6 +107,18 @@ func legacyConfigCanonicalBytes(cfg *ports.BridgeConfig) ([]byte, bool) {
 // hashed. It includes the version number, so it is taken over a COPY of cfg put
 // back to recordedVersion; the caller's config is never modified.
 //
+// A legacy match is therefore exactly as precise as the release that wrote the
+// record, and no more: that rounding means two documents differing only in an
+// integer wider than 2^53 share one legacy digest, so such a match says "the
+// writer of this record would have hashed cfg to this value" rather than "cfg is
+// that document". For a rollout row that is the best available answer — a row
+// carries a digest and no bytes, so there is nothing else to compare cfg
+// against. Where the record does carry bytes, the caller has a better one: the
+// boot resolution and the missed-commit reconcile both match the DECODED
+// artifact, so the memory below is established from the record's own bytes, and
+// the choice between the artifact's document and the member's is then made by
+// comparing content rather than digests (see resolveBootFromCommittedArtifact).
+//
 // A legacy match, once made, is REMEMBERED on the barrier as "this recorded
 // digest names that content" (see legacyStandsFor). The older spelling can only
 // be recomputed while the running document is still the raw form the old release

@@ -130,3 +130,54 @@ func TestResolveBoot_BootsOnItsOwnDocumentWhenItIsTheCommittedContentInAnotherFo
 	_, applied := applier.observedState(r)
 	assert.True(t, applied, "a member booted on the committed configuration is not diverged from it")
 }
+
+// wideIntegerCohortConfig is maxBytesConfig wired as a coordinated single-member
+// cohort, so boot resolution can run over a document whose plugin carries an
+// integer the legacy projection cannot tell apart from its neighbour.
+func wideIntegerCohortConfig(version int, maxBytes int64) *ports.BridgeConfig {
+	cfg := maxBytesConfig(version, maxBytes)
+	cfg.Bridge.Cluster = &ports.ClusterConfig{Rollout: "coordinated", Members: []string{"node-a"}}
+	return cfg
+}
+
+// TestResolveBoot_LegacyMatchIsDecidedOnTheDecodedContent pins that a digest an
+// old release recorded never decides a boot on its own. That older spelling
+// rounded an integer wider than 2^53 through a float64, so two documents
+// differing only in such an option share one legacy digest: here the cohort
+// committed 9007199254740993 and this member's config source holds
+// 9007199254740992. Accepting the boot document because the record's digest also
+// names it would run content no peer runs, so the decision is taken on the
+// artifact's decoded content instead — and this member boots what the cohort
+// committed.
+func TestResolveBoot_LegacyMatchIsDecidedOnTheDecodedContent(t *testing.T) {
+	ctx := context.Background()
+	store := memoryrollout.NewStore()
+	codec := newConfigCodecFake()
+
+	committedCfg := wideIntegerCohortConfig(3, wideInteger)
+	boot := wideIntegerCohortConfig(3, wideInteger-1)
+	recorded := legacyDigestOf(t, committedCfg)
+	require.Equal(t, recorded, legacyDigestOf(t, boot),
+		"precondition: the legacy projection rounds both options to the same number, so one "+
+			"recorded digest names both documents")
+
+	require.NoError(t, store.PutCommittedConfig(ctx, persistence.CommittedRolloutConfig{
+		Generation: 1, ConfigVersion: committedCfg.Version,
+		ConfigBytes: codec.register(committedCfg), Digest: recorded,
+	}))
+
+	rc := testRolloutConfig(store, "node-a")
+	rc.Encode = codec.encode
+	rc.Decode = codec.decode
+	d := NewClusterRolloutDriver(newFakeRolloutHost(boot), rc)
+	require.NotNil(t, d)
+
+	resolved, err := d.ResolveBoot(ctx, boot)
+
+	require.NoError(t, err, "the artifact is intact, so there is nothing here to refuse to start over")
+	require.Len(t, resolved.Sessions, 1)
+	plugin, ok := resolved.Sessions[0].Config.(*roundTripConfig)
+	require.True(t, ok)
+	assert.Equal(t, wideInteger, plugin.MaxBytes,
+		"the member boots the content the cohort committed, not its own document")
+}

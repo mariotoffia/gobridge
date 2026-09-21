@@ -87,18 +87,29 @@ func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Cont
 			"not be read at startup, so this node cannot tell whether its boot config is the one the cohort "+
 			"committed; refusing to start (config_version=%d): %w", cfg.Version, err)
 	}
-	if d.barrier.recordedDigestMatches(cfg, committed.Digest, committed.ConfigVersion) {
-		// The boot config IS the last committed config, so this member boots it
-		// without ever reading the artifact's bytes. That leaves the artifact
-		// itself unchecked, and an unchecked corrupt record is one nobody sees
-		// until another member restarts onto a different config and refuses over
-		// it — so check it here and report what it finds.
+	if bootDigest == committed.Digest {
+		// The boot config IS the last committed config — the record carries this
+		// document's own content digest — so this member boots it without ever
+		// reading the artifact's bytes. Only that exact match takes the shortcut.
+		// The digest an older release recorded is LOSSY: it rounded an integer
+		// wider than 2^53 through a float64, so two documents differing only in
+		// such an option share one recorded digest. That digest may therefore
+		// vouch for the artifact's own bytes, but it can never prove that some
+		// other document is the committed one — which document this member boots
+		// is decided on content below, once the artifact is decoded.
+		//
+		// Booting without reading those bytes leaves the artifact itself
+		// unchecked, and an unchecked corrupt record is one nobody sees until
+		// another member restarts onto a different config and refuses over it —
+		// so check it here and report what it finds.
 		d.reportInconsistentCommittedArtifact(committed)
 		return cfg, nil
 	}
-	// The boot config differs from the committed artifact. Reconstruct the
-	// committed config; fail closed if it cannot be rebuilt — booting on the wrong
-	// config is the split-brain the whole protocol prevents.
+	// The boot config's content digest is not the one the record carries — though
+	// the record may still name this very content in the older spelling, which
+	// only the decoded artifact can settle. Reconstruct the committed config; fail
+	// closed if it cannot be rebuilt — booting on the wrong config is the
+	// split-brain the whole protocol prevents.
 	committedCfg, err := d.barrier.decode(committed.ConfigBytes)
 	if err != nil {
 		return nil, fmt.Errorf("bridge: cluster.rollout: the durable last-committed config artifact "+
@@ -128,12 +139,17 @@ func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Cont
 	// decodable-but-wrong artifact (bit-rot that still parses, or a non-digest-
 	// preserving codec) must not be booted as if it were the committed config.
 	// A config that cannot be canonicalised matches nothing, so it fails here too.
+	// An older spelling is accepted here because it is recomputed over the
+	// artifact's OWN bytes — the document whose writer recorded that digest — so
+	// what the barrier then remembers about that record is taken from the bytes
+	// it describes rather than from whatever this member happens to be holding.
 	if !d.barrier.recordedDigestMatches(committedCfg, committed.Digest, committed.ConfigVersion) {
 		return nil, fmt.Errorf("bridge: cluster.rollout: the durable last-committed config artifact "+
 			"(generation=%d) failed its digest check after decoding, so its bytes are not the config the "+
 			"cohort committed; refusing to start", committed.Generation)
 	}
-	// The digests disagreed, but the decoded artifact settles it on content: when
+	// The record did not carry this document's content digest, but the decoded
+	// artifact settles the question on content instead of on a digest: when
 	// the boot config says the same thing, this member's own document IS the
 	// committed configuration written another way — an artifact an older release
 	// recorded over the raw document, or a no-op re-save that renumbered or

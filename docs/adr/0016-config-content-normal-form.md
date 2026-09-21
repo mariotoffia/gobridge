@@ -63,6 +63,13 @@ The normal form:
   and `30s` are one value. A value that cannot be parsed is kept as written, so
   it still takes part in the comparison and a document that cannot be brought
   into the normal form counts as a change (fail safe);
+- writes a resolver rule's condition value the way the runtime coerces it: nil,
+  scalars and lists keep their kind, and anything else, a map for instance,
+  becomes the string `fmt.Sprint` gives, exactly as `runtime.Val` does. An
+  empty list is written the same way. So an empty map, an empty list and an
+  absent value are three different rules in the identity, as they are three
+  different matches at runtime, and the empty-collection rule below cannot
+  fold them together;
 - writes out the two defaults `ports` itself defines, `bridge.shutdown_timeout`
   and `bridge.drain_timeout`, for a value that is left out (the 30 seconds their
   accessors fall back to). A written value is kept as written, an explicit zero
@@ -127,9 +134,13 @@ the moment of it:
 - once a record has matched through the raw-document digest, the bridge
   remembers, for the life of the process, which normal-form identity that
   digest stands for, so a later no-op that reorders the document still matches;
-- at boot, once the committed artifact has been decoded and its integrity
-  verified, the member compares content, not digests, and boots on its own
-  document when that document is the committed content in another form.
+- at boot, only an exact normal-form match lets a member skip the artifact; a
+  raw-document match is lossy (it could not tell two integers above 2^53
+  apart) and never decides a boot by itself. Otherwise the committed artifact
+  is decoded and its integrity verified, the raw-document digest is matched
+  against the artifact's own bytes, and the member compares content, not
+  digests, booting on its own document when that document is the committed
+  content in another form.
 
 The raw-document digest is never written again; the first commit on the new
 release replaces the record. The reader that reproduces it is a fossil: it

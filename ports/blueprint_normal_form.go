@@ -1,6 +1,8 @@
 package ports
 
 import (
+	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -30,6 +32,10 @@ import (
 //     "30000ms" and "30s" are one value. A value time.ParseDuration cannot read
 //     is kept as written: it still takes part in the comparison, so a document
 //     that cannot be normalised counts as a change (fail safe).
+//   - A resolver rule's condition value is written the way the runtime coerces
+//     it (see normalConditionValue), so two rules that match differently at
+//     runtime — an empty map, an empty list, no value at all — never share an
+//     identity, whatever a projection later does with empty collections.
 //   - The two defaults ports itself defines are written out for a value that is
 //     LEFT OUT — shutdown_timeout and drain_timeout, the 30 seconds their
 //     *Duration accessors fall back to — so a document that omits one and one
@@ -105,6 +111,11 @@ func normalRoute(r RouteDef) RouteDef {
 	r.Policy.DepthCacheTTL = canonicalDuration(r.Policy.DepthCacheTTL, 0)
 	r.Policy.Backoff.InitialInterval = canonicalDuration(r.Policy.Backoff.InitialInterval, 0)
 	r.Policy.Backoff.MaxInterval = canonicalDuration(r.Policy.Backoff.MaxInterval, 0)
+	if r.Resolver != nil {
+		res := *r.Resolver
+		res.Rules = normalRules(res.Rules)
+		r.Resolver = &res
+	}
 	if r.Session != nil {
 		s := *r.Session
 		s.LeaseTTL = canonicalDuration(s.LeaseTTL, 0)
@@ -128,6 +139,78 @@ func normalRoute(r RouteDef) RouteDef {
 		r.Session = &s
 	}
 	return r
+}
+
+// normalRules copies the rules, in their written order, with every condition
+// value written the way the runtime coerces it. The rules and their match
+// lists are cloned so the caller's config is never modified.
+func normalRules(rules []RuleDef) []RuleDef {
+	if len(rules) == 0 {
+		return rules
+	}
+	out := slices.Clone(rules)
+	for i := range out {
+		if len(out[i].Match) == 0 {
+			continue
+		}
+		match := slices.Clone(out[i].Match)
+		for j := range match {
+			match[j].Value = normalConditionValue(match[j].Value)
+		}
+		out[i].Match = match
+	}
+	return out
+}
+
+// normalConditionValue writes a rule's condition value the way the runtime's
+// coercion (runtime.Val) reads it, so the identity of a rule follows how the
+// rule behaves:
+//
+//   - nil stays nil: it is the kind that matches a null field;
+//   - a string, a bool and every number keep their kind, and a decoded JSON
+//     number becomes the float64 the runtime compares with;
+//   - a list keeps its element kinds, each element written by the same rule;
+//   - anything else — a map, a struct, and an EMPTY list — becomes the string
+//     fmt.Sprint gives, which is exactly what the runtime compares for a map.
+//     An empty list is written that way for a different reason: a projection
+//     that reduces empty collections would otherwise not tell it from an absent
+//     value, and at runtime the two match differently.
+//
+// fmt.Sprint writes map keys in sorted order, so the result is deterministic.
+func normalConditionValue(v any) any {
+	if v == nil {
+		return nil
+	}
+	// A decoded JSON number (encoding/json's Number, matched by its method set so
+	// this package carries no JSON dependency) is the float64 the runtime uses.
+	if n, ok := v.(interface{ Float64() (float64, error) }); ok {
+		if f, err := n.Float64(); err == nil {
+			return f
+		}
+		return fmt.Sprint(v)
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.String, reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return v
+	case reflect.Slice:
+		if rv.Len() == 0 {
+			return fmt.Sprint(v)
+		}
+		if items, ok := v.([]any); ok {
+			out := make([]any, len(items))
+			for i, item := range items {
+				out[i] = normalConditionValue(item)
+			}
+			return out
+		}
+		return v // a typed list keeps its element kinds as written
+	default:
+		return fmt.Sprint(v)
+	}
 }
 
 // canonicalDuration rewrites raw in time.Duration's own spelling. dflt is the
