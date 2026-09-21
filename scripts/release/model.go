@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -144,10 +145,13 @@ func loadManifest(repo string) (releaseManifest, error) {
 	if err := decoder.Decode(&manifest); err != nil {
 		return releaseManifest{}, fmt.Errorf("decoding release manifest %s: %w", filename, err)
 	}
-	// A decoder reads one value and stops, so a concatenated or half-duplicated
-	// file would otherwise load as whichever value came first.
-	if decoder.More() {
-		return releaseManifest{}, fmt.Errorf("release manifest %s has trailing content", filename)
+	// A manifest is exactly one JSON value. Decode stops after the first one,
+	// so everything after it must be whitespace, or a second value or a stray
+	// closing brace would load silently. Decoding again and requiring io.EOF
+	// applies exactly the JSON grammar; Decoder.More cannot, because at the top
+	// level it reports false for a trailing '}' or ']'.
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return releaseManifest{}, fmt.Errorf("release manifest %s has trailing content after its top-level object", filename)
 	}
 	if err := manifest.validate(); err != nil {
 		return releaseManifest{}, fmt.Errorf("validating release manifest %s: %w", filename, err)

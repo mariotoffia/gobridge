@@ -541,7 +541,7 @@ func TestListModules_RejectsInvalidSelection(t *testing.T) {
 	}
 }
 
-func TestLoadManifest_RejectsUnknownKeysAndOldSchema(t *testing.T) {
+func TestLoadManifest_RejectsUnknownKeysOldSchemaAndTrailingContent(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -569,6 +569,18 @@ func TestLoadManifest_RejectsUnknownKeysAndOldSchema(t *testing.T) {
 {}`,
 			wantErr: "trailing content",
 		},
+		{
+			name: "trailing closing brace",
+			manifest: `{"schema": 2, "module_prefix": "github.com/mariotoffia/gobridge",
+  "published_modules": [{"path": ".", "layer": 0}, {"path": "cmd/gobridge", "layer": 1}]}}`,
+			wantErr: "trailing content",
+		},
+		{
+			name: "trailing closing bracket",
+			manifest: `{"schema": 2, "module_prefix": "github.com/mariotoffia/gobridge",
+  "published_modules": [{"path": ".", "layer": 0}, {"path": "cmd/gobridge", "layer": 1}]}]`,
+			wantErr: "trailing content",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -580,6 +592,21 @@ func TestLoadManifest_RejectsUnknownKeysAndOldSchema(t *testing.T) {
 				t.Fatalf("loadManifest() error = %v, want substring %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// The committed manifest ends with a newline, and editors add trailing blank
+// lines; whitespace after the single top-level value is part of valid JSON.
+func TestLoadManifest_AcceptsTrailingWhitespace(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	manifest := `{"schema": 2, "module_prefix": "github.com/mariotoffia/gobridge",
+  "published_modules": [{"path": ".", "layer": 0}, {"path": "cmd/gobridge", "layer": 1}]}` + "\n \t\r\n"
+	writeTestFile(t, filepath.Join(repo, filepath.FromSlash(manifestRelativePath)), manifest)
+
+	if _, err := loadManifest(repo); err != nil {
+		t.Fatalf("loadManifest() error = %v, want trailing whitespace accepted", err)
 	}
 }
 
