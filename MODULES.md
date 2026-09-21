@@ -87,7 +87,7 @@ branch, or a malformed version.
 After a successful train, consumers can:
 
 ```bash
-go get github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho@v0.3.0
-go install github.com/mariotoffia/gobridge/cmd/gobridge@v0.3.0
-go get github.com/mariotoffia/gobridge/testutil/mqttlocal@v0.3.0
+go get github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho@vX.Y.Z
+go install github.com/mariotoffia/gobridge/cmd/gobridge@vX.Y.Z
+go get github.com/mariotoffia/gobridge/testutil/mqttlocal@vX.Y.Z
 ```

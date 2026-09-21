@@ -52,7 +52,7 @@ under `tests/`, `scripts/`, and `deployment/` is internal-only and is never
 tagged.
 
 The test helper modules sit on layer 1 because they require only the root and
-every adapter's tests require them; see [Test helper modules](#test-helper-modules).
+the adapters' tests require them; see [Test helper modules](#test-helper-modules).
 
 The deployment-profile modules are published because an external CDK app writes
 its own stack against the constructs, those constructs take `infra` types as
@@ -92,9 +92,10 @@ composition root can use them in its own integration tests:
 go get github.com/mariotoffia/gobridge/testutil/mqttlocal@vX.Y.Z
 ```
 
-The readiness helper `testutil/wait` and the Docker wrapper
-`testutil/dockerexec` are packages of the root module, so they come with
-`go get github.com/mariotoffia/gobridge@vX.Y.Z`.
+The readiness helper `testutil/wait`, the Docker wrapper
+`testutil/dockerexec`, the TCP fault-injection proxy `testutil/netfault` and
+the TLS certificate generator `testutil/tlsgen` are packages of the root
+module, so they come with `go get github.com/mariotoffia/gobridge@vX.Y.Z`.
 
 **Their compatibility promise is lighter than the runtime modules'.** The
 helpers carry the same version as everything else, so pin them to the version
@@ -265,8 +266,8 @@ each step does; `run.sh` performs them in order and must not be bypassed to
 retag.
 
 Layer 1 is the seven test-helper modules. Each requires only the root, and
-every adapter's tests require them, so they are tagged and visible on the
-proxy before any adapter is staged.
+the adapters' tests require them, so they are tagged and visible on the proxy
+before any adapter is staged.
 
 Propagation is not uniform. A leaf module appears on proxy.golang.org in about
 a minute; `adapters/aws/store` and `adapters/native/store`, whose directories

@@ -214,7 +214,7 @@ gobridge/
 │   └── otel/         OpenTelemetry metrics and tracing
 ├── processors/       Filter, transform, circuit breaker, tenant
 ├── cmd/gobridge/     Example binary
-└── testutil/         Test helpers: published broker/emulator modules, plus root-owned wait, dockerexec, netfault, tlsgen
+└── testutil/         Published broker/emulator modules + root-owned helper packages
 ```
 
 ## Transports
