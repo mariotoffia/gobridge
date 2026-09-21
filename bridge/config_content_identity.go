@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 
+	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -136,6 +137,23 @@ func (b *rolloutBarrier) recordedDigestMatches(cfg *ports.BridgeConfig, recorded
 	}
 	b.rememberLegacy(recorded, identity)
 	return true
+}
+
+// committedArtifactVersionMatches reports whether the config decoded from a
+// committed-config artifact is the document that record describes, by comparing
+// the version the document carries against the version the record names.
+//
+// It exists because the digest cannot answer that question. Every digest this
+// project writes is taken over the content normal form, which leaves the version
+// number out on purpose, so bytes carrying any version at all pass the digest
+// check. The writer always records the version of the very document it encodes
+// (see writeCommittedArtifact), so a record that disagrees with its own bytes is
+// corrupt or tampered with — and this is what still proves the decoded document
+// is the one the record describes. It matters because both readers of the
+// artifact go on to trust that version: the boot resolution gates a whole-cohort
+// replacement on it, and a composition root orders configs by it.
+func committedArtifactVersionMatches(cfg *ports.BridgeConfig, committed persistence.CommittedRolloutConfig) bool {
+	return cfg != nil && cfg.Version == committed.ConfigVersion
 }
 
 // legacyStandsFor returns the content identity this barrier established for a

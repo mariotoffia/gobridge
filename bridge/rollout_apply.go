@@ -151,9 +151,11 @@ func (a *rolloutApplier) adoptable(cand stagedCandidate) *ports.BridgeConfig {
 // happened and never staged the candidate. It fetches the committed BYTES rather
 // than replaying the proposal, so it needs no staged candidate.
 //
-// A no-op when no codec is wired, the artifact is not ahead, or the decoded bytes
-// fail their digest check (the running config is then kept — better than building
-// a corrupt artifact). Returns a store error to the caller for retry.
+// A no-op when no codec is wired, the artifact is not ahead, or the record does
+// not describe the bytes it holds — a decoded document at another config version,
+// or one that fails its digest check (the running config is then kept — better
+// than building a corrupt artifact). Returns a store error to the caller for
+// retry.
 //
 // Wiring obligation, and it is LIVE: reconcile (like the joiner's boot
 // substitution) applies a config the config MANAGER did not emit — the decoded
@@ -205,6 +207,21 @@ func (a *rolloutApplier) reconcileMissedCommit(ctx context.Context, decidedGen u
 			a.host.RolloutLogger().Error("supervisor: the durable last-committed rollout artifact could not be "+
 				"decoded to reconcile a missed commit; the running config is kept",
 				"generation", committed.Generation, "error", err)
+		}
+		return nil
+	}
+	// Integrity: the record has to describe the document it holds. The digest
+	// cannot settle that — it is taken over the content normal form, which leaves
+	// the version out (see committedArtifactVersionMatches) — so a record
+	// disagreeing with its own bytes is corrupt or tampered with and the running
+	// config is kept, exactly as on a digest mismatch.
+	if !committedArtifactVersionMatches(cfg, committed) {
+		if a.host.RolloutLogger() != nil {
+			a.host.RolloutLogger().Error("supervisor: the durable last-committed rollout artifact holds a "+
+				"document whose config version differs from the one the record names; the running config is kept",
+				"generation", committed.Generation,
+				"document_config_version", cfg.Version,
+				"record_config_version", committed.ConfigVersion)
 		}
 		return nil
 	}

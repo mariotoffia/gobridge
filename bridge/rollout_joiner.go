@@ -103,6 +103,20 @@ func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Cont
 			"docs/runbooks/cluster-config-rollout.md",
 			committed.Generation, committed.ConfigVersion, err)
 	}
+	// Integrity: the record has to describe the document it holds. The digest
+	// cannot settle that — it is taken over the content normal form, which leaves
+	// the version out (see committedArtifactVersionMatches) — and everything below
+	// is version-gated, so a record disagreeing with its own bytes would boot this
+	// member on a document whose version nothing vouches for.
+	if !committedArtifactVersionMatches(committedCfg, committed) {
+		return nil, fmt.Errorf("bridge: cluster.rollout: the durable last-committed config artifact "+
+			"(generation=%d) holds a document at config version %d while the record names config "+
+			"version %d, so its bytes are not the artifact the cohort committed; refusing to start. The "+
+			"record itself is inconsistent, so no config change repairs it: the cohort's next commit "+
+			"rewrites it, and a cohort that is entirely down needs it removed by hand first — see "+
+			"docs/runbooks/cluster-config-rollout.md",
+			committed.Generation, committedCfg.Version, committed.ConfigVersion)
+	}
 	// Integrity: the reconstructed committed config must match the digest the
 	// artifact records, mirroring reconcileMissedCommit. A
 	// decodable-but-wrong artifact (bit-rot that still parses, or a non-digest-

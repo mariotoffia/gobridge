@@ -114,6 +114,15 @@ The raw-document digest is never written again; the first commit on the new
 release replaces the record. The fallback can be removed once no cohort can
 still hold a record written before the normal form.
 
+**The committed artifact's version is still checked, separately.** The digest
+leaves the version out, so on its own it no longer proves that a decoded
+artifact carries the version its record names. Every legitimately written
+artifact has the two equal (the record and the bytes are written from one
+configuration), so a decoded document whose version differs from the record's
+`ConfigVersion` is rejected as corrupt, in boot resolution and in
+reconciliation alike. That keeps the corruption check the byte digest used to
+give, without putting the version back into the identity.
+
 ## Consequences
 
 - An update that changes nothing about what the bridge does reconnects
