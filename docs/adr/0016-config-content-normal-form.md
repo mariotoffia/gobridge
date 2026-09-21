@@ -102,10 +102,13 @@ above 2^53 is never rounded through `float64` and two distinct values never
 share an identity. One boundary of the collapse rule is accepted: a decoded
 tree cannot tell an object that came from a struct field from a data map a
 plugin passes through verbatim (an AMQP argument table), so an entry in such a
-map whose value is an empty table compares like an absent entry. No shipped
-transport gives such an entry a meaning of its own; a precise, type-aware rule
-would need a reflective copy of every plugin's options and is not worth that
-for a case nothing uses.
+map whose value is an empty table or an explicit null compares like an absent
+entry. The fold cannot be narrowed: a nil slice or map field marshals as null
+and reads back from a document as an empty collection, and the rollout quorum
+depends on the in-memory document and the read-back document projecting alike.
+No shipped transport gives such an entry a meaning of its own; a precise,
+type-aware rule would need a reflective copy of every plugin's options and is
+not worth that for a case nothing uses.
 
 `bridge.DeploymentBaselineContentDigest` is now the same value as
 `bridge.ConfigArtifactDigest`. The name is kept because the AWS deployment

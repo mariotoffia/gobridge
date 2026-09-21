@@ -31,10 +31,14 @@ package ports
 //   - A decoded tree does not say which objects came from struct fields and
 //     which are data a plugin passes through verbatim (an AMQP argument table
 //     held in a map[string]any, for example), so the object rule reaches into
-//     both. An entry in such a data map whose value is an empty table therefore
-//     compares like an absent entry. No shipped transport gives such an entry
-//     a meaning of its own; if one ever does, that plugin's options need a
-//     value that is not an empty collection to carry it.
+//     both. An entry in such a data map whose value is an empty table or an
+//     explicit null therefore compares like an absent entry. That fold cannot
+//     be narrowed to struct fields: a nil slice or map field marshals as null
+//     and reads back from a document as an empty collection, and the rollout
+//     quorum depends on those two projecting alike. No shipped transport gives
+//     such an entry a meaning of its own; if one ever does, that plugin's
+//     options need a value that is neither null nor an empty collection to
+//     carry it.
 //   - Scalars pass through untouched, so the caller decides how numbers are
 //     represented. Every current projection in this project decodes with
 //     json.Decoder.UseNumber so an integer is never rounded through float64;
