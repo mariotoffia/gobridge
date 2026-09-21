@@ -77,9 +77,12 @@ build-gobridge: ## Build cmd/gobridge/gobridge.out; optionally embed INITIAL_CON
 dev: ## Regenerate the Go workspace (go.work) from every on-disk module (local-dev bootstrap)
 	@echo "Regenerating go.work from on-disk modules..."
 	@rm -f go.work go.work.sum
-	@go work init
-	@go work use -r .
-	@go work edit -dropuse ./scripts/release
+	@# GOWORK pins the file to this checkout. Without it, a worktree nested under
+	@# the main checkout (.worktrees/, .claude/worktrees/) finds the parent's
+	@# go.work first and `go work init` refuses with "already exists".
+	@GOWORK="$(CURDIR)/go.work" go work init
+	@GOWORK="$(CURDIR)/go.work" go work use -r .
+	@GOWORK="$(CURDIR)/go.work" go work edit -dropuse ./scripts/release
 	@echo "Workspace ready. (scripts/release is excluded by design — it builds with GOWORK=off.)"
 
 # ============================================================================
