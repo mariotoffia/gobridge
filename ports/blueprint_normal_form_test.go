@@ -326,3 +326,21 @@ func TestContentNormalForm_ConditionValuesFollowTheRuntimeCoercion(t *testing.T)
 	ports.ContentNormalForm(input)
 	assert.Equal(t, map[string]any{"k": "v"}, input.Routes[0].Resolver.Rules[0].Match[0].Value, "the input is never modified")
 }
+
+// Normalising a normal form changes nothing, so a caller that hands an already
+// normalised config to a digest gets the same identity. The marker for an empty
+// condition list is the value most at risk of being rewritten on a second pass.
+func TestContentNormalForm_IsIdempotent(t *testing.T) {
+	cfg := normalFormFixture(nil)
+	cfg.Routes[0].Resolver.Rules = append(cfg.Routes[0].Resolver.Rules, ports.RuleDef{
+		BindingID: "b1",
+		Match: []ports.ConditionDef{
+			{Field: "tags", Operator: "in", Value: []any{}},
+			{Field: "meta", Operator: "eq", Value: map[string]any{}},
+			{Field: "n", Operator: "eq", Value: 7},
+		},
+	})
+	once := ports.ContentNormalForm(cfg)
+	twice := ports.ContentNormalForm(once)
+	assert.Equal(t, once, twice)
+}

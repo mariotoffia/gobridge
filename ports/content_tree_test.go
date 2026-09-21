@@ -48,8 +48,19 @@ func TestWithoutEmptyCollections_ScalarsAreValuesNotAbsences(t *testing.T) {
 	assert.Equal(t, map[string]any{"name": "", "count": float64(0), "flag": false}, got)
 }
 
-func TestWithoutEmptyCollections_KeepsArrayPositions(t *testing.T) {
-	got, keep := ports.WithoutEmptyCollections([]any{map[string]any{}, "x", []any{}})
+func TestWithoutEmptyCollections_KeepsArrayElementsAsTheyAre(t *testing.T) {
+	got, keep := ports.WithoutEmptyCollections([]any{map[string]any{}, "x", []any{}, nil})
 	assert.True(t, keep)
-	assert.Equal(t, []any{nil, "x", nil}, got, "position is meaning inside an array, so an empty element stays as a placeholder")
+	assert.Equal(t, []any{map[string]any{}, "x", []any{}, nil}, got,
+		"inside a list an element's position and kind are content: an empty object, an empty list and null stay three different elements")
+}
+
+func TestWithoutEmptyCollections_PrunesObjectFieldsInsideArrayElements(t *testing.T) {
+	got, keep := ports.WithoutEmptyCollections([]any{
+		map[string]any{"a": []any{}, "b": float64(1)},
+		map[string]any{"a": []any{}},
+	})
+	assert.True(t, keep)
+	assert.Equal(t, []any{map[string]any{"b": float64(1)}, map[string]any{}}, got,
+		"an element's own fields follow the object rule; an element left with no fields stays an empty object")
 }

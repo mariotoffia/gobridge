@@ -24,10 +24,12 @@ import (
 // roundTripConfig is a plugin config whose collections are the shapes a save and
 // a reload flip between: a nil slice becomes empty, and a nil map becomes empty.
 // MaxBytes is an option wider than a float64 holds exactly, so the projection's
-// handling of numbers is exercised too.
+// handling of numbers is exercised too, and Tables is a list whose elements are
+// themselves collections, which is where the projection's array rule shows.
 type roundTripConfig struct {
 	BrokerURLs []string          `json:"broker_urls"`
 	Headers    map[string]string `json:"headers"`
+	Tables     []map[string]any  `json:"tables"`
 	ClientID   string            `json:"client_id"`
 	KeepAlive  int               `json:"keep_alive"`
 	MaxBytes   int64             `json:"max_bytes"`
@@ -137,28 +139,40 @@ func TestConfigCanonicalBytes_LargeIntegersStayDistinct(t *testing.T) {
 }
 
 // TestConfigCanonicalBytes_ArrayPositionIsPreserved pins the one place the
-// collapse must NOT reach. Position is meaning inside an array, so an element
-// that carries nothing stays as a placeholder rather than shortening the array
-// and making two different configs agree.
+// collapse must NOT reach. Both an element's position and its kind are meaning
+// inside an array, so an element that carries nothing keeps its place as the
+// empty collection it is: the list is never shortened, and an empty table is
+// still a different element from a null one, which is what stops two different
+// configs from agreeing.
 func TestConfigCanonicalBytes_ArrayPositionIsPreserved(t *testing.T) {
-	withPlaceholder := &ports.BridgeConfig{
-		Bridge: ports.BridgeSettings{
-			ID:             "demo",
-			DeploymentMode: "clustered",
-			Cluster:        &ports.ClusterConfig{Members: []string{"a", "b"}},
-		},
-	}
-	shorter := &ports.BridgeConfig{
-		Bridge: ports.BridgeSettings{
-			ID:             "demo",
-			DeploymentMode: "clustered",
-			Cluster:        &ports.ClusterConfig{Members: []string{"a"}},
-		},
-	}
+	withEmptyElement := configWithSessionPlugin(t, &roundTripConfig{
+		ClientID: "c",
+		Tables:   []map[string]any{{}, {"routing_key": "a"}},
+	})
+	shorter := configWithSessionPlugin(t, &roundTripConfig{
+		ClientID: "c",
+		Tables:   []map[string]any{{"routing_key": "a"}},
+	})
+	withNullElement := configWithSessionPlugin(t, &roundTripConfig{
+		ClientID: "c",
+		Tables:   []map[string]any{nil, {"routing_key": "a"}},
+	})
 
-	first, ok := configCanonicalBytesDigest(withPlaceholder)
+	projection, ok := configCanonicalBytes(withEmptyElement)
+	require.True(t, ok)
+	require.Contains(t, string(projection), `"tables":[{},{"routing_key":"a"}]`,
+		"the element that carries nothing keeps its place as the empty table it is")
+
+	first, ok := configCanonicalBytesDigest(withEmptyElement)
 	require.True(t, ok)
 	second, ok := configCanonicalBytesDigest(shorter)
 	require.True(t, ok)
-	require.NotEqual(t, first, second, "a shorter roster is a different cohort")
+	assert.NotEqual(t, first, second,
+		"dropping the element would let a shorter list agree with a longer one")
+
+	third, ok := configCanonicalBytesDigest(withNullElement)
+	require.True(t, ok)
+	assert.NotEqual(t, first, third,
+		"the wire format keeps an empty table and a null apart on a round trip, so they stay "+
+			"two different elements")
 }

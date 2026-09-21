@@ -47,6 +47,30 @@ func maxBytesConfig(version int, maxBytes int64) *ports.BridgeConfig {
 	}
 }
 
+// emptyTableElementConfig is a fixed single-session document whose plugin
+// carries a list holding one empty table. It is the fixture
+// emptyTableElementLegacyDigest was taken over, so neither may change without
+// recomputing that digest.
+func emptyTableElementConfig() *ports.BridgeConfig {
+	session := ports.SessionDef{ID: "s", Transport: "roundtrip"}
+	session.SetDecoded(&roundTripConfig{
+		ClientID:  "c",
+		KeepAlive: 30,
+		Tables:    []map[string]any{{}},
+	}, nil)
+	return &ports.BridgeConfig{
+		Version:  3,
+		Bridge:   ports.BridgeSettings{ID: "demo", DeploymentMode: "clustered"},
+		Sessions: []ports.SessionDef{session},
+	}
+}
+
+// emptyTableElementLegacyDigest is the digest the historical algorithm produces
+// for emptyTableElementConfig. Like the one above it is written out rather than
+// computed, so the test pins a value instead of agreeing with whatever the code
+// does today.
+const emptyTableElementLegacyDigest = "5f994e70c84eb30446f93a0a70df2197aa8b12a40f083e1d3d8bee3df409c1be"
+
 // historicalProjection is a copy of the projection those releases wrote, kept
 // local to the test so it cannot be refactored together with the production
 // code: marshal, read the bytes back into an `any` with float64 numbers, drop
@@ -68,7 +92,7 @@ func historicalEncode(t *testing.T, buf *bytes.Buffer, value any) {
 	require.NoError(t, err)
 	var tree any
 	require.NoError(t, json.Unmarshal(raw, &tree))
-	normalized, keep := ports.WithoutEmptyCollections(tree)
+	normalized, keep := historicalWithoutEmptyCollections(tree)
 	if !keep {
 		buf.WriteString("null\n")
 		return
@@ -77,6 +101,46 @@ func historicalEncode(t *testing.T, buf *bytes.Buffer, value any) {
 	require.NoError(t, err)
 	buf.Write(out)
 	buf.WriteByte('\n')
+}
+
+// historicalWithoutEmptyCollections is the tree reduction those releases
+// applied, copied here so the test keeps its own reference to compare the
+// production fossil against. It must never be replaced by the rule the current
+// projections apply: object keys whose value carries nothing are dropped, and an
+// array element that carries nothing becomes a null placeholder — which is where
+// the two rules part company, because the current one leaves an empty element as
+// the empty collection it is.
+func historicalWithoutEmptyCollections(value any) (any, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return nil, false
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			if normalized, keep := historicalWithoutEmptyCollections(item); keep {
+				out[key] = normalized
+			}
+		}
+		if len(out) == 0 {
+			return nil, false
+		}
+		return out, true
+	case []any:
+		if len(typed) == 0 {
+			return nil, false
+		}
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			normalized, keep := historicalWithoutEmptyCollections(item)
+			if !keep {
+				normalized = nil
+			}
+			out = append(out, normalized)
+		}
+		return out, true
+	default:
+		return typed, true
+	}
 }
 
 func TestLegacyDigest_ReproducesTheHistoricalProjectionForWideIntegers(t *testing.T) {
@@ -111,6 +175,32 @@ func TestLegacyDigest_ReproducesTheHistoricalProjectionForWideIntegers(t *testin
 	narrowNormalForm, ok := configCanonicalBytes(narrow)
 	require.True(t, ok)
 	assert.Equal(t, string(narrowNormalForm), string(narrowLegacy))
+}
+
+// Those releases also reduced an array element that carried nothing to a null
+// placeholder, so a plugin option holding a list with an empty table in it was
+// hashed as [null]. The rule every current projection applies leaves that
+// element as the empty table it is, which is a different document to hash, so
+// the fossil has to keep the older reduction of its own.
+func TestLegacyDigest_WritesANullPlaceholderForAnEmptyArrayElement(t *testing.T) {
+	cfg := emptyTableElementConfig()
+
+	historical := historicalProjection(t, cfg)
+	require.Contains(t, string(historical), `"tables":[null]`,
+		"precondition: the historical reduction is the one that replaces an empty element")
+	require.Equal(t, emptyTableElementLegacyDigest, candidateConfigDigest(historical),
+		"the golden digest is what the historical algorithm produces for this fixture; "+
+			"a failure here means the copy above drifted, not the implementation")
+
+	legacy, ok := legacyConfigCanonicalBytes(cfg)
+	require.True(t, ok)
+	assert.Contains(t, string(legacy), `"tables":[null]`,
+		"the fossil writes the placeholder those releases wrote, not the empty table the "+
+			"current rule keeps")
+	assert.Equal(t, string(historical), string(legacy))
+	assert.Equal(t, emptyTableElementLegacyDigest, candidateConfigDigest(legacy),
+		"a member that computes anything else stops recognising a record written over a "+
+			"configuration with an empty element in one of its lists")
 }
 
 func TestRecordedDigestMatches_AcceptsALegacyDigestWithWideIntegers(t *testing.T) {

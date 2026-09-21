@@ -87,7 +87,8 @@ func configCanonicalBytes(cfg *ports.BridgeConfig) ([]byte, bool) {
 //
 // It can be deleted once no cohort can still hold a record written before the
 // normal form: every rollout row and committed-config artifact in the fleet has
-// been rewritten by a release that has it. Delete encodeLegacy with it.
+// been rewritten by a release that has it. Delete encodeLegacy and
+// legacyWithoutEmptyCollections with it.
 func legacyConfigCanonicalBytes(cfg *ports.BridgeConfig) ([]byte, bool) {
 	return canonicalProjection(cfg, encodeLegacy)
 }
@@ -219,11 +220,13 @@ func (b *rolloutBarrier) rememberLegacy(recorded, identity string) {
 // The projection must be stable across a save and a reload, because that is the
 // only reason it exists: a cohort agrees on a change by comparing this value,
 // and the member proposing it holds the config in memory while every other
-// member reads the document that was written from it. Every value it writes
-// therefore goes through ports.WithoutEmptyCollections, which is what makes a
-// collection that is absent and one that is empty the same content — see that
-// function for why a save-and-reload round trip otherwise gives one change two
-// identities, and what is deliberately NOT collapsed.
+// member reads the document that was written from it. Every value the canonical
+// encoder writes therefore goes through ports.WithoutEmptyCollections, which is
+// what makes a collection that is absent and one that is empty the same content
+// — see that function for why a save-and-reload round trip otherwise gives one
+// change two identities, and what is deliberately NOT collapsed. The legacy
+// encoder applies the older spelling of that same rule, for the same reason it
+// rounds its numbers: it has to be the bytes its records were hashed from.
 func canonicalProjection(cfg *ports.BridgeConfig, encode func(*bytes.Buffer, any) bool) ([]byte, bool) {
 	if cfg == nil {
 		return nil, true
@@ -287,7 +290,7 @@ func encodeCanonical(buf *bytes.Buffer, value any) bool {
 
 // encodeLegacy appends one value to buf the way the projection up to release
 // v0.4.1 wrote it: marshalled, read back into a tree whose numbers are float64,
-// reduced by ports.WithoutEmptyCollections, marshalled again, newline.
+// reduced by legacyWithoutEmptyCollections, marshalled again, newline.
 //
 // This function is a FOSSIL. Reading a number back as a float64 rounds any
 // integer wider than 2^53 — an int64 option such as a transport's maximum body
@@ -310,7 +313,7 @@ func encodeLegacy(buf *bytes.Buffer, value any) bool {
 	if err := json.Unmarshal(raw, &tree); err != nil {
 		return false
 	}
-	normalized, keep := ports.WithoutEmptyCollections(tree)
+	normalized, keep := legacyWithoutEmptyCollections(tree)
 	if !keep {
 		buf.WriteString("null\n")
 		return true
@@ -322,6 +325,53 @@ func encodeLegacy(buf *bytes.Buffer, value any) bool {
 	buf.Write(out)
 	buf.WriteByte('\n')
 	return true
+}
+
+// legacyWithoutEmptyCollections is a verbatim copy of the tree reduction
+// releases up to v0.4.1 applied, and it is part of the same FOSSIL as
+// encodeLegacy: object keys whose value carries nothing are dropped, and an
+// array element that carries nothing is replaced by a null placeholder so the
+// array keeps its length.
+//
+// It is a copy rather than a call to ports.WithoutEmptyCollections because the
+// current rule no longer replaces such an element — an empty object stays an
+// empty object and an empty list stays an empty list — and a document with an
+// empty element in one of its lists therefore hashes differently under the two.
+// Only the older answer can match a record those releases wrote, so this rule
+// must never be "fixed", tidied into the current one, or shared with it. It is
+// deleted together with encodeLegacy and the legacy fallback, once no cohort can
+// still hold such a record.
+func legacyWithoutEmptyCollections(value any) (any, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return nil, false
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			if normalized, keep := legacyWithoutEmptyCollections(item); keep {
+				out[key] = normalized
+			}
+		}
+		if len(out) == 0 {
+			return nil, false
+		}
+		return out, true
+	case []any:
+		if len(typed) == 0 {
+			return nil, false
+		}
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			normalized, keep := legacyWithoutEmptyCollections(item)
+			if !keep {
+				normalized = nil
+			}
+			out = append(out, normalized)
+		}
+		return out, true
+	default:
+		return typed, true
+	}
 }
 
 // visitPluginConfigs visits every decoded PluginConfig on the blueprint in the

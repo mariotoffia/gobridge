@@ -90,9 +90,12 @@ no longer disagree about what counts as a change. Their JSON encoders stay
 where they were, because the inner ring deliberately carries no JSON
 dependency, but the second rule they apply to the decoded tree is shared as
 well: `ports.WithoutEmptyCollections` makes an absent collection and an empty
-one the same value (a document read back from a store turns a nil slice into
-an empty one), in the bridge's projection and in the manager's fingerprint
-alike, for the blueprint and for every plugin's options. A keyword field that
+one the same value in an object field (a document read back from a store turns
+a nil slice into an empty one), in the bridge's projection and in the manager's
+fingerprint alike, for the blueprint and for every plugin's options. Inside a
+list it does not: an element's position and kind are content and the wire
+format keeps an empty object, an empty list and null apart, so they stay three
+different elements. A keyword field that
 happens to look like a duration, such as `ack_after`, is compared as written.
 Both projections decode numbers with `json.Decoder.UseNumber`, so an integer
 above 2^53 is never rounded through `float64` and two distinct values never

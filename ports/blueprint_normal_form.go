@@ -196,6 +196,11 @@ func normalConditionValue(v any) any {
 	if v == nil {
 		return nil
 	}
+	// A value this function wrote on an earlier pass is already in its final
+	// form; leaving it alone is what makes ContentNormalForm idempotent.
+	if _, ok := v.(EmptyConditionList); ok {
+		return v
+	}
 	// A decoded JSON number (encoding/json's Number, matched by its method set so
 	// this package carries no JSON dependency) is the float64 the runtime uses.
 	if n, ok := v.(interface{ Float64() (float64, error) }); ok {
