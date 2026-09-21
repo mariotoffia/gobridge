@@ -120,12 +120,14 @@ still hold a record written before the normal form.
 
 **The committed artifact's version is still checked, separately.** The digest
 leaves the version out, so on its own it no longer proves that a decoded
-artifact carries the version its record names. Every legitimately written
-artifact has the two equal (the record and the bytes are written from one
-configuration), so a decoded document whose version differs from the record's
-`ConfigVersion` is rejected as corrupt, in boot resolution and in
-reconciliation alike. That keeps the corruption check the byte digest used to
-give, without putting the version back into the identity.
+artifact carries the version its record names. The writer therefore stamps the
+bytes with the rollout row's version before encoding them: members whose
+sources delivered equivalent documents at different versions join one rollout,
+and whichever of them writes the artifact, the record and its bytes agree. A
+decoded document whose version differs from the record's `ConfigVersion` is
+consequently corrupt and is rejected, in boot resolution and in reconciliation
+alike. That keeps the corruption check the byte digest used to give, without
+putting the version back into the identity.
 
 ## Consequences
 

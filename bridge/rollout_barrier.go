@@ -200,11 +200,25 @@ func (b *rolloutBarrier) candidate(digest string) (stagedCandidate, bool) {
 // — and a no-op when no codec is wired. The recorded digest is the CANONICAL
 // digest (identity, matching the rollout row); the bytes are the round-trippable
 // wire form a (re)joining member decodes.
+//
+// The bytes are STAMPED with version, the config version the record names, so
+// the record and its bytes always agree — whichever member wins the write, and
+// whatever version that member's own config source happened to deliver. The two
+// can differ: the digest is taken over the content normal form (ADR 0016),
+// which leaves the version out, so members holding equivalent documents at
+// different versions stage one candidate and join one rollout, while the row
+// keeps the proposer's version. A reader that finds the record and its bytes
+// disagreeing is therefore looking at a corrupt record, not at this. The version
+// is no part of the digest, so stamping it changes nothing the cohort agreed on.
+//
+// The caller's config is never modified: the version is set on a copy.
 func (b *rolloutBarrier) writeCommittedArtifact(ctx context.Context, gen uint64, version int, cfg *ports.BridgeConfig) error {
 	if b.encode == nil || b.committedStore == nil {
 		return nil
 	}
-	raw, err := b.encode(cfg)
+	atRecordedVersion := *cfg
+	atRecordedVersion.Version = version
+	raw, err := b.encode(&atRecordedVersion)
 	if err != nil {
 		return fmt.Errorf("bridge: encoding the committed config for the durable rollout artifact failed: %w", err)
 	}

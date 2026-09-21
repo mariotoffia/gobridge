@@ -153,8 +153,8 @@ func (b *rolloutBarrier) recordedDigestMatches(cfg *ports.BridgeConfig, recorded
 // It exists because the digest cannot answer that question. Every digest this
 // project writes is taken over the content normal form, which leaves the version
 // number out on purpose, so bytes carrying any version at all pass the digest
-// check. The writer always records the version of the very document it encodes
-// (see writeCommittedArtifact), so a record that disagrees with its own bytes is
+// check. The writer always STAMPS the document with the version it records (see
+// writeCommittedArtifact), so a record that disagrees with its own bytes is
 // corrupt or tampered with — and this is what still proves the decoded document
 // is the one the record describes. It matters because both readers of the
 // artifact go on to trust that version: the boot resolution gates a whole-cohort
