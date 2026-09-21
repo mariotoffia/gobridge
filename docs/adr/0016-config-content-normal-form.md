@@ -124,7 +124,9 @@ running configuration's normal form, the runtime is kept and every session stays
 connected, but the new document becomes the applied configuration: the
 Supervisor's `Config()` and the AWS runtime's applied configuration report the
 version number that now describes the running content, in step with the
-configuration manager's running version.
+configuration manager's running version. The post-swap convergence watcher
+reads that version when it writes a diagnostic, so a warning or degraded
+reason raised after an adoption names the adopted document too.
 
 **Digests recorded before the normal form are still readable.** A rollout row
 and a committed-config artifact written by an earlier release carry a digest of

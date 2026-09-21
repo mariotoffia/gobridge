@@ -80,7 +80,7 @@ func (s *Supervisor) watchPostSwapConvergence(ctx context.Context, rt *runtime.R
 	if rt == nil || cfg == nil {
 		return
 	}
-	go s.runConvergenceWatch(ctx, rt, cfg.Version, convergenceBudget(cfg))
+	go s.runConvergenceWatch(ctx, rt, convergenceBudget(cfg))
 }
 
 // convergenceBudget derives the watch budget from the committed config: the
@@ -127,7 +127,13 @@ func convergenceDegradedReason(configVersion int, level ports.ReadinessLevel, bu
 // surfacing the reason in deep health), then KEEPS watching: per-session
 // supervision retries forever, so a later genuine convergence clears the
 // state again instead of leaving a stale alarm on a self-healed bridge.
-func (s *Supervisor) runConvergenceWatch(ctx context.Context, rt *runtime.Runtime, configVersion int, budget time.Duration) {
+//
+// It carries no config version of its own. A reload that says the same thing
+// as the running one keeps this runtime and only adopts the new document, so
+// the version the supervisor reports can move while this watch runs. Every
+// diagnostic below therefore reads the version at the moment it is written,
+// which is what Supervisor.Config() reports to the operator at that moment.
+func (s *Supervisor) runConvergenceWatch(ctx context.Context, rt *runtime.Runtime, budget time.Duration) {
 	deadline := s.clk.Now().Add(budget)
 	timer := s.clk.NewTimer(convergencePollInterval)
 	defer timer.Stop()
@@ -154,26 +160,26 @@ func (s *Supervisor) runConvergenceWatch(ctx context.Context, rt *runtime.Runtim
 			// even when THIS watcher never marked: convergence factually
 			// resolves any convergence-owned mark a predecessor watcher
 			// (an earlier swap or resume) left behind.
-			s.clearConvergenceDegraded(rt, configVersion)
+			s.clearConvergenceDegraded(rt)
 			return
 		}
 		if !marked && !s.clk.Now().Before(deadline) {
-			if s.markConvergenceDegraded(rt, convergenceDegradedReason(configVersion, level, budget)) {
-				marked = true
-				if s.logger != nil {
-					s.logger.Warn("supervisor: reload applied but NOT converged — reload success signals are "+
-						"green while the transport has not reached its declared broker state; "+
-						"MetricConfigDegraded=1 with the convergence reason until sessions converge or the "+
-						"config is reverted",
-						"config_version", configVersion,
-						"readiness", level.String(),
-						"budget", budget.String(),
-					)
-				}
-			} else {
+			version, ok := s.markConvergenceDegraded(rt, level, budget)
+			if !ok {
 				// The runtime changed under us between the check and the mark;
 				// the successor watcher owns the signal.
 				return
+			}
+			marked = true
+			if s.logger != nil {
+				s.logger.Warn("supervisor: reload applied but NOT converged — reload success signals are "+
+					"green while the transport has not reached its declared broker state; "+
+					"MetricConfigDegraded=1 with the convergence reason until sessions converge or the "+
+					"config is reverted",
+					"config_version", version,
+					"readiness", level.String(),
+					"budget", budget.String(),
+				)
 			}
 		}
 		select {
@@ -196,25 +202,43 @@ func (s *Supervisor) watcherCurrent(rt *runtime.Runtime) bool {
 	return s.rt == rt && !s.paused
 }
 
+// appliedConfigVersion reports the version of the config the supervisor holds,
+// or 0 when it holds none.
+func appliedConfigVersion(cfg *ports.BridgeConfig) int {
+	if cfg == nil {
+		return 0
+	}
+	return cfg.Version
+}
+
 // markConvergenceDegraded sets the applied-but-not-converged degraded state
 // iff rt is still the active runtime and the bridge is not paused, so a
 // watcher for a superseded swap (or a runtime an operator just paused) can
 // never clobber the state owned by its successor. Takes convergence
 // ownership of the degraded state (degradedByConvergence) so later watchers,
-// StopBridge, and apply() can distinguish it from foreign causes. Returns
+// StopBridge, and apply() can distinguish it from foreign causes.
+//
+// It builds the reason here, under the same lock that verifies the runtime, so
+// the version named in it is the one the supervisor holds for THIS runtime at
+// this instant: a reload that changes nothing but the version number adopts
+// its document without replacing the runtime, so a version read when the watch
+// started can already name a superseded document. Returns that version and
 // whether the mark was applied.
-func (s *Supervisor) markConvergenceDegraded(rt *runtime.Runtime, reason string) bool {
+func (s *Supervisor) markConvergenceDegraded(
+	rt *runtime.Runtime, level ports.ReadinessLevel, budget time.Duration,
+) (int, bool) {
 	s.mu.Lock()
 	if s.rt != rt || s.paused {
 		s.mu.Unlock()
-		return false
+		return 0, false
 	}
+	version := appliedConfigVersion(s.cfg)
 	s.degraded = true
-	s.degradedReason = reason
+	s.degradedReason = convergenceDegradedReason(version, level, budget)
 	s.degradedByConvergence = true
 	s.mu.Unlock()
 	s.emitConfigDegradedGauge(true)
-	return true
+	return version, true
 }
 
 // clearConvergenceDegraded clears the degraded state iff it is
@@ -224,9 +248,14 @@ func (s *Supervisor) markConvergenceDegraded(rt *runtime.Runtime, reason string)
 // pause/resume the resumed runtime's watcher is a different instance from
 // the one that marked, yet its observed convergence factually resolves the
 // alarm.
-func (s *Supervisor) clearConvergenceDegraded(rt *runtime.Runtime, configVersion int) {
+//
+// The version logged is read under the same lock, for the same reason the mark
+// reads it there: it must name the document the supervisor holds now, not one
+// a no-op reload has already replaced.
+func (s *Supervisor) clearConvergenceDegraded(rt *runtime.Runtime) {
 	s.mu.Lock()
 	owned := s.rt == rt && s.degraded && s.degradedByConvergence
+	configVersion := appliedConfigVersion(s.cfg)
 	if owned {
 		s.degraded = false
 		s.degradedReason = ""

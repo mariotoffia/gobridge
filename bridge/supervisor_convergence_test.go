@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -59,13 +60,14 @@ func TestSupervisor_ConvergenceWatch_MarksAppliedNotConvergedThenClearsOnConverg
 	rt := runtime.New(runtime.WithInstanceID("convergence-watch"))
 	s.mu.Lock()
 	s.rt = rt
+	s.cfg = &ports.BridgeConfig{Version: 7}
 	s.mu.Unlock()
 
 	watchDone := make(chan struct{})
 	const budget = 4 * time.Second
 	go func() {
 		defer close(watchDone)
-		s.runConvergenceWatch(t.Context(), rt, 7, budget)
+		s.runConvergenceWatch(t.Context(), rt, budget)
 	}()
 
 	// Drive the fake clock past the budget; each advance fires one poll tick.
@@ -112,7 +114,8 @@ func TestSupervisor_StopBridgeClearsConvergenceOwnedDegradedOnly(t *testing.T) {
 		s.mu.Lock()
 		s.rt = rt
 		s.mu.Unlock()
-		require.True(t, s.markConvergenceDegraded(rt, "applied but not converged"))
+		_, marked := s.markConvergenceDegraded(rt, ports.LevelLive, time.Minute)
+		require.True(t, marked)
 
 		require.NoError(t, s.StopBridge(t.Context()))
 
@@ -157,7 +160,7 @@ func TestSupervisor_ConvergenceWatch_AbandonsWhenPaused(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.runConvergenceWatch(t.Context(), rt, 9, time.Second)
+		s.runConvergenceWatch(t.Context(), rt, time.Second)
 	}()
 	select {
 	case <-done:
@@ -166,8 +169,8 @@ func TestSupervisor_ConvergenceWatch_AbandonsWhenPaused(t *testing.T) {
 	}
 	degraded, _ := s.Degraded()
 	assert.False(t, degraded)
-	assert.False(t, s.markConvergenceDegraded(rt, "mark through pause"),
-		"marking through a paused supervisor must be refused")
+	_, marked := s.markConvergenceDegraded(rt, ports.LevelLive, time.Second)
+	assert.False(t, marked, "marking through a paused supervisor must be refused")
 }
 
 // Review finding (pause interaction): a successor watcher observing
@@ -190,7 +193,7 @@ func TestSupervisor_ConvergenceWatch_ClearsPredecessorMarkOnConvergence(t *testi
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.runConvergenceWatch(t.Context(), rt, 4, time.Minute)
+		s.runConvergenceWatch(t.Context(), rt, time.Minute)
 	}()
 	select {
 	case <-done:
@@ -199,6 +202,73 @@ func TestSupervisor_ConvergenceWatch_ClearsPredecessorMarkOnConvergence(t *testi
 	}
 	degraded, _ := s.Degraded()
 	assert.False(t, degraded, "convergence resolves a predecessor watcher's convergence-owned mark")
+}
+
+// a reload that says the same thing as the running one keeps the runtime and
+// only adopts the new document: the supervisor reports the new version while
+// the watch started by the original swap is still running. The watch's
+// diagnostics must name the document the supervisor holds when the diagnostic
+// is written, so an operator told "config version N" looks at the version the
+// bridge reports as running. Adoption must not move the watch's deadline
+// either — the budget belongs to the runtime, and the runtime did not change.
+func TestConvergenceWatch_DiagnosticsNameTheAdoptedDocument(t *testing.T) {
+	clk := clocktest.NewAt(time.Unix(1_700_000_000, 0))
+	s := NewSupervisor(WithSupervisorClock(clk))
+
+	// An unstarted runtime reports LevelLive and never converges on its own.
+	rt := runtime.New(runtime.WithInstanceID("adopted-document"))
+	s.mu.Lock()
+	s.rt = rt
+	s.cfg = &ports.BridgeConfig{Version: 1}
+	s.mu.Unlock()
+
+	const ticksToBudget = 10
+	const budget = ticksToBudget * convergencePollInterval
+	start := clk.Now()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	watchDone := make(chan struct{})
+	t.Cleanup(func() { cancel(); <-watchDone })
+	go func() {
+		defer close(watchDone)
+		s.runConvergenceWatch(ctx, rt, budget)
+	}()
+	// The watch reads the clock to compute its deadline and then arms its poll
+	// timer, so an armed timer proves the deadline was taken from the start
+	// instant rather than from an already-advanced clock.
+	require.Eventually(t, func() bool { return clk.TimerCount() == 1 }, time.Second, time.Millisecond,
+		"the convergence watch must arm its poll timer")
+
+	advance := func(ticks int) {
+		for range ticks {
+			clk.Advance(convergencePollInterval)
+		}
+	}
+
+	// Half a budget in, an equivalent document is adopted the way the
+	// no-op reload path adopts one: the applied config moves, the runtime stays.
+	advance(ticksToBudget / 2)
+	s.mu.Lock()
+	s.cfg = &ports.BridgeConfig{Version: 2}
+	s.mu.Unlock()
+
+	// Advance to exactly the ORIGINAL expiry and no further. A deadline pushed
+	// out by the adoption would leave the watch silent here.
+	advance(ticksToBudget / 2)
+	require.Eventually(t, func() bool {
+		degraded, _ := s.Degraded()
+		return degraded
+	}, 2*time.Second, time.Millisecond,
+		"the original budget must still expire on schedule after an equivalent document is adopted")
+
+	degraded, reason := s.Degraded()
+	require.True(t, degraded)
+	assert.Contains(t, reason, "config version 2",
+		"the degraded reason must name the document the supervisor holds now")
+	assert.NotContains(t, reason, "config version 1",
+		"naming the superseded document sends the operator to the wrong version")
+	assert.Equal(t, budget, clk.Now().Sub(start),
+		"the mark belongs at the original budget expiry, not a budget later")
 }
 
 // a watcher whose runtime was replaced by a later swap must abandon
@@ -219,7 +289,7 @@ func TestSupervisor_ConvergenceWatch_AbandonsWhenRuntimeReplaced(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.runConvergenceWatch(t.Context(), oldRt, 3, time.Second)
+		s.runConvergenceWatch(t.Context(), oldRt, time.Second)
 	}()
 	select {
 	case <-done:
@@ -230,6 +300,6 @@ func TestSupervisor_ConvergenceWatch_AbandonsWhenRuntimeReplaced(t *testing.T) {
 	degraded, reason := s.Degraded()
 	assert.True(t, degraded, "a superseded watcher must not clear foreign degraded state")
 	assert.Equal(t, "someone else's degraded cause", reason)
-	assert.False(t, s.markConvergenceDegraded(oldRt, "stale mark"),
-		"marking through a superseded runtime must be refused")
+	_, marked := s.markConvergenceDegraded(oldRt, ports.LevelLive, time.Second)
+	assert.False(t, marked, "marking through a superseded runtime must be refused")
 }
