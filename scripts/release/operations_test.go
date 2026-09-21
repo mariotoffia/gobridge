@@ -454,6 +454,14 @@ func TestResolveSiblingRequirements_BindsPublishedSiblingToTagCommit(t *testing.
 				manifest,
 				moduleFile,
 			)
+			// The sibling is bound to the commit of its own tag, so the second
+			// command (after the go list) must ask git for exactly that tag.
+			wantTagArgs := []string{"rev-parse", "--verify", "refs/tags/testutil/example/v0.3.0^{commit}"}
+			if len(runner.requests) < 2 ||
+				runner.requests[1].Name != "git" ||
+				!slices.Equal(runner.requests[1].Args, wantTagArgs) {
+				t.Fatalf("tag lookup commands = %v, want git %v", runner.requests, wantTagArgs)
+			}
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("resolveSiblingRequirements() error = %v", err)
@@ -550,6 +558,13 @@ func TestLoadManifest_RejectsUnknownKeysAndOldSchema(t *testing.T) {
 			manifest: `{"schema": 1, "module_prefix": "github.com/mariotoffia/gobridge",
   "published_modules": [{"path": ".", "layer": 0}, {"path": "cmd/gobridge", "layer": 1}]}`,
 			wantErr: "schema = 1, want 2",
+		},
+		{
+			name: "trailing content",
+			manifest: `{"schema": 2, "module_prefix": "github.com/mariotoffia/gobridge",
+  "published_modules": [{"path": ".", "layer": 0}, {"path": "cmd/gobridge", "layer": 1}]}
+{}`,
+			wantErr: "trailing content",
 		},
 	}
 	for _, tt := range tests {

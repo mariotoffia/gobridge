@@ -295,6 +295,12 @@ for layer in $(seq 1 "$MAX_LAYER"); do
   publish_layer "$layer"
 done
 
+# The tags already carried every per-module release commit to the remote, but
+# the branch ref itself is what this project keeps permanently on origin.
+# Pushing it once the last layer is done points the remote branch at the final
+# release commit instead of a mid-train one.
+git push "$REMOTE" "HEAD:refs/heads/${branch}"
+
 # §4 final public proof
 echo "== §4 smoke =="
 make smoke-released-modules RELEASE_TAG="cmd/gobridge/${VERSION}"

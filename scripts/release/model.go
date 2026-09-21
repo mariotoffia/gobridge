@@ -144,6 +144,11 @@ func loadManifest(repo string) (releaseManifest, error) {
 	if err := decoder.Decode(&manifest); err != nil {
 		return releaseManifest{}, fmt.Errorf("decoding release manifest %s: %w", filename, err)
 	}
+	// A decoder reads one value and stops, so a concatenated or half-duplicated
+	// file would otherwise load as whichever value came first.
+	if decoder.More() {
+		return releaseManifest{}, fmt.Errorf("release manifest %s has trailing content", filename)
+	}
 	if err := manifest.validate(); err != nil {
 		return releaseManifest{}, fmt.Errorf("validating release manifest %s: %w", filename, err)
 	}
@@ -614,7 +619,7 @@ func stageModuleManifest(
 		if !sibling {
 			return nil
 		}
-		if dependencyPath != rootModulePath && published[dependencyPath].Path == "" {
+		if _, isPublished := published[dependencyPath]; dependencyPath != rootModulePath && !isPublished {
 			return fmt.Errorf("requirement %s is an undeclared repository sibling", importPath)
 		}
 		return parsed.AddRequire(importPath, releaseVersion)
