@@ -76,6 +76,26 @@ adapter falls back to polling when streams are unavailable. Library callers can
 inject an emulator client with `WithDynamoDBClient`; the config loader, runtime
 stores and derived streams client share its connection settings.
 
+### Configuration size limit
+
+The DynamoDB config source stores the whole bridge config as one DynamoDB item.
+DynamoDB caps an item at 400 KB, and that limit cannot be raised. See
+[Service, account, and table quotas in Amazon DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Constraints.html).
+
+GoBridge checks the config before it writes. The limit is **390 KiB
+(399,360 bytes)** of serialized JSON, the text stored in the item's `data`
+attribute. The rest of the 400 KB is left for the key and `version`
+attributes. Every write is checked: an admin API commit, the initial create,
+and a library `Save` or `SaveIfVersion`. A config over the limit is refused
+before any request is sent to AWS. The error names the size and the limit. The
+stored document and the running configuration stay unchanged.
+
+As a rough guide, each owner's block of sessions, receivers, senders, bindings
+and routes takes about 1–2 KB of JSON. A bridge shared by many owners reaches
+the limit at a few hundred blocks. If you expect to get close, split the
+owners across several bridges, each with its own `bridge_id` and config
+document, or use the `file` config source.
+
 ### Field Reference
 
 | Field | Type | Required | Default | Description |
