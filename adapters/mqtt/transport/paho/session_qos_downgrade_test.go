@@ -423,6 +423,21 @@ func TestQoSDowngrade_ReconnectReset_HidesBestEffortUntilReactivated(t *testing.
 		"the same lower grant stays accepted")
 }
 
+// TestPlanDesiredQoS_SkipsOutOfRangeQoS pins that a QoS outside 0..2 is never
+// narrowed into a desired level (as a byte 257 is 1, 258 is 2 and -1 is 255),
+// while the highest valid QoS per filter still wins.
+func TestPlanDesiredQoS_SkipsOutOfRangeQoS(t *testing.T) {
+	plan := &connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{
+		{Topic: "a", QoS: 1}, {Topic: "a", QoS: 2},
+		{Topic: "b", QoS: 257},
+		{Topic: "c", QoS: -1},
+		{Topic: "d", QoS: 0},
+		{Topic: "e", QoS: 1}, {Topic: "e", QoS: 258},
+	}}
+	require.Equal(t, map[string]byte{"a": 2, "d": 0, "e": 1}, planDesiredQoS(plan))
+	require.Empty(t, planDesiredQoS(nil))
+}
+
 // TestQoSDowngrade_RefusedSubscription_StillFailsReconcile is the control: a
 // broker that REFUSES a subscription (SUBACK >= 0x80) fails that reconcile as
 // before. Only a lower grant is accepted as best effort.

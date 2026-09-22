@@ -93,6 +93,28 @@ func TestQoSDowngrade_FailedReconcileOfNewPlan_DropsRemovedFilter(t *testing.T) 
 	require.Empty(t, s.Health(ctx).BestEffortTopics)
 }
 
+// TestQoSDowngrade_PlanWithOutOfRangeQoS_DropsRecordAndProbesNothing proves a
+// rejected plan cannot keep a downgrade alive. QoS 257 narrows to 1 as a byte,
+// so a plan asking for it must not count as still wanting the accepted QoS 1
+// filter: the reconcile rejects the plan, and the probe — which reads the
+// stashed plan — would otherwise re-subscribe from it.
+func TestQoSDowngrade_PlanWithOutOfRangeQoS_DropsRecordAndProbesNothing(t *testing.T) {
+	ctx := context.Background()
+	s, fake, clk, rec := newDowngradeSession(t, "downgrade-qos-257", connectivity.SessionPersistent, 0x00, nil)
+	require.NoError(t, s.Reconcile(ctx, planAtQoS("sensors/x", 1)))
+	confirmDowngrade(t, s, clk, fake, "sensors/x")
+
+	require.ErrorIs(t, s.Reconcile(ctx, planAtQoS("sensors/x", 257)), shared.ErrInvalidConfig)
+	_, recorded := downgradeState(s, "sensors/x")
+	require.False(t, recorded, "the rejected plan does not want the filter")
+	requireGauge(t, rec, "downgrade-qos-257", 0)
+	require.NotEqual(t, ports.ServiceLevelFull, s.Health(ctx).ServiceLevel, "a rejected plan is not served")
+
+	awaitNoTimer(t, clk)
+	clk.Advance(2 * DefaultQoSRecheckInterval)
+	require.Equal(t, qosDowngradeConfirmations, fake.subscribeCallCount(), "no SUBSCRIBE from a rejected plan")
+}
+
 // TestQoSDowngrade_ObservedLowerGrantWithoutRecord_IsResubscribed pins the
 // invariant that an observed lower grant always has a record. The seeded state
 // is what a dropped record leaves when its filter's UNSUBSCRIBE failed and a

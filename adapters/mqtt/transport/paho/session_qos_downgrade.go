@@ -266,13 +266,21 @@ func (s *Session) reportGrants(reports []grantReport) {
 	}
 }
 
-// planDesiredQoS returns the highest requested QoS per filter of plan.
+// planDesiredQoS returns the highest requested QoS per filter of plan. A
+// subscription whose QoS is outside 0..2 is not desired at all: the range is
+// checked before the byte conversion, which would alias 257 to 1 (see
+// ValidateMQTTSubscription). Such a plan is stashed before reconcile rejects
+// it, so aliasing would keep a downgrade record — and the probe that reads the
+// stashed plan — alive for a subscription nothing may request.
 func planDesiredQoS(plan *connectivity.SessionPlan) map[string]byte {
 	desired := make(map[string]byte)
 	if plan == nil {
 		return desired
 	}
 	for _, sub := range plan.Subscriptions {
+		if sub.QoS < 0 || sub.QoS > maxMQTTQoS {
+			continue
+		}
 		qos := byte(sub.QoS)
 		if current, ok := desired[sub.Topic]; !ok || qos > current {
 			desired[sub.Topic] = qos
