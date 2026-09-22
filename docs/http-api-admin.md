@@ -164,6 +164,17 @@ binding that failed, not to its healthy siblings. It is **not** a header:
 at ingress before any consumption site reads them, so a header cannot steer the
 replay.
 
+**One 30-second budget covers the whole batch, and entries are redriven one
+after another.** A replay into a `direct_hold` route now retries a recoverable
+send inside the bridge for that route's `send_retry_budget` (60s by default), so
+against a destination that is still down the **first** entry can spend the whole
+30 seconds retrying and every remaining id comes back with `redrive deadline
+exceeded before entry lookup`. Nothing is lost -- inject happens before delete,
+so an entry that was not redriven is still in the store with its evidence (see
+[ADR 0015](adr/0015-dlq-redrive-inject-then-delete.md)) -- but the batch
+reports one attempt and the rest as deadline errors. Redrive **after** the
+destination is healthy, or in small batches; retry the failed ids once it is.
+
 An inject is "confirmed" only when the route actually delivered the message. A
 replay the route **dropped** (`on_permanent_failure: drop`), filtered, expired,
 or wrote back to the DLQ is reported per entry in the `errors` array, counted on

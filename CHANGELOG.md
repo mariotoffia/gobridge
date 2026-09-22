@@ -47,7 +47,10 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 - Delivery hooks: `OnAttempt` fires once per physical send, so a hook now sees
   every retry and its error. `DeliveryAttempt.Attempt` still carries the
   delivery-level attempt number that `max_replay_attempts` caps, so repeated
-  sends of one delivery report the same number. `OnSettled` still fires once.
+  sends of one delivery report the same number. The programmatic
+  `RouteRunnerConfig.OnDelivery` callback fires once per physical send too, on
+  failure as well as on success, where it used to fire once per held delivery.
+  `OnSettled` still fires once.
 - New optional typed-config capability `ports.SettlementRecoveryTimingConfig`,
   implemented by the MQTT (paho) config, through which a source session tells
   the route validator how long its recovery recycle waits for accepted

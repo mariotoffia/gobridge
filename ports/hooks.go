@@ -37,7 +37,14 @@ type DeliveryAttempt struct {
 	Address string
 	// Envelope is the message being processed. Hooks must not mutate it.
 	Envelope *messaging.Envelope
-	// Attempt is the 1-based attempt number for this message.
+	// Attempt is the 1-based attempt number for this message: the
+	// delivery-level number that MaxAttempts caps, not a count of
+	// physical sends. On a direct_hold route that retries a recoverable
+	// send inside the bridge, OnAttempt fires once per physical send and
+	// every one of those sends reports the SAME Attempt, because they all
+	// belong to the one delivery the source is still holding. Tell them
+	// apart by Err: each failed send carries its own error, and a send
+	// with Err nil is the one that succeeded.
 	Attempt int
 	// MaxAttempts is the configured maximum replay attempts from the
 	// route policy. Zero means unknown or unlimited.
@@ -65,7 +72,10 @@ type DeliveryOutcome struct {
 	// Envelope is the message that reached its terminal state.
 	// Hooks must not mutate it.
 	Envelope *messaging.Envelope
-	// Attempt is the total number of attempts made.
+	// Attempt is the delivery-level attempt number the message reached,
+	// on the same scale as DeliveryAttempt.Attempt. It is not a count of
+	// physical sends: the in-process send retries of a direct_hold route
+	// all sit inside one attempt number.
 	Attempt int
 	// MaxAttempts is the configured maximum from route policy.
 	MaxAttempts int

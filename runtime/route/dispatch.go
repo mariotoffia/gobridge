@@ -162,9 +162,9 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 
 		// route the terminal decision through the single gate
 		// so a count-less source is capped by the bridge-owned ledger AND an
-		// uncountable adapter-generated identity (which the ledger cannot count) is
-		// sinked terminally on its first failure instead of recycling the source
-		// session forever.
+		// uncountable adapter-generated identity (which the ledger cannot count)
+		// is sunk terminally — but only after sendHeld has spent the route's
+		// send_retry_budget in process (a 0s budget sinks it on the first failure).
 		if _, over := r.replayCapReached(env); over {
 			poisonErr, category := r.replayCapPoison(env, rc, sendErr, "max_retries")
 			if logging.DebugEnabled(r.logger) {

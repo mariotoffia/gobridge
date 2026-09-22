@@ -27,10 +27,15 @@ import (
 // and DLQ-ing.
 //
 // The accepted tradeoff is closed by a SEPARATE signal rather than by folding
-// target health into readiness: every failed delivery raises
+// target health into readiness: a failed delivery raises
 // shared.MetricRouteErrors tagged with the route, which is the delivery-stall
 // series operators alarm on. This test pins both halves — readiness stays green,
 // the stall is counted — so neither can be quietly changed.
+//
+// On a direct_hold route the SEND leg raises that counter once the in-process
+// send retry has given up, not on the first failed send, so the route it
+// configures below disables send_retry_budget to keep the signal immediate. The
+// processor-chain and resolver sources of the same counter are unaffected.
 // ═══════════════════════════════════════════════════════════════════════════
 
 // TestDeepHealth_TotalDeliveryFailureKeepsRouteReady_ProductionContract proves

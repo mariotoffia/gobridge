@@ -155,8 +155,11 @@ const (
 	// bound a held delivery must not outlive; validateSendRetryBudget enforces
 	// that per route. A Stop is deliberately shorter: it drains in-flight
 	// deliveries for ~25s and then cancels, truncating a held retry part-way
-	// through its budget and leaving the delivery unsettled for the source to
-	// redeliver. See ADR-0017.
+	// through its budget and leaving the delivery unsettled. A source that
+	// redelivers replays it into the next process; a best-effort (QoS 0) source
+	// does not, and that message is then lost with no dead-letter record, so a
+	// route whose source cannot redeliver wants a small budget or none at all.
+	// See ADR-0017.
 	DefaultSendRetryBudget = 60 * time.Second
 	// SendRetryBudgetDisabled is the explicit opt-out from in-process send retry,
 	// kept distinct from the zero value so WithDefaults can tell "unset" from

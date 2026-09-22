@@ -76,13 +76,17 @@ func (r *RouteRunner) sendOnce(ctx context.Context, sender ports.Sender, msg por
 }
 
 // awaitSendRetry waits d on the injected clock. It reports false when the
-// delivery context ends first.
+// delivery context ends first — and also when the wait runs out on a context
+// that is already done. The two can become ready in the same instant, and then
+// the select arm is a coin flip; re-reading the context in the timer arm makes
+// the outcome the same either way, so a delivery the bridge has given up on is
+// never sent again by a sender that ignores its context.
 func (r *RouteRunner) awaitSendRetry(ctx context.Context, d time.Duration) bool {
 	t := r.clk.NewTimer(d)
 	defer t.Stop()
 	select {
 	case <-t.C():
-		return true
+		return ctx.Err() == nil
 	case <-ctx.Done():
 		return false
 	}

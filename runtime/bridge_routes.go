@@ -202,11 +202,13 @@ func (rt *Runtime) InjectRedrive(ctx context.Context, routeID, bindingID string,
 	fresh.DeleteHeader(messaging.HeaderDeduplicationID)
 	// The adapter-generated identity marker must not ride along either. It means
 	// "the SOURCE supplied no stable identity", which makes the message
-	// UNCOUNTABLE: the replay ledger cannot follow it across redeliveries, so the
-	// route sinks it terminally on its FIRST transient failure. A redrive is
-	// operator-issued under the fresh, bridge-minted ID above, so it is countable
-	// and must get the route's normal retry budget instead of being dropped on
-	// one downstream blip.
+	// UNCOUNTABLE: the replay ledger cannot follow it across redeliveries, so a
+	// direct_hold route retries the send in process for send_retry_budget and
+	// then sinks the message terminally — it is never handed back to the source.
+	// A redrive is operator-issued under the fresh, bridge-minted ID above, so it
+	// is countable and must get the route's normal max_replay_attempts source
+	// redeliveries on top of that in-process retry, instead of being sunk because
+	// one downstream blip outlasted the send budget.
 	fresh.DeleteHeader(messaging.HeaderGeneratedID)
 	// Nor may the SOURCE transport's redelivery counter ride along. On a
 	// count-bearing source (SQS, Azure Service Bus, AMQP 1.0) the route reads

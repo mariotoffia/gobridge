@@ -88,10 +88,19 @@ mirror of `replay_budget` being read by the drainer only.
   which the second validation rule below enforces per route.
   A shutdown is shorter than the budget and deliberately so: `Stop` waits about
   25 seconds for in-flight deliveries and then cancels, which **truncates** a
-  held retry part-way through its budget. That is not a conflict. A cancelled
-  retry leaves the delivery unsettled, so the source redelivers it to the next
-  process; the budget is a ceiling on how long the bridge keeps trying, not a
-  promise that it always gets the whole time.
+  held retry part-way through its budget — with the 60-second default, a
+  graceful shutdown during a destination outage truncates one every time. A
+  cancelled retry leaves the delivery unsettled, so a source that redelivers
+  hands it to the next process; the budget is a ceiling on how long the bridge
+  keeps trying, not a promise that it always gets the whole time.
+  **A source that cannot redeliver loses the message there.** A best-effort
+  (QoS 0) `direct_hold` source has nothing to redeliver, so an abandoned
+  delivery is gone with no dead-letter record and no terminal accounting —
+  where before this change its first failed send would have written it to the
+  dead-letter store with its failure evidence. The window in which a
+  cancellation can catch a delivery that way is no longer one `send_timeout`
+  but the whole retry budget. A route whose source cannot redeliver should run
+  a small budget, or `0s`.
 - An explicit `0s` turns in-process retry off and restores the behaviour of
   every release before this one. It is the same tri-state as `jitter: 0`:
   programmatically it is `routing.SendRetryBudgetDisabled`, which is kept
@@ -160,6 +169,22 @@ The session reports that wait through a new optional typed-config capability,
 from the same numbers its own recycle uses. The validator and the adapter
 therefore cannot disagree about how long a held delivery may take to settle.
 
+**The second rule is necessary, not sufficient.** The recovery wait is the outer
+deadline for the *whole* recovery attempt, not a budget reserved for settling:
+the same 240 seconds also covers waiting for the session serialization gate, the
+teardown drain, and the disconnect, reconnect and reconcile that follow it. And
+one held delivery can occupy more of that wait than `send_retry_budget +
+send_timeout`: the message runs its processor chain first, where each processor
+may take up to `processor_timeout`; a parked send holds the delivery for
+`send_timeout` plus up to five seconds more before the wedge ceiling trips; and
+a message that ends up dead-lettered spends a further 10.5 seconds on that
+write. With the shipped defaults and no processors, the worst case one delivery
+can hold grew from about 40 seconds to about 100 seconds of the same 240. The
+rule catches the obvious overrun, and a long processor chain plus a dead-letter
+write can still crowd the recycle on a route that passes it. The cure is a
+smaller `send_retry_budget`, or larger session `connect_timeout` /
+`reconcile_timeout` values, which is what the wait is computed from.
+
 ## Consequences
 
 - A destination outage shorter than the budget no longer produces dead-letter
@@ -170,13 +195,43 @@ therefore cannot disagree about how long a held delivery may take to settle.
   under a 30-second bound, so a redrive whose destination stays down spends
   that time retrying in process; when the bound passes the inject returns an
   error and the entry is **not** deleted (0015), so nothing is lost.
+- That bound covers a whole redrive **batch**, whose entries are redriven one
+  after another, so against a destination that is down the first entry can now
+  spend the entire 30 seconds retrying and every remaining id comes back
+  `redrive deadline exceeded before entry lookup`. Nothing is lost — inject
+  happens before delete, so an entry that was not redriven is still there — but
+  an operator redriving a hundred ids during an outage gets one attempt and
+  ninety-nine deadline errors. Redrive after the destination is healthy, or in
+  small batches. The same holds for a synchronous `Inject` /
+  `InjectToBinding` into a `direct_hold` route: the call now returns only when
+  the retry loop is done with it.
+- **Duplicates can be amplified.** A send the destination accepted but whose
+  response was lost is indistinguishable from a failure, and the retry
+  publishes it again. That window existed before; what changes is its size —
+  for an uncountable message it cost one extra downstream copy, and it now
+  costs up to one per physical send the budget allows. The requirement is
+  unchanged and stated in the transport matrix (`Downstream must dedupe`, see
+  [MQTT behaviour](../transports/mqtt-behavior.md)); the budget decides how
+  many copies that requirement has to absorb.
+- **The route's `backoff` now decides how hard a failing destination is hit.**
+  In-process retries are bounded by wall clock only; before this change
+  `max_replay_attempts` bounded the number of sends. The default ladder (1 s
+  doubling to 30 s) makes a 60-second budget about six sends, but an aggressive
+  ladder — `initial_interval: 1ms` with `multiplier: 1`, both legal — turns the
+  same budget into tens of thousands of sends at a destination that is already
+  unwell. Keep the default backoff, or lower the budget. No send-count cap is
+  added: the budget plus the route's own backoff is the bound.
 - Deliveries are held longer. Worst case one message occupies its route slot
   and a runtime-wide in-flight slot for the budget plus one `send_timeout`,
   and a destination that is down slows the whole route rather than draining it
   to the dead-letter store.
 - `Stop` waits up to its drain budget (25 seconds by default, `WithStopQuiesce`)
   for in-flight deliveries and then cancels, which ends a held retry and leaves
-  the delivery unsettled for the source to redeliver.
+  the delivery unsettled. A source that redelivers replays it into the next
+  process. A best-effort (QoS 0) source does not, so that message is lost with
+  no dead-letter evidence, where on the old first-failure path it would have
+  been dead-lettered; and because the 60-second default outlasts the 25-second
+  drain, a shutdown during an outage hits that case rather than avoiding it.
 - A configuration that was valid before can be rejected after an upgrade,
   purely because of the 60-second default: a `direct_hold` route on a fixed SQS
   visibility window whose worst case now overruns it, or an MQTT route whose

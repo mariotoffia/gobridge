@@ -113,9 +113,9 @@ type RouteRunnerConfig struct {
 	PanicRetryTimeout    time.Duration
 	ReceiverCloseTimeout time.Duration
 	Clock                clock.Clock
-	// OnDelivery is invoked (non-blocking) for each envelope the RouteRunner
-	// has successfully dispatched (sent to the target). Receives the envelope
-	// and any error from the send pipeline (nil on success). Optional.
+	// OnDelivery is invoked (non-blocking) once per PHYSICAL send of a held
+	// (direct_hold) delivery — in-process send retries included — on failure as
+	// well as on success. Receives the envelope and that send's error. Optional.
 	OnDelivery func(env *messaging.Envelope, err error)
 	// OnAck is invoked (non-blocking) after the source delivery is acked or
 	// retried. Receives the envelope and the ack error (nil on successful ack).

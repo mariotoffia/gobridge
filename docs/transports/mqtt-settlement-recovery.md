@@ -106,7 +106,16 @@ config knob:
   validator is what then rejects, at config load, any `direct_hold` route whose
   `send_retry_budget` + `send_timeout` would not fit inside it — a held retry
   that outlives the drain would fail the recovery attempt and terminalize the
-  session;
+  session. That check is **necessary, not sufficient**: those 240 seconds also
+  pay for the gate wait, the disconnect, the reconnect and the reconcile, and a
+  held delivery can occupy more of them than the two settings it compares — its
+  processor chain (up to `processor_timeout` each), up to five seconds past
+  `send_timeout` before a parked send trips the wedge ceiling, and 10.5 seconds
+  for a dead-letter write. With the shipped defaults and no processors the
+  worst-case hold grew from about 40 s to about 100 s of the same 240 s. If a
+  recycle keeps failing on a route the validator accepted, lower that route's
+  `send_retry_budget`, or raise the session's `connect_timeout` /
+  `reconcile_timeout`, which is what the 240 s is made of;
 - the rebuild preserves `client_id` and session expiry, forcing `clean_start=false`;
 - CONNACK must report **Session Present**, or the broker cannot prove the
   unsettled packet survived. That evidence is stamped with the exact connection

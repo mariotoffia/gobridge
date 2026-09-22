@@ -153,6 +153,14 @@ not the YAML shape, but they change *when* and *how* config errors surface:
   (60s by default) and `SendRetries` (`route_id`) is the earlier one.
   `route_dead` (a route flapping at the supervisor backoff cap) is the separate
   *pipeline* fault state.
+- **`Inject` / `InjectToBinding` block until the message settles.** Both are
+  synchronous: they return when the route delivered the message or settled it
+  terminally. On a `direct_hold` route a recoverable send failure is now retried
+  inside the bridge first, so the call can block for that route's
+  `send_retry_budget` (60s by default) plus one `send_timeout` before it returns
+  an error. Give the call a context whose deadline you are willing to wait for,
+  and remember the admin DLQ redrive inherits this: its 30-second budget covers
+  a whole batch of sequential injects.
 - **Route fault blast radius.** A route whose receiver fails is restarted in
   isolation — backed off, counted on `RouteRestarts`, marked not-ready, and
   latched `route_dead` after repeated quick flaps — only when the source can be

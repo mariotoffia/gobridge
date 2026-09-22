@@ -63,10 +63,15 @@ type RouteConfig struct {
 	// SourceSettlementRecoveryWait is how long the source's session waits for the
 	// deliveries this route already accepted to settle before it recycles its
 	// broker connection to recover stranded settlements (MQTT persistent and
-	// exclusive sessions do). The validator keeps a direct_hold route's held
-	// delivery inside that wait, because a retry still running when it runs out
-	// fails the recycle. Zero means the source never recycles for that reason, or
-	// the transport has no opinion, and the check is skipped.
+	// exclusive sessions do). It is the OUTER bound of the WHOLE recovery
+	// attempt, not a budget reserved for the settling: the same wait also covers
+	// the session serialization gate, the teardown drain, and the disconnect,
+	// reconnect and reconcile that follow. The validator checks
+	// send_retry_budget + send_timeout against it, which is necessary but not
+	// sufficient — a long processor chain or a dead-letter write on the same
+	// held delivery still eats into what is left for the recycle. Zero means the
+	// source never recycles for that reason, or the transport has no opinion,
+	// and the check is skipped.
 	SourceSettlementRecoveryWait time.Duration
 
 	// SourceTransport is the identity of the transport feeding this route

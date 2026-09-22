@@ -297,6 +297,60 @@ func TestSendRetry_CancelDuringWaitLeavesDeliveryUnsettled(t *testing.T) {
 	f.assertRetryMetrics(t, 0, 0)
 }
 
+// deadDeliveryContext is a delivery context that is already done through Err
+// while its Done channel never closes. That is precisely the state a retry wait
+// is in when its timer and the delivery context become ready in the same
+// instant and the wait resumes on the timer: the context is dead, but the arm
+// that observed it is the timer's. Presenting the state directly keeps this
+// test off that coin flip — nothing here depends on which arm a select picks.
+type deadDeliveryContext struct{ context.Context }
+
+// Done reports a channel that never closes, so only the retry timer can end the
+// wait.
+func (deadDeliveryContext) Done() <-chan struct{} { return nil }
+
+// TestSendRetry_WaitEndingOnACancelledContextDoesNotSendAgain pins the stop
+// condition at the END of a retry wait. The bridge may cancel a held delivery
+// while its wait is running out; whichever of the two the wait notices first, a
+// delivery the bridge has already given up on must not be sent again — a sender
+// that ignores its context would publish it, and the send would be counted as
+// an in-process retry that never had a chance. The wait ends, nothing more is
+// sent, and the delivery is left unsettled for the source.
+//
+// Mutation check: end the wait on the timer without re-reading the delivery
+// context and this fails — a second physical send happens and one SendRetries
+// is counted.
+func TestSendRetry_WaitEndingOnACancelledContextDoesNotSendAgain(t *testing.T) {
+	sender := &flakySender{err: shared.ErrUnavailable, failures: -1}
+	f := newSendRetryFixture(0, sender)
+	del := &stubDelivery{env: generatedIDEnv("send-retry-cancelled-wait")}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	done := f.handle(deadDeliveryContext{ctx}, del)
+	f.awaitRetryWait(t, 1)
+	cancel()
+	f.clk.Advance(time.Second) // the wait runs out on a context that is already done
+	err := wait.RequireReceive(t, done, 5*time.Second)
+
+	if got := sender.sends.Load(); got != 1 {
+		t.Fatalf("sends = %d, want 1: a cancelled delivery must not be sent again", got)
+	}
+	if !errors.Is(err, errDeliveryAbandoned) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("HandleDelivery error = %v, want the abandoned-delivery error carrying context.Canceled", err)
+	}
+	if del.acked || del.retried {
+		t.Fatalf("settlement acked=%v retried=%v, want neither", del.acked, del.retried)
+	}
+	if got := f.store.writes.Load(); got != 0 {
+		t.Fatalf("DLQ writes = %d, want 0", got)
+	}
+	if _, settled := f.hook.snapshot(); settled != 0 {
+		t.Fatalf("OnSettled = %d, want 0 for an unsettled delivery", settled)
+	}
+	f.assertRetryMetrics(t, 0, 0)
+}
+
 // TestSendRetry_WedgeStopsFurtherAttempts pins that a wedged route stops
 // retrying. The first send hangs past its wedge ceiling, which wedges the
 // route; the loop must not wait for another send, and the delivery goes
