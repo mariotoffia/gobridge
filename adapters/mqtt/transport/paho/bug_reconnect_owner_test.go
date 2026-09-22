@@ -47,13 +47,15 @@ type fakeReconcileConn struct {
 	mu          sync.Mutex
 	subCalls    int
 	subTopics   [][]string
+	subSpecs    [][]subscribeSpec
 	unsubCalls  int
 	unsubTopics [][]string
 
 	// reasons, when non-nil, is returned as the SUBACK reason vector for
 	// every Subscribe. A byte >= 0x80 marks a rejected topic (mapped to a
 	// BridgeError by classifySubackReasons). When nil, all requested topics
-	// are accepted (reason 0x00).
+	// are accepted (reason 0x00). Change it through setReasons once a
+	// session goroutine may be subscribing.
 	reasons []byte
 }
 
@@ -69,6 +71,7 @@ func (f *fakeReconcileConn) Subscribe(_ context.Context, subs []subscribeSpec) (
 		topics[i] = s.Topic
 	}
 	f.subTopics = append(f.subTopics, topics)
+	f.subSpecs = append(f.subSpecs, append([]subscribeSpec(nil), subs...))
 	if f.reasons != nil {
 		return f.reasons, nil
 	}
@@ -103,6 +106,25 @@ func (f *fakeReconcileConn) subscribeCallCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.subCalls
+}
+
+// subscribeSpecs returns a copy of the options passed to each Subscribe call,
+// in call order.
+func (f *fakeReconcileConn) subscribeSpecs() [][]subscribeSpec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][]subscribeSpec, len(f.subSpecs))
+	for i, specs := range f.subSpecs {
+		out[i] = append([]subscribeSpec(nil), specs...)
+	}
+	return out
+}
+
+// setReasons replaces the SUBACK reason vector every later Subscribe returns.
+func (f *fakeReconcileConn) setReasons(r []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reasons = append([]byte(nil), r...)
 }
 
 func (f *fakeReconcileConn) unsubscribeCallCount() int {

@@ -243,13 +243,21 @@ const (
 	// least once; see docs/runbooks/broker-outage-reconnect-storm.md.
 	MetricMQTTSessionResumeLost = "MQTTSessionResumeLost"
 
-	// MetricMQTTQoSDowngraded counts subscriptions the broker granted at a
-	// LOWER QoS than requested (for example, requested QoS 2 and SUBACK reason
-	// 0x00 granting QoS 0). Reconcile emits a loud warning, leaves the filter
-	// inactive, and returns ErrQoSNotSupported with topic, requested QoS, and
-	// granted QoS context, so readiness remains non-Full. The broker-observed
-	// grant suppresses an unchanged immediate re-subscribe; this counter advances
-	// only when a broker SUBACK newly reports the downgrade. Any non-zero value
-	// warrants investigating a broker QoS-cap policy.
+	// MetricMQTTQoSDowngraded counts each time a SUBACK FIRST reports that the
+	// broker granted a filter a LOWER QoS than requested (for example, requested
+	// QoS 2 and SUBACK reason 0x00 granting QoS 0). A changed lower grant counts
+	// again; the confirmation SUBSCRIBEs and later re-checks of the same grant
+	// do not. The session confirms the grant with fresh SUBSCRIBEs, then keeps
+	// the subscription active at the granted QoS as best effort; the process is
+	// never stopped. Any non-zero value warrants investigating a broker QoS-cap
+	// policy; alarm on MetricMQTTQoSDowngradedActive for a standing condition.
 	MetricMQTTQoSDowngraded = "MQTTQoSDowngraded"
+
+	// MetricMQTTQoSDowngradedActive is a gauge of the subscriptions currently
+	// accepted below their requested QoS (best effort), per session. It rises
+	// when a confirmed downgrade is accepted and falls when a re-check or a
+	// reconnect gets the requested QoS, when the subscription is removed from
+	// the plan, or when the session closes. Unlike the MQTTQoSDowngraded
+	// counter, an alarm on it stays raised until the cause is fixed.
+	MetricMQTTQoSDowngradedActive = "MQTTQoSDowngradedActive"
 )

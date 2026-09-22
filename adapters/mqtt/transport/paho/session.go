@@ -258,12 +258,18 @@ type Session struct {
 	lastRecoveryCompleted       time.Time
 	recoveryRecycleCount        uint64
 
-	// qosDowngradeConfirmed is the broker grant the current confirmation streak
-	// is counting, and qosDowngradeStreak how many consecutive reconciles have
-	// concluded it. A different grant, or a reconcile that converges without a
-	// downgrade, restarts the count. See noteQoSDowngrade. Guarded by mu.
-	qosDowngradeConfirmed qosDowngradeGrant
-	qosDowngradeStreak    int
+	// qosDowngrades records every filter the broker granted below the
+	// requested QoS, keyed by filter: confirming until qosDowngradeConfirmations
+	// fresh SUBACKs agree, then accepted as best effort and re-checked. See
+	// session_qos_downgrade.go. Guarded by mu.
+	qosDowngrades map[string]*qosDowngrade
+	// qosDowngradeGauge is the MQTTQoSDowngradedActive value last emitted, so
+	// the gauge is written only when the number of accepted downgrades changes.
+	// Guarded by mu.
+	qosDowngradeGauge int
+	// qosProbeCancel cancels the scheduled confirmation / re-check probe; each
+	// arming replaces it. Guarded by mu.
+	qosProbeCancel context.CancelFunc
 
 	// connectErr latches the mapped cause of the most recent failed CONNECT and
 	// is cleared when a connection comes up. MQTT authenticates only at CONNECT

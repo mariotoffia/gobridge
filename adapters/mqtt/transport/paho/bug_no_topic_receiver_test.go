@@ -2,7 +2,6 @@ package paho
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -111,16 +110,19 @@ func TestShortSuback_ReconcileFails(t *testing.T) {
 	}
 }
 
-// TestQoSDowngrade_ReconcileFailsAndRemainsNonFull proves that a broker
-// grant below the requested QoS is not accepted as active session state.
-func TestQoSDowngrade_ReconcileFailsAndRemainsNonFull(t *testing.T) {
+// TestQoSDowngrade_ReconcileSucceedsAndStaysNonFullWhileConfirming proves
+// that a broker grant below the requested QoS does not fail the reconcile, yet
+// is not active session state while the session confirms it.
+func TestQoSDowngrade_ReconcileSucceedsAndStaysNonFullWhileConfirming(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	logs := &recordingLogHandler{}
 	fake := &fakeReconcileConn{reasons: []byte{0x00}}
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "c4-downgrade",
+		Clock:      testClock(),
 	}, connectivity.SessionEphemeral, slog.New(logs), rec)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
 	s.mu.Lock()
 	s.cm = fake
 	s.connected = true
@@ -134,19 +136,8 @@ func TestQoSDowngrade_ReconcileFailsAndRemainsNonFull(t *testing.T) {
 		ExpectedReceiverIDs: []string{"rx-sensors"},
 	}
 
-	err := s.Reconcile(context.Background(), plan)
-	if err == nil {
-		t.Fatal("a SUBACK QoS grant below the requested QoS must fail reconcile")
-	}
-	if !errors.Is(err, shared.ErrQoSNotSupported) {
-		t.Fatalf("expected ErrQoSNotSupported, got %T: %v", err, err)
-	}
-	be, ok := shared.AsBridgeError(err)
-	if !ok {
-		t.Fatalf("expected classified *shared.BridgeError, got %T: %v", err, err)
-	}
-	if be.Context["topic"] != "sensors/x" || be.Context["requested_qos"] != 1 || be.Context["granted_qos"] != 0 {
-		t.Fatalf("downgrade error context = %v, want topic/requested/granted", be.Context)
+	if err := s.Reconcile(context.Background(), plan); err != nil {
+		t.Fatalf("a SUBACK QoS grant below the requested QoS must not fail reconcile: %v", err)
 	}
 	if got := len(rec.FindEntries(MetricMQTTQoSDowngraded)); got != 1 {
 		t.Fatalf("downgrade metric count = %d, want 1", got)
@@ -159,21 +150,20 @@ func TestQoSDowngrade_ReconcileFailsAndRemainsNonFull(t *testing.T) {
 		t.Fatalf("broker-observed grant = %+v, present=%v; want requested=1 granted=0", grant, observed)
 	}
 	if active {
-		t.Fatal("downgraded subscription must not be marked contract-active")
+		t.Fatal("a downgraded subscription still being confirmed must not be marked contract-active")
 	}
 	h := s.Health(context.Background())
 	if got := h.ServiceLevel; got == ports.ServiceLevelFull {
-		t.Fatalf("downgraded subscription health = %s, must remain non-Full", got)
+		t.Fatalf("downgraded subscription health = %s, must remain non-Full while confirming", got)
 	}
 	if h.SubscriptionsSatisfied == nil || *h.SubscriptionsSatisfied {
 		t.Fatalf("downgraded subscription satisfaction = %v, want explicit false", h.SubscriptionsSatisfied)
 	}
 
-	// The broker-observed downgrade remains deficient, but a repeated reconcile
-	// must not issue another SUBSCRIBE or repeat the warning metric in a tight loop.
-	err = s.Reconcile(context.Background(), plan)
-	if !errors.Is(err, shared.ErrQoSNotSupported) {
-		t.Fatalf("repeated reconcile error = %v, want ErrQoSNotSupported", err)
+	// Confirmation is the probe's job: a repeated reconcile must not issue
+	// another SUBSCRIBE or repeat the warning metric in a tight loop.
+	if err := s.Reconcile(context.Background(), plan); err != nil {
+		t.Fatalf("repeated reconcile: %v", err)
 	}
 	if got := fake.subscribeCallCount(); got != 1 {
 		t.Fatalf("subscribe calls after unchanged retry = %d, want 1", got)

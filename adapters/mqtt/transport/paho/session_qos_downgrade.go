@@ -1,108 +1,258 @@
 package paho
 
 import (
+	"sort"
+	"time"
+
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
-// permanentQoSDowngradeConfirmations is how many consecutive reconciles must
-// conclude the SAME broker grant before the downgrade is treated as permanent.
+// A broker may grant a subscription a lower QoS than requested (MQTT 5
+// SUBACK). One weak SUBACK can be transient — a cluster node restarting, an
+// authorization rule mid-propagation — so the bridge first confirms it with
+// fresh SUBSCRIBEs, qosDowngradeConfirmInterval apart. When
+// qosDowngradeConfirmations fresh SUBACKs agree, the grant is ACCEPTED: the
+// subscription stays active at the granted QoS as best effort (at QoS 0 no
+// acknowledgement and no redelivery; messages published while the bridge is
+// disconnected may be lost) and is re-checked every qos_recheck_interval.
 //
-// One weak SUBACK is not proof: a broker can cap QoS transiently while a
-// cluster member restarts or an authorization policy is mid-propagation, and
-// terminalising on that would turn a blip into a process restart. Repeating the
-// identical (filter, requested, granted) verdict is proof — a broker QoS-cap
-// policy does not change between reconciles seconds apart.
-//
-// Three is the smallest count that tolerates a propagation window while still
-// stopping the churn within one supervisor backoff ladder.
-const permanentQoSDowngradeConfirmations = 3
+// A lower grant never stops the session or the process. A broker that REFUSES
+// a subscription degrades only its own session; a broker that accepts it at a
+// lower QoS gave the milder answer and must not be punished harder.
 
-// qosDowngradeGrant identifies one broker verdict: a filter, the QoS the plan
-// requested for it, and the QoS the broker granted. Two reconciles that produce
-// an equal value are two confirmations of the same incompatibility; any change
-// (a different filter, an operator lowering the requested QoS, a broker
-// granting more) starts a fresh count.
-type qosDowngradeGrant struct {
+// qosDowngradeConfirmations is how many fresh SUBACKs must report the same
+// lower grant before it is accepted as best effort.
+const qosDowngradeConfirmations = 3
+
+// qosDowngradeConfirmInterval spaces the confirmation SUBSCRIBEs, long enough
+// to ride out a brief broker-side cap.
+const qosDowngradeConfirmInterval = 5 * time.Second
+
+// qosDowngrade is the record of one filter the broker granted below the
+// requested QoS.
+type qosDowngrade struct {
+	requested     byte
+	granted       byte
+	confirmations int           // fresh SUBACKs that reported this grant
+	acceptedAt    time.Time     // zero while confirming
+	recheck       time.Duration // re-check interval once accepted; 0 = off
+	due           time.Time     // next probe SUBSCRIBE; zero = none scheduled
+}
+
+func (d *qosDowngrade) accepted() bool { return !d.acceptedAt.IsZero() }
+
+// retryInterval is how long a probe that got no verdict waits to try again.
+func (d *qosDowngrade) retryInterval() time.Duration {
+	if d.accepted() {
+		return d.recheck
+	}
+	return qosDowngradeConfirmInterval
+}
+
+// grantVerdict is what one fresh SUBACK grant changed.
+type grantVerdict uint8
+
+const (
+	grantUnchanged  grantVerdict = iota
+	grantDowngraded              // a newly reported lower grant; confirmation starts
+	grantAccepted                // the confirmed lower grant is accepted as best effort
+	grantRecovered               // an accepted downgrade is granted the requested QoS again
+)
+
+// grantReport carries one verdict out of s.mu so it is logged without the lock.
+type grantReport struct {
 	topic     string
 	requested byte
 	granted   byte
+	verdict   grantVerdict
 }
 
-// noteQoSDowngrade records one confirmation of a broker grant below the
-// requested QoS and returns the error reconcile must surface.
-//
-// A downgrade leaves the filter inactive, so readiness stays below Full and the
-// session manager treats the reconcile failure as a session failure — which
-// restarts the session. Without a confirmation count that restart hits the same
-// broker policy and fails identically, forever: a persistent session loops at
-// the supervisor's backoff cap, and an exclusive one additionally releases and
-// re-seizes its lease each cycle, resetting every standby's observation window.
-//
-// Once the same grant has been confirmed permanentQoSDowngradeConfirmations
-// times the returned error carries shared.ErrTransportClosedPermanently, which
-// runtime/session escalates to a terminal restart. The bridge stops retrying a
-// configuration only a human can fix — lower the route's QoS, or lift the
-// broker's cap.
-//
-// A confirmation is not always a fresh broker verdict, and that is deliberate.
-// An unchanged downgraded filter is NOT re-subscribed (reconcileApply keeps the
-// requested QoS as its delta baseline), so on a session that stays connected —
-// the non-exclusive restart path — every reconcile after the first re-reads the
-// standing observed grant. Nothing short of a reconnect can retest it, so
-// counting only fresh SUBACKs would never terminate that loop. Escalating is
-// what produces the retest: the process restart builds a fresh session that
-// SUBSCRIBEs again, so a genuinely transient cap recovers on the next start
-// while a broker policy surfaces as a crash-loop an operator can see. An
-// exclusive session disconnects on every failed reconcile, so its
-// confirmations are three independent broker verdicts.
-func (s *Session) noteQoSDowngrade(grant qosDowngradeGrant) *shared.BridgeError {
-	err := qosDowngradeError(grant.topic, grant.requested, grant.granted)
-
-	s.mu.Lock()
-	if s.qosDowngradeConfirmed != grant {
-		s.qosDowngradeConfirmed = grant
-		s.qosDowngradeStreak = 0
+// applyGrantLocked records one FRESH broker grant for topic — a SUBACK to a
+// SUBSCRIBE this session just sent — in the observed, active and downgrade
+// state. It is the only writer of s.qosDowngrades besides pruning, so reconcile
+// and the probe agree on what a grant means. Callers hold s.mu and have checked
+// the connection epoch.
+func (s *Session) applyGrantLocked(topic string, requested, granted byte, recheck time.Duration) grantVerdict {
+	if s.observedSubs == nil {
+		s.observedSubs = make(map[string]subscriptionGrant)
 	}
-	s.qosDowngradeStreak++
-	streak := s.qosDowngradeStreak
-	s.mu.Unlock()
-
-	if streak < permanentQoSDowngradeConfirmations {
-		return err
+	if s.activeSubs == nil {
+		s.activeSubs = make(map[string]byte)
 	}
-	err = err.With("confirmations", streak).
-		Wrap(shared.ErrTransportClosedPermanently)
-	if streak == permanentQoSDowngradeConfirmations && s.logger != nil {
-		s.logger.Warn("mqtt: broker QoS grant is permanently incompatible with the route; "+
-			"the same downgrade was confirmed on every reconcile, so the session is failed "+
-			"terminally instead of restarting into it forever — lower the route's QoS to the "+
-			"granted level or lift the broker's QoS cap",
+	s.observedSubs[topic] = subscriptionGrant{Requested: requested, Granted: granted}
+	d := s.qosDowngrades[topic]
+	if granted >= requested {
+		s.activeSubs[topic] = granted
+		delete(s.qosDowngrades, topic)
+		if d != nil && d.accepted() {
+			return grantRecovered
+		}
+		// A grant that recovers while still confirming was never accepted.
+		return grantUnchanged
+	}
+
+	now := s.clock().Now()
+	verdict := grantUnchanged
+	if d == nil || d.requested != requested || d.granted != granted {
+		// A different grant is a new broker answer: it restarts confirmation.
+		d = &qosDowngrade{requested: requested, granted: granted}
+		if s.qosDowngrades == nil {
+			s.qosDowngrades = make(map[string]*qosDowngrade)
+		}
+		s.qosDowngrades[topic] = d
+		verdict = grantDowngraded
+	}
+	d.recheck = recheck
+	if !d.accepted() {
+		d.confirmations++
+		if d.confirmations >= qosDowngradeConfirmations {
+			d.acceptedAt = now
+			verdict = grantAccepted
+		}
+	}
+	if !d.accepted() {
+		delete(s.activeSubs, topic)
+		d.due = now.Add(qosDowngradeConfirmInterval)
+		return verdict
+	}
+	s.activeSubs[topic] = granted
+	d.due = time.Time{}
+	if d.recheck > 0 {
+		d.due = now.Add(d.recheck)
+	}
+	return verdict
+}
+
+// reconcileQoSDowngradesLocked brings the downgrade records in line with the
+// plan a reconcile just applied: it forgets filters the plan no longer wants at
+// the recorded requested QoS, and applies a changed qos_recheck_interval to an
+// accepted downgrade without waiting for its next SUBACK (an unchanged filter
+// is not re-subscribed, so no SUBACK would carry it). Callers hold s.mu.
+func (s *Session) reconcileQoSDowngradesLocked(desired map[string]byte, recheck map[string]time.Duration) {
+	now := s.clock().Now()
+	for topic, d := range s.qosDowngrades {
+		if requested, ok := desired[topic]; !ok || requested != d.requested {
+			delete(s.qosDowngrades, topic)
+			continue
+		}
+		if interval := recheck[topic]; interval != d.recheck {
+			d.recheck = interval
+			if d.accepted() {
+				d.due = time.Time{}
+				if interval > 0 {
+					d.due = now.Add(interval)
+				}
+			}
+		}
+	}
+}
+
+// syncQoSDowngradeGaugeLocked emits MQTTQoSDowngradedActive when the number of
+// accepted downgrades changed. Callers hold s.mu.
+func (s *Session) syncQoSDowngradeGaugeLocked() {
+	accepted := 0
+	for _, d := range s.qosDowngrades {
+		if d.accepted() {
+			accepted++
+		}
+	}
+	if accepted == s.qosDowngradeGauge {
+		return
+	}
+	s.qosDowngradeGauge = accepted
+	s.metrics.Gauge(MetricMQTTQoSDowngradedActive, float64(accepted),
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
+}
+
+// retireQoSDowngradesLocked drops every downgrade and its probe when the
+// session closes, so the gauge does not report a subscription that is gone.
+// Callers hold s.mu.
+func (s *Session) retireQoSDowngradesLocked() {
+	if s.qosProbeCancel != nil {
+		s.qosProbeCancel()
+		s.qosProbeCancel = nil
+	}
+	clear(s.qosDowngrades)
+	s.syncQoSDowngradeGaugeLocked()
+}
+
+// qosDowngradeHealthLocked returns the sorted filters accepted as best effort
+// and whether any downgrade is still confirming. Callers hold s.mu.
+func (s *Session) qosDowngradeHealthLocked() (bestEffort []string, confirming bool) {
+	for topic, d := range s.qosDowngrades {
+		if d.accepted() {
+			bestEffort = append(bestEffort, topic)
+		} else {
+			confirming = true
+		}
+	}
+	sort.Strings(bestEffort)
+	return bestEffort, confirming
+}
+
+// reportGrants logs and counts verdicts after s.mu is released.
+func (s *Session) reportGrants(reports []grantReport) {
+	tag := shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID}
+	for _, r := range reports {
+		if r.verdict == grantDowngraded {
+			s.metrics.Counter(MetricMQTTQoSDowngraded, 1, tag)
+		}
+		if s.logger == nil {
+			continue
+		}
+		attrs := []any{
 			"client_id", s.opts.ClientID,
-			"topic", grant.topic,
-			"requested_qos", grant.requested,
-			"granted_qos", grant.granted,
-			"confirmations", streak,
-		)
+			"topic", r.topic,
+			"requested_qos", r.requested,
+			"granted_qos", r.granted,
+		}
+		switch r.verdict {
+		case grantDowngraded:
+			s.logger.Warn("mqtt: broker downgraded subscription QoS below requested; "+
+				"confirming with fresh SUBSCRIBEs before accepting it as best effort", attrs...)
+		case grantAccepted:
+			s.logger.Error("mqtt: broker keeps granting subscription QoS below requested; the "+
+				"subscription is kept active as best effort — at QoS 0 there is no acknowledgement "+
+				"or redelivery, and messages published while the bridge is disconnected may be "+
+				"lost. Lower the route's qos to the granted level, or lift the broker's cap", attrs...)
+		case grantRecovered:
+			s.logger.Info("mqtt: broker grants the requested subscription QoS again; "+
+				"the best-effort downgrade is cleared", attrs...)
+		}
 	}
-	return err
 }
 
-// clearQoSDowngrade forgets the confirmation streak after a reconcile that
-// converged with no downgrade. The streak counts CONSECUTIVE confirmations of
-// one incompatibility, so a broker (or a lowered route QoS) that satisfies the
-// request restores the full retry budget for any later, unrelated downgrade.
-func (s *Session) clearQoSDowngrade() {
-	s.mu.Lock()
-	s.qosDowngradeConfirmed = qosDowngradeGrant{}
-	s.qosDowngradeStreak = 0
-	s.mu.Unlock()
+// planDesiredQoS returns the highest requested QoS per filter of plan.
+func planDesiredQoS(plan *connectivity.SessionPlan) map[string]byte {
+	desired := make(map[string]byte)
+	if plan == nil {
+		return desired
+	}
+	for _, sub := range plan.Subscriptions {
+		qos := byte(sub.QoS)
+		if current, ok := desired[sub.Topic]; !ok || qos > current {
+			desired[sub.Topic] = qos
+		}
+	}
+	return desired
 }
 
-// qosDowngradeError builds the classified rejection a downgraded grant returns.
-func qosDowngradeError(topic string, requested, granted byte) *shared.BridgeError {
-	return shared.ErrQoSNotSupported.
-		WithMessage("mqtt: broker granted subscription QoS below requested").
-		With("topic", topic).
-		With("requested_qos", int(requested)).
-		With("granted_qos", int(granted))
+// subscriptionQoSRecheckInterval returns the qos_recheck_interval a plan
+// subscription carries. A subscription without a Paho config (a plan built in
+// code) uses DefaultQoSRecheckInterval.
+func subscriptionQoSRecheckInterval(cfg any) (time.Duration, error) {
+	pc, ok := cfg.(ports.PluginConfig)
+	if !ok {
+		return DefaultQoSRecheckInterval, nil
+	}
+	c, err := configFromSpec(pc)
+	if err != nil {
+		return DefaultQoSRecheckInterval, nil
+	}
+	if c.Subscription.QoSRecheckInterval < 0 {
+		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: subscription.qos_recheck_interval must not be negative")
+	}
+	return c.Subscription.QoSRecheckInterval, c.Subscription.validate()
 }
