@@ -57,6 +57,52 @@ func TestSendRetry_WedgeDuringTheWaitStopsTheNextSend(t *testing.T) {
 	f.assertRetryMetrics(t, 0, 0)
 }
 
+// TestSendRetry_LateWakePastTheBudgetDoesNotSendAgain pins the budget as a
+// wall-clock bound, not merely a bound on what was SCHEDULED. A timer
+// guarantees a minimum delay and nothing more: scheduler pressure or a GC pause
+// can resume a parked delivery long after the budget the delay was measured
+// against. Starting another send there would put the last physical send past
+// the budget and let it run a further send_timeout — the very hold both route
+// validator rules are sized on, so the source window they protect would be
+// overrun by a route the validator accepted.
+//
+// Mutation check: re-check only the retry predicate when the wait ends and this
+// fails — the late delivery counts a retry and sends again past its budget.
+func TestSendRetry_LateWakePastTheBudgetDoesNotSendAgain(t *testing.T) {
+	sender := &flakySender{err: shared.ErrUnavailable, failures: -1}
+	f := newSendRetryFixture(10*time.Second, sender)
+	del := &stubDelivery{env: generatedIDEnv("send-retry-late-wake")}
+
+	done := f.handle(context.Background(), del)
+	f.awaitRetryWait(t, 1)
+	// One step past both the 1 s delay and the whole 10 s budget: the timer has
+	// long since fallen due, which is exactly what a late wake looks like to the
+	// loop.
+	f.clk.Advance(30 * time.Second)
+	if err := wait.RequireReceive(t, done, 5*time.Second); err != nil {
+		t.Fatalf("HandleDelivery: %v", err)
+	}
+
+	if got := sender.sends.Load(); got != 1 {
+		t.Fatalf("sends = %d, want 1: a send may not start after the budget is spent", got)
+	}
+	// The same terminal outcome a spent budget always produced: an uncountable
+	// message is poisoned, its source settled.
+	if !del.acked || del.retried {
+		t.Fatalf("settlement acked=%v retried=%v, want the terminal poison ack", del.acked, del.retried)
+	}
+	if got := f.store.writes.Load(); got != 1 {
+		t.Fatalf("DLQ writes = %d, want 1", got)
+	}
+	if got := countTaggedCounter(f.rec, shared.MetricDLQEntries, shared.TagKeyCategory, "unstable_identity"); got != 1 {
+		t.Fatalf("DLQEntries{category=unstable_identity} = %d, want 1", got)
+	}
+	if attempts, _ := f.hook.snapshot(); len(attempts) != 1 {
+		t.Fatalf("OnAttempt = %d, want 1", len(attempts))
+	}
+	f.assertRetryMetrics(t, 0, 1)
+}
+
 // TestSendRetry_AbsurdRetryAfterHintExhaustsTheBudget pins the budget check
 // against a delay the DESTINATION chose. A RetryAfter hint is authoritative and
 // used verbatim — never capped, never jittered — so a sender may hand back one

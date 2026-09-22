@@ -70,11 +70,15 @@ with jitter, by default. The first wait is therefore about one second.
 - the route wedging;
 - the next wait ending past the budget.
 
-Every one of those but the last is re-checked when a wait ENDS, not only right
-after a send. The loop spends almost all of its budget parked on a backoff
-timer, and the two terminal conditions — a wedge another delivery latched, a
-delivery context the bridge cancelled — can arrive during that park. A delivery
-that wakes into one of them stops without a further physical send.
+All of those are re-checked when a wait ENDS, not only right after a send. The
+loop spends almost all of its budget parked on a backoff timer, and its state
+can change during that park: another delivery can latch the wedge, and the
+bridge can cancel the delivery context. The budget is re-measured there too,
+because a timer guarantees a MINIMUM delay and nothing more — scheduler pressure
+or a GC pause can resume the loop past the budget the delay was measured
+against, and the two validation rules below are sized on the last send STARTING
+inside the budget. A delivery that wakes into any of these stops without a
+further physical send.
 
 Afterwards nothing changes. The same replay-cap gate runs and the message is
 either handed back to its source or written to the dead-letter store exactly as

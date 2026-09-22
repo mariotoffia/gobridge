@@ -23,10 +23,10 @@ import (
 //
 // The loop stops on success, on a non-recoverable error, when the delivery
 // context is cancelled (the caller then abandons the delivery unsettled), when
-// the route is wedged, and when the next wait does not fit in what is left of
-// the budget. Every condition but the last is re-checked when a wait ends, so a
-// state that changed while this delivery was parked — a wedge another delivery
-// latched, a context the bridge cancelled — stops it BEFORE the next physical
+// the route is wedged, and when the budget cannot cover the next wait. All of
+// them are re-checked when a wait ENDS, so a state that changed while this
+// delivery was parked — a wedge another delivery latched, a context the bridge
+// cancelled, a wake that came back late — stops it BEFORE the next physical
 // send rather than after it.
 func (r *RouteRunner) sendHeld(ctx context.Context, sender ports.Sender, msg ports.OutboundMessage, plan routing.DispatchPlan, attempt int) error {
 	start := r.clk.Now()
@@ -36,17 +36,7 @@ func (r *RouteRunner) sendHeld(ctx context.Context, sender ports.Sender, msg por
 			return err
 		}
 		delay := RetryDelay(r.policy, try, err)
-		// Measure the delay against what is LEFT of the budget rather than
-		// adding elapsed and delay together. A destination's RetryAfter hint is
-		// authoritative and used verbatim, so it can be near the largest
-		// duration there is, and adding even a second of elapsed time to that
-		// wraps the sum negative — which reads as "fits", arming a
-		// centuries-long timer on a one-minute route. Both terms below are
-		// non-negative, so the subtraction cannot overflow.
-		remaining := r.policy.SendRetryBudget - r.clk.Since(start)
-		if remaining <= 0 || delay > remaining {
-			r.metrics.Counter(shared.MetricSendRetryBudgetExhausted, 1,
-				shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
+		if r.sendRetryBudgetSpent(start, delay) {
 			return err
 		}
 		// Re-check the WHOLE retry predicate after the wait, not just the
@@ -57,9 +47,41 @@ func (r *RouteRunner) sendHeld(ctx context.Context, sender ports.Sender, msg por
 		if !r.awaitSendRetry(ctx, delay) || !r.retryableInProcess(ctx, err) {
 			return err
 		}
+		// Then re-measure the budget itself. A timer guarantees a MINIMUM delay
+		// and nothing more: scheduler pressure or a GC pause can resume this
+		// goroutine long after the budget the delay was measured against. The
+		// bound has to hold on the wall clock, because both route-validator
+		// rules size a held delivery as "the last send starts inside the budget
+		// and runs at most one SendTimeout" — a send started after the budget
+		// overruns the very source window those rules protect.
+		if r.sendRetryBudgetSpent(start, 0) {
+			return err
+		}
 		r.metrics.Counter(shared.MetricSendRetries, 1,
 			shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
 	}
+}
+
+// sendRetryBudgetSpent reports whether the route's in-process send-retry budget
+// can still cover need — the delay a wait is about to take, or zero when only
+// the time already spent is being re-measured after one. It counts
+// SendRetryBudgetExhausted on the way out, so both places that give up on the
+// budget report it identically.
+//
+// The comparison is against what is LEFT of the budget rather than elapsed plus
+// need: a destination's RetryAfter hint is authoritative and used verbatim, so
+// it can be near the largest duration there is, and adding even a second of
+// elapsed time to that wraps the sum negative — which reads as "fits", arming a
+// centuries-long timer on a one-minute route. The subtraction cannot overflow:
+// the budget is positive here (retryableInProcess required it) and elapsed time
+// is never negative.
+func (r *RouteRunner) sendRetryBudgetSpent(start time.Time, need time.Duration) bool {
+	if remaining := r.policy.SendRetryBudget - r.clk.Since(start); remaining > 0 && need <= remaining {
+		return false
+	}
+	r.metrics.Counter(shared.MetricSendRetryBudgetExhausted, 1,
+		shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
+	return true
 }
 
 // retryableInProcess reports whether a failed send may be tried again inside
