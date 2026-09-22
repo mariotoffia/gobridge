@@ -60,6 +60,7 @@ type SessionHealthDetail struct {
 	SubscriptionsActive      int
 	SubscriptionsSatisfied   *bool    // exact explicit-plan convergence, including removals; nil means legacy unknown
 	ActiveTopics             []string // contract-active topic filters
+	BestEffortTopics         []string // contract-active filters the broker granted below the requested QoS, accepted as best effort (sorted)
 	Ready                    bool
 	ServiceLevel             ServiceLevel
 	UnsettledCount           int

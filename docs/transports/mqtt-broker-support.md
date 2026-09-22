@@ -16,9 +16,17 @@ running your own proof.
 | | |
 |---|---|
 | Product | Eclipse Mosquitto |
-| Version | 2.0.22, pinned by image digest |
+| Version | 2.1.2, pinned by image digest |
 | Protocol | MQTT v5 only |
 | Where it comes from | `testutil/mqttlocal`, started per test in Docker |
+
+Mosquitto 2.1's WebSocket listener rejects an empty WebSocket frame and
+disconnects the client as a malformed packet; GoBridge never sends one.
+`TestMQTTWebsocketConn_EmptyWriteSendsNoFrame` checks the frames the session
+puts on the wire. The WebSocket and Secure WebSocket rows below
+(`TestIntegration_WebSocket_CarriesAuthenticatedTraffic`,
+`TestIntegration_SecureWebSocket_ValidatesTheBrokerCertificate`) carry traffic
+through this broker.
 
 One product, one version, pinned. A floating tag would mean the evidence
 described here silently became evidence about something else.
@@ -26,9 +34,10 @@ described here silently became evidence about something else.
 ## Proved features
 
 Every row names the test that fails if the behaviour regresses. All of them run
-against that broker except the proxied-TLS row, which is marked, and which runs
-on loopback against a generated authority because what it proves is the identity
-the client validates on a socket it did not dial itself.
+against that broker except the proxied rows, which are marked. Those run on
+loopback, with a generated authority for TLS, because what they prove is the
+route the client takes and the identity it validates on a socket it did not
+dial itself.
 
 | Feature | What is proved | Evidence |
 |---|---|---|
@@ -37,6 +46,7 @@ the client validates on a socket it did not dial itself.
 | TLS trust enforcement | A broker certificate no configured authority signed is refused | `TestIntegration_DirectTLS_RefusesAnUntrustedBrokerCertificate` |
 | Mutual TLS | The session presents a client certificate; a listener that requires one refuses a session without it | `TestIntegration_MutualTLS_PresentsTheClientCertificate` |
 | Proxied TLS *(loopback, not Mosquitto)* | A dial through a SOCKS5 proxy validates the broker identity derived from the broker URL, not from the socket | `TestDialMQTTTLS_ThroughProxyVerifiesBrokerIdentity` |
+| Proxied WebSocket *(loopback, not Mosquitto)* | `ws://` and `wss://` reach the broker through the `ALL_PROXY` proxy and never around it; `wss://` validates the broker identity derived from the broker URL | `TestDialMQTTWebsocket_AllProxyCarriesTheDial`, `TestDialMQTTWebsocket_UnreachableProxyFailsClosed`, `TestDialMQTTWebsocket_SecureThroughProxyVerifiesBrokerIdentity` |
 | Username/password | Correct credentials connect; a wrong one surfaces as a classified `ErrNotAuthorized` | `TestIntegration_CredentialFailure_SurfacesNotAuthorized` |
 | Credential rotation | A live session refused for a stale secret reaches the broker after the rotated one is pushed | `TestIntegration_CredentialRotation_ConnectsWithTheRotatedSecret` |
 | WebSocket (`ws://`) | Upgrade, authentication and message flow | `TestIntegration_WebSocket_CarriesAuthenticatedTraffic` |

@@ -52,6 +52,10 @@ const (
 	localDynamoPort = 8000
 	localBrokerPort = 1883
 
+	// localDeniedTopic is the one topic the broker refuses a SUBSCRIBE to (see
+	// the broker's ACL in localSandbox). Nothing else subscribes to it.
+	localDeniedTopic = "gobridge/ha/denied"
+
 	// proberImage is how the test process reaches a deployed member. The
 	// emulator's ECS returns no ENI attachment, and on a Docker-for-Mac host the
 	// container network is not routable from the test process, so calls go
@@ -109,6 +113,9 @@ type localBackend struct {
 	metadata         string
 	runtimeImages    []string
 	taskSpecs        map[string]localTaskSpec
+	// runtimePlatform is the Docker daemon's platform, read once per run; see
+	// localRuntimePlatform.
+	runtimePlatform string
 	// deployedTaskDefs records, per deployed service, the task definition
 	// CloudFormation put it on before the harness rolled it onto a restored one.
 	deployedTaskDefs map[string]string
@@ -180,6 +187,7 @@ func localSandbox(t *testing.T) SandboxEnv {
 	// Published from here on, so TestMain can tear the run down even if the
 	// remaining setup fails.
 	localState = state
+	localRunDirectories(t, state)
 
 	// The emulator joins the network first and is given the socket, so the ECS
 	// tasks it launches land beside the broker and DynamoDB Local.
@@ -190,23 +198,32 @@ func localSandbox(t *testing.T) SandboxEnv {
 	// leftovers, precisely.
 	flocilocal.Configure(
 		flocilocal.WithServicesNetwork(state.network, localFlociHost),
+		// Floci refuses an ECS host-volume source outside an approved root. Every
+		// task's config mount lives under the run directory, so that directory,
+		// and nothing wider, is the one root approved.
+		flocilocal.WithHostVolumeRoots(state.runDir),
 	)
 	state.flociEndpoint = flocilocal.Endpoint(t)
 
 	state.dynamoEndpoint = ddblocal.Endpoint(t)
 	attachToNetwork(t, state.network, ddblocal.ContainerName(t), localDynamoHost)
 
-	// Cap the broker at QoS 1. It is what gives the suite a config change every
-	// member can ACCEPT and none can RUN: a subscription that asks for QoS 2 is
-	// built and validated by every member, and then granted at QoS 1 by the
-	// broker, so no member ever reports its subscriptions satisfied and the
-	// confirm window takes the whole cohort back. Nothing else here asks for
-	// QoS 2, so the cap is invisible to every other topology.
-	mqttlocal.Configure(mqttlocal.WithExtraConfig("max_qos 1\n"))
+	// Refuse a SUBSCRIBE to one topic nothing else uses. It is what gives the
+	// suite a config change every member can ACCEPT and none can RUN: a receiver
+	// subscribing to localDeniedTopic is built and validated by every member, and
+	// the broker then refuses the filter (SUBACK 0x87, not authorized), so the
+	// reconcile fails, no member ever reports its subscriptions satisfied, and
+	// the confirm window takes the whole cohort back. A QoS cap cannot do this:
+	// a lower grant is accepted as best effort. The members present the local
+	// MQTT credential document, and the broker refuses a username its ACL does
+	// not list, so that user is listed.
+	mqttlocal.Configure(mqttlocal.WithACL(mqttlocal.ACL{
+		DeniedSubscriptions: []string{localDeniedTopic},
+		Users:               map[string]string{localMQTTUsername: localMQTTPassword},
+	}))
 	state.brokerURL = mqttlocal.BrokerURL(t)
 	attachToNetwork(t, state.network, mqttlocal.ContainerName(t), localBrokerHost)
 
-	localRunDirectories(t, state)
 	state.prober = startProber(t, state.network)
 	state.responder = startCloudFormationResponder(t, state)
 	state.metadata = startTaskMetadata(t, state)
@@ -316,25 +333,6 @@ func attachToNetwork(t *testing.T, network, container, alias string) {
 // harness containers and the runtime images it builds all carry it, so one run's
 // artefacts are identifiable as a set and reclaimable as one.
 const localRunPrefix = "gobridge-local-deploy-"
-
-// localRunDirectories creates the host directories the containers mount.
-//
-// They have to be reachable from the Docker daemon as a bind source AND from the
-// test process, so they live under the OS temp directory, which Docker shares by
-// default on every platform the suite runs on.
-func localRunDirectories(t *testing.T, state *localBackend) {
-	t.Helper()
-	state.runDir = filepath.Join(os.TempDir(), state.network)
-	state.configDir = filepath.Join(state.runDir, "config")
-	if err := os.MkdirAll(state.configDir, 0o777); err != nil {
-		t.Fatalf("create shared config directory: %v", err)
-	}
-	// Each per-stack mount gets the runtime user's ownership before deployment.
-	// MkdirAll honours the umask, so the shared parent mode is set explicitly.
-	if err := os.Chmod(state.configDir, 0o777); err != nil {
-		t.Fatalf("open shared config directory: %v", err)
-	}
-}
 
 // mountOwnerUID and mountOwnerGID are the uid:gid the deployed containers run as,
 // and therefore the ownership the shipped EFS access point creates the config

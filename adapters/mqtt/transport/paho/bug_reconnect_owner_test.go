@@ -2,6 +2,7 @@ package paho
 
 import (
 	"context"
+	"maps"
 	"sync"
 	"testing"
 	"time"
@@ -47,14 +48,21 @@ type fakeReconcileConn struct {
 	mu          sync.Mutex
 	subCalls    int
 	subTopics   [][]string
+	subSpecs    [][]subscribeSpec
 	unsubCalls  int
 	unsubTopics [][]string
 
 	// reasons, when non-nil, is returned as the SUBACK reason vector for
 	// every Subscribe. A byte >= 0x80 marks a rejected topic (mapped to a
 	// BridgeError by classifySubackReasons). When nil, all requested topics
-	// are accepted (reason 0x00).
+	// are accepted (reason 0x00). Change it through setReasons once a
+	// session goroutine may be subscribing.
 	reasons []byte
+	// topicReasons, when non-nil, answers each subscription by its topic
+	// instead (a topic not listed is granted its requested QoS), so a test can
+	// mix grants and refusals in one SUBSCRIBE whose order comes from a map.
+	// It takes precedence over reasons. Set it through setTopicReasons.
+	topicReasons map[string]byte
 }
 
 func (f *fakeReconcileConn) AwaitConnection(context.Context) error { return nil }
@@ -69,13 +77,24 @@ func (f *fakeReconcileConn) Subscribe(_ context.Context, subs []subscribeSpec) (
 		topics[i] = s.Topic
 	}
 	f.subTopics = append(f.subTopics, topics)
+	f.subSpecs = append(f.subSpecs, append([]subscribeSpec(nil), subs...))
+	if f.topicReasons != nil {
+		out := make([]byte, len(subs))
+		for i, s := range subs {
+			out[i] = s.QoS
+			if r, ok := f.topicReasons[s.Topic]; ok {
+				out[i] = r
+			}
+		}
+		return out, nil
+	}
 	if f.reasons != nil {
 		return f.reasons, nil
 	}
 	// Default: accept every subscription at the REQUESTED QoS (granted ==
 	// requested, no downgrade). Echoing the requested QoS keeps the SUBACK
-	// realistic now that reconcile persists the GRANTED QoS and surfaces
-	// downgrades (c4-qos-downgrade).
+	// realistic: reconcile records the GRANTED QoS, and a grant below the
+	// requested QoS would start a QoS downgrade confirmation.
 	granted := make([]byte, len(subs))
 	for i, s := range subs {
 		granted[i] = s.QoS
@@ -105,6 +124,32 @@ func (f *fakeReconcileConn) subscribeCallCount() int {
 	return f.subCalls
 }
 
+// subscribeSpecs returns a copy of the options passed to each Subscribe call,
+// in call order.
+func (f *fakeReconcileConn) subscribeSpecs() [][]subscribeSpec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][]subscribeSpec, len(f.subSpecs))
+	for i, specs := range f.subSpecs {
+		out[i] = append([]subscribeSpec(nil), specs...)
+	}
+	return out
+}
+
+// setReasons replaces the SUBACK reason vector every later Subscribe returns.
+func (f *fakeReconcileConn) setReasons(r []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reasons = append([]byte(nil), r...)
+}
+
+// setTopicReasons answers every later Subscribe per topic (see topicReasons).
+func (f *fakeReconcileConn) setTopicReasons(r map[string]byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.topicReasons = maps.Clone(r)
+}
+
 func (f *fakeReconcileConn) unsubscribeCallCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -125,14 +170,14 @@ func (f *fakeReconcileConn) unsubscribedTopics() [][]string {
 
 var _ pahoConnection = (*fakeReconcileConn)(nil)
 
-// c7Session builds a Session wired to the given fake connection with a
+// reconciledSession builds a Session wired to the given fake connection with a
 // single-topic plan already reconciled and active — i.e. the state just
 // before a connection drop.
-func c7Session(t *testing.T, fake pahoConnection, topic string, qos byte) (*Session, connectivity.SessionPlan) {
+func reconciledSession(t *testing.T, fake pahoConnection, topic string, qos byte) (*Session, connectivity.SessionPlan) {
 	t.Helper()
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
-		ClientID:   "c7-" + topic,
+		ClientID:   "reconciled-" + topic,
 	}, connectivity.SessionEphemeral, nil)
 
 	plan := connectivity.SessionPlan{
@@ -142,10 +187,10 @@ func c7Session(t *testing.T, fake pahoConnection, topic string, qos byte) (*Sess
 	s.cm = fake
 	s.plan = &plan
 	// appliedPlan represents the LAST SUCCESSFULLY reconciled state (the plan
-	// whose broker subscribe actually landed): c7Session models a session that
-	// already reconciled this plan, so the applied history must mirror it —
-	// the reconnect-window teardown and empty-plan no-op both key off it
-	// (blocking-#2).
+	// whose broker subscribe actually landed): reconciledSession models a
+	// session that already reconciled this plan, so the applied history must
+	// mirror it — the reconnect-window teardown and empty-plan no-op both key
+	// off it.
 	s.appliedPlan = &plan
 	s.activeSubs = map[string]byte{topic: qos} // active before the drop
 	s.mu.Unlock()
@@ -160,7 +205,7 @@ func c7Session(t *testing.T, fake pahoConnection, topic string, qos byte) (*Sess
 // set and performs a full re-subscribe.
 func TestOnConnectionUp_ResetsActiveSubsBeforeSignal(t *testing.T) {
 	fake := &fakeReconcileConn{}
-	s, _ := c7Session(t, fake, "t/x", 1)
+	s, _ := reconciledSession(t, fake, "t/x", 1)
 
 	s.handleConnectionUp()
 
@@ -194,7 +239,7 @@ func TestOnConnectionUp_ResetsActiveSubsBeforeSignal(t *testing.T) {
 // SessionReconciled is emitted — from the manager-driven Reconcile.
 func TestReconnectResubscribe_SingleSubscribeAndReconciledOnce(t *testing.T) {
 	fake := &fakeReconcileConn{} // accept all
-	s, plan := c7Session(t, fake, "sensors/a", 1)
+	s, plan := reconciledSession(t, fake, "sensors/a", 1)
 
 	// autopaho fires OnConnectionUp on reconnect: reset + signal.
 	s.handleConnectionUp()
@@ -239,7 +284,7 @@ func TestReconnectResubscribe_SingleSubscribeAndReconciledOnce(t *testing.T) {
 // reconcile actually issues SUBSCRIBE and observes the rejection.
 func TestReconnectResubscribeFailure_PropagatesViaManagerReconcile(t *testing.T) {
 	fake := &fakeReconcileConn{reasons: []byte{0x87}} // 0x87 = not authorized
-	s, plan := c7Session(t, fake, "acl/denied", 1)
+	s, plan := reconciledSession(t, fake, "acl/denied", 1)
 
 	// Reconnect: OnConnectionUp resets activeSubs and signals connected.
 	s.handleConnectionUp()
@@ -283,7 +328,7 @@ func TestReconnectResubscribeFailure_PropagatesViaManagerReconcile(t *testing.T)
 // only the activeSubs state (stale vs) differs.
 func TestStaleActiveSubs_ZeroDeltaMasksBrokerRejection(t *testing.T) {
 	fake := &fakeReconcileConn{reasons: []byte{0x87}} // broker would reject a real SUBSCRIBE
-	s, plan := c7Session(t, fake, "acl/denied", 1)
+	s, plan := reconciledSession(t, fake, "acl/denied", 1)
 	// NOTE: no handleConnectionUp() — activeSubs stays stale (== desired),
 	// modelling the old emit-before-reset ordering's race outcome.
 
@@ -301,7 +346,7 @@ func TestStaleActiveSubs_ZeroDeltaMasksBrokerRejection(t *testing.T) {
 }
 
 // TestReconcile_EmptyPlanRemovesManagedSubs asserts the intentional
-// "remove all subscriptions" semantics (c4-remove-subs): an empty plan handed
+// "remove all subscriptions" semantics: an empty plan handed
 // to Reconcile while managed subscriptions are still active MUST unsubscribe
 // them (converging broker state) and emit SessionReconciled — it does real
 // work. The prior behaviour treated this as a silent no-op, leaving the broker
@@ -309,7 +354,7 @@ func TestStaleActiveSubs_ZeroDeltaMasksBrokerRejection(t *testing.T) {
 // forever.
 func TestReconcile_EmptyPlanRemovesManagedSubs(t *testing.T) {
 	fake := &fakeReconcileConn{}
-	s, _ := c7Session(t, fake, "kept", 0) // activeSubs = {kept:0}, plan = {kept}
+	s, _ := reconciledSession(t, fake, "kept", 0) // activeSubs = {kept:0}, plan = {kept}
 
 	if err := s.Reconcile(context.Background(), connectivity.SessionPlan{}); err != nil {
 		t.Fatalf("empty-plan Reconcile error: %v", err)
@@ -340,7 +385,7 @@ func TestReconcile_InitialEmptyPlan_EmitsReconciled(t *testing.T) {
 	fake := &fakeReconcileConn{}
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
-		ClientID:   "c7-sender-only",
+		ClientID:   "sender-only",
 	}, connectivity.SessionEphemeral, nil)
 	s.mu.Lock()
 	s.cm = fake // no prior plan

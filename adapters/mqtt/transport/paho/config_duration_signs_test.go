@@ -31,6 +31,7 @@ func TestConfigValidate_RejectsNegativeDurations(t *testing.T) {
 		"unmatched_grace":      func(c *Config) { c.Session.UnmatchedGrace = -time.Second },
 		"sender.timeout":       func(c *Config) { c.Sender.Timeout = -time.Second },
 		"throttle_retry_after": func(c *Config) { c.Sender.ThrottleRetryAfter = -time.Second },
+		"qos_recheck_interval": func(c *Config) { c.Subscription.QoSRecheckInterval = -time.Second },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -91,6 +92,7 @@ func TestConfigValidate_AcceptsZeroAndPositiveDurations(t *testing.T) {
 	cfg.Session.UnmatchedGrace = 0
 	cfg.Sender.Timeout = 0
 	cfg.Sender.ThrottleRetryAfter = 0
+	cfg.Subscription.QoSRecheckInterval = 0
 
 	require.NoError(t, cfg.Validate())
 }

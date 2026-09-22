@@ -195,19 +195,9 @@ exists only to flag such a future mode.
   fails because the broker is unreachable signals terminal death; the runtime
   supervisor re-Starts the session with jittered backoff, so it reconnects by
   itself once the broker returns.
-- **Granted-QoS downgrade is surfaced.** A SUBACK below the requested level
-  silently removes offline/redelivery coverage while the route still assumes the
-  requested guarantee, opening a disconnect-gap loss window. The reconcile loop
-  keeps the requested QoS as its delta baseline (a stable downgraded sub is not
-  re-subscribed every cycle) and counts `MQTTQoSDowngraded` with a loud warning
-  once per subscription transition. Any non-zero value warrants checking the
-  broker's QoS-cap policy. A broker QoS **cap** fails every reconcile
-  identically, so the same (filter, requested, granted) grant confirmed on three
-  consecutive reconciles is treated as PERMANENT: the error then carries the
-  permanent-closure marker and the session fails terminally instead of
-  restarting into the identical downgrade forever (an exclusive owner would
-  otherwise release and re-seize its lease every cycle). Lower the route's `qos`
-  to the granted level, or lift the broker's cap.
+- **A granted-QoS downgrade is kept as best effort.** A subscription the broker
+  grants below the requested QoS stays active at the granted QoS; see
+  [QoS downgrade](#qos-downgrade).
 - **A lost durable resume is signalled, not silently absorbed.** Persistent and
   Exclusive sessions dial `clean_start=false` because they want the broker to
   resume the subscriptions and the queued offline QoS 1/2 backlog. When CONNACK
@@ -228,6 +218,82 @@ exists only to flag such a future mode.
   Ephemeral sessions use Retain Handling = 0: each connect is a fresh
   subscription with no prior broker-side state, so the retained snapshot is the
   intended first delivery.
+
+### QoS downgrade
+
+An MQTT 5 broker may answer a SUBSCRIBE with a SUBACK that grants a **lower**
+QoS than the route asked for, for example QoS 0 when the route asked for QoS 1.
+Brokers do this to enforce a QoS cap (Mosquitto `max_qos`, an authorization
+rule). The bridge keeps such a subscription running instead of failing:
+
+1. **Confirm.** One low grant can be transient (a cluster node restarting, an
+   authorization rule still propagating). The SUBACK the reconcile received is
+   the first answer, logged at Warn (`broker downgraded subscription QoS below
+   requested; confirming with fresh SUBSCRIBEs …`) with the topic, the
+   requested QoS and the granted QoS. The session then sends SUBSCRIBE for the
+   same filter twice more, 5 s apart. These re-sends use Retain Handling 1, so the broker does not
+   replay retained messages, and the same QoS and No-Local as the original. While
+   it confirms, the filter is not counted as active (messages still arrive at
+   the granted QoS), session health is Degraded, and the
+   reconcile itself succeeds, so the supervisor does not retry the session and
+   an exclusive session keeps its lease. A grant that meets the requested QoS
+   during confirmation returns the subscription to normal. A different lower
+   grant starts the confirmation again. A confirmation SUBSCRIBE that gets no
+   grant keeps the last one and is retried after 5 s, the wait doubling with
+   each further miss up to 1 min.
+2. **Accept as best effort.** When three fresh SUBACKs report the same lower
+   grant, the subscription becomes active at the granted QoS and has that
+   QoS's guarantee. At QoS 0 (see the QoS 0 row of the
+   [guarantee matrix](#source-to-destination-guarantee-matrix)) there is no
+   acknowledgement and no redelivery, and messages published while the bridge
+   is disconnected may be lost. The bridge logs this once at Error with the topic,
+   the requested QoS and the granted QoS. Deep health lists the filter in
+   `best_effort_topics`, and the session can report Full.
+3. **Re-check.** Every `qos_recheck_interval` (per subscription; default `1h`,
+   `0s` turns it off, minimum `1m`; see
+   [Subscription Options Reference](mqtt-options.md#subscription-options-reference))
+   the session sends a fresh SUBSCRIBE with Retain Handling 1. It never runs at
+   the same time as a reconcile of that session. If the broker grants the
+   requested QoS, the subscription returns to normal and the bridge logs it at
+   Info. A re-check that is still lower changes nothing. A re-check the broker
+   refuses keeps the last grant and is retried at the next
+   `qos_recheck_interval`. A run of refusals, during confirmation or re-check, is
+   logged at Warn once. Every reconnect also re-evaluates the grant through the
+   normal reconcile.
+
+**Failed deliveries.** The bridge validates a route for the QoS it requests. A
+route whose subscriptions are all QoS 1 or 2 on a session that resumes counts
+as a source that redelivers, so it is exempt from the retry check that asks a
+source without redelivery for a DLQ store or
+[`allow_retry_drop`](../routes-and-runtime-reference.md#routespolicy----delivery-policy).
+An accepted QoS 0 grant breaks that assumption: the broker cannot redeliver a
+message the route fails to process, so the route's
+[retry fallback](mqtt-settlement-recovery.md) takes over. With the default
+route policies (`on_permanent_failure` and `on_expired` both `dlq`) the bridge
+must have a DLQ store anyway, so the message is dead-lettered. It is dropped
+and counted as `MessagesDropped{reason=retry_unsupported}` only on a bridge
+with no DLQ store, which validation allows only when every route sets
+`on_permanent_failure: drop` and `on_expired: drop` and none sets
+`on_filtered: dlq`. For a broker that caps QoS, keep a
+[DLQ store](../configuration-reference.md#stores----backing-store-configuration)
+configured, or lower the route's `qos` to the granted level.
+
+Two metrics follow the downgrade. `MQTTQoSDowngraded` counts once when a SUBACK
+first reports a lower grant (a changed grant counts again; confirmations and
+re-checks do not). `MQTTQoSDowngradedActive`, tagged `session_id`, is a gauge of
+the accepted downgrades per session, written when the count changes and again
+on every health sweep. It falls when a grant recovers, when the
+plan stops wanting the filter, or when the session closes, so alarm on the gauge
+for a standing condition. See [adapter diagnostic
+metrics](../adapter-diagnostic-metrics.md).
+
+A lower grant never stops the session and never restarts the process. A
+**refused** subscription (SUBACK reason code `0x80` or higher) is different: it
+still fails that session's reconcile, which retries on its own without
+affecting other sessions.
+
+To remove the downgrade, lower the route's `qos` to the granted level, or lift
+the broker's cap.
 
 ## Backpressure and dispatch
 

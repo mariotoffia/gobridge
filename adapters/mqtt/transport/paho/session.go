@@ -199,7 +199,9 @@ type Session struct {
 	observedSubs map[string]subscriptionGrant
 
 	// activeSubs is the contract-active subset of observedSubs: filters whose
-	// granted QoS meets or exceeds the requested QoS. Health reads only this map.
+	// granted QoS meets or exceeds the requested QoS, plus lower grants accepted
+	// as best effort (see qosDowngrades), each at its granted QoS. A lower grant
+	// still being confirmed is not in it. Health reads only this map.
 	activeSubs map[string]byte // topic filter -> granted qos
 
 	// subscriptionsSatisfied is latched false when an explicit plan starts
@@ -258,12 +260,19 @@ type Session struct {
 	lastRecoveryCompleted       time.Time
 	recoveryRecycleCount        uint64
 
-	// qosDowngradeConfirmed is the broker grant the current confirmation streak
-	// is counting, and qosDowngradeStreak how many consecutive reconciles have
-	// concluded it. A different grant, or a reconcile that converges without a
-	// downgrade, restarts the count. See noteQoSDowngrade. Guarded by mu.
-	qosDowngradeConfirmed qosDowngradeGrant
-	qosDowngradeStreak    int
+	// qosDowngrades records every filter the broker granted below the
+	// requested QoS, keyed by filter: confirming until qosDowngradeConfirmations
+	// fresh SUBACKs agree, then accepted as best effort and re-checked. See
+	// session_qos_downgrade.go. Guarded by mu.
+	qosDowngrades map[string]*qosDowngrade
+	// qosDowngradeGauge is the MQTTQoSDowngradedActive value last emitted on a
+	// change, so a state change writes the gauge only when the number of
+	// accepted downgrades moved (Health re-emits it on every sweep regardless).
+	// Guarded by mu.
+	qosDowngradeGauge int
+	// qosProbeCancel cancels the scheduled confirmation / re-check probe; each
+	// arming replaces it. Guarded by mu.
+	qosProbeCancel context.CancelFunc
 
 	// connectErr latches the mapped cause of the most recent failed CONNECT and
 	// is cleared when a connection comes up. MQTT authenticates only at CONNECT

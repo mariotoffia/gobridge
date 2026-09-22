@@ -305,10 +305,9 @@ it at runtime too.
 
 ### `QOS_NOT_SUPPORTED`
 
-* **When you see it.** The configured MQTT/AMQP QoS level is not
-  supported by the broker or the subscription's grant.
-* **Likely cause.** Broker capped at QoS 1 while the route asked for
-  QoS 2; subscription grant downgraded silently.
+* **When you see it.** The broker does not support the configured MQTT/AMQP QoS level (MQTT reason code `0x9B`).
+* **Likely cause.** Broker capped at QoS 1 while the route asked for QoS 2. A SUBACK
+  that grants a lower QoS is not this error: it is a [QoS downgrade](transports/mqtt-behavior.md#qos-downgrade).
 * **Recovery.** Lower the route's QoS to a level the broker grants, or
   upgrade the broker. Verify subscription grants in broker logs.
 

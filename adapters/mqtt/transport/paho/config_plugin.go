@@ -29,11 +29,12 @@ var (
 )
 
 // Config is the typed PluginConfig for the MQTT (Eclipse Paho)
-// transport. It nests session/sender role configs and is shared
+// transport. It nests session/sender/subscription role configs and is shared
 // across SessionSpec.Config / ReceiverSpec.Config / SenderSpec.Config.
 type Config struct {
-	Session SessionOptions `mapstructure:"session" yaml:"session" json:"session"`
-	Sender  SenderOptions  `mapstructure:"sender" yaml:"sender" json:"sender"`
+	Session      SessionOptions      `mapstructure:"session" yaml:"session" json:"session"`
+	Sender       SenderOptions       `mapstructure:"sender" yaml:"sender" json:"sender"`
+	Subscription SubscriptionOptions `mapstructure:"subscription" yaml:"subscription" json:"subscription"`
 
 	// CredentialsURIRef is the optional URI consulted by the bridge's
 	// credential store at build time. Resolved material is applied
@@ -139,6 +140,9 @@ func (c Config) Validate() error {
 	if err := c.validateDurations(); err != nil {
 		return err
 	}
+	if err := c.Subscription.validate(); err != nil {
+		return err
+	}
 	if err := c.Session.Will.Validate(); err != nil {
 		return err
 	}
@@ -175,6 +179,10 @@ func (c Config) Validate() error {
 // reason no operator can see in the configuration. This is the one effective
 // validator every typed entry point passes through, so the sign check belongs
 // here rather than on any single decoder.
+//
+// subscription.qos_recheck_interval is not in this loop: for it 0 turns the
+// re-check off rather than selecting a default, so SubscriptionOptions.validate
+// owns its sign check with wording of its own.
 func (c Config) validateDurations() error {
 	durations := []struct {
 		key   string

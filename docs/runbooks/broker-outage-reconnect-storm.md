@@ -60,10 +60,14 @@ mistaking a broker outage for a bridge fault and restarting healthy tasks.
    again, so this counter — and the matching `LastError` latch, which clears on
    the next converged reconcile — is the ONLY evidence that continuity broke.
 
-6. If reconnects recover but readiness never reaches `full`, look for
-   `MQTTQoSDowngraded`. A broker QoS cap fails every reconcile identically; the
-   third consecutive confirmation of the same grant is treated as permanent and
-   the session goes terminal rather than restarting into it forever.
+6. If reconnects recover but readiness stays below `full` for about 10 s,
+   look for `MQTTQoSDowngraded`. The broker granted a subscription a lower QoS
+   than requested, and the session is confirming the grant with fresh
+   SUBSCRIBEs 5 s apart. After three matching answers the subscription runs at
+   the granted QoS as best effort, readiness can return to `full`, and
+   `MQTTQoSDowngradedActive` stays above zero. A lower grant never stops the
+   session or the process; see
+   [QoS downgrade](../transports/mqtt-behavior.md#qos-downgrade).
 
 ## Action
 
@@ -89,11 +93,13 @@ mistaking a broker outage for a bridge fault and restarting healthy tasks.
   loses every session on restart regardless of the interval). If the loss is not
   acceptable, move the source to a store-backed transport rather than relying on
   broker-side offline retention.
-- **`MQTTQoSDowngraded` climbing with a terminal session** — the broker refuses
-  the QoS the route asks for and the bridge stopped retrying. Either lower the
-  route's `qos` to the granted level (accepting the weaker guarantee) or lift the
-  broker's QoS cap for this client; the reconcile error names the topic, the
-  requested QoS and the granted QoS.
+- **`MQTTQoSDowngradedActive` above zero** — the broker grants a subscription
+  less than the QoS the route asks for, and the bridge runs it at the granted
+  QoS as best effort (listed in deep health as `best_effort_topics`). Either
+  lower the route's `qos` to the granted level (accepting the weaker guarantee)
+  or lift the broker's QoS cap for this client; the Error log names the topic,
+  the requested QoS and the granted QoS. The session re-checks the grant every
+  `qos_recheck_interval` and on every reconnect.
 - **Outage exceeds your SLO budget** — escalate to the broker/dependency owner.
   A clustered instance whose lease store also went unreachable steps down and
   eventually goes terminal; the process then exits non-zero so the orchestrator

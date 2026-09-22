@@ -323,7 +323,7 @@ data faults).
 | `BadUserNameOrPassword`, `NotAuthorized`
 | `domain.ErrNotAuthorized`
 | MQTT Paho
-| `QoSNotSupported`
+| `QoSNotSupported` (reason code `0x9B`). A SUBACK that grants a lower QoS than requested is not an error: the subscription is kept as best effort (see `docs/transports/mqtt-behavior.md` §QoS downgrade)
 | `domain.ErrQoSNotSupported`
 | MQTT Paho
 | Broker rejection (`Server unavailable`)
