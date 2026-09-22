@@ -23,7 +23,11 @@ import (
 //
 // The loop stops on success, on a non-recoverable error, when the delivery
 // context is cancelled (the caller then abandons the delivery unsettled), when
-// the route is wedged, and when the next wait would end past the budget.
+// the route is wedged, and when the next wait does not fit in what is left of
+// the budget. Every condition but the last is re-checked when a wait ends, so a
+// state that changed while this delivery was parked — a wedge another delivery
+// latched, a context the bridge cancelled — stops it BEFORE the next physical
+// send rather than after it.
 func (r *RouteRunner) sendHeld(ctx context.Context, sender ports.Sender, msg ports.OutboundMessage, plan routing.DispatchPlan, attempt int) error {
 	start := r.clk.Now()
 	for try := 1; ; try++ {
@@ -32,12 +36,25 @@ func (r *RouteRunner) sendHeld(ctx context.Context, sender ports.Sender, msg por
 			return err
 		}
 		delay := RetryDelay(r.policy, try, err)
-		if r.clk.Since(start)+delay > r.policy.SendRetryBudget {
+		// Measure the delay against what is LEFT of the budget rather than
+		// adding elapsed and delay together. A destination's RetryAfter hint is
+		// authoritative and used verbatim, so it can be near the largest
+		// duration there is, and adding even a second of elapsed time to that
+		// wraps the sum negative — which reads as "fits", arming a
+		// centuries-long timer on a one-minute route. Both terms below are
+		// non-negative, so the subtraction cannot overflow.
+		remaining := r.policy.SendRetryBudget - r.clk.Since(start)
+		if remaining <= 0 || delay > remaining {
 			r.metrics.Counter(shared.MetricSendRetryBudgetExhausted, 1,
 				shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
 			return err
 		}
-		if !r.awaitSendRetry(ctx, delay) {
+		// Re-check the WHOLE retry predicate after the wait, not just the
+		// delivery context the wait itself watches. A second delivery can wedge
+		// the route while this one is parked, and a latched wedge is terminal:
+		// the route is refusing new deliveries and escalating to the supervisor,
+		// so this delivery must not start another physical send into it either.
+		if !r.awaitSendRetry(ctx, delay) || !r.retryableInProcess(ctx, err) {
 			return err
 		}
 		r.metrics.Counter(shared.MetricSendRetries, 1,

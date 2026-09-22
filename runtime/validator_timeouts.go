@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/routing"
@@ -61,7 +62,7 @@ func validateTimeouts(ve *ValidationError, prefix string, entry *routeEntry, has
 	}
 	nProc := len(entry.config.Processors)
 	retry := sendRetryBudgetFor(policy)
-	total := time.Duration(nProc)*policy.ProcessorTimeout + retry + policy.SendTimeout + dlqBudget
+	total := saturatingSum(saturatingProduct(nProc, policy.ProcessorTimeout), retry, policy.SendTimeout, dlqBudget)
 	if total > vis {
 		fix := ""
 		if retry > 0 {
@@ -74,6 +75,49 @@ func validateTimeouts(ve *ValidationError, prefix string, entry *routeEntry, has
 				"source may redeliver mid-pipeline causing duplicate processing%s",
 			total, nProc, policy.ProcessorTimeout, retry, policy.SendTimeout, dlqBudget, vis, fix))
 	}
+}
+
+// maxDuration is the ceiling the two helpers below clamp at.
+const maxDuration = time.Duration(math.MaxInt64)
+
+// saturatingSum and saturatingProduct build the worst-case hold above. Every
+// term is a duration parsed from configuration, so any of them may legitimately
+// be near maxDuration; added with plain arithmetic the total wraps NEGATIVE,
+// and a negative total is under every visibility window — so the route with the
+// longest possible hold would be the one this check waves through. Clamping
+// keeps an absurd term absurd. Neither helper reports the clamp: a saturated
+// total is already past every window a source can have, which is the answer the
+// caller needs. The runtime has no shared saturating duration helper to reuse
+// (the failover-budget sum lives in the composition root and the MQTT one is
+// adapter-local; neither may be imported here), so these stay unexported beside
+// their only caller.
+//
+// Non-positive terms are skipped rather than added: every term is a
+// validated-or-defaulted budget, and a negative one must not shrink the worst
+// case into passing.
+func saturatingSum(parts ...time.Duration) time.Duration {
+	var total time.Duration
+	for _, part := range parts {
+		if part <= 0 {
+			continue
+		}
+		if total > maxDuration-part {
+			return maxDuration
+		}
+		total += part
+	}
+	return total
+}
+
+// saturatingProduct is n copies of d with the same clamp.
+func saturatingProduct(n int, d time.Duration) time.Duration {
+	if n <= 0 || d <= 0 {
+		return 0
+	}
+	if int64(n) > int64(maxDuration)/int64(d) {
+		return maxDuration
+	}
+	return time.Duration(n) * d
 }
 
 // dlqWriteBudget is the bounded wall-clock time the inline failure path may spend
@@ -123,7 +167,14 @@ func validateSendRetryBudget(ve *ValidationError, prefix string, entry *routeEnt
 	if retry <= 0 || wait <= 0 {
 		return
 	}
-	if retry+policy.SendTimeout > wait {
+	// Compare by SUBTRACTION, never by adding the two holds together: both come
+	// from parsed configuration and either may be near the largest duration
+	// there is, and a wrapped sum is under every wait. Both terms here are
+	// positive — the guard above returns on a non-positive wait, and
+	// WithDefaults fills a non-positive send timeout — so wait - SendTimeout
+	// cannot underflow, and a send timeout that alone outlives the wait leaves a
+	// negative remainder that every enabled budget exceeds.
+	if retry > wait-policy.SendTimeout {
 		ve.add(prefix + fmt.Sprintf(
 			"send_retry_budget %s + send_timeout %s exceeds the source's settlement-recovery wait %s; "+
 				"a held retry would outlive the MQTT connection recycle and fail it "+

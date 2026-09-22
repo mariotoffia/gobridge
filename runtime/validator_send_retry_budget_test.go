@@ -2,11 +2,13 @@ package runtime_test
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
@@ -195,5 +197,96 @@ func TestValidator_AcceptsTheSendRetryBudgetOptOut(t *testing.T) {
 
 	if messages := validationMessages(t, rt); len(messages) != 0 {
 		t.Fatalf("the documented opt-out must validate: %v", messages)
+	}
+}
+
+// Both ceilings are checked by ADDING route durations together, and every one
+// of those durations comes from parsed configuration: a `send_retry_budget` or
+// a `processor_timeout` may legitimately be written near the largest duration
+// there is. A sum that wraps negative is under every ceiling, so the route with
+// the LONGEST possible hold on its source would be the one the check waves
+// through — the exact inversion of what these rules exist to do.
+
+// TestValidator_AbsurdDurationsStillFailTheFixedWindow pins the worst-case
+// pipeline sum against terms near the maximum duration: the total saturates at
+// the maximum instead of wrapping, so a fixed-window source is rejected.
+func TestValidator_AbsurdDurationsStillFailTheFixedWindow(t *testing.T) {
+	cases := []struct {
+		name             string
+		budget           time.Duration
+		processorTimeout time.Duration
+		processors       []ports.Processor
+	}{
+		{name: "send retry budget near the maximum duration",
+			budget: time.Duration(math.MaxInt64)},
+		// Three processors at half the maximum each: the product alone wraps,
+		// before anything is added to it.
+		{name: "processor timeout near the maximum duration",
+			budget:           routing.SendRetryBudgetDisabled,
+			processorTimeout: time.Duration(math.MaxInt64) / 2,
+			processors:       []ports.Processor{&timeoutProcessor{}, &timeoutProcessor{}, &timeoutProcessor{}}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := runtime.New(
+				runtime.WithInstanceID("test-bridge"),
+				runtime.WithDLQStore(NewFakeDLQStore()),
+			)
+			cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+			cfg.Policy.OnPermanentFailure = routing.FailureDLQ
+			cfg.Policy.SendTimeout = 30 * time.Second
+			cfg.Policy.SendRetryBudget = tc.budget
+			cfg.Policy.ProcessorTimeout = tc.processorTimeout
+			cfg.Processors = tc.processors
+			cfg.SourceVisibilityTimeout = 120 * time.Second
+			cfg.SourceAutoExtend = false
+
+			if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+				t.Fatal(err)
+			}
+
+			messages := validationMessages(t, rt)
+			if !containsMessage(messages, "worst-case pipeline time") {
+				t.Fatalf("a hold that outlives every window must be rejected, not wrapped into fitting: %v", messages)
+			}
+		})
+	}
+}
+
+// TestValidator_AbsurdDurationsStillFailTheRecoveryWait is the same guard on the
+// settlement-recovery rule, plus the boundary the rewrite must not lose: a send
+// timeout that alone outlives the recycle wait rejects however small the budget
+// beside it is.
+func TestValidator_AbsurdDurationsStillFailTheRecoveryWait(t *testing.T) {
+	cases := []struct {
+		name        string
+		budget      time.Duration
+		sendTimeout time.Duration
+		wait        time.Duration
+	}{
+		{name: "budget near the maximum duration",
+			budget: time.Duration(math.MaxInt64), sendTimeout: 30 * time.Second, wait: 240 * time.Second},
+		{name: "send timeout alone outlives the wait",
+			budget: time.Second, sendTimeout: 250 * time.Second, wait: 240 * time.Second},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := runtime.New(runtime.WithInstanceID("test-bridge"))
+			cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+			cfg.Policy.SendTimeout = tc.sendTimeout
+			cfg.Policy.SendRetryBudget = tc.budget
+			cfg.SourceSettlementRecoveryWait = tc.wait
+
+			if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+				t.Fatal(err)
+			}
+
+			messages := validationMessages(t, rt)
+			if !containsMessage(messages, "settlement-recovery wait") {
+				t.Fatalf("a held retry that outlives the recycle wait must be rejected: %v", messages)
+			}
+		})
 	}
 }
