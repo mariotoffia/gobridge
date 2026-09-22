@@ -65,8 +65,8 @@ with jitter, by default. The first wait is therefore about one second.
 - the send succeeding;
 - a non-recoverable error — a rejected message is never retried;
 - the delivery's context ending, which happens on shutdown or a reconfiguration
-  swap. The delivery is then left unsettled for the source to redeliver, and
-  spends no replay budget;
+  swap. The delivery is then left unsettled, for a redelivering source to
+  deliver again, and spends no replay budget;
 - the route wedging;
 - the next wait ending past the budget.
 

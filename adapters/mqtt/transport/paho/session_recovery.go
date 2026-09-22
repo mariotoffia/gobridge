@@ -17,8 +17,8 @@ import (
 // There is deliberately NO separate drain limit. The recovery drain waits for
 // deliveries the runtime already ACCEPTED to settle, and every settlement path
 // is bounded by the ROUTE that owns it — a direct_hold route's in-process
-// send-retry budget (send_retry_budget, 60 s by default, and on a route with no
-// processor chain the largest of these terms), the send-wedge ceiling, the
+// send-retry budget (send_retry_budget, 60 s by default, and typically the
+// largest of these terms), the send-wedge ceiling, the
 // processor budget, the store and dead-letter call deadlines. An adapter-local
 // drain bound could therefore only be SHORTER than a legitimate settlement, and
 // since a failed drain is unrecoverable in-process (old work could still mutate
