@@ -36,8 +36,8 @@ const qosDowngradeConfirmInterval = 5 * time.Second
 type qosDowngrade struct {
 	requested     byte
 	granted       byte
-	confirmations int           // fresh SUBACKs that reported this grant
-	acceptedAt    time.Time     // zero while confirming
+	confirmations int           // fresh SUBACKs that reported this grant; stops at qosDowngradeConfirmations
+	acceptedAt    time.Time     // when the grant was accepted; a record only, never the acceptance flag
 	recheck       time.Duration // re-check interval once accepted; 0 = off
 	due           time.Time     // next probe SUBSCRIBE; zero = none scheduled
 	// noVerdictRounds counts consecutive probes that got no grant; a grant
@@ -45,7 +45,10 @@ type qosDowngrade struct {
 	noVerdictRounds int
 }
 
-func (d *qosDowngrade) accepted() bool { return !d.acceptedAt.IsZero() }
+// accepted reports whether enough fresh SUBACKs confirmed the grant. It counts
+// confirmations rather than testing acceptedAt, because the clock.Clock
+// contract lets Now return the zero time, which would pass for "not accepted".
+func (d *qosDowngrade) accepted() bool { return d.confirmations >= qosDowngradeConfirmations }
 
 // retryInterval is how long a probe that got no verdict waits to try again. An
 // accepted downgrade keeps its re-check cadence. One still confirming backs

@@ -52,7 +52,14 @@ func newDowngradeSession(
 	logs slog.Handler,
 ) (*Session, *fakeReconcileConn, *clocktest.Fake, *ports.RecordingExporter) {
 	tb.Helper()
-	clk := testClock()
+	return newDowngradeSessionOnClock(tb, testClock(), clientID, mode, granted, logs)
+}
+
+// newDowngradeSessionOnClock is newDowngradeSession on a given fake clock.
+func newDowngradeSessionOnClock(
+	tb testing.TB, clk *clocktest.Fake, clientID string, mode connectivity.SessionMode, granted byte, logs slog.Handler,
+) (*Session, *fakeReconcileConn, *clocktest.Fake, *ports.RecordingExporter) {
+	tb.Helper()
 	fake := &fakeReconcileConn{reasons: []byte{granted}}
 	rec := &ports.RecordingExporter{}
 	var logger *slog.Logger
