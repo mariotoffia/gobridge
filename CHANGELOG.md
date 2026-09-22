@@ -122,6 +122,35 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   mixed/ephemeral configurations, managed-subscription initialization, and
   explicit crash-loss boundaries.
 
+### Changed — an MQTT subscription granted a lower QoS is kept as best effort
+
+- **A broker that grants a subscription a lower QoS no longer stops the
+  process.** Before, the same lower grant on three reconciles in a row failed
+  the session permanently and the process exited. Now a lower grant never
+  stops the session or the process. A refused subscription (SUBACK reason code
+  `0x80` or higher) still fails that session's reconcile, as before.
+- The session confirms a lower grant with three fresh SUBSCRIBEs 5 s apart
+  (Retain Handling 1, so no retained replay). While it confirms, the filter is
+  inactive and session health is Degraded.
+- A confirmed lower grant is accepted: the subscription runs at the granted
+  QoS as best effort, and the bridge logs it once at Error with the topic, the
+  requested QoS and the granted QoS. See
+  [QoS downgrade](docs/transports/mqtt-behavior.md#qos-downgrade).
+- New gauge `MQTTQoSDowngradedActive` (`session_id`) counts the accepted
+  downgrades per session. Alarm on it for a standing condition.
+- Deep health lists the accepted filters in `best_effort_topics`, and the
+  session can report Full.
+- `MQTTQoSDowngraded` now increments once per newly reported lower grant, not
+  on every reconcile that sees it.
+
+### Added — `qos_recheck_interval`
+
+- New per-subscription option `subscription.qos_recheck_interval` on a
+  receiver `topics[].options` block: how often a subscription accepted below
+  its requested QoS is re-subscribed to learn whether the broker grants the
+  requested QoS again. Default `1h`, `0` turns it off, minimum `1m`. See
+  [Subscription Options Reference](docs/transports/mqtt-options.md#subscription-options-reference).
+
 ## [0.4.1] - 2026-09-14
 
 Retires the project's container image. Nothing in the repository needed one: on

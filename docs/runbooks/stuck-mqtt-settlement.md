@@ -140,5 +140,5 @@ the gauges publish, without waiting for a metrics flush.
 - [Broker outage / reconnect storm](broker-outage-reconnect-storm.md)
 - [Outbox backlog / stuck drain](outbox-backlog-stuck-drain.md)
 - [DynamoDB store outage / throttling](dynamodb-store-outage-throttling.md)
-- [MQTT SUBACK rejection / QoS downgrade flap](mqtt-suback-rejection-flap.md)
+- [MQTT SUBACK rejection flap / QoS downgrade](mqtt-suback-rejection-flap.md)
 - [MQTT ingress poison](mqtt-ingress-poison.md)

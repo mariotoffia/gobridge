@@ -93,8 +93,8 @@ func (f *fakeReconcileConn) Subscribe(_ context.Context, subs []subscribeSpec) (
 	}
 	// Default: accept every subscription at the REQUESTED QoS (granted ==
 	// requested, no downgrade). Echoing the requested QoS keeps the SUBACK
-	// realistic now that reconcile persists the GRANTED QoS and surfaces
-	// downgrades (c4-qos-downgrade).
+	// realistic: reconcile records the GRANTED QoS, and a grant below the
+	// requested QoS would start a QoS downgrade confirmation.
 	granted := make([]byte, len(subs))
 	for i, s := range subs {
 		granted[i] = s.QoS

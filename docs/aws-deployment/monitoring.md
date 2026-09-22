@@ -319,7 +319,10 @@ The MQTT adapter self-instruments its own counters and gauges, tagged
 the three the shipped alarms read are `MQTTIngressPoisonDropped`
 (acked-and-dropped ingress that breached a local cap — acknowledged loss),
 `MQTTSessionTakeover` (another client on the same `client_id`) and
-`MQTTQoSDowngraded` (the broker granted weaker delivery than configured).
+`MQTTQoSDowngraded` (the broker first reported a lower QoS grant than
+configured; the subscription keeps running at the granted QoS as best effort).
+The counter marks only the first report; the gauge `MQTTQoSDowngradedActive`
+shows a downgrade that is still standing.
 
 Two more are worth a hand-authored alarm and have none:
 [`MQTTEgressRejected`](alarms.md#alarms-you-must-author-yourself) — a publish

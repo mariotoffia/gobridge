@@ -88,7 +88,7 @@ means silence is health.
 | `HAMQTTIngressPoisonDropped` | HA | `MQTTIngressPoisonDropped` (Sum) | `> 0` | not breaching | An inbound publish exceeded a local payload/property cap and was acked and dropped. Every count is acknowledged loss — see the [ingress-poison runbook](../runbooks/mqtt-ingress-poison.md). |
 | `HAReconcileFailures` | HA | `ReconcileFailures` (Sum) | `> 0` | not breaching | Subscription reconcile failed; a permanent SUBACK rejection flaps the whole session. |
 | `HAMQTTSessionTakeover` | HA | `MQTTSessionTakeover` (Sum) | `> 0` | not breaching | Another client connected with the same `client_id` — an identity collision, or a normal exclusive failover. |
-| `HAMQTTQoSDowngraded` | HA | `MQTTQoSDowngraded` (Sum) | `> 0` | not breaching | The broker granted a lower QoS than requested; delivery guarantees are weaker than configured. |
+| `HAMQTTQoSDowngraded` | HA | `MQTTQoSDowngraded` (Sum) | `> 0` | not breaching | The broker granted a lower QoS than requested; the subscription runs at the granted QoS as best effort, so delivery guarantees are weaker than configured. The counter moves only when a lower grant is first reported, so this alarm clears on its own; the standing condition is the gauge `MQTTQoSDowngradedActive` (see [QoS downgrade](../transports/mqtt-behavior.md#qos-downgrade)). |
 | `HAClusterRolloutDiverged` | `EnableClusterRolloutAlarms` | `ClusterRolloutDiverged` (Maximum) | `> 0` | not breaching | A member is not running the generation the cohort decided on. The barrier is atomic before the commit and per-member after it ([ADR 0013](../adr/0013-coordinated-cluster-config-rollout.md)), so a brief `1` during a rollout is normal — the evaluation periods are what separate it from a split cohort. |
 | `HAClusterRolloutTerminal` | `EnableClusterRolloutAlarms` | `ClusterRolloutTerminal` (Maximum) | `> 0` | not breaching | A member has exhausted its own repair. Not a rate: any non-zero value needs an operator. Read `terminal_reason` in `/deephealth` — it says whether to repair the rollout store or replace the member. |
 | `HAClusterRolloutObservationAge` | `EnableClusterRolloutAlarms` | `ClusterRolloutObservationAge` (Maximum) | `> 60` seconds | not breaching | Members have not read the rollout row for over a minute, so every rollout field they report is stale. A fleet that cannot see the row does not know its own rollout state; that is not the same as being healthy. |
@@ -137,7 +137,7 @@ Configure the exporter with that list **and** the same namespace the alarms read
 | `MQTTIngressPoisonDropped` | Emitted per `session_id`. |
 | `ReconcileFailures` | Emitted per `session_id`. |
 | `MQTTSessionTakeover` | Emitted per `session_id`. |
-| `MQTTQoSDowngraded` | Emitted per `session_id`. |
+| `MQTTQoSDowngraded` | Emitted per `session_id`, once when a lower grant is first reported. |
 | `ClusterRolloutDiverged` | Emitted per member; the rollup takes the fleet `Maximum`, so one wrong member alarms. |
 | `ClusterRolloutTerminal` | Emitted per member; fleet `Maximum`. |
 | `ClusterRolloutObservationAge` | Emitted per member; fleet `Maximum` is the staleness of the worst-informed member. |
@@ -178,6 +178,7 @@ dimensioned alarm on an adapter series.
 | `ConfigDegraded` | `Maximum >= 1` sustained, high | The bridge is running blind on its last good config, or a reload applied but never converged. Read `/deephealth` for which. |
 | `MQTTEgressRejected` | `Sum > 0`, high | A producer or route is generating messages this broker cannot accept. Each one is DLQ'd, not retried, so the DLQ fills at the rejection rate. |
 | `MQTTReceiverEmitRejected` (`outcome=lost`) | `Sum > 0` on the `lost` dimension, high | Acknowledged best-effort loss. Whether it matters depends on how significant QoS 0 ingress is to the deployment, so no default threshold is honest. |
+| `MQTTQoSDowngradedActive` | `Maximum > 0` per `session_id`, warning | A gauge of subscriptions the broker grants below the requested QoS, kept running as best effort. It stays raised until the route's `qos` is lowered or the broker's cap is lifted. Adapter-owned and dimensioned, so no rollup copy exists. |
 | `SQLiteStoreUnhealthy` | `Sum > 0` on `entity=outbox`, critical | Adapter-owned and dimensioned, so no rollup copy exists. Applies to single-instance SQLite deployments only. |
 | `DynamoDBOutboxClaimScanPages` | `Sum > 0` over 15 minutes, warning | Adapter-owned and dimensioned. On a table that has `ClaimIndex`, a rising value means ordering keys rather than a missing index. |
 | ECS `CPUUtilization` / `MemoryUtilization` | `> 80%` over 5 minutes, warning | Sizing is deployment-specific. |
