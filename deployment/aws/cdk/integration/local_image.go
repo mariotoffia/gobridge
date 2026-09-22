@@ -52,10 +52,18 @@ func useLocalRuntimeImage(properties map[string]any, image string) error {
 	return nil
 }
 
+// buildLocalRuntimeImage builds the runtime for the Docker daemon's platform,
+// not for the platform the asset declares. The emulator runs every ECS task on
+// the daemon's platform and ignores the task definition's RuntimePlatform, and
+// since floci 2.1.0 it uses a local image only when the image was built for that
+// platform; for any other image it pulls the tag instead, and a tag that exists
+// only on this machine cannot be pulled. The task definition keeps the
+// deployment's platform, so the stack under test stays the one AWS receives.
 func buildLocalRuntimeImage(t *testing.T, state *localBackend, asset localRuntimeAsset) string {
 	t.Helper()
+	platform := localRuntimePlatform(t, state)
 	if override := strings.TrimSpace(os.Getenv(localImageEnv)); override != "" {
-		verifyLocalRuntimeImage(t, override, asset)
+		verifyLocalRuntimeImage(t, override, platform, asset)
 		return override
 	}
 	root, err := filepath.Abs("../../../..")
@@ -76,24 +84,69 @@ func buildLocalRuntimeImage(t *testing.T, state *localBackend, asset localRuntim
 	}
 	image := "gobridge-local-runtime:" + strings.TrimPrefix(state.network, localRunPrefix) + "-" + asset.ID
 	state.runtimeImages = append(state.runtimeImages, image)
-	cmd := exec.CommandContext(t.Context(), "docker", "build", "--platform", asset.Platform,
+	t.Logf("runtime image %s: the deployment declares %s; building for %s, the Docker daemon's platform",
+		image, asset.Platform, platform)
+	cmd := exec.CommandContext(t.Context(), "docker", "build", "--platform", platform,
 		"--build-arg", "INITIAL_CONFIG_FILE="+filepath.Base(file.Name()), "-t", image, root)
 	cmd.Stdout, cmd.Stderr = testWriter{t}, testWriter{t}
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("build local runtime with staged initial config: %v", err)
 	}
-	verifyLocalRuntimeImage(t, image, asset)
+	verifyLocalRuntimeImage(t, image, platform, asset)
 	return image
 }
 
-func verifyLocalRuntimeImage(t *testing.T, image string, asset localRuntimeAsset) {
+// localRuntimePlatform returns the Docker daemon's platform, read once per run.
+func localRuntimePlatform(t *testing.T, state *localBackend) string {
+	t.Helper()
+	if state.runtimePlatform == "" {
+		out, err := dockerexec.Run(dockerexec.InspectTimeout, "info", "--format", "{{.OSType}}/{{.Architecture}}")
+		if err != nil {
+			t.Fatalf("read the Docker daemon platform: %v\n%s", err, out)
+		}
+		platform, err := daemonPlatform(string(out))
+		if err != nil {
+			t.Fatal(err)
+		}
+		state.runtimePlatform = platform
+	}
+	return state.runtimePlatform
+}
+
+// daemonPlatform normalizes `docker info`'s OSType/Architecture exactly as
+// floci does before it compares a local image with it: lower case, aarch64 is
+// arm64, x86_64 is amd64, and an unreported OS is linux. Only the two platforms
+// a runtime image asset may declare are accepted.
+func daemonPlatform(info string) (string, error) {
+	reported := strings.TrimSpace(info)
+	osType, arch, _ := strings.Cut(strings.ToLower(reported), "/")
+	if osType == "" {
+		osType = "linux"
+	}
+	switch arch {
+	case "aarch64":
+		arch = "arm64"
+	case "x86_64":
+		arch = "amd64"
+	}
+	platform := osType + "/" + arch
+	if platform != "linux/amd64" && platform != "linux/arm64" {
+		return "", fmt.Errorf("the Docker daemon reports the platform %q; the emulator runs ECS tasks only on "+
+			"the daemon's platform, and the local runtime image is built only for linux/amd64 or linux/arm64",
+			reported)
+	}
+	return platform, nil
+}
+
+func verifyLocalRuntimeImage(t *testing.T, image, platform string, asset localRuntimeAsset) {
 	t.Helper()
 	// No AWS calls or startup side effects: this command exits after hashing
 	// its embedded bytes, before opening a config source or listening socket.
+	// It runs on the platform the emulator will run the image on.
 	out, err := dockerexec.Run(dockerexec.RunTimeout, "run", "--rm", "--network", "none",
-		"--platform", asset.Platform, image, "-initial-config-digest")
+		"--platform", platform, image, "-initial-config-digest")
 	if err != nil {
-		t.Fatalf("runtime image %q cannot verify its embedded initial config: %v\n%s", image, err, out)
+		t.Fatalf("runtime image %q cannot verify its embedded initial config on %s: %v\n%s", image, platform, err, out)
 	}
 	if err := verifyInitialConfigDigest(asset.Config, string(out)); err != nil {
 		t.Fatalf("%s=%q: %v; unset %s to build this checkout with the fixture's config",

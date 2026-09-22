@@ -19,13 +19,15 @@ func TestLocalRuntimeBuild_EmbedsStagedConfigAndCleansInput(t *testing.T) {
 	t.Run("build", func(t *testing.T) {
 		t.Setenv(localImageEnv, "")
 		image := buildLocalRuntimeImage(t, state, localRuntimeAsset{
-			ID: "asset", Platform: "linux/arm64", Config: payload,
+			ID: "asset", Platform: "linux/amd64", Config: payload,
 		})
 		require.Equal(t, []string{image}, state.runtimeImages, "the run owns cleanup of its built image")
+		require.Equal(t, "linux/arm64", state.runtimePlatform, "the daemon platform is read once per run")
 		data, err := os.ReadFile(record)
 		require.NoError(t, err)
 		args := strings.Split(strings.TrimSpace(string(data)), "\n")
-		require.Equal(t, []string{"build", "--platform", "linux/arm64", "--build-arg"}, args[:4])
+		require.Equal(t, []string{"build", "--platform", "linux/arm64", "--build-arg"}, args[:4],
+			"the emulator runs a local image only on the daemon's platform, whatever the asset declares")
 		relative := strings.TrimPrefix(args[4], "INITIAL_CONFIG_FILE=")
 		require.True(t, strings.HasPrefix(relative, ".gobridge-initial-"))
 		require.Equal(t, filepath.Base(relative), relative, "input must be inside the root Docker context")
@@ -54,7 +56,8 @@ func TestLocalRuntimeBuild_UsesVerifiedOverrideWithoutRebuilding(t *testing.T) {
 }
 
 // This CLI stand-in records only build arguments. It never starts a container
-// or writes to the runtime config target; deployment tests own that proof.
+// or writes to the runtime config target; deployment tests own that proof. Its
+// daemon is Apple silicon, and it verifies an image only on that platform.
 func installImageBuildCLI(t *testing.T, digest string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -62,11 +65,18 @@ func installImageBuildCLI(t *testing.T, digest string) string {
 	script := `#!/bin/sh
 set -eu
 case "$1" in
+info)
+  test "$2" = --format
+  test "$3" = '{{.OSType}}/{{.Architecture}}'
+  printf 'linux/aarch64\n'
+  ;;
 build) printf '%s\n' "$@" >"$GOBRIDGE_TEST_BUILD_ARGS" ;;
 run)
   test "$2" = --rm
   test "$3" = --network
   test "$4" = none
+  test "$5" = --platform
+  test "$6" = linux/arm64
   test "$8" = -initial-config-digest
   printf '%s\n' "$GOBRIDGE_TEST_CONFIG_DIGEST"
   ;;

@@ -113,6 +113,9 @@ type localBackend struct {
 	metadata         string
 	runtimeImages    []string
 	taskSpecs        map[string]localTaskSpec
+	// runtimePlatform is the Docker daemon's platform, read once per run; see
+	// localRuntimePlatform.
+	runtimePlatform string
 	// deployedTaskDefs records, per deployed service, the task definition
 	// CloudFormation put it on before the harness rolled it onto a restored one.
 	deployedTaskDefs map[string]string

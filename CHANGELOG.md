@@ -67,11 +67,12 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 - `testutil/flocilocal` honours `FLOCI_IMAGE`: when it is set, the helper pulls
   and runs that image instead of `floci/floci:latest`, which stays the default.
   Re-running on an earlier release, e.g. `FLOCI_IMAGE=floci/floci:2.0.1`, tells
-  whether a break is the emulator's. floci 2.1.0 pulls every ECS task image
-  instead of running the runtime image the local deployment suite builds, so
-  no deployed task starts and every test that waits for one fails; run that
-  suite with `FLOCI_IMAGE=floci/floci:2.0.1` until the harness publishes its
-  runtime image where floci 2.1 can pull it. See
+  whether a break is the emulator's. floci runs every ECS task on the Docker
+  host's architecture and, since 2.1.0, uses a local image only when the image
+  matches the Docker host's platform, so the local deployment suite now builds
+  its runtime image for the host platform (`linux/arm64` on Apple silicon)
+  while the task definition keeps the deployment's platform (`X86_64` by
+  default). See
   [Which emulator release a run is on](docs/aws-deployment/local-deployment-suite.md#which-emulator-release-a-run-is-on).
 
 ### Changed — `testutil/wait` is a package of the core module

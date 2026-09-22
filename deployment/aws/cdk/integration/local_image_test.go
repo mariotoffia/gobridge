@@ -132,3 +132,37 @@ func TestIsRuntimeContainer_UsesDeclaredRuntimeName(t *testing.T) {
 	require.True(t, isRuntimeContainer("gobridge"))
 	require.False(t, isRuntimeContainer("metrics"))
 }
+
+func TestDaemonPlatform_NormalizesAsTheEmulatorDoes(t *testing.T) {
+	for _, tc := range []struct{ name, info, want string }{
+		{"apple silicon", "linux/aarch64\n", "linux/arm64"},
+		{"intel", "linux/x86_64\n", "linux/amd64"},
+		{"already arm64", "linux/arm64", "linux/arm64"},
+		{"already amd64", "linux/amd64", "linux/amd64"},
+		{"upper case", "Linux/AARCH64", "linux/arm64"},
+		{"unreported os", "/x86_64", "linux/amd64"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := daemonPlatform(tc.info)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestDaemonPlatform_RejectsPlatformsNoAssetDeclares(t *testing.T) {
+	for _, tc := range []struct{ name, info string }{
+		{"empty", ""},
+		{"no architecture", "linux/"},
+		{"no separator", "linux"},
+		{"32-bit arm", "linux/armv7l"},
+		{"s390x", "linux/s390x"},
+		{"windows", "windows/x86_64"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := daemonPlatform(tc.info)
+			require.Error(t, err)
+			require.Empty(t, got)
+		})
+	}
+}

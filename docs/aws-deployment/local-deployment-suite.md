@@ -77,8 +77,10 @@ build-time embedding, not an environment-based runtime initializer.
 Before deployment, the harness reads each runtime image asset's embedded bytes,
 checks their SHA-256 against the Base64 asset filename,
 places them in a private `.gobridge-initial-*.yaml` file in the repository root,
-and builds the root Dockerfile with `INITIAL_CONFIG_FILE` and the asset's
-platform. The runtime's `-initial-config-digest` command must report the SHA-256
+and builds the root Dockerfile with `INITIAL_CONFIG_FILE` for the Docker host's
+platform, which need not be the asset's (see
+[Which emulator release a run is on](#which-emulator-release-a-run-is-on)).
+The runtime's `-initial-config-digest` command must report the SHA-256
 of those exact bytes. The harness then replaces the task definition's image
 reference and removes only that runtime asset's publication entry. Lambda and
 other deployment assets keep their normal publication paths.
@@ -96,12 +98,13 @@ must never overwrite it. There is no configuration seeder container, separate
 configuration image, or S3 configuration asset.
 
 `GOBRIDGE_LOCAL_IMAGE` remains an explicit prebuilt-image override. It skips the
-local build only if the image's `-initial-config-digest` matches the synthesized
-fixture's embedded payload. An empty, mismatched, or unsupported digest fails
-before deployment with instructions to unset the override. A generic unconfigured
-runtime image is not sufficient, and one override cannot cover fixtures whose
-embedded configurations differ. The harness does not rebuild, retag, or delete
-an image supplied through this override.
+local build only if the image, run on the Docker host's platform, reports an
+`-initial-config-digest` that matches the synthesized fixture's embedded
+payload. An empty, mismatched, or unsupported digest fails before deployment
+with instructions to unset the override. A generic unconfigured runtime image is
+not sufficient, and one override cannot cover fixtures whose embedded
+configurations differ. The harness does not rebuild, retag, or delete an image
+supplied through this override.
 
 Credentialed fixtures instead require `GOBRIDGE_INT_VERSION`, naming a published
 module version that supports embedded initialization and the digest command.
@@ -317,16 +320,19 @@ A run that passes there and fails on `:latest` broke with the emulator, not
 with the code. `docker image inspect floci/floci:latest` shows which image
 `:latest` is on this machine.
 
-**Known emulator incompatibility: floci 2.1.0 pulls every ECS task image.** It
-no longer runs an image the local Docker daemon already has, so the runtime
-image the harness builds locally never starts — the emulator's own log shows
-`pull access denied for gobridge-local-runtime` — and every local test that
-waits for a deployed ECS task fails. A cohort test reports
-`no member of the roster … answered at all`; the others report
-`service … never had … ready containers`. Until the harness publishes its
-runtime image where floci 2.1 can pull it, run the suite with
-`FLOCI_IMAGE=floci/floci:2.0.1`. The other 2.1.0 change, refusing an ECS host
-volume outside an approved root, needs nothing from you: the harness approves
+**The runtime image is built for the Docker host's platform.** floci runs every
+ECS task on the Docker host's architecture and ignores the task definition's
+`RuntimePlatform`. Since 2.1.0 it uses a local image only when the image matches
+the Docker host's platform; for any other image it pulls the tag instead. The
+runtime image the harness builds exists only on this machine, so that pull fails
+with `pull access denied for gobridge-local-runtime` and no deployed task
+starts. The harness therefore builds its runtime image for the host platform,
+`linux/arm64` on Apple silicon, while the task definition keeps the
+deployment's platform, `X86_64` by default, so the stack under test stays the
+one AWS receives. The run logs both platforms for every image it builds, and a
+Docker host that is neither `linux/amd64` nor `linux/arm64` fails the run before
+its runtime image is built. The other 2.1.0 change, refusing an ECS host volume
+outside an approved root, needs nothing from you either: the harness approves
 its own run directory and no other host path.
 
 ## Where the code lives
