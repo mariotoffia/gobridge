@@ -143,3 +143,14 @@ func TestSenderOptionsReference_DocumentsEveryDecodedKey(t *testing.T) {
 	require.Emptyf(t, missingFrom(documented, decoded),
 		"keys documented under %q that the decoder does not read", heading)
 }
+
+func TestSubscriptionOptionsReference_DocumentsEveryDecodedKey(t *testing.T) {
+	const heading = "## Subscription Options Reference"
+	documented := documentedOptions(t, sessionOptionsDoc, heading)
+	decoded := decodedKeys(t, paho.SubscriptionOptions{})
+
+	require.Emptyf(t, missingFrom(decoded, documented),
+		"subscription keys the decoder reads that %s does not document", sessionOptionsDoc)
+	require.Emptyf(t, missingFrom(documented, decoded),
+		"keys documented under %q that the decoder does not read", heading)
+}

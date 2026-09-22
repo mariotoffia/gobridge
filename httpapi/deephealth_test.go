@@ -21,10 +21,11 @@ import (
 
 // stubSession implements ports.Session for deep health tests.
 type stubSession struct {
-	connected    bool
-	ready        bool
-	serviceLevel ports.ServiceLevel
-	events       chan ports.SessionEvent
+	connected        bool
+	ready            bool
+	serviceLevel     ports.ServiceLevel
+	bestEffortTopics []string
+	events           chan ports.SessionEvent
 }
 
 func newStubSession(connected, ready bool) *stubSession {
@@ -51,6 +52,7 @@ func (s *stubSession) Health(context.Context) ports.SessionHealth {
 		OldestUnsettledAge:       4 * time.Second,
 		ReceiveWindowUtilization: 0.75,
 		RecoveryRecycleCount:     2,
+		BestEffortTopics:         s.bestEffortTopics,
 	}
 }
 func (s *stubSession) Events() <-chan ports.SessionEvent { return s.events }
@@ -130,16 +132,14 @@ func TestHandleDeepHealth_Running(t *testing.T) {
 	assert.Equal(t, string(routing.DeliveryDirectHold), body.Routes[0].DeliveryMode)
 }
 
-// TestHandleDeepHealth_WithSession validates that deep health includes
-// session details when the runtime has routes with sessions.
-func TestHandleDeepHealth_WithSession(t *testing.T) {
+// serveDeepHealthWithSession starts a runtime whose only route,
+// "route-with-session", is bound to sess as session "sess-1", and returns the
+// monitor's deep-health response for it.
+func serveDeepHealthWithSession(t *testing.T, sess ports.Session) *httptest.ResponseRecorder {
+	t.Helper()
 	rt := runtime.New(runtime.WithInstanceID("dh-session"))
 
 	receiver := newStubReceiver()
-	sender := &stubSender{}
-	sess := newStubSession(true, true)
-	sessCfg := &session.Config{SessionID: "sess-1"}
-
 	err := rt.AddRoute(runtime.RouteConfig{
 		ID: "route-with-session",
 		Policy: routing.RoutePolicy{
@@ -148,23 +148,27 @@ func TestHandleDeepHealth_WithSession(t *testing.T) {
 			OnExpired:          routing.ExpiredDrop,
 		},
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
-	}, receiver, sender, sess, sessCfg)
+	}, receiver, &stubSender{}, sess, &session.Config{SessionID: "sess-1"})
 	require.NoError(t, err)
 
 	require.NoError(t, rt.Start(context.Background()))
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 	wait.RequireClosed(t, receiver.ready, 2*time.Second)
 
-	cfg := testConfig()
-	s := New(rt, cfg)
-
 	mux := http.NewServeMux()
-	s.registerMonitorRoutes(mux)
+	New(rt, testConfig()).registerMonitorRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/monitor/deephealth", nil)
 	req.Header.Set("X-API-Key", "test-secret-key-0123456789")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestHandleDeepHealth_WithSession validates that deep health includes
+// session details when the runtime has routes with sessions.
+func TestHandleDeepHealth_WithSession(t *testing.T) {
+	rec := serveDeepHealthWithSession(t, newStubSession(true, true))
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 
@@ -185,6 +189,42 @@ func TestHandleDeepHealth_WithSession(t *testing.T) {
 
 	require.Len(t, body.Routes, 1)
 	assert.Equal(t, "route-with-session", body.Routes[0].ID)
+}
+
+// TestHandleDeepHealth_BestEffortTopicsRenderedOnlyWhenPresent pins the
+// best_effort_topics key: a session that accepted subscriptions below the
+// requested QoS names them, and a session with none omits the key entirely.
+func TestHandleDeepHealth_BestEffortTopicsRenderedOnlyWhenPresent(t *testing.T) {
+	cases := []struct {
+		name   string
+		topics []string
+		want   string // raw JSON value; empty when the key must be absent
+	}{
+		{name: "accepted below requested QoS", topics: []string{"sensors/x"}, want: `["sensors/x"]`},
+		{name: "nil list", topics: nil},
+		{name: "empty list", topics: []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := newStubSession(true, true)
+			sess.bestEffortTopics = tc.topics
+			rec := serveDeepHealthWithSession(t, sess)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			var body struct {
+				Sessions []map[string]json.RawMessage `json:"sessions"`
+			}
+			require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
+			require.Len(t, body.Sessions, 1)
+			got, present := body.Sessions[0]["best_effort_topics"]
+			if tc.want == "" {
+				assert.False(t, present, "a session with no best-effort subscriptions must omit the key, got %s", got)
+				return
+			}
+			require.True(t, present, "best_effort_topics missing from the session")
+			assert.JSONEq(t, tc.want, string(got))
+		})
+	}
 }
 
 // TestHandleDeepHealth_RequiresAuth validates that the deep health

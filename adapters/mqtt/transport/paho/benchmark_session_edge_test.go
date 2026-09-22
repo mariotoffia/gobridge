@@ -70,30 +70,92 @@ func BenchmarkSession_ConnectFailure(b *testing.B) {
 	}
 }
 
-// BenchmarkSession_ReconcileQoSDowngrade measures a reconcile whose broker
-// grant sits below the requested QoS, including the permanence confirmation
-// bookkeeping. It is the reconnect-storm shape of a broker QoS cap: one
-// reconcile per connection edge, each concluding the same downgrade.
+// BenchmarkSession_ReconcileQoSDowngrade measures the steady state of a
+// subscription accepted below its requested QoS: a reconcile of the unchanged
+// filter, which issues no SUBSCRIBE but re-aligns the downgrade record with the
+// plan and re-arms its re-check.
 func BenchmarkSession_ReconcileQoSDowngrade(b *testing.B) {
-	s := NewSession(SessionOptions{
-		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
-		ClientID:   "bench-downgrade",
-	}, connectivity.SessionPersistent, nil, &ports.NoopExporter{})
-	s.mu.Lock()
-	s.cm = &fakeReconcileConn{reasons: []byte{0x00}}
-	s.connected = true
-	empty := connectivity.SessionPlan{}
-	s.appliedPlan = &empty
-	s.mu.Unlock()
-
-	plan := connectivity.SessionPlan{
-		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "sensors/x", QoS: 1}},
-	}
+	s, fake, clk, _ := newDowngradeSession(b, "bench-downgrade", connectivity.SessionPersistent, 0x00, nil)
+	plan := planAtQoS("sensors/x", 1)
 	ctx := context.Background()
+	if err := s.Reconcile(ctx, plan); err != nil {
+		b.Fatal(err)
+	}
+	confirmDowngrade(b, s, clk, fake, "sensors/x")
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = s.Reconcile(ctx, plan)
+		// Every reconcile re-arms the re-check; each replaced schedule stops
+		// its timer from its own goroutine. The fake clock keeps a stopped
+		// timer until an Advance retires it. Advance(0) retires those without
+		// firing the re-check an hour away, so memory stays bounded however
+		// large b.N grows.
+		clk.Advance(0)
+	}
+}
+
+// BenchmarkSession_QoSDowngradeGrant measures the per-SUBACK bookkeeping of a
+// lower grant without timers: recording one fresh grant and syncing the gauge,
+// under the session lock as reconcile and the probe do.
+func BenchmarkSession_QoSDowngradeGrant(b *testing.B) {
+	b.Run("recheck_still_lower", func(b *testing.B) {
+		s, _, _, _ := newDowngradeSession(b, "bench-grant-still", connectivity.SessionPersistent, 0x00, nil)
+		s.mu.Lock()
+		for range qosDowngradeConfirmations {
+			s.applyGrantLocked("sensors/x", 1, 0, DefaultQoSRecheckInterval)
+		}
+		s.mu.Unlock()
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			s.mu.Lock()
+			s.applyGrantLocked("sensors/x", 1, 0, DefaultQoSRecheckInterval)
+			s.syncQoSDowngradeGaugeLocked()
+			s.mu.Unlock()
+		}
+	})
+	b.Run("lower_then_recovered", func(b *testing.B) {
+		s, _, _, _ := newDowngradeSession(b, "bench-grant-alternate", connectivity.SessionPersistent, 0x00, nil)
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			s.mu.Lock()
+			s.applyGrantLocked("sensors/x", 1, byte(i%2), DefaultQoSRecheckInterval)
+			s.syncQoSDowngradeGaugeLocked()
+			s.mu.Unlock()
+		}
+	})
+}
+
+// BenchmarkSession_QoSDowngradeProbe measures one re-check round of an
+// accepted downgrade: the gated SUBSCRIBE, recording the unchanged grant and
+// re-arming the next re-check. The probe is called directly with its record
+// due, so the timer wait itself is not part of the measurement.
+func BenchmarkSession_QoSDowngradeProbe(b *testing.B) {
+	s, fake, clk, _ := newDowngradeSession(b, "bench-probe", connectivity.SessionPersistent, 0x00, nil)
+	ctx := context.Background()
+	if err := s.Reconcile(ctx, planAtQoS("sensors/x", 1)); err != nil {
+		b.Fatal(err)
+	}
+	confirmDowngrade(b, s, clk, fake, "sensors/x")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s.mu.Lock()
+		s.qosDowngrades["sensors/x"].due = clk.Now()
+		s.mu.Unlock()
+		s.probeQoSDowngrades(ctx)
+		// Retire the timer the round's re-arm stopped (see
+		// BenchmarkSession_ReconcileQoSDowngrade); the new one is an hour away.
+		clk.Advance(0)
+	}
+	b.StopTimer()
+	if got := fake.subscribeCallCount(); got != qosDowngradeConfirmations+b.N {
+		b.Fatalf("probe rounds sent %d SUBSCRIBEs, want %d", got, qosDowngradeConfirmations+b.N)
 	}
 }

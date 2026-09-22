@@ -337,7 +337,7 @@ sessions:
 |-------|------|----------|---------|-------------|
 | `topic` | string | **yes** | -- | Topic or subject pattern |
 | `qos` | int | no | 0 | Quality of service (MQTT: 0, 1, 2) |
-| `options` | map | no | -- | Per-subscription options |
+| `options` | map | no | -- | Per-subscription options (MQTT: `subscription.qos_recheck_interval`, see [MQTT options](transports/mqtt-options.md#subscription-options-reference)) |
 
 ```yaml
 receivers:

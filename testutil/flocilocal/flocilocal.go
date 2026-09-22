@@ -33,7 +33,9 @@
 //
 // The container is started on first call to [Endpoint] or [AWSConfig].
 // If the FLOCI_ENDPOINT environment variable is set, no container is started
-// and that endpoint is used directly (after verifying connectivity).
+// and that endpoint is used directly (after verifying connectivity). If the
+// FLOCI_IMAGE environment variable is set, the helper pulls and runs that
+// image instead of floci/floci:latest.
 package flocilocal
 
 import (
@@ -42,6 +44,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -61,8 +66,22 @@ const containerPrefix = "gobridge-flocilocal-"
 // it. The accepted cost is that a run can break on a day nobody changed
 // anything; when that happens the break is real news about the emulator, and
 // the first diagnostic is which image the machine is on
-// (`docker image inspect floci/floci:latest`).
+// (`docker image inspect floci/floci:latest`). To find out whether a break is
+// the emulator's, re-run on an earlier release, e.g.
+// `FLOCI_IMAGE=floci/floci:2.0.1` (see [imageName]): a run that passes there
+// and fails on :latest broke with the emulator, not with the code.
 const defaultImage = "floci/floci:latest"
+
+// imageName is the emulator image a run pulls and starts: the FLOCI_IMAGE
+// environment variable when it is set, [defaultImage] otherwise. The pull and
+// the `docker run` arguments both take the image from here, so the choice
+// lives in one place.
+func imageName() string {
+	if img := os.Getenv("FLOCI_IMAGE"); img != "" {
+		return img
+	}
+	return defaultImage
+}
 
 // gatewayPort is the single port every emulated AWS API is served on.
 const gatewayPort = 4566
@@ -81,6 +100,10 @@ type options struct {
 	// and Lambda functions as real containers. See [WithServicesNetwork].
 	servicesNetwork string
 	servicesAlias   string
+
+	// hostVolumeRoots are the only directories an ECS task definition's host
+	// volume may bind-mount from. See [WithHostVolumeRoots].
+	hostVolumeRoots []string
 }
 
 var (
@@ -121,6 +144,22 @@ func WithServicesNetwork(network, alias string) Option {
 		o.servicesNetwork = network
 		o.servicesAlias = alias
 	}
+}
+
+// WithHostVolumeRoots approves dirs, and nothing else, as the directories an ECS
+// task definition's host volume may bind-mount from, including anything below
+// them.
+//
+// Floci refuses every volumes[].host.sourcePath outside an approved root, so a
+// deployment test whose tasks mount host directories cannot even register its
+// task definitions without this. Floci's switch that allows any host path is
+// deliberately not offered: approving only the named directories keeps the
+// emulator's containers away from the rest of the host. Floci reads the roots
+// comma-separated, so a root that contains a comma fails the fixture instead of
+// approving its pieces, and so does an empty, relative or filesystem-root one
+// (see checkHostVolumeRoot). A later call replaces the roots of an earlier one.
+func WithHostVolumeRoots(dirs ...string) Option {
+	return func(o *options) { o.hostVolumeRoots = slices.Clone(dirs) }
 }
 
 // WithMemory sets the Docker --memory limit for the container (e.g. "512m", "1g").
@@ -295,8 +334,8 @@ func newAWSConfig(ep string) aws.Config {
 
 // --- container lifecycle ---
 
-// pullLatestImage refreshes the emulator image before a run instead of trusting
-// whatever copy the machine already has.
+// pullLatestImage refreshes the emulator image ([imageName]) before a run
+// instead of trusting whatever copy the machine already has.
 //
 // dockerexec.EnsureImage is the wrong primitive for this helper: it returns
 // early whenever any local copy of the reference exists, which for a moving tag
@@ -307,12 +346,13 @@ func newAWSConfig(ep string) aws.Config {
 // A failed pull is only fatal when nothing local can serve instead, so a
 // developer with no network still runs against the image they have.
 func pullLatestImage() error {
-	out, err := dockerexec.Run(dockerexec.PullTimeout, "pull", defaultImage)
+	img := imageName()
+	out, err := dockerexec.Run(dockerexec.PullTimeout, "pull", img)
 	if err == nil {
 		return nil
 	}
-	if _, inspectErr := dockerexec.Run(dockerexec.InspectTimeout, "image", "inspect", defaultImage); inspectErr != nil {
-		return fmt.Errorf("pull %s: %w\n%s", defaultImage, err, out)
+	if _, inspectErr := dockerexec.Run(dockerexec.InspectTimeout, "image", "inspect", img); inspectErr != nil {
+		return fmt.Errorf("pull %s: %w\n%s", img, err, out)
 	}
 	return nil
 }
@@ -334,30 +374,10 @@ func startContainer() (string, string, func(), error) {
 	name := containerPrefix + fmt.Sprintf("%d", port)
 	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
 
-	// The Docker socket is bind-mounted only for [WithServicesNetwork]. Floci
-	// needs it to run ECS tasks and Lambda functions as real containers; a test
-	// that only calls AWS APIs does not, and handing every test binary the host
-	// daemon is a privilege the suite has no use for.
-	args := []string{
-		"run", "-d",
-		"--name", name,
-		"-p", fmt.Sprintf("127.0.0.1:%d:%d", port, gatewayPort),
+	args, err := runArgs(name, port, opts)
+	if err != nil {
+		return "", "", nil, err
 	}
-	if opts.servicesNetwork != "" {
-		args = append(args,
-			"--network", opts.servicesNetwork,
-			"--network-alias", opts.servicesAlias,
-			"-v", "/var/run/docker.sock:/var/run/docker.sock",
-			"-e", "FLOCI_SERVICES_DOCKER_NETWORK="+opts.servicesNetwork,
-		)
-	}
-	if opts.memory != "" {
-		args = append(args, "--memory", opts.memory)
-	}
-	if opts.cpus != "" {
-		args = append(args, "--cpus", opts.cpus)
-	}
-	args = append(args, defaultImage)
 
 	if err := pullLatestImage(); err != nil {
 		return "", "", nil, err
@@ -392,6 +412,63 @@ func startContainer() (string, string, func(), error) {
 	}
 
 	return ep, name, cleanup, nil
+}
+
+// runArgs renders the `docker run` arguments that start the emulator. The image
+// comes last: docker hands everything after it to the container as its command.
+func runArgs(name string, port int, o options) ([]string, error) {
+	// The Docker socket is bind-mounted only for [WithServicesNetwork]. Floci
+	// needs it to run ECS tasks and Lambda functions as real containers; a test
+	// that only calls AWS APIs does not, and handing every test binary the host
+	// daemon is a privilege the suite has no use for.
+	args := []string{
+		"run", "-d",
+		"--name", name,
+		"-p", fmt.Sprintf("127.0.0.1:%d:%d", port, gatewayPort),
+	}
+	if o.servicesNetwork != "" {
+		args = append(args,
+			"--network", o.servicesNetwork,
+			"--network-alias", o.servicesAlias,
+			"-v", "/var/run/docker.sock:/var/run/docker.sock",
+			"-e", "FLOCI_SERVICES_DOCKER_NETWORK="+o.servicesNetwork,
+		)
+	}
+	if len(o.hostVolumeRoots) > 0 {
+		for _, dir := range o.hostVolumeRoots {
+			if err := checkHostVolumeRoot(dir); err != nil {
+				return nil, err
+			}
+		}
+		args = append(args, "-e", "FLOCI_SERVICES_ECS_HOST_VOLUME_ROOTS="+strings.Join(o.hostVolumeRoots, ","))
+	}
+	if o.memory != "" {
+		args = append(args, "--memory", o.memory)
+	}
+	if o.cpus != "" {
+		args = append(args, "--cpus", o.cpus)
+	}
+	return append(args, imageName()), nil
+}
+
+// checkHostVolumeRoot refuses a root that does not name one directory the test
+// owns. Floci canonicalises each root and allows any source path starting with
+// it, so the filesystem root, or anything that cleans to it, would approve
+// every host mount: the switch [WithHostVolumeRoots] deliberately does not
+// offer. An empty or relative root names no directory, and floci would split a
+// root containing a comma into other roots.
+func checkHostVolumeRoot(dir string) error {
+	switch clean := filepath.Clean(dir); {
+	case dir == "":
+		return fmt.Errorf("host-volume root is empty; name the absolute directory the task definitions mount from")
+	case !filepath.IsAbs(dir):
+		return fmt.Errorf("host-volume root %q is not absolute; name the absolute directory the task definitions mount from", dir)
+	case filepath.Dir(clean) == clean:
+		return fmt.Errorf("host-volume root %q is the filesystem root, which would let the emulator mount any host path", dir)
+	case strings.Contains(dir, ","):
+		return fmt.Errorf("host-volume root %q contains a comma, which floci would split into other roots", dir)
+	}
+	return nil
 }
 
 // probeClient bounds every health request. dockerexec.WaitProbe checks its

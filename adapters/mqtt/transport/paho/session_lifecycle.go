@@ -386,6 +386,7 @@ func (s *Session) Close(ctx context.Context) error {
 		return nil
 	}
 	s.closed = true
+	s.retireQoSDowngradesLocked()
 	s.connected = false
 	// Wake every detached session-lifetime wait (the settlement-recovery
 	// cooldown runs on a context deliberately immune to route cancellation, so

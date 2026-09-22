@@ -74,8 +74,9 @@ func (s *Session) ConnectionManager() *autopaho.ConnectionManager {
 //   - Granted QoS: a success reason code (0x00/0x01/
 //     0x02) IS the QoS the broker granted, which may be LOWER than the
 //     requested QoS. The succeeded spec carries the GRANTED QoS so the caller
-//     can retain broker-observed state for cleanup while keeping that topic out
-//     of the contract-active activeSubs map.
+//     can retain broker-observed state for cleanup and treat a lower grant as a
+//     QoS downgrade: out of the contract-active activeSubs map while it is
+//     confirmed, then in it at the granted QoS once accepted as best effort.
 func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
 	succeeded []subscribeSpec, firstErr *shared.BridgeError, errTopic string,
 ) {
@@ -86,8 +87,7 @@ func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
 			// confirmation. Treat it as a failure rather than assuming
 			// acceptance; do NOT mark it active.
 			if firstErr == nil {
-				firstErr = shared.ErrProtocolError.WithMessage(
-					"mqtt: SUBACK returned fewer reason codes than requested subscriptions")
+				firstErr = shortSubackError()
 				errTopic = opt.Topic
 			}
 			continue
@@ -106,6 +106,13 @@ func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
 		succeeded = append(succeeded, granted)
 	}
 	return succeeded, firstErr, errTopic
+}
+
+// shortSubackError is the failure of a subscription the SUBACK carried no
+// reason code for.
+func shortSubackError() *shared.BridgeError {
+	return shared.ErrProtocolError.WithMessage(
+		"mqtt: SUBACK returned fewer reason codes than requested subscriptions")
 }
 
 // Start connects to the MQTT broker and emits a SessionConnected event

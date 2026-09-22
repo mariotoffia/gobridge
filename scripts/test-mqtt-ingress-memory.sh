@@ -27,10 +27,10 @@ trap cleanup EXIT
 
 # The measured binary uses the production allocator. Race instrumentation has
 # a separate shadow heap and would not measure the configured production
-# ingress bound.
+# ingress bound. The build itself is not bounded: only the measured run below
+# is, and compiling modernc.org/sqlite, which the suite links, needs more than
+# 512 MiB.
 docker run --rm \
-  --memory 512m \
-  --memory-swap 512m \
   -v "$workspace:$workspace" \
   -v "$go_cache:/root/.cache/go-build" \
   -v "$go_mod_cache:/go/pkg/mod" \
@@ -46,7 +46,7 @@ docker run -d \
   --network "$network_name" \
   --network-alias mqtt-memory-broker \
   -v "$workspace/tests/longrunning/testdata/mosquitto-memory.conf:/mosquitto/config/mosquitto.conf:ro" \
-  eclipse-mosquitto:2.0.22@sha256:212f89e1eaeb2c322d6441b64396e3346026674db8fa9c27beac293405c32b3c
+  eclipse-mosquitto:2.1.2-alpine@sha256:38c0da4f2ef84284d47b3b3eeea1cb3bdeabe81ee10caf0cd5c5ff61ee3ea408
 
 docker run -d \
   --name "$publisher_name" \

@@ -69,6 +69,60 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   integration tests instead of writing its own container setup and readiness
   polling. They carry a lighter compatibility promise than the runtime
   modules; see [Test helper modules](RELEASE.md#test-helper-modules).
+- `testutil/mqttlocal` grew `WithACL`: the broker refuses a SUBSCRIBE to the
+  listed filters with reason code `0x87` (Not authorized), for anonymous
+  clients and the listed users. Mosquitto reads its `acl_file` only when it
+  accepts or delivers a message, never at SUBSCRIBE, so the fixture loads
+  Mosquitto's dynamic security plugin instead, which also refuses a CONNECT
+  carrying a username it does not list. The local deployment suite uses it for
+  the change every member accepts and none can run, which a broker QoS cap no
+  longer is.
+- `testutil/mqttlocal` grew `WithMaxQoS` and `BrokerInstance.RestartWith`.
+  `WithMaxQoS(n)` caps every listener at QoS `n`: the broker grants a SUBSCRIBE
+  at most `n` and disconnects a client that publishes above it. `-1`, the
+  default, leaves Mosquitto's own default of 2; any other value outside `0..2`
+  fails the fixture. `RestartWith(opts...)` restarts an instance on the same
+  port with the options applied on top of its configuration, so a test can
+  lift a cap mid-test with `RestartWith(WithMaxQoS(2))` and watch its sessions
+  reconnect. It refuses an option that would change the listeners, the
+  credentials, TLS, the ACL or persistence: those are fixed when the instance
+  is created, so such an option fails the test instead of restarting a broker
+  that quietly kept the old setting. The fixture's readiness check now
+  publishes at QoS 1, or at the broker's announced Maximum QoS when that is
+  lower, so a broker capped at QoS 0 no longer looks as if it never
+  started. `WithExtraConfig` replaces the lines of an earlier call rather than
+  adding to them, and its documentation now says so.
+- The MQTT test broker is now Mosquitto 2.1.2 (was 2.0.22), still pinned by
+  image digest, both in `testutil/mqttlocal` and in the release gate's ingress
+  memory proof. The broker now caps every packet at 2,000,000 bytes and
+  announces the cap as Maximum Packet Size in its CONNACK; a client that sends
+  a larger packet is disconnected with reason code `0x95` (Packet too large).
+  A GoBridge session never gets that far: its send fails locally against the
+  Maximum Packet Size the CONNACK announced. 2.0 had no cap.
+  `WithExtraConfig("max_packet_size …\n")` raises it. Since 2.1.0 a SUBSCRIBE
+  to a shared subscription (`$share/…`) that sets No Local is a protocol
+  error. GoBridge clears No Local on shared filters, so it is unaffected, but
+  a test that subscribes to the fixture with its own client must not set it.
+  WebSocket listeners are now served by Mosquitto's own implementation instead
+  of libwebsockets. That implementation rejects an empty WebSocket frame, which
+  the MQTT transport no longer sends (see Fixed, below).
+- `testutil/flocilocal` grew `WithHostVolumeRoots`: the emulator starts with
+  `FLOCI_SERVICES_ECS_HOST_VOLUME_ROOTS` set to the listed directories, and a
+  directory containing a comma fails the fixture, because floci reads the list
+  comma-separated. Newer floci images refuse an ECS task definition whose host
+  volume `sourcePath` lies outside an approved root, so the local deployment
+  suite approves only its own run directory, never any host path.
+- `testutil/flocilocal` honours `FLOCI_IMAGE`: when it is set, the helper pulls
+  and runs that image instead of `floci/floci:latest`, which stays the default.
+  Re-running on an earlier release, e.g. `FLOCI_IMAGE=floci/floci:2.0.1`, tells
+  whether a break is the emulator's. floci runs every ECS task on the Docker
+  host's architecture and, since 2.1.0, uses a local image only when the image
+  matches the Docker host's platform, so the local deployment suite now builds
+  its runtime image for the host platform (`linux/arm64` on Apple silicon)
+  while the task definition keeps the deployment's platform (`X86_64` by
+  default). Only the image differs, so a local run on Apple silicon no longer
+  proves that the image for the declared platform starts. See
+  [Which emulator release a run is on](docs/aws-deployment/local-deployment-suite.md#which-emulator-release-a-run-is-on).
 
 ### Changed — `testutil/wait` is a package of the core module
 
@@ -169,6 +223,86 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 - Add [scenario 24](docs/scenarios/24-mqtt-mixed-qos-to-sqs.md) with runnable
   mixed/ephemeral configurations, managed-subscription initialization, and
   explicit crash-loss boundaries.
+
+### Fixed — MQTT over WebSocket no longer sends empty frames
+
+- MQTT over `ws://` and `wss://` no longer sends empty WebSocket frames.
+  Mosquitto 2.1 rejects them by disconnecting the client with a Malformed
+  Packet error. Paho writes a packet one buffer at a time, and a SUBSCRIBE,
+  UNSUBSCRIBE or PUBLISH without properties includes an empty buffer, which
+  went out as its own zero-length binary frame. On Mosquitto 2.1 a session
+  could connect over WebSocket but was disconnected at its first
+  subscription. The MQTT bytes on the wire are unchanged; only the empty
+  frames are gone.
+
+### Fixed — MQTT over WebSocket follows `ALL_PROXY` like every other broker scheme
+
+- `ws://` and `wss://` broker connections now follow `ALL_PROXY`, `NO_PROXY`
+  and the `ALL_PROXY=direct` opt-out, like `tcp://` and `ssl://`, and no longer
+  `HTTP_PROXY` or `HTTPS_PROXY`. The WebSocket's TCP connection goes through
+  the same proxy decision, and `wss://` runs TLS on top of it, verifying the
+  broker identity from the broker URL.
+- Before, a WebSocket dial ignored `ALL_PROXY` and went around the SOCKS5
+  proxy, either directly or through an HTTP proxy from `HTTP_PROXY` /
+  `HTTPS_PROXY`. A proxy that cannot be reached now fails the dial instead of
+  being bypassed.
+- **Check `ALL_PROXY` before upgrading.** A deployment that sets `ALL_PROXY`
+  for other tools and reached a `ws://` or `wss://` broker directly, loopback
+  included, now dials that broker through the proxy. A value that is not a
+  SOCKS5 proxy, such as `http://`, fails the dial, as it already did for
+  `tcp://` and `ssl://`. To keep the direct route, list the broker host in
+  `NO_PROXY` or set `ALL_PROXY=direct`.
+- A deployment that reached a WebSocket broker through `HTTP_PROXY` or
+  `HTTPS_PROXY` now dials it directly unless `ALL_PROXY` names a SOCKS5 proxy.
+
+### Changed — an MQTT subscription granted a lower QoS is kept as best effort
+
+- **A broker that grants a subscription a lower QoS no longer stops the
+  process.** Before, the same lower grant on three reconciles in a row failed
+  the session permanently and the process exited. Now a lower grant never
+  stops the session or the process. A refused subscription (SUBACK reason code
+  `0x80` or higher) still fails that session's reconcile, as before.
+- The session confirms a lower grant with three fresh SUBSCRIBEs 5 s apart
+  (Retain Handling 1, so no retained replay). While it confirms, the filter is
+  not counted as active (messages still arrive at the granted QoS) and session
+  health is Degraded. A confirmation SUBSCRIBE that gets no grant is retried
+  after 5 s, the wait doubling with each further miss up to 1 min.
+- A confirmed lower grant is accepted: the subscription runs at the granted
+  QoS as best effort, and the bridge logs it once at Error with the topic, the
+  requested QoS and the granted QoS. See
+  [QoS downgrade](docs/transports/mqtt-behavior.md#qos-downgrade).
+- At a QoS 0 grant the broker cannot redeliver a message the route fails to
+  process. The message goes to the DLQ or, when the bridge has no DLQ store, is
+  dropped and counted as `MessagesDropped{reason=retry_unsupported}`, even
+  though the route was validated for the QoS it requested (the retry check asks
+  a route whose subscriptions are all QoS 1 or 2 on a resuming session for no
+  DLQ store or `allow_retry_drop`; with default route policies the bridge has a
+  DLQ store and the message is dead-lettered). The acceptance log says so. For
+  a broker that caps QoS, keep a DLQ store configured or lower the route's
+  `qos`.
+- New gauge `MQTTQoSDowngradedActive` (`session_id`) counts the accepted
+  downgrades per session. It is written when the count changes and again on
+  every health sweep, so it keeps producing samples while a downgrade stands.
+  Alarm on it for a standing condition.
+- Deep health lists the accepted filters in `best_effort_topics`, and the
+  session can report Full.
+- `MQTTQoSDowngraded` now increments once per newly reported lower grant, not
+  on every SUBACK that reports it.
+- The CDK alarm `HAMQTTQoSDowngraded` (on that counter) now fires once per
+  newly reported downgrade and then clears, instead of staying in ALARM through
+  a crash-loop. A standing condition is visible on the
+  `MQTTQoSDowngradedActive` gauge; a CDK alarm on the gauge is a follow-up.
+- An MQTT session plan subscription must carry no `Config` or the MQTT plugin
+  config: a typed-nil, foreign or non-plugin value makes `Reconcile` fail with
+  `shared.ErrInvalidConfig`. Plans the bridge builds are unaffected.
+
+### Added — `qos_recheck_interval`
+
+- New per-subscription option `subscription.qos_recheck_interval` on a
+  receiver `topics[].options` block: how often a subscription accepted below
+  its requested QoS is re-subscribed to learn whether the broker grants the
+  requested QoS again. Default `1h`, `0s` turns it off, minimum `1m`. See
+  [Subscription Options Reference](docs/transports/mqtt-options.md#subscription-options-reference).
 
 ## [0.4.1] - 2026-09-14
 

@@ -27,9 +27,9 @@ import (
 // at the vote: the rollout aborts and nobody applies anything. A change every
 // member ACCEPTS and none can RUN should be resolved by the confirm window,
 // which takes the whole cohort back to its last confirmed generation. The lever
-// for the second is a subscription that asks for a QoS the broker caps below what
-// was requested — every member builds and validates it, and no member's
-// subscriptions are ever satisfied.
+// for the second is a subscription to a topic the broker's ACL refuses — every
+// member builds and validates it, the broker answers SUBACK 0x87 (not
+// authorized), and no member's subscriptions are ever satisfied.
 //
 // The second phase also proves the half that used to be broken on the way: a
 // subscription change, the one delta that reaches the barrier through a
@@ -169,11 +169,11 @@ func TestLocal_StaticSlotCohort(t *testing.T) {
 		// cohort has to be answering again before a proposal that needs every
 		// member's vote is made.
 		waitForEverySlot(t, ctx, probe, adminKey, roster)
-		// A subscription asking for QoS 2 against a broker capped at QoS 1. Every
-		// member validates and builds it — the vote is a build, and nothing about
-		// this config is unbuildable — and no member can then actually run it: the
-		// broker grants the filter one level below what was asked for, the reconcile
-		// fails, and the session restarts into the same verdict.
+		// A subscription to the one topic the broker's ACL refuses. Every member
+		// validates and builds it — the vote is a build, and nothing about this
+		// config is unbuildable — and no member can then actually run it: the
+		// broker refuses the filter (SUBACK 0x87, not authorized), the reconcile
+		// fails, and supervision retries the session into the same verdict.
 		//
 		// It is the one change that reaches the barrier through a receiver's typed
 		// plugin options, which is why it is also the proof that a subscription
@@ -189,7 +189,7 @@ func TestLocal_StaticSlotCohort(t *testing.T) {
 		commitOverlay(t, ctx, probe, controlHost, adminKey, map[string]any{
 			"receivers": []map[string]any{{
 				"id":     haReceiverID,
-				"topics": []map[string]any{{"topic": haProbeTopic, "qos": 2}},
+				"topics": []map[string]any{{"topic": localDeniedTopic, "qos": 1}},
 			}},
 		})
 

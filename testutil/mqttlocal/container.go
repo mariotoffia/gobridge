@@ -35,7 +35,10 @@ func startContainer(c config) (mqttURL, wsURLOut, cName string, cleanup func(), 
 		}
 	}
 
-	confContent := buildConfig(c)
+	confContent, err := buildConfig(c)
+	if err != nil {
+		return "", "", "", nil, err
+	}
 
 	// An authenticated or certificate-serving shared fixture needs its
 	// material on disk before Mosquitto reads the config that names it.

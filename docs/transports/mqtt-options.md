@@ -265,8 +265,22 @@ The same pattern works for AMQP 0-9-1, AMQP 1.0 and Azure Service Bus.
 
 ## Receiver Options
 
-MQTT receivers have no transport-specific options. Subscriptions are declared
-in the `topics[]` array on the `ReceiverDef`, not in the `options` map.
+MQTT receivers still have no receiver-level options. Subscriptions are declared
+in the `topics[]` array on the `ReceiverDef`, not in the receiver's `options`
+map, and each `topics[]` entry accepts an `options.subscription` block,
+documented in [Subscription Options Reference](#subscription-options-reference):
+
+```yaml
+receivers:
+  - id: sensors-in
+    session_id: plant-broker
+    topics:
+      - topic: sensors/#
+        qos: 1
+        options:
+          subscription:
+            qos_recheck_interval: 30m
+```
 
 Every entry is validated at **build time** -- the topic filter against the MQTT
 v5 filter rules (wildcard placement, `$share/<group>/<filter>` shape, UTF-8, no
@@ -287,5 +301,13 @@ delivered at-most-once and never asked for an acknowledgement.
 > constructor exists for adapter diagnostics and focused router tests; it bypasses
 > factory preflight and must not be used to multiplex production routes onto one
 > session. Receiver IDs remain globally unique in bridge configuration.
+
+## Subscription Options Reference
+
+Keys of the `options.subscription` block on a receiver `topics[]` entry.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `qos_recheck_interval` | duration | `1h` | How often a subscription the broker granted below the requested QoS (accepted as best effort) is re-subscribed to learn whether the broker grants the requested QoS again. `0s` disables it (a bare `0` is rejected); a reconnect still re-evaluates. Minimum `1m`. See [QoS downgrade](mqtt-behavior.md#qos-downgrade). |
 
 ---

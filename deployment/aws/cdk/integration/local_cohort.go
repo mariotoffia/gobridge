@@ -35,6 +35,12 @@ const (
 	localAdminKey   = "local-deployment-proof-key"
 	localImageEnv   = "GOBRIDGE_LOCAL_IMAGE"
 
+	// localMQTTUsername and localMQTTPassword are what the MQTT credential
+	// document carries. The broker's ACL lists them, because it refuses a
+	// username it does not know.
+	localMQTTUsername = "gobridge"
+	localMQTTPassword = "gobridge"
+
 	// bootstrapDocumentVariable is the container environment variable the
 	// deployment stamps its bootstrap document into.
 	bootstrapDocumentVariable = "GOBRIDGE_AWS_BOOTSTRAP_JSON"
@@ -165,8 +171,8 @@ func (c LocalCohort) serviceMemberID(t *testing.T, ctx context.Context, service 
 
 // seedLocalParameters writes the two secure parameters the deployment reads at
 // boot. The stack imports them by name, so they must exist before a member
-// starts; the broker allows anonymous connections, so the MQTT document only has
-// to be well-formed.
+// starts; the broker refuses a username its ACL does not list, so the MQTT
+// document carries the credentials localSandbox lists.
 func seedLocalParameters(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -174,7 +180,7 @@ func seedLocalParameters(t *testing.T) {
 	client := ssm.NewFromConfig(localAWSConfig(t))
 	for name, value := range map[string]string{
 		localAdminParam: localAdminKey,
-		localMQTTParam:  `{"username":"gobridge","password":"gobridge"}`,
+		localMQTTParam:  fmt.Sprintf(`{"username":%q,"password":%q}`, localMQTTUsername, localMQTTPassword),
 	} {
 		if _, err := client.PutParameter(ctx, &ssm.PutParameterInput{
 			Name: aws.String(name), Value: aws.String(value),

@@ -465,10 +465,10 @@ malformed subscription filter, cleartext credentials on a non-TLS broker — is
 ## Dialing through a proxy
 
 `ALL_PROXY` (or `all_proxy`) routes broker dials through a SOCKS5 proxy, and
-`NO_PROXY` (or `no_proxy`) exempts hosts from it. Both spellings are read on
-every dial with the **uppercase** taking precedence — the same rule
-`golang.org/x/net/proxy` and `net/http` use, so no two resolvers in the process
-can disagree about which proxy is in force.
+`NO_PROXY` (or `no_proxy`) exempts hosts from it. This holds for every broker
+scheme, `ws://` and `wss://` included; `HTTP_PROXY` and `HTTPS_PROXY` are not
+read. Both spellings are read on every dial, **uppercase** first, as in
+`golang.org/x/net/proxy` and `net/http`, so no two resolvers can disagree.
 
 Two behaviours are deliberate and differ from `proxy.FromEnvironment`:
 
@@ -481,10 +481,10 @@ Two behaviours are deliberate and differ from `proxy.FromEnvironment`:
   reached without it.
 
 TLS broker connections derive the certificate `ServerName` from the broker URL
-host on **both** the direct and the proxied path, so an `ssl://` connection
-through a proxy verifies the broker's identity exactly as a direct one does.
-Previously the proxied path set no name at all, leaving a certificate-validating
-proxied connection unable to verify the broker.
+host on **both** the direct and the proxied path, so an `ssl://` or `wss://`
+connection through a proxy verifies the broker's identity exactly as a direct
+one does. Previously the proxied `ssl://` path set no name at all, leaving a
+certificate-validating proxied connection unable to verify the broker.
 
 ---
 

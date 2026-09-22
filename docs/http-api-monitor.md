@@ -117,6 +117,10 @@ state, session connectivity, lease status, and subscription convergence.
 
 The `service_level` field aggregates across sessions: `full`, `degraded`, `none`.
 
+Each session's `best_effort_topics` lists the subscriptions the broker granted
+below the requested QoS that the session accepted as best effort. Present only
+when non-empty.
+
 The `empty` field is true when the instance carries no routes and no sessions,
 so no message can be bridged through it. That is what a bridge started without
 a usable configuration looks like -- for example when the configured file does

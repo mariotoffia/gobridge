@@ -37,10 +37,11 @@ const (
 	wsPort    = 9001
 	wssPort   = 9443
 
-	// Mosquitto 2.x writes PBKDF2-SHA512 password entries as
-	// `$7$<iterations>$<salt>$<hash>` with these parameters. Rendering the
-	// entry here rather than shelling out to mosquitto_passwd keeps the
-	// fixture to one container.
+	// A PBKDF2-SHA512 password entry is `$7$<iterations>$<salt>$<hash>`.
+	// These are the parameters Mosquitto 2.0 wrote; 2.1 writes a 64-byte salt
+	// and 1000 iterations but still reads a 12-byte salt and any positive
+	// iteration count. Rendering the entry here rather than shelling out to
+	// mosquitto_passwd keeps the fixture to one container.
 	passwordIterations = 101
 	passwordSaltBytes  = 12
 	passwordHashBytes  = sha512.Size
@@ -90,7 +91,7 @@ func WithMutualTLS() Option {
 // needsSecureMaterial reports whether the fixture must write a material
 // directory for the container to mount.
 func (c config) needsSecureMaterial() bool {
-	return c.username != "" || c.tls
+	return c.username != "" || c.tls || c.acl != nil
 }
 
 // writeSecureMaterial renders the password file and TLS material into a fresh
@@ -122,6 +123,18 @@ func writeSecureMaterial(c config) (string, *Material, error) {
 		if err := write(passwordFileName, entry); err != nil {
 			_ = os.RemoveAll(dir)
 			return "", nil, fmt.Errorf("write password file: %w", err)
+		}
+	}
+
+	if c.acl != nil {
+		doc, aclErr := dynamicSecurityConfig(c)
+		if aclErr != nil {
+			_ = os.RemoveAll(dir)
+			return "", nil, aclErr
+		}
+		if err := write(aclConfigName, doc); err != nil {
+			_ = os.RemoveAll(dir)
+			return "", nil, fmt.Errorf("write %s: %w", aclConfigName, err)
 		}
 	}
 
@@ -177,34 +190,48 @@ func writeSecureMaterial(c config) (string, *Material, error) {
 // broker itself is the check that this format is right: a wrong hash fails the
 // fixture's readiness probe rather than passing silently.
 func mosquittoPasswordEntry(username, password string) (string, error) {
-	salt := make([]byte, passwordSaltBytes)
-	if _, err := rand.Read(salt); err != nil {
-		return "", fmt.Errorf("generate password salt: %w", err)
-	}
-	hash, err := pbkdf2.Key(sha512.New, password, salt, passwordIterations, passwordHashBytes)
+	salt, hash, err := passwordHash(password)
 	if err != nil {
-		return "", fmt.Errorf("derive password hash: %w", err)
+		return "", err
 	}
 	return fmt.Sprintf("%s:$7$%d$%s$%s\n", username, passwordIterations,
 		base64.StdEncoding.EncodeToString(salt),
 		base64.StdEncoding.EncodeToString(hash)), nil
 }
 
-// secureListenerLines renders the authentication and TLS directives shared by
-// every listener, plus the TLS listeners themselves.
+// passwordHash derives the PBKDF2-SHA512 hash Mosquitto 2.x stores for a
+// password — in the password file and in the dynamic security plugin alike —
+// over a fresh salt.
+func passwordHash(password string) (salt, hash []byte, err error) {
+	salt = make([]byte, passwordSaltBytes)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, nil, fmt.Errorf("generate password salt: %w", err)
+	}
+	hash, err = pbkdf2.Key(sha512.New, password, salt, passwordIterations, passwordHashBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("derive password hash: %w", err)
+	}
+	return salt, hash, nil
+}
+
+// secureListenerLines renders the authentication, access-control and TLS
+// directives shared by every listener, plus the TLS listeners themselves.
 func secureListenerLines(c config) string {
 	s := ""
 	if c.username != "" {
 		s += fmt.Sprintf("password_file %s/%s\n", secureMountPath, passwordFileName)
 	}
+	if c.acl != nil {
+		s += fmt.Sprintf("plugin %s\nplugin_opt_config_file %s/%s\n", aclPluginPath, secureMountPath, aclConfigName)
+	}
 	if !c.tls {
 		return s
 	}
 	s += fmt.Sprintf("\nlistener %d 0.0.0.0\nprotocol mqtt\n", tlsPort)
-	s += tlsDirectives(c)
+	s += tlsDirectives(c) + listenerLimits(c)
 	if c.webSocket {
 		s += fmt.Sprintf("\nlistener %d 0.0.0.0\nprotocol websockets\n", wssPort)
-		s += tlsDirectives(c)
+		s += tlsDirectives(c) + listenerLimits(c)
 	}
 	return s
 }

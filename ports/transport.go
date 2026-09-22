@@ -385,6 +385,7 @@ type SessionHealth struct {
 	Ready                    bool          // Connected to the broker (connectivity only)
 	ServiceLevel             ServiceLevel  // Operational completeness (none/degraded/full)
 	ActiveTopics             []string      // contract-active subscription filters
+	BestEffortTopics         []string      // contract-active filters the broker granted below the requested QoS, accepted as best effort (sorted)
 }
 
 // HasTopic reports whether the given topic is among the active subscriptions.

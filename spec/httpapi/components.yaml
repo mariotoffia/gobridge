@@ -636,6 +636,14 @@ schemas:
         type: integer
         description: Number of subscriptions currently active.
         example: 5
+      best_effort_topics:
+        type: array
+        items:
+          type: string
+        description: >
+          Subscriptions the broker granted below the requested QoS that the
+          session accepted as best effort. Present only when non-empty.
+        example: ["sensors/x"]
       ready:
         type: boolean
         description: Whether the session is fully converged and ready.

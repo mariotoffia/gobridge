@@ -354,6 +354,41 @@ type SenderOptions struct {
 	ThrottleRetryAfter time.Duration `mapstructure:"throttle_retry_after" yaml:"throttle_retry_after" json:"throttle_retry_after"`
 }
 
+// SubscriptionOptions holds the options of one receiver subscription: the
+// options.subscription block of a receiver topics[] entry.
+type SubscriptionOptions struct {
+	// QoSRecheckInterval is how often the bridge re-sends SUBSCRIBE for a
+	// subscription it accepted below the requested QoS, to learn whether the
+	// broker grants the requested QoS again. Zero disables the re-check; a
+	// reconnect still re-evaluates the grant. A non-zero value must be at least
+	// MinQoSRecheckInterval so the re-check cannot load the broker.
+	QoSRecheckInterval time.Duration `mapstructure:"qos_recheck_interval" yaml:"qos_recheck_interval" json:"qos_recheck_interval"`
+}
+
+// DefaultQoSRecheckInterval is the qos_recheck_interval of a subscription that
+// does not configure one.
+const DefaultQoSRecheckInterval = time.Hour
+
+// MinQoSRecheckInterval is the shortest non-zero qos_recheck_interval.
+const MinQoSRecheckInterval = time.Minute
+
+// DefaultSubscriptionOptions returns SubscriptionOptions with recommended defaults.
+func DefaultSubscriptionOptions() SubscriptionOptions {
+	return SubscriptionOptions{QoSRecheckInterval: DefaultQoSRecheckInterval}
+}
+
+// validate rejects a re-check interval that is neither 0 (off) nor at least
+// MinQoSRecheckInterval, a negative one included. It owns the sign check: 0
+// turns the re-check off, so only omitting the option gives the default.
+func (o SubscriptionOptions) validate() error {
+	if d := o.QoSRecheckInterval; d < 0 || (d > 0 && d < MinQoSRecheckInterval) {
+		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"mqtt: subscription.qos_recheck_interval must be 0s (off) or at least %s, got %s (omit it for the %s default)",
+			MinQoSRecheckInterval, d, DefaultQoSRecheckInterval))
+	}
+	return nil
+}
+
 // DefaultPersistentSessionExpiry is the session_expiry_interval (in
 // seconds) applied by NewSession when a Persistent or Exclusive session
 // is configured with the zero value. 0 would give ZERO offline
@@ -453,7 +488,8 @@ func DefaultConfig() Config {
 	// decoded Config free of it (NewSession installs clock.System).
 	session.Clock = nil
 	return Config{
-		Session: session,
-		Sender:  DefaultSenderOptions(),
+		Session:      session,
+		Sender:       DefaultSenderOptions(),
+		Subscription: DefaultSubscriptionOptions(),
 	}
 }

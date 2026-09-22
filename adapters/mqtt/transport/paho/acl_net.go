@@ -185,7 +185,7 @@ func firstNonEmptyEnv(lookup proxyEnvLookup, names ...string) string {
 
 // dialBrokerStream opens the TCP byte stream to address, through the resolved
 // proxy or directly. It is the single dial seam for every broker scheme so a
-// proxy decision cannot differ between plaintext and TLS.
+// proxy decision cannot differ between tcp://, ssl://, ws:// and wss://.
 func dialBrokerStream(ctx context.Context, address string) (net.Conn, error) {
 	dialer, err := brokerProxyDialer(os.Getenv)
 	if err != nil {
@@ -256,27 +256,57 @@ func dialMQTTWebsocket(
 	cfg *autopaho.WebSocketConfig,
 	serverURL *url.URL,
 ) (net.Conn, error) {
-	var dialer *websocket.Dialer
+	dialer := brokerWebsocketDialer(tlsConfig, cfg, serverURL)
 	var header http.Header
-	if cfg != nil {
-		if cfg.Dialer != nil {
-			dialer = cfg.Dialer(serverURL, tlsConfig)
-		}
-		if cfg.Header != nil {
-			header = cfg.Header(serverURL, tlsConfig)
-		}
-	}
-	if dialer == nil {
-		copy := *websocket.DefaultDialer
-		copy.TLSClientConfig = tlsConfig
-		copy.Subprotocols = []string{"mqtt"}
-		dialer = &copy
+	if cfg != nil && cfg.Header != nil {
+		header = cfg.Header(serverURL, tlsConfig)
 	}
 	conn, _, err := dialer.DialContext(ctx, serverURL.String(), header)
 	if err != nil {
 		return nil, fmt.Errorf("mqtt: websocket connection: %w", err)
 	}
 	return &mqttWebsocketConn{Conn: conn}, nil
+}
+
+// websocketHandshakeTimeout bounds the WebSocket upgrade; it is the value
+// gorilla's websocket.DefaultDialer carries.
+const websocketHandshakeTimeout = 45 * time.Second
+
+// brokerWebsocketDialer returns the dialer for one ws:// or wss:// broker
+// connection. Its TCP connection comes from dialBrokerStream, so ALL_PROXY,
+// NO_PROXY and ALL_PROXY=direct route it exactly as they route tcp:// and
+// ssl://, and wss:// runs TLS on top of it. The default dialer is built from
+// scratch, not copied from websocket.DefaultDialer: that one reads HTTP_PROXY
+// and HTTPS_PROXY, which are not broker proxy variables, and it is a
+// process-wide variable, so a dial function set on it anywhere in the process
+// would carry broker dials around ALL_PROXY.
+//
+// A dialer from WebSocketCfg.Dialer keeps every field it sets, its Proxy
+// included: a caller that sets a route has chosen it. It gets the broker stream
+// only when it sets neither NetDial nor NetDialContext; a NetDialTLSContext it
+// sets still wins for wss://, as gorilla prefers it there. It is copied first,
+// because the caller may hand back a dialer it shares.
+func brokerWebsocketDialer(
+	tlsConfig *tls.Config,
+	cfg *autopaho.WebSocketConfig,
+	serverURL *url.URL,
+) *websocket.Dialer {
+	dialer := websocket.Dialer{
+		HandshakeTimeout: websocketHandshakeTimeout,
+		TLSClientConfig:  tlsConfig,
+		Subprotocols:     []string{"mqtt"},
+	}
+	if cfg != nil && cfg.Dialer != nil {
+		if custom := cfg.Dialer(serverURL, tlsConfig); custom != nil {
+			dialer = *custom
+		}
+	}
+	if dialer.NetDial == nil && dialer.NetDialContext == nil {
+		dialer.NetDialContext = func(ctx context.Context, _, address string) (net.Conn, error) {
+			return dialBrokerStream(ctx, address)
+		}
+	}
+	return &dialer
 }
 
 // mqttWebsocketConn presents consecutive binary WebSocket messages as the byte
@@ -311,6 +341,14 @@ func (c *mqttWebsocketConn) Read(p []byte) (int, error) {
 }
 
 func (c *mqttWebsocketConn) Write(p []byte) (int, error) {
+	// An empty write sends no frame. io.Writer permits returning 0, nil for it,
+	// and an empty frame carries no MQTT bytes. Paho writes a packet one buffer
+	// at a time, so a SUBSCRIBE or PUBLISH without properties includes an empty
+	// buffer, and Mosquitto 2.1's WebSocket listener rejects an empty frame by
+	// disconnecting the client with a Malformed Packet error.
+	if len(p) == 0 {
+		return 0, nil
+	}
 	if err := c.WriteMessage(websocket.BinaryMessage, p); err != nil {
 		return 0, err //nolint:wrapcheck // net.Conn Write preserves WebSocket transport errors.
 	}

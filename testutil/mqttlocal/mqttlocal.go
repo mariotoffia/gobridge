@@ -46,6 +46,9 @@
 // endpoints ([BrokerInstance.TLSURL], [BrokerInstance.WebSocketURL],
 // [BrokerInstance.SecureWebSocketURL]) and the generated
 // [BrokerInstance.Material] are per-instance. See secure.go.
+//
+// [WithACL] makes the broker refuse a SUBSCRIBE to named filters with reason
+// code 0x87 (Not authorized). See acl.go.
 package mqttlocal
 
 import (
@@ -67,8 +70,10 @@ import (
 const containerPrefix = "gobridge-mqtt-"
 
 // defaultImage is pinned by digest, like rabbitmqlocal. A floating :latest
-// means CI can break on a day nobody changed anything.
-const defaultImage = "eclipse-mosquitto:2.0.22@sha256:212f89e1eaeb2c322d6441b64396e3346026674db8fa9c27beac293405c32b3c"
+// means CI can break on a day nobody changed anything. The digest is the
+// multi-arch image index, so every platform resolves the same release. The 2.1
+// line is published only with the -alpine suffix.
+const defaultImage = "eclipse-mosquitto:2.1.2-alpine@sha256:38c0da4f2ef84284d47b3b3eeea1cb3bdeabe81ee10caf0cd5c5ff61ee3ea408"
 
 type config struct {
 	image            string
@@ -79,6 +84,7 @@ type config struct {
 	maxQueuedMsgs    int // -1 = not set, 0 = unlimited
 	maxQueuedBytes   int // -1 = not set, 0 = unlimited
 	messageSizeLimit int // -1 = not set, 0 = unlimited
+	maxQoS           int // -1 = not set (Mosquitto default 2), else 0..2
 	extraConfig      string
 	memory           string // e.g. "256m", "512m" — passed to --memory
 	cpus             string // e.g. "0.5", "1.0" — passed to --cpus
@@ -90,6 +96,9 @@ type config struct {
 	password  string
 	tls       bool
 	mutualTLS bool
+
+	// acl refuses a SUBSCRIBE to the filters it denies (see acl.go).
+	acl *ACL
 }
 
 var (
@@ -101,14 +110,21 @@ var (
 	containerName string
 	cleanupFn     func()
 	initErr       error
-	cfg           = config{
+	cfg           = defaultConfig()
+)
+
+// defaultConfig is the configuration every fixture starts from before its
+// options apply: the pinned image and no limit rendered.
+func defaultConfig() config {
+	return config{
 		image:            defaultImage,
 		maxInflightMsgs:  -1,
 		maxQueuedMsgs:    -1,
 		maxQueuedBytes:   -1,
 		messageSizeLimit: -1,
+		maxQoS:           -1,
 	}
-)
+}
 
 // Option configures the Mosquitto container before it is started.
 type Option func(*config)
@@ -156,12 +172,33 @@ func WithMaxQueuedBytes(n int) Option {
 
 // WithMessageSizeLimit sets the Mosquitto message_size_limit config.
 // Use 0 for unlimited. Default (-1) omits the setting.
+//
+// The limit is on the payload only. Mosquitto 2.1 also caps every packet at
+// 2,000,000 bytes (max_packet_size) and disconnects a client that sends a
+// larger one, whatever this limit says; raise that cap with WithExtraConfig.
+// A GoBridge session never gets that far: its send fails locally against the
+// Maximum Packet Size the broker announces in its CONNACK.
 func WithMessageSizeLimit(n int) Option {
 	return func(c *config) { c.messageSizeLimit = n }
 }
 
-// WithExtraConfig appends raw lines to the Mosquitto config file.
-// Each line should be terminated with a newline.
+// WithMaxQoS sets the Mosquitto max_qos config on every listener: the broker
+// grants a SUBSCRIBE at most qos in its SUBACK, announces the cap to MQTT 5
+// clients in the CONNACK, and disconnects a client that publishes above it.
+// Use 0, 1 or 2. Default (-1) omits the setting (Mosquitto default: 2), so
+// WithMaxQoS(-1) removes a cap an earlier option set. Any other value fails
+// the fixture when it renders the config.
+func WithMaxQoS(qos int) Option {
+	return func(c *config) { c.maxQoS = qos }
+}
+
+// WithExtraConfig appends raw lines to the end of the Mosquitto config file.
+// Each line should be terminated with a newline. A listener setting among them
+// applies only to the last listener rendered.
+//
+// The lines replace those of any earlier WithExtraConfig rather than adding to
+// them, so WithExtraConfig("") removes them — on a BrokerInstance.RestartWith
+// as well.
 func WithExtraConfig(lines string) Option {
 	return func(c *config) { c.extraConfig = lines }
 }

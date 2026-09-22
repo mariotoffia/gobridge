@@ -59,13 +59,7 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 		t.Skipf("docker not found: %v", err)
 	}
 
-	c := config{
-		image:            defaultImage,
-		maxInflightMsgs:  -1,
-		maxQueuedMsgs:    -1,
-		maxQueuedBytes:   -1,
-		messageSizeLimit: -1,
-	}
+	c := defaultConfig()
 	for _, o := range opts {
 		o(&c)
 	}
@@ -75,7 +69,10 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 		t.Fatalf("mqttlocal.NewBrokerInstance: free port: %v", err)
 	}
 
-	confContent := buildConfig(c)
+	confContent, err := buildConfig(c)
+	if err != nil {
+		t.Fatalf("mqttlocal.NewBrokerInstance: %v", err)
+	}
 	confFile, err := os.CreateTemp("", "mqttinstance-*.conf")
 	if err != nil {
 		t.Fatalf("mqttlocal.NewBrokerInstance: create config: %v", err)
@@ -283,13 +280,57 @@ func (b *BrokerInstance) Stop() {
 // are reused so existing MQTT sessions can reconnect.
 func (b *BrokerInstance) Restart() {
 	b.t.Helper()
+	b.RestartWith()
+}
+
+// RestartWith stops the broker, applies opts on top of the configuration the
+// instance runs, and starts it again on the same port and container name, so a
+// session reconnecting to URL meets the new configuration — for example
+// RestartWith(WithMaxQoS(2)) lifts a cap mid-test.
+//
+// Only settings rendered into mosquitto.conf can change (limits, WithMaxQoS,
+// WithExtraConfig), plus the image and the container resources. Listeners,
+// credentials, TLS material, the ACL and persistence are fixed when the
+// instance is created; an option changing one fails the test instead of
+// restarting a broker that quietly kept the old setting.
+func (b *BrokerInstance) RestartWith(opts ...Option) {
+	b.t.Helper()
+	next := b.cfg
+	for _, o := range opts {
+		o(&next)
+	}
+	if !sameCreationSettings(b.cfg, next) {
+		b.t.Fatalf("mqttlocal.BrokerInstance.RestartWith: listeners, credentials, TLS, " +
+			"the ACL and persistence are fixed at NewBrokerInstance")
+	}
+	confContent, err := buildConfig(next)
+	if err != nil {
+		b.t.Fatalf("mqttlocal.BrokerInstance.RestartWith: %v", err)
+	}
 	if !b.stopped {
 		b.Stop()
 	}
+	// Same mode NewBrokerInstance gave the file: the container reads it as its
+	// own uid, and nothing in it is secret.
+	if err := os.WriteFile(b.confPath, []byte(confContent), 0o644); err != nil {
+		b.t.Fatalf("mqttlocal.BrokerInstance.RestartWith: rewrite config: %v", err)
+	}
+	b.cfg = next
 	// Remove the dead container so we can reuse the name, waiting until it is
 	// actually gone before starting a replacement.
 	_ = dockerexec.DrainRemove(b.name, dockerexec.RemoveTimeout)
 	b.start()
+}
+
+// sameCreationSettings reports whether two configs agree on everything
+// NewBrokerInstance turned into ports, mounts or generated material. The ACL
+// compares by identity: each WithACL owns its copy, so only the option the
+// instance was created with matches, and any other WithACL is refused, because
+// the generated ACL file is never rewritten.
+func sameCreationSettings(a, b config) bool {
+	return a.persistence == b.persistence && a.webSocket == b.webSocket &&
+		a.username == b.username && a.password == b.password &&
+		a.tls == b.tls && a.mutualTLS == b.mutualTLS && a.acl == b.acl
 }
 
 // StopGraceful sends SIGTERM via docker stop, giving Mosquitto time to

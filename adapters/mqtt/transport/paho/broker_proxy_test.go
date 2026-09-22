@@ -136,18 +136,7 @@ func TestBrokerTLSConfig_DerivesServerNameFromAddress(t *testing.T) {
 func TestDialMQTTTLS_ThroughProxyVerifiesBrokerIdentity(t *testing.T) {
 	const brokerHost = "broker.test"
 
-	ca := tlsgen.MustGenerate(tlsgen.Options{
-		CommonName: brokerHost,
-		DNSNames:   []string{brokerHost},
-		ValidFor:   time.Hour,
-		IsCA:       true,
-	})
-	certificate, err := tls.X509KeyPair([]byte(ca.CertPEM), []byte(ca.KeyPEM))
-	require.NoError(t, err)
-
-	pool := x509.NewCertPool()
-	require.True(t, pool.AppendCertsFromPEM([]byte(ca.CAPEM)))
-
+	certificate, pool := brokerTestIdentity(t, brokerHost)
 	brokerAddr := startTLSEchoListener(t, certificate)
 	proxyAddr := startSOCKS5Proxy(t, brokerAddr)
 
@@ -200,6 +189,24 @@ func TestDialMQTTTCP_UnusableProxyFailsClosed(t *testing.T) {
 
 	_, err := dialMQTTTCP(ctx, target)
 	require.Error(t, err)
+}
+
+// brokerTestIdentity returns a certificate for brokerHost that is its own
+// authority, and a pool that trusts it.
+func brokerTestIdentity(t *testing.T, brokerHost string) (tls.Certificate, *x509.CertPool) {
+	t.Helper()
+	ca := tlsgen.MustGenerate(tlsgen.Options{
+		CommonName: brokerHost,
+		DNSNames:   []string{brokerHost},
+		ValidFor:   time.Hour,
+		IsCA:       true,
+	})
+	certificate, err := tls.X509KeyPair([]byte(ca.CertPEM), []byte(ca.KeyPEM))
+	require.NoError(t, err)
+
+	pool := x509.NewCertPool()
+	require.True(t, pool.AppendCertsFromPEM([]byte(ca.CAPEM)))
+	return certificate, pool
 }
 
 func startTCPEchoListener(t *testing.T) string {

@@ -77,8 +77,10 @@ build-time embedding, not an environment-based runtime initializer.
 Before deployment, the harness reads each runtime image asset's embedded bytes,
 checks their SHA-256 against the Base64 asset filename,
 places them in a private `.gobridge-initial-*.yaml` file in the repository root,
-and builds the root Dockerfile with `INITIAL_CONFIG_FILE` and the asset's
-platform. The runtime's `-initial-config-digest` command must report the SHA-256
+and builds the root Dockerfile with `INITIAL_CONFIG_FILE` for the Docker host's
+platform, which need not be the asset's (see
+[Which emulator release a run is on](#which-emulator-release-a-run-is-on)).
+The runtime's `-initial-config-digest` command must report the SHA-256
 of those exact bytes. The harness then replaces the task definition's image
 reference and removes only that runtime asset's publication entry. Lambda and
 other deployment assets keep their normal publication paths.
@@ -96,12 +98,13 @@ must never overwrite it. There is no configuration seeder container, separate
 configuration image, or S3 configuration asset.
 
 `GOBRIDGE_LOCAL_IMAGE` remains an explicit prebuilt-image override. It skips the
-local build only if the image's `-initial-config-digest` matches the synthesized
-fixture's embedded payload. An empty, mismatched, or unsupported digest fails
-before deployment with instructions to unset the override. A generic unconfigured
-runtime image is not sufficient, and one override cannot cover fixtures whose
-embedded configurations differ. The harness does not rebuild, retag, or delete
-an image supplied through this override.
+local build only if the image, run on the Docker host's platform, reports an
+`-initial-config-digest` that matches the synthesized fixture's embedded
+payload. An empty, mismatched, or unsupported digest fails before deployment
+with instructions to unset the override. A generic unconfigured runtime image is
+not sufficient, and one override cannot cover fixtures whose embedded
+configurations differ. The harness does not rebuild, retag, or delete an image
+supplied through this override.
 
 Credentialed fixtures instead require `GOBRIDGE_INT_VERSION`, naming a published
 module version that supports embedded initialization and the digest command.
@@ -167,7 +170,7 @@ locally, the measured reason.
 | Config source | runtime initialization of embedded config into DynamoDB, agreed generation-zero baseline, direct CAS table-write hot reload and return to the original log level on every member | `TestLocal_DynamoDBConfigHotReload` — verifies actual applied config, row/JSON versions and the immutable deployment fingerprint, not only rollout generations |
 | Rollout | a change one member cannot answer for is applied by nobody | `TestLocal_StaticSlotCohort` |
 | Rollout | a subscription change is agreed by the WHOLE cohort, not only by the member that proposed it | `TestLocal_StaticSlotCohort` |
-| Rollout | the confirm window: a change every member accepts and none can run takes the cohort back | `TestLocal_StaticSlotCohort` — the lever is a subscription asking for a QoS the broker caps below it: every member builds and acks it, no member's subscriptions are ever satisfied, and the cohort reverts to its last confirmed generation |
+| Rollout | the confirm window: a change every member accepts and none can run takes the cohort back | `TestLocal_StaticSlotCohort` — the lever is a subscription to a topic the broker's ACL refuses (SUBACK `0x87`, not authorized): every member builds and acks it, no member's subscriptions are ever satisfied, and the cohort reverts to its last confirmed generation |
 | Observability | runtime metrics reach CloudWatch and the alarm's own query crosses its threshold on them | `TestLocal_DeadLetterAndAlarms` |
 | Observability | an alarm driven into ALARM reaches its subscription | **not covered locally** — `TestLocal_DeadLetterAndAlarms` proves the topic's subscription carries messages, then skips: `SetAlarmState` does not run the alarm's actions on this emulator |
 
@@ -183,6 +186,7 @@ Each of these was measured, not assumed.
 | **IAM is not evaluated.** A call the assumed task role has no grant for still succeeds. | The granted half is executed as the task role. For the denied half, the policy CloudFormation attached to the deployed role is read back and every SQS grant in it must name this deployment's own queues. | That AWS refuses the non-granted call. |
 | **CloudFormation cannot update an `AWS::ECS::Service`.** It reports the service it created as not found, then cannot roll back. | The idempotent-redeploy test skips with that reason rather than reporting a deployment defect that does not exist. | Whether re-deploying the same template is a no-op. Synth and the credentialed suite own it. |
 | **EFS has no NFS data plane** and CloudFormation drops task-definition volumes. | The harness rewrites each EFS volume to a host bind mount before deploy, and re-registers filesystem-backed task definitions with the declared volumes and mount points. Explicit DynamoDB-only tasks are checked to have no volumes or mounts and remain on the deployed revision; no artificial bind mount is injected. | That a filesystem-backed task definition reaches ECS intact. |
+| **The emulator ignores `RuntimePlatform`** and runs every ECS task on the Docker host's architecture. | The harness builds the runtime image for the host platform and logs both platforms. The task definition keeps the deployment's `RuntimePlatform`, `X86_64` by default. | That the image for the declared platform starts. Apple silicon runs an arm64 build of the same checkout. |
 | **~~The config mount's ownership is not reproducible.~~ Closed.** The harness used to bind-mount a host directory `0777`, which a SQLite store correctly refuses — it will not put a database under a parent it does not own, or one that is group- or other-writable. That was an accident of convenience, not a limit: the shipped EFS access point creates the mount `755` owned by the container user, and the harness now does the same. | Each stack's config directory is chowned and chmodded to match the access point from a throwaway root container, which covers both a uid-mapping Docker host and a plain Linux one, and handed back before cleanup removes it. | Nothing. |
 | **DynamoDB tables are mirrored only after CloudFormation deploys.** | Runtime calls already address DynamoDB Local. Early tasks can encounter an absent table or config item; they stay live but unready while the target is unavailable. Once the table exists, the control runtime initializes its embedded document using strict create-if-absent. The test never injects an initial config and checks the initial item and every member's applied config, not a helper's stdout. | AWS table provisioning and task startup timing. |
 | **Container stdout does not reach the `awslogs` driver.** | Log assertions read the container's own logs. | Nothing material. |
@@ -300,6 +304,37 @@ All three are closed.
       The emulator is not pinned — the helper pulls `floci/floci:latest` before
       every run — so these answers belong to the image the run was on, and a
       later break is news about the emulator rather than about the topology.
+      To run another release, see
+      [Which emulator release a run is on](#which-emulator-release-a-run-is-on).
+
+## Which emulator release a run is on
+
+`testutil/flocilocal` pulls `floci/floci:latest` before every run. Set
+`FLOCI_IMAGE` to pull and run another image instead; unset, nothing changes. To
+find out whether a break is the emulator's, re-run on an earlier release:
+
+```bash
+FLOCI_IMAGE=floci/floci:2.0.1 make test-local-deploy
+```
+
+A run that passes there and fails on `:latest` broke with the emulator, not
+with the code. `docker image inspect floci/floci:latest` shows which image
+`:latest` is on this machine.
+
+**The runtime image is built for the Docker host's platform.** floci runs every
+ECS task on the Docker host's architecture and ignores the task definition's
+`RuntimePlatform`. Since 2.1.0 it uses a local image only when the image matches
+the Docker host's platform; for any other image it pulls the tag instead. The
+runtime image the harness builds exists only on this machine, so that pull fails
+with `pull access denied for gobridge-local-runtime` and no deployed task
+starts. The harness therefore builds its runtime image for the host platform,
+`linux/arm64` on Apple silicon. The task definition keeps the deployment's
+`RuntimePlatform`, `X86_64` by default; only the image differs, and what that
+leaves unproven is listed under *Emulation gaps*. The run logs both platforms
+for every image it builds, and a Docker host that is neither `linux/amd64` nor
+`linux/arm64` fails the run before its runtime image is built. The other 2.1.0
+change, refusing an ECS host volume outside an approved root, needs nothing from
+you either: the harness approves its own run directory and no other host path.
 
 ## Where the code lives
 

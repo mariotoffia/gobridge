@@ -35,8 +35,10 @@ import (
 // operational completeness:
 //   - Full: the latest explicit plan has successfully converged exactly (no
 //     missing or stale broker subscriptions), every unique desired topic filter
-//     is active at or above requested QoS, every expected receiver handler is
-//     registered, and no publishes are
+//     is active at or above requested QoS — or, granted lower and confirmed, is
+//     active at the granted QoS as best effort (listed in BestEffortTopics; a
+//     lower grant still being confirmed keeps the session Degraded) — every
+//     expected receiver handler is registered, and no publishes are
 //     still buffered waiting for a handler (a covered
 //     subscription whose receiver died keeps its messages retained in the
 //     pending buffer, so a non-empty buffer degrades readiness even while a
@@ -48,7 +50,7 @@ import (
 func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	s.mu.Lock()
 	cm := s.cm
-	desired := make(map[string]byte)
+	desired := planDesiredQoS(s.plan)
 	var expectedReceiverIDs []string
 	planDeclared := s.plan != nil
 	// A reserved ingress receiver (Factory.NewReceiver) that has not yet declared
@@ -57,14 +59,17 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	// (MQTT-OBS-2).
 	ingressReserved := s.ingressReceiverReserved
 	if planDeclared {
-		for _, sub := range s.plan.Subscriptions {
-			qos := byte(sub.QoS)
-			if current, ok := desired[sub.Topic]; !ok || qos > current {
-				desired[sub.Topic] = qos
-			}
-		}
 		expectedReceiverIDs = append(expectedReceiverIDs, s.plan.ExpectedReceiverIDs...)
 	}
+	bestEffort, acceptedDowngrades, confirming := s.qosDowngradeHealthLocked()
+	// Also written when the count changes; re-emitted on every sweep because an
+	// exporter that publishes each gauge call as one datapoint would otherwise
+	// hold a standing downgrade as a single sample, and an alarm on it would fall
+	// to INSUFFICIENT_DATA. Written under s.mu with the count it reports, like
+	// every change write, so a count read before a concurrent recovery, plan
+	// removal or Close can never land after the value that change wrote.
+	s.metrics.Gauge(MetricMQTTQoSDowngradedActive, float64(acceptedDowngrades),
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
 	active := make(map[string]byte, len(s.activeSubs))
 	topics := make([]string, 0, len(s.activeSubs))
 	for topic, qos := range s.activeSubs {
@@ -87,7 +92,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	pendingCount := s.router.PendingCount()
 	wantedCount := len(desired)
 	activeCount := len(active)
-	subscriptionsSatisfied := latchedSubscriptionsSatisfied
+	subscriptionsSatisfied := latchedSubscriptionsSatisfied && !confirming
 	if !planDeclared {
 		// Compatibility for zero-value/programmatic sessions that have not
 		// declared an explicit plan through Reconcile.
@@ -149,6 +154,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		Ready:                    connected && terminalErr == nil,
 		ServiceLevel:             sl,
 		ActiveTopics:             topics,
+		BestEffortTopics:         bestEffort,
 	}
 }
 
