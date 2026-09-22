@@ -176,6 +176,8 @@ func WithMaxQueuedBytes(n int) Option {
 // The limit is on the payload only. Mosquitto 2.1 also caps every packet at
 // 2,000,000 bytes (max_packet_size) and disconnects a client that sends a
 // larger one, whatever this limit says; raise that cap with WithExtraConfig.
+// A GoBridge session never gets that far: its send fails locally against the
+// Maximum Packet Size the broker announces in its CONNACK.
 func WithMessageSizeLimit(n int) Option {
 	return func(c *config) { c.messageSizeLimit = n }
 }

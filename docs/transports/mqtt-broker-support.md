@@ -22,6 +22,11 @@ running your own proof.
 
 Mosquitto 2.1's WebSocket listener rejects an empty WebSocket frame and
 disconnects the client as a malformed packet; GoBridge never sends one.
+`TestMQTTWebsocketConn_EmptyWriteSendsNoFrame` checks the frames the session
+puts on the wire. The WebSocket and Secure WebSocket rows below
+(`TestIntegration_WebSocket_CarriesAuthenticatedTraffic`,
+`TestIntegration_SecureWebSocket_ValidatesTheBrokerCertificate`) carry traffic
+through this broker.
 
 One product, one version, pinned. A floating tag would mean the evidence
 described here silently became evidence about something else.

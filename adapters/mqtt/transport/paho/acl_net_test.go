@@ -62,10 +62,12 @@ type websocketFrame struct {
 }
 
 // startWebsocketFrameRecorder serves a WebSocket endpoint that accepts the
-// mqtt subprotocol and reports every frame the client sends. It reads the raw
-// frames itself: gorilla's reader would reassemble fragments and deliver an
-// empty frame as nothing. The channel closes when the client disconnects or
-// sends a frame the recorder cannot parse.
+// mqtt subprotocol and reports every frame the client sends. It parses the raw
+// frames itself so the check is exact per frame. Gorilla's reader would show an
+// empty message as an empty payload, but it joins the frames of a fragmented
+// message into one payload, which would hide an empty fragment or a write split
+// across frames. The channel closes when the client disconnects or sends a
+// frame the recorder cannot parse.
 func startWebsocketFrameRecorder(t *testing.T) (*url.URL, <-chan websocketFrame) {
 	t.Helper()
 	frames := make(chan websocketFrame, 8)

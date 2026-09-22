@@ -49,9 +49,14 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   memory proof. The broker now caps every packet at 2,000,000 bytes and
   announces the cap as Maximum Packet Size in its CONNACK; a client that sends
   a larger packet is disconnected with reason code `0x95` (Packet too large).
-  2.0 had no cap. `WithExtraConfig("max_packet_size …\n")` raises it. WebSocket
-  listeners are now served by Mosquitto's own implementation instead of
-  libwebsockets. That implementation rejects an empty WebSocket frame, which
+  A GoBridge session never gets that far: its send fails locally against the
+  Maximum Packet Size the CONNACK announced. 2.0 had no cap.
+  `WithExtraConfig("max_packet_size …\n")` raises it. Since 2.1.0 a SUBSCRIBE
+  to a shared subscription (`$share/…`) that sets No Local is a protocol
+  error. GoBridge clears No Local on shared filters, so it is unaffected, but
+  a test that subscribes to the fixture with its own client must not set it.
+  WebSocket listeners are now served by Mosquitto's own implementation instead
+  of libwebsockets. That implementation rejects an empty WebSocket frame, which
   the MQTT transport no longer sends (see Fixed, below).
 - `testutil/flocilocal` grew `WithHostVolumeRoots`: the emulator starts with
   `FLOCI_SERVICES_ECS_HOST_VOLUME_ROOTS` set to the listed directories, and a
