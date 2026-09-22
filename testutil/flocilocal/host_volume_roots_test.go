@@ -48,7 +48,7 @@ func TestRunArgs_HostVolumeRootsApproveExactlyTheNamedDirectories(t *testing.T) 
 	if at < 1 || args[at-1] != "-e" {
 		t.Fatalf("the roots are not passed as floci's comma-separated setting: %q", args)
 	}
-	if args[len(args)-1] != defaultImage {
+	if args[len(args)-1] != imageName() {
 		t.Fatalf("the image is not the last argument, so docker would hand the setting to the container as its command: %q", args)
 	}
 }

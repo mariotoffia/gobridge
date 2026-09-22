@@ -33,7 +33,9 @@
 //
 // The container is started on first call to [Endpoint] or [AWSConfig].
 // If the FLOCI_ENDPOINT environment variable is set, no container is started
-// and that endpoint is used directly (after verifying connectivity).
+// and that endpoint is used directly (after verifying connectivity). If the
+// FLOCI_IMAGE environment variable is set, the helper pulls and runs that
+// image instead of floci/floci:latest.
 package flocilocal
 
 import (
@@ -63,8 +65,22 @@ const containerPrefix = "gobridge-flocilocal-"
 // it. The accepted cost is that a run can break on a day nobody changed
 // anything; when that happens the break is real news about the emulator, and
 // the first diagnostic is which image the machine is on
-// (`docker image inspect floci/floci:latest`).
+// (`docker image inspect floci/floci:latest`). To find out whether a break is
+// the emulator's, re-run on an earlier release, e.g.
+// `FLOCI_IMAGE=floci/floci:2.0.1` (see [imageName]): a run that passes there
+// and fails on :latest broke with the emulator, not with the code.
 const defaultImage = "floci/floci:latest"
+
+// imageName is the emulator image a run pulls and starts: the FLOCI_IMAGE
+// environment variable when it is set, [defaultImage] otherwise. The pull and
+// the `docker run` arguments both take the image from here, so the choice
+// lives in one place.
+func imageName() string {
+	if img := os.Getenv("FLOCI_IMAGE"); img != "" {
+		return img
+	}
+	return defaultImage
+}
 
 // gatewayPort is the single port every emulated AWS API is served on.
 const gatewayPort = 4566
@@ -316,8 +332,8 @@ func newAWSConfig(ep string) aws.Config {
 
 // --- container lifecycle ---
 
-// pullLatestImage refreshes the emulator image before a run instead of trusting
-// whatever copy the machine already has.
+// pullLatestImage refreshes the emulator image ([imageName]) before a run
+// instead of trusting whatever copy the machine already has.
 //
 // dockerexec.EnsureImage is the wrong primitive for this helper: it returns
 // early whenever any local copy of the reference exists, which for a moving tag
@@ -328,12 +344,13 @@ func newAWSConfig(ep string) aws.Config {
 // A failed pull is only fatal when nothing local can serve instead, so a
 // developer with no network still runs against the image they have.
 func pullLatestImage() error {
-	out, err := dockerexec.Run(dockerexec.PullTimeout, "pull", defaultImage)
+	img := imageName()
+	out, err := dockerexec.Run(dockerexec.PullTimeout, "pull", img)
 	if err == nil {
 		return nil
 	}
-	if _, inspectErr := dockerexec.Run(dockerexec.InspectTimeout, "image", "inspect", defaultImage); inspectErr != nil {
-		return fmt.Errorf("pull %s: %w\n%s", defaultImage, err, out)
+	if _, inspectErr := dockerexec.Run(dockerexec.InspectTimeout, "image", "inspect", img); inspectErr != nil {
+		return fmt.Errorf("pull %s: %w\n%s", img, err, out)
 	}
 	return nil
 }
@@ -429,7 +446,7 @@ func runArgs(name string, port int, o options) ([]string, error) {
 	if o.cpus != "" {
 		args = append(args, "--cpus", o.cpus)
 	}
-	return append(args, defaultImage), nil
+	return append(args, imageName()), nil
 }
 
 // probeClient bounds every health request. dockerexec.WaitProbe checks its

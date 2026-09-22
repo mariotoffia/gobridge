@@ -300,6 +300,34 @@ All three are closed.
       The emulator is not pinned — the helper pulls `floci/floci:latest` before
       every run — so these answers belong to the image the run was on, and a
       later break is news about the emulator rather than about the topology.
+      To run another release, see
+      [Which emulator release a run is on](#which-emulator-release-a-run-is-on).
+
+## Which emulator release a run is on
+
+`testutil/flocilocal` pulls `floci/floci:latest` before every run. Set
+`FLOCI_IMAGE` to pull and run another image instead; unset, nothing changes. To
+find out whether a break is the emulator's, re-run on an earlier release:
+
+```bash
+FLOCI_IMAGE=floci/floci:2.0.1 make test-local-deploy
+```
+
+A run that passes there and fails on `:latest` broke with the emulator, not
+with the code. `docker image inspect floci/floci:latest` shows which image
+`:latest` is on this machine.
+
+**Known emulator incompatibility: floci 2.1.0 pulls every ECS task image.** It
+no longer runs an image the local Docker daemon already has, so the runtime
+image the harness builds locally never starts — the emulator's own log shows
+`pull access denied for gobridge-local-runtime` — and every local test that
+waits for a deployed ECS task fails. A cohort test reports
+`no member of the roster … answered at all`; the others report
+`service … never had … ready containers`. Until the harness publishes its
+runtime image where floci 2.1 can pull it, run the suite with
+`FLOCI_IMAGE=floci/floci:2.0.1`. The other 2.1.0 change, refusing an ECS host
+volume outside an approved root, needs nothing from you: the harness approves
+its own run directory and no other host path.
 
 ## Where the code lives
 
