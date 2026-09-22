@@ -42,6 +42,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -81,6 +83,10 @@ type options struct {
 	// and Lambda functions as real containers. See [WithServicesNetwork].
 	servicesNetwork string
 	servicesAlias   string
+
+	// hostVolumeRoots are the only directories an ECS task definition's host
+	// volume may bind-mount from. See [WithHostVolumeRoots].
+	hostVolumeRoots []string
 }
 
 var (
@@ -121,6 +127,21 @@ func WithServicesNetwork(network, alias string) Option {
 		o.servicesNetwork = network
 		o.servicesAlias = alias
 	}
+}
+
+// WithHostVolumeRoots approves dirs, and nothing else, as the directories an ECS
+// task definition's host volume may bind-mount from, including anything below
+// them.
+//
+// Floci refuses every volumes[].host.sourcePath outside an approved root, so a
+// deployment test whose tasks mount host directories cannot even register its
+// task definitions without this. Floci's switch that allows any host path is
+// deliberately not offered: approving only the named directories keeps the
+// emulator's containers away from the rest of the host. Floci reads the roots
+// comma-separated, so a root that contains a comma fails the fixture instead of
+// approving its pieces. A later call replaces the roots of an earlier one.
+func WithHostVolumeRoots(dirs ...string) Option {
+	return func(o *options) { o.hostVolumeRoots = slices.Clone(dirs) }
 }
 
 // WithMemory sets the Docker --memory limit for the container (e.g. "512m", "1g").
@@ -334,30 +355,10 @@ func startContainer() (string, string, func(), error) {
 	name := containerPrefix + fmt.Sprintf("%d", port)
 	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
 
-	// The Docker socket is bind-mounted only for [WithServicesNetwork]. Floci
-	// needs it to run ECS tasks and Lambda functions as real containers; a test
-	// that only calls AWS APIs does not, and handing every test binary the host
-	// daemon is a privilege the suite has no use for.
-	args := []string{
-		"run", "-d",
-		"--name", name,
-		"-p", fmt.Sprintf("127.0.0.1:%d:%d", port, gatewayPort),
+	args, err := runArgs(name, port, opts)
+	if err != nil {
+		return "", "", nil, err
 	}
-	if opts.servicesNetwork != "" {
-		args = append(args,
-			"--network", opts.servicesNetwork,
-			"--network-alias", opts.servicesAlias,
-			"-v", "/var/run/docker.sock:/var/run/docker.sock",
-			"-e", "FLOCI_SERVICES_DOCKER_NETWORK="+opts.servicesNetwork,
-		)
-	}
-	if opts.memory != "" {
-		args = append(args, "--memory", opts.memory)
-	}
-	if opts.cpus != "" {
-		args = append(args, "--cpus", opts.cpus)
-	}
-	args = append(args, defaultImage)
 
 	if err := pullLatestImage(); err != nil {
 		return "", "", nil, err
@@ -392,6 +393,43 @@ func startContainer() (string, string, func(), error) {
 	}
 
 	return ep, name, cleanup, nil
+}
+
+// runArgs renders the `docker run` arguments that start the emulator. The image
+// comes last: docker hands everything after it to the container as its command.
+func runArgs(name string, port int, o options) ([]string, error) {
+	// The Docker socket is bind-mounted only for [WithServicesNetwork]. Floci
+	// needs it to run ECS tasks and Lambda functions as real containers; a test
+	// that only calls AWS APIs does not, and handing every test binary the host
+	// daemon is a privilege the suite has no use for.
+	args := []string{
+		"run", "-d",
+		"--name", name,
+		"-p", fmt.Sprintf("127.0.0.1:%d:%d", port, gatewayPort),
+	}
+	if o.servicesNetwork != "" {
+		args = append(args,
+			"--network", o.servicesNetwork,
+			"--network-alias", o.servicesAlias,
+			"-v", "/var/run/docker.sock:/var/run/docker.sock",
+			"-e", "FLOCI_SERVICES_DOCKER_NETWORK="+o.servicesNetwork,
+		)
+	}
+	if len(o.hostVolumeRoots) > 0 {
+		for _, dir := range o.hostVolumeRoots {
+			if strings.Contains(dir, ",") {
+				return nil, fmt.Errorf("host-volume root %q contains a comma, which floci would split into other roots", dir)
+			}
+		}
+		args = append(args, "-e", "FLOCI_SERVICES_ECS_HOST_VOLUME_ROOTS="+strings.Join(o.hostVolumeRoots, ","))
+	}
+	if o.memory != "" {
+		args = append(args, "--memory", o.memory)
+	}
+	if o.cpus != "" {
+		args = append(args, "--cpus", o.cpus)
+	}
+	return append(args, defaultImage), nil
 }
 
 // probeClient bounds every health request. dockerexec.WaitProbe checks its

@@ -184,6 +184,7 @@ func localSandbox(t *testing.T) SandboxEnv {
 	// Published from here on, so TestMain can tear the run down even if the
 	// remaining setup fails.
 	localState = state
+	localRunDirectories(t, state)
 
 	// The emulator joins the network first and is given the socket, so the ECS
 	// tasks it launches land beside the broker and DynamoDB Local.
@@ -194,6 +195,10 @@ func localSandbox(t *testing.T) SandboxEnv {
 	// leftovers, precisely.
 	flocilocal.Configure(
 		flocilocal.WithServicesNetwork(state.network, localFlociHost),
+		// Floci refuses an ECS host-volume source outside an approved root. Every
+		// task's config mount lives under the run directory, so that directory,
+		// and nothing wider, is the one root approved.
+		flocilocal.WithHostVolumeRoots(state.runDir),
 	)
 	state.flociEndpoint = flocilocal.Endpoint(t)
 
@@ -216,7 +221,6 @@ func localSandbox(t *testing.T) SandboxEnv {
 	state.brokerURL = mqttlocal.BrokerURL(t)
 	attachToNetwork(t, state.network, mqttlocal.ContainerName(t), localBrokerHost)
 
-	localRunDirectories(t, state)
 	state.prober = startProber(t, state.network)
 	state.responder = startCloudFormationResponder(t, state)
 	state.metadata = startTaskMetadata(t, state)
@@ -326,25 +330,6 @@ func attachToNetwork(t *testing.T, network, container, alias string) {
 // harness containers and the runtime images it builds all carry it, so one run's
 // artefacts are identifiable as a set and reclaimable as one.
 const localRunPrefix = "gobridge-local-deploy-"
-
-// localRunDirectories creates the host directories the containers mount.
-//
-// They have to be reachable from the Docker daemon as a bind source AND from the
-// test process, so they live under the OS temp directory, which Docker shares by
-// default on every platform the suite runs on.
-func localRunDirectories(t *testing.T, state *localBackend) {
-	t.Helper()
-	state.runDir = filepath.Join(os.TempDir(), state.network)
-	state.configDir = filepath.Join(state.runDir, "config")
-	if err := os.MkdirAll(state.configDir, 0o777); err != nil {
-		t.Fatalf("create shared config directory: %v", err)
-	}
-	// Each per-stack mount gets the runtime user's ownership before deployment.
-	// MkdirAll honours the umask, so the shared parent mode is set explicitly.
-	if err := os.Chmod(state.configDir, 0o777); err != nil {
-		t.Fatalf("open shared config directory: %v", err)
-	}
-}
 
 // mountOwnerUID and mountOwnerGID are the uid:gid the deployed containers run as,
 // and therefore the ownership the shipped EFS access point creates the config

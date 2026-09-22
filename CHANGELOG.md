@@ -53,6 +53,12 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   listeners are now served by Mosquitto's own implementation instead of
   libwebsockets. That implementation rejects an empty WebSocket frame, which
   the MQTT transport no longer sends (see Fixed, below).
+- `testutil/flocilocal` grew `WithHostVolumeRoots`: the emulator starts with
+  `FLOCI_SERVICES_ECS_HOST_VOLUME_ROOTS` set to the listed directories, and a
+  directory containing a comma fails the fixture, because floci reads the list
+  comma-separated. Newer floci images refuse an ECS task definition whose host
+  volume `sourcePath` lies outside an approved root, so the local deployment
+  suite approves only its own run directory, never any host path.
 
 ### Changed — `testutil/wait` is a package of the core module
 
