@@ -178,9 +178,11 @@ supports it: the message is re-issued under a fresh envelope ID with the
 original stamped as provenance (`x-bridge.causation-id`). The re-issue also
 drops the source's **adapter-generated identity marker**
 (`x-bridge.generated-id`): that marker means the SOURCE supplied no stable
-identity, which makes a message uncountable and sinks it terminally on its first
-transient failure. A redrive is operator-issued under the fresh bridge-minted
-ID, so it is countable and gets the route's normal retry budget. The re-issue
+identity, which makes a message uncountable, so once a `direct_hold` route has
+spent its in-process `send_retry_budget` (default 60s) on the send it sinks the
+message terminally instead of asking the source to redeliver it. A redrive is
+operator-issued under the fresh bridge-minted ID, so it is countable and gets
+the route's normal retry budget on top of that in-process one. The re-issue
 also **drops the stale transport dedup key** (`x-bridge.dedup-id`): a redrive is a
 deliberate operator re-issue, so the original dedup id -- whose whole purpose is
 to *suppress* re-delivery (e.g. it maps to an SQS FIFO `MessageDeduplicationId`)

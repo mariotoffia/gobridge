@@ -448,6 +448,17 @@ so neither can be injected through an attribute.
   transport-wide constant. An effective window below 2 seconds runs a fixed,
   non-renewed visibility even under `auto_extend: true`, so the check still
   applies there.
+- **Worst-case pipeline time vs. visibility window.** With `auto_extend`
+  disabled, the builder also rejects a route whose whole worst case overruns the
+  window, not just its send: `processors × processor_timeout` +
+  `send_retry_budget` + `send_timeout` + the DLQ-write budget must fit inside
+  the effective `visibility_timeout`, or SQS redelivers mid-pipeline and the
+  message is processed twice. `send_retry_budget` is the in-process send retry a
+  `direct_hold` route spends with the message still invisible; it defaults to
+  60s, so a fixed-window route that validated before this default existed can
+  now be rejected. The rejection names the knobs; `send_retry_budget: 0s` on the
+  route, a longer window, or `auto_extend` each resolve it. See the
+  [`send_retry_budget` policy row](../routes-and-runtime-reference.md#routespolicy----delivery-policy).
 
 > **Tip:** Set the SQS native DLQ `maxReceiveCount` to at least
 > `(bridge max retries + 3)` to prevent SQS from moving messages to the DLQ

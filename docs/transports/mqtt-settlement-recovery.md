@@ -102,10 +102,11 @@ config knob:
   With the shipped defaults it is 240 seconds (2 × `connect_timeout` + 4 ×
   `reconcile_timeout` + 2 × `unmatched_grace`, all 30 s). The session reports
   that same number to the route validator through
-  `ports.SettlementRecoveryTimingConfig`, which rejects at config load any
-  `direct_hold` route whose `send_retry_budget` + `send_timeout` would not fit
-  inside it — a held retry that outlives the drain would fail the recovery
-  attempt and terminalize the session;
+  `ports.SettlementRecoveryTimingConfig`, which only reports it; the route
+  validator is what then rejects, at config load, any `direct_hold` route whose
+  `send_retry_budget` + `send_timeout` would not fit inside it — a held retry
+  that outlives the drain would fail the recovery attempt and terminalize the
+  session;
 - the rebuild preserves `client_id` and session expiry, forcing `clean_start=false`;
 - CONNACK must report **Session Present**, or the broker cannot prove the
   unsettled packet survived. That evidence is stamped with the exact connection

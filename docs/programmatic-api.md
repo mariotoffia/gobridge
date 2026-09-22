@@ -145,12 +145,14 @@ not the YAML shape, but they change *when* and *how* config errors surface:
   instance that is correctly retrying, and every instance at once during a
   shared-target outage. Alert on delivery instead: `RouteErrors` (`route_id`) is
   the delivery-stall signal, alongside `DLQEntries`, `MessagesDropped`, and
-  `OutboxDepth` for the `shared_outbox` mode. On a `direct_hold` route
-  `RouteErrors` is raised only once the in-process send retry gives up, so it
-  lags a stalling destination by up to `send_retry_budget` (60s by default);
-  `SendRetries` (`route_id`) is the earlier signal. `route_dead` (a route
-  flapping at the supervisor backoff cap) is the separate *pipeline* fault
-  state.
+  `OutboxDepth` for the `shared_outbox` mode. `RouteErrors` covers recoverable
+  send failures, recoverable processor-chain failures and a resolver that
+  returned more than one plan; of those, the **send** failures on a
+  `direct_hold` route are counted only once the in-process send retry gives up,
+  so that one signal lags a stalling destination by up to `send_retry_budget`
+  (60s by default) and `SendRetries` (`route_id`) is the earlier one.
+  `route_dead` (a route flapping at the supervisor backoff cap) is the separate
+  *pipeline* fault state.
 - **Route fault blast radius.** A route whose receiver fails is restarted in
   isolation — backed off, counted on `RouteRestarts`, marked not-ready, and
   latched `route_dead` after repeated quick flaps — only when the source can be

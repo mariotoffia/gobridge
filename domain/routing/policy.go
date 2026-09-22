@@ -150,8 +150,13 @@ const (
 	// DefaultSendRetryBudget is how long a direct_hold route keeps retrying a
 	// recoverable send inside the bridge, with backoff, before it makes the
 	// replay-or-dead-letter decision. 60s rides out a destination policy that is
-	// still propagating (up to about a minute on SQS) while staying well inside
-	// the stop drain and an MQTT settlement-recovery recycle. See ADR-0017.
+	// still propagating (up to about a minute on SQS) and fits inside an MQTT
+	// settlement-recovery recycle wait (240s with the shipped defaults), the one
+	// bound a held delivery must not outlive; validateSendRetryBudget enforces
+	// that per route. A Stop is deliberately shorter: it drains in-flight
+	// deliveries for ~25s and then cancels, truncating a held retry part-way
+	// through its budget and leaving the delivery unsettled for the source to
+	// redeliver. See ADR-0017.
 	DefaultSendRetryBudget = 60 * time.Second
 	// SendRetryBudgetDisabled is the explicit opt-out from in-process send retry,
 	// kept distinct from the zero value so WithDefaults can tell "unset" from

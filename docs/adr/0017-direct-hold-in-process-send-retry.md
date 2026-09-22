@@ -82,10 +82,16 @@ mirror of `replay_budget` being read by the drainer only.
 
 - Leaving it out takes the default of **60 seconds**
   (`routing.DefaultSendRetryBudget`). Sixty seconds rides out a destination
-  policy that is still propagating — up to about a minute on SQS — while
-  staying well inside the two limits that bound a held delivery: the roughly
-  25-second drain a `Stop` waits before it cancels, and the MQTT
-  settlement-recovery recycle wait (240 seconds with the shipped defaults).
+  policy that is still propagating — up to about a minute on SQS — and fits
+  inside the limit that a held delivery must not outlive: the MQTT
+  settlement-recovery recycle wait, 240 seconds with the shipped defaults,
+  which the second validation rule below enforces per route.
+  A shutdown is shorter than the budget and deliberately so: `Stop` waits about
+  25 seconds for in-flight deliveries and then cancels, which **truncates** a
+  held retry part-way through its budget. That is not a conflict. A cancelled
+  retry leaves the delivery unsettled, so the source redelivers it to the next
+  process; the budget is a ceiling on how long the bridge keeps trying, not a
+  promise that it always gets the whole time.
 - An explicit `0s` turns in-process retry off and restores the behaviour of
   every release before this one. It is the same tri-state as `jitter: 0`:
   programmatically it is `routing.SendRetryBudgetDisabled`, which is kept
@@ -179,3 +185,30 @@ therefore cannot disagree about how long a held delivery may take to settle.
   that route.
 - `replay_budget` stays what it was: the drainer's wall-clock poison gate. The
   two budgets never apply to the same route.
+
+## Alternatives considered
+
+- **Tell operators to use `shared_outbox` instead.** The drainer already
+  retries for 15 minutes, so a route that cannot afford to dead-letter on a
+  short outage could switch modes. Rejected: `shared_outbox` requires a durable
+  outbox store and acknowledges the source as soon as the record is persisted,
+  which is a different delivery contract, not a retry setting. A route is on
+  `direct_hold` because it wants the source held until the destination has the
+  message; asking for a store and a weaker contract to survive a five-second
+  blip is too large a change to ask for.
+- **Leave it to the destination SDK's own retryer.** The AWS SDK inside the SQS
+  sender already retries a few times. Rejected: it covers one transport. The
+  MQTT and AMQP senders have no such layer, so the behaviour would stay
+  transport-dependent — and each SDK's retryer sits inside a single
+  `send_timeout`, so it cannot span the minute an outage lasts without making
+  that timeout long enough to break the visibility-window checks.
+- **Make `replay_budget` apply to `direct_hold` as well.** It is the field
+  operators already reach for, and reusing it would add no new knob. Rejected:
+  the two budgets mean different things. `replay_budget` is wall-clock measured
+  from a record's first attempt across drainer claims, half of an AND-gate with
+  `max_replay_attempts`, and its 15-minute default is safe only because the
+  source was acknowledged long ago. Held against an unsettled source, 15
+  minutes would outlive every visibility window and every MQTT recovery wait.
+  One name for two incompatible defaults would have been the more confusing
+  outcome, so `send_retry_budget` is its own field and the reference says
+  plainly which mode reads which.
