@@ -179,6 +179,10 @@ func (c Config) Validate() error {
 // reason no operator can see in the configuration. This is the one effective
 // validator every typed entry point passes through, so the sign check belongs
 // here rather than on any single decoder.
+//
+// subscription.qos_recheck_interval is not in this loop: for it 0 turns the
+// re-check off rather than selecting a default, so SubscriptionOptions.validate
+// owns its sign check with wording of its own.
 func (c Config) validateDurations() error {
 	durations := []struct {
 		key   string
@@ -192,7 +196,6 @@ func (c Config) validateDurations() error {
 		{"session.unmatched_grace", c.Session.UnmatchedGrace},
 		{"sender.timeout", c.Sender.Timeout},
 		{"sender.throttle_retry_after", c.Sender.ThrottleRetryAfter},
-		{"subscription.qos_recheck_interval", c.Subscription.QoSRecheckInterval},
 	}
 	for _, d := range durations {
 		if d.value < 0 {

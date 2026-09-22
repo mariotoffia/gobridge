@@ -296,8 +296,8 @@ func subscriptionQoSRecheckInterval(cfg any) (time.Duration, error) {
 		return 0, shared.ErrInvalidConfig.Wrap(err).WithMessage(
 			fmt.Sprintf("mqtt: subscription config must be a non-nil MQTT plugin config, got %T", cfg))
 	}
-	if c.Subscription.QoSRecheckInterval < 0 {
-		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: subscription.qos_recheck_interval must not be negative")
+	if err := c.Subscription.validate(); err != nil {
+		return 0, err
 	}
-	return c.Subscription.QoSRecheckInterval, c.Subscription.validate()
+	return c.Subscription.QoSRecheckInterval, nil
 }

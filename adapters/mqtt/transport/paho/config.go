@@ -377,13 +377,14 @@ func DefaultSubscriptionOptions() SubscriptionOptions {
 	return SubscriptionOptions{QoSRecheckInterval: DefaultQoSRecheckInterval}
 }
 
-// validate rejects a re-check interval that is neither off nor at least
-// MinQoSRecheckInterval. Negative values are rejected by validateDurations.
+// validate rejects a re-check interval that is neither 0 (off) nor at least
+// MinQoSRecheckInterval, a negative one included. It owns the sign check: 0
+// turns the re-check off, so only omitting the option gives the default.
 func (o SubscriptionOptions) validate() error {
-	if d := o.QoSRecheckInterval; d > 0 && d < MinQoSRecheckInterval {
+	if d := o.QoSRecheckInterval; d < 0 || (d > 0 && d < MinQoSRecheckInterval) {
 		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
-			"mqtt: subscription.qos_recheck_interval must be 0 (off) or at least %s, got %s",
-			MinQoSRecheckInterval, d))
+			"mqtt: subscription.qos_recheck_interval must be 0 (off) or at least %s, got %s (omit it for the %s default)",
+			MinQoSRecheckInterval, d, DefaultQoSRecheckInterval))
 	}
 	return nil
 }

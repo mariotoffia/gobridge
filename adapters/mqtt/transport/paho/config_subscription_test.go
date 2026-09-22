@@ -65,6 +65,27 @@ func TestRegistryDecode_SubscriptionQoSRecheckIntervalRejectsNegativeAndBelowMin
 	}
 }
 
+// TestSubscriptionOptionsValidate_RejectsNegative pins that the option owns its
+// sign check: the validator alone refuses a negative interval.
+func TestSubscriptionOptionsValidate_RejectsNegative(t *testing.T) {
+	assert.ErrorIs(t, SubscriptionOptions{QoSRecheckInterval: -time.Second}.validate(), shared.ErrInvalidConfig)
+}
+
+// TestConfigValidate_NegativeQoSRecheckInterval_DoesNotAdviseZeroForDefault pins
+// the wording. The shared duration advice "use 0 for the default" is wrong for
+// this option: 0 turns the re-check off, and only omitting it gives the default,
+// so an operator following that advice would silently disable probing.
+func TestConfigValidate_NegativeQoSRecheckInterval_DoesNotAdviseZeroForDefault(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Session.BrokerURLs = []string{"tcp://192.0.2.1:1883"}
+	cfg.Session.ClientID = "negative-qos-recheck"
+	cfg.Subscription.QoSRecheckInterval = -time.Second
+
+	err := cfg.Validate()
+	require.ErrorIs(t, err, shared.ErrInvalidConfig)
+	assert.NotContains(t, err.Error(), "use 0 for the default")
+}
+
 // TestSubscriptionOptionsValidate_AcceptsOffOrAtLeastMinimum pins the boundary
 // on the validator itself, so a rejection above is the value being refused and
 // not the strict decoder refusing the key.
