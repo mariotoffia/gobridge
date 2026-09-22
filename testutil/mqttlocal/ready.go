@@ -92,20 +92,29 @@ func mqttRoundtrip(addr, username, password string) error {
 		connect.Password = []byte(password)
 		connect.PasswordFlag = true
 	}
-	if _, err := client.Connect(ctx, connect); err != nil {
+	ack, err := client.Connect(ctx, connect)
+	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
 	defer func() { _ = client.Disconnect(&paho.Disconnect{ReasonCode: 0}) }()
 
+	// A broker capped below QoS 1 (WithMaxQoS(0)) announces the cap in its
+	// CONNACK, and the client refuses to publish above it, so the roundtrip runs
+	// at the cap: a QoS 1 probe would report a working broker as never ready.
+	qos := byte(1)
+	if ack != nil && ack.Properties != nil && ack.Properties.MaximumQoS != nil {
+		qos = min(qos, *ack.Properties.MaximumQoS)
+	}
+
 	if _, err := client.Subscribe(ctx, &paho.Subscribe{
-		Subscriptions: []paho.SubscribeOptions{{Topic: topic, QoS: 1}},
+		Subscriptions: []paho.SubscribeOptions{{Topic: topic, QoS: qos}},
 	}); err != nil {
 		return fmt.Errorf("subscribe %s: %w", topic, err)
 	}
 
 	if _, err := client.Publish(ctx, &paho.Publish{
 		Topic:   topic,
-		QoS:     1,
+		QoS:     qos,
 		Payload: []byte("ready"),
 	}); err != nil {
 		return fmt.Errorf("publish %s: %w", topic, err)

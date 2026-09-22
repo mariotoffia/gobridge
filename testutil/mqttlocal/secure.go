@@ -227,10 +227,10 @@ func secureListenerLines(c config) string {
 		return s
 	}
 	s += fmt.Sprintf("\nlistener %d 0.0.0.0\nprotocol mqtt\n", tlsPort)
-	s += tlsDirectives(c)
+	s += tlsDirectives(c) + listenerLimits(c)
 	if c.webSocket {
 		s += fmt.Sprintf("\nlistener %d 0.0.0.0\nprotocol websockets\n", wssPort)
-		s += tlsDirectives(c)
+		s += tlsDirectives(c) + listenerLimits(c)
 	}
 	return s
 }

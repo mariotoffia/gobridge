@@ -8,10 +8,15 @@ import "fmt"
 // Container lifecycle plumbing (orphan sweep, healthy/TCP/stabilize gates,
 // log capture, free ports) lives in testutil/dockerexec — shared by every
 // testutil/*local launcher.
-func buildConfig(c config) string {
-	s := fmt.Sprintf("listener %d 0.0.0.0\nprotocol mqtt\n\n", plainPort)
+func buildConfig(c config) (string, error) {
+	// Mosquitto refuses to start on any other value, which would surface as a
+	// fixture that never becomes ready instead of as the option at fault.
+	if c.maxQoS < -1 || c.maxQoS > 2 {
+		return "", fmt.Errorf("mqttlocal: WithMaxQoS(%d): use 0, 1 or 2, or -1 for the broker default", c.maxQoS)
+	}
+	s := fmt.Sprintf("listener %d 0.0.0.0\nprotocol mqtt\n%s\n", plainPort, listenerLimits(c))
 	if c.webSocket {
-		s += fmt.Sprintf("listener %d 0.0.0.0\nprotocol websockets\n\n", wsPort)
+		s += fmt.Sprintf("listener %d 0.0.0.0\nprotocol websockets\n%s\n", wsPort, listenerLimits(c))
 	}
 	s += secureListenerLines(c)
 	// allow_anonymous is global in Mosquitto: with a password file present
@@ -38,5 +43,15 @@ func buildConfig(c config) string {
 		s += c.extraConfig
 	}
 	s += "\nlog_dest stdout\n"
-	return s
+	return s, nil
+}
+
+// listenerLimits renders the settings Mosquitto scopes to the listener they
+// follow, for every listener block to repeat: rendered once at the end of the
+// file, like WithExtraConfig, they would bind only the last listener.
+func listenerLimits(c config) string {
+	if c.maxQoS < 0 {
+		return ""
+	}
+	return fmt.Sprintf("max_qos %d\n", c.maxQoS)
 }

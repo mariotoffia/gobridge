@@ -82,6 +82,7 @@ type config struct {
 	maxQueuedMsgs    int // -1 = not set, 0 = unlimited
 	maxQueuedBytes   int // -1 = not set, 0 = unlimited
 	messageSizeLimit int // -1 = not set, 0 = unlimited
+	maxQoS           int // -1 = not set (Mosquitto default 2), else 0..2
 	extraConfig      string
 	memory           string // e.g. "256m", "512m" — passed to --memory
 	cpus             string // e.g. "0.5", "1.0" — passed to --cpus
@@ -107,14 +108,21 @@ var (
 	containerName string
 	cleanupFn     func()
 	initErr       error
-	cfg           = config{
+	cfg           = defaultConfig()
+)
+
+// defaultConfig is the configuration every fixture starts from before its
+// options apply: the pinned image and no limit rendered.
+func defaultConfig() config {
+	return config{
 		image:            defaultImage,
 		maxInflightMsgs:  -1,
 		maxQueuedMsgs:    -1,
 		maxQueuedBytes:   -1,
 		messageSizeLimit: -1,
+		maxQoS:           -1,
 	}
-)
+}
 
 // Option configures the Mosquitto container before it is started.
 type Option func(*config)
@@ -166,8 +174,23 @@ func WithMessageSizeLimit(n int) Option {
 	return func(c *config) { c.messageSizeLimit = n }
 }
 
-// WithExtraConfig appends raw lines to the Mosquitto config file.
-// Each line should be terminated with a newline.
+// WithMaxQoS sets the Mosquitto max_qos config on every listener: the broker
+// grants a SUBSCRIBE at most qos in its SUBACK, announces the cap to MQTT 5
+// clients in the CONNACK, and disconnects a client that publishes above it.
+// Use 0, 1 or 2. Default (-1) omits the setting (Mosquitto default: 2), so
+// WithMaxQoS(-1) removes a cap an earlier option set. Any other value fails
+// the fixture when it renders the config.
+func WithMaxQoS(qos int) Option {
+	return func(c *config) { c.maxQoS = qos }
+}
+
+// WithExtraConfig appends raw lines to the end of the Mosquitto config file.
+// Each line should be terminated with a newline. A listener setting among them
+// applies only to the last listener rendered.
+//
+// The lines replace those of any earlier WithExtraConfig rather than adding to
+// them, so WithExtraConfig("") removes them — on a BrokerInstance.RestartWith
+// as well.
 func WithExtraConfig(lines string) Option {
 	return func(c *config) { c.extraConfig = lines }
 }
