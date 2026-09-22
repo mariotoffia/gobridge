@@ -67,13 +67,10 @@ func TestRouteRunner_DirectHold_HappyPath(t *testing.T) {
 	}
 }
 
-// TestRouteRunner_DirectHold_TransientSendError verifies transient send failure retries the delivery without acking.
+// TestRouteRunner_DirectHold_TransientSendError verifies transient send failure retries the delivery without acking (in-process send retry off: one send per delivery).
 func TestRouteRunner_DirectHold_TransientSendError(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
-		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
-		// One send per delivery: this pins the replay decision, not the
-		// in-process send retry that precedes it.
-		cfg.Policy.SendRetryBudget = routing.SendRetryBudgetDisabled
+		cfg.Policy.DeliveryMode, cfg.Policy.SendRetryBudget = routing.DeliveryDirectHold, routing.SendRetryBudgetDisabled
 	})
 	sender.SendErr = shared.ErrUnavailable
 
