@@ -118,11 +118,12 @@ func (s *Session) probeQoSDowngrades(ctx context.Context) {
 		qos, ok := granted[spec.Topic]
 		if !ok {
 			// No verdict (refused, short SUBACK, or no SUBACK at all): keep the
-			// recorded grant and ask again later. A broker that keeps refusing
-			// is warned about once per streak, not on every retry.
+			// recorded grant and ask again later, backing off while confirming.
+			// A broker that keeps refusing is warned about once per streak, not
+			// on every retry.
+			d.noVerdictRounds++
 			d.due = now.Add(d.retryInterval())
-			warn = warn || !d.noVerdict
-			d.noVerdict = true
+			warn = warn || d.noVerdictRounds == 1
 			continue
 		}
 		if v := s.applyGrantLocked(spec.Topic, d.requested, qos, d.recheck); v != grantUnchanged {

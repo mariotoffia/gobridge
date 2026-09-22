@@ -257,7 +257,9 @@ const (
 	// accepted below their requested QoS (best effort), per session. It rises
 	// when a confirmed downgrade is accepted and falls when a re-check or a
 	// reconnect gets the requested QoS, when the subscription is removed from
-	// the plan, or when the session closes. Unlike the MQTTQoSDowngraded
-	// counter, an alarm on it stays raised until the cause is fixed.
+	// the plan, or when the session closes. It is written when the count
+	// changes and again on every Session.Health sweep, so a standing downgrade
+	// keeps producing samples. Unlike the MQTTQoSDowngraded counter, an alarm
+	// on it stays raised until the cause is fixed.
 	MetricMQTTQoSDowngradedActive = "MQTTQoSDowngradedActive"
 )

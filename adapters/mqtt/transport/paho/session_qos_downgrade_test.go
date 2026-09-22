@@ -177,6 +177,8 @@ func TestQoSDowngrade_ThreeFreshIdenticalGrants_AcceptedAsBestEffort(t *testing.
 	requireGauge(t, rec, "downgrade-accept", 1)
 	require.Equal(t, 1, logs.messageCountContaining(slog.LevelError, "best effort"),
 		"acceptance is announced once, at Error")
+	require.Equal(t, 1, logs.messageCountContaining(slog.LevelError, "no acknowledgement or redelivery"),
+		"a QoS 0 grant names what QoS 0 gives up")
 	require.Len(t, rec.FindEntries(MetricMQTTQoSDowngraded), 1,
 		"the counter counts the first report, not the confirmations")
 
@@ -189,6 +191,22 @@ func TestQoSDowngrade_ThreeFreshIdenticalGrants_AcceptedAsBestEffort(t *testing.
 	require.NoError(t, s.Reconcile(ctx, plan), "the accepted state is a converged state")
 	require.Equal(t, qosDowngradeConfirmations, fake.subscribeCallCount(),
 		"an unchanged accepted filter is not re-subscribed by reconcile")
+}
+
+// TestQoSDowngrade_AcceptedAboveQoS0_LogsGrantedQoSDelivery proves the
+// acceptance log describes the grant it accepts: the QoS 0 consequences (no
+// acknowledgement, no redelivery) appear only when the broker granted QoS 0.
+func TestQoSDowngrade_AcceptedAboveQoS0_LogsGrantedQoSDelivery(t *testing.T) {
+	logs := &recordingLogHandler{}
+	s, fake, clk, _ := newDowngradeSession(t, "downgrade-qos1", connectivity.SessionPersistent, 0x01, logs)
+	require.NoError(t, s.Reconcile(context.Background(), planAtQoS("sensors/x", 2)))
+	confirmDowngrade(t, s, clk, fake, "sensors/x")
+
+	require.Equal(t, 1, logs.messageCountContaining(slog.LevelError, "best effort"))
+	require.Equal(t, 1, logs.messageCountContaining(slog.LevelError,
+		"delivery runs at the granted QoS instead of the requested one"))
+	require.Zero(t, logs.messageCountContaining(slog.LevelError, "no acknowledgement"),
+		"QoS 0 consequences do not apply to a QoS 1 grant")
 }
 
 // TestQoSDowngrade_BestEffortTopics_AreSorted pins the documented order of
@@ -229,7 +247,28 @@ func TestQoSDowngrade_WhileConfirming_HealthIsDegraded(t *testing.T) {
 	require.NotNil(t, h.SubscriptionsSatisfied)
 	require.False(t, *h.SubscriptionsSatisfied, "a downgrade still confirming is unsatisfied")
 	require.Empty(t, h.BestEffortTopics)
-	require.Empty(t, rec.FindEntries(MetricMQTTQoSDowngradedActive), "nothing is accepted yet")
+	requireGauge(t, rec, "downgrade-confirming", 0)
+}
+
+// TestQoSDowngrade_Health_EmitsAcceptedCountEverySweep proves a standing
+// downgrade keeps producing gauge samples. An exporter that publishes each gauge
+// call as one datapoint (CloudWatch) would otherwise see a single sample, and an
+// alarm on the gauge would fall to INSUFFICIENT_DATA while the downgrade stands.
+func TestQoSDowngrade_Health_EmitsAcceptedCountEverySweep(t *testing.T) {
+	ctx := context.Background()
+	idle, _, _, idleRec := newDowngradeSession(t, "downgrade-health-none", connectivity.SessionPersistent, 0x00, nil)
+	idle.Health(ctx)
+	requireGauge(t, idleRec, "downgrade-health-none", 0)
+
+	s, fake, clk, rec := newDowngradeSession(t, "downgrade-health-gauge", connectivity.SessionPersistent, 0x00, nil)
+	require.NoError(t, s.Reconcile(ctx, planAtQoS("sensors/x", 1)))
+	confirmDowngrade(t, s, clk, fake, "sensors/x")
+	onChange := len(rec.FindEntries(MetricMQTTQoSDowngradedActive))
+	for sweep := 1; sweep <= 3; sweep++ {
+		s.Health(ctx)
+		require.Len(t, rec.FindEntries(MetricMQTTQoSDowngradedActive), onChange+sweep, "one sample per Health sweep")
+		requireGauge(t, rec, "downgrade-health-gauge", 1)
+	}
 }
 
 // TestQoSDowngrade_RecoveryDuringConfirmation_NeverAccepted proves a transient

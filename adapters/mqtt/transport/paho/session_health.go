@@ -61,7 +61,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	if planDeclared {
 		expectedReceiverIDs = append(expectedReceiverIDs, s.plan.ExpectedReceiverIDs...)
 	}
-	bestEffort, confirming := s.qosDowngradeHealthLocked()
+	bestEffort, acceptedDowngrades, confirming := s.qosDowngradeHealthLocked()
 	active := make(map[string]byte, len(s.activeSubs))
 	topics := make([]string, 0, len(s.activeSubs))
 	for topic, qos := range s.activeSubs {
@@ -130,6 +130,11 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	s.metrics.Gauge(MetricMQTTUnsettled, float64(unsettled.Count), tags...)
 	s.metrics.Gauge(MetricMQTTOldestUnsettledAge, unsettled.OldestAge.Seconds(), tags...)
 	s.metrics.Gauge(MetricMQTTReceiveWindowUtilization, unsettled.ReceiveWindowUtilization, tags...)
+	// Also written when the count changes; re-emitted on every sweep because an
+	// exporter that publishes each gauge call as one datapoint would otherwise
+	// hold a standing downgrade as a single sample, and an alarm on it would fall
+	// to INSUFFICIENT_DATA.
+	s.metrics.Gauge(MetricMQTTQoSDowngradedActive, float64(acceptedDowngrades), tags...)
 
 	return ports.SessionHealth{
 		Connected:                connected,

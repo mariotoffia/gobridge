@@ -2,12 +2,14 @@ package paho
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -75,7 +77,9 @@ func TestQoSDowngrade_RecheckStillLower_ChangesNothing(t *testing.T) {
 		})
 		d, _ := downgradeState(s, "sensors/x")
 		require.True(t, d.accepted())
-		require.Len(t, rec.FindEntries(MetricMQTTQoSDowngradedActive), 1, "the gauge moves only on a change")
+		// Health is never called here, so every sample is an on-change write.
+		require.Len(t, rec.FindEntries(MetricMQTTQoSDowngradedActive), 1, "an unchanged count writes no sample")
+		requireGauge(t, rec, "downgrade-still", 1)
 		require.Equal(t, 1, logs.messageCountContaining(slog.LevelError, "best effort"))
 		require.Len(t, rec.FindEntries(MetricMQTTQoSDowngraded), 1)
 	}
@@ -155,26 +159,74 @@ func TestQoSDowngrade_ProbeRefusedRepeatedly_WarnsOncePerStreak(t *testing.T) {
 	logs := &recordingLogHandler{}
 	s, fake, clk, _ := newDowngradeSession(t, "downgrade-refused-streak", connectivity.SessionPersistent, 0x00, logs)
 	require.NoError(t, s.Reconcile(context.Background(), planAtQoS("sensors/x", 1)))
-	refusedRound := func(subscribes int) {
-		t.Helper()
-		advanceAndAwait(t, s, clk, qosDowngradeConfirmInterval, "refused probe rescheduled", func() bool {
-			d, ok := downgradeState(s, "sensors/x")
-			return ok && fake.subscribeCallCount() == subscribes &&
-				d.due.Equal(clk.Now().Add(qosDowngradeConfirmInterval))
-		})
-	}
 
 	fake.setReasons([]byte{0x87})
-	refusedRound(2)
-	refusedRound(3)
+	refusedProbeRound(t, s, clk, fake, 2, qosDowngradeConfirmInterval, qosDowngradeConfirmInterval)
+	refusedProbeRound(t, s, clk, fake, 3, qosDowngradeConfirmInterval, 2*qosDowngradeConfirmInterval)
 	require.Equal(t, 1, logs.warnCountContaining(warning), "one Warn for the whole streak")
 
 	fake.setReasons([]byte{0x00})
-	advanceAndAwait(t, s, clk, qosDowngradeConfirmInterval, "a grant ends the streak", func() bool {
+	advanceAndAwait(t, s, clk, 2*qosDowngradeConfirmInterval, "a grant ends the streak", func() bool {
 		d, ok := downgradeState(s, "sensors/x")
 		return ok && d.confirmations == 2
 	})
 	fake.setReasons([]byte{0x87})
-	refusedRound(5)
+	refusedProbeRound(t, s, clk, fake, 5, qosDowngradeConfirmInterval, qosDowngradeConfirmInterval)
 	require.Equal(t, 2, logs.warnCountContaining(warning), "a new streak warns again")
+}
+
+// refusedProbeRound advances the clock by advance so the due probe runs and
+// gets no grant, then waits until `subscribes` SUBSCRIBEs have been sent in
+// total and the next probe is due `next` from now.
+func refusedProbeRound(
+	t *testing.T, s *Session, clk *clocktest.Fake, fake *fakeReconcileConn,
+	subscribes int, advance, next time.Duration,
+) {
+	t.Helper()
+	advanceAndAwait(t, s, clk, advance, fmt.Sprintf("refused probe %d rescheduled %s ahead", subscribes, next), func() bool {
+		d, ok := downgradeState(s, "sensors/x")
+		return ok && fake.subscribeCallCount() == subscribes && d.due.Equal(clk.Now().Add(next))
+	})
+}
+
+// TestQoSDowngrade_ProbeWithoutVerdict_BacksOffWhileConfirming proves a broker
+// that keeps refusing the confirmation SUBSCRIBE is asked less and less often:
+// each consecutive round without a grant doubles the wait, up to
+// MinQoSRecheckInterval, and a grant resets it.
+func TestQoSDowngrade_ProbeWithoutVerdict_BacksOffWhileConfirming(t *testing.T) {
+	s, fake, clk, _ := newDowngradeSession(t, "downgrade-backoff", connectivity.SessionPersistent, 0x00, nil)
+	require.NoError(t, s.Reconcile(context.Background(), planAtQoS("sensors/x", 1)))
+
+	fake.setReasons([]byte{0x87})
+	advance := qosDowngradeConfirmInterval
+	delays := []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second, 40 * time.Second, time.Minute, time.Minute}
+	for round, next := range delays {
+		refusedProbeRound(t, s, clk, fake, round+2, advance, next)
+		advance = next
+	}
+
+	fake.setReasons([]byte{0x00})
+	advanceAndAwait(t, s, clk, advance, "a grant resets the backoff", func() bool {
+		d, ok := downgradeState(s, "sensors/x")
+		return ok && d.confirmations == 2 && d.due.Equal(clk.Now().Add(qosDowngradeConfirmInterval))
+	})
+	fake.setReasons([]byte{0x87})
+	refusedProbeRound(t, s, clk, fake, len(delays)+3, qosDowngradeConfirmInterval, qosDowngradeConfirmInterval)
+}
+
+// TestQoSDowngrade_AcceptedProbeWithoutVerdict_KeepsRecheckInterval proves the
+// backoff is for confirmation only: a re-check of an accepted downgrade that
+// gets no grant retries at qos_recheck_interval, never sooner.
+func TestQoSDowngrade_AcceptedProbeWithoutVerdict_KeepsRecheckInterval(t *testing.T) {
+	s, fake, clk, _ := newDowngradeSession(t, "downgrade-accepted-refused", connectivity.SessionPersistent, 0x00, nil)
+	require.NoError(t, s.Reconcile(context.Background(), planAtQoS("sensors/x", 1)))
+	confirmDowngrade(t, s, clk, fake, "sensors/x")
+
+	fake.setReasons([]byte{0x87})
+	for round := 1; round <= 2; round++ {
+		refusedProbeRound(t, s, clk, fake, qosDowngradeConfirmations+round,
+			DefaultQoSRecheckInterval, DefaultQoSRecheckInterval)
+	}
+	d, _ := downgradeState(s, "sensors/x")
+	require.True(t, d.accepted(), "a re-check without a verdict keeps the accepted grant")
 }

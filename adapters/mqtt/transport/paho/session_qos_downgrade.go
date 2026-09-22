@@ -39,17 +39,27 @@ type qosDowngrade struct {
 	acceptedAt    time.Time     // zero while confirming
 	recheck       time.Duration // re-check interval once accepted; 0 = off
 	due           time.Time     // next probe SUBSCRIBE; zero = none scheduled
-	noVerdict     bool          // the last probe got no grant; warned once per streak
+	// noVerdictRounds counts consecutive probes that got no grant; a grant
+	// resets it. The first of a streak is warned about.
+	noVerdictRounds int
 }
 
 func (d *qosDowngrade) accepted() bool { return !d.acceptedAt.IsZero() }
 
-// retryInterval is how long a probe that got no verdict waits to try again.
+// retryInterval is how long a probe that got no verdict waits to try again. An
+// accepted downgrade keeps its re-check cadence. One still confirming backs
+// off: each consecutive round without a verdict doubles the wait, from
+// qosDowngradeConfirmInterval up to MinQoSRecheckInterval, so a broker that
+// keeps refusing the probe is not asked every few seconds forever.
 func (d *qosDowngrade) retryInterval() time.Duration {
 	if d.accepted() {
 		return d.recheck
 	}
-	return qosDowngradeConfirmInterval
+	delay := qosDowngradeConfirmInterval
+	for round := 1; round < d.noVerdictRounds && delay < MinQoSRecheckInterval; round++ {
+		delay *= 2
+	}
+	return min(delay, MinQoSRecheckInterval)
 }
 
 // grantVerdict is what one fresh SUBACK grant changed.
@@ -106,7 +116,7 @@ func (s *Session) applyGrantLocked(topic string, requested, granted byte, rechec
 		verdict = grantDowngraded
 	}
 	d.recheck = recheck
-	d.noVerdict = false
+	d.noVerdictRounds = 0
 	if !d.accepted() {
 		d.confirmations++
 		if d.confirmations >= qosDowngradeConfirmations {
@@ -162,7 +172,8 @@ func (s *Session) reconcileQoSDowngradesLocked(desired map[string]byte, recheck 
 }
 
 // syncQoSDowngradeGaugeLocked emits MQTTQoSDowngradedActive when the number of
-// accepted downgrades changed. Callers hold s.mu.
+// accepted downgrades changed, so a change is visible at once; Health re-emits
+// the count on every sweep. Callers hold s.mu.
 func (s *Session) syncQoSDowngradeGaugeLocked() {
 	accepted := 0
 	for _, d := range s.qosDowngrades {
@@ -192,20 +203,22 @@ func (s *Session) retireQoSDowngradesLocked() {
 
 // qosDowngradeHealthLocked returns the sorted filters accepted as best effort
 // that are contract-active — a reconnect deactivates them until its reconcile
-// re-subscribes — and whether any downgrade is still confirming. Callers hold
-// s.mu.
-func (s *Session) qosDowngradeHealthLocked() (bestEffort []string, confirming bool) {
+// re-subscribes — the number of accepted downgrades (the
+// MQTTQoSDowngradedActive value), and whether any downgrade is still
+// confirming. Callers hold s.mu.
+func (s *Session) qosDowngradeHealthLocked() (bestEffort []string, accepted int, confirming bool) {
 	for topic, d := range s.qosDowngrades {
 		if !d.accepted() {
 			confirming = true
 			continue
 		}
+		accepted++
 		if _, active := s.activeSubs[topic]; active {
 			bestEffort = append(bestEffort, topic)
 		}
 	}
 	sort.Strings(bestEffort)
-	return bestEffort, confirming
+	return bestEffort, accepted, confirming
 }
 
 // reportGrants logs and counts verdicts after s.mu is released.
@@ -229,10 +242,14 @@ func (s *Session) reportGrants(reports []grantReport) {
 			s.logger.Warn("mqtt: broker downgraded subscription QoS below requested; "+
 				"confirming with fresh SUBSCRIBEs before accepting it as best effort", attrs...)
 		case grantAccepted:
+			consequence := "delivery runs at the granted QoS instead of the requested one"
+			if r.granted == 0 {
+				consequence = "at QoS 0 there is no acknowledgement or redelivery, and messages " +
+					"published while the bridge is disconnected may be lost"
+			}
 			s.logger.Error("mqtt: broker keeps granting subscription QoS below requested; the "+
-				"subscription is kept active as best effort — at QoS 0 there is no acknowledgement "+
-				"or redelivery, and messages published while the bridge is disconnected may be "+
-				"lost. Lower the route's qos to the granted level, or lift the broker's cap", attrs...)
+				"subscription is kept active as best effort — "+consequence+". Lower the "+
+				"route's qos to the granted level, or lift the broker's cap", attrs...)
 		case grantRecovered:
 			s.logger.Info("mqtt: broker grants the requested subscription QoS again; "+
 				"the best-effort downgrade is cleared", attrs...)

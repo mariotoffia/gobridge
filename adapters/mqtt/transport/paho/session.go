@@ -199,7 +199,9 @@ type Session struct {
 	observedSubs map[string]subscriptionGrant
 
 	// activeSubs is the contract-active subset of observedSubs: filters whose
-	// granted QoS meets or exceeds the requested QoS. Health reads only this map.
+	// granted QoS meets or exceeds the requested QoS, plus lower grants accepted
+	// as best effort (see qosDowngrades), each at its granted QoS. A lower grant
+	// still being confirmed is not in it. Health reads only this map.
 	activeSubs map[string]byte // topic filter -> granted qos
 
 	// subscriptionsSatisfied is latched false when an explicit plan starts
@@ -263,8 +265,9 @@ type Session struct {
 	// fresh SUBACKs agree, then accepted as best effort and re-checked. See
 	// session_qos_downgrade.go. Guarded by mu.
 	qosDowngrades map[string]*qosDowngrade
-	// qosDowngradeGauge is the MQTTQoSDowngradedActive value last emitted, so
-	// the gauge is written only when the number of accepted downgrades changes.
+	// qosDowngradeGauge is the MQTTQoSDowngradedActive value last emitted on a
+	// change, so a state change writes the gauge only when the number of
+	// accepted downgrades moved (Health re-emits it on every sweep regardless).
 	// Guarded by mu.
 	qosDowngradeGauge int
 	// qosProbeCancel cancels the scheduled confirmation / re-check probe; each
