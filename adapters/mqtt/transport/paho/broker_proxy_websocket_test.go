@@ -3,6 +3,7 @@ package paho
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -151,13 +152,35 @@ func TestDialMQTTWebsocket_CallerDialerKeepsItsOwnRoute(t *testing.T) {
 }
 
 // TestBrokerWebsocketDialer_DefaultReadsNoHTTPProxyVariables pins that the
-// default WebSocket dialer has no proxy function. gorilla's default one reads
-// HTTP_PROXY and HTTPS_PROXY, which are not broker proxy variables. It is
-// checked on the dialer because a unit test cannot see it on the wire: net/http
-// never proxies a loopback host, and any other host needs DNS.
+// default WebSocket dialer has no proxy function. gorilla's stock one reads
+// HTTP_PROXY and HTTPS_PROXY, which are not broker proxy variables. The check
+// is on the dialer rather than the wire because net/http reads those variables
+// once per process (a sync.Once): an in-process wire test would see the values
+// it sets only if no earlier test had asked net/http for a proxy, so its verdict
+// would depend on test order. Proxy is the only field through which gorilla
+// consults a proxy at all.
 func TestBrokerWebsocketDialer_DefaultReadsNoHTTPProxyVariables(t *testing.T) {
 	dialer := brokerWebsocketDialer(nil, nil, &url.URL{Scheme: "ws", Host: "broker.test"})
 	assert.Nil(t, dialer.Proxy, "HTTP_PROXY and HTTPS_PROXY must not route a broker dial")
+}
+
+// TestBrokerWebsocketDialer_IgnoresTheProcessWideDefaultDialer pins that the
+// default WebSocket dialer is built from scratch, not copied from
+// websocket.DefaultDialer. That is a process-wide variable: a dial function set
+// on it anywhere in the process must not carry a broker dial around ALL_PROXY.
+func TestBrokerWebsocketDialer_IgnoresTheProcessWideDefaultDialer(t *testing.T) {
+	errProcessWide := errors.New("process-wide dial function")
+	saved := *websocket.DefaultDialer
+	t.Cleanup(func() { *websocket.DefaultDialer = saved })
+	websocket.DefaultDialer.NetDialContext = func(context.Context, string, string) (net.Conn, error) {
+		return nil, errProcessWide
+	}
+	isolateProxyEnv(t, map[string]string{"ALL_PROXY": "socks5://" + closedLoopbackAddress(t)})
+
+	dialer := brokerWebsocketDialer(nil, nil, &url.URL{Scheme: "ws", Host: "broker.test"})
+	_, err := dialer.NetDialContext(boundedDialContext(t), "tcp", "broker.test:80")
+	require.Error(t, err, "the closed ALL_PROXY proxy is the route, so the dial fails")
+	assert.NotErrorIs(t, err, errProcessWide, "the process-wide dial function must not be used")
 }
 
 // isolateProxyEnv clears every proxy variable either resolver could read, so the

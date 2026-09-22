@@ -196,10 +196,14 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   proxy, either directly or through an HTTP proxy from `HTTP_PROXY` /
   `HTTPS_PROXY`. A proxy that cannot be reached now fails the dial instead of
   being bypassed.
+- **Check `ALL_PROXY` before upgrading.** A deployment that sets `ALL_PROXY`
+  for other tools and reached a `ws://` or `wss://` broker directly, loopback
+  included, now dials that broker through the proxy. A value that is not a
+  SOCKS5 proxy, such as `http://`, fails the dial, as it already did for
+  `tcp://` and `ssl://`. To keep the direct route, list the broker host in
+  `NO_PROXY` or set `ALL_PROXY=direct`.
 - A deployment that reached a WebSocket broker through `HTTP_PROXY` or
   `HTTPS_PROXY` now dials it directly unless `ALL_PROXY` names a SOCKS5 proxy.
-  An `http://` value in `ALL_PROXY` fails the dial, as it does for every broker
-  scheme.
 
 ### Changed — an MQTT subscription granted a lower QoS is kept as best effort
 

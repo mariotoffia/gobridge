@@ -24,6 +24,7 @@ import (
 // listener reads an empty binary frame as garbage and disconnects the client
 // for a malformed packet.
 func TestMQTTWebsocketConn_EmptyWriteSendsNoFrame(t *testing.T) {
+	isolateProxyEnv(t, nil) // the shell's ALL_PROXY must not route this loopback dial
 	endpoint, frames := startWebsocketFrameRecorder(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	t.Cleanup(cancel)

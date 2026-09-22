@@ -268,12 +268,18 @@ func dialMQTTWebsocket(
 	return &mqttWebsocketConn{Conn: conn}, nil
 }
 
+// websocketHandshakeTimeout bounds the WebSocket upgrade; it is the value
+// gorilla's websocket.DefaultDialer carries.
+const websocketHandshakeTimeout = 45 * time.Second
+
 // brokerWebsocketDialer returns the dialer for one ws:// or wss:// broker
 // connection. Its TCP connection comes from dialBrokerStream, so ALL_PROXY,
 // NO_PROXY and ALL_PROXY=direct route it exactly as they route tcp:// and
-// ssl://, and wss:// runs TLS on top of it. gorilla's own proxy lookup is off:
-// websocket.DefaultDialer reads HTTP_PROXY and HTTPS_PROXY, which are not
-// broker proxy variables, and net/http reads them once per process.
+// ssl://, and wss:// runs TLS on top of it. The default dialer is built from
+// scratch, not copied from websocket.DefaultDialer: that one reads HTTP_PROXY
+// and HTTPS_PROXY, which are not broker proxy variables, and it is a
+// process-wide variable, so a dial function set on it anywhere in the process
+// would carry broker dials around ALL_PROXY.
 //
 // A dialer from WebSocketCfg.Dialer keeps every field it sets, its Proxy
 // included: a caller that sets a route has chosen it. It gets the broker stream
@@ -285,10 +291,11 @@ func brokerWebsocketDialer(
 	cfg *autopaho.WebSocketConfig,
 	serverURL *url.URL,
 ) *websocket.Dialer {
-	dialer := *websocket.DefaultDialer
-	dialer.Proxy = nil
-	dialer.TLSClientConfig = tlsConfig
-	dialer.Subprotocols = []string{"mqtt"}
+	dialer := websocket.Dialer{
+		HandshakeTimeout: websocketHandshakeTimeout,
+		TLSClientConfig:  tlsConfig,
+		Subprotocols:     []string{"mqtt"},
+	}
 	if cfg != nil && cfg.Dialer != nil {
 		if custom := cfg.Dialer(serverURL, tlsConfig); custom != nil {
 			dialer = *custom
