@@ -51,8 +51,7 @@ func TestQoSDowngrade_RuntimeSessionManagerNeverTerminates(t *testing.T) {
 	// the reconcile re-arms once more at its end. Advancing between the two
 	// would fire a timer that is already replaced, so wait for the reconcile
 	// to release the serialization gate first.
-	require.NoError(t, s.acquireReload(ctx))
-	s.releaseReload()
+	awaitReloadGate(t, s, 5*time.Second, "await the manager's reconcile")
 	confirmDowngrade(t, s, clk, fake, "sensors/x")
 
 	h := s.Health(ctx)
