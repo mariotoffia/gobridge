@@ -59,7 +59,9 @@ func recordDeliveries(t *testing.T, session *Session, receiverID, topic string) 
 	}()
 	t.Cleanup(func() {
 		cancel()
-		wait.RequireReceive(t, stopped, 5*time.Second)
+		// Canceled, not an emit error: an Ack that failed would have stopped the
+		// receiver early, and every delivery after it would have gone unseen.
+		require.ErrorIs(t, wait.RequireReceive(t, stopped, 5*time.Second), context.Canceled)
 	})
 	wait.RequireClosed(t, receiver.Started(), 5*time.Second)
 	return delivered
