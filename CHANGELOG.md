@@ -44,6 +44,15 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   lower, so a broker capped at QoS 0 no longer looks as if it never
   started. `WithExtraConfig` replaces the lines of an earlier call rather than
   adding to them, and its documentation now says so.
+- The MQTT test broker is now Mosquitto 2.1.2 (was 2.0.22), still pinned by
+  image digest, both in `testutil/mqttlocal` and in the release gate's ingress
+  memory proof. The broker now caps every packet at 2,000,000 bytes and
+  announces the cap as Maximum Packet Size in its CONNACK; a client that sends
+  a larger packet is disconnected with reason code `0x95` (Packet too large).
+  2.0 had no cap. `WithExtraConfig("max_packet_size …\n")` raises it. WebSocket
+  listeners are now served by Mosquitto's own implementation instead of
+  libwebsockets. That implementation rejects an empty WebSocket frame, which
+  the MQTT transport no longer sends (see Fixed, below).
 
 ### Changed — `testutil/wait` is a package of the core module
 

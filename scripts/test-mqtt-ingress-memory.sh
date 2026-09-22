@@ -46,7 +46,7 @@ docker run -d \
   --network "$network_name" \
   --network-alias mqtt-memory-broker \
   -v "$workspace/tests/longrunning/testdata/mosquitto-memory.conf:/mosquitto/config/mosquitto.conf:ro" \
-  eclipse-mosquitto:2.0.22@sha256:212f89e1eaeb2c322d6441b64396e3346026674db8fa9c27beac293405c32b3c
+  eclipse-mosquitto:2.1.2-alpine@sha256:38c0da4f2ef84284d47b3b3eeea1cb3bdeabe81ee10caf0cd5c5ff61ee3ea408
 
 docker run -d \
   --name "$publisher_name" \

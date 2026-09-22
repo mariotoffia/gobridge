@@ -37,10 +37,11 @@ const (
 	wsPort    = 9001
 	wssPort   = 9443
 
-	// Mosquitto 2.x writes PBKDF2-SHA512 password entries as
-	// `$7$<iterations>$<salt>$<hash>` with these parameters. Rendering the
-	// entry here rather than shelling out to mosquitto_passwd keeps the
-	// fixture to one container.
+	// A PBKDF2-SHA512 password entry is `$7$<iterations>$<salt>$<hash>`.
+	// These are the parameters Mosquitto 2.0 wrote; 2.1 writes a 64-byte salt
+	// and 1000 iterations but still reads a 12-byte salt and any positive
+	// iteration count. Rendering the entry here rather than shelling out to
+	// mosquitto_passwd keeps the fixture to one container.
 	passwordIterations = 101
 	passwordSaltBytes  = 12
 	passwordHashBytes  = sha512.Size

@@ -16,7 +16,7 @@ running your own proof.
 | | |
 |---|---|
 | Product | Eclipse Mosquitto |
-| Version | 2.0.22, pinned by image digest |
+| Version | 2.1.2, pinned by image digest |
 | Protocol | MQTT v5 only |
 | Where it comes from | `testutil/mqttlocal`, started per test in Docker |
 

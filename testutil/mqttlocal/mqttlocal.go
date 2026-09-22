@@ -70,8 +70,10 @@ import (
 const containerPrefix = "gobridge-mqtt-"
 
 // defaultImage is pinned by digest, like rabbitmqlocal. A floating :latest
-// means CI can break on a day nobody changed anything.
-const defaultImage = "eclipse-mosquitto:2.0.22@sha256:212f89e1eaeb2c322d6441b64396e3346026674db8fa9c27beac293405c32b3c"
+// means CI can break on a day nobody changed anything. The digest is the
+// multi-arch image index, so every platform resolves the same release. The 2.1
+// line is published only with the -alpine suffix.
+const defaultImage = "eclipse-mosquitto:2.1.2-alpine@sha256:38c0da4f2ef84284d47b3b3eeea1cb3bdeabe81ee10caf0cd5c5ff61ee3ea408"
 
 type config struct {
 	image            string
@@ -170,6 +172,10 @@ func WithMaxQueuedBytes(n int) Option {
 
 // WithMessageSizeLimit sets the Mosquitto message_size_limit config.
 // Use 0 for unlimited. Default (-1) omits the setting.
+//
+// The limit is on the payload only. Mosquitto 2.1 also caps every packet at
+// 2,000,000 bytes (max_packet_size) and disconnects a client that sends a
+// larger one, whatever this limit says; raise that cap with WithExtraConfig.
 func WithMessageSizeLimit(n int) Option {
 	return func(c *config) { c.messageSizeLimit = n }
 }
