@@ -245,9 +245,9 @@ func (s *Session) reportGrants(reports []grantReport) {
 			consequence := "delivery runs at the granted QoS instead of the requested one"
 			advice := "Lower the route's qos to the granted level, or lift the broker's cap"
 			if r.granted == 0 {
-				// On a resuming session the route was validated as redelivering at the
-				// requested QoS, so it may have no DLQ store and no allow_retry_drop.
-				// Say where a failed delivery goes now that the broker cannot redeliver it.
+				// The retry check exempts a route whose subscriptions all requested QoS
+				// 1 or 2 on a resuming session, trusting broker redelivery. Say where a
+				// failed delivery goes now that the broker cannot redeliver it.
 				consequence = "at QoS 0 there is no acknowledgement or redelivery, and messages " +
 					"published while the bridge is disconnected may be lost. A delivery the route " +
 					"fails to process cannot be redelivered by the broker either: it goes to the " +

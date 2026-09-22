@@ -262,16 +262,21 @@ rule). The bridge keeps such a subscription running instead of failing:
    normal reconcile.
 
 **Failed deliveries.** The bridge validates a route for the QoS it requests. A
-QoS 1 or 2 subscription on a session that resumes counts as a source that
-redelivers, so the route needs neither a DLQ store nor
+route whose subscriptions are all QoS 1 or 2 on a session that resumes counts
+as a source that redelivers, so it is exempt from the retry check that asks a
+source without redelivery for a DLQ store or
 [`allow_retry_drop`](../routes-and-runtime-reference.md#routespolicy----delivery-policy).
 An accepted QoS 0 grant breaks that assumption: the broker cannot redeliver a
-message the route fails to process. The route's
-[retry fallback](mqtt-settlement-recovery.md) sends the message to the DLQ or,
-when no DLQ store is configured, drops it and counts it as
-`MessagesDropped{reason=retry_unsupported}`. For a broker that caps QoS,
-configure a [DLQ store](../configuration-reference.md#stores----backing-store-configuration),
-or lower the route's `qos` to the granted level.
+message the route fails to process, so the route's
+[retry fallback](mqtt-settlement-recovery.md) takes over. With the default
+route policies (`on_permanent_failure` and `on_expired` both `dlq`) the bridge
+must have a DLQ store anyway, so the message is dead-lettered. It is dropped
+and counted as `MessagesDropped{reason=retry_unsupported}` only on a bridge
+with no DLQ store, which validation allows only when every route sets
+`on_permanent_failure: drop` and `on_expired: drop` and none sets
+`on_filtered: dlq`. For a broker that caps QoS, keep a
+[DLQ store](../configuration-reference.md#stores----backing-store-configuration)
+configured, or lower the route's `qos` to the granted level.
 
 Two metrics follow the downgrade. `MQTTQoSDowngraded` counts once when a SUBACK
 first reports a lower grant (a changed grant counts again; confirmations and

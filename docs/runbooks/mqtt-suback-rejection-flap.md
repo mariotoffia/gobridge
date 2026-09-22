@@ -70,8 +70,12 @@ the Error log names `topic`, `requested_qos` and `granted_qos`, and the gauge
 health lists the affected filters in `best_effort_topics`. A lower grant never
 stops the session or the process, but when the broker grants QoS 0, messages
 can be lost (no acknowledgement or redelivery, and messages published while the
-bridge is disconnected may be lost). The re-check can recover on its own when
-the broker grants the requested QoS again.
+bridge is disconnected may be lost). A message the route fails to process at a
+QoS 0 grant is dead-lettered, or, on a bridge with no DLQ store, dropped and
+counted as `MessagesDropped{reason=retry_unsupported}`; see the Failed
+deliveries note under
+[QoS downgrade](../transports/mqtt-behavior.md#qos-downgrade). The re-check can
+recover on its own when the broker grants the requested QoS again.
 
 To remove it, lower the route's `qos` to the granted level, or lift the
 broker's QoS cap. The session re-checks the grant every `qos_recheck_interval`
