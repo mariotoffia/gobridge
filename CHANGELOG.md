@@ -182,6 +182,9 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   newly reported downgrade and then clears, instead of staying in ALARM through
   a crash-loop. A standing condition is visible on the
   `MQTTQoSDowngradedActive` gauge; a CDK alarm on the gauge is a follow-up.
+- An MQTT session plan subscription must carry no `Config` or the MQTT plugin
+  config: a typed-nil, foreign or non-plugin value makes `Reconcile` fail with
+  `shared.ErrInvalidConfig`. Plans the bridge builds are unaffected.
 
 ### Added — `qos_recheck_interval`
 
