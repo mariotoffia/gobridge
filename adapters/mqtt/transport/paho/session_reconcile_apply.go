@@ -53,6 +53,10 @@ func (s *Session) reconcile(
 	}
 	current := maps.Clone(s.activeSubs)
 	observed := maps.Clone(s.observedSubs)
+	recorded := make(map[string]struct{}, len(s.qosDowngrades))
+	for topic := range s.qosDowngrades {
+		recorded[topic] = struct{}{}
+	}
 	if observed == nil {
 		observed = make(map[string]subscriptionGrant)
 	}
@@ -198,7 +202,11 @@ func (s *Session) reconcile(
 	var toSub []subscribeSpec
 	for topic, qos := range desired {
 		grant, exists := observed[topic]
-		if !exists || grant.Requested != qos {
+		_, hasRecord := recorded[topic]
+		// An observed grant below the requested QoS always has a downgrade
+		// record. One without (dropped with an earlier plan while the filter's
+		// UNSUBSCRIBE failed) is re-subscribed, so a fresh SUBACK re-evaluates it.
+		if !exists || grant.Requested != qos || (grant.Granted < qos && !hasRecord) {
 			// No-Local is opt-in per session (no_local config, default off).
 			// When enabled it breaks the same-session MQTT->MQTT self-delivery
 			// loop (Scenario 01) but MUST stay off for a shared subscription

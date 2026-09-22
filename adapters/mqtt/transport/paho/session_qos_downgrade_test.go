@@ -349,6 +349,24 @@ func TestQoSDowngrade_Reconnect_ReevaluatesAcceptedGrant(t *testing.T) {
 	require.Equal(t, 1, logs.messageCountContaining(slog.LevelInfo, "requested subscription QoS again"))
 }
 
+// TestQoSDowngrade_ReconnectReset_HidesBestEffortUntilReactivated proves
+// BestEffortTopics lists only contract-active filters: the reconnect reset
+// deactivates every subscription until the reconnect's reconcile re-subscribes.
+func TestQoSDowngrade_ReconnectReset_HidesBestEffortUntilReactivated(t *testing.T) {
+	ctx := context.Background()
+	s, fake, clk, _ := newDowngradeSession(t, "downgrade-reconnect-hidden", connectivity.SessionPersistent, 0x00, nil)
+	plan := planAtQoS("sensors/x", 1)
+	require.NoError(t, s.Reconcile(ctx, plan))
+	confirmDowngrade(t, s, clk, fake, "sensors/x")
+
+	reconnectReset(s)
+	require.Empty(t, s.Health(ctx).BestEffortTopics, "not active until re-subscribed")
+
+	require.NoError(t, s.Reconcile(ctx, plan))
+	require.Equal(t, []string{"sensors/x"}, s.Health(ctx).BestEffortTopics,
+		"the same lower grant stays accepted")
+}
+
 // TestQoSDowngrade_RefusedSubscription_StillFailsReconcile is the control: a
 // broker that REFUSES a subscription (SUBACK >= 0x80) fails that reconcile as
 // before. Only a lower grant is accepted as best effort.

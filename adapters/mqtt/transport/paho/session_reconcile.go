@@ -131,6 +131,14 @@ func (s *Session) reconcileUnderGate(
 	// Reconcile-before-Start still stashes the plan. It is deliberately NOT the
 	// applied history (see appliedPlan, set only after the broker ops succeed).
 	s.plan = &desiredPlan
+	// A downgrade record lives only while the plan wants its filter at the
+	// recorded requested QoS. Dropping it here, before any broker operation,
+	// keeps a reconcile that fails — or the empty-plan no-op below, which never
+	// reaches the end-of-reconcile alignment — from leaving the gauge and
+	// health reporting a filter that is gone.
+	s.dropUnwantedQoSDowngradesLocked(planDesiredQoS(&desiredPlan))
+	s.syncQoSDowngradeGaugeLocked()
+	s.armQoSProbeLocked()
 	// An explicit plan is unsatisfied until this operation proves exact broker
 	// convergence. Errors and reconnect generation changes leave it false.
 	s.subscriptionsSatisfied = false

@@ -146,3 +146,35 @@ func TestQoSDowngrade_ProbeRefused_KeepsGrantAndRetries(t *testing.T) {
 		return ok && d.confirmations == 2
 	})
 }
+
+// TestQoSDowngrade_ProbeRefusedRepeatedly_WarnsOncePerStreak proves a broker
+// that keeps refusing the probe SUBSCRIBE is reported once per run of refusals,
+// not on every retry.
+func TestQoSDowngrade_ProbeRefusedRepeatedly_WarnsOncePerStreak(t *testing.T) {
+	const warning = "re-check SUBSCRIBE got no grant"
+	logs := &recordingLogHandler{}
+	s, fake, clk, _ := newDowngradeSession(t, "downgrade-refused-streak", connectivity.SessionPersistent, 0x00, logs)
+	require.NoError(t, s.Reconcile(context.Background(), planAtQoS("sensors/x", 1)))
+	refusedRound := func(subscribes int) {
+		t.Helper()
+		advanceAndAwait(t, s, clk, qosDowngradeConfirmInterval, "refused probe rescheduled", func() bool {
+			d, ok := downgradeState(s, "sensors/x")
+			return ok && fake.subscribeCallCount() == subscribes &&
+				d.due.Equal(clk.Now().Add(qosDowngradeConfirmInterval))
+		})
+	}
+
+	fake.setReasons([]byte{0x87})
+	refusedRound(2)
+	refusedRound(3)
+	require.Equal(t, 1, logs.warnCountContaining(warning), "one Warn for the whole streak")
+
+	fake.setReasons([]byte{0x00})
+	advanceAndAwait(t, s, clk, qosDowngradeConfirmInterval, "a grant ends the streak", func() bool {
+		d, ok := downgradeState(s, "sensors/x")
+		return ok && d.confirmations == 2
+	})
+	fake.setReasons([]byte{0x87})
+	refusedRound(5)
+	require.Equal(t, 2, logs.warnCountContaining(warning), "a new streak warns again")
+}

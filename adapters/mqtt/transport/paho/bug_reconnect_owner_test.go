@@ -2,6 +2,7 @@ package paho
 
 import (
 	"context"
+	"maps"
 	"sync"
 	"testing"
 	"time"
@@ -57,6 +58,11 @@ type fakeReconcileConn struct {
 	// are accepted (reason 0x00). Change it through setReasons once a
 	// session goroutine may be subscribing.
 	reasons []byte
+	// topicReasons, when non-nil, answers each subscription by its topic
+	// instead (a topic not listed is granted its requested QoS), so a test can
+	// mix grants and refusals in one SUBSCRIBE whose order comes from a map.
+	// It takes precedence over reasons. Set it through setTopicReasons.
+	topicReasons map[string]byte
 }
 
 func (f *fakeReconcileConn) AwaitConnection(context.Context) error { return nil }
@@ -72,6 +78,16 @@ func (f *fakeReconcileConn) Subscribe(_ context.Context, subs []subscribeSpec) (
 	}
 	f.subTopics = append(f.subTopics, topics)
 	f.subSpecs = append(f.subSpecs, append([]subscribeSpec(nil), subs...))
+	if f.topicReasons != nil {
+		out := make([]byte, len(subs))
+		for i, s := range subs {
+			out[i] = s.QoS
+			if r, ok := f.topicReasons[s.Topic]; ok {
+				out[i] = r
+			}
+		}
+		return out, nil
+	}
 	if f.reasons != nil {
 		return f.reasons, nil
 	}
@@ -125,6 +141,13 @@ func (f *fakeReconcileConn) setReasons(r []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reasons = append([]byte(nil), r...)
+}
+
+// setTopicReasons answers every later Subscribe per topic (see topicReasons).
+func (f *fakeReconcileConn) setTopicReasons(r map[string]byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.topicReasons = maps.Clone(r)
 }
 
 func (f *fakeReconcileConn) unsubscribeCallCount() int {

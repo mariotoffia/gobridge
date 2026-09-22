@@ -39,6 +39,7 @@ type qosDowngrade struct {
 	acceptedAt    time.Time     // zero while confirming
 	recheck       time.Duration // re-check interval once accepted; 0 = off
 	due           time.Time     // next probe SUBSCRIBE; zero = none scheduled
+	noVerdict     bool          // the last probe got no grant; warned once per streak
 }
 
 func (d *qosDowngrade) accepted() bool { return !d.acceptedAt.IsZero() }
@@ -105,6 +106,7 @@ func (s *Session) applyGrantLocked(topic string, requested, granted byte, rechec
 		verdict = grantDowngraded
 	}
 	d.recheck = recheck
+	d.noVerdict = false
 	if !d.accepted() {
 		d.confirmations++
 		if d.confirmations >= qosDowngradeConfirmations {
@@ -125,18 +127,28 @@ func (s *Session) applyGrantLocked(topic string, requested, granted byte, rechec
 	return verdict
 }
 
+// dropUnwantedQoSDowngradesLocked forgets every downgrade whose filter the plan
+// does not want at the recorded requested QoS. Reconcile calls it when it
+// stashes a new plan, before any broker operation, so neither a reconcile that
+// fails nor the empty-plan no-op leaves the gauge and health reporting a filter
+// that is gone. Callers hold s.mu.
+func (s *Session) dropUnwantedQoSDowngradesLocked(desired map[string]byte) {
+	for topic, d := range s.qosDowngrades {
+		if requested, ok := desired[topic]; !ok || requested != d.requested {
+			delete(s.qosDowngrades, topic)
+		}
+	}
+}
+
 // reconcileQoSDowngradesLocked brings the downgrade records in line with the
 // plan a reconcile just applied: it forgets filters the plan no longer wants at
 // the recorded requested QoS, and applies a changed qos_recheck_interval to an
 // accepted downgrade without waiting for its next SUBACK (an unchanged filter
 // is not re-subscribed, so no SUBACK would carry it). Callers hold s.mu.
 func (s *Session) reconcileQoSDowngradesLocked(desired map[string]byte, recheck map[string]time.Duration) {
+	s.dropUnwantedQoSDowngradesLocked(desired)
 	now := s.clock().Now()
 	for topic, d := range s.qosDowngrades {
-		if requested, ok := desired[topic]; !ok || requested != d.requested {
-			delete(s.qosDowngrades, topic)
-			continue
-		}
 		if interval := recheck[topic]; interval != d.recheck {
 			d.recheck = interval
 			if d.accepted() {
@@ -179,13 +191,17 @@ func (s *Session) retireQoSDowngradesLocked() {
 }
 
 // qosDowngradeHealthLocked returns the sorted filters accepted as best effort
-// and whether any downgrade is still confirming. Callers hold s.mu.
+// that are contract-active — a reconnect deactivates them until its reconcile
+// re-subscribes — and whether any downgrade is still confirming. Callers hold
+// s.mu.
 func (s *Session) qosDowngradeHealthLocked() (bestEffort []string, confirming bool) {
 	for topic, d := range s.qosDowngrades {
-		if d.accepted() {
-			bestEffort = append(bestEffort, topic)
-		} else {
+		if !d.accepted() {
 			confirming = true
+			continue
+		}
+		if _, active := s.activeSubs[topic]; active {
+			bestEffort = append(bestEffort, topic)
 		}
 	}
 	sort.Strings(bestEffort)

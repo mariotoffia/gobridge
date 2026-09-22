@@ -87,6 +87,12 @@ func BenchmarkSession_ReconcileQoSDowngrade(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = s.Reconcile(ctx, plan)
+		// Every reconcile re-arms the re-check; each replaced schedule stops
+		// its timer from its own goroutine. The fake clock keeps a stopped
+		// timer until an Advance retires it. Advance(0) retires those without
+		// firing the re-check an hour away, so memory stays bounded however
+		// large b.N grows.
+		clk.Advance(0)
 	}
 }
 
@@ -144,6 +150,9 @@ func BenchmarkSession_QoSDowngradeProbe(b *testing.B) {
 		s.qosDowngrades["sensors/x"].due = clk.Now()
 		s.mu.Unlock()
 		s.probeQoSDowngrades(ctx)
+		// Retire the timer the round's re-arm stopped (see
+		// BenchmarkSession_ReconcileQoSDowngrade); the new one is an hour away.
+		clk.Advance(0)
 	}
 	b.StopTimer()
 	if got := fake.subscribeCallCount(); got != qosDowngradeConfirmations+b.N {

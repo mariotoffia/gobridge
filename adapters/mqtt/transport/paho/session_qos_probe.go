@@ -109,6 +109,7 @@ func (s *Session) probeQoSDowngrades(ctx context.Context) {
 		granted[opt.Topic] = opt.QoS
 	}
 	var reports []grantReport
+	warn := false
 	for _, spec := range specs {
 		d := s.qosDowngrades[spec.Topic]
 		if d == nil {
@@ -117,8 +118,11 @@ func (s *Session) probeQoSDowngrades(ctx context.Context) {
 		qos, ok := granted[spec.Topic]
 		if !ok {
 			// No verdict (refused, short SUBACK, or no SUBACK at all): keep the
-			// recorded grant and ask again later.
+			// recorded grant and ask again later. A broker that keeps refusing
+			// is warned about once per streak, not on every retry.
 			d.due = now.Add(d.retryInterval())
+			warn = warn || !d.noVerdict
+			d.noVerdict = true
 			continue
 		}
 		if v := s.applyGrantLocked(spec.Topic, d.requested, qos, d.recheck); v != grantUnchanged {
@@ -130,9 +134,11 @@ func (s *Session) probeQoSDowngrades(ctx context.Context) {
 	s.mu.Unlock()
 
 	s.reportGrants(reports)
-	if s.logger != nil && (refusal != nil || (subErr != nil && len(reasons) == 0)) {
+	if warn && s.logger != nil {
+		// No reason codes at all: the SDK error is the only evidence, and
+		// classifySubackReasons would call it a short SUBACK.
 		cause := error(refusal)
-		if refusal == nil {
+		if subErr != nil && len(reasons) == 0 {
 			cause = MapError(subErr)
 		}
 		s.logger.Warn("mqtt: QoS downgrade re-check SUBSCRIBE got no grant; keeping the last grant and retrying",

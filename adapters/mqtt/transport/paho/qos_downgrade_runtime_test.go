@@ -47,6 +47,12 @@ func TestQoSDowngrade_RuntimeSessionManagerNeverTerminates(t *testing.T) {
 		_, recorded := downgradeState(s, "sensors/x")
 		return recorded
 	})
+	// The record is visible after the SUBACK walk arms the first probe, but
+	// the reconcile re-arms once more at its end. Advancing between the two
+	// would fire a timer that is already replaced, so wait for the reconcile
+	// to release the serialization gate first.
+	require.NoError(t, s.acquireReload(ctx))
+	s.releaseReload()
 	confirmDowngrade(t, s, clk, fake, "sensors/x")
 
 	h := s.Health(ctx)
