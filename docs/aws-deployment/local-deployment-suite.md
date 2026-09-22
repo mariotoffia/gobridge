@@ -167,7 +167,7 @@ locally, the measured reason.
 | Config source | runtime initialization of embedded config into DynamoDB, agreed generation-zero baseline, direct CAS table-write hot reload and return to the original log level on every member | `TestLocal_DynamoDBConfigHotReload` — verifies actual applied config, row/JSON versions and the immutable deployment fingerprint, not only rollout generations |
 | Rollout | a change one member cannot answer for is applied by nobody | `TestLocal_StaticSlotCohort` |
 | Rollout | a subscription change is agreed by the WHOLE cohort, not only by the member that proposed it | `TestLocal_StaticSlotCohort` |
-| Rollout | the confirm window: a change every member accepts and none can run takes the cohort back | `TestLocal_StaticSlotCohort` — the lever is a subscription asking for a QoS the broker caps below it: every member builds and acks it, no member's subscriptions are ever satisfied, and the cohort reverts to its last confirmed generation |
+| Rollout | the confirm window: a change every member accepts and none can run takes the cohort back | `TestLocal_StaticSlotCohort` — the lever is a subscription to a topic the broker's ACL refuses (SUBACK `0x87`, not authorized): every member builds and acks it, no member's subscriptions are ever satisfied, and the cohort reverts to its last confirmed generation |
 | Observability | runtime metrics reach CloudWatch and the alarm's own query crosses its threshold on them | `TestLocal_DeadLetterAndAlarms` |
 | Observability | an alarm driven into ALARM reaches its subscription | **not covered locally** — `TestLocal_DeadLetterAndAlarms` proves the topic's subscription carries messages, then skips: `SetAlarmState` does not run the alarm's actions on this emulator |
 

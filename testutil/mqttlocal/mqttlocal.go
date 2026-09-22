@@ -46,6 +46,9 @@
 // endpoints ([BrokerInstance.TLSURL], [BrokerInstance.WebSocketURL],
 // [BrokerInstance.SecureWebSocketURL]) and the generated
 // [BrokerInstance.Material] are per-instance. See secure.go.
+//
+// [WithACL] makes the broker refuse a SUBSCRIBE to named filters with reason
+// code 0x87 (Not authorized). See acl.go.
 package mqttlocal
 
 import (
@@ -90,6 +93,9 @@ type config struct {
 	password  string
 	tls       bool
 	mutualTLS bool
+
+	// acl refuses a SUBSCRIBE to the filters it denies (see acl.go).
+	acl *ACL
 }
 
 var (

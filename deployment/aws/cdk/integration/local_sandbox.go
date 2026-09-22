@@ -52,6 +52,10 @@ const (
 	localDynamoPort = 8000
 	localBrokerPort = 1883
 
+	// localDeniedTopic is the one topic the broker refuses a SUBSCRIBE to (see
+	// the broker's ACL in localSandbox). Nothing else subscribes to it.
+	localDeniedTopic = "gobridge/ha/denied"
+
 	// proberImage is how the test process reaches a deployed member. The
 	// emulator's ECS returns no ENI attachment, and on a Docker-for-Mac host the
 	// container network is not routable from the test process, so calls go
@@ -196,13 +200,19 @@ func localSandbox(t *testing.T) SandboxEnv {
 	state.dynamoEndpoint = ddblocal.Endpoint(t)
 	attachToNetwork(t, state.network, ddblocal.ContainerName(t), localDynamoHost)
 
-	// Cap the broker at QoS 1. It is what gives the suite a config change every
-	// member can ACCEPT and none can RUN: a subscription that asks for QoS 2 is
-	// built and validated by every member, and then granted at QoS 1 by the
-	// broker, so no member ever reports its subscriptions satisfied and the
-	// confirm window takes the whole cohort back. Nothing else here asks for
-	// QoS 2, so the cap is invisible to every other topology.
-	mqttlocal.Configure(mqttlocal.WithExtraConfig("max_qos 1\n"))
+	// Refuse a SUBSCRIBE to one topic nothing else uses. It is what gives the
+	// suite a config change every member can ACCEPT and none can RUN: a receiver
+	// subscribing to localDeniedTopic is built and validated by every member, and
+	// the broker then refuses the filter (SUBACK 0x87, not authorized), so the
+	// reconcile fails, no member ever reports its subscriptions satisfied, and
+	// the confirm window takes the whole cohort back. A QoS cap cannot do this:
+	// a lower grant is accepted as best effort. The members present the local
+	// MQTT credential document, and the broker refuses a username its ACL does
+	// not list, so that user is listed.
+	mqttlocal.Configure(mqttlocal.WithACL(mqttlocal.ACL{
+		DeniedSubscriptions: []string{localDeniedTopic},
+		Users:               map[string]string{localMQTTUsername: localMQTTPassword},
+	}))
 	state.brokerURL = mqttlocal.BrokerURL(t)
 	attachToNetwork(t, state.network, mqttlocal.ContainerName(t), localBrokerHost)
 
