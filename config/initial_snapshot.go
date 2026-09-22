@@ -115,6 +115,7 @@ func freezeInitialPlugin(cfg ports.PluginConfig) (ports.PluginConfig, error) {
 		reflect.TypeFor[ports.CredentialedConfig](),
 		reflect.TypeFor[ports.DurableSessionIdentityConfig](),
 		reflect.TypeFor[ports.PostAcquireActivationTimingConfig](),
+		reflect.TypeFor[ports.SettlementRecoveryTimingConfig](),
 		reflect.TypeFor[ports.TransportFailoverTimingConfig](),
 		reflect.TypeFor[ports.IngressMemoryConfig](),
 	} {

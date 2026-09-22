@@ -391,6 +391,13 @@ from `ports/plugin_config.go`:
 | `PostAcquireActivationTimingConfig` | The conservative bound for every sequential phase between exclusive lease acquisition and convergence, for a transport whose reconciliation can include a mandatory replay-verification wait. Zero when the selected session mode has no such sequence. |
 | `SettlementRecoveryTimingConfig` | How long a source session's recovery recycle waits for already-accepted deliveries to settle, so the route validator can reject a `direct_hold` hold (`send_retry_budget` + `send_timeout`) the source would not tolerate. Return the same number the adapter's own recycle uses, so the two cannot disagree; zero when the session mode never recycles for this reason. |
 
+**Every capability above must survive freezing**, and a new one must be added to
+**both** guard lists: `freezePluginConfig` (`bridge/builder_resolve.go`) and
+`freezeInitialPlugin` (`config/initial_snapshot.go`). A capability the frozen
+value drops is otherwise silent — the config still validates and keeps its kind,
+while the core code reading it sees an absent value and skips the very check the
+capability exists for.
+
 These capabilities keep `bridge/` and `validate/` transport-neutral: core code
 asserts the generic interface and never switches on a transport name or imports
 an adapter config type.

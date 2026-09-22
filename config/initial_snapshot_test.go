@@ -57,3 +57,25 @@ func TestInitialSnapshotRejectsUnownedPluginAndConditionState(t *testing.T) {
 	_, err = cloneInitialValue(make(chan string))
 	require.ErrorIs(t, err, shared.ErrInvalidConfig)
 }
+
+// TestInitialSnapshotRejectsAFrozenPluginThatLostItsRecoveryTiming pins the
+// settlement-recovery wait as a capability that must survive freezing, on the
+// freeze path initialization takes.
+//
+// A dropped capability is silent everywhere downstream: the frozen config still
+// validates and keeps its kind, the source facts simply report no wait, and the
+// route validator's settlement-recovery rule is skipped — so a direct_hold route
+// whose held retry outlives the MQTT recycle passes the gate that exists to
+// reject it. The session still enforces its own recycle timeout at runtime, so
+// the config admitted here is the one that terminalizes it in production. Every
+// optional capability the runtime reads off a frozen plugin has to be on this
+// list for the same reason.
+func TestInitialSnapshotRejectsAFrozenPluginThatLostItsRecoveryTiming(t *testing.T) {
+	cfg := minimalValidConfig("original")
+	cfg.Sessions = []ports.SessionDef{{ID: "sess1", Transport: "mqtt", Config: &recoveryTimedInitialPlugin{}}}
+
+	_, err := initialSnapshot(cfg)
+
+	require.ErrorIs(t, err, shared.ErrInvalidConfig)
+	require.ErrorContains(t, err, "lost a capability")
+}
