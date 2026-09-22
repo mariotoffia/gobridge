@@ -143,6 +143,7 @@ func freezePluginConfig(config ports.PluginConfig) (ports.PluginConfig, error) {
 	_, credentialed := config.(ports.CredentialedConfig)
 	_, durable := config.(ports.DurableSessionIdentityConfig)
 	_, activationTimed := config.(ports.PostAcquireActivationTimingConfig)
+	_, recoveryTimed := config.(ports.SettlementRecoveryTimingConfig)
 	_, failoverTimed := config.(ports.TransportFailoverTimingConfig)
 	_, ingressMemoryAware := config.(ports.IngressMemoryConfig)
 	if !canFreeze {
@@ -176,6 +177,12 @@ func freezePluginConfig(config ports.PluginConfig) (ports.PluginConfig, error) {
 		if _, ok := frozen.(ports.PostAcquireActivationTimingConfig); !ok {
 			return nil, shared.ErrInvalidConfig.WithMessage(
 				fmt.Sprintf("bridge: plugin config kind %q lost its post-acquire activation timing capability when frozen", sourceKind))
+		}
+	}
+	if recoveryTimed {
+		if _, ok := frozen.(ports.SettlementRecoveryTimingConfig); !ok {
+			return nil, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("bridge: plugin config kind %q lost its settlement-recovery timing capability when frozen", sourceKind))
 		}
 	}
 	if failoverTimed {

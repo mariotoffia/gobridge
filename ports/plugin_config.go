@@ -82,6 +82,17 @@ type PostAcquireActivationTimingConfig interface {
 	PostAcquireActivationTiming(mode connectivity.SessionMode) SessionActivationTiming
 }
 
+// SettlementRecoveryTimingConfig is an OPTIONAL typed-config capability of a
+// source session whose transport recycles its broker connection to recover
+// stranded settlements. SettlementRecoveryWait is how long that recycle waits
+// for the deliveries the runtime already accepted to settle before the recovery
+// attempt fails; zero when the session mode never recycles for this reason. The
+// route validator uses it so a direct_hold route cannot hold a delivery longer
+// than its source would wait.
+type SettlementRecoveryTimingConfig interface {
+	SettlementRecoveryWait(mode connectivity.SessionMode) time.Duration
+}
+
 // TransportFailoverTiming reports one conservative effective bound for the
 // complete post-takeover transport activation through ServiceLevelFull. The
 // bound includes broker connect, subscription cleanup/replay, any required
@@ -104,8 +115,8 @@ type TransportFailoverTimingConfig interface {
 // runtime dependencies that must retain identity (for example a client handle,
 // clock, mutex-bearing state, or process-stable suffix resolver). The result must
 // be non-nil, retain the source Kind and this freeze capability, and preserve
-// any durable-identity, post-acquire timing, failover timing, and credential capabilities
-// exposed by the source.
+// any durable-identity, post-acquire timing, settlement-recovery timing, failover
+// timing, and credential capabilities exposed by the source.
 type FreezableConfig interface {
 	FreezePluginConfig() PluginConfig
 }

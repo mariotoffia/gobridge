@@ -372,18 +372,19 @@ func (b *Builder) wireRoutes(
 		}
 
 		rcfg := runtime.RouteConfig{
-			ID:                      routeDef.ID,
-			Policy:                  policy,
-			Bindings:                bindings,
-			Processors:              procs,
-			SourceCapabilities:      source.Capabilities,
-			SourceVisibilityTimeout: source.VisibilityTimeout,
-			SourceAutoExtend:        source.AutoExtend,
-			SourceTransport:         source.Transport,
-			SourceRedeliveryRefusal: source.RedeliveryRefusal,
-			SourceBestEffortTopics:  source.BestEffortTopics,
-			SourceReceiverID:        routeDef.ReceiverID,
-			SourceSessionID:         sourceSessionID,
+			ID:                           routeDef.ID,
+			Policy:                       policy,
+			Bindings:                     bindings,
+			Processors:                   procs,
+			SourceCapabilities:           source.Capabilities,
+			SourceVisibilityTimeout:      source.VisibilityTimeout,
+			SourceSettlementRecoveryWait: source.SettlementRecoveryWait,
+			SourceAutoExtend:             source.AutoExtend,
+			SourceTransport:              source.Transport,
+			SourceRedeliveryRefusal:      source.RedeliveryRefusal,
+			SourceBestEffortTopics:       source.BestEffortTopics,
+			SourceReceiverID:             routeDef.ReceiverID,
+			SourceSessionID:              sourceSessionID,
 		}
 
 		// Build content-based resolver from config if present.

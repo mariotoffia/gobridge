@@ -176,6 +176,7 @@ func validateRoute(ve *ValidationError, entry *routeEntry, hasOutboxStore, hasLe
 	validateRetryFallback(ve, prefix, entry, hasDLQStore)
 	validateTerminalFailureSink(ve, prefix, policy, hasDLQStore)
 	validateTimeouts(ve, prefix, entry, hasDLQStore)
+	validateSendRetryBudget(ve, prefix, entry, policy)
 	validateBackoff(ve, prefix, policy)
 }
 
@@ -393,71 +394,6 @@ func validateRetryFallback(ve *ValidationError, prefix string, entry *routeEntry
 			"messages will be silently dropped on failure (set AllowRetryDrop to suppress)")
 	}
 }
-
-// validateTimeouts checks that SendTimeout does not exceed half the
-// source visibility timeout. When send takes longer than the visibility
-// window, the source transport redelivers the message while send is
-// still in progress, causing duplicates.
-//
-// The check is skipped when the source auto-extends the window
-// (SourceAutoExtend): a background renewal keeps the message invisible
-// for the duration of processing, so a deliberately short window is safe
-// and must not be rejected. It only guards routes running with a fixed,
-// non-renewed window.
-func validateTimeouts(ve *ValidationError, prefix string, entry *routeEntry, hasDLQStore bool) {
-	policy := entry.config.Policy.WithDefaults()
-	vis := entry.config.SourceVisibilityTimeout
-	if entry.config.SourceAutoExtend || vis <= 0 {
-		// Auto-extend renews the window in the background, and a zero/unknown
-		// window is not checkable; either way the fixed-window bound does not apply.
-		return
-	}
-
-	if policy.SendTimeout >= vis/2 {
-		ve.add(prefix + fmt.Sprintf(
-			"SendTimeout (%s) >= VisibilityTimeout/2 (%s); "+
-				"source may redeliver before send completes",
-			policy.SendTimeout, vis/2))
-	}
-
-	// Total worst-case time the message can hold the source before it is settled,
-	// checked against the fixed visibility window. Per-processor budgets are
-	// own-time-only and disarm during next() (route/chain.go), so N compliant
-	// processors can legally consume N×ProcessorTimeout before the send even
-	// starts; add the send budget and the bounded DLQ-write budget the failure
-	// path may spend. When this total exceeds the window the source redelivers
-	// mid-pipeline and the message is processed concurrently — the very duplicate
-	// this validator exists to prevent — even though every individual timeout
-	// passes its own check.
-	//
-	// dlqWriteBudget is the DLQ-write time the failure path may spend before it
-	// settles the source (see the package const). It is counted into the worst
-	// case only when a DLQ write is actually reachable: a DLQ store exists AND the
-	// terminal policy is not drop. A drop-policy route, or any route in a
-	// deployment with no DLQ store, settles the source in-memory on failure, so
-	// counting the budget there would over-reject a safe config at startup.
-	dlqBudget := time.Duration(0)
-	if hasDLQStore && policy.OnPermanentFailure != routing.FailureDrop {
-		dlqBudget = dlqWriteBudget
-	}
-	nProc := len(entry.config.Processors)
-	total := time.Duration(nProc)*policy.ProcessorTimeout + policy.SendTimeout + dlqBudget
-	if total > vis {
-		ve.add(prefix + fmt.Sprintf(
-			"worst-case pipeline time (%s = %d processors × ProcessorTimeout %s + SendTimeout %s + DLQ budget %s) "+
-				"exceeds source VisibilityTimeout (%s); source may redeliver mid-pipeline causing duplicate processing",
-			total, nProc, policy.ProcessorTimeout, policy.SendTimeout, dlqBudget, vis))
-	}
-}
-
-// dlqWriteBudget is the bounded wall-clock time the inline failure path may spend
-// writing a poisoned/permanently-failed message to the DLQ before it settles the
-// source. It mirrors the DLQ router wiring in bridge_start.go (WriteTimeout 5s ×
-// WriteMaxAttempts 2 plus the router's 500ms default backoff between attempts =
-// 10.5s). Kept a local constant because the runtime does not model it as a shared
-// value; TestDLQWriteBudget_MatchesRouterWiring pins it to that wiring so either
-// side drifting is caught.
-const dlqWriteBudget = 10500 * time.Millisecond
 
 // validateBackoff rejects a Backoff block that is not a backoff. WithDefaults
 // fills only ZERO fields, so a negative interval or a below-one multiplier

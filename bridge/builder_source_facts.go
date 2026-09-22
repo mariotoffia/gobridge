@@ -39,6 +39,12 @@ type routeSourceFacts struct {
 	// BestEffortTopics admits only the configured weaker subscriptions, without
 	// promising source recovery or suppressing retry-fallback validation.
 	BestEffortTopics []string
+	// SettlementRecoveryWait is how long the ingress session waits for the
+	// deliveries this route already accepted to settle before it recycles its
+	// broker connection to recover stranded settlements. Zero when the session
+	// never recycles for that reason, and the validator then has nothing to keep
+	// a held delivery inside.
+	SettlementRecoveryWait time.Duration
 }
 
 // sourceRouteFacts resolves the source facts for one route's receiver. A nil
@@ -103,6 +109,16 @@ func (b *Builder) sourceRouteFacts(recvDef *ports.ReceiverDef) routeSourceFacts 
 	ingress := ports.SessionSpec{}
 	if sd := findSession(b.cfg, recvDef.SessionID); sd != nil {
 		ingress = sessionSpecFrom(*sd)
+	}
+	// How long that session waits for the deliveries this route accepted to
+	// settle before it recycles the broker connection. It bounds how long the
+	// route may hold one of them, so it is read from the INGRESS session and for
+	// the mode that session actually runs in — an unset mode is ephemeral, which
+	// never recycles for stranded settlements.
+	if !ports.IsNilPluginConfig(ingress.Config) {
+		if timing, ok := ingress.Config.(ports.SettlementRecoveryTimingConfig); ok {
+			facts.SettlementRecoveryWait = timing.SettlementRecoveryWait(ingress.SessionMode)
+		}
 	}
 	subscriptions := receiverSpecFrom(*recvDef).Subscriptions
 	if bc, ok := recvDef.Config.(ports.BestEffortDirectHoldConfig); ok {

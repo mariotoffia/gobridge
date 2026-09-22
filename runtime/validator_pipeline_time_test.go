@@ -29,6 +29,9 @@ func TestValidator_PipelineTimeExceedsVisibility_Rejected(t *testing.T) {
 	cfg.SourceAutoExtend = false
 	cfg.Policy.ProcessorTimeout = 10 * time.Second
 	cfg.Policy.SendTimeout = 2 * time.Second // < vis/2 (15s): the old check stays green
+	// In-process send retry off, so the processors alone have to overflow the
+	// window for this to fail.
+	cfg.Policy.SendRetryBudget = routing.SendRetryBudgetDisabled
 	cfg.Processors = []ports.Processor{&timeoutProcessor{}, &timeoutProcessor{}, &timeoutProcessor{}}
 
 	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
@@ -61,11 +64,9 @@ func TestValidator_PipelineTimeAutoExtend_NotRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Pre-cancel so Start returns straight after validation without launching the
-	// route background loops.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := rt.Start(ctx); err != nil && strings.Contains(err.Error(), "worst-case pipeline time") {
+	// The side-effect-free validation Start runs, without launching the route
+	// background loops.
+	if err := rt.ValidateRoutes(); err != nil && strings.Contains(err.Error(), "worst-case pipeline time") {
 		t.Fatalf("auto-extend source must not be rejected for pipeline time: %v", err)
 	}
 }
@@ -106,6 +107,7 @@ func TestValidator_PipelineTime_DLQBudgetExcludedForDropPolicy(t *testing.T) {
 	cfg.SourceAutoExtend = false
 	cfg.Policy.ProcessorTimeout = 8 * time.Second
 	cfg.Policy.SendTimeout = 2 * time.Second // < vis/2 (12.5s): the send-window check stays green
+	cfg.Policy.SendRetryBudget = routing.SendRetryBudgetDisabled
 	cfg.Processors = []ports.Processor{&timeoutProcessor{}, &timeoutProcessor{}}
 	// 2×8s + 2s = 18s < 25s window (passes); + 10.5s DLQ budget = 28.5s > 25s
 	// (would fail if the budget were counted). Drop policy → budget excluded.
@@ -113,10 +115,8 @@ func TestValidator_PipelineTime_DLQBudgetExcludedForDropPolicy(t *testing.T) {
 	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
 		t.Fatal(err)
 	}
-	// Pre-cancel so Start returns straight after validation without launching loops.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := rt.Start(ctx); err != nil && strings.Contains(err.Error(), "worst-case pipeline time") {
+	// The side-effect-free validation Start runs, without launching loops.
+	if err := rt.ValidateRoutes(); err != nil && strings.Contains(err.Error(), "worst-case pipeline time") {
 		t.Fatalf("drop-policy route must not be rejected for a phantom DLQ budget: %v", err)
 	}
 }
@@ -137,6 +137,7 @@ func TestValidator_PipelineTime_DLQBudgetCountedWhenDLQConfigured(t *testing.T) 
 	cfg.SourceAutoExtend = false
 	cfg.Policy.ProcessorTimeout = 8 * time.Second
 	cfg.Policy.SendTimeout = 2 * time.Second
+	cfg.Policy.SendRetryBudget = routing.SendRetryBudgetDisabled
 	cfg.Processors = []ports.Processor{&timeoutProcessor{}, &timeoutProcessor{}}
 	// 2×8s + 2s = 18s < 25s window, but + 10.5s DLQ budget = 28.5s > 25s: the route
 	// holds the source through the DLQ write past the window → rejected.

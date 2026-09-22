@@ -60,6 +60,15 @@ type RouteConfig struct {
 	// auto-extend is valid and must not be rejected.
 	SourceAutoExtend bool
 
+	// SourceSettlementRecoveryWait is how long the source's session waits for the
+	// deliveries this route already accepted to settle before it recycles its
+	// broker connection to recover stranded settlements (MQTT persistent and
+	// exclusive sessions do). The validator keeps a direct_hold route's held
+	// delivery inside that wait, because a retry still running when it runs out
+	// fails the recycle. Zero means the source never recycles for that reason, or
+	// the transport has no opinion, and the check is skipped.
+	SourceSettlementRecoveryWait time.Duration
+
 	// SourceTransport is the identity of the transport feeding this route
 	// (the RegisterTransportFactory name declared under `transport:`, or the
 	// adapter's canonical PluginConfig.Kind). The runtime uses it to strip

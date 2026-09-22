@@ -31,7 +31,7 @@ func (s *Session) recoveryAttemptTimeout() time.Duration {
 	opts := s.opts
 	mode := s.mode
 	s.mu.Unlock()
-	return (Config{Session: opts}).PostAcquireActivationTiming(mode).WorstCaseDuration
+	return (Config{Session: opts}).SettlementRecoveryWait(mode)
 }
 
 // contextWithClockTimeout applies a cancellable hard bound using the injected
