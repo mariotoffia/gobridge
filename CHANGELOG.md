@@ -185,6 +185,22 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   subscription. The MQTT bytes on the wire are unchanged; only the empty
   frames are gone.
 
+### Fixed — MQTT over WebSocket follows `ALL_PROXY` like every other broker scheme
+
+- `ws://` and `wss://` broker connections now follow `ALL_PROXY`, `NO_PROXY`
+  and the `ALL_PROXY=direct` opt-out, like `tcp://` and `ssl://`, and no longer
+  `HTTP_PROXY` or `HTTPS_PROXY`. The WebSocket's TCP connection goes through
+  the same proxy decision, and `wss://` runs TLS on top of it, verifying the
+  broker identity from the broker URL.
+- Before, a WebSocket dial ignored `ALL_PROXY` and went around the SOCKS5
+  proxy, either directly or through an HTTP proxy from `HTTP_PROXY` /
+  `HTTPS_PROXY`. A proxy that cannot be reached now fails the dial instead of
+  being bypassed.
+- A deployment that reached a WebSocket broker through `HTTP_PROXY` or
+  `HTTPS_PROXY` now dials it directly unless `ALL_PROXY` names a SOCKS5 proxy.
+  An `http://` value in `ALL_PROXY` fails the dial, as it does for every broker
+  scheme.
+
 ### Changed — an MQTT subscription granted a lower QoS is kept as best effort
 
 - **A broker that grants a subscription a lower QoS no longer stops the
