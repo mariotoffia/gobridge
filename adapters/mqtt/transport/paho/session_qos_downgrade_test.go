@@ -179,6 +179,10 @@ func TestQoSDowngrade_ThreeFreshIdenticalGrants_AcceptedAsBestEffort(t *testing.
 		"acceptance is announced once, at Error")
 	require.Equal(t, 1, logs.messageCountContaining(slog.LevelError, "no acknowledgement or redelivery"),
 		"a QoS 0 grant names what QoS 0 gives up")
+	require.Equal(t, 1, logs.messageCountContaining(slog.LevelError, "retry_unsupported"),
+		"a QoS 0 grant says a failed delivery goes to the DLQ or is dropped as retry_unsupported")
+	require.Equal(t, 1, logs.messageCountContaining(slog.LevelError, "Configure a DLQ store"),
+		"a QoS 0 grant recommends the DLQ its route was never required to have")
 	require.Len(t, rec.FindEntries(MetricMQTTQoSDowngraded), 1,
 		"the counter counts the first report, not the confirmations")
 
@@ -195,7 +199,8 @@ func TestQoSDowngrade_ThreeFreshIdenticalGrants_AcceptedAsBestEffort(t *testing.
 
 // TestQoSDowngrade_AcceptedAboveQoS0_LogsGrantedQoSDelivery proves the
 // acceptance log describes the grant it accepts: the QoS 0 consequences (no
-// acknowledgement, no redelivery) appear only when the broker granted QoS 0.
+// acknowledgement, no redelivery, a failed delivery dropped as
+// retry_unsupported without a DLQ) appear only when the broker granted QoS 0.
 func TestQoSDowngrade_AcceptedAboveQoS0_LogsGrantedQoSDelivery(t *testing.T) {
 	logs := &recordingLogHandler{}
 	s, fake, clk, _ := newDowngradeSession(t, "downgrade-qos1", connectivity.SessionPersistent, 0x01, logs)
@@ -207,6 +212,8 @@ func TestQoSDowngrade_AcceptedAboveQoS0_LogsGrantedQoSDelivery(t *testing.T) {
 		"delivery runs at the granted QoS instead of the requested one"))
 	require.Zero(t, logs.messageCountContaining(slog.LevelError, "no acknowledgement"),
 		"QoS 0 consequences do not apply to a QoS 1 grant")
+	require.Zero(t, logs.messageCountContaining(slog.LevelError, "retry_unsupported"),
+		"a QoS 1 grant still redelivers, so a failed delivery is not dropped as retry_unsupported")
 }
 
 // TestQoSDowngrade_BestEffortTopics_AreSorted pins the documented order of

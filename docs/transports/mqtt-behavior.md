@@ -261,6 +261,18 @@ rule). The bridge keeps such a subscription running instead of failing:
    logged at Warn once. Every reconnect also re-evaluates the grant through the
    normal reconcile.
 
+**Failed deliveries.** The bridge validates a route for the QoS it requests. A
+QoS 1 or 2 subscription on a session that resumes counts as a source that
+redelivers, so the route needs neither a DLQ store nor
+[`allow_retry_drop`](../routes-and-runtime-reference.md#routespolicy----delivery-policy).
+An accepted QoS 0 grant breaks that assumption: the broker cannot redeliver a
+message the route fails to process. The route's
+[retry fallback](mqtt-settlement-recovery.md) sends the message to the DLQ or,
+when no DLQ store is configured, drops it and counts it as
+`MessagesDropped{reason=retry_unsupported}`. For a broker that caps QoS,
+configure a [DLQ store](../configuration-reference.md#stores----backing-store-configuration),
+or lower the route's `qos` to the granted level.
+
 Two metrics follow the downgrade. `MQTTQoSDowngraded` counts once when a SUBACK
 first reports a lower grant (a changed grant counts again; confirmations and
 re-checks do not). `MQTTQoSDowngradedActive`, tagged `session_id`, is a gauge of

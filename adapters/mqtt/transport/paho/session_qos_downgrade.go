@@ -243,13 +243,21 @@ func (s *Session) reportGrants(reports []grantReport) {
 				"confirming with fresh SUBSCRIBEs before accepting it as best effort", attrs...)
 		case grantAccepted:
 			consequence := "delivery runs at the granted QoS instead of the requested one"
+			advice := "Lower the route's qos to the granted level, or lift the broker's cap"
 			if r.granted == 0 {
+				// On a resuming session the route was validated as redelivering at the
+				// requested QoS, so it may have no DLQ store and no allow_retry_drop.
+				// Say where a failed delivery goes now that the broker cannot redeliver it.
 				consequence = "at QoS 0 there is no acknowledgement or redelivery, and messages " +
-					"published while the bridge is disconnected may be lost"
+					"published while the bridge is disconnected may be lost. A delivery the route " +
+					"fails to process cannot be redelivered by the broker either: it goes to the " +
+					"DLQ or, when no DLQ store is configured, is dropped and counted as " +
+					"retry_unsupported, even though the route was validated for the QoS it requested"
+				advice = "Configure a DLQ store, lower the route's qos to the granted level, " +
+					"or lift the broker's cap"
 			}
 			s.logger.Error("mqtt: broker keeps granting subscription QoS below requested; the "+
-				"subscription is kept active as best effort — "+consequence+". Lower the "+
-				"route's qos to the granted level, or lift the broker's cap", attrs...)
+				"subscription is kept active as best effort — "+consequence+". "+advice, attrs...)
 		case grantRecovered:
 			s.logger.Info("mqtt: broker grants the requested subscription QoS again; "+
 				"the best-effort downgrade is cleared", attrs...)

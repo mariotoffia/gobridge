@@ -157,6 +157,13 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   QoS as best effort, and the bridge logs it once at Error with the topic, the
   requested QoS and the granted QoS. See
   [QoS downgrade](docs/transports/mqtt-behavior.md#qos-downgrade).
+- At a QoS 0 grant the broker cannot redeliver a message the route fails to
+  process. The message goes to the DLQ or, when no DLQ store is configured, is
+  dropped and counted as `MessagesDropped{reason=retry_unsupported}`, even
+  though the route was validated for the QoS it requested (a QoS 1 or 2 route
+  on a resuming session needs no DLQ store or `allow_retry_drop`). The
+  acceptance log says so. For a broker that caps QoS, configure a DLQ store or
+  lower the route's `qos`.
 - New gauge `MQTTQoSDowngradedActive` (`session_id`) counts the accepted
   downgrades per session. It is written when the count changes and again on
   every health sweep, so it keeps producing samples while a downgrade stands.
