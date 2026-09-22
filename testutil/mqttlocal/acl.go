@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 )
 
 // A broker that refuses a SUBSCRIBE.
@@ -37,7 +39,13 @@ type ACL struct {
 // WithACL makes the broker enforce acl for anonymous clients and for the
 // listed users. It cannot be combined with WithAuth: list that user in
 // ACL.Users instead.
+//
+// The option owns a copy of acl's filters and users, so changing them after
+// the call does not reach the fixture. The broker's ACL file is generated once,
+// at start-up, and must keep matching the configuration the fixture records.
 func WithACL(acl ACL) Option {
+	acl.DeniedSubscriptions = slices.Clone(acl.DeniedSubscriptions)
+	acl.Users = maps.Clone(acl.Users)
 	return func(c *config) { c.acl = &acl }
 }
 

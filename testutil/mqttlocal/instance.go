@@ -323,7 +323,10 @@ func (b *BrokerInstance) RestartWith(opts ...Option) {
 }
 
 // sameCreationSettings reports whether two configs agree on everything
-// NewBrokerInstance turned into ports, mounts or generated material.
+// NewBrokerInstance turned into ports, mounts or generated material. The ACL
+// compares by identity: each WithACL owns its copy, so only the option the
+// instance was created with matches, and any other WithACL is refused, because
+// the generated ACL file is never rewritten.
 func sameCreationSettings(a, b config) bool {
 	return a.persistence == b.persistence && a.webSocket == b.webSocket &&
 		a.username == b.username && a.password == b.password &&
