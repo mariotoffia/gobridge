@@ -58,7 +58,9 @@ func useLocalRuntimeImage(properties map[string]any, image string) error {
 // since floci 2.1.0 it uses a local image only when the image was built for that
 // platform; for any other image it pulls the tag instead, and a tag that exists
 // only on this machine cannot be pulled. The task definition keeps the
-// deployment's platform, so the stack under test stays the one AWS receives.
+// deployment's RuntimePlatform, X86_64 by default; only the image differs. On an
+// arm64 host a run therefore starts an arm64 build of this checkout, and leaves
+// unproven that the image for the declared platform starts.
 func buildLocalRuntimeImage(t *testing.T, state *localBackend, asset localRuntimeAsset) string {
 	t.Helper()
 	platform := localRuntimePlatform(t, state)
