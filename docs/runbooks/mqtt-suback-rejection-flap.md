@@ -35,8 +35,8 @@ see [A QoS downgrade is not a flap](#a-qos-downgrade-is-not-a-flap).
 
 1. Get the offending filter from the reconcile failure log (`topic`).
 2. Check the broker's ACL / policy for that filter and this session's
-   credentials: SUBACK 0x87 (Not authorized) and QoS caps are broker policy,
-   not bridge state.
+   credentials: SUBACK 0x87 (Not authorized) is broker policy, not bridge
+   state.
 3. Confirm the filter is still wanted in the bridge config (a stale route may
    simply need removal).
 
@@ -68,10 +68,10 @@ at the granted QoS as best effort. `MQTTQoSDowngraded` counts the first report,
 the Error log names `topic`, `requested_qos` and `granted_qos`, and the gauge
 `MQTTQoSDowngradedActive` stays above zero while the downgrade stands. Deep
 health lists the affected filters in `best_effort_topics`. A lower grant never
-stops the session or the process, but when the broker grants QoS 0 messages
-can be lost (no acknowledgement or redelivery, and nothing is kept while the
-bridge is disconnected). The re-check can recover on its own when the broker
-grants the requested QoS again.
+stops the session or the process, but when the broker grants QoS 0, messages
+can be lost (no acknowledgement or redelivery, and messages published while the
+bridge is disconnected may be lost). The re-check can recover on its own when
+the broker grants the requested QoS again.
 
 To remove it, lower the route's `qos` to the granted level, or lift the
 broker's QoS cap. The session re-checks the grant every `qos_recheck_interval`

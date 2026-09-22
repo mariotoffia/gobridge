@@ -233,11 +233,14 @@ rule). The bridge keeps such a subscription running instead of failing:
    requested QoS and the granted QoS. The session then sends SUBSCRIBE for the
    same filter twice more, 5 s apart. These re-sends use Retain Handling 1, so the broker does not
    replay retained messages, and the same QoS and No-Local as the original. While
-   it confirms, the filter is not active, session health is Degraded, and the
+   it confirms, the filter is not counted as active (messages still arrive at
+   the granted QoS), session health is Degraded, and the
    reconcile itself succeeds, so the supervisor does not retry the session and
    an exclusive session keeps its lease. A grant that meets the requested QoS
    during confirmation returns the subscription to normal. A different lower
-   grant starts the confirmation again.
+   grant starts the confirmation again. A confirmation SUBSCRIBE that gets no
+   grant keeps the last one and is retried after 5 s, the wait doubling with
+   each further miss up to 1 min.
 2. **Accept as best effort.** When three fresh SUBACKs report the same lower
    grant, the subscription becomes active at the granted QoS and has that
    QoS's guarantee. At QoS 0 (see the QoS 0 row of the
@@ -253,14 +256,16 @@ rule). The bridge keeps such a subscription running instead of failing:
    the same time as a reconcile of that session. If the broker grants the
    requested QoS, the subscription returns to normal and the bridge logs it at
    Info. A re-check that is still lower changes nothing. A re-check the broker
-   refuses keeps the last grant and is retried; it is logged at Warn once per run
-   of refusals. Every reconnect also re-evaluates the grant through the normal
-   reconcile.
+   refuses keeps the last grant and is retried at the next
+   `qos_recheck_interval`. A run of refusals, during confirmation or re-check, is
+   logged at Warn once. Every reconnect also re-evaluates the grant through the
+   normal reconcile.
 
 Two metrics follow the downgrade. `MQTTQoSDowngraded` counts once when a SUBACK
 first reports a lower grant (a changed grant counts again; confirmations and
 re-checks do not). `MQTTQoSDowngradedActive`, tagged `session_id`, is a gauge of
-the accepted downgrades per session. It falls when a grant recovers, when the
+the accepted downgrades per session, written when the count changes and again
+on every health sweep. It falls when a grant recovers, when the
 plan stops wanting the filter, or when the session closes, so alarm on the gauge
 for a standing condition. See [adapter diagnostic
 metrics](../adapter-diagnostic-metrics.md).

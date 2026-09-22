@@ -153,9 +153,11 @@ reload, verify session health (or watch `ConfigDegraded`) — the reload
 success signal alone is insufficient. Remediation for a non-converging
 config is a revert (see `docs/runbooks/config-rollback.md`).
 
-Note also: one permanently rejected subscription (broker denies a filter, or
-grants a lower QoS) fails the whole reconcile; on an exclusive session the
-lease is released and supervision retries forever at the 30s backoff cap —
-connect → subscribe → reject → disconnect, indefinitely, with readiness below
-Full. There is deliberately no per-topic quarantine (a partial route set is
-never silently served). See `docs/runbooks/mqtt-suback-rejection-flap.md`.
+Note also: one permanently rejected subscription (broker denies a filter)
+fails the whole reconcile; on an exclusive session the lease is released and
+supervision retries forever at the 30s backoff cap — connect → subscribe →
+reject → disconnect, indefinitely, with readiness below Full. There is
+deliberately no per-topic quarantine (a partial route set is never silently
+served). See `docs/runbooks/mqtt-suback-rejection-flap.md`. A filter the
+broker grants at a lower QoS does not fail the reconcile; see
+[QoS downgrade](mqtt-behavior.md#qos-downgrade).

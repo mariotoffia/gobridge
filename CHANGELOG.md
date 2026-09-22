@@ -21,6 +21,14 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   integration tests instead of writing its own container setup and readiness
   polling. They carry a lighter compatibility promise than the runtime
   modules; see [Test helper modules](RELEASE.md#test-helper-modules).
+- `testutil/mqttlocal` grew `WithACL`: the broker refuses a SUBSCRIBE to the
+  listed filters with reason code `0x87` (Not authorized), for anonymous
+  clients and the listed users. Mosquitto reads its `acl_file` only when it
+  accepts or delivers a message, never at SUBSCRIBE, so the fixture loads
+  Mosquitto's dynamic security plugin instead, which also refuses a CONNECT
+  carrying a username it does not list. The local deployment suite uses it for
+  the change every member accepts and none can run, which a broker QoS cap no
+  longer is.
 
 ### Changed — `testutil/wait` is a package of the core module
 
@@ -131,17 +139,25 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   `0x80` or higher) still fails that session's reconcile, as before.
 - The session confirms a lower grant with three fresh SUBSCRIBEs 5 s apart
   (Retain Handling 1, so no retained replay). While it confirms, the filter is
-  inactive and session health is Degraded.
+  not counted as active (messages still arrive at the granted QoS) and session
+  health is Degraded. A confirmation SUBSCRIBE that gets no grant is retried
+  after 5 s, the wait doubling with each further miss up to 1 min.
 - A confirmed lower grant is accepted: the subscription runs at the granted
   QoS as best effort, and the bridge logs it once at Error with the topic, the
   requested QoS and the granted QoS. See
   [QoS downgrade](docs/transports/mqtt-behavior.md#qos-downgrade).
 - New gauge `MQTTQoSDowngradedActive` (`session_id`) counts the accepted
-  downgrades per session. Alarm on it for a standing condition.
+  downgrades per session. It is written when the count changes and again on
+  every health sweep, so it keeps producing samples while a downgrade stands.
+  Alarm on it for a standing condition.
 - Deep health lists the accepted filters in `best_effort_topics`, and the
   session can report Full.
 - `MQTTQoSDowngraded` now increments once per newly reported lower grant, not
-  on every reconcile that sees it.
+  on every SUBACK that reports it.
+- The CDK alarm `HAMQTTQoSDowngraded` (on that counter) now fires once per
+  newly reported downgrade and then clears, instead of staying in ALARM through
+  a crash-loop. A standing condition is visible on the
+  `MQTTQoSDowngradedActive` gauge; a CDK alarm on the gauge is a follow-up.
 
 ### Added — `qos_recheck_interval`
 
