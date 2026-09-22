@@ -21,6 +21,11 @@ import (
 // real-broker helpers (publishBacklog, watchTopic, requireDeliversAll), which
 // an in-package test cannot import.
 
+// brokerWait bounds every wait on a real broker: a delivery, a reconcile, a
+// reconnect. A reconnect is the long one — when a broker restart leaves the old
+// connection half-open, only the session's keep-alive notices.
+const brokerWait = 30 * time.Second
+
 // brokerMessage is what a receiver's handler saw of one delivery.
 type brokerMessage struct {
 	payload  string
@@ -96,9 +101,8 @@ func publishOnce(t *testing.T, brokerURL, topic string, qos byte, retain bool, p
 // is counted.
 func awaitReconciles(t *testing.T, s *Session, metrics *ports.RecordingExporter, n int) {
 	t.Helper()
-	wait.Until(t, 20*time.Second, fmt.Sprintf("%d reconciles completed", n), func() bool {
+	wait.Until(t, brokerWait, fmt.Sprintf("%d reconciles completed", n), func() bool {
 		return len(metrics.FindEntries(MetricMQTTReconcileLatency)) >= n
 	})
-	require.NoError(t, s.acquireReload(t.Context()), "await the last reconcile")
-	s.releaseReload()
+	awaitReloadGate(t, s, brokerWait, "await the last reconcile")
 }

@@ -113,8 +113,18 @@ func advanceAndAwait(tb testing.TB, s *Session, clk *clocktest.Fake, d time.Dura
 	if !wait.Poll(5*time.Second, cond) {
 		tb.Fatalf("after advancing %s: %s never held", d, desc)
 	}
-	if err := s.acquireReload(context.Background()); err != nil {
-		tb.Fatalf("await probe completion: %v", err)
+	awaitReloadGate(tb, s, 5*time.Second, "await probe completion")
+}
+
+// awaitReloadGate takes and releases the session's serialization gate, so the
+// reconcile or probe that held it has finished, its logs and counters
+// included. It fails the test when the gate is still held after bound.
+func awaitReloadGate(tb testing.TB, s *Session, bound time.Duration, what string) {
+	tb.Helper()
+	ctx, cancel := context.WithTimeout(tb.Context(), bound)
+	defer cancel()
+	if err := s.acquireReload(ctx); err != nil {
+		tb.Fatalf("%s: the session's serialization gate was still held after %s: %v", what, bound, err)
 	}
 	s.releaseReload()
 }

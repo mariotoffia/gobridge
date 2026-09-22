@@ -36,8 +36,12 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   fails the fixture. `RestartWith(opts...)` restarts an instance on the same
   port with the options applied on top of its configuration, so a test can
   lift a cap mid-test with `RestartWith(WithMaxQoS(2))` and watch its sessions
-  reconnect. The fixture's readiness check now publishes at the QoS the broker
-  announces, so a broker capped at QoS 0 no longer looks as if it never
+  reconnect. It refuses an option that would change the listeners, the
+  credentials, TLS, the ACL or persistence: those are fixed when the instance
+  is created, so such an option fails the test instead of restarting a broker
+  that quietly kept the old setting. The fixture's readiness check now
+  publishes at QoS 1, or at the broker's announced Maximum QoS when that is
+  lower, so a broker capped at QoS 0 no longer looks as if it never
   started. `WithExtraConfig` replaces the lines of an earlier call rather than
   adding to them, and its documentation now says so.
 

@@ -35,10 +35,6 @@ import (
 const (
 	downgradeTopic      = "qos-downgrade/real-broker"
 	downgradeReceiverID = "rx-qos-downgrade"
-	// brokerWait bounds every wait on the broker: a delivery, a reconnect. The
-	// reconnect is the long one — if the restart leaves the old connection
-	// half-open, only the session's keep-alive notices.
-	brokerWait = 30 * time.Second
 	// retainedReplayWindow is how long the handler must stay silent after the
 	// re-check SUBACK. A broker replays retained messages right behind the
 	// SUBACK, within milliseconds on a local broker.
@@ -110,11 +106,13 @@ func TestIntegration_QoSDowngrade_RealBrokerCapIsAcceptedAsBestEffortAndRecovers
 			return ok && d.confirmations == n
 		})
 	}
-	d, _ = downgradeState(s, downgradeTopic)
+	d, recorded = downgradeState(s, downgradeTopic)
+	require.True(t, recorded, "the confirmed downgrade must still be recorded")
 	require.True(t, d.accepted(), "%d identical SUBACKs accept the grant", qosDowngradeConfirmations)
 	h = s.Health(ctx)
 	require.Equal(t, ports.ServiceLevelFull, h.ServiceLevel)
 	require.Equal(t, []string{downgradeTopic}, h.BestEffortTopics)
+	require.NotNil(t, h.SubscriptionsSatisfied)
 	require.True(t, *h.SubscriptionsSatisfied)
 	requireGauge(t, rec, clientID, 1)
 	require.Equal(t, 1, logs.messageCountContaining(slog.LevelError, "best effort"),
@@ -135,13 +133,15 @@ func TestIntegration_QoSDowngrade_RealBrokerCapIsAcceptedAsBestEffortAndRecovers
 	publishOnce(t, broker.URL(), downgradeTopic, 0, true, "retained-state")
 	require.Equal(t, brokerMessage{payload: "retained-state", qos: 0},
 		wait.RequireReceive(t, received, brokerWait), "the retained message arrives once, live")
-	before, _ := downgradeState(s, downgradeTopic)
+	before, recorded := downgradeState(s, downgradeTopic)
+	require.True(t, recorded, "the accepted downgrade must be recorded before the re-check")
 	errorLogs := logs.messageCountContaining(slog.LevelError, "")
 	advanceAndAwait(t, s, clk, DefaultQoSRecheckInterval, "the re-check SUBACK was recorded", func() bool {
 		d, ok := downgradeState(s, downgradeTopic)
 		return ok && d.due.After(before.due)
 	})
-	after, _ := downgradeState(s, downgradeTopic)
+	after, recorded := downgradeState(s, downgradeTopic)
+	require.True(t, recorded, "a re-check still granted lower must keep the downgrade")
 	require.Zero(t, after.noVerdictRounds, "the re-check SUBSCRIBE must have been granted")
 	require.Equal(t, before.confirmations, after.confirmations)
 	require.Equal(t, before.acceptedAt, after.acceptedAt, "a re-check still granted lower changes nothing")
@@ -164,8 +164,7 @@ func TestIntegration_QoSDowngrade_RealBrokerCapIsAcceptedAsBestEffortAndRecovers
 		_, recorded := downgradeState(s, downgradeTopic)
 		return !recorded
 	})
-	require.NoError(t, s.acquireReload(ctx), "await the recovering reconcile")
-	s.releaseReload()
+	awaitReloadGate(t, s, brokerWait, "await the recovering reconcile")
 	qos, active := activeQoS(s, downgradeTopic)
 	require.True(t, active, "the subscription is active again")
 	require.Equal(t, byte(1), qos, "at the requested QoS")
