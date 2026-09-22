@@ -94,8 +94,10 @@ func TestRetryUnsupported_NilDLQ_AcksDelivery(t *testing.T) {
 	sender.SendErr = shared.ErrConnectionLost
 
 	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
-		RouteID:  "retry-test",
-		Policy:   routing.RoutePolicy{}.WithDefaults(),
+		RouteID: "retry-test",
+		// One send per delivery: this pins the replay decision, not the
+		// in-process send retry that precedes it.
+		Policy:   routing.RoutePolicy{SendRetryBudget: routing.SendRetryBudgetDisabled}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      nil,
@@ -140,8 +142,10 @@ func TestRetryUnsupported_WithDLQ_RoutesToDLQ(t *testing.T) {
 	dlqStore := NewFakeDLQStore()
 
 	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
-		RouteID:  "retry-dlq-test",
-		Policy:   routing.RoutePolicy{}.WithDefaults(),
+		RouteID: "retry-dlq-test",
+		// One send per delivery: this pins the replay decision, not the
+		// in-process send retry that precedes it.
+		Policy:   routing.RoutePolicy{SendRetryBudget: routing.SendRetryBudgetDisabled}.WithDefaults(),
 		Receiver: receiver,
 		Sender:   sender,
 		DLQ:      dlq.New(dlqStore),

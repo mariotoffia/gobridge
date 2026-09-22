@@ -40,6 +40,9 @@ func TestMQTTCore1_UncountableRedelivery_PoisonsWithoutRetry(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			DeliveryMode:      routing.DeliveryDirectHold,
 			MaxReplayAttempts: cap,
+			// One send per delivery: this pins the replay decision, not the
+			// in-process send retry that precedes it.
+			SendRetryBudget: routing.SendRetryBudgetDisabled,
 		},
 		Sender:  stubSender{err: shared.ErrUnavailable}, // deterministic transient failure
 		DLQ:     dlq.New(store),
@@ -81,6 +84,9 @@ func TestMQTTCore1_GeneratedID_WithStableKey_StillRetries(t *testing.T) {
 			// the default posture strips all reserved headers, so a stable key only
 			// survives on a trusted bridge-to-bridge receiver.
 			TrustBridgeHeaders: true,
+			// One send per delivery: this pins the replay decision, not the
+			// in-process send retry that precedes it.
+			SendRetryBudget: routing.SendRetryBudgetDisabled,
 		},
 		Sender:  stubSender{err: shared.ErrUnavailable},
 		DLQ:     dlq.New(store),

@@ -125,6 +125,9 @@ func TestTerminalAckFailure_KeepsLedgerEntry(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			DeliveryMode:      routing.DeliveryDirectHold,
 			MaxReplayAttempts: capN,
+			// One send per delivery: this pins the replay decision, not the
+			// in-process send retry that precedes it.
+			SendRetryBudget: routing.SendRetryBudgetDisabled,
 		},
 		Sender:  stubSender{err: shared.ErrUnavailable}, // deterministic transient send failure
 		DLQ:     dlq.New(store),

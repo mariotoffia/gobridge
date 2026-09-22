@@ -113,6 +113,13 @@ func TestSendDirectHold_UnparseableReceiveCountEmitsSignal(t *testing.T) {
 	// A transient (recoverable) send failure is the harm path: with rc==0 the
 	// replay cap never fires, so the delivery is retried rather than DLQ'd.
 	recoverable := shared.NewBridgeError(shared.ErrCodeConnectionLost, shared.ErrorTransient, "transient send failure")
+	policy := routing.RoutePolicy{
+		DeliveryMode:      routing.DeliveryDirectHold,
+		MaxReplayAttempts: 5,
+		// One send per delivery: this pins the replay decision, not the
+		// in-process send retry that precedes it.
+		SendRetryBudget: routing.SendRetryBudgetDisabled,
+	}
 
 	t.Run("present-but-garbage count emits metric + debug log and still retries", func(t *testing.T) {
 		rec := &ports.RecordingExporter{}
@@ -126,7 +133,7 @@ func TestSendDirectHold_UnparseableReceiveCountEmitsSignal(t *testing.T) {
 		})
 		r := NewRouteRunnerFromConfig(RouteRunnerConfig{
 			RouteID: "r1",
-			Policy:  routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold, MaxReplayAttempts: 5},
+			Policy:  policy,
 			Sender:  stubSender{err: recoverable},
 			Metrics: rec,
 			Logger:  logger,
@@ -156,7 +163,7 @@ func TestSendDirectHold_UnparseableReceiveCountEmitsSignal(t *testing.T) {
 		})
 		r := NewRouteRunnerFromConfig(RouteRunnerConfig{
 			RouteID: "r1",
-			Policy:  routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold, MaxReplayAttempts: 5},
+			Policy:  policy,
 			Sender:  stubSender{err: recoverable},
 			Metrics: rec,
 		})

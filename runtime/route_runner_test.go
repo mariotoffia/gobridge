@@ -71,6 +71,9 @@ func TestRouteRunner_DirectHold_HappyPath(t *testing.T) {
 func TestRouteRunner_DirectHold_TransientSendError(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
+		// One send per delivery: this pins the replay decision, not the
+		// in-process send retry that precedes it.
+		cfg.Policy.SendRetryBudget = routing.SendRetryBudgetDisabled
 	})
 	sender.SendErr = shared.ErrUnavailable
 

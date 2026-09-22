@@ -58,6 +58,9 @@ func TestSendRetryBackoff_GrowsWithLedgerAttempt(t *testing.T) {
 			MaxReplayAttempts:  10,
 			SendTimeout:        time.Second,
 			TrustBridgeHeaders: true, // keep the stable dedup key across ingress
+			// One send per delivery: this pins the replay backoff, not the
+			// in-process send retry that precedes it.
+			SendRetryBudget: routing.SendRetryBudgetDisabled,
 			Backoff: routing.BackoffPolicy{
 				InitialInterval: time.Second,
 				MaxInterval:     time.Minute,

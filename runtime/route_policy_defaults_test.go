@@ -139,6 +139,9 @@ func TestRouteRunner_SendTimeout(t *testing.T) {
 		Policy: routing.RoutePolicy{
 			DeliveryMode: routing.DeliveryDirectHold,
 			SendTimeout:  100 * time.Millisecond,
+			// One send per delivery: this pins the replay decision after the
+			// timed-out send, not the in-process send retry that precedes it.
+			SendRetryBudget: routing.SendRetryBudgetDisabled,
 		}.WithDefaults(),
 		Receiver:    receiver,
 		Sender:      blockingSender,

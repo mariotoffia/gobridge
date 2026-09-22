@@ -147,9 +147,12 @@ func TestMQTTBestEffortBroker_PublisherZeroThroughSubscriptionOne(t *testing.T) 
 			var sends atomic.Int32
 			require.NoError(t, rt.AddRoute(goruntime.RouteConfig{
 				ID: "publisher-zero", SourceCapabilities: directHoldCaps,
+				// One send per delivery: this pins the terminal outcome of the
+				// first failure, not the in-process send retry that precedes it.
 				Policy: routing.RoutePolicy{
 					DeliveryMode: routing.DeliveryDirectHold, MaxInFlight: 1, AllowRetryDrop: true,
 					OnPermanentFailure: routing.FailureDrop, OnExpired: routing.ExpiredDrop,
+					SendRetryBudget: routing.SendRetryBudgetDisabled,
 				},
 			}, receiver, bestEffortSender(func(context.Context, ports.OutboundMessage) error {
 				if sends.Add(1) == 1 {

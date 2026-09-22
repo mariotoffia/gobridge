@@ -115,6 +115,9 @@ func TestDirectHold_RetryUnsupported_FallsToDLQ(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
+		// One send per delivery: this pins the replay decision, not the
+		// in-process send retry that precedes it.
+		cfg.Policy.SendRetryBudget = routing.SendRetryBudgetDisabled
 		cfg.Metrics = rec
 	})
 	sender.SendErr = shared.ErrUnavailable
@@ -163,6 +166,9 @@ func TestDirectHold_RetryUnsupported_DLQAlsoFails_CountsTerminalLoss(t *testing.
 	_, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
 		cfg.Policy.MaxInFlight = 1
+		// One send per delivery: this pins the replay decision, not the
+		// in-process send retry that precedes it.
+		cfg.Policy.SendRetryBudget = routing.SendRetryBudgetDisabled
 		cfg.Clock = clk
 		cfg.Metrics = rec
 		cfg.Hook = hook
@@ -216,6 +222,10 @@ func TestRetryUnsupported_FailedDLQAcrossDispatchBranches(t *testing.T) {
 					cfg.Processors = []ports.Processor{&FakeProcessor{NameVal: "reject", ProcessErr: shared.ErrInvalidPayload}}
 				case "resolver":
 					cfg.Resolver = &FakeResolver{ResolveErr: shared.ErrInvalidTopic}
+				case "replay cap":
+					// One send per delivery: this pins the replay-cap decision,
+					// not the in-process send retry that precedes it.
+					cfg.Policy.SendRetryBudget = routing.SendRetryBudgetDisabled
 				case "filtered":
 					cfg.Policy.OnFiltered = routing.FilteredDLQ
 					cfg.Processors = []ports.Processor{&FakeProcessor{NameVal: "filter", ProcessErr: shared.ErrMessageFiltered}}
@@ -460,6 +470,9 @@ func TestDirectHold_RetrySupported_NoFallback(t *testing.T) {
 	hook := &recordingHook{}
 	_, sender, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
+		// One send per delivery: this pins the replay decision, not the
+		// in-process send retry that precedes it.
+		cfg.Policy.SendRetryBudget = routing.SendRetryBudgetDisabled
 		cfg.Clock = clocktest.NewAt(time.Unix(1000, 0))
 		cfg.Metrics = rec
 		cfg.Hook = hook

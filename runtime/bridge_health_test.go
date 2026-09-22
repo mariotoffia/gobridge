@@ -55,9 +55,11 @@ func TestDeepHealth_TotalDeliveryFailureKeepsRouteReady_ProductionContract(t *te
 		Policy: routing.RoutePolicy{
 			DeliveryMode:       routing.DeliveryDirectHold,
 			OnPermanentFailure: routing.FailureDLQ,
-			// One replay attempt keeps the terminal decision immediate, so the
-			// test asserts on a settled state rather than mid-backoff.
+			// One replay attempt and no in-process send retry keep the terminal
+			// decision immediate, so the test asserts on a settled state rather
+			// than mid-backoff.
 			MaxReplayAttempts: 1,
+			SendRetryBudget:   routing.SendRetryBudgetDisabled,
 		},
 		Resolver: &FakeResolver{
 			Plans: []routing.DispatchPlan{{BindingID: "binding-1", Address: "devices/1/state"}},

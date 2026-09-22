@@ -369,6 +369,9 @@ func TestSendTimeout_StillPoisonsUncountableSource(t *testing.T) {
 			DeliveryMode:      routing.DeliveryDirectHold,
 			MaxReplayAttempts: 3,
 			SendTimeout:       time.Second,
+			// One send per delivery: this pins the replay decision, not the
+			// in-process send retry that precedes it.
+			SendRetryBudget: routing.SendRetryBudgetDisabled,
 		},
 		Sender:   stubSender{err: context.DeadlineExceeded},
 		Bindings: []routing.DestinationBinding{{ID: "b1", SessionID: "s1", Address: "addr"}},

@@ -79,9 +79,6 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		)
 	}
 
-	sendCtx, sendCancel := context.WithTimeout(ctx, r.policy.SendTimeout)
-	defer sendCancel()
-
 	rc := r.effectiveAttempt(env)
 	// a redelivery-count header that is present but uninterpretable makes
 	// receiveCount fail open to a first delivery (native rc==0) so a good message
@@ -124,7 +121,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	// (buildOutboxRecords) — symmetric with this hop — so a drained record still
 	// propagates this bridge hop downstream rather than the bare upstream
 	// traceparent the clone carried (OTEL).
-	if injected := r.tracer.Inject(sendCtx, map[string]any{}); len(injected) > 0 {
+	if injected := r.tracer.Inject(ctx, map[string]any{}); len(injected) > 0 {
 		outbound.DeleteHeader(messaging.HeaderTraceParent)
 		outbound.DeleteHeader(messaging.HeaderTraceState)
 		for k, v := range injected {
@@ -132,20 +129,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		}
 	}
 
-	sendErr := r.boundedSend(sendCtx, sender, ports.OutboundMessage{Envelope: outbound, Address: plan.Address}, plan.BindingID)
-
-	r.invokeOnDelivery(outbound, sendErr)
-
-	r.hook.OnAttempt(ctx, ports.DeliveryAttempt{
-		Direction:   ports.DirectionEgress,
-		RouteID:     r.routeID,
-		BindingID:   plan.BindingID,
-		Address:     plan.Address,
-		Envelope:    outbound,
-		Attempt:     attempt,
-		MaxAttempts: r.policy.MaxReplayAttempts,
-		Err:         sendErr,
-	})
+	sendErr := r.sendHeld(ctx, sender, ports.OutboundMessage{Envelope: outbound, Address: plan.Address}, plan, attempt)
 
 	if sendErr == nil {
 		r.metrics.Counter(shared.MetricMessagesSent, 1,
