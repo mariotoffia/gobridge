@@ -2,6 +2,7 @@ package paho
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -104,6 +105,42 @@ func TestReconcileSubscriptionConfig_RejectsMalformedTopicFilter(t *testing.T) {
 	err := s.reconcile(context.Background(), conn, plan, nil, s.connEpoch)
 
 	require.ErrorIs(t, err, shared.ErrInvalidConfig)
+}
+
+// foreignPluginConfig is another adapter's typed config: a real
+// ports.PluginConfig that is not the MQTT one.
+type foreignPluginConfig struct{}
+
+func (foreignPluginConfig) Kind() string    { return "amqp091" }
+func (foreignPluginConfig) Validate() error { return nil }
+
+// TestReconcileSubscriptionConfig_RejectsNonMQTTConfig pins that a plan handed
+// straight to a session fails closed on a subscription config that is not the
+// MQTT plugin config, as the factory seams do, instead of reading it as an
+// omitted option and re-checking at DefaultQoSRecheckInterval. A nil config is
+// a plan built in code and keeps the default; the re-check cadence asserted in
+// TestQoSDowngrade_RecheckStillLower_ChangesNothing pins that.
+func TestReconcileSubscriptionConfig_RejectsNonMQTTConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  any
+	}{
+		{"typed-nil-config", (*Config)(nil)},
+		{"foreign-plugin-config", foreignPluginConfig{}},
+		{"not-a-plugin-config", map[string]any{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, fake, _, _ := newDowngradeSession(t, tc.name, connectivity.SessionPersistent, 0x01, nil)
+			plan := planAtQoS("sensors/x", 1)
+			plan.Subscriptions[0].Config = tc.cfg
+
+			err := s.Reconcile(context.Background(), plan)
+
+			require.ErrorIs(t, err, shared.ErrInvalidConfig)
+			require.ErrorContains(t, err, fmt.Sprintf("%T", tc.cfg), "the error names the type it got")
+			require.Zero(t, fake.subscribeCallCount(), "an invalid plan sends no SUBSCRIBE")
+		})
+	}
 }
 
 // TestFactoryNewReceiver_RejectsEmptyTopic pins that an empty filter is

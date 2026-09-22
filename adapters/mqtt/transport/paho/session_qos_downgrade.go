@@ -1,6 +1,7 @@
 package paho
 
 import (
+	"fmt"
 	"sort"
 	"time"
 
@@ -281,16 +282,19 @@ func planDesiredQoS(plan *connectivity.SessionPlan) map[string]byte {
 }
 
 // subscriptionQoSRecheckInterval returns the qos_recheck_interval a plan
-// subscription carries. A subscription without a Paho config (a plan built in
-// code) uses DefaultQoSRecheckInterval.
+// subscription carries. A nil config (a plan built in code) uses
+// DefaultQoSRecheckInterval. Anything else must be the MQTT plugin config: a
+// typed-nil, foreign or non-PluginConfig value fails closed, as it does at the
+// factory seams, instead of passing for an omitted option.
 func subscriptionQoSRecheckInterval(cfg any) (time.Duration, error) {
-	pc, ok := cfg.(ports.PluginConfig)
-	if !ok {
+	if cfg == nil {
 		return DefaultQoSRecheckInterval, nil
 	}
+	pc, _ := cfg.(ports.PluginConfig) // a non-PluginConfig stays nil and configFromSpec refuses it
 	c, err := configFromSpec(pc)
 	if err != nil {
-		return DefaultQoSRecheckInterval, nil
+		return 0, shared.ErrInvalidConfig.Wrap(err).WithMessage(
+			fmt.Sprintf("mqtt: subscription config must be a non-nil MQTT plugin config, got %T", cfg))
 	}
 	if c.Subscription.QoSRecheckInterval < 0 {
 		return 0, shared.ErrInvalidConfig.WithMessage("mqtt: subscription.qos_recheck_interval must not be negative")
