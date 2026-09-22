@@ -44,6 +44,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -155,7 +156,8 @@ func WithServicesNetwork(network, alias string) Option {
 // deliberately not offered: approving only the named directories keeps the
 // emulator's containers away from the rest of the host. Floci reads the roots
 // comma-separated, so a root that contains a comma fails the fixture instead of
-// approving its pieces. A later call replaces the roots of an earlier one.
+// approving its pieces, and so does an empty, relative or filesystem-root one
+// (see checkHostVolumeRoot). A later call replaces the roots of an earlier one.
 func WithHostVolumeRoots(dirs ...string) Option {
 	return func(o *options) { o.hostVolumeRoots = slices.Clone(dirs) }
 }
@@ -434,8 +436,8 @@ func runArgs(name string, port int, o options) ([]string, error) {
 	}
 	if len(o.hostVolumeRoots) > 0 {
 		for _, dir := range o.hostVolumeRoots {
-			if strings.Contains(dir, ",") {
-				return nil, fmt.Errorf("host-volume root %q contains a comma, which floci would split into other roots", dir)
+			if err := checkHostVolumeRoot(dir); err != nil {
+				return nil, err
 			}
 		}
 		args = append(args, "-e", "FLOCI_SERVICES_ECS_HOST_VOLUME_ROOTS="+strings.Join(o.hostVolumeRoots, ","))
@@ -447,6 +449,26 @@ func runArgs(name string, port int, o options) ([]string, error) {
 		args = append(args, "--cpus", o.cpus)
 	}
 	return append(args, imageName()), nil
+}
+
+// checkHostVolumeRoot refuses a root that does not name one directory the test
+// owns. Floci canonicalises each root and allows any source path starting with
+// it, so the filesystem root, or anything that cleans to it, would approve
+// every host mount: the switch [WithHostVolumeRoots] deliberately does not
+// offer. An empty or relative root names no directory, and floci would split a
+// root containing a comma into other roots.
+func checkHostVolumeRoot(dir string) error {
+	switch clean := filepath.Clean(dir); {
+	case dir == "":
+		return fmt.Errorf("host-volume root is empty; name the absolute directory the task definitions mount from")
+	case !filepath.IsAbs(dir):
+		return fmt.Errorf("host-volume root %q is not absolute; name the absolute directory the task definitions mount from", dir)
+	case filepath.Dir(clean) == clean:
+		return fmt.Errorf("host-volume root %q is the filesystem root, which would let the emulator mount any host path", dir)
+	case strings.Contains(dir, ","):
+		return fmt.Errorf("host-volume root %q contains a comma, which floci would split into other roots", dir)
+	}
+	return nil
 }
 
 // probeClient bounds every health request. dockerexec.WaitProbe checks its

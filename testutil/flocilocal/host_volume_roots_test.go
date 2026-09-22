@@ -58,3 +58,19 @@ func TestRunArgs_HostVolumeRootWithACommaIsRejected(t *testing.T) {
 		t.Fatalf("a root floci would split into /tmp/a and b was accepted: %q", args)
 	}
 }
+
+// TestRunArgs_HostVolumeRootThatApprovesNoOwnedDirectoryIsRejected pins that a
+// root must name one directory the test owns. Floci canonicalises each root and
+// allows any source path starting with it, so the filesystem root — or anything
+// that cleans to it — would approve every host mount, the very switch this
+// helper does not offer. An empty or relative root names no directory at all.
+func TestRunArgs_HostVolumeRootThatApprovesNoOwnedDirectoryIsRejected(t *testing.T) {
+	for _, root := range []string{"/", "//", "/.", "/tmp/..", "", "relative/dir", "./dir"} {
+		t.Run(root, func(t *testing.T) {
+			args, err := render(WithHostVolumeRoots("/tmp/run-a", root))
+			if err == nil {
+				t.Fatalf("root %q was accepted: %q", root, args)
+			}
+		})
+	}
+}
