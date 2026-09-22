@@ -250,7 +250,7 @@ rule). The bridge keeps such a subscription running instead of failing:
    the requested QoS and the granted QoS. Deep health lists the filter in
    `best_effort_topics`, and the session can report Full.
 3. **Re-check.** Every `qos_recheck_interval` (per subscription; default `1h`,
-   `0` turns it off, minimum `1m`; see
+   `0s` turns it off, minimum `1m`; see
    [Subscription Options Reference](mqtt-options.md#subscription-options-reference))
    the session sends a fresh SUBSCRIBE with Retain Handling 1. It never runs at
    the same time as a reconcile of that session. If the broker grants the

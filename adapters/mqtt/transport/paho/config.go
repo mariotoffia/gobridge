@@ -383,7 +383,7 @@ func DefaultSubscriptionOptions() SubscriptionOptions {
 func (o SubscriptionOptions) validate() error {
 	if d := o.QoSRecheckInterval; d < 0 || (d > 0 && d < MinQoSRecheckInterval) {
 		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
-			"mqtt: subscription.qos_recheck_interval must be 0 (off) or at least %s, got %s (omit it for the %s default)",
+			"mqtt: subscription.qos_recheck_interval must be 0s (off) or at least %s, got %s (omit it for the %s default)",
 			MinQoSRecheckInterval, d, DefaultQoSRecheckInterval))
 	}
 	return nil

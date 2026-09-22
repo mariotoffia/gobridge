@@ -65,6 +65,20 @@ func TestRegistryDecode_SubscriptionQoSRecheckIntervalRejectsNegativeAndBelowMin
 	}
 }
 
+// TestRegistryDecode_SubscriptionQoSRecheckIntervalRejectsBareNumber pins why
+// the documented off value is "0s": a bare number would be read as nanoseconds,
+// so the parser refuses it for every duration, including a bare 0.
+func TestRegistryDecode_SubscriptionQoSRecheckIntervalRejectsBareNumber(t *testing.T) {
+	reg := ports.NewRegistry()
+	require.NoError(t, Register(reg))
+
+	_, err := reg.Decode(ShortKind, parser.NewRawConfig(map[string]any{
+		"subscription": map[string]any{"qos_recheck_interval": 0},
+	}))
+
+	require.Error(t, err, "a bare 0 must be written as 0s")
+}
+
 // TestSubscriptionOptionsValidate_RejectsNegative pins that the option owns its
 // sign check: the validator alone refuses a negative interval.
 func TestSubscriptionOptionsValidate_RejectsNegative(t *testing.T) {

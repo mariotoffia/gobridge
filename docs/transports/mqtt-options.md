@@ -308,6 +308,6 @@ Keys of the `options.subscription` block on a receiver `topics[]` entry.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `qos_recheck_interval` | duration | `1h` | How often a subscription the broker granted below the requested QoS (accepted as best effort) is re-subscribed to learn whether the broker grants the requested QoS again. `0` disables it; a reconnect still re-evaluates. Minimum `1m`. See [QoS downgrade](mqtt-behavior.md#qos-downgrade). |
+| `qos_recheck_interval` | duration | `1h` | How often a subscription the broker granted below the requested QoS (accepted as best effort) is re-subscribed to learn whether the broker grants the requested QoS again. `0s` disables it (a duration needs its unit; a bare `0` is rejected); a reconnect still re-evaluates. Minimum `1m`. See [QoS downgrade](mqtt-behavior.md#qos-downgrade). |
 
 ---

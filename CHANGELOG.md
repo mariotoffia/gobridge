@@ -253,7 +253,7 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 - New per-subscription option `subscription.qos_recheck_interval` on a
   receiver `topics[].options` block: how often a subscription accepted below
   its requested QoS is re-subscribed to learn whether the broker grants the
-  requested QoS again. Default `1h`, `0` turns it off, minimum `1m`. See
+  requested QoS again. Default `1h`, `0s` turns it off, minimum `1m`. See
   [Subscription Options Reference](docs/transports/mqtt-options.md#subscription-options-reference).
 
 ## [0.4.1] - 2026-09-14
