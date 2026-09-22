@@ -27,6 +27,7 @@ record remains available and links to its replacement.
 | [0014](0014-confirm-window-provisional-commit.md) | Confirm window: provisional commit with deadman revert | accepted |
 | [0015](0015-dlq-redrive-inject-then-delete.md) | DLQ redrive inject-then-delete (at-least-once) | accepted |
 | [0016](0016-config-content-normal-form.md) | Configuration content identity: compare the normal form, not the bytes | accepted |
+| [0017](0017-direct-hold-in-process-send-retry.md) | `direct_hold` retries a failed send in process before replay or dead-lettering | accepted |
 
 ## Numbering
 

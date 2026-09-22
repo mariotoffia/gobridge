@@ -1,0 +1,181 @@
+# 0017 — `direct_hold` retries a failed send in process before replay or dead-lettering
+
+Status: accepted
+Date: 2026-09-22
+Deciders: GoBridge core
+Relates to: 0015 (a redrive whose inject fails only temporarily is dead-lettered
+again less often), 0004 (a wedged route stops the loop)
+
+## Context
+
+A `direct_hold` route holds the source message unacknowledged while it sends to
+the destination, and settles the source only once the send has returned. When
+that send failed with a recoverable error, the route never tried the send again
+itself. One failed send led straight to one decision:
+
+- hand the message back to its source (`Delivery.Retry`), so the source
+  redelivers it later; or
+- treat it as permanently failed and write it to the dead-letter store.
+
+Which of the two applied depended on whether the bridge could count how many
+times it had already seen that message:
+
+- **A message with a stable identity** — a producer-supplied `mqtt.message-id`,
+  MQTT correlation data, or a bridge dedup/idempotency key — was handed back,
+  up to `max_replay_attempts` (default 5). On MQTT, handing a message back
+  means recycling the whole session: a disconnect and a reconnect, which
+  redelivers every unsettled delivery on that session and interrupts every
+  subscription on it.
+- **A message the bridge cannot count** — an ordinary MQTT publish with no
+  producer id, for which the adapter generates a fresh envelope id on every
+  arrival — could not be counted across redeliveries, so it was written to the
+  dead-letter store on its **first** failure, under the category
+  `unstable_identity`.
+
+What operators saw was that a destination which was unavailable for a few
+seconds — a queue policy still propagating, a broker restart, a throttling
+burst — either emptied into the dead-letter store, one manual redrive per
+message, or recycled the MQTT session over and over.
+
+Nothing else covered that gap. The SQS sender inherits the AWS SDK's own
+retryer, which absorbs a few seconds; the MQTT and AMQP senders have no such
+layer at all.
+
+The route setting `replay_budget` (default 15 minutes) reads like a retry
+budget for these routes. It is not one: only the `shared_outbox` drainer reads
+it, and a `direct_hold` route never has.
+
+## Decision
+
+**A `direct_hold` route retries a recoverable send inside the bridge, with
+backoff, for a bounded time, before the decision above runs.** The source
+message stays held and unacknowledged for the whole time, so nothing is
+acknowledged that was not delivered and nothing is dead-lettered that a short
+outage would have cured.
+
+**The loop.** Each pass is one physical send under its own `send_timeout`, and
+keeps the per-send wedge ceiling it always had. Between two sends the route
+waits on the same backoff ladder it uses everywhere else: a `RetryAfter` hint
+from the destination (SQS throttling, for example) is authoritative and is used
+as written, and otherwise the route's `backoff` applies — 1 s doubling to 30 s
+with jitter, by default. The first wait is therefore about one second.
+
+**It stops** on the first of:
+
+- the send succeeding;
+- a non-recoverable error — a rejected message is never retried;
+- the delivery's context ending, which happens on shutdown or a reconfiguration
+  swap. The delivery is then left unsettled for the source to redeliver, and
+  spends no replay budget;
+- the route wedging;
+- the next wait ending past the budget.
+
+Afterwards nothing changes. The same replay-cap gate runs and the message is
+either handed back to its source or written to the dead-letter store exactly as
+before. In-process retries do not spend the message's replay budget: the
+bridge-owned replay ledger is still charged once per delivery, however many
+sends that delivery took.
+
+**The budget** is a new route policy field, `send_retry_budget`
+(`routing.RoutePolicy.SendRetryBudget`). It applies to `direct_hold` only, the
+mirror of `replay_budget` being read by the drainer only.
+
+- Leaving it out takes the default of **60 seconds**
+  (`routing.DefaultSendRetryBudget`). Sixty seconds rides out a destination
+  policy that is still propagating — up to about a minute on SQS — while
+  staying well inside the two limits that bound a held delivery: the roughly
+  25-second drain a `Stop` waits before it cancels, and the MQTT
+  settlement-recovery recycle wait (240 seconds with the shipped defaults).
+- An explicit `0s` turns in-process retry off and restores the behaviour of
+  every release before this one. It is the same tri-state as `jitter: 0`:
+  programmatically it is `routing.SendRetryBudgetDisabled`, which is kept
+  distinct from the zero value so a field that was simply left out still gets
+  the default.
+- Any other negative value is rejected when the configuration is loaded.
+
+**Hooks and metrics.** `OnAttempt` and the `OnDelivery` callback fire once per
+physical send, so a hook sees every one of them and their errors. Every
+physical send of one delivery reports the **same** `DeliveryAttempt.Attempt`:
+that number is the delivery-level attempt that `max_replay_attempts` caps, and
+in-process retries do not advance it. `OnSettled` still fires exactly once.
+
+Two counters, both tagged `route_id` and both emitted only while the budget is
+enabled:
+
+| Metric | Meaning |
+|---|---|
+| `SendRetries` | One per in-process retry after a recoverable send failure. |
+| `SendRetryBudgetExhausted` | One per held send whose retries used up the budget. |
+
+`RouteErrors` now counts a failed send once the in-process retry has given up,
+not on the first failed send. Under the default budget a stalled destination
+therefore shows up in `RouteErrors` up to a minute later — or never, when the
+destination recovers inside the budget. `SendRetries` is the early signal to
+alert on instead.
+
+**A waiting delivery keeps its slot.** It holds its route's `max_in_flight`
+slot — and the runtime-wide in-flight slot, where a runtime-wide limit is
+configured — for the whole wait, so intake slows down while a destination is
+unwell. That is the intended effect: the source becomes the buffer instead of
+the dead-letter store. A persistent MQTT session's broker keeps queueing for
+the session, an SQS message stays invisible under auto-extend, and an AMQP link
+runs out of credit. The cost is stated plainly: one route whose destination is
+down can hold runtime-wide in-flight capacity for up to the budget, which slows
+unrelated routes sharing it.
+
+**Two validation rules keep the hold inside what the source will tolerate.**
+Both run when the configuration is loaded, so a bad combination never reaches
+production traffic.
+
+1. On a source with a **fixed** visibility window — an SQS queue without
+   auto-extend — the budget is counted into the worst case the message may
+   spend before it is settled:
+   `processors × processor_timeout + send_retry_budget + send_timeout + DLQ
+   budget ≤ visibility timeout`. Over that, the source redelivers mid-pipeline
+   and the message is processed twice. The rejection reads `worst-case pipeline
+   time (…) exceeds source VisibilityTimeout (…); source may redeliver
+   mid-pipeline causing duplicate processing (lower send_retry_budget, set it
+   to 0s to turn in-process send retry off, or auto-extend the source window)`.
+   A source that auto-extends its window is skipped, as it always was.
+2. On a source session that recycles its broker connection to recover stranded
+   settlements — an MQTT persistent or exclusive session — that recycle first
+   waits a bounded time for the deliveries the runtime already accepted to
+   settle. A held retry still running when the wait runs out fails the recovery
+   attempt and terminalizes the session. The last send starts just inside the
+   budget and may then run its full `send_timeout`, so `send_retry_budget +
+   send_timeout` is the hold the wait has to cover. The rejection reads
+   `send_retry_budget … + send_timeout … exceeds the source's
+   settlement-recovery wait …; a held retry would outlive the MQTT connection
+   recycle and fail it (lower send_retry_budget or send_timeout, or raise the
+   session's connect/reconcile timeouts)`.
+
+The session reports that wait through a new optional typed-config capability,
+`ports.SettlementRecoveryTimingConfig`, which the MQTT transport implements
+from the same numbers its own recycle uses. The validator and the adapter
+therefore cannot disagree about how long a held delivery may take to settle.
+
+## Consequences
+
+- A destination outage shorter than the budget no longer produces dead-letter
+  entries or MQTT session recycles. Messages without a producer id — the common
+  MQTT publish — benefit most: they were dead-lettered on the first failure and
+  now get a full minute of retries first.
+- A dead-letter redrive through the admin API inherits this. The redrive runs
+  under a 30-second bound, so a redrive whose destination stays down spends
+  that time retrying in process; when the bound passes the inject returns an
+  error and the entry is **not** deleted (0015), so nothing is lost.
+- Deliveries are held longer. Worst case one message occupies its route slot
+  and a runtime-wide in-flight slot for the budget plus one `send_timeout`,
+  and a destination that is down slows the whole route rather than draining it
+  to the dead-letter store.
+- `Stop` waits up to its drain budget (25 seconds by default, `WithStopQuiesce`)
+  for in-flight deliveries and then cancels, which ends a held retry and leaves
+  the delivery unsettled for the source to redeliver.
+- A configuration that was valid before can be rejected after an upgrade,
+  purely because of the 60-second default: a `direct_hold` route on a fixed SQS
+  visibility window whose worst case now overruns it, or an MQTT route whose
+  budget plus send timeout overruns the session's recovery wait. Both rejections
+  name the knobs, and `send_retry_budget: 0s` restores the previous behaviour on
+  that route.
+- `replay_budget` stays what it was: the drainer's wall-clock poison gate. The
+  two budgets never apply to the same route.

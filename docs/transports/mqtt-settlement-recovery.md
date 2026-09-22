@@ -45,14 +45,19 @@ All three count on `MQTTReceiverEmitRejected`, separated by its `outcome` tag.
 
 **An accepted delivery that later fails is different from an emit rejection.**
 The runner accepts asynchronously, so a later send or DLQ failure does not reach
-the receiver's emit-error counter. For actual QoS 0, Retry returns
+the receiver's emit-error counter. On a `direct_hold` route a recoverable send
+failure is retried **inside the bridge** first, with the delivery still held,
+for `send_retry_budget` (default 60s), so a short destination outage no longer
+recycles the session and no longer dead-letters a message on its first failure
+([ADR 0017](../adr/0017-direct-hold-in-process-send-retry.md)). Everything below
+happens once that budget is spent. For actual QoS 0, Retry returns
 `ErrNotSupported`. The runner uses the existing DLQ fallback or an explicitly
 permitted no-DLQ drop (`MessagesDropped{reason=retry_unsupported}`).
 If bounded DLQ persistence also fails, it records exactly one terminal loss as
 `MessagesDropped{reason=retry_unsupported_dlq_failed}` and surfaces the error.
 `DLQWriteFailures` still records failed persistence; no `DLQEntries` success is
 invented. The delivery releases its route slot and does not request a session
-recycle. Generated IDs may first enter the existing `unstable_identity` terminal
+recycle. Generated IDs may then enter the existing `unstable_identity` terminal
 path; a failed DLQ there reaches the same unsupported-retry fallback.
 
 Recovery is decided by the actual delivery. A publisher's QoS 0 packet through
@@ -93,7 +98,14 @@ config knob:
 - one hard deadline covers waiting for that gate, the settlement drain,
   disconnect, reconnect, and replacement-generation reconcile. It reuses the
   post-acquire activation timing derived from `connect_timeout`,
-  `reconcile_timeout` and `unmatched_grace`; there is no duplicate setting;
+  `reconcile_timeout` and `unmatched_grace`; there is no duplicate setting.
+  With the shipped defaults it is 240 seconds (2 × `connect_timeout` + 4 ×
+  `reconcile_timeout` + 2 × `unmatched_grace`, all 30 s). The session reports
+  that same number to the route validator through
+  `ports.SettlementRecoveryTimingConfig`, which rejects at config load any
+  `direct_hold` route whose `send_retry_budget` + `send_timeout` would not fit
+  inside it — a held retry that outlives the drain would fail the recovery
+  attempt and terminalize the session;
 - the rebuild preserves `client_id` and session expiry, forcing `clean_start=false`;
 - CONNACK must report **Session Present**, or the broker cannot prove the
   unsettled packet survived. That evidence is stamped with the exact connection

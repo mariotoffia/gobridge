@@ -402,6 +402,16 @@ from `ports/plugin_config.go`:
   recycle/reconnect, and final reconciliation exactly once. A declared
   `failover_slo` fails closed when the aggregate bound is unavailable; core code
   must not add nested phases again and remains transport-neutral.
+- `PostAcquireActivationTimingConfig` exposes the conservative bound for every
+  sequential phase between exclusive lease acquisition and convergence, for a
+  transport whose reconciliation can include a mandatory replay-verification
+  wait. Zero when the selected session mode has no such sequence.
+- `SettlementRecoveryTimingConfig` exposes how long a source session's recovery
+  recycle waits for already-accepted deliveries to settle, so the route
+  validator can reject a `direct_hold` hold (`send_retry_budget` +
+  `send_timeout`) the source would not tolerate. Return the same number the
+  adapter's own recycle uses, so the two cannot disagree; zero when the session
+  mode never recycles for this reason.
 
 These capabilities keep `bridge/` and `validate/` transport-neutral: core code
 asserts the generic interface and never switches on a transport name or imports

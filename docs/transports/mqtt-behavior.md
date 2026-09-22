@@ -90,8 +90,8 @@ destination, so downstream idempotency is required in every row.
 | QoS 1/2 | `shared_outbox` | **reused** (same ID for distinct events) | durable, persisted | any | Collapse of a distinct event: the second event reuses the first's dedup key (`partition` + `EnvelopeID` + `binding`); its Persist returns `ErrDuplicateRecord` and is acked-and-dropped. A supplied producer ID is preserved and trusted as identity. |
 | QoS 1/2, source broker offline | either | any | n/a | source queue/session expiry or capacity drop before receipt | Possible loss: the source broker can expire or drop its offline/session queue before the bridge ever receives the message. |
 | any | `shared_outbox` | any | durable, persisted | `ReplayCount` > `MaxReplayAttempts` **and** `ReplayBudget` elapsed since first attempt | Permanent failure: the record reaches the terminal action below. A record whose envelope TTL passes is expired first, per `OnExpired`. |
-| any (stable identity) | `direct_hold` | present, or bridge dedup/idempotency key | n/a | source attempts reach `MaxReplayAttempts` (count only, no wall-clock gate) | Permanent failure: the source delivery reaches the terminal action below. Count-less sources are counted by the bridge-owned replay ledger keyed on the stable identity. |
-| Any QoS (no stable identity) | `direct_hold` | **missing** (no producer ID) | n/a | first transient failure | A count-less source with an adapter-generated id cannot be counted across redelivery, so the existing terminal action uses category `unstable_identity`. Supply `mqtt.message-id`/correlation data for a countable retry budget. |
+| any (stable identity) | `direct_hold` | present, or bridge dedup/idempotency key | n/a | source attempts reach `MaxReplayAttempts` (count only, no wall-clock gate) | Permanent failure: the source delivery reaches the terminal action below. A recoverable send failure is first retried **inside the bridge** for `send_retry_budget` (default 60s) with the source delivery still held, so a short destination outage no longer recycles the session. Only afterwards is the source asked to redeliver. Count-less sources are counted by the bridge-owned replay ledger keyed on the stable identity. |
+| Any QoS (no stable identity) | `direct_hold` | **missing** (no producer ID) | n/a | a transient failure that outlives `send_retry_budget` | The message is retried in process for `send_retry_budget` (default 60s) first. Only if it is still failing then does the terminal action apply: a count-less source with an adapter-generated id cannot be counted across redelivery, so it uses category `unstable_identity`. Supply `mqtt.message-id`/correlation data for a countable retry budget, or raise `send_retry_budget`. |
 | any | `direct_hold` | any | n/a | terminal action after permanent failure/expiry | Per `OnPermanentFailure`/`OnExpired` (default `dlq`): confirmed DLQ persistence counts `DLQEntries` and settles the source; an explicit drop records its terminal metric and settles without a DLQ record. |
 | Retry-capable QoS 1/2, resuming session | `direct_hold` | any | n/a | DLQ persistence fails | Remains protocol-unsettled; bounded session recovery requests redelivery. No acknowledged terminal drop or false DLQ success. |
 | Actual QoS 0 | `direct_hold` | any | n/a | Retry unsupported and bounded DLQ persistence fails | Terminal loss counted once as `MessagesDropped{reason=retry_unsupported_dlq_failed}`; the persistence error is surfaced. No successful DLQ entry, no QoS-0-induced session recycle, and route capacity is released. |
@@ -130,13 +130,17 @@ instead bounded by:
   its `ReplayCount` exceeds `MaxReplayAttempts` **and** the wall-clock
   `ReplayBudget` (default 15 minutes, measured from the first attempt) has
   elapsed; a legacy record with no first-attempt timestamp falls back to the
-  `CreatedAt`/`poisonMinAge` age gate. `direct_hold` instead poisons the source
-  delivery on the attempt-count cap alone — counting count-less sources through
-  the bridge-owned replay ledger keyed on a stable identity. A count-less source
+  `CreatedAt`/`poisonMinAge` age gate. `direct_hold` instead retries a
+  recoverable send **in process** for `send_retry_budget` (default 60s), with
+  the source delivery still held, and only then poisons the source delivery on
+  the attempt-count cap alone — counting count-less sources through the
+  bridge-owned replay ledger keyed on a stable identity. A count-less source
   that supplies **no** stable identity (adapter-generated envelope id) cannot be
-  counted, so instead of looping forever it is terminally sinked on the first
-  transient failure (`unstable_identity`); see
-  [Envelope identity and no-ID redelivery](mqtt-ingress-headers.md#envelope-identity-and-no-id-redelivery);
+  counted, so once the in-process budget is spent it is terminally sinked rather
+  than looping forever (`unstable_identity`); with `send_retry_budget: 0s` that
+  happens on the first transient failure, as in earlier releases. See
+  [Envelope identity and no-ID redelivery](mqtt-ingress-headers.md#envelope-identity-and-no-id-redelivery)
+  and [ADR 0017](../adr/0017-direct-hold-in-process-send-retry.md);
 - **store durability loss** — a volatile (in-memory) store on restart, or
   operator deletion / row corruption of a durable store.
 

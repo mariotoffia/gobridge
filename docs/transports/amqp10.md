@@ -207,10 +207,12 @@ adapter marks such an envelope `x-bridge.generated-id` to say so.
 
 A message that carries a header section is still countable through its
 `delivery-count`, so it keeps the route's full `max_replay_attempts` budget. A
-message with neither a `message-id` nor a header section is uncountable: the
-runtime settles its first transient failure terminally (DLQ, or dropped per the
-route's `on_permanent_failure`) rather than redelivering on an identity that can
-never accumulate attempts.
+message with neither a `message-id` nor a header section is uncountable: on a
+`direct_hold` route the runtime first retries the send in process, with the
+delivery still held, for `send_retry_budget` (default 60s), and only then
+settles the message terminally (DLQ, or dropped per the route's
+`on_permanent_failure`) rather than redelivering on an identity that can never
+accumulate attempts.
 
 ## AMQP 1.0 vs AMQP 0-9-1
 
