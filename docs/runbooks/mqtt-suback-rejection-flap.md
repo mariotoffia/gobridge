@@ -1,11 +1,13 @@
-# Runbook: MQTT Permanent SUBACK Rejection Flap / QoS Downgrade
+# Runbook: MQTT SUBACK Rejection Flap / QoS Downgrade
 
 **Applies to:** MQTT (paho) receiver sessions, most visibly exclusive
 sessions.
 **Audience:** on-call operators.
-**Risk:** no message loss — the failure is fail-closed by design — but the
-affected session (and every route on it) stays down until an operator or a
-broker-side change resolves the disagreement. It does **not** self-heal.
+**Risk:** for a SUBACK rejection flap, no message loss — the failure is
+fail-closed by design — but the affected session (and every route on it) stays
+down until an operator or a broker-side change resolves the disagreement. The
+flap does **not** self-heal. A QoS downgrade has a different risk; see
+[A QoS downgrade is not a flap](#a-qos-downgrade-is-not-a-flap).
 
 ## Background
 
@@ -64,8 +66,12 @@ a Mosquitto `max_qos` cap), the reconcile succeeds. The session confirms the
 grant with three fresh SUBSCRIBEs 5 s apart, then keeps the subscription active
 at the granted QoS as best effort. `MQTTQoSDowngraded` counts the first report,
 the Error log names `topic`, `requested_qos` and `granted_qos`, and the gauge
-`MQTTQoSDowngradedActive` stays above zero while the downgrade stands. A lower
-grant never stops the session or the process.
+`MQTTQoSDowngradedActive` stays above zero while the downgrade stands. Deep
+health lists the affected filters in `best_effort_topics`. A lower grant never
+stops the session or the process, but when the broker grants QoS 0 messages
+can be lost (no acknowledgement or redelivery, and nothing is kept while the
+bridge is disconnected). The re-check can recover on its own when the broker
+grants the requested QoS again.
 
 To remove it, lower the route's `qos` to the granted level, or lift the
 broker's QoS cap. The session re-checks the grant every `qos_recheck_interval`

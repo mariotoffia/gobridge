@@ -228,8 +228,10 @@ rule). The bridge keeps such a subscription running instead of failing:
 
 1. **Confirm.** One low grant can be transient (a cluster node restarting, an
    authorization rule still propagating). The SUBACK the reconcile received is
-   the first answer; the session then sends SUBSCRIBE for the same filter twice
-   more, 5 s apart. These re-sends use Retain Handling 1, so the broker does not
+   the first answer, logged at Warn (`broker downgraded subscription QoS below
+   requested; confirming with fresh SUBSCRIBEs …`) with the topic, the
+   requested QoS and the granted QoS. The session then sends SUBSCRIBE for the
+   same filter twice more, 5 s apart. These re-sends use Retain Handling 1, so the broker does not
    replay retained messages, and the same QoS and No-Local as the original. While
    it confirms, the filter is not active, session health is Degraded, and the
    reconcile itself succeeds, so the supervisor does not retry the session and
@@ -237,11 +239,11 @@ rule). The bridge keeps such a subscription running instead of failing:
    during confirmation returns the subscription to normal. A different lower
    grant starts the confirmation again.
 2. **Accept as best effort.** When three fresh SUBACKs report the same lower
-   grant, the subscription becomes active at the granted QoS. It then has the
-   guarantee of a configured QoS 0 subscription (see the QoS 0 row of the
-   [guarantee matrix](#source-to-destination-guarantee-matrix)): no
-   acknowledgement, no redelivery, and messages published while the bridge is
-   disconnected may be lost. The bridge logs this once at Error with the topic,
+   grant, the subscription becomes active at the granted QoS and has that
+   QoS's guarantee. At QoS 0 (see the QoS 0 row of the
+   [guarantee matrix](#source-to-destination-guarantee-matrix)) there is no
+   acknowledgement and no redelivery, and messages published while the bridge
+   is disconnected may be lost. The bridge logs this once at Error with the topic,
    the requested QoS and the granted QoS. Deep health lists the filter in
    `best_effort_topics`, and the session can report Full.
 3. **Re-check.** Every `qos_recheck_interval` (per subscription; default `1h`,

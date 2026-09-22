@@ -60,7 +60,7 @@ mistaking a broker outage for a bridge fault and restarting healthy tasks.
    again, so this counter — and the matching `LastError` latch, which clears on
    the next converged reconcile — is the ONLY evidence that continuity broke.
 
-6. If reconnects recover but readiness stays below `full` for a few seconds,
+6. If reconnects recover but readiness stays below `full` for about 10 s,
    look for `MQTTQoSDowngraded`. The broker granted a subscription a lower QoS
    than requested, and the session is confirming the grant with fresh
    SUBSCRIBEs 5 s apart. After three matching answers the subscription runs at
