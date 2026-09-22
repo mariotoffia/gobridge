@@ -27,10 +27,10 @@ trap cleanup EXIT
 
 # The measured binary uses the production allocator. Race instrumentation has
 # a separate shadow heap and would not measure the configured production
-# ingress bound.
+# ingress bound. The build itself is not bounded: only the measured run below
+# is, and compiling modernc.org/sqlite, which the suite links, needs more than
+# 512 MiB.
 docker run --rm \
-  --memory 512m \
-  --memory-swap 512m \
   -v "$workspace:$workspace" \
   -v "$go_cache:/root/.cache/go-build" \
   -v "$go_mod_cache:/go/pkg/mod" \

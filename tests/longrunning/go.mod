@@ -14,6 +14,9 @@ replace (
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho => ../../adapters/mqtt/transport/paho
 	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq => ../../adapters/native/store/memorydlq
 	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox => ../../adapters/native/store/memoryoutbox
+	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq => ../../adapters/native/store/sqlitedlq
+	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions => ../../adapters/native/store/sqlitemanagedsubscriptions
+	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox => ../../adapters/native/store/sqliteoutbox
 	github.com/mariotoffia/gobridge/httpapi => ../../httpapi
 	github.com/mariotoffia/gobridge/processors/circuitbreaker => ../../processors/circuitbreaker
 	github.com/mariotoffia/gobridge/processors/transform => ../../processors/transform
@@ -37,7 +40,7 @@ require (
 	github.com/mariotoffia/gobridge/adapters/aws/store/dynamodbrollout v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/aws/transport/sqs v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/adapters/mqtt/transport/paho v0.0.0
-	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge/adapters/native/store/memoryoutbox v0.0.0
 	github.com/mariotoffia/gobridge/httpapi v0.0.0-00010101000000-000000000000
 	github.com/mariotoffia/gobridge/processors/circuitbreaker v0.0.0-20260405055210-02d996a46256
 	github.com/mariotoffia/gobridge/processors/transform v0.0.0-20260405055210-02d996a46256
@@ -48,7 +51,23 @@ require (
 	github.com/stretchr/testify v1.11.1
 )
 
-require github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.37 // indirect
+require (
+	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.37 // indirect
+	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/memorydlq v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/sqlitedlq v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/sqlitemanagedsubscriptions v0.0.0 // indirect
+	github.com/mariotoffia/gobridge/adapters/native/store/sqliteoutbox v0.0.0 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
+	github.com/ncruces/go-strftime v1.0.0 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	modernc.org/libc v1.75.3 // indirect
+	modernc.org/mathutil v1.7.1 // indirect
+	modernc.org/memory v1.12.0 // indirect
+	modernc.org/sqlite v1.56.0 // indirect
+)
 
 require (
 	github.com/Azure/go-amqp v1.7.0 // indirect
