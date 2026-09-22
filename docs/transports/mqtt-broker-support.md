@@ -20,6 +20,9 @@ running your own proof.
 | Protocol | MQTT v5 only |
 | Where it comes from | `testutil/mqttlocal`, started per test in Docker |
 
+Mosquitto 2.1's WebSocket listener rejects an empty WebSocket frame and
+disconnects the client as a malformed packet; GoBridge never sends one.
+
 One product, one version, pinned. A floating tag would mean the evidence
 described here silently became evidence about something else.
 

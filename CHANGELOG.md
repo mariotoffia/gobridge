@@ -145,6 +145,17 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   mixed/ephemeral configurations, managed-subscription initialization, and
   explicit crash-loss boundaries.
 
+### Fixed — MQTT over WebSocket no longer sends empty frames
+
+- MQTT over `ws://` and `wss://` no longer sends empty WebSocket frames.
+  Mosquitto 2.1 rejects them by disconnecting the client with a Malformed
+  Packet error. Paho writes a packet one buffer at a time, and a SUBSCRIBE,
+  UNSUBSCRIBE or PUBLISH without properties includes an empty buffer, which
+  went out as its own zero-length binary frame. On Mosquitto 2.1 a session
+  could connect over WebSocket but was disconnected at its first
+  subscription. The MQTT bytes on the wire are unchanged; only the empty
+  frames are gone.
+
 ### Changed — an MQTT subscription granted a lower QoS is kept as best effort
 
 - **A broker that grants a subscription a lower QoS no longer stops the

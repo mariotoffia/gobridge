@@ -311,6 +311,14 @@ func (c *mqttWebsocketConn) Read(p []byte) (int, error) {
 }
 
 func (c *mqttWebsocketConn) Write(p []byte) (int, error) {
+	// An empty write sends no frame. io.Writer permits returning 0, nil for it,
+	// and an empty frame carries no MQTT bytes. Paho writes a packet one buffer
+	// at a time, so a SUBSCRIBE or PUBLISH without properties includes an empty
+	// buffer, and Mosquitto 2.1's WebSocket listener rejects an empty frame by
+	// disconnecting the client with a Malformed Packet error.
+	if len(p) == 0 {
+		return 0, nil
+	}
 	if err := c.WriteMessage(websocket.BinaryMessage, p); err != nil {
 		return 0, err //nolint:wrapcheck // net.Conn Write preserves WebSocket transport errors.
 	}
