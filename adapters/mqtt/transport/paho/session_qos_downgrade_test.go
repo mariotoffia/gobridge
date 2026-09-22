@@ -430,18 +430,25 @@ func TestQoSDowngrade_ReconnectReset_HidesBestEffortUntilReactivated(t *testing.
 		"the same lower grant stays accepted")
 }
 
-// TestPlanDesiredQoS_SkipsOutOfRangeQoS pins that a QoS outside 0..2 is never
-// narrowed into a desired level (as a byte 257 is 1, 258 is 2 and -1 is 255),
-// while the highest valid QoS per filter still wins.
-func TestPlanDesiredQoS_SkipsOutOfRangeQoS(t *testing.T) {
+// TestPlanDesiredQoS_SkipsSubscriptionsReconcileRejects pins that a
+// subscription reconcile would refuse is never desired: a QoS outside 0..2 is
+// not narrowed into a level (as a byte 257 is 1, 258 is 2 and -1 is 255), and a
+// config that is not a valid MQTT plugin config is skipped. The highest valid
+// QoS per filter still wins, and a nil or valid config is kept.
+func TestPlanDesiredQoS_SkipsSubscriptionsReconcileRejects(t *testing.T) {
 	plan := &connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{
 		{Topic: "a", QoS: 1}, {Topic: "a", QoS: 2},
 		{Topic: "b", QoS: 257},
 		{Topic: "c", QoS: -1},
 		{Topic: "d", QoS: 0},
 		{Topic: "e", QoS: 1}, {Topic: "e", QoS: 258},
+		{Topic: "f", QoS: 1, Config: (*Config)(nil)},
+		{Topic: "g", QoS: 1, Config: foreignPluginConfig{}},
+		{Topic: "h", QoS: 1, Config: "not a plugin config"},
+		{Topic: "i", QoS: 1, Config: &Config{Subscription: SubscriptionOptions{QoSRecheckInterval: time.Second}}},
+		{Topic: "j", QoS: 1, Config: &Config{Subscription: DefaultSubscriptionOptions()}},
 	}}
-	require.Equal(t, map[string]byte{"a": 2, "d": 0, "e": 1}, planDesiredQoS(plan))
+	require.Equal(t, map[string]byte{"a": 2, "d": 0, "e": 1, "j": 1}, planDesiredQoS(plan))
 	require.Empty(t, planDesiredQoS(nil))
 }
 
