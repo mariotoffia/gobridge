@@ -87,8 +87,7 @@ func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
 			// confirmation. Treat it as a failure rather than assuming
 			// acceptance; do NOT mark it active.
 			if firstErr == nil {
-				firstErr = shared.ErrProtocolError.WithMessage(
-					"mqtt: SUBACK returned fewer reason codes than requested subscriptions")
+				firstErr = shortSubackError()
 				errTopic = opt.Topic
 			}
 			continue
@@ -107,6 +106,13 @@ func classifySubackReasons(toSub []subscribeSpec, reasons []byte) (
 		succeeded = append(succeeded, granted)
 	}
 	return succeeded, firstErr, errTopic
+}
+
+// shortSubackError is the failure of a subscription the SUBACK carried no
+// reason code for.
+func shortSubackError() *shared.BridgeError {
+	return shared.ErrProtocolError.WithMessage(
+		"mqtt: SUBACK returned fewer reason codes than requested subscriptions")
 }
 
 // Start connects to the MQTT broker and emits a SessionConnected event

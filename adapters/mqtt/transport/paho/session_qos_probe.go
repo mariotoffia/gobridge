@@ -96,7 +96,7 @@ func (s *Session) probeQoSDowngrades(ctx context.Context) {
 	subCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
 	reasons, subErr := cm.Subscribe(subCtx, specs)
 	cancel()
-	succeeded, refusal, refusedTopic := classifySubackReasons(specs, reasons)
+	succeeded, _, _ := classifySubackReasons(specs, reasons)
 
 	s.mu.Lock()
 	if s.closed || s.connEpoch != epoch {
@@ -109,8 +109,8 @@ func (s *Session) probeQoSDowngrades(ctx context.Context) {
 		granted[opt.Topic] = opt.QoS
 	}
 	var reports []grantReport
-	warn := false
-	for _, spec := range specs {
+	var streakStarts []int // indexes into specs of filters whose no-verdict streak starts now
+	for i, spec := range specs {
 		d := s.qosDowngrades[spec.Topic]
 		if d == nil {
 			continue
@@ -120,10 +120,12 @@ func (s *Session) probeQoSDowngrades(ctx context.Context) {
 			// No verdict (refused, short SUBACK, or no SUBACK at all): keep the
 			// recorded grant and ask again later, backing off while confirming.
 			// A broker that keeps refusing is warned about once per streak, not
-			// on every retry.
+			// on every retry — and per filter, since each has its own streak.
 			d.noVerdictRounds++
 			d.due = now.Add(d.retryInterval())
-			warn = warn || d.noVerdictRounds == 1
+			if d.noVerdictRounds == 1 {
+				streakStarts = append(streakStarts, i)
+			}
 			continue
 		}
 		if v := s.applyGrantLocked(spec.Topic, d.requested, qos, d.recheck); v != grantUnchanged {
@@ -135,16 +137,29 @@ func (s *Session) probeQoSDowngrades(ctx context.Context) {
 	s.mu.Unlock()
 
 	s.reportGrants(reports)
-	if warn && s.logger != nil {
-		// No reason codes at all: the SDK error is the only evidence, and
-		// classifySubackReasons would call it a short SUBACK.
-		cause := error(refusal)
-		if subErr != nil && len(reasons) == 0 {
-			cause = MapError(subErr)
-		}
-		s.logger.Warn("mqtt: QoS downgrade re-check SUBSCRIBE got no grant; keeping the last grant and retrying",
-			"client_id", s.opts.ClientID, "topic", refusedTopic, "error", cause)
+	if s.logger == nil {
+		return
 	}
+	for _, i := range streakStarts {
+		s.logger.Warn("mqtt: QoS downgrade re-check SUBSCRIBE got no grant; keeping the last grant and retrying",
+			"client_id", s.opts.ClientID, "topic", specs[i].Topic, "error", noGrantCause(i, reasons, subErr))
+	}
+}
+
+// noGrantCause is why subscription i of a probe SUBSCRIBE got no grant: no
+// SUBACK at all (the SDK error is the only evidence), no reason code for it (a
+// short SUBACK), or a refusal reason code.
+func noGrantCause(i int, reasons []byte, subErr error) error {
+	switch {
+	case subErr != nil && len(reasons) == 0:
+		return MapError(subErr)
+	case i >= len(reasons):
+		return shortSubackError()
+	}
+	if refusal := MapSubscribeReasonCode(reasons[i]); refusal != nil {
+		return refusal
+	}
+	return nil
 }
 
 // subscribeSpec builds the SUBSCRIBE options for one filter. No-Local follows

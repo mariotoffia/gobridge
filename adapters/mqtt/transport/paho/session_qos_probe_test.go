@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
 
@@ -173,6 +175,84 @@ func TestQoSDowngrade_ProbeRefusedRepeatedly_WarnsOncePerStreak(t *testing.T) {
 	fake.setReasons([]byte{0x87})
 	refusedProbeRound(t, s, clk, fake, 5, qosDowngradeConfirmInterval, qosDowngradeConfirmInterval)
 	require.Equal(t, 2, logs.warnCountContaining(warning), "a new streak warns again")
+}
+
+// noGrantWarning is the stable text of the probe's no-verdict Warn.
+const noGrantWarning = "re-check SUBSCRIBE got no grant"
+
+// noGrantWarnings returns the attributes of every no-verdict Warn, in order.
+func noGrantWarnings(logs *recordingLogHandler) []map[string]any {
+	logs.mu.Lock()
+	defer logs.mu.Unlock()
+	var out []map[string]any
+	for _, r := range logs.records {
+		if r.Level != slog.LevelWarn || !strings.Contains(r.Message, noGrantWarning) {
+			continue
+		}
+		attrs := map[string]any{}
+		r.Attrs(func(a slog.Attr) bool {
+			attrs[a.Key] = a.Value.Any()
+			return true
+		})
+		out = append(out, attrs)
+	}
+	return out
+}
+
+// requireNoGrantWarning asserts one no-verdict Warn names topic and carries a
+// cause classified as want.
+func requireNoGrantWarning(t *testing.T, attrs map[string]any, clientID, topic string, want error) {
+	t.Helper()
+	require.Equal(t, clientID, attrs["client_id"])
+	require.Equal(t, topic, attrs["topic"])
+	cause, ok := attrs["error"].(error)
+	require.True(t, ok, "the Warn carries its cause as an error, got %T", attrs["error"])
+	require.ErrorIs(t, cause, want)
+}
+
+// TestQoSDowngrade_ProbeWithoutVerdict_NamesEachFilterWhoseStreakStarts proves
+// every filter whose run of no-verdict probes starts in a round is named in its
+// own Warn, with its own cause. Warning only for the round's first refused
+// filter would misattribute a later filter's streak — and never name that
+// filter at all, since its next rounds are not a streak's first.
+func TestQoSDowngrade_ProbeWithoutVerdict_NamesEachFilterWhoseStreakStarts(t *testing.T) {
+	const clientID = "downgrade-refused-per-filter"
+	logs := &recordingLogHandler{}
+	s, fake, clk, _ := newDowngradeSession(t, clientID, connectivity.SessionPersistent, 0x00, logs)
+	plan := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{
+		{Topic: "sensors/a", QoS: 1},
+		{Topic: "sensors/b", QoS: 1},
+	}}
+	fake.setTopicReasons(map[string]byte{"sensors/a": 0x00, "sensors/b": 0x00})
+	require.NoError(t, s.Reconcile(context.Background(), plan))
+
+	fake.setTopicReasons(map[string]byte{"sensors/a": 0x87, "sensors/b": 0x00})
+	advanceAndAwait(t, s, clk, qosDowngradeConfirmInterval, "only sensors/a refused", func() bool {
+		a, okA := downgradeState(s, "sensors/a")
+		b, okB := downgradeState(s, "sensors/b")
+		return okA && okB && a.noVerdictRounds == 1 && b.confirmations == 2
+	})
+	warns := noGrantWarnings(logs)
+	require.Len(t, warns, 1)
+	requireNoGrantWarning(t, warns[0], clientID, "sensors/a", shared.ErrForbidden)
+
+	fake.setTopicReasons(map[string]byte{"sensors/a": 0x87, "sensors/b": 0x97})
+	advanceAndAwait(t, s, clk, qosDowngradeConfirmInterval, "both refused", func() bool {
+		a, okA := downgradeState(s, "sensors/a")
+		b, okB := downgradeState(s, "sensors/b")
+		return okA && okB && a.noVerdictRounds == 2 && b.noVerdictRounds == 1
+	})
+	warns = noGrantWarnings(logs)
+	require.Len(t, warns, 2, "sensors/a's streak continues silently; sensors/b's starts")
+	requireNoGrantWarning(t, warns[1], clientID, "sensors/b", shared.ErrThrottled)
+}
+
+// TestNoGrantCause_ClassifiesEachWayAProbeGetsNoGrant pins the cause a
+// no-verdict Warn names for each shape of broker answer.
+func TestNoGrantCause_ClassifiesEachWayAProbeGetsNoGrant(t *testing.T) {
+	require.ErrorIs(t, noGrantCause(1, []byte{0x00, 0x87}, nil), shared.ErrForbidden, "a refusal reason code")
+	require.ErrorIs(t, noGrantCause(1, []byte{0x00}, nil), shared.ErrProtocolError, "a short SUBACK")
+	require.ErrorIs(t, noGrantCause(0, nil, context.DeadlineExceeded), shared.ErrTimeout, "no SUBACK at all")
 }
 
 // refusedProbeRound advances the clock by advance so the due probe runs and
