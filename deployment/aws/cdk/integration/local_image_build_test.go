@@ -22,7 +22,7 @@ func TestLocalRuntimeBuild_EmbedsStagedConfigAndCleansInput(t *testing.T) {
 			ID: "asset", Platform: "linux/amd64", Config: payload,
 		})
 		require.Equal(t, []string{image}, state.runtimeImages, "the run owns cleanup of its built image")
-		require.Equal(t, "linux/arm64", state.runtimePlatform, "the daemon platform is read once per run")
+		require.Equal(t, "linux/arm64", state.runtimePlatform, "the daemon platform is kept on the run's state")
 		data, err := os.ReadFile(record)
 		require.NoError(t, err)
 		args := strings.Split(strings.TrimSpace(string(data)), "\n")

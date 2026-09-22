@@ -186,6 +186,7 @@ Each of these was measured, not assumed.
 | **IAM is not evaluated.** A call the assumed task role has no grant for still succeeds. | The granted half is executed as the task role. For the denied half, the policy CloudFormation attached to the deployed role is read back and every SQS grant in it must name this deployment's own queues. | That AWS refuses the non-granted call. |
 | **CloudFormation cannot update an `AWS::ECS::Service`.** It reports the service it created as not found, then cannot roll back. | The idempotent-redeploy test skips with that reason rather than reporting a deployment defect that does not exist. | Whether re-deploying the same template is a no-op. Synth and the credentialed suite own it. |
 | **EFS has no NFS data plane** and CloudFormation drops task-definition volumes. | The harness rewrites each EFS volume to a host bind mount before deploy, and re-registers filesystem-backed task definitions with the declared volumes and mount points. Explicit DynamoDB-only tasks are checked to have no volumes or mounts and remain on the deployed revision; no artificial bind mount is injected. | That a filesystem-backed task definition reaches ECS intact. |
+| **The emulator ignores `RuntimePlatform`** and runs every ECS task on the Docker host's architecture. | The harness builds the runtime image for the host platform and logs both platforms. The task definition keeps the deployment's `RuntimePlatform`, `X86_64` by default. | That the image for the declared platform starts. Apple silicon runs an arm64 build of the same checkout. |
 | **~~The config mount's ownership is not reproducible.~~ Closed.** The harness used to bind-mount a host directory `0777`, which a SQLite store correctly refuses — it will not put a database under a parent it does not own, or one that is group- or other-writable. That was an accident of convenience, not a limit: the shipped EFS access point creates the mount `755` owned by the container user, and the harness now does the same. | Each stack's config directory is chowned and chmodded to match the access point from a throwaway root container, which covers both a uid-mapping Docker host and a plain Linux one, and handed back before cleanup removes it. | Nothing. |
 | **DynamoDB tables are mirrored only after CloudFormation deploys.** | Runtime calls already address DynamoDB Local. Early tasks can encounter an absent table or config item; they stay live but unready while the target is unavailable. Once the table exists, the control runtime initializes its embedded document using strict create-if-absent. The test never injects an initial config and checks the initial item and every member's applied config, not a helper's stdout. | AWS table provisioning and task startup timing. |
 | **Container stdout does not reach the `awslogs` driver.** | Log assertions read the container's own logs. | Nothing material. |
@@ -327,13 +328,13 @@ the Docker host's platform; for any other image it pulls the tag instead. The
 runtime image the harness builds exists only on this machine, so that pull fails
 with `pull access denied for gobridge-local-runtime` and no deployed task
 starts. The harness therefore builds its runtime image for the host platform,
-`linux/arm64` on Apple silicon, while the task definition keeps the
-deployment's platform, `X86_64` by default, so the stack under test stays the
-one AWS receives. The run logs both platforms for every image it builds, and a
-Docker host that is neither `linux/amd64` nor `linux/arm64` fails the run before
-its runtime image is built. The other 2.1.0 change, refusing an ECS host volume
-outside an approved root, needs nothing from you either: the harness approves
-its own run directory and no other host path.
+`linux/arm64` on Apple silicon. The task definition keeps the deployment's
+`RuntimePlatform`, `X86_64` by default; only the image differs, and what that
+leaves unproven is listed under *Emulation gaps*. The run logs both platforms
+for every image it builds, and a Docker host that is neither `linux/amd64` nor
+`linux/arm64` fails the run before its runtime image is built. The other 2.1.0
+change, refusing an ECS host volume outside an approved root, needs nothing from
+you either: the harness approves its own run directory and no other host path.
 
 ## Where the code lives
 

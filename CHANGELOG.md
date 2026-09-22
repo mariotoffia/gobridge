@@ -72,7 +72,8 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   matches the Docker host's platform, so the local deployment suite now builds
   its runtime image for the host platform (`linux/arm64` on Apple silicon)
   while the task definition keeps the deployment's platform (`X86_64` by
-  default). See
+  default). Only the image differs, so a local run on Apple silicon no longer
+  proves that the image for the declared platform starts. See
   [Which emulator release a run is on](docs/aws-deployment/local-deployment-suite.md#which-emulator-release-a-run-is-on).
 
 ### Changed — `testutil/wait` is a package of the core module
