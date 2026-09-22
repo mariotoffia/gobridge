@@ -114,6 +114,9 @@ func normalRoute(r RouteDef) RouteDef {
 	// Policy.AckAfter is a keyword (an acknowledgement boundary such as
 	// "outbox_persist"), not a duration, so it is compared as written.
 	r.Policy.ReplayBudget = canonicalDuration(r.Policy.ReplayBudget, 0)
+	// An explicit zero turns in-process send retry off while an omitted budget
+	// takes the default, so no default is filled in and the two stay distinct.
+	r.Policy.SendRetryBudget = canonicalDuration(r.Policy.SendRetryBudget, 0)
 	r.Policy.SendTimeout = canonicalDuration(r.Policy.SendTimeout, 0)
 	r.Policy.DepthCacheTTL = canonicalDuration(r.Policy.DepthCacheTTL, 0)
 	r.Policy.Backoff.InitialInterval = canonicalDuration(r.Policy.Backoff.InitialInterval, 0)

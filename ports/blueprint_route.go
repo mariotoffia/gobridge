@@ -268,10 +268,16 @@ type DrainStrategyDef struct {
 // PolicyDef defines per-route delivery, retry, and backpressure
 // configuration as YAML-friendly strings.
 type PolicyDef struct {
-	MaxInFlight        int    `yaml:"max_in_flight,omitempty" json:"max_in_flight,omitempty"`
-	AckAfter           string `yaml:"ack_after,omitempty" json:"ack_after,omitempty"`
-	MaxReplayAttempts  int    `yaml:"max_replay_attempts,omitempty" json:"max_replay_attempts,omitempty"`
-	ReplayBudget       string `yaml:"replay_budget,omitempty" json:"replay_budget,omitempty"`
+	MaxInFlight       int    `yaml:"max_in_flight,omitempty" json:"max_in_flight,omitempty"`
+	AckAfter          string `yaml:"ack_after,omitempty" json:"ack_after,omitempty"`
+	MaxReplayAttempts int    `yaml:"max_replay_attempts,omitempty" json:"max_replay_attempts,omitempty"`
+	ReplayBudget      string `yaml:"replay_budget,omitempty" json:"replay_budget,omitempty"`
+	// SendRetryBudget is how long a direct_hold route retries a recoverable send
+	// inside the bridge before the replay-or-dead-letter decision. Omitted takes
+	// routing.DefaultSendRetryBudget; an explicit zero ("0s") turns in-process
+	// retry off; a negative value is rejected. Maps to
+	// routing.RoutePolicy.SendRetryBudget.
+	SendRetryBudget    string `yaml:"send_retry_budget,omitempty" json:"send_retry_budget,omitempty"`
 	MaxOutboxDepth     int    `yaml:"max_outbox_depth,omitempty" json:"max_outbox_depth,omitempty"`
 	OnExpired          string `yaml:"on_expired,omitempty" json:"on_expired,omitempty"`
 	OnPermanentFailure string `yaml:"on_permanent_failure,omitempty" json:"on_permanent_failure,omitempty"`

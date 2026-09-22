@@ -103,6 +103,36 @@ func TestValidateBlueprintGraph_BackoffJitterBounds(t *testing.T) {
 	}
 }
 
+// TestValidateBlueprintGraph_SendRetryBudget holds the blueprint to the same
+// rules the builder parses send_retry_budget with, so a bad value fails before
+// commit. An explicit zero is legal: it is how an operator turns in-process
+// send retry off, distinct from omitting the key, which takes the default.
+func TestValidateBlueprintGraph_SendRetryBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "omitted", value: "", wantErr: false},
+		{name: "explicit zero disables", value: "0s", wantErr: false},
+		{name: "positive", value: "45s", wantErr: false},
+		{name: "negative", value: "-5s", wantErr: true},
+		{name: "unparseable", value: "soon", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validRouteWithResolver()
+			cfg.Routes[0].Policy.SendRetryBudget = tc.value
+			got := errorString(t, cfg)
+			if tc.wantErr && !strings.Contains(got, "send_retry_budget") {
+				t.Fatalf("send_retry_budget %q must fail before commit, got: %q", tc.value, got)
+			}
+			if !tc.wantErr && got != "" {
+				t.Fatalf("expected no errors, got: %s", got)
+			}
+		})
+	}
+}
+
 // TestValidateBlueprintGraph_BrokerHealthStepDown covers the session duration
 // field the builder parses but validation skipped, so an invalid value passed
 // the config transaction and only failed at apply — after the durable write.

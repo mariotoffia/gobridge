@@ -130,6 +130,8 @@ gauge reports a current value and is read with `Maximum`. Reading a gauge with
 | `MessagesFiltered` | `route_id`, `processor` | Count | A processor deliberately discarded the message (`ErrMessageFiltered`) under `OnFiltered=drop` — a policy discard, distinct from a fault drop. `processor` is omitted when the drop is unattributed. |
 | `MessagesExpired` | `route_id` | Count | Message expired before delivery under `OnExpired=drop`. The drain-path bulk sweep also tags `session_id`. |
 | `RouteErrors` | `route_id` | Count | Delivery errors by route |
+| `SendRetries` | `route_id` | Count | In-process send retries on a `direct_hold` route: one per retry after a recoverable send failure, while the source message stays held. A rising value shows destination trouble before any dead-letter alarm fires. Only counted when `send_retry_budget` is enabled |
+| `SendRetryBudgetExhausted` | `route_id` | Count | Held sends whose retries used up `send_retry_budget`. Each one is then replayed or dead-lettered exactly as without in-process retry |
 | `DeliveryE2ELatency` | `route_id` | Milliseconds | End-to-end delivery latency (StatisticSet — chart `Average`/`Maximum`) |
 | `ReceiveCountUnparseable` | `route_id` | Count | Redelivery-count header was present but not an integer; receiveCount failed open to a first delivery |
 

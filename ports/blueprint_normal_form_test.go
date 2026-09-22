@@ -227,6 +227,26 @@ func TestContentNormalForm_ExplicitZeroIsNotTheDefault(t *testing.T) {
 	assert.NotEqual(t, absent, got)
 }
 
+// send_retry_budget is tri-state: an omitted budget takes the retry default
+// while an explicit zero turns in-process send retry off, so the two are
+// different configurations. Two spellings of one budget are the same one.
+func TestContentNormalForm_SendRetryBudgetExplicitZeroIsNotOmitted(t *testing.T) {
+	withBudget := func(budget string) *ports.BridgeConfig {
+		return &ports.BridgeConfig{
+			Bridge: ports.BridgeSettings{ID: "demo"},
+			Routes: []ports.RouteDef{{ID: "r", Policy: ports.PolicyDef{SendRetryBudget: budget}}},
+		}
+	}
+
+	disabled := ports.ContentNormalForm(withBudget("0s"))
+	assert.Equal(t, "0s", disabled.Routes[0].Policy.SendRetryBudget)
+	assert.NotEqual(t, ports.ContentNormalForm(withBudget("")), disabled,
+		"turning in-process retry off is a change, not the default")
+
+	assert.Equal(t, ports.ContentNormalForm(withBudget("60s")), ports.ContentNormalForm(withBudget("1m")))
+	assert.Equal(t, "1m0s", ports.ContentNormalForm(withBudget("60000ms")).Routes[0].Policy.SendRetryBudget)
+}
+
 func TestContentNormalForm_KeepsUnparseableDurationAsWritten(t *testing.T) {
 	cfg := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "demo", DrainTimeout: "soon"}}
 	got := ports.ContentNormalForm(cfg)

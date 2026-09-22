@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -19,8 +20,8 @@ import (
 // nothing else names it; a metric the page invents sends an operator looking for
 // a series that is never emitted. Both failures are silent in production and
 // neither shows up in any other test, so the two sets are compared directly:
-// the wire values declared in metrics.go against the rows of the sections of the
-// catalogue this package owns.
+// the wire values declared in the metrics*.go files against the rows of the
+// sections of the catalogue this package owns.
 //
 // Adapter-owned sections (the store, transport and exporter tables) name metrics
 // declared in other modules and are excluded BY HEADING rather than by guessing,
@@ -63,15 +64,35 @@ var (
 	docMetricRow    = regexp.MustCompile("^\\|\\s*`([A-Za-z0-9]+)`\\s*\\|")
 )
 
+// metricSourceDecls returns the top-level declarations of every non-test
+// metrics*.go file in this package. The metric names are split across files so
+// none of them outgrows the file-size limit, and a name declared in any of them
+// is a published wire name.
+func metricSourceDecls(t *testing.T) []ast.Decl {
+	t.Helper()
+	paths, err := filepath.Glob("metrics*.go")
+	require.NoError(t, err)
+
+	fset := token.NewFileSet()
+	var decls []ast.Decl
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		require.NoError(t, err, "%s must parse", path)
+		decls = append(decls, file.Decls...)
+	}
+	require.NotEmpty(t, decls, "no metrics*.go source file found")
+	return decls
+}
+
 // declaredMetricNames returns the wire values of every Metric* constant declared
-// in metrics.go, keyed by the constant identifier.
+// in the metrics*.go files, keyed by the constant identifier.
 func declaredMetricNames(t *testing.T) map[string]string {
 	t.Helper()
-	file, err := parser.ParseFile(token.NewFileSet(), "metrics.go", nil, 0)
-	require.NoError(t, err, "metrics.go must parse")
-
 	out := map[string]string{}
-	for _, decl := range file.Decls {
+	for _, decl := range metricSourceDecls(t) {
 		gen, ok := decl.(*ast.GenDecl)
 		if !ok || gen.Tok != token.CONST {
 			continue
@@ -97,7 +118,7 @@ func declaredMetricNames(t *testing.T) map[string]string {
 			}
 		}
 	}
-	require.NotEmpty(t, out, "no Metric* constants parsed from metrics.go")
+	require.NotEmpty(t, out, "no Metric* constants parsed from metrics*.go")
 	return out
 }
 
@@ -173,7 +194,7 @@ func TestMetricsReference_DocumentsEveryDeclaredMetric(t *testing.T) {
 	}
 	sort.Strings(missing)
 	require.Emptyf(t, missing,
-		"metrics declared in metrics.go with no row in %s: %s",
+		"metrics declared in metrics*.go with no row in %s: %s",
 		metricsReferenceDoc, strings.Join(missing, ", "))
 }
 
@@ -197,7 +218,7 @@ func TestMetricsReference_DocumentsNoMetricThatIsNotEmitted(t *testing.T) {
 	}
 	sort.Strings(invented)
 	require.Emptyf(t, invented,
-		"%s documents metrics no constant in metrics.go declares: %s",
+		"%s documents metrics no constant in metrics*.go declares: %s",
 		metricsReferenceDoc, strings.Join(invented, ", "))
 }
 

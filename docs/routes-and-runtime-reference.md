@@ -89,6 +89,7 @@ it on a receiver reachable by untrusted producers would let them spoof
 | `ack_after` | string | no | `target_accept` | `target_accept` or `outbox_persist` |
 | `max_replay_attempts` | int | no | 5 | Max times a record may be claimed before it is eligible for poison (claims include deferrals/reclaims; poisoning also requires the wall-clock `replay_budget` to be spent) |
 | `replay_budget` | duration | no | `15m` | Wall-clock ceiling, measured from a record's FIRST attempt, on how long the outbox drainer keeps redelivering it. It is the **age** half of the poison gate and applies **AND**-ed with `max_replay_attempts`: a record is poisoned to the DLQ only once **both** the attempt count and this budget are spent, so raising one alone changes nothing. Negative is rejected at config load; `0` takes the default. |
+| `send_retry_budget` | duration | no | `60s` | `direct_hold` only: how long a recoverable send failure is retried inside the bridge, with the route's backoff and the source message still held, before the message is handed back to its source or dead-lettered. The outbox drainer never reads it, just as a `direct_hold` route never reads `replay_budget`. **Omitting the field takes the `60s` default; an explicit `0s` turns in-process retry off.** Negative is rejected at config load |
 | `max_outbox_depth` | int | no | 10000 | Max pending outbox records before backpressure |
 | `on_expired` | string | no | `dlq` | `drop` or `dlq` |
 | `on_permanent_failure` | string | no | `dlq` | `drop` or `dlq` |
