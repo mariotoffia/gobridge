@@ -78,6 +78,25 @@ annotation escape hatch. Read `reports/planning-refs.log` when it is red.
 If a plan's decision is worth keeping, promote it to an ADR or a `docs/` page
 **before** the plan is deleted, then point at that.
 
+## MUST: Keep the review rules current
+
+Copilot code review reads `.github/skills/code-review/SKILL.md` and the
+path-scoped `.github/instructions/*.instructions.md` files. They restate rules
+from the docs, so they go stale when the docs or the code move. Update them in
+the same PR when you:
+
+- add, change, supersede or remove an ADR under `docs/adr/`;
+- change `ARCHITECTURE.md`, `DDD.md`, `UBIQUITOUS.md`, `PLUGIN.md`, `TESTS.md`,
+  `LINT.md`, `RELEASE.md` or `LANGUAGE.md` in a way that changes a rule;
+- change a contract described in `docs/internals/` or `docs/transports/`;
+- add, move, rename or remove a package, transport or store — fix the
+  `applyTo` globs and the path table in the skill's Step 0;
+- make a checker enforce a rule the review files list — move it to the skill's
+  "what lint already enforces" section.
+
+Change only the rules the PR affects. A rule that no longer holds is removed,
+not left for review to enforce.
+
 ## How to know you're done
 
 Two commands. That's it.
@@ -108,6 +127,7 @@ make check-all   # build + lint + test-integration (Docker-backed)
 2. Name by role: `adapter_transport_<tech>`, `adapter_store_<provider>_<role>`, `adapter_config_<source>`.
 3. Add precise `mayDependOn` and only imported SDKs in `canUse` in `.go-arch-lint.yml`.
 4. Add a sentinel in `scripts/lint-arch-mapping-test.sh`.
-5. `make lint` must stay green.
+5. Cover its path in `.github/instructions/` and the skill's Step 0 table (see "Keep the review rules current").
+6. `make lint` must stay green.
 
 If `make lint` conflicts with the code, the code is wrong. Refactor by moving types inward, introducing a port, or pushing wiring to the composition root. Relax `.go-arch-lint.yml` only when a generic architectural concept is genuinely missing — and document the reason inline in the yaml.
