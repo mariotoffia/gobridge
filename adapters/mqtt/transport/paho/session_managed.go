@@ -51,9 +51,6 @@ func (s *Session) reconcileManagedUnsubscribe(
 			return shared.ErrUnavailable.WithMessage("mqtt: recycle after managed subscription cleanup").Wrap(reloadErr)
 		}
 		if confirmation.firstErr != nil {
-			if err := s.verifyManagedReplay(ctx, confirmation.confirmed); err != nil {
-				return err
-			}
 			if err := s.finalizeManagedCleanup(ctx, managedStore, managedIdentity, confirmation.confirmed); err != nil {
 				return err
 			}
@@ -66,10 +63,8 @@ func (s *Session) reconcileManagedUnsubscribe(
 	// prior process may have received 0x00 and removed the filter but died before
 	// recording in-memory verification/Forget; this replacement can still receive
 	// a delayed broker-pinned replay. Always wait the current generation's full
-	// replay-grace before Forget, even without managedCleanupVerification state.
-	if err := s.verifyManagedReplay(ctx, confirmation.confirmed); err != nil {
-		return err
-	}
+	// replay-grace before Forget, even without managedCleanupVerification state;
+	// finalizeManagedCleanup settles that replay first.
 	if err := s.finalizeManagedCleanup(ctx, managedStore, managedIdentity, confirmation.confirmed); err != nil {
 		return err
 	}
@@ -79,15 +74,46 @@ func (s *Session) reconcileManagedUnsubscribe(
 	return nil
 }
 
-func (s *Session) verifyManagedReplay(ctx context.Context, filters []string) error {
+// settleManagedReplay deals with deliveries the broker hands this session for
+// filters it just removed. Without a dead-letter path it keeps them
+// unacknowledged and fails closed, as before. With one it dead-letters and
+// acknowledges each, waiting out the current generation's replay-grace window,
+// so a removed filter's queued traffic cannot stop the session. A failed write
+// is transient: the delivery stays buffered and the manager retries the
+// reconcile.
+func (s *Session) settleManagedReplay(ctx context.Context, filters []string) error {
 	if len(filters) == 0 || s.router == nil {
 		return nil
 	}
-	pinned, err := s.router.awaitManagedReplay(ctx, filters)
-	if err != nil || pinned {
-		return s.failClosedForManagedMigration(ctx)
+	s.mu.Lock()
+	deadLetter := s.removedSubscriptionDeadLetter
+	s.mu.Unlock()
+	if deadLetter == nil {
+		pinned, err := s.router.awaitManagedReplay(ctx, filters)
+		if err != nil || pinned {
+			return s.failClosedForManagedMigration(ctx)
+		}
+		return nil
 	}
-	return nil
+	var writeCtx context.Context
+	for {
+		pinned, err := s.router.awaitManagedReplay(ctx, filters)
+		if err != nil {
+			return shared.ErrUnavailable.WithMessage("mqtt: await replay for removed managed subscriptions").Wrap(err)
+		}
+		if !pinned {
+			return nil
+		}
+		if writeCtx == nil {
+			// The clock starts at the first write, so the replay-grace wait is not charged.
+			var cancel context.CancelFunc
+			writeCtx, cancel = context.WithTimeout(ctx, s.reconcileTimeout())
+			defer cancel()
+		}
+		if err := s.router.deadLetterPending(writeCtx, filters, deadLetter); err != nil {
+			return shared.ErrUnavailable.WithMessage("mqtt: dead-letter a delivery held for a removed subscription").Wrap(err)
+		}
+	}
 }
 
 func (s *Session) finalizeManagedCleanup(
@@ -99,8 +125,8 @@ func (s *Session) finalizeManagedCleanup(
 	if len(filters) == 0 {
 		return nil
 	}
-	if s.router != nil && s.router.pendingMatching(filters) > 0 {
-		return s.failClosedForManagedMigration(ctx)
+	if err := s.settleManagedReplay(ctx, filters); err != nil {
+		return err
 	}
 	if err := managedStore.Forget(ctx, managedIdentity, filters); err != nil {
 		return shared.ErrUnavailable.WithMessage("mqtt: forget verified managed subscriptions").Wrap(err)
@@ -243,7 +269,7 @@ func (s *Session) loadManagedSubscriptionHistory(ctx context.Context) error {
 		// Desired state is not declared until Reconcile. Gate every durable
 		// historical filter before broker activation so resumed traffic cannot
 		// reach a handler through a stale wildcard/shared subscription.
-		s.router.setManagedCleanupFilters(filters)
+		s.router.setManagedCleanupFilters(filters, nil)
 	}
 	return nil
 }
@@ -271,5 +297,9 @@ func (s *Session) syncManagedCleanupGate(plan connectivity.SessionPlan) {
 	if s.router == nil {
 		return
 	}
-	s.router.setManagedCleanupFilters(s.managedCleanupFilters(plan))
+	desired := make([]string, 0, len(plan.Subscriptions))
+	for _, sub := range plan.Subscriptions {
+		desired = append(desired, sub.Topic)
+	}
+	s.router.setManagedCleanupFilters(s.managedCleanupFilters(plan), desired)
 }

@@ -93,9 +93,6 @@ func (s *Session) reconcile(
 				verified = append(verified, filter)
 			}
 			sort.Strings(verified)
-			if err := s.verifyManagedReplay(ctx, verified); err != nil {
-				return err
-			}
 			if err := s.finalizeManagedCleanup(ctx, managedStore, managedIdentity, verified); err != nil {
 				return err
 			}

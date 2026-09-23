@@ -106,7 +106,7 @@ mirror of `replay_budget` being read by the drainer only.
   (`routing.DefaultSendRetryBudget`). Sixty seconds rides out a destination
   policy that is still propagating — up to about a minute on SQS — and fits
   inside the limit that a held delivery must not outlive: the MQTT
-  settlement-recovery recycle wait, 240 seconds with the shipped defaults,
+  settlement-recovery recycle wait, 300 seconds with the shipped defaults,
   which the second validation rule below enforces per route.
   A shutdown is shorter than the budget and deliberately so: `Stop` waits about
   25 seconds for in-flight deliveries and then cancels, which **truncates** a
@@ -206,7 +206,7 @@ therefore cannot disagree about how long a held delivery may take to settle.
 
 **The second rule is necessary, not sufficient.** The recovery wait is the outer
 deadline for the *whole* recovery attempt, not a budget reserved for settling:
-the same 240 seconds also covers waiting for the session serialization gate, the
+the same 300 seconds also covers waiting for the session serialization gate, the
 teardown drain, and the disconnect, reconnect and reconcile that follow it. And
 one held delivery can occupy more of that wait than `send_retry_budget` + send
 wedge ceiling: the message runs its processor chain first, where each processor

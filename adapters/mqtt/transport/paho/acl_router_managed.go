@@ -3,19 +3,33 @@ package paho
 import (
 	"context"
 	"sort"
+
+	pahov5 "github.com/eclipse/paho.golang/paho"
+
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // setManagedCleanupFilters atomically replaces the exact history-minus-desired
-// gate. No handler match can race past a newly installed stale-filter gate.
-func (r *router) setManagedCleanupFilters(filters []string) {
+// gate and the desired filters it was computed against. No handler match can
+// race past a newly installed stale-filter gate.
+func (r *router) setManagedCleanupFilters(cleanup, desired []string) {
 	if r == nil {
 		return
 	}
-	copyFilters := append([]string(nil), filters...)
-	sort.Strings(copyFilters)
+	cleanupCopy := append([]string(nil), cleanup...)
+	sort.Strings(cleanupCopy)
+	desiredCopy := append([]string(nil), desired...)
+	sort.Strings(desiredCopy)
 	r.mu.Lock()
-	r.managedCleanupFilters = copyFilters
+	r.managedCleanupFilters = cleanupCopy
+	r.managedDesiredFilters = desiredCopy
 	r.mu.Unlock()
+}
+
+// wantedByDesiredLocked reports whether a still-desired filter covers topic.
+// Caller holds r.mu.
+func (r *router) wantedByDesiredLocked(topic string) bool {
+	return len(r.managedDesiredFilters) > 0 && matchesAnyFilter(r.managedDesiredFilters, topic)
 }
 
 // quiesceForRecycle waits for active handler dispatch, purges old-epoch pending
@@ -150,28 +164,72 @@ func (r *router) resumeManagedDispatch(ctx context.Context) error {
 	}
 }
 
-// pendingMatching reports how many buffered publishes match exact managed
-// filters. It never settles or removes entries; migration uses it after a
-// cleanup recycle to detect broker-pinned QoS1 deliveries and fail closed.
-func (r *router) pendingMatching(filters []string) int {
+// deadLetterPending hands every buffered delivery of the current connection
+// generation that matches filters to write, and acknowledges each one only after
+// write returned nil. A delivery a still-desired filter also covers is live
+// traffic, not a removed filter's residue: it stays buffered for dispatch. An
+// acknowledged entry leaves the buffer and gives its dispatch reservation back.
+// It stops at the first write or acknowledgement failure and returns it; that
+// entry and every later one stay buffered with their acknowledgement intact.
+// write and ack run with r.mu released: the acknowledgement wrapper takes r.mu.
+func (r *router) deadLetterPending(
+	ctx context.Context,
+	filters []string,
+	write func(context.Context, *messaging.Envelope, string) error,
+) error {
 	if r == nil || len(filters) == 0 {
-		return 0
+		return nil
+	}
+	type held struct {
+		pub    *pahov5.Publish
+		ack    func() error
+		filter string
 	}
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	count := 0
+	var matched []held
 	for _, pending := range r.pending {
-		if matchesAnyFilter(filters, pending.pub.Topic) {
-			count++
+		if pending.epoch != r.connEpoch || r.wantedByDesiredLocked(pending.pub.Topic) {
+			continue
+		}
+		for _, filter := range filters {
+			if matchTopicFilter(filter, pending.pub.Topic) {
+				matched = append(matched, held{pub: pending.pub, ack: pending.ack, filter: filter})
+				break
+			}
 		}
 	}
-	return count
+	r.mu.RUnlock()
+
+	for _, entry := range matched {
+		if err := write(ctx, EnvelopeFromPublish(entry.pub, r.clk, r.metrics), entry.filter); err != nil {
+			return err
+		}
+		if entry.ack != nil {
+			if err := entry.ack(); err != nil {
+				return err
+			}
+		}
+		r.mu.Lock()
+		for i := range r.pending {
+			if r.pending[i].pub == entry.pub {
+				r.pending = append(r.pending[:i], r.pending[i+1:]...)
+				r.pendingBytes -= pubBytes(entry.pub)
+				r.releaseQueueReservationLocked(entry.pub)
+				break
+			}
+		}
+		r.mu.Unlock()
+	}
+	return nil
 }
 
 // awaitManagedReplay waits through the current connection startup-grace window
 // for a broker-pinned replay matching filters. The managed gate remains active,
-// so any match stays buffered and unacknowledged. Routers without a live grace
-// generation (unit fakes/direct dispatch) return their immediate snapshot.
+// so any match stays buffered and unacknowledged. Only deliveries of the
+// current connection generation count, the same ones deadLetterPending can
+// settle. A delivery a still-desired filter also covers is not a replay of the
+// removed filters and is ignored. Routers without a live grace generation (unit
+// fakes/direct dispatch) return their immediate snapshot.
 func (r *router) awaitManagedReplay(ctx context.Context, filters []string) (bool, error) {
 	if r == nil || len(filters) == 0 {
 		return false, nil
@@ -185,7 +243,8 @@ func (r *router) awaitManagedReplay(ctx context.Context, filters []string) (bool
 	for {
 		r.mu.RLock()
 		for _, pending := range r.pending {
-			if matchesAnyFilter(filters, pending.pub.Topic) {
+			if pending.epoch == r.connEpoch && matchesAnyFilter(filters, pending.pub.Topic) &&
+				!r.wantedByDesiredLocked(pending.pub.Topic) {
 				r.mu.RUnlock()
 				return true, nil
 			}

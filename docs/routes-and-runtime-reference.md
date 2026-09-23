@@ -261,7 +261,7 @@ routes:
       sender_id: sqs-out
       lease_ttl: 300s
       step_down_grace: 20s
-      failover_slo: 980s
+      failover_slo: 1040s
       startup_allowance: 10s
       drain_strategy:
         type: adaptive_backoff

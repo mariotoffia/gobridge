@@ -81,9 +81,10 @@ func (c Config) TransportFailoverTiming(mode connectivity.SessionMode) ports.Tra
 // connections cover initial Start plus cleanup recycle. Four reconcile-owned
 // waits cover initial SUBSCRIBE, exact UNSUBSCRIBE, bounded ingress quiescence,
 // and replacement-generation SUBSCRIBE. Two replay windows cover crash residue
-// followed by filters removed in the current attempt. The SDK reconnect-attempt
-// timeout is nested inside each connection await and is therefore not added
-// again.
+// followed by filters removed in the current attempt, and each replay window
+// adds one reconcile timeout of dead-letter writes for deliveries held for a
+// removed filter. The SDK reconnect-attempt timeout is nested inside each
+// connection await and is therefore not added again.
 func (c Config) PostAcquireActivationTiming(mode connectivity.SessionMode) ports.SessionActivationTiming {
 	if mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive {
 		return ports.SessionActivationTiming{}
@@ -104,6 +105,7 @@ func (c Config) PostAcquireActivationTiming(mode connectivity.SessionMode) ports
 		connectTimeout, connectTimeout,
 		reconcileTimeout, reconcileTimeout, reconcileTimeout, reconcileTimeout,
 		replayGrace, replayGrace,
+		reconcileTimeout, reconcileTimeout,
 	)}
 }
 

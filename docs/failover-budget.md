@@ -111,22 +111,22 @@ A route session that pins neither `lease_ttl` nor `renew_interval` inherits one
 of two baselines, chosen by deployment mode. Both rows below are evaluated at
 the shipped defaults with the shipped MQTT (paho) transport at ITS defaults
 (`connect_timeout`, `reconcile_timeout` and `unmatched_grace` all 30s, giving a
-240s aggregate activation bound) and `startup_allowance: 0s`.
+300s aggregate activation bound) and `startup_allowance: 0s`.
 
 | Profile | `lease_ttl` | `renew_interval` | `renew_call_timeout` | `acquire_poll_interval` | `step_down_grace` | Owner-death budget | Broker-path budget |
 |---|---|---|---|---|---|---|---|
-| Standalone default (`deployment_mode: standalone`) | 360s | 75.56s derived | 5s derived | 5s derived | 15s | 1097.5s | `broker_health_step_down` + 382.5s |
-| Clustered HA (`deployment_mode: clustered`, no pinned lease timing) | 45s | 10s | 3s | 5s derived | 5s | 336.5s | `broker_health_step_down` + 290s |
+| Standalone default (`deployment_mode: standalone`) | 360s | 75.56s derived | 5s derived | 5s derived | 15s | 1157.5s | `broker_health_step_down` + 442.5s |
+| Clustered HA (`deployment_mode: clustered`, no pinned lease timing) | 45s | 10s | 3s | 5s derived | 5s | 396.5s | `broker_health_step_down` + 350s |
 
 Two things an operator plans recovery around, and both were previously
 invisible: the enforced bound is **three times the lease TTL** on the standalone
-profile and **seven times** on the clustered one, because transport activation
+profile and **more than eight times** on the clustered one, because transport activation
 and the observation-call budget dominate it; and the clustered profile is a
 different, much shorter lease cadence that a page showing only the 360s default
 never mentioned.
 
 Shrink either budget by lowering the transport's `connect_timeout` /
-`reconcile_timeout` / `unmatched_grace` (the 240s term above), by shortening
+`reconcile_timeout` / `unmatched_grace` (the 300s term above), by shortening
 `lease_ttl`, or by raising `acquire_poll_interval` — a longer poll costs one
 boundary but removes many observation calls.
 

@@ -204,7 +204,7 @@ exclusive sessions have no such coupling. See
 **Failover timing.** A clustered exclusive route that leaves lease timing unset
 uses the 45s HA lease cadence, but that cadence is not an end-to-end SLO. The
 MQTT **post-takeover activation** term alone is
-`2×connect_timeout + 4×reconcile_timeout + 2×unmatched_grace` = **240s with the
+`2×connect_timeout + 6×reconcile_timeout + 2×unmatched_grace` = **300s with the
 shipped defaults** (30s each), which is what makes the enforced bound several
 times the lease TTL on both shipped profiles. Both formulas and both profiles
 evaluated at their defaults are in [Failover budget](../failover-budget.md); a

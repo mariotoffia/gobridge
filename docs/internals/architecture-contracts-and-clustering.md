@@ -63,6 +63,7 @@ All errors in the bridge pipeline are structured as `shared.BridgeError` with an
 |---|---|
 | `ErrMessageFiltered` | Ack without DLQ -- the message was intentionally dropped by a filter processor |
 | `ErrUnavailable.WithRetryAfter(d)` | Circuit breaker open -- includes a retry delay hint for the caller |
+| `ErrSubscriptionRemoved` (`SUBSCRIPTION_REMOVED`, `Permanent`) | Not returned by a route. A persistent/exclusive MQTT session dead-letters a delivery the broker hands it for a removed filter with this code, then acks it; written whenever a DLQ store exists, independent of `FailureAction`. Without a store the session fails closed. See [MQTT durable session state](../transports/mqtt-durable-sessions.md#deliveries-held-for-a-removed-filter) |
 
 ### Error API
 
