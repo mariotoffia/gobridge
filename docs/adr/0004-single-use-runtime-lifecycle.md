@@ -3,6 +3,8 @@
 Status: accepted
 Date: 2026-07-03
 Deciders: GoBridge core
+Amended by: 0018 (a running runtime may retire and graft reload units; it is
+still started once, stopped once and never restarted)
 
 ## Context
 
@@ -28,7 +30,10 @@ and `/live` fails closed.
   rather than resetting state: `"runtime: cannot start a stopped runtime
   (single-use lifecycle); build a new runtime"`
   (`runtime/bridge_start.go`). Configuration changes replace the instance
-  (swap mode); they never restart one.
+  (swap mode); they never restart one. Since
+  [ADR 0018](0018-reload-in-place-by-unit.md), a change confined to reload
+  units instead retires those units from the running instance and grafts
+  freshly built ones onto it; nothing is restarted or reset.
 
 - **Terminal state on the port.** `ports.Runtime` exposes `Terminal() bool`
   (`ports/runtime.go`). A runtime that can never serve again reports
@@ -51,7 +56,9 @@ and `/live` fails closed.
 ## Consequences
 
 - No in-place restart path exists, so no half-reset runtime can leak resources.
-  A config change builds a fresh instance or it fails.
+  A config change builds a fresh instance or it fails. ADR 0018 widens this:
+  a config change builds fresh components — a whole instance, or reload units
+  grafted onto the running one — or it fails.
 - A wedged process exits non-zero and fails `/live`. The orchestrator restarts
   the task from a clean slate instead of holding a dead one behind a green
   health check.

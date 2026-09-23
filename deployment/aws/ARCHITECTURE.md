@@ -434,7 +434,11 @@ First activation is not readiness: a standby can activate without reaching Full.
 Returning to idle does not rearm initialization in that process. Watch ordering
 must preserve deletion and subsequent recreation, including a reset version.
 
-Reload uses overlap by default and prepare/commit for exclusive identities.
+Reload first tries in place: when only reload units changed, the installed
+runtime is kept and only those units are retired and grafted
+([ADR 0018](../../docs/adr/0018-reload-in-place-by-unit.md)). Otherwise it
+replaces the runtime, with overlap by default and prepare/commit for exclusive
+identities.
 Reference cells keep the control-plane servers independent of runtime swaps.
 Clustered updates still follow the barrier or whole-cohort replacement rules.
 
@@ -467,6 +471,7 @@ covers creation races, operator creation, artifact visibility, and SQS selection
 | Reload failure | `recoverPrevious` rebuilds last-good logical config; admin/monitor stay up. |
 | Stale runtime on watch shutdown | `Stop` waits for `watchWg` before tearing down dependencies. |
 | Bad new runtime in prepare/commit | Old runtime stopped *before* commit; `recoverPrevious` re-attempts. |
+| Failed in-place reload | Unchanged: the runtime keeps the running config. Torn: runtime stopped, `recoverPrevious` rebuilds. A retired unit or torn runtime that does not stop cleanly wedges (ADR-0004). |
 | Concurrent EFS RW writers across deploys | Control deploy policy `MinHealthyPercent=0 / MaxHealthyPercent=100`. |
 | Worker config writes | Runtime `ConfigReadOnly` rejects writes for both sources; file mounts are read-only and DynamoDB config-table grants are read-only. ALB admin paths route to control only. |
 | Multiple facades in same stack | `cdk/constructs/internal/singleton` synth-time scope scan. |

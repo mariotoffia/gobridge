@@ -10,6 +10,53 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Added — a configuration change reconnects only what it changed
+
+- **Behaviour change, on by default** (#53). A change confined to sessions,
+  receivers, senders, bindings and routes no longer replaces the whole
+  runtime. The bridge splits each configuration into **reload units** —
+  sessions, receivers, senders, bindings and routes joined by the ids they
+  reference — and keeps every unit whose content is unchanged running
+  untouched: its sessions stay connected and its routes keep delivering. Only
+  the changed, added and removed units are drained, stopped, rebuilt and
+  started inside the running runtime
+  ([ADR 0018](docs/adr/0018-reload-in-place-by-unit.md)). Previously every
+  accepted change disconnected every session of every owner.
+- Both composition roots do it: the Supervisor (`cmd/gobridge`) under
+  `SwapAuto`, the default, and the AWS runtime (`deployment/aws`) on every
+  apply.
+- Routes that share a session are one unit, so changing one of them
+  reconnects that session and restarts the other routes on it.
+- The whole runtime is still replaced when a bridge-wide section changes
+  (`bridge`, `stores`, `config_watch`, `http`), when the derived outbox
+  stale-claim duration changes, when a changed unit uses the `http`
+  transport, and in the Supervisor under an explicit `SwapOverlap` or
+  `SwapPrepareCommit`.
+- When a unit holds an exclusive broker identity, the old unit stops before
+  its replacement is built, as in a prepare/commit swap. Inside the runtime a
+  replaced unit always stops before its replacement starts, so a changed SQS
+  unit has a short gap that the AWS runtime's overlap swap used to avoid;
+  unchanged units have none.
+- A failed in-place reload keeps the running configuration (nothing retired,
+  or the retired units restored), rebuilds the running configuration as a
+  whole, or wedges when a retired unit does not stop cleanly (ADR 0004, now
+  amended by ADR 0018: a running runtime may retire and graft reload units, and
+  is still never restarted).
+- New API: `bridge.SwapInPlace` (reported in `SwapEvent.SwapMode`),
+  `bridge.PlanInPlaceReload`, `(*bridge.InPlaceReload).Apply` with
+  `bridge.InPlaceOutcome`, `(*bridge.CredentialRefresher).Forget`, and on the
+  runtime `Retire`, `Graft`, `Stores`, `WithSharedStores`,
+  `AttachCredentialForget`, `runtime.Unit`, `runtime.ErrNotRunning` and
+  `(*cluster.Locator).UnregisterRoute`. A
+  successful in-place reload logs `retired_routes`, `added_routes`,
+  `retired_sessions` and `added_sessions`.
+- **AWS, several MQTT tenants:** the MQTT memory profile shares its
+  reservation equally, so adding or removing an MQTT session that takes a
+  share reconnects every MQTT session that leaves
+  `ingress_memory_budget_bytes` unset. Pin it per session to keep the other
+  tenants connected; see
+  [keeping MQTT tenants connected](docs/aws-deployment/config-reload.md#keeping-mqtt-tenants-connected).
+
 ### Changed — removing an MQTT subscription no longer stops the process when a dead-letter store exists
 
 - **Behaviour change** (#56). A persistent or exclusive MQTT session can still
