@@ -202,7 +202,7 @@ func TestBridgeError_Is_NonBridgeErrorTarget_ReturnsFalse(t *testing.T) {
 }
 
 // TestSentinelErrorCodes_MatchDeclaredConstants validates every sentinel's .Code field
-// matches its corresponding ErrCode* constant, covering all 24 declared sentinels.
+// matches its corresponding ErrCode* constant, covering all 26 listed sentinels.
 func TestSentinelErrorCodes_MatchDeclaredConstants(t *testing.T) {
 	tests := []struct {
 		sentinel *shared.BridgeError
@@ -226,6 +226,7 @@ func TestSentinelErrorCodes_MatchDeclaredConstants(t *testing.T) {
 		{shared.ErrMessageExpired, shared.ErrCodeMessageExpired},
 		{shared.ErrQoSNotSupported, shared.ErrCodeQoSNotSupported},
 		{shared.ErrMessageFiltered, shared.ErrCodeMessageFiltered},
+		{shared.ErrSubscriptionRemoved, shared.ErrCodeSubscriptionRemoved},
 		{shared.ErrNotSupported, shared.ErrCodeNotSupported},
 		{shared.ErrVersionMismatch, shared.ErrCodeVersionMismatch},
 		{shared.ErrAlreadyExists, shared.ErrCodeAlreadyExists},

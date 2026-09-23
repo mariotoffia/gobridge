@@ -62,6 +62,9 @@ const (
 	ErrCodeMessageExpired  ErrorCode = "MESSAGE_EXPIRED"
 	ErrCodeQoSNotSupported ErrorCode = "QOS_NOT_SUPPORTED"
 	ErrCodeMessageFiltered ErrorCode = "MESSAGE_FILTERED"
+	// ErrCodeSubscriptionRemoved flags a delivery the broker handed a session
+	// for a subscription the session had removed; it was dead-lettered.
+	ErrCodeSubscriptionRemoved ErrorCode = "SUBSCRIPTION_REMOVED"
 )
 
 // Infrastructure and fencing error codes.
@@ -281,6 +284,10 @@ var (
 	ErrMessageFiltered = &BridgeError{
 		Code: ErrCodeMessageFiltered, Class: ErrorRejected,
 		Message: "message filtered",
+	}
+	ErrSubscriptionRemoved = &BridgeError{
+		Code: ErrCodeSubscriptionRemoved, Class: ErrorPermanent,
+		Message: "subscription removed",
 	}
 )
 

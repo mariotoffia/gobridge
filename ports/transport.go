@@ -430,6 +430,19 @@ type IngressQuiescenceConfigurer interface {
 	SetIngressQuiescenceWaiter(waiter func(context.Context) error)
 }
 
+// RemovedSubscriptionDeadLetterConfigurer is an optional session capability. A
+// session that removes a subscription can still be handed deliveries for it by
+// the broker (unacknowledged or queued ones it must resend after a reconnect).
+// The runtime installs fn so the session can write such a delivery to the
+// dead-letter store before acknowledging it. fn returns nil only once the
+// record is durable; filter is the removed subscription filter the delivery
+// matched. The setter is called during Runtime.Start before session goroutines
+// begin; a nil fn means no dead-letter path, and the session keeps such a
+// delivery unacknowledged.
+type RemovedSubscriptionDeadLetterConfigurer interface {
+	SetRemovedSubscriptionDeadLetter(fn func(ctx context.Context, env *messaging.Envelope, filter string) error)
+}
+
 // Capability describes a routing-relevant transport feature.
 type Capability string
 
