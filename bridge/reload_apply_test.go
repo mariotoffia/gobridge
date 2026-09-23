@@ -2,7 +2,9 @@ package bridge
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -338,10 +340,33 @@ func TestInPlaceReload_TeardownIsDetachedFromTheCallersContext(t *testing.T) {
 	assert.Equal(t, []string{"a"}, runtimeRouteIDs(rt))
 }
 
+// A retire and a part stop are bounded by the drain timeout the caller gives,
+// and by the running configuration's drain timeout (1s here) when it gives
+// none. The bounds are read against the moment before the teardown began, so
+// scheduling delays cannot blur them.
+func TestInPlaceReload_TeardownIsBoundedByTheCallersDrainTimeout(t *testing.T) {
+	tf := newPerSessionTransportFactory(false)
+	running := applyTestConfig("a", "b")
+	plan := planApplyTest(t, tf, running, changeRoute(applyTestConfig("a", "b"), "b"))
+	teardownBudget := func() time.Duration {
+		before := time.Now()
+		ctx, cancel := plan.teardownCtx(context.Background())
+		defer cancel()
+		deadline, ok := ctx.Deadline()
+		require.True(t, ok, "a teardown is always bounded")
+		return deadline.Sub(before)
+	}
+
+	assert.Less(t, teardownBudget(), time.Hour, "without one, the running configuration's drain timeout")
+	plan.DrainTimeout = time.Hour
+	assert.GreaterOrEqual(t, teardownBudget(), time.Hour, "the caller's drain timeout")
+}
+
 // A serialized reload retires its units between preparing the parts and
 // committing them, and a retire may take the whole drain timeout. The commit
-// therefore runs in a phase of its own: a budget that ran out while the retired
-// unit drained must not fail the build that follows.
+// therefore runs in a phase of its own, begun once the retire is over: a budget
+// that ran out while the retired unit drained must not fail the build that
+// follows.
 func TestApply_CommitGetsAFreshPhaseAfterASlowRetire(t *testing.T) {
 	tf := newPerSessionTransportFactory(true)
 	newBuilder := applyTestBuilder(tf)
@@ -350,25 +375,37 @@ func TestApply_CommitGetsAFreshPhaseAfterASlowRetire(t *testing.T) {
 	plan := planApplyTest(t, tf, running, changeRoute(applyTestConfig("a", "b"), "b"))
 	require.True(t, plan.Serialized())
 
+	var mu sync.Mutex
 	var phases []context.Context
 	var cancels []context.CancelFunc
+	phasesAtRetire := -1
 	phase := func(ctx context.Context) (context.Context, context.CancelFunc) {
 		phaseCtx, cancel := context.WithCancel(ctx)
+		mu.Lock()
+		defer mu.Unlock()
 		phases = append(phases, phaseCtx)
 		cancels = append(cancels, cancel)
 		return phaseCtx, cancel
 	}
-	// The retired session closes only once the first phase's budget is spent.
+	// The retired session is slow to close: by the time it has, the budget of
+	// every phase begun so far is spent.
 	tf.onClose = func(name string) {
-		if name == "b-s#1" {
-			cancels[0]()
+		if name != "b-s#1" {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		phasesAtRetire = len(phases)
+		for _, cancel := range cancels {
+			cancel()
 		}
 	}
 
 	outcome, err := plan.Apply(context.Background(), rt, newBuilder, phase)
 
-	require.NoError(t, err, "the commit must not run under the budget the retire spent")
+	require.NoError(t, err, "the commit must not run under a budget the retire spent")
 	assert.Equal(t, InPlaceApplied, outcome)
+	assert.Equal(t, 1, phasesAtRetire, "only preparing the parts has begun when the retired unit closes")
 	require.Len(t, phases, 2, "preparing and committing the parts are two phases")
 	assert.Error(t, phases[1].Err(), "a phase is released when it ends")
 	assert.Equal(t, []int{1, 0}, tf.closeCounts("b-s"), "owner b's session is replaced")

@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"slices"
+	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -13,6 +14,12 @@ import (
 // unit: a change inside a unit retires the old unit and adds the new one, and
 // a merge or split of units is handled the same way.
 type InPlaceReload struct {
+	// DrainTimeout bounds each retire, and each stop of a part never grafted,
+	// in Apply. Zero uses the running configuration's drain timeout. A caller
+	// whose own stops fall back to a default of theirs for an unset
+	// drain_timeout sets it, so Apply's teardown gets the same budget.
+	DrainTimeout time.Duration
+
 	running, next *ports.BridgeConfig
 	retire, add   []reloadUnit
 	// serialized: the retired units stop before the added ones are built,

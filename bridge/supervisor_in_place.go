@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 
@@ -9,12 +10,21 @@ import (
 	"github.com/mariotoffia/gobridge/runtime"
 )
 
+// autoSwap reports whether the Supervisor chooses the swap mode of each reload.
+// An explicit SwapInPlace counts: it can only ever be chosen, so taken as a
+// full swap mode it would fall back to an overlap swap even where an exclusive
+// broker identity requires a prepare-commit one.
+func (s *Supervisor) autoSwap() bool {
+	return s.swapMode == SwapAuto || s.swapMode == SwapInPlace
+}
+
 // planInPlace returns the plan of an in-place reload from oldCfg, which oldRt
 // runs, to newCfg, or nil when the reload takes a full replacement: an explicit
-// swap mode asks for one, no running runtime is there to keep, or the change is
-// not confined to reload units (PlanInPlaceReload says which changes are).
+// full swap mode asks for one, no running runtime is there to keep, or the
+// change is not confined to reload units (PlanInPlaceReload says which changes
+// are).
 func (s *Supervisor) planInPlace(oldRt *runtime.Runtime, oldCfg, newCfg *ports.BridgeConfig) *InPlaceReload {
-	if s.swapMode != SwapAuto || oldRt == nil || !oldRt.IsRunning() {
+	if !s.autoSwap() || oldRt == nil || !oldRt.IsRunning() {
 		return nil
 	}
 	s.mu.RLock()
@@ -30,7 +40,7 @@ func (s *Supervisor) planInPlace(oldRt *runtime.Runtime, oldCfg, newCfg *ports.B
 // applyInPlace reloads oldRt, which runs oldCfg, in place by plan, and returns
 // the runtime that runs the next configuration: oldRt itself. Each build phase
 // runs under a swap deadline of its own, as the phases of a prepare-commit swap
-// do.
+// do, and each retire under the drain timeout the Supervisor's own stops use.
 //
 // A failure ends as the matching failure of a full swap does. When nothing
 // changed or the retired units were restored, oldRt keeps serving the running
@@ -39,6 +49,7 @@ func (s *Supervisor) planInPlace(oldRt *runtime.Runtime, oldCfg, newCfg *ports.B
 // built afresh, or a wedge when either step fails. When a retired unit did not
 // stop cleanly, the Supervisor stops oldRt and wedges (ADR-0004).
 func (s *Supervisor) applyInPlace(ctx context.Context, oldRt *runtime.Runtime, oldCfg *ports.BridgeConfig, plan *InPlaceReload) (*runtime.Runtime, error) {
+	plan.DrainTimeout = s.drainTimeoutFrom(oldCfg)
 	outcome, err := plan.Apply(ctx, oldRt, s.newBuilder, s.swapPhaseCtx)
 	switch outcome {
 	case InPlaceApplied:
@@ -55,6 +66,7 @@ func (s *Supervisor) applyInPlace(ctx context.Context, oldRt *runtime.Runtime, o
 		stopErr := oldRt.Stop(stopCtx)
 		cancel()
 		if stopErr != nil {
+			err = errors.Join(err, fmt.Errorf("stop old runtime: %w", stopErr))
 			s.wedgeAfterFailedStop(stopErr)
 			break
 		}

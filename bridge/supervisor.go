@@ -43,8 +43,8 @@ const (
 	SwapAuto
 
 	// SwapInPlace keeps the running runtime and replaces only the reload units
-	// that changed (PlanInPlaceReload). Only SwapAuto chooses it, so it is
-	// reported in SwapEvent, not passed to WithSwapMode.
+	// that changed (PlanInPlaceReload). SwapAuto chooses it and SwapEvent reports
+	// it; passed to WithSwapMode, it acts as SwapAuto.
 	SwapInPlace
 )
 
@@ -212,7 +212,7 @@ func WithSupervisorClock(c clock.Clock) SupervisorOption {
 	}
 }
 
-// WithSwapMode overrides the automatic swap mode detection.
+// WithSwapMode overrides the automatic swap mode detection (SwapInPlace keeps it).
 func WithSwapMode(m SwapMode) SupervisorOption {
 	return func(s *Supervisor) { s.swapMode = m }
 }
@@ -1470,7 +1470,7 @@ func (s *Supervisor) newBuilder(cfg *ports.BridgeConfig) *Builder {
 }
 
 func (s *Supervisor) detectSwapMode(cfg *ports.BridgeConfig) SwapMode {
-	if s.swapMode != SwapAuto {
+	if !s.autoSwap() {
 		return s.swapMode
 	}
 

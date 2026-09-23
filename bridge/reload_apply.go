@@ -62,9 +62,9 @@ func (o InPlaceOutcome) String() string {
 // between preparing and committing, and a retire may take the whole drain
 // timeout; a budget spanning both would hand the commit a spent context. A nil
 // phase runs every phase under ctx. Each retire, and each stop of a part never
-// grafted, runs under the drain timeout detached from ctx, so a cancelled
-// reload still leaves every unit settled. The caller serializes reloads and
-// stops of rt.
+// grafted, runs under r.DrainTimeout (the running configuration's drain timeout
+// when zero) detached from ctx, so a cancelled reload still leaves every unit
+// settled. The caller serializes reloads and stops of rt.
 //
 // The whole next document is validated and every added unit prepared before
 // anything is retired, so a configuration a full build would refuse changes
@@ -223,7 +223,11 @@ func (r *InPlaceReload) stopParts(ctx context.Context, parts []*runtime.Runtime)
 // from ctx: a teardown that starts must finish, or a retired unit's in-flight
 // deliveries and a stopped part's sessions are abandoned mid-way.
 func (r *InPlaceReload) teardownCtx(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), r.running.Bridge.DrainTimeoutDuration())
+	d := r.DrainTimeout
+	if d <= 0 {
+		d = r.running.Bridge.DrainTimeoutDuration()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), d)
 }
 
 // String names u by its route and session ids, for errors.

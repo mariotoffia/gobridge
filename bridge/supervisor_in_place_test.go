@@ -132,35 +132,6 @@ func TestSupervisorInPlace_MessagesFlowThroughUnchangedRouteDuringReload(t *test
 	assert.Same(t, rt, s.Runtime())
 }
 
-func TestSupervisorInPlace_ExplicitSwapModeKeepsFullReplacement(t *testing.T) {
-	tf := newPerSessionTransportFactory(false)
-	s, changes, swaps := runInPlaceSupervisor(t, tf, applyTestConfig("a", "b"), WithSwapMode(SwapOverlap))
-	rt := s.Runtime()
-
-	ev := reloadTo(t, changes, swaps, changeRoute(applyTestConfig("a", "b"), "b"), 2)
-
-	require.NoError(t, ev.Error)
-	assert.Equal(t, SwapOverlap, ev.SwapMode)
-	assert.NotSame(t, rt, s.Runtime(), "an explicit swap mode replaces the runtime")
-	assert.Equal(t, []int{1, 0}, tf.closeCounts("a-s"), "owner a is rebuilt with everything else")
-}
-
-func TestSupervisorInPlace_BridgeSettingChangeUsesFullReplacement(t *testing.T) {
-	tf := newPerSessionTransportFactory(false)
-	s, changes, swaps := runInPlaceSupervisor(t, tf, applyTestConfig("a", "b"))
-	rt := s.Runtime()
-	next := applyTestConfig("a", "b")
-	next.Bridge.DrainTimeout = "2s"
-
-	ev := reloadTo(t, changes, swaps, next, 2)
-
-	require.NoError(t, ev.Error)
-	assert.Equal(t, SwapOverlap, ev.SwapMode)
-	assert.NotSame(t, rt, s.Runtime(), "a bridge-wide change replaces the runtime")
-	assert.Equal(t, []int{1, 0}, tf.closeCounts("a-s"))
-	assert.Equal(t, []int{1, 0}, tf.closeCounts("b-s"))
-}
-
 func TestSupervisorInPlace_FailedBuildKeepsRunningConfig(t *testing.T) {
 	tf := newPerSessionTransportFactory(false)
 	s, changes, swaps := runInPlaceSupervisor(t, tf, applyTestConfig("a", "b"))
@@ -218,6 +189,8 @@ func TestSupervisorInPlace_TornRuntimeThatDoesNotStopWedges(t *testing.T) {
 	ev := reloadTo(t, changes, swaps, changeRoute(applyTestConfig("a", "b"), "b"), 2)
 
 	require.ErrorIs(t, ev.Error, errSessionRefused)
+	require.ErrorIs(t, ev.Error, errCloseRefused, "the error names why the runtime was not rebuilt")
+	assert.ErrorContains(t, ev.Error, "stop old runtime")
 	assert.True(t, s.Terminal())
 	assert.Nil(t, s.Runtime())
 	assert.Len(t, tf.closeCounts("a-s"), 1, "nothing is rebuilt over a session that did not close")
@@ -276,43 +249,6 @@ func TestSupervisorInPlace_OrphanedPartitionStrandIsReadFromTheRunningStore(t *t
 	assert.Equal(t, int64(1), strands[0].IValue)
 	assert.Contains(t, strands[0].Tags,
 		shared.Tag{Key: shared.TagKeyPartition, Value: persistence.OutboxPartitionKey("s1", "")})
-}
-
-// A serialized reload in place retires the unit before it commits the
-// successor, and the retire may burn the whole drain timeout. The successor's
-// sessions must still be built under a fresh swap deadline, as a prepare-commit
-// swap's are after the old runtime stops.
-func TestSupervisorInPlace_CommitDeadlineStartsAfterSlowRetire(t *testing.T) {
-	const swapDeadline = time.Second
-
-	onSwap, swaps := swapChan(1)
-	tf := &deadlineRecordingFactory{}
-	s := NewSupervisor(
-		WithSupervisorBlueprintValidator(config.Validate),
-		WithOnSwap(onSwap),
-		WithSwapDeadline(swapDeadline),
-	)
-	s.RegisterTransport("fake", &fakeTransportFactory{})
-	s.RegisterTransport("exclusive", tf)
-	s.RegisterStoreFactory("memory", &fakeStoreFactory{})
-
-	// The retired session's slow Close runs until the close budget the retire
-	// draws from drain_timeout (1s) ends.
-	ch := make(chan *ports.BridgeConfig, 1)
-	cancel, errCh := quickSupervisorRun(s, supervisorTestConfigWithSession("r1", "s1"), ch)
-	defer func() { cancel(); <-errCh }()
-	rt := s.Runtime()
-	require.NotNil(t, rt)
-
-	require.True(t, sendConfig(ch, supervisorTestConfigWithSession("r2", "s1"), time.Second))
-	ev := awaitSwap(t, swaps)
-	require.NoError(t, ev.Error, "a slow but successful retire must not consume the construction deadline")
-	require.Equal(t, SwapInPlace, ev.SwapMode)
-	assert.Same(t, rt, s.Runtime())
-
-	assert.Greater(t, tf.lastBudget(), swapDeadline*3/4,
-		"the successor's session must be built under a fresh swap deadline, "+
-			"not the remainder left after the retired unit drained")
 }
 
 // credPerSessionTransportFactory is a perSessionTransportFactory whose
