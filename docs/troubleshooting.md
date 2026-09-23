@@ -47,8 +47,7 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
   config block (transport `options`, processor `timeout`, store driver
   config) — but only after confirming the latency is legitimate, not a
   symptom of a broken peer.
-* **Related metrics.** `RouteErrors{route_id="…"}`,
-  per-route latency histograms.
+* **Related metrics.** `RouteErrors{route_id="…"}`, per-route latency histograms.
 
 ### `CONNECTION_LOST`
 
@@ -59,8 +58,7 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
 * **Recovery.** Adapters reconnect automatically (autopaho, amqp091
   reconnect loop, ASB SDK). If reconnects loop, check broker logs for
   rejected credentials, duplicate `client_id`, or TLS issues.
-* **Related metrics.** Session reconnect counters,
-  `RouteErrors{route_id="…"}`.
+* **Related metrics.** Session reconnect counters, `RouteErrors{route_id="…"}`.
 
 ### `UNAVAILABLE`
 
@@ -71,8 +69,7 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
   region-wide throttling.
 * **Recovery.** Wait through the backoff window. Escalate to the
   dependency's status page if duration exceeds your SLO budget.
-* **Related metrics.** `RouteErrors{route_id="…"}`,
-  upstream/downstream success ratios.
+* **Related metrics.** `RouteErrors{route_id="…"}`, upstream/downstream success ratios.
 
 ### `THROTTLED`
 
@@ -84,8 +81,7 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
 * **Recovery.** Inspect the `RetryAfter` hint on the error; the runtime
   honours it. If chronic, request a quota increase, enable batching, or
   reduce per-route `MaxInFlight` to smooth the burst pattern.
-* **Related metrics.** `RouteErrors{route_id="…"}`,
-  outbox depth gauge (rises when egress is throttled).
+* **Related metrics.** `RouteErrors{route_id="…"}`, outbox depth gauge (rises when egress is throttled).
 
 ### `BROKER_BUSY`
 
@@ -132,8 +128,7 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
 * **Recovery.** Self-heals as the forwarder retries against the new
   owner. If chronic, inspect the `LeaseStore` (DynamoDB) for stuck or
   stale lease records and verify all instances see the same store.
-* **Related metrics.** Lease churn counters,
-  `RouteErrors{route_id="…"}`.
+* **Related metrics.** Lease churn counters, `RouteErrors{route_id="…"}`.
 
 ### `FORWARD_FAILED`
 
@@ -144,8 +139,7 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
 * **Recovery.** Verify peer connectivity (the endpoints stored on
   `LeaseInfo.Endpoints` must be routable). Check the cluster
   endpoint resolver configuration.
-* **Related metrics.** `RouteErrors{route_id="…"}`,
-  cluster forward latency.
+* **Related metrics.** `RouteErrors{route_id="…"}`, cluster forward latency.
 
 ### `PROCESSOR_TIMEOUT`
 
@@ -155,8 +149,7 @@ route hits its `MaxRetries` and the envelope lands in the DLQ.
 * **Recovery.** Profile the offending processor; raise its timeout only
   if the latency is legitimate and bounded. Otherwise refactor to push
   the slow work asynchronously or behind a circuit breaker.
-* **Related metrics.** Per-processor latency histograms,
-  `RouteErrors{route_id="…"}`.
+* **Related metrics.** Per-processor latency histograms, `RouteErrors{route_id="…"}`.
 
 ## Permanent codes (DLQ-bound)
 
@@ -310,6 +303,12 @@ it at runtime too.
   that grants a lower QoS is not this error: it is a [QoS downgrade](transports/mqtt-behavior.md#qos-downgrade).
 * **Recovery.** Lower the route's QoS to a level the broker grants, or
   upgrade the broker. Verify subscription grants in broker logs.
+
+### `SUBSCRIPTION_REMOVED`
+
+* **When you see it.** A DLQ entry written by a persistent/exclusive MQTT session, not by a route: the broker handed the session a delivery for a filter a configuration change removed (unacknowledged before a disconnect, or queued during it). The session dead-lettered it, then acknowledged it, and the cleanup went on. `session_id` names the session, `route_id` its single ingress route (empty when there is none), and the entry's address holds the removed filter. Written whenever a DLQ store exists, whatever the route's `FailureAction`; without a store the session keeps the delivery unacknowledged and fails closed.
+* **Likely cause.** A filter with live traffic was removed. MQTT 5 cannot hand a delivery back, so it is kept and acknowledged instead of blocking a Receive Maximum slot and being resent after every reconnect.
+* **Recovery.** Inspect, then redrive or purge by ID — see the [managed-filter migration runbook](runbooks/mqtt-managed-subscription-migration.md#dead-lettered-deliveries-inspect-then-redrive-or-purge). If the session's reconcile keeps failing with `UNAVAILABLE`, the DLQ write is failing: fix the store; the session retries by itself.
 
 ### `NOT_SUPPORTED`
 
@@ -493,6 +492,7 @@ The adapter and runtime diagnostic counters — what each one means when it clim
 | `TIMEOUT`, `CONNECTION_LOST`, `UNAVAILABLE`, `THROTTLED`, `BROKER_BUSY`, `TEMPORARY_AUTH_FAILURE`, `NO_ROUTE_OWNER`, `FORWARD_FAILED`, `PROCESSOR_TIMEOUT` | `transient` | Only after retries exhausted |
 | `NOT_AUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `INVALID_CONFIG`, `PROTOCOL_ERROR`, `QOS_NOT_SUPPORTED`, `NOT_SUPPORTED`, `VERSION_MISMATCH`, `ALREADY_EXISTS`, `STALE_FENCING_TOKEN`, `DUPLICATE_RECORD`, `PROCESSOR_PANIC`, `INTERNAL`, `INVALID_OUTBOX_RECORD`, `OUTBOX_NOT_CLAIMABLE`, `OUTBOX_NOT_IN_CLAIMED_STATE`, `OUTBOX_ALREADY_TERMINAL`, `NO_BINDING_MATCH`, `POISON_MESSAGE` | `permanent` | Yes (per route `FailureAction`) |
 | `INVALID_PAYLOAD`, `PAYLOAD_TOO_LARGE`, `INVALID_TOPIC`, `ADDRESS_TEMPLATE`, `SCHEMA_VIOLATION`, `MESSAGE_FILTERED` | `rejected` | Yes, never retried, when a DLQ store exists and `on_permanent_failure` is not `drop`; otherwise dropped with a `MessagesDropped` metric. `MESSAGE_FILTERED` follows `on_filtered` instead (default `drop`) |
+| `SUBSCRIPTION_REMOVED` | `permanent` | Yes, whenever a DLQ store exists (written by the MQTT session, not per route `FailureAction`); without one the session fails closed |
 | `MESSAGE_EXPIRED` | `expired` | Per route `ExpiredAction` |
 
 The authoritative source is [`domain/shared/errors.go`](../domain/shared/errors.go);

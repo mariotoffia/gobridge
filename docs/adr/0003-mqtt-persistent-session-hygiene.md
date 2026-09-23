@@ -169,5 +169,32 @@ QoS 1/2 delivery was redistributed. Brokers may pin it to the persistent
 ClientID. GoBridge now retains history through reconnect verification; a matching
 replay is held unacknowledged and causes terminal fail-closed migration. Operators
 must restore the exact old identity/configuration and handler, drain the replay,
-and retry. See the [MQTT transport reference](../transports/mqtt-durable-sessions.md#removing-filters-restore-drain-retry)
+and retry. See the [MQTT transport reference](../transports/mqtt-durable-sessions.md#removing-filters)
 and [migration runbook](../runbooks/mqtt-managed-subscription-migration.md).
+
+**Amended 2026-09-23: dead-letter the replay when a dead-letter store exists.**
+The fail-closed rule above now applies only to a runtime with no dead-letter
+store (`stores.dlq`). With one, a delivery the broker hands the session for a
+filter that a configuration change removed is written to the dead-letter store
+first and acknowledged after the write is durable. The record carries error code
+`SUBSCRIPTION_REMOVED` (class `permanent`), the session ID, the session's ingress
+route ID (empty when no single route rides on the session), and the removed filter
+as its address. The cleanup then continues: the filter is forgotten and the
+session converges. The session keeps doing this until one `unmatched_grace`
+window passes with no matching delivery. If a write fails, the delivery stays
+unacknowledged, the reconcile fails with a transient error, and the session
+manager retries it with backoff; the process keeps running. All dead-letter
+writes in one reconcile share one `reconcile_timeout`, counted from the first
+write.
+
+Why the rule changed: MQTT 5 gives a client no way to hand a delivery back — a
+PUBACK with an error reason code ends it like a successful one. Holding it
+unacknowledged loses nothing, but the broker resends it after every reconnect,
+it occupies one Receive Maximum slot (enough of them stop all traffic to the
+session), and the terminal migration error stopped the whole process, every
+other route with it, on every restart. Keeping a durable copy and then
+acknowledging is the only choice that neither loses the delivery nor blocks the
+session. Without a dead-letter store, acknowledging would lose it silently, so
+that case still fails closed. Operators inspect the records, then redrive or
+purge them, as the [migration runbook](../runbooks/mqtt-managed-subscription-migration.md)
+describes.

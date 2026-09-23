@@ -27,14 +27,21 @@ GoBridge reconnects before normal handler dispatch and keeps the exact history
 durable while it checks the replacement generation. This safely handles the
 no-buffer case, but MQTT does **not** portably guarantee that an unacknowledged
 shared QoS 1/2 delivery will be redistributed: a broker may pin it to the
-persistent client session and replay it to the same ClientID. GoBridge never
-ACKs or drops such a replay and never reports convergence/Full. It disconnects,
-enters the terminal migration-required path, retains the managed-filter history,
-and requires the restore/drain/retry procedure below. Exclusive mode keeps the
-lease until natural expiry on this fail-closed path so work cannot continue
-under a new owner while accepted work may still settle.
+persistent client session and replay it to the same ClientID. What GoBridge
+does with such a replay depends on whether the runtime has a dead-letter store
+(`stores.dlq`):
 
-### Removing filters: restore, drain, retry
+- **With a dead-letter store**, GoBridge writes the replay to it with error
+  code `SUBSCRIPTION_REMOVED`, acknowledges it only after the write is durable,
+  forgets the filter, and converges. See [Removing filters](#removing-filters).
+- **Without one**, GoBridge never ACKs or drops such a replay and never reports
+  convergence/Full. It disconnects, enters the terminal migration-required
+  path, retains the managed-filter history, and requires the restore/drain/retry
+  procedure below. Exclusive mode keeps the lease until natural expiry on this
+  fail-closed path so work cannot continue under a new owner while accepted
+  work may still settle.
+
+### Removing filters
 
 Before removing persistent/exclusive filters, stop publishers or otherwise drain
 traffic covered by the old wildcard/shared filters. A no-buffer cutover removes
@@ -43,10 +50,10 @@ then forgets verified history and reaches Full. Initial Exclusive activation
 uses one conservative whole-path hard bound rather than the short recurring
 reconnect reconcile cap. Paho computes it from every potentially sequential
 phase: initial and recycle connection waits, initial/final subscription broker
-operations, exact cleanup, bounded ingress quiescence, and both possible replay
-verification windows. Nested reconnect-attempt limits are not double-counted.
-With the 30s MQTT defaults this conservative bound is 4m, longer than the 45s HA
-lease TTL.
+operations, exact cleanup, bounded ingress quiescence, both possible replay
+verification windows, and the dead-letter write budget of each window. Nested
+reconnect-attempt limits are not double-counted. With the 30s MQTT defaults
+this conservative bound is 5m, longer than the 45s HA lease TTL.
 
 The existing lease-renewal loop therefore starts immediately after Acquire and
 remains the **only** renewer throughout bounded activation. Successful Renew
@@ -55,9 +62,43 @@ existing renewal-failure step-down cancels activation and disconnects/quiesces
 before returning. A parked
 activation or failed disconnect is terminal and never releases ownership under
 work that may still mutate. This removes backend-dependent timing acceptance and
-keeps safe defaults usable, but it does **not** claim the Task 9 failover SLO.
+keeps safe defaults usable, but it does **not** claim a failover SLO.
 A hard-bound expiry, shorter caller context, or store outage remains uncertainty
 and fails closed.
+
+#### Deliveries held for a removed filter
+
+MQTT 5 has no way to hand a delivery back to the broker: a PUBACK with an error
+reason code ends the delivery like a successful one. A delivery the broker
+still holds for a removed filter — sent before the disconnect and never
+acknowledged, or queued while the bridge was disconnected — is resent after
+every reconnect and occupies one Receive Maximum slot until it is acknowledged.
+When enough are held, the broker stops sending anything to the session.
+
+With a dead-letter store, the session settles each such delivery during the
+cleanup:
+
+1. It writes the delivery to the dead-letter store. The record has error code
+   `SUBSCRIPTION_REMOVED`, category `permanent`, reason `subscription removed`,
+   the session ID, the route ID of the session's single ingress route (empty
+   when no single route rides on the session), and the removed filter, exactly
+   as configured (for example `$share/group/sensors/#`), as its address.
+2. It acknowledges the delivery only after the write is durable.
+3. It repeats until one `unmatched_grace` window passes with no matching
+   delivery, then forgets the filter and reaches Full.
+
+If a write fails, the delivery stays unacknowledged and the filter stays in the
+managed history. The reconcile fails with a transient `UNAVAILABLE` error, the
+session manager retries it with backoff, and the process and every other route
+keep running. All dead-letter writes in one reconcile share one
+`reconcile_timeout`, counted from the first write; a write still running when it
+runs out fails the reconcile the same way. A retry can write the same delivery
+again if its acknowledgement failed after the write; nothing is lost.
+
+Afterwards, inspect the `SUBSCRIPTION_REMOVED` records, then redrive or purge
+them. See the [managed-filter migration runbook](../runbooks/mqtt-managed-subscription-migration.md#dead-lettered-deliveries-inspect-then-redrive-or-purge).
+
+#### Without a dead-letter store: restore, drain, retry
 
 If startup/reconcile reports that managed subscription migration requires the
 old configuration, readiness must remain below Full. Do **not** delete/empty the

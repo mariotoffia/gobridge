@@ -10,6 +10,44 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Changed — removing an MQTT subscription no longer stops the process when a dead-letter store exists
+
+- **Behaviour change** (#56). A persistent or exclusive MQTT session can still
+  be handed deliveries for a filter a configuration change removed: ones sent
+  before a disconnect and never acknowledged, or ones the broker queued while
+  the bridge was disconnected. Previously such a delivery made the session
+  terminal, which stopped the whole process, every other route with it; the
+  broker resent it to the next process, which stopped the same way, until an
+  operator restored the old configuration, drained it and retried. Now, when
+  the runtime has a dead-letter store (`stores.dlq`), the session writes the
+  delivery to it, acknowledges it only after the write is durable, forgets the
+  filter and converges.
+- The record carries the new permanent error code **`SUBSCRIPTION_REMOVED`**
+  (`shared.ErrSubscriptionRemoved`, reason `subscription removed`), the session
+  ID, the session's single ingress route ID (empty when there is none), and the
+  removed filter as its address. It is written whenever a dead-letter store
+  exists, independent of any route's `on_permanent_failure`.
+- A failed dead-letter write leaves the delivery unacknowledged and fails the
+  reconcile with a transient `UNAVAILABLE`; the session manager retries it with
+  backoff and the process keeps running. All dead-letter writes in one
+  reconcile share one `reconcile_timeout`, counted from the first write.
+- The post-acquire activation bound grows by those budgets, from
+  `2×connect_timeout + 4×reconcile_timeout + 2×unmatched_grace` to
+  `2×connect_timeout + 6×reconcile_timeout + 2×unmatched_grace`: 300 s instead
+  of 240 s with the shipped defaults.
+- **Without a dead-letter store nothing changes:** acknowledging would lose the
+  delivery silently, so the session still fails closed and the restore, drain,
+  retry procedure still applies.
+- Operators inspect the `SUBSCRIPTION_REMOVED` records, then redrive or purge
+  them by ID; see the
+  [managed-filter migration runbook](docs/runbooks/mqtt-managed-subscription-migration.md#dead-lettered-deliveries-inspect-then-redrive-or-purge)
+  and the amended [ADR 0003](docs/adr/0003-mqtt-persistent-session-hygiene.md#addendum-durable-exact-filter-migration).
+  #57 will redrive these records automatically when the subscription is added
+  back.
+- New optional session capability `ports.RemovedSubscriptionDeadLetterConfigurer`;
+  the runtime installs it on every managed session when a dead-letter store
+  exists.
+
 ### Added — a `direct_hold` route retries a failed send before giving up
 
 - **Behaviour change, on by default.** A `direct_hold` route now retries a
@@ -46,7 +84,7 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
     wedge ceiling + DLQ budget ≤ visibility timeout` — a 90 s window with a 30 s
     send timeout and a DLQ store now fails (105.5 s);
   - `send_retry_budget` + send wedge ceiling must fit inside an MQTT persistent
-    or exclusive source session's settlement-recovery wait (240 s with the
+    or exclusive source session's settlement-recovery wait (300 s with the
     shipped defaults).
 
   No configuration shipped with GoBridge hits either, and both rejection
