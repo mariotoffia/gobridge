@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sync"
+	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -43,6 +45,14 @@ func WithSharedStores() Option {
 // and may not reuse a route id or a session id rt already has. The grafted
 // components run with rt's settings (clock, metrics, logger, lease owner,
 // instance id), not with part's.
+//
+// part must be closed over its sessions: no route of part may ride on
+// (SourceSessionID) or bind to (a binding's SessionID) a session rt already
+// has, and no route of rt may ride on or bind to a session part brings. A
+// wiring pass wires a session together with the routes that come with it, so
+// such a route would get no drainer or settlement barrier for the other side's
+// session, and the two sides would no longer be separate reload units. Graft
+// refuses a part that breaks this where the route names the session by id.
 //
 // On success part is consumed: it holds nothing, a later Start fails, and a
 // later Stop is a no-op. On a refusal part is left exactly as it was, and the
@@ -113,8 +123,9 @@ func sameStores(a, b Stores) (same bool) {
 }
 
 // graftCollisionLocked refuses a part that reuses a route id or a session id of
-// rt: a route id names one route runner, and a session has exactly one manager.
-// The caller holds rt.mu and part.mu.
+// rt — a route id names one route runner, and a session has exactly one manager
+// — or that is not closed over its sessions (see Graft). The caller holds rt.mu
+// and part.mu.
 func (rt *Runtime) graftCollisionLocked(part *Runtime) error {
 	routes := make(map[string]bool, len(rt.entries))
 	for _, entry := range rt.entries {
@@ -126,12 +137,40 @@ func (rt *Runtime) graftCollisionLocked(part *Runtime) error {
 		}
 	}
 	sessions := rt.sessionIDsLocked()
-	for sid := range part.sessionIDsLocked() {
+	partSessions := part.sessionIDsLocked()
+	for sid := range partSessions {
 		if sessions[sid] {
 			return fmt.Errorf("runtime: graft: session %q is already registered", sid)
 		}
 	}
+	for _, entry := range part.entries {
+		if sid := usedSessionIn(entry, sessions); sid != "" {
+			return fmt.Errorf("runtime: graft: part route %q uses session %q of the runtime; "+
+				"a part must bring every session its routes use", entry.config.ID, sid)
+		}
+	}
+	for _, entry := range rt.entries {
+		if sid := usedSessionIn(entry, partSessions); sid != "" {
+			return fmt.Errorf("runtime: graft: route %q uses session %q the part brings; "+
+				"retire the route with the unit that brings its session", entry.config.ID, sid)
+		}
+	}
 	return nil
+}
+
+// usedSessionIn returns the session of ids that entry's route rides on or binds
+// to, or "" when it uses none of them.
+func usedSessionIn(entry *routeEntry, ids map[string]bool) string {
+	used := []string{entry.config.SourceSessionID}
+	for _, binding := range entry.config.Bindings {
+		used = append(used, binding.SessionID)
+	}
+	for _, sid := range used {
+		if sid != "" && ids[sid] {
+			return sid
+		}
+	}
+	return ""
 }
 
 // sessionIDsLocked returns every session id rt knows: managed, registered as a
@@ -178,7 +217,7 @@ func (rt *Runtime) AttachCredentialCloser(close func(context.Context)) {
 		return
 	}
 	rt.mu.Lock()
-	rt.credHooks = append(rt.credHooks, credentialHook{close: close})
+	rt.credHooks = append(rt.credHooks, &credentialHook{close: close})
 	rt.mu.Unlock()
 }
 
@@ -202,5 +241,34 @@ func (rt *Runtime) AttachCredentialForget(forget func(targets []any) (idle bool)
 		rt.credHooks[last].forget = forget
 		return
 	}
-	rt.credHooks = append(rt.credHooks, credentialHook{forget: forget})
+	rt.credHooks = append(rt.credHooks, &credentialHook{forget: forget})
+}
+
+// closeCredentialHooks runs the close of every hook concurrently and waits for
+// them at most timeout, or until ctx ends, so a stuck closer can neither hold
+// its caller past that budget nor keep another refresher open.
+func closeCredentialHooks(ctx context.Context, hooks []*credentialHook, timeout time.Duration) {
+	if len(hooks) == 0 {
+		return
+	}
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	// The closers have an explicit lifetime: when they overrun the bounded
+	// timer or the caller's ctx, the caller moves on (best-effort).
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var closers sync.WaitGroup
+		for _, hook := range hooks {
+			if hook.close != nil {
+				closers.Go(func() { hook.close(closeCtx) })
+			}
+		}
+		closers.Wait()
+	}()
+	select {
+	case <-done:
+	case <-closeCtx.Done():
+	case <-ctx.Done():
+	}
 }

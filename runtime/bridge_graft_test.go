@@ -173,15 +173,16 @@ func TestGraft_StartsPartRoutesOnRunningRuntime(t *testing.T) {
 func TestGraft_RefusesDuplicateRouteOrSessionID(t *testing.T) {
 	cases := []struct {
 		name  string
+		want  string
 		build func(t *testing.T, part *Runtime, sess ports.Session)
 	}{
-		{"route id", func(t *testing.T, part *Runtime, sess ports.Session) {
+		{"route id", `route "r1" is already registered`, func(t *testing.T, part *Runtime, sess ports.Session) {
 			require.NoError(t, part.AddRoute(componentRoute("r1"), newComponentReceiver(), &componentSender{}, sess, nil))
 		}},
-		{"session sender id", func(t *testing.T, part *Runtime, sess ports.Session) {
+		{"session sender id", `session "s1" is already registered`, func(t *testing.T, part *Runtime, sess ports.Session) {
 			require.NoError(t, part.RegisterSessionSender(session.Config{SessionID: "s1"}, sess, nopRouteSender{}))
 		}},
-		{"route session naming a session sender", func(t *testing.T, part *Runtime, sess ports.Session) {
+		{"route session naming a session sender", `session "s1" is already registered`, func(t *testing.T, part *Runtime, sess ports.Session) {
 			sessCfg := session.Config{SessionID: "s1"}
 			require.NoError(t, part.AddRoute(componentRoute("r2"), newComponentReceiver(), &componentSender{}, sess, &sessCfg))
 		}},
@@ -198,7 +199,7 @@ func TestGraft_RefusesDuplicateRouteOrSessionID(t *testing.T) {
 			tc.build(t, part, sess)
 			before := routeIDs(part)
 
-			require.Error(t, host.Graft(part))
+			require.ErrorContains(t, host.Graft(part), tc.want)
 
 			assert.Equal(t, before, routeIDs(part), "a refused part keeps its routes")
 			assert.Equal(t, []string{"r1"}, routeIDs(host))
@@ -231,7 +232,7 @@ func TestGraft_RefusesWhenHostNotRunning(t *testing.T) {
 			part := New(stores.options(WithSharedStores())...)
 			require.NoError(t, part.AddRoute(componentRoute("r2"), newComponentReceiver(), &componentSender{}, nil, nil))
 
-			require.Error(t, host.Graft(part))
+			require.ErrorContains(t, host.Graft(part), "runtime is not running")
 
 			assert.Equal(t, []string{"r2"}, routeIDs(part), "a refused part keeps its routes")
 			assert.Empty(t, routeIDs(host))
@@ -256,12 +257,54 @@ func TestGraft_RefusesPartOverDifferentStores(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			require.NoError(t, part.AddRoute(componentRoute("r2"), newComponentReceiver(), &componentSender{}, nil, nil))
 
-			require.Error(t, host.Graft(part))
+			require.ErrorContains(t, host.Graft(part), "must be built over this runtime's stores with WithSharedStores")
 
 			assert.Equal(t, []string{"r2"}, routeIDs(part), "a refused part keeps its routes")
 		})
 	}
 	assert.Empty(t, routeIDs(host))
+}
+
+// TestGraft_RefusesPartNotClosedOverItsSessions pins that a part must bring
+// every session its routes ride on or bind to, and may not bring one a route of
+// the runtime uses: the wiring pass gives no drainer or settlement barrier
+// across that line.
+func TestGraft_RefusesPartNotClosedOverItsSessions(t *testing.T) {
+	cases := []struct {
+		name, want string
+		hostRoute  RouteConfig
+		build      func(t *testing.T, part *Runtime)
+	}{
+		{"part route rides on a runtime session", `part route "r2" uses session "s1" of the runtime`, componentRoute("r1"),
+			func(t *testing.T, part *Runtime) {
+				require.NoError(t, part.AddRoute(ridingRoute("r2", "s1"), newComponentReceiver(), &componentSender{}, nil, nil))
+			}},
+		{"part route binds to a runtime session", `part route "r2" uses session "s1" of the runtime`, componentRoute("r1"),
+			func(t *testing.T, part *Runtime) {
+				cfg := componentRoute("r2")
+				cfg.Bindings = []routing.DestinationBinding{{ID: "b2", Address: "devices/r2", SessionID: "s1"}}
+				require.NoError(t, part.AddRoute(cfg, newComponentReceiver(), &componentSender{}, nil, nil))
+			}},
+		{"runtime route rides on a part session", `route "r1" uses session "p1" the part brings`, ridingRoute("r1", "p1"),
+			func(t *testing.T, part *Runtime) {
+				require.NoError(t, part.RegisterSessionSender(session.Config{SessionID: "p1"}, newGraftSession(), nopRouteSender{}))
+			}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stores := newGraftStores()
+			host := New(stores.options()...)
+			require.NoError(t, host.AddRoute(tc.hostRoute, newComponentReceiver(), &componentSender{}, nil, nil))
+			require.NoError(t, host.RegisterSessionSender(session.Config{SessionID: "s1"}, newGraftSession(), nopRouteSender{}))
+			startComponentRuntime(t, host)
+			part := New(stores.options(WithSharedStores())...)
+			tc.build(t, part)
+
+			require.ErrorContains(t, host.Graft(part), tc.want)
+
+			assert.Equal(t, []string{"r1"}, routeIDs(host))
+		})
+	}
 }
 
 // TestGraft_RefusesPartStartWouldRefuse pins that a graft runs the route checks
@@ -293,7 +336,7 @@ func TestGraft_ConsumesPart(t *testing.T) {
 	require.NoError(t, part.AddRoute(componentRoute("r2"), newComponentReceiver(), &componentSender{}, sess, &sessCfg))
 	require.NoError(t, host.Graft(part))
 
-	require.Error(t, part.Start(context.Background()))
+	require.ErrorContains(t, part.Start(context.Background()), "grafted onto another runtime")
 	stopRuntime(t, part)
 
 	assert.Zero(t, sess.closes.Load(), "the grafted session belongs to the runtime the part joined")

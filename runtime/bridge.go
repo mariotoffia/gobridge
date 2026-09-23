@@ -61,7 +61,7 @@ type Runtime struct {
 
 	// credHooks holds the credential refreshers attached to this runtime and to
 	// every part grafted onto it; Stop closes each of them.
-	credHooks []credentialHook
+	credHooks []*credentialHook
 	// sharedStores marks the stores as owned by another runtime, so Stop leaves
 	// them open (WithSharedStores).
 	sharedStores bool

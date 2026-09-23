@@ -21,9 +21,11 @@ import (
 )
 
 // componentReceiver hands the test the emit function its route runner passes
-// to Run; ready closes once the runner is receiving.
+// to Run, and the context it runs under; ready closes once the runner is
+// receiving.
 type componentReceiver struct {
 	ready chan struct{}
+	ctx   context.Context
 	emit  func(context.Context, ports.Delivery) error
 }
 
@@ -32,7 +34,7 @@ func newComponentReceiver() *componentReceiver {
 }
 
 func (r *componentReceiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
-	r.emit = emit
+	r.ctx, r.emit = ctx, emit
 	close(r.ready)
 	<-ctx.Done()
 	return ctx.Err()
