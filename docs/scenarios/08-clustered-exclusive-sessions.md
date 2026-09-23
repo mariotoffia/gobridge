@@ -169,10 +169,10 @@ routes:
       max_renew_fails: 3
       connect_after_lease: true
       # Optional declared objective: failure detection to ServiceLevelFull.
-      # Paho activation = 2*30s connect + 4*30s reconcile + 2*30s grace = 240s.
+      # Paho activation = 2*30s connect + 6*30s reconcile + 2*30s grace = 300s.
       # min poll=3.75s; calls=1+ceil(300s/3.75s)=81.
-      # Budget = 300s + 2*6.25s + 81*5s + 240s + 10s = 967.5s.
-      failover_slo: 980s
+      # Budget = 300s + 2*6.25s + 81*5s + 300s + 10s = 1027.5s.
+      failover_slo: 1040s
       startup_allowance: 10s
       # Declaring an objective forces the broker-path decision. This deployment
       # reaches one HA broker endpoint from every node, so it rides out a
@@ -385,7 +385,8 @@ fails closed on non-positive required terms, negative values, unknown transport
 timing, or overflow. The generic capability is one aggregate duration, so the
 builder never double-counts nested connect/reconcile phases. Paho reuses its
 complete post-acquire phase calculator: initial connect, managed cleanup/replay,
-recycle/reconnect, four reconcile-owned waits, and two grace windows.
+recycle/reconnect, four reconcile-owned waits, two grace windows, and one
+dead-letter budget per grace window.
 
 There are two independent jittered poll boundaries. If the owner crashes just
 after renewal and just after a standby poll, the first later Acquire can only
@@ -414,12 +415,12 @@ budget and must be represented by measured SLO error budget/alerts.
 `startup_allowance` defaults to zero and is bounded to 10 minutes. Empty
 `failover_slo` means that no objective is declared.
 
-The example in this scenario declares `980s`. Paho default post-takeover
-activation is `2×30s connect + 4×30s reconcile + 2×30s grace = 240s`; the
+The example in this scenario declares `1040s`. Paho default post-takeover
+activation is `2×30s connect + 6×30s reconcile + 2×30s grace = 300s`; the
 minimum jittered poll is `3.75s`, so call count is
 `1 + ceil(300/3.75) = 81`. The full budget is
-`300s + 2×6.25s + 81×5s + 240s + 10s = 967.5s`, so preflight accepts it.
-This is an admission check, not proof that the deployment meets 980 seconds.
+`300s + 2×6.25s + 81×5s + 300s + 10s = 1027.5s`, so preflight accepts it.
+This is an admission check, not proof that the deployment meets 1040 seconds.
 Warm and cold failure-detection-to-`ServiceLevelFull` samples must be measured in
 the target environment before publishing an SLO claim.
 

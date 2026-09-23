@@ -99,7 +99,7 @@ config knob:
   disconnect, reconnect, and replacement-generation reconcile. It reuses the
   post-acquire activation timing derived from `connect_timeout`,
   `reconcile_timeout` and `unmatched_grace`; there is no duplicate setting.
-  With the shipped defaults it is 240 seconds (2 × `connect_timeout` + 4 ×
+  With the shipped defaults it is 300 seconds (2 × `connect_timeout` + 6 ×
   `reconcile_timeout` + 2 × `unmatched_grace`, all 30 s). The session reports
   that same number to the route validator through
   `ports.SettlementRecoveryTimingConfig`, which only reports it; the route
@@ -109,14 +109,14 @@ config knob:
   the session. The send wedge ceiling is `send_timeout` plus
   `min(send_timeout, 5s)`, the longest a parked last send can hold the delivery
   before the route gives up on it. That check is **necessary, not sufficient**:
-  those 240 seconds also pay for the gate wait, the disconnect, the reconnect
+  those 300 seconds also pay for the gate wait, the disconnect, the reconnect
   and the reconcile, and a held delivery can occupy more of them than the terms
   it compares — its processor chain (up to `processor_timeout` each) and 10.5
   seconds for a dead-letter write. With the shipped defaults and no processors
-  the worst-case hold grew from about 45 s to about 105 s of the same 240 s. If a
+  the worst-case hold grew from about 45 s to about 105 s of the same 300 s. If a
   recycle keeps failing on a route the validator accepted, lower that route's
   `send_retry_budget`, or raise the session's `connect_timeout` /
-  `reconcile_timeout`, which is what the 240 s is made of;
+  `reconcile_timeout`, which is what the 300 s is made of;
 - the rebuild preserves `client_id` and session expiry, forcing `clean_start=false`;
 - CONNACK must report **Session Present**, or the broker cannot prove the
   unsettled packet survived. That evidence is stamped with the exact connection
