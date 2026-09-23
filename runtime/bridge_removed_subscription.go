@@ -43,6 +43,10 @@ func (rt *Runtime) installRemovedSubscriptionDeadLetter(dlqRouter *dlq.Router) {
 
 // sourceRouteOn names the one route whose receiver subscribes through session
 // sid. With none, or several, a record written for that session names no route.
+// Only SourceSessionID is trusted, not the route's session argument: the builder
+// passes an egress binding's session there, so an SQS-to-MQTT route would be
+// named and a redrive would publish the removed filter's messages to its
+// destination. An empty route only makes that redrive fail; the record stays.
 func (rt *Runtime) sourceRouteOn(sid string) string {
 	routeID := ""
 	for _, entry := range rt.entries {
