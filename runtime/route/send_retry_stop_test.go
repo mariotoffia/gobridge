@@ -166,13 +166,13 @@ func TestSendRetry_LateWakePastTheBudgetDoesNotSendAgain(t *testing.T) {
 }
 
 // TestSendRetry_AbsurdRetryAfterHintExhaustsTheBudget pins the budget check
-// against a delay the DESTINATION chose. A RetryAfter hint is authoritative and
-// used verbatim — never capped, never jittered — so a sender may hand back one
-// near the largest duration there is. Added to the time the delivery has
-// already spent, such a hint wraps the sum negative, which reads as "fits
-// inside the budget": a one-minute route would arm a centuries-long timer and
-// hold its source on it. The budget is declared spent instead, and the delivery
-// takes the decision it always took.
+// against a delay the DESTINATION chose. A RetryAfter hint is never capped and
+// never jittered — the loop only raises one shorter than its 100 ms floor — so
+// a sender may hand back one near the largest duration there is. Added to the
+// time the delivery has already spent, such a hint wraps the sum negative,
+// which reads as "fits inside the budget": a one-minute route would arm a
+// centuries-long timer and hold its source on it. The budget is declared spent
+// instead, and the delivery takes the decision it always took.
 //
 // Mutation check: compare elapsed + delay against the budget and this fails —
 // the delivery never returns, because it is parked on a timer that outlives the

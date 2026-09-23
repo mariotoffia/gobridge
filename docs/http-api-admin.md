@@ -172,8 +172,12 @@ against a destination that is still down the **first** entry can spend the whole
 exceeded before entry lookup`. Nothing is lost -- inject happens before delete,
 so an entry that was not redriven is still in the store with its evidence (see
 [ADR 0015](adr/0015-dlq-redrive-inject-then-delete.md)) -- but the batch
-reports one attempt and the rest as deadline errors. Redrive **after** the
-destination is healthy, or in small batches; retry the failed ids once it is.
+reports one attempt and the rest as deadline errors. The 30 seconds stops the
+retrying, not a send already in progress: that send is still waited for, so
+against a sender that ignores its context the request can take up to one send
+wedge ceiling (`send_timeout` + `min(send_timeout, 5s)`, 35s at the default
+`send_timeout`) longer. Redrive **after** the destination is healthy, or in
+small batches; retry the failed ids once it is.
 
 An inject is "confirmed" only when the route actually delivered the message. A
 replay the route **dropped** (`on_permanent_failure: drop`), filtered, expired,

@@ -56,9 +56,11 @@ outage would have cured.
 **The loop.** Each pass is one physical send under its own `send_timeout`, and
 keeps the per-send wedge ceiling it always had. Between two sends the route
 waits on the same backoff ladder it uses everywhere else: a `RetryAfter` hint
-from the destination (SQS throttling, for example) is authoritative and is used
-as written, and otherwise the route's `backoff` applies — 1 s doubling to 30 s
-with jitter, by default. The first wait is therefore about one second.
+from the destination (SQS throttling, for example) replaces the backoff step
+and is not jittered, and otherwise the route's `backoff` applies — 1 s doubling
+to 30 s with jitter, by default. Either way the wait is never shorter than the
+100 ms floor described next. With the default backoff and no hint, the first
+wait is therefore about one second.
 
 **No wait is shorter than 100 ms.** A shorter backoff interval or `RetryAfter`
 hint is raised to that floor before the budget is asked whether it can cover
@@ -143,10 +145,11 @@ enabled:
 | `SendRetryBudgetExhausted` | One per held send whose retries used up the budget. |
 
 `RouteErrors` now counts a failed send once the in-process retry has given up,
-not on the first failed send. Under the default budget a stalled destination
-therefore shows up in `RouteErrors` up to a minute later — or never, when the
-destination recovers inside the budget. `SendRetries` is the early signal to
-alert on instead.
+not on the first failed send. A stalled destination therefore shows up in
+`RouteErrors` up to the budget plus the last send's hold after the first send
+started — that hold is at most one send wedge ceiling (defined below), so 95
+seconds with the defaults — or never, when the destination recovers inside the
+budget. `SendRetries` is the early signal to alert on instead.
 
 **A waiting delivery keeps its slot.** It holds its route's `max_in_flight`
 slot — and the runtime-wide in-flight slot, where a runtime-wide limit is
@@ -224,8 +227,11 @@ smaller `send_retry_budget`, or larger session `connect_timeout` /
   now get a full minute of retries first.
 - A dead-letter redrive through the admin API inherits this. The redrive runs
   under a 30-second bound, so a redrive whose destination stays down spends
-  that time retrying in process; when the bound passes the inject returns an
-  error and the entry is **not** deleted (0015), so nothing is lost.
+  that time retrying in process; when the bound passes the retry loop stops,
+  the inject returns an error and the entry is **not** deleted (0015), so
+  nothing is lost. The bound stops the retrying, not a send already in
+  progress: against a sender that ignores its context the request can run up
+  to one send wedge ceiling past the 30 seconds.
 - That bound covers a whole redrive **batch**, whose entries are redriven one
   after another, so against a destination that is down the first entry can now
   spend the entire 30 seconds retrying and every remaining id comes back
@@ -233,9 +239,17 @@ smaller `send_retry_budget`, or larger session `connect_timeout` /
   happens before delete, so an entry that was not redriven is still there — but
   an operator redriving a hundred ids during an outage gets one attempt and
   ninety-nine deadline errors. Redrive after the destination is healthy, or in
-  small batches. The same holds for a synchronous `Inject` /
-  `InjectToBinding` into a `direct_hold` route: the call now returns only when
-  the retry loop is done with it.
+  small batches.
+- A synchronous `Inject` / `InjectToBinding` into a `direct_hold` route now
+  returns only when the retry loop is done with it. Once the call has an
+  in-flight slot it can block for up to
+  `processors × processor_timeout + send_retry_budget + send wedge ceiling`,
+  plus the 10.5-second dead-letter write when the message is dead-lettered
+  (and a second one when the dead-letter store itself fails) — 105.5 seconds
+  with the defaults and no processors. The caller's context is the real cap: when it ends, the loop
+  stops and the delivery is abandoned without a dead-letter record, though a
+  send already in progress is still waited for, up to its wedge ceiling. The
+  [programmatic API guide](../programmatic-api.md) spells the bound out.
 - **Duplicates can be amplified.** A send the destination accepted but whose
   response was lost is indistinguishable from a failure, and the retry
   publishes it again. That window existed before; what changes is its size —

@@ -13,8 +13,8 @@ const (
 	// fit inside send_retry_budget. That usually means the retries used the
 	// budget up, but it also fires when the budget never covered even the FIRST
 	// wait — a destination's RetryAfter hint longer than the budget, or a budget
-	// below the route's backoff initial_interval — because the send did not fit
-	// the budget either way. Each one is then replayed or dead-lettered exactly
-	// as it would be without in-process retry.
+	// shorter than the first backoff wait, which is never under 100 ms — because
+	// the send did not fit the budget either way. Each one is then replayed or
+	// dead-lettered exactly as it would be without in-process retry.
 	MetricSendRetryBudgetExhausted = "SendRetryBudgetExhausted"
 )

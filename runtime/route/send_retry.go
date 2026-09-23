@@ -64,15 +64,16 @@ func (r *RouteRunner) sendHeld(ctx context.Context, sender ports.Sender, msg por
 
 // minSendRetryWait is the shortest wait between two in-process sends of one
 // held delivery. Validation accepts a backoff that starts at 1 ms and never
-// grows, and a destination's RetryAfter hint is used verbatim, so without it a
-// 60 s budget could make tens of thousands of sends for one delivery — and a
-// jittered nanosecond interval rounds the wait to zero, which is a CPU-bound
-// loop against the destination. The floor caps a delivery at budget/100ms
-// sends (about 600 at the 60 s default), which also bounds the loop RetryDelay
-// runs to compute each backoff. It never binds under the default backoff,
-// whose first wait is 1 s. It raises the cadence only: the stop conditions are
-// unchanged, and a budget too short to cover even the floored first wait is
-// spent before that wait, like any other.
+// grows, and RetryDelay returns a destination's RetryAfter hint as-is, however
+// short, so without the floor a 60 s budget could make tens of thousands of
+// sends for one delivery — and a jittered nanosecond interval rounds the wait
+// to zero, which is a CPU-bound loop against the destination. sendHeld raises
+// every shorter wait to this floor, a hint included, which caps a delivery at
+// budget/100ms sends (about 600 at the 60 s default) and also bounds the loop
+// RetryDelay runs to compute each backoff. It never binds under the default
+// backoff, whose first wait is 1 s. It raises the cadence only: the stop
+// conditions are unchanged, and a budget too short to cover even the floored
+// first wait is spent before that wait, like any other.
 const minSendRetryWait = 100 * time.Millisecond
 
 // sendRetryBudgetSpent reports whether the route's in-process send-retry budget
@@ -87,10 +88,11 @@ const minSendRetryWait = 100 * time.Millisecond
 // own first interval retries once by one measure and never by the other.
 //
 // The comparison is made against what is LEFT of the budget rather than by
-// adding elapsed to need: a destination's RetryAfter hint is authoritative and
-// used verbatim, so it can be near the largest duration there is, and adding
-// even a second of elapsed time to that wraps the sum negative — which reads as
-// "fits", arming a centuries-long timer on a one-minute route. The subtraction
+// adding elapsed to need: a destination's RetryAfter hint is never capped —
+// minSendRetryWait only raises a short one — so it can be near the largest
+// duration there is, and adding even a second of elapsed time to that wraps
+// the sum negative — which reads as "fits", arming a centuries-long timer on a
+// one-minute route. The subtraction
 // cannot overflow: the budget is positive here (retryableInProcess required it)
 // and elapsed time is never negative.
 func (r *RouteRunner) sendRetryBudgetSpent(start time.Time, need time.Duration) bool {

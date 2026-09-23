@@ -150,17 +150,33 @@ not the YAML shape, but they change *when* and *how* config errors surface:
   returned more than one plan; of those, the **send** failures on a
   `direct_hold` route are counted only once the in-process send retry gives up,
   so that one signal lags a stalling destination by up to `send_retry_budget`
-  (60s by default) and `SendRetries` (`route_id`) is the earlier one.
+  plus the last send's hold, which is at most one send wedge ceiling
+  (`send_timeout` + `min(send_timeout, 5s)`): 95s with the defaults. `SendRetries`
+  (`route_id`) is the earlier signal.
   `route_dead` (a route flapping at the supervisor backoff cap) is the separate
   *pipeline* fault state.
 - **`Inject` / `InjectToBinding` block until the message settles.** Both are
   synchronous: they return when the route delivered the message or settled it
   terminally. On a `direct_hold` route a recoverable send failure is now retried
-  inside the bridge first, so the call can block for that route's
-  `send_retry_budget` (60s by default) plus one `send_timeout` before it returns
-  an error. Give the call a context whose deadline you are willing to wait for,
-  and remember the admin DLQ redrive inherits this: its 30-second budget covers
-  a whole batch of sequential injects.
+  inside the bridge first, so once the call has a free in-flight slot on the
+  route it can block for up to
+  `processors × processor_timeout + send_retry_budget + send wedge ceiling + 10.5s`.
+  The last send starts inside `send_retry_budget`, and a sender that ignores its
+  context holds it until the send wedge ceiling, `send_timeout` +
+  `min(send_timeout, 5s)`. The 10.5 seconds is the dead-letter write (two
+  5-second write attempts with a 500 ms pause between them), paid only when the
+  route writes the message to the dead-letter store; if that store is itself
+  failing, a second write can add up to 10.5 seconds more. With the defaults and no
+  processors the bound is 60s + 35s + 10.5s = 105.5s. Waiting for the in-flight
+  slot comes first, and only your context limits it.
+
+  **Your context is the real cap.** When it ends, the retry loop stops and the
+  call returns an error that wraps your context's error, without dead-lettering
+  the message: the delivery is abandoned. A send already in progress is still
+  waited for, up to the send wedge ceiling when the sender ignores its context.
+  Give the call a context whose deadline you are willing to wait for, and
+  remember the admin DLQ redrive inherits this: its 30-second budget covers a
+  whole batch of sequential injects.
 - **Route fault blast radius.** A route whose receiver fails is restarted in
   isolation — backed off, counted on `RouteRestarts`, marked not-ready, and
   latched `route_dead` after repeated quick flaps — only when the source can be
