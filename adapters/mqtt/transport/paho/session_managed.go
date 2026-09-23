@@ -111,14 +111,8 @@ func (s *Session) settleManagedReplay(ctx context.Context, filters []string, bud
 		if !pinned {
 			return nil
 		}
-		handled, err := s.router.deadLetterPending(budget.context(), filters, deadLetter)
-		if err != nil {
+		if err := s.router.deadLetterPending(budget.context(), filters, deadLetter); err != nil {
 			return shared.ErrUnavailable.WithMessage("mqtt: dead-letter a delivery held for a removed subscription").Wrap(err)
-		}
-		if handled == 0 {
-			// Only an entry of an older connection generation matched. Its
-			// acknowledgement is dead, so it cannot be settled here.
-			return s.failClosedForManagedMigration(ctx)
 		}
 	}
 }

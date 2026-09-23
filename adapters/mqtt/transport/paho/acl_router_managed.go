@@ -176,9 +176,9 @@ func (r *router) deadLetterPending(
 	ctx context.Context,
 	filters []string,
 	write func(context.Context, *messaging.Envelope, string) error,
-) (handled int, err error) {
+) error {
 	if r == nil || len(filters) == 0 {
-		return 0, nil
+		return nil
 	}
 	type held struct {
 		pub    *pahov5.Publish
@@ -202,11 +202,11 @@ func (r *router) deadLetterPending(
 
 	for _, entry := range matched {
 		if err := write(ctx, EnvelopeFromPublish(entry.pub, r.clk, r.metrics), entry.filter); err != nil {
-			return handled, err
+			return err
 		}
 		if entry.ack != nil {
 			if err := entry.ack(); err != nil {
-				return handled, err
+				return err
 			}
 		}
 		r.mu.Lock()
@@ -219,16 +219,17 @@ func (r *router) deadLetterPending(
 			}
 		}
 		r.mu.Unlock()
-		handled++
 	}
-	return handled, nil
+	return nil
 }
 
 // awaitManagedReplay waits through the current connection startup-grace window
 // for a broker-pinned replay matching filters. The managed gate remains active,
-// so any match stays buffered and unacknowledged. A delivery a still-desired
-// filter also covers is not a replay of the removed filters and is ignored. Routers without a live grace
-// generation (unit fakes/direct dispatch) return their immediate snapshot.
+// so any match stays buffered and unacknowledged. Only deliveries of the
+// current connection generation count, the same ones deadLetterPending can
+// settle. A delivery a still-desired filter also covers is not a replay of the
+// removed filters and is ignored. Routers without a live grace generation (unit
+// fakes/direct dispatch) return their immediate snapshot.
 func (r *router) awaitManagedReplay(ctx context.Context, filters []string) (bool, error) {
 	if r == nil || len(filters) == 0 {
 		return false, nil
@@ -242,7 +243,8 @@ func (r *router) awaitManagedReplay(ctx context.Context, filters []string) (bool
 	for {
 		r.mu.RLock()
 		for _, pending := range r.pending {
-			if matchesAnyFilter(filters, pending.pub.Topic) && !r.wantedByDesiredLocked(pending.pub.Topic) {
+			if pending.epoch == r.connEpoch && matchesAnyFilter(filters, pending.pub.Topic) &&
+				!r.wantedByDesiredLocked(pending.pub.Topic) {
 				r.mu.RUnlock()
 				return true, nil
 			}

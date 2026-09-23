@@ -368,6 +368,19 @@ func TestManagedSubscriptionOverlappingReplacementWithoutDeadLetterPathDoesNotFa
 	}
 }
 
+func TestRouterAwaitManagedReplayIgnoresOlderConnectionGenerations(t *testing.T) {
+	r := newRouter(nil, nil)
+	r.mu.Lock()
+	r.pending = append(r.pending, pendingPublish{pub: &pahov5.Publish{Topic: "stale/old", QoS: 1}, epoch: r.connEpoch})
+	r.connEpoch++
+	r.mu.Unlock()
+
+	pinned, err := r.awaitManagedReplay(t.Context(), []string{"stale/#"})
+	if err != nil || pinned {
+		t.Fatalf("awaitManagedReplay = (%v, %v), want (false, nil): an older generation's entry is no replay", pinned, err)
+	}
+}
+
 func TestRouterDeadLetterPendingStopsAtFirstFailure(t *testing.T) {
 	r := newRouter(nil, nil)
 	r.mu.Lock()
@@ -393,9 +406,8 @@ func TestRouterDeadLetterPendingStopsAtFirstFailure(t *testing.T) {
 		}
 		return fake.write(ctx, env, filter)
 	}
-	handled, err := r.deadLetterPending(t.Context(), []string{"stale/#"}, write)
-	if err == nil || handled != 1 {
-		t.Fatalf("deadLetterPending = (%d, %v), want (1, error)", handled, err)
+	if err := r.deadLetterPending(t.Context(), []string{"stale/#"}, write); err == nil {
+		t.Fatal("deadLetterPending succeeded, want the second write's failure")
 	}
 	if log, _ := fake.snapshot(); !equalManagedStrings(log, []string{"write stale/one", "ack stale/one"}) {
 		t.Fatalf("dead-letter/ACK log = %v, want only stale/one handled", log)
