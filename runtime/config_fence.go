@@ -11,7 +11,7 @@ func (rt *Runtime) Fence() {
 	rt.fenced = true
 	rt.healthy = false
 	for _, d := range rt.drainers {
-		d.Fence()
+		d.drainer.Fence()
 	}
 	if rt.cancel != nil {
 		rt.cancel()

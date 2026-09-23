@@ -15,7 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/cluster"
-	"github.com/mariotoffia/gobridge/runtime/outbox"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 	"github.com/mariotoffia/gobridge/runtime/route"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
@@ -68,12 +68,24 @@ type Runtime struct {
 	// subscribe through them and for nothing else (RegisterIngressSession).
 	ingressSessions map[string]*ingressSessionEntry
 	sessionMgrs     map[string]*session.Manager
-	drainers        []*outbox.Drainer
+	drainers        []*drainerRun
 	globalSem       chan struct{}
 	running         bool
 	fenced          bool
 	healthy         bool
 	terminal        bool
+	// sessionRuns holds the run of every started session manager, by session
+	// id; a manager without one has not been started yet.
+	sessionRuns map[string]componentRun
+	// exclusiveSessions marks the session ids that carry a lease. The DLQ
+	// router fences a write only for those (see dlqToken).
+	exclusiveSessions map[string]bool
+	// dlqRouter is the one DLQ router every route runner, drainer and session
+	// writes through. Start builds it.
+	dlqRouter *dlq.Router
+	// workCtx is the work context Start derives. Every component runs under a
+	// child of it, so it can be stopped alone, and rt.cancel still ends them all.
+	workCtx context.Context
 	// stopped records a clean, DELIBERATE Stop (an admin pause or a
 	// supervisor swap of the old runtime). Unlike terminal it is NOT an
 	// unrecoverable death: /live stays 200 and the liveness backstop must not
@@ -116,6 +128,8 @@ type routeEntry struct {
 	sender   ports.Sender
 	session  ports.Session
 	sessCfg  *session.Config
+	// run is the route runner's own run, set when it is started.
+	run componentRun
 }
 
 // sessionSenderEntry pairs a session with its sender and configuration,

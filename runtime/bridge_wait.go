@@ -78,6 +78,25 @@ type QuiescenceOptions struct {
 // on the InFlight → 0 transition. The quiet-window timer (clk.After)
 // provides both the MinQuiet deadline and a sanity fallback.
 func (rt *Runtime) WaitQuiescent(ctx context.Context, opts QuiescenceOptions) error {
+	return rt.waitEntriesQuiescent(ctx, func() []*routeEntry {
+		if len(opts.Routes) == 0 {
+			return rt.entries
+		}
+		watched := make([]*routeEntry, 0, len(opts.Routes))
+		for _, e := range rt.entries {
+			if routeWatched(opts.Routes, e.config.ID) {
+				watched = append(watched, e)
+			}
+		}
+		return watched
+	}, opts)
+}
+
+// waitEntriesQuiescent is WaitQuiescent over the route entries snapshot returns,
+// called under rt.mu on every check; opts.Routes is not consulted. A
+// settlement barrier passes the entries it captured, so it keeps waiting on its
+// own route runners even once other entries carry the same route ids.
+func (rt *Runtime) waitEntriesQuiescent(ctx context.Context, snapshot func() []*routeEntry, opts QuiescenceOptions) error {
 	if opts.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
@@ -94,13 +113,11 @@ func (rt *Runtime) WaitQuiescent(ctx context.Context, opts QuiescenceOptions) er
 		// Channels must be captured before reading InFlight to avoid
 		// a lost-wakeup race (see OutboxDrainer.WaitIdle).
 		rt.mu.Lock()
-		idleChs := make([]<-chan struct{}, 0, len(rt.entries))
+		entries := snapshot()
+		idleChs := make([]<-chan struct{}, 0, len(entries))
 		allZero := true
-		for _, e := range rt.entries {
+		for _, e := range entries {
 			if e.runner == nil {
-				continue
-			}
-			if !routeWatched(opts.Routes, e.config.ID) {
 				continue
 			}
 			idleChs = append(idleChs, e.runner.IdleChanged())

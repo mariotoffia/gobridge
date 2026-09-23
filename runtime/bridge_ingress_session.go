@@ -78,36 +78,34 @@ func (rt *Runtime) routePrimarySessionLocked(sessionID string) (string, bool) {
 	return "", false
 }
 
-// attachIngressSessions gives every ingress session its manager and enrols it
-// in the settlement barrier for the routes whose receivers ride on it. It runs
-// under rt.mu during Start, after the route-primary and session-sender
-// managers exist, so a lease-bearing manager would always win — although
-// registration already refuses that overlap.
+// attachIngressSessions gives every ingress session in ingress its manager and
+// enrols it in the settlement barrier for the routes of entries whose receivers
+// ride on it. It runs under rt.mu while a wiring pass starts its components,
+// after the route-primary and session-sender managers exist, so a lease-bearing
+// manager would always win — although registration already refuses that
+// overlap.
 func (rt *Runtime) attachIngressSessions(
 	m ports.MetricsExporter,
+	ingress map[string]*ingressSessionEntry,
+	entries []*routeEntry,
 	settlementSessions map[string]ports.Session,
-	settlementRoutes map[string][]string,
+	settlementRoutes map[string][]*routeEntry,
 ) {
-	for sid, entry := range rt.ingressSessions {
-		if _, exists := rt.sessionMgrs[sid]; !exists {
-			mgr := session.NewWithMetrics(entry.config, entry.session, rt.leaseStore, rt.leaseOwnerID, rt.logger, m, rt.clk)
-			mgr.SetAudit(rt.audit)
-			mgr.SetEndpoints(rt.clusterEndpoints)
-			rt.sessionMgrs[sid] = mgr
-		}
+	for sid, entry := range ingress {
+		rt.ensureSessionManagerLocked(m, sid, entry.config, entry.session)
 		// A route rides on this session when its receiver subscribes through it
 		// (the builder says which), or — for a hand-wired runtime — when the
 		// session it was added with is this one and it names no primary of its
 		// own. A route whose primary session is a DIFFERENT, lease-held session
 		// still rides its receiver on this one and still needs the barrier.
-		for _, route := range rt.entries {
+		for _, route := range entries {
 			ridesOn := route.config.SourceSessionID == sid ||
 				(route.sessCfg == nil && route.session == entry.session)
 			if !ridesOn {
 				continue
 			}
 			settlementSessions[sid] = entry.session
-			settlementRoutes[sid] = append(settlementRoutes[sid], route.config.ID)
+			settlementRoutes[sid] = append(settlementRoutes[sid], route)
 		}
 	}
 }
