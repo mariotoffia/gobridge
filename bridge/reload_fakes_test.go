@@ -26,10 +26,15 @@ var (
 // "new:<id>#<n>" and "close:<id>#<n>", n counting the sessions built for id.
 // It advertises plan-driven subscriptions, so the builder gives every session
 // a receiver rides on a manager, which closes it when its unit retires or its
-// part stops.
+// part stops. Like a transport dialling a broker, it refuses to build a session
+// under a context that has ended.
 type perSessionTransportFactory struct {
 	fakeTransportFactory
 	caps []ports.Capability
+	// onClose, when set, runs at the start of every session's Close with that
+	// session's "<id>#<n>" name. It is read without the lock, so set it before
+	// the closes it must see can run.
+	onClose func(name string)
 
 	mu        sync.Mutex
 	events    []string
@@ -53,7 +58,10 @@ func newPerSessionTransportFactory(exclusive bool) *perSessionTransportFactory {
 
 func (f *perSessionTransportFactory) Capabilities() []ports.Capability { return f.caps }
 
-func (f *perSessionTransportFactory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.Session, error) {
+func (f *perSessionTransportFactory) NewSession(ctx context.Context, spec ports.SessionSpec) (ports.Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if left := f.failures[spec.ID]; left != 0 {
@@ -113,6 +121,9 @@ type recordedSession struct {
 }
 
 func (s *recordedSession) Close(context.Context) error {
+	if s.factory.onClose != nil {
+		s.factory.onClose(s.name)
+	}
 	s.factory.mu.Lock()
 	defer s.factory.mu.Unlock()
 	s.closes++

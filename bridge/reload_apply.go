@@ -53,10 +53,18 @@ func (o InPlaceOutcome) String() string {
 // newBuilder returns a Builder for a configuration, set up the way the caller
 // builds a full runtime (factories, processors, credential stores, validator).
 // Apply uses it to preflight the whole next document and to build one part per
-// added unit. ctx bounds the builds and is the caller's to bound. Each retire,
-// and each stop of a part never grafted, runs under the drain timeout detached
-// from ctx, so a cancelled reload still leaves every unit settled. The caller
-// serializes reloads and stops of rt.
+// added unit.
+//
+// phase bounds one build phase: preparing the parts (with the preflight),
+// committing them, or rebuilding the retired units after a failure. Apply calls
+// it with ctx once per phase and cancels what it returns when the phase ends.
+// Each phase gets a budget of its own because a serialized reload retires units
+// between preparing and committing, and a retire may take the whole drain
+// timeout; a budget spanning both would hand the commit a spent context. A nil
+// phase runs every phase under ctx. Each retire, and each stop of a part never
+// grafted, runs under the drain timeout detached from ctx, so a cancelled
+// reload still leaves every unit settled. The caller serializes reloads and
+// stops of rt.
 //
 // The whole next document is validated and every added unit prepared before
 // anything is retired, so a configuration a full build would refuse changes
@@ -65,26 +73,23 @@ func (o InPlaceOutcome) String() string {
 // otherwise the parts are built while the retired units still serve, and a
 // failed build changes nothing. A failure once a unit has retired restores the
 // retired units from the running configuration.
-func (r *InPlaceReload) Apply(ctx context.Context, rt *runtime.Runtime, newBuilder func(*ports.BridgeConfig) *Builder) (InPlaceOutcome, error) {
+func (r *InPlaceReload) Apply(ctx context.Context, rt *runtime.Runtime, newBuilder func(*ports.BridgeConfig) *Builder,
+	phase func(context.Context) (context.Context, context.CancelFunc),
+) (InPlaceOutcome, error) {
 	if rt == nil || !rt.IsRunning() {
 		return InPlaceUnchanged, errors.New("in-place reload: the runtime is not running")
 	}
-	if err := newBuilder(r.next).Preflight(ctx); err != nil {
-		return InPlaceUnchanged, fmt.Errorf("in-place reload: preflight: %w", err)
+	if phase == nil {
+		phase = func(ctx context.Context) (context.Context, context.CancelFunc) { return ctx, func() {} }
 	}
-	plans := make([]*BuildPlan, len(r.add))
-	for i, u := range r.add {
-		plan, err := newBuilder(u.sub).planPart(ctx, rt)
-		if err != nil {
-			return InPlaceUnchanged, fmt.Errorf("in-place reload: prepare unit (%v): %w", u, err)
-		}
-		plans[i] = plan
+	plans, err := r.prepareParts(ctx, rt, newBuilder, phase)
+	if err != nil {
+		return InPlaceUnchanged, err
 	}
 
 	var parts []*runtime.Runtime
-	var err error
 	if !r.serialized {
-		if parts, err = r.buildParts(ctx, plans); err != nil {
+		if parts, err = r.buildParts(ctx, plans, phase); err != nil {
 			return InPlaceUnchanged, err
 		}
 	}
@@ -100,25 +105,51 @@ func (r *InPlaceReload) Apply(ctx context.Context, rt *runtime.Runtime, newBuild
 		}
 	}
 	if r.serialized {
-		if parts, err = r.buildParts(ctx, plans); err != nil {
-			return r.restore(ctx, rt, newBuilder, nil, nil, err)
+		if parts, err = r.buildParts(ctx, plans, phase); err != nil {
+			return r.restore(ctx, rt, newBuilder, phase, nil, nil, err)
 		}
 	}
 	for i, part := range parts {
 		if err := rt.Graft(part); err != nil {
 			err = fmt.Errorf("in-place reload: graft unit (%v): %w", r.add[i], err)
-			return r.restore(ctx, rt, newBuilder, r.add[:i], parts[i:], err)
+			return r.restore(ctx, rt, newBuilder, phase, r.add[:i], parts[i:], err)
 		}
 	}
 	return InPlaceApplied, nil
 }
 
-// buildParts commits the plan of every added unit, in order. On a failure it
-// stops the parts already built, so a failed build leaves nothing open.
-func (r *InPlaceReload) buildParts(ctx context.Context, plans []*BuildPlan) ([]*runtime.Runtime, error) {
+// prepareParts preflights the whole next document and plans the part of every
+// added unit, in order, in one phase. It opens nothing.
+func (r *InPlaceReload) prepareParts(ctx context.Context, rt *runtime.Runtime, newBuilder func(*ports.BridgeConfig) *Builder,
+	phase func(context.Context) (context.Context, context.CancelFunc),
+) ([]*BuildPlan, error) {
+	ctx, cancel := phase(ctx)
+	defer cancel()
+	if err := newBuilder(r.next).Preflight(ctx); err != nil {
+		return nil, fmt.Errorf("in-place reload: preflight: %w", err)
+	}
+	plans := make([]*BuildPlan, len(r.add))
+	for i, u := range r.add {
+		plan, err := newBuilder(u.sub).planPart(ctx, rt)
+		if err != nil {
+			return nil, fmt.Errorf("in-place reload: prepare unit (%v): %w", u, err)
+		}
+		plans[i] = plan
+	}
+	return plans, nil
+}
+
+// buildParts commits the plan of every added unit, in order, in one phase. On
+// a failure it stops the parts already built, so a failed build leaves nothing
+// open.
+func (r *InPlaceReload) buildParts(ctx context.Context, plans []*BuildPlan,
+	phase func(context.Context) (context.Context, context.CancelFunc),
+) ([]*runtime.Runtime, error) {
+	buildCtx, cancel := phase(ctx)
+	defer cancel()
 	parts := make([]*runtime.Runtime, 0, len(plans))
 	for i, plan := range plans {
-		part, err := plan.Commit(ctx)
+		part, err := plan.Commit(buildCtx)
 		if err != nil {
 			err = fmt.Errorf("in-place reload: build unit (%v): %w", r.add[i], err)
 			return nil, errors.Join(err, r.stopParts(ctx, parts))
@@ -131,13 +162,14 @@ func (r *InPlaceReload) buildParts(ctx context.Context, plans []*BuildPlan) ([]*
 // restore brings back the running configuration after a failure past retiring
 // its units: it stops the parts that will not be grafted, retires the added
 // units grafted so far, then builds each retired unit again from the running
-// configuration and grafts it. cause is the failure that led here, and every
-// outcome carries it.
+// configuration, in one phase, and grafts it. cause is the failure that led
+// here, and every outcome carries it.
 //
 // A grafted unit that does not retire cleanly wedges, as a retired unit does
 // in Apply: its sessions may still hold the identities the restored units
 // claim.
 func (r *InPlaceReload) restore(ctx context.Context, rt *runtime.Runtime, newBuilder func(*ports.BridgeConfig) *Builder,
+	phase func(context.Context) (context.Context, context.CancelFunc),
 	grafted []reloadUnit, unused []*runtime.Runtime, cause error,
 ) (InPlaceOutcome, error) {
 	cause = errors.Join(cause, r.stopParts(ctx, unused))
@@ -146,8 +178,10 @@ func (r *InPlaceReload) restore(ctx context.Context, rt *runtime.Runtime, newBui
 			return InPlaceWedged, errors.Join(cause, err)
 		}
 	}
+	buildCtx, cancel := phase(ctx)
+	defer cancel()
 	for _, u := range r.retire {
-		part, err := newBuilder(u.sub).buildPart(ctx, rt)
+		part, err := newBuilder(u.sub).buildPart(buildCtx, rt)
 		if err == nil {
 			if err = rt.Graft(part); err != nil {
 				err = errors.Join(err, r.stopParts(ctx, []*runtime.Runtime{part}))

@@ -18,7 +18,7 @@ func TestApply_UnchangedUnitKeepsItsSession(t *testing.T) {
 	rt := startApplyTestRuntime(t, newBuilder, running)
 	plan := planApplyTest(t, tf, running, changeRoute(applyTestConfig("a", "b"), "b"))
 
-	outcome, err := plan.Apply(context.Background(), rt, newBuilder)
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, InPlaceApplied, outcome)
@@ -37,7 +37,7 @@ func TestApply_SerializedClosesOldBeforeBuildingNew(t *testing.T) {
 	plan := planApplyTest(t, tf, running, changeRoute(applyTestConfig("a", "b"), "b"))
 	require.True(t, plan.Serialized())
 
-	outcome, err := plan.Apply(context.Background(), rt, newBuilder)
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, InPlaceApplied, outcome)
@@ -56,7 +56,7 @@ func TestApply_BuildFirstWhenNotSerialized(t *testing.T) {
 	plan := planApplyTest(t, tf, running, changeRoute(applyTestConfig("a", "b"), "b"))
 	require.False(t, plan.Serialized())
 
-	outcome, err := plan.Apply(context.Background(), rt, newBuilder)
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, InPlaceApplied, outcome)
@@ -73,7 +73,7 @@ func TestApply_AddedAndRemovedUnits(t *testing.T) {
 	rt := startApplyTestRuntime(t, newBuilder, running)
 	plan := planApplyTest(t, tf, running, applyTestConfig("a", "c"))
 
-	outcome, err := plan.Apply(context.Background(), rt, newBuilder)
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, InPlaceApplied, outcome)
@@ -97,7 +97,7 @@ func TestApply_PreflightFailureChangesNothing(t *testing.T) {
 	rt := startApplyTestRuntime(t, newBuilder, running)
 	plan := planApplyTest(t, tf, running, applyTestConfig("a", "b", "c"))
 
-	outcome, err := plan.Apply(context.Background(), rt, newBuilder)
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
 
 	require.ErrorIs(t, err, errTooManyRoutes)
 	assert.Equal(t, InPlaceUnchanged, outcome)
@@ -132,7 +132,7 @@ func TestApply_StoreCheckRefusalRetiresNothing(t *testing.T) {
 	plan := planApplyTest(t, tf, running, next)
 	require.True(t, plan.Serialized())
 
-	outcome, err := plan.Apply(context.Background(), rt, newBuilder)
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
 
 	require.ErrorContains(t, err, "crash-durable OutboxStore")
 	assert.Equal(t, InPlaceUnchanged, outcome)
@@ -152,7 +152,7 @@ func TestApply_BuildFailureBeforeRetireChangesNothing(t *testing.T) {
 	require.False(t, plan.Serialized())
 	tf.refuseSessions("b-s", 1)
 
-	outcome, err := plan.Apply(context.Background(), rt, newBuilder)
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
 
 	require.ErrorIs(t, err, errSessionRefused)
 	assert.Equal(t, InPlaceUnchanged, outcome)
@@ -173,7 +173,7 @@ func TestApply_BuildFailureAfterRetireRestoresOldUnit(t *testing.T) {
 	require.True(t, plan.Serialized())
 	tf.refuseSessions("b-s", 1)
 
-	outcome, err := plan.Apply(context.Background(), rt, newBuilder)
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
 
 	require.ErrorIs(t, err, errSessionRefused)
 	assert.Equal(t, InPlaceUnchanged, outcome)
@@ -193,7 +193,7 @@ func TestApply_RestoreFailureIsTorn(t *testing.T) {
 	require.True(t, plan.Serialized())
 	tf.refuseSessions("b-s", -1)
 
-	outcome, err := plan.Apply(context.Background(), rt, newBuilder)
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
 
 	require.ErrorIs(t, err, errSessionRefused)
 	assert.Equal(t, InPlaceTorn, outcome)
@@ -210,7 +210,7 @@ func TestApply_RetireFailureIsWedged(t *testing.T) {
 	require.False(t, plan.Serialized())
 	tf.refuseClose("b-s", 1, errCloseRefused)
 
-	outcome, err := plan.Apply(context.Background(), rt, newBuilder)
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
 
 	require.ErrorIs(t, err, errCloseRefused)
 	assert.Equal(t, InPlaceWedged, outcome)
@@ -238,7 +238,7 @@ func TestApply_NotRunningIsUnchanged(t *testing.T) {
 			prepare(t, rt)
 			plan := planApplyTest(t, tf, running, applyTestConfig("a", "b", "c"))
 
-			outcome, err := plan.Apply(context.Background(), rt, newBuilder)
+			outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
 
 			require.ErrorContains(t, err, "not running")
 			assert.Equal(t, InPlaceUnchanged, outcome)
@@ -265,7 +265,7 @@ func TestApply_FirstRetireRefusedByAStoppedRuntimeIsUnchanged(t *testing.T) {
 	plan := planApplyTest(t, tf, running, changeRoute(applyTestConfig("a", "b"), "b"))
 	require.False(t, plan.Serialized())
 
-	outcome, err := plan.Apply(context.Background(), rt, newBuilder)
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
 
 	require.ErrorIs(t, err, runtime.ErrNotRunning)
 	assert.Equal(t, InPlaceUnchanged, outcome)
@@ -287,7 +287,7 @@ func TestApply_GraftFailureRetiresGraftedUnitsAndRestores(t *testing.T) {
 	require.False(t, plan.Serialized())
 	plan.add = append(plan.add, plan.add[0])
 
-	outcome, err := plan.Apply(context.Background(), rt, newBuilder)
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
 
 	require.ErrorContains(t, err, "already registered")
 	assert.Equal(t, InPlaceUnchanged, outcome)
@@ -309,7 +309,7 @@ func TestApply_GraftedUnitThatDoesNotRetireIsWedged(t *testing.T) {
 	plan.add = append(plan.add, plan.add[0])
 	tf.refuseClose("b-s", 2, errCloseRefused) // the successor grafted first
 
-	outcome, err := plan.Apply(context.Background(), rt, newBuilder)
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
 
 	require.ErrorIs(t, err, errCloseRefused)
 	assert.Equal(t, InPlaceWedged, outcome)
@@ -336,6 +336,43 @@ func TestInPlaceReload_TeardownIsDetachedFromTheCallersContext(t *testing.T) {
 
 	assert.Equal(t, []int{1, 1}, tf.closeCounts("b-s"), "the retired session and the part's session are closed")
 	assert.Equal(t, []string{"a"}, runtimeRouteIDs(rt))
+}
+
+// A serialized reload retires its units between preparing the parts and
+// committing them, and a retire may take the whole drain timeout. The commit
+// therefore runs in a phase of its own: a budget that ran out while the retired
+// unit drained must not fail the build that follows.
+func TestApply_CommitGetsAFreshPhaseAfterASlowRetire(t *testing.T) {
+	tf := newPerSessionTransportFactory(true)
+	newBuilder := applyTestBuilder(tf)
+	running := applyTestConfig("a", "b")
+	rt := startApplyTestRuntime(t, newBuilder, running)
+	plan := planApplyTest(t, tf, running, changeRoute(applyTestConfig("a", "b"), "b"))
+	require.True(t, plan.Serialized())
+
+	var phases []context.Context
+	var cancels []context.CancelFunc
+	phase := func(ctx context.Context) (context.Context, context.CancelFunc) {
+		phaseCtx, cancel := context.WithCancel(ctx)
+		phases = append(phases, phaseCtx)
+		cancels = append(cancels, cancel)
+		return phaseCtx, cancel
+	}
+	// The retired session closes only once the first phase's budget is spent.
+	tf.onClose = func(name string) {
+		if name == "b-s#1" {
+			cancels[0]()
+		}
+	}
+
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, phase)
+
+	require.NoError(t, err, "the commit must not run under the budget the retire spent")
+	assert.Equal(t, InPlaceApplied, outcome)
+	require.Len(t, phases, 2, "preparing and committing the parts are two phases")
+	assert.Error(t, phases[1].Err(), "a phase is released when it ends")
+	assert.Equal(t, []int{1, 0}, tf.closeCounts("b-s"), "owner b's session is replaced")
+	assert.Equal(t, 7, runtimeRoutePolicy(t, rt, "b").MaxInFlight)
 }
 
 func TestInPlaceOutcome_String(t *testing.T) {
