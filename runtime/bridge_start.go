@@ -432,6 +432,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 			})
 		})
 	}
+	rt.installRemovedSubscriptionDeadLetter(dlqRouter, settlementRoutes)
 
 	// DLQ writes are fenced PER OWNING SESSION, not by an
 	// instance-global "any lease held" gate. Build the set of exclusive
