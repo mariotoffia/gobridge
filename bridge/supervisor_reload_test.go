@@ -10,19 +10,18 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// Full-session reload semantics (accepted tradeoff).
+// Reload semantics.
 //
-// The Supervisor detects no-ops on the WHOLE config only. Any accepted delta —
-// however narrow — rebuilds the entire runtime: every session, receiver, sender,
-// and store is reconstructed and the previous runtime is stopped. Editing one
-// route therefore bounces every OTHER route's broker session too, which is a
-// fleet-wide connection churn and a loss window for QoS 0 and ephemeral sessions.
+// A document that says the same thing as the running one is a no-op. Under
+// SwapAuto a delta confined to sessions, receivers, senders, bindings and routes
+// reloads in place: only the reload units it changes are rebuilt, and every
+// other route keeps its broker session. A bridge-wide delta, or any delta under
+// an explicit WithSwapMode, still rebuilds the entire runtime: every session,
+// receiver, sender and store is reconstructed and the previous runtime is
+// stopped, with the loss window that opens for QoS 0 and ephemeral sessions.
 //
-// Diff-based reload is an explicit non-goal of the production-readiness
-// remediation. These tests PIN the retained semantics so the contract published
-// to operators (batch config changes; expect a full restart) cannot silently
-// drift, and so a future diff-reload implementation must delete this pin
-// deliberately rather than by accident.
+// These tests PIN both halves so the contract published to operators cannot
+// silently drift.
 
 // twoSessionReloadConfig builds a config with two independent exclusive sessions,
 // each driving its own lease-managed route. address2 changes only route r2's
@@ -73,12 +72,12 @@ func twoSessionReloadConfig(version int, address2 string) *ports.BridgeConfig {
 	return cfg
 }
 
-// TestSupervisorReload_OneRouteChangeRestartsEverySession pins the accepted
-// full-session restart semantics: a delta confined to route r2 still tears down
-// and rebuilds session s1, which route r2 does not reference.
+// TestSupervisorReload_OneRouteChangeRestartsEverySession pins the full-session
+// restart semantics of an explicit swap mode: a delta confined to route r2
+// still tears down and rebuilds session s1, which route r2 does not reference.
 func TestSupervisorReload_OneRouteChangeRestartsEverySession(t *testing.T) {
 	onSwap, swaps := swapChan(1)
-	s, ef := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
+	s, ef := newTestSupervisorWithExclusive(WithOnSwap(onSwap), WithSwapMode(SwapPrepareCommit))
 	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, twoSessionReloadConfig(1, "topic/r2"), ch)
 	defer func() { cancel(); <-errCh }()
@@ -101,11 +100,35 @@ func TestSupervisorReload_OneRouteChangeRestartsEverySession(t *testing.T) {
 	assert.Equal(t, 2, s.Config().Version)
 }
 
+// TestSupervisorReload_OneRouteChangeRestartsOnlyItsSession pins the default:
+// the same delta confined to route r2 reloads in place, so only r2's session s2
+// is rebuilt and the runtime serving route r1 on session s1 keeps running.
+func TestSupervisorReload_OneRouteChangeRestartsOnlyItsSession(t *testing.T) {
+	onSwap, swaps := swapChan(1)
+	s, ef := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
+	ch := make(chan *ports.BridgeConfig, 1)
+	cancel, errCh := quickSupervisorRun(s, twoSessionReloadConfig(1, "topic/r2"), ch)
+	defer func() { cancel(); <-errCh }()
+
+	rt := s.Runtime()
+	require.NotNil(t, rt)
+
+	require.True(t, sendConfig(ch, twoSessionReloadConfig(2, "topic/r2-moved"), time.Second))
+	ev := awaitSwap(t, swaps)
+	require.NoError(t, ev.Error)
+	assert.Equal(t, SwapInPlace, ev.SwapMode)
+
+	sessions, _, _ := ef.Counts()
+	assert.Equal(t, 3, sessions, "a one-route delta rebuilds only the route's own session")
+	assert.Same(t, rt, s.Runtime(), "the running runtime instance is kept")
+	assert.True(t, rt.IsRunning(), "and every unrelated route keeps serving")
+	assert.Equal(t, 2, s.Config().Version)
+}
+
 // TestSupervisorReload_NoOpConfigKeepsSessionsRunning is the boundary of the
-// pin: the ONLY delta that does not restart every session is a document that
-// says the same thing as the running one. Anything that changes what the bridge
-// actually runs costs a full restart, which is exactly why operators must batch
-// config changes.
+// pin: the only delta that restarts no session at all is a document that says
+// the same thing as the running one. Anything that changes what the bridge
+// actually runs restarts at least the reload units it changes.
 func TestSupervisorReload_NoOpConfigKeepsSessionsRunning(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, ef := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
@@ -178,10 +201,11 @@ func TestSupervisorReload_ReorderedListsKeepSessionsRunning(t *testing.T) {
 }
 
 // BenchmarkSupervisorReload_FullSessionRestart measures the SUPERVISOR's own
-// cost of the retained semantics: per accepted config change, one full teardown
+// cost of a full replacement: per accepted config change, one full teardown
 // and rebuild of every session in the config — canonicalisation, plan build,
 // session/receiver/sender construction, old-runtime stop — driven by a delta
-// that touches one route.
+// that touches one route, under an explicit swap mode so it is not reloaded in
+// place.
 //
 // It is a FLOOR, not an operator budget. The transports here are in-memory fakes:
 // no broker dial, TLS handshake, CONNECT/CONNACK, or subscription reconciliation
@@ -191,7 +215,7 @@ func TestSupervisorReload_ReorderedListsKeepSessionsRunning(t *testing.T) {
 // reconnect measurement instead.
 func BenchmarkSupervisorReload_FullSessionRestart(b *testing.B) {
 	onSwap, swaps := swapChan(b.N + 1)
-	s, _ := newTestSupervisorWithExclusive(WithOnSwap(onSwap))
+	s, _ := newTestSupervisorWithExclusive(WithOnSwap(onSwap), WithSwapMode(SwapPrepareCommit))
 	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, twoSessionReloadConfig(1, "topic/r2-0"), ch)
 	defer func() { cancel(); <-errCh }()

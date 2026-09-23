@@ -323,7 +323,8 @@ func TestSupervisor_StopErrorDoesNotPreventSwap(t *testing.T) {
 // TestSupervisor_BrokerUnreachable_Overlap validates that a transport session creation failure keeps the old runtime.
 func TestSupervisor_BrokerUnreachable_Overlap(t *testing.T) {
 	onSwap, swaps := swapChan(1)
-	s := newTestSupervisor(WithOnSwap(onSwap))
+	// The route change alone would reload in place.
+	s := newTestSupervisor(WithOnSwap(onSwap), WithSwapMode(SwapOverlap))
 	s.RegisterTransport("broken", &failingTransportFactory{sessionErr: fmt.Errorf("broker unreachable")})
 	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, _ := quickSupervisorRun(s, quickCfg("r1"), ch)

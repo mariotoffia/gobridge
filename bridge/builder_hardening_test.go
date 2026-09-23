@@ -243,6 +243,9 @@ func TestSupervisor_WedgesWhenSwapAndRecoveryFail(t *testing.T) {
 		WithSupervisorBlueprintValidator(config.Validate),
 		WithOnSwap(onSwap),
 		WithAllowDestructiveReload(true),
+		// The route change alone would reload in place; this pins the
+		// prepare-commit swap, which stops the old runtime before complete.
+		WithSwapMode(SwapPrepareCommit),
 	)
 	s.RegisterTransport("fake", &fakeTransportFactory{})
 	s.RegisterTransport("exclusive", &exclusiveTransportFactory{})
@@ -254,8 +257,8 @@ func TestSupervisor_WedgesWhenSwapAndRecoveryFail(t *testing.T) {
 	require.NotNil(t, s.Runtime(), "initial runtime must be running")
 
 	// direct_hold against an exclusive session fails complete()'s route
-	// validation; the config forces PrepareCommit swap mode via the exclusive
-	// session, so the old runtime is stopped before complete runs.
+	// validation; in PrepareCommit swap mode the old runtime is stopped before
+	// complete runs.
 	bad := supervisorTestConfigWithSession("r2", "s1")
 	bad.Receivers[0].Transport = "exclusive"
 	bad.Routes[0].DeliveryMode = "direct_hold"

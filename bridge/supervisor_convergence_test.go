@@ -67,7 +67,7 @@ func TestSupervisor_ConvergenceWatch_MarksAppliedNotConvergedThenClearsOnConverg
 	const budget = 4 * time.Second
 	go func() {
 		defer close(watchDone)
-		s.runConvergenceWatch(t.Context(), rt, budget)
+		s.runConvergenceWatch(t.Context(), rt, s.nextConvergenceGen(), budget)
 	}()
 
 	// Drive the fake clock past the budget; each advance fires one poll tick.
@@ -114,7 +114,7 @@ func TestSupervisor_StopBridgeClearsConvergenceOwnedDegradedOnly(t *testing.T) {
 		s.mu.Lock()
 		s.rt = rt
 		s.mu.Unlock()
-		_, marked := s.markConvergenceDegraded(rt, ports.LevelLive, time.Minute)
+		_, marked := s.markConvergenceDegraded(rt, s.nextConvergenceGen(), ports.LevelLive, time.Minute)
 		require.True(t, marked)
 
 		require.NoError(t, s.StopBridge(t.Context()))
@@ -157,10 +157,11 @@ func TestSupervisor_ConvergenceWatch_AbandonsWhenPaused(t *testing.T) {
 	s.paused = true
 	s.mu.Unlock()
 
+	gen := s.nextConvergenceGen()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.runConvergenceWatch(t.Context(), rt, time.Second)
+		s.runConvergenceWatch(t.Context(), rt, gen, time.Second)
 	}()
 	select {
 	case <-done:
@@ -169,7 +170,7 @@ func TestSupervisor_ConvergenceWatch_AbandonsWhenPaused(t *testing.T) {
 	}
 	degraded, _ := s.Degraded()
 	assert.False(t, degraded)
-	_, marked := s.markConvergenceDegraded(rt, ports.LevelLive, time.Second)
+	_, marked := s.markConvergenceDegraded(rt, gen, ports.LevelLive, time.Second)
 	assert.False(t, marked, "marking through a paused supervisor must be refused")
 }
 
@@ -193,7 +194,7 @@ func TestSupervisor_ConvergenceWatch_ClearsPredecessorMarkOnConvergence(t *testi
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.runConvergenceWatch(t.Context(), rt, time.Minute)
+		s.runConvergenceWatch(t.Context(), rt, s.nextConvergenceGen(), time.Minute)
 	}()
 	select {
 	case <-done:
@@ -231,7 +232,7 @@ func TestConvergenceWatch_DiagnosticsNameTheAdoptedDocument(t *testing.T) {
 	t.Cleanup(func() { cancel(); <-watchDone })
 	go func() {
 		defer close(watchDone)
-		s.runConvergenceWatch(ctx, rt, budget)
+		s.runConvergenceWatch(ctx, rt, s.nextConvergenceGen(), budget)
 	}()
 	// The watch reads the clock to compute its deadline and then arms its poll
 	// timer, so an armed timer proves the deadline was taken from the start
@@ -286,10 +287,11 @@ func TestSupervisor_ConvergenceWatch_AbandonsWhenRuntimeReplaced(t *testing.T) {
 	s.degradedReason = "someone else's degraded cause"
 	s.mu.Unlock()
 
+	gen := s.nextConvergenceGen()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.runConvergenceWatch(t.Context(), oldRt, time.Second)
+		s.runConvergenceWatch(t.Context(), oldRt, gen, time.Second)
 	}()
 	select {
 	case <-done:
@@ -300,6 +302,6 @@ func TestSupervisor_ConvergenceWatch_AbandonsWhenRuntimeReplaced(t *testing.T) {
 	degraded, reason := s.Degraded()
 	assert.True(t, degraded, "a superseded watcher must not clear foreign degraded state")
 	assert.Equal(t, "someone else's degraded cause", reason)
-	_, marked := s.markConvergenceDegraded(oldRt, ports.LevelLive, time.Second)
+	_, marked := s.markConvergenceDegraded(oldRt, gen, ports.LevelLive, time.Second)
 	assert.False(t, marked, "marking through a superseded runtime must be refused")
 }

@@ -36,10 +36,16 @@ const (
 	// consumer, a pinned Service Bus session.
 	SwapPrepareCommit
 
-	// SwapAuto selects PrepareCommit when RequiresSerializedSwap finds an
-	// exclusive broker identity in the new config, or held by the running
-	// config on a transport the new config still uses, and Overlap otherwise.
+	// SwapAuto reloads in place (SwapInPlace) when it can. Otherwise it selects
+	// PrepareCommit when RequiresSerializedSwap finds an exclusive broker
+	// identity in the new config, or held by the running config on a transport
+	// the new config still uses, and Overlap otherwise.
 	SwapAuto
+
+	// SwapInPlace keeps the running runtime and replaces only the reload units
+	// that changed (PlanInPlaceReload). Only SwapAuto chooses it, so it is
+	// reported in SwapEvent, not passed to WithSwapMode.
+	SwapInPlace
 )
 
 // DeferReason names WHY a SwapEvent was deferred. A deferred swap is
@@ -94,7 +100,7 @@ type SwapEvent struct {
 }
 
 // Supervisor manages the runtime lifecycle and applies new
-// configurations by coordinating Stop-Rebuild-Start cycles. It
+// configurations in place or by Stop-Rebuild-Start cycles. It
 // supports pluggable ReconfigStrategy for debouncing and automatic
 // SwapMode detection based on transport capabilities.
 type Supervisor struct {
@@ -164,6 +170,7 @@ type Supervisor struct {
 	degraded              bool
 	degradedReason        string
 	degradedByConvergence bool
+	convergenceGen        uint64 // the newest convergence watch; see nextConvergenceGen
 
 	// lifecycleMu serializes control-plane mutations: apply() (config-driven
 	// swaps, run from the Run goroutine) and StartBridge/StopBridge (admin,
@@ -846,13 +853,13 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 	s.mu.RUnlock()
 
 	// (1) No-op: a document that says the same thing as the applied one is not a
-	// reconfiguration. This is WHOLE-CONFIG detection and it is the only delta
-	// that avoids a restart: every accepted change — however narrow, down to
-	// a single route's address — rebuilds the entire runtime, so unrelated routes'
-	// broker sessions are torn down and re-established with them (full-session
-	// reload, the accepted tradeoff; diff-based reload is out of
-	// scope). Operators must batch config changes and budget the loss window this
-	// opens for QoS 0 and ephemeral sessions on every reload;
+	// reconfiguration. Any other change reconnects only what it touches when it
+	// can: under SwapAuto, a change confined to sessions, receivers, senders,
+	// bindings and routes reloads the running runtime in place (SwapInPlace), so
+	// only the reload units it changes reconnect and every other route keeps its
+	// broker session. A bridge-wide change, an explicit WithSwapMode, or an HTTP
+	// endpoint in a changed unit still rebuilds the entire runtime, with the loss
+	// window that opens for QoS 0 and ephemeral sessions;
 	// bridge/supervisor_reload_test.go pins the semantics.
 	//
 	// The RUNTIME is kept and the DOCUMENT is adopted. Nothing has to be rebuilt,
@@ -1003,6 +1010,10 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 	oldRt := s.rt
 	oldCfg := s.cfg
 	s.mu.RUnlock()
+	inPlace := s.planInPlace(oldRt, oldCfg, frozenCfg)
+	if inPlace != nil {
+		mode = SwapInPlace
+	}
 
 	var newRt *runtime.Runtime
 	var err error
@@ -1083,6 +1094,8 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 				"affected partitions/stores first or force with WithAllowDestructiveReload to discard them",
 				"error", err, "attempted_config_version", frozenCfg.Version)
 		}
+	case inPlace != nil:
+		newRt, err = s.applyInPlace(ctx, oldRt, oldCfg, inPlace)
 	case mode == SwapPrepareCommit:
 		newRt, err = s.applyPrepareCommit(ctx, oldRt, oldCfg, frozenCfg)
 	default:
@@ -1091,11 +1104,11 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 
 	// Observable residual: the preflight proved the orphaned
 	// partitions empty at CHECK time, but a record could still have landed in the
-	// swap window (late ingress) or a claimed send could have failed. Both swap
-	// paths fully STOP the old runtime before returning err==nil (applyOverlap
-	// stops old before newRt.Start; applyPrepareCommit stops old before
-	// complete/Start), so by here ingress has ceased and the NEW runtime opens
-	// the SAME durable store (identity changes are refused). Re-query each
+	// swap window (late ingress) or a claimed send could have failed. Every swap
+	// path stops what it replaces before returning err==nil (applyOverlap and
+	// applyPrepareCommit stop the old runtime; an in-place reload retires the
+	// changed units), so by here ingress has ceased and newRt reads the SAME
+	// durable store (identity changes are refused). Re-query each
 	// orphaned partition and surface a non-empty result as an OBSERVABLE signal
 	// instead of a silent strand. One-shot / best-effort: a record still in
 	// CLAIMED state is not counted here (CountPending is pending-only) and
@@ -1150,9 +1163,9 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 		s.mu.Unlock()
 
 		if s.logger != nil {
-			s.logger.Info("supervisor: reconfiguration complete",
+			s.logger.Info("supervisor: reconfiguration complete", append([]any{
 				"swap_mode", mode, "duration", ev.Duration,
-				"config_version", frozenCfg.Version, "old_config_version", oldVersion)
+				"config_version", frozenCfg.Version, "old_config_version", oldVersion}, inPlaceLogFields(inPlace)...)...)
 		}
 		// A successful reload clears any prior degraded state; export both the
 		// gauge reset and the success counter so operators see recovery.

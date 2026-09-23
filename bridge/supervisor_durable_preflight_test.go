@@ -463,6 +463,9 @@ func TestSupervisor_ReloadOrphanStrandedAfterSwap_EmitsObservableSignal(t *testi
 		WithOnSwap(onSwap),
 		WithSupervisorMetrics(rec),
 		WithAllowDestructiveReload(true),
+		// The late-ingress record lands in the outbox store the NEW runtime
+		// opens; a reload in place keeps the running store instead.
+		WithSwapMode(SwapOverlap),
 	)
 	s.RegisterTransport("fake", &fakeTransportFactory{})
 	s.RegisterTransport("exclusive", &exclusiveTransportFactory{})

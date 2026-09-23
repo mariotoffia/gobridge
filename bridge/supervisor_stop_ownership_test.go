@@ -30,6 +30,7 @@ func TestSupervisor_OldStopFails_WedgesInsteadOfRetainingDeadRuntime_PrepareComm
 	s := NewSupervisor(
 		WithSupervisorBlueprintValidator(config.Validate),
 		WithOnSwap(onSwap),
+		WithSwapMode(SwapPrepareCommit),
 	)
 	s.RegisterTransport("fake", &fakeTransportFactory{})
 	s.RegisterTransport("exclusive", closeFailExclusiveFactory())
@@ -144,6 +145,7 @@ func TestSupervisor_PrepareCommitSwap_ConstructionDeadlineStartsAfterOldStop(t *
 		WithSupervisorBlueprintValidator(config.Validate),
 		WithOnSwap(onSwap),
 		WithSwapDeadline(swapDeadline),
+		WithSwapMode(SwapPrepareCommit),
 	)
 	s.RegisterTransport("fake", &fakeTransportFactory{})
 	s.RegisterTransport("exclusive", tf)

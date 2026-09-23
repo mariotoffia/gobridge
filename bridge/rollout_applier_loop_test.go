@@ -215,7 +215,11 @@ func TestRolloutApplier_AdoptsCommittedGeneration(t *testing.T) {
 	require.NoError(t, f.applier.step(context.Background()))
 
 	assert.Equal(t, 99, f.sup.Config().Version, "the committed generation is applied locally")
-	assert.NotSame(t, oldRt, f.sup.Runtime(), "the swap really happened")
+	ev := awaitSwap(t, f.swaps)
+	require.NoError(t, ev.Error)
+	assert.False(t, ev.Deferred, "the swap really happened")
+	assert.Equal(t, 99, ev.NewConfig.Version)
+	assert.True(t, f.sup.Runtime().IsRunning())
 	assert.Equal(t, "addr/rolled", f.sup.Config().Bindings[0].Address)
 }
 

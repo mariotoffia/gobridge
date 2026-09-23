@@ -126,7 +126,7 @@ func TestSupervisor_LeaseSessionIDChange_RefusesReload(t *testing.T) {
 
 // TestSupervisor_LeaseSessionIDChange_AllowedWithDestructiveFlag proves the
 // existing WithAllowDestructiveReload escape hatch forces the session_id change
-// through: the swap succeeds and the runtime is replaced.
+// through: the swap succeeds and the runtime runs the new session.
 func TestSupervisor_LeaseSessionIDChange_AllowedWithDestructiveFlag(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	s, _ := newTestSupervisorWithExclusive(WithOnSwap(onSwap), WithAllowDestructiveReload(true))
@@ -143,7 +143,12 @@ func TestSupervisor_LeaseSessionIDChange_AllowedWithDestructiveFlag(t *testing.T
 
 	ev := awaitSwap(t, swaps)
 	require.NoError(t, ev.Error, "escape hatch must force the session_id change through")
-	assert.NotSame(t, oldRt, s.Runtime(), "runtime must be swapped when forced")
+	assert.Equal(t, "sess-b", s.Config().Routes[0].Session.SessionID)
+	var sessionIDs []string
+	for _, sess := range s.Runtime().DeepHealth(t.Context()).Sessions {
+		sessionIDs = append(sessionIDs, sess.SessionID)
+	}
+	assert.Equal(t, []string{"sess-b"}, sessionIDs, "runtime must run the new session when forced")
 }
 
 // TestSupervisor_LeaseSessionIDUnchanged_AllowsReload proves a compatible reload

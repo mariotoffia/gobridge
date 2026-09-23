@@ -97,7 +97,11 @@ func TestClusterRollout_EndToEnd_HappyPath(t *testing.T) {
 	})
 
 	assert.Equal(t, "addr/rolled", s.Config().Bindings[0].Address)
-	assert.NotSame(t, oldRt, s.Runtime(), "the committed generation really swapped")
+	ev = awaitSwap(t, swaps)
+	require.NoError(t, ev.Error)
+	assert.False(t, ev.Deferred, "the committed generation really swapped")
+	assert.Equal(t, 99, ev.NewConfig.Version)
+	assert.True(t, s.Runtime().IsRunning())
 	assert.Equal(t, string(persistence.RolloutCommitted), rolloutState(s))
 	assert.Equal(t, 1, countEntries(rec, shared.MetricClusterRolloutResolved, shared.TagKeyOutcome, "committed"),
 		"the resolution must be observable exactly once")
