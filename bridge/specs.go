@@ -136,7 +136,7 @@ func senderSpecFrom(def ports.SenderDef) ports.SenderSpec {
 // order for subscriptions; sorted, deduplicated receiver IDs) and independent
 // of which route triggers it, so every route
 // sharing the session derives an identical plan. That keeps the runtime's
-// first-wins session-manager dedup (runtime/bridge_start.go) safe:
+// first-wins session-manager dedup (runtime/bridge_components.go) safe:
 // whichever route's sessCfg the manager is built from carries the same
 // subscriptions.
 //

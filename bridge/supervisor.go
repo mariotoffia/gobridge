@@ -857,10 +857,10 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 	// can: under SwapAuto, a change confined to sessions, receivers, senders,
 	// bindings and routes reloads the running runtime in place (SwapInPlace), so
 	// only the reload units it changes reconnect and every other route keeps its
-	// broker session. A bridge-wide change, an explicit WithSwapMode, or an HTTP
-	// endpoint in a changed unit still rebuilds the entire runtime, with the loss
-	// window that opens for QoS 0 and ephemeral sessions;
-	// bridge/supervisor_reload_test.go pins the semantics.
+	// broker session. A change PlanInPlaceReload refuses (a bridge-wide one, an
+	// HTTP endpoint in a changed unit) or an explicit SwapOverlap/SwapPrepareCommit
+	// still rebuilds the entire runtime, with the loss window that opens for QoS 0
+	// and ephemeral sessions; bridge/supervisor_reload_test.go pins the semantics.
 	//
 	// The RUNTIME is kept and the DOCUMENT is adopted. Nothing has to be rebuilt,
 	// because the two documents describe the same content — but the new one is
@@ -1783,7 +1783,7 @@ const strandReportBudget = 5 * time.Second
 // sharedOutboxPartitionSessions returns the set of session IDs a config wires
 // shared_outbox outbox drainers for. Each such session owns the outbox
 // partition SESSION#<sid> (persistence.OutboxPartitionKey(sid, "")). It mirrors
-// the runtime drainer wiring (runtime/bridge_start.go): for every shared_outbox
+// the runtime drainer wiring (runtime/bridge_components.go): for every shared_outbox
 // route it covers the resolved PRIMARY session (the inline route session if
 // present, else the first binding's session) PLUS every binding session. A route
 // that is not shared_outbox, or a binding without a session, contributes no

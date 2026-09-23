@@ -389,9 +389,9 @@ func (a *App) installPlan(plan *runtimePlan) error {
 	// closeSupersededHTTP and Stop). Stored last, after handlerRef already
 	// points at this registry's mux.
 	a.registryRef.Store(plan.registry)
-	// Begin (supersede) the post-swap convergence watch for the
-	// freshly installed runtime. Skipped during the pre-rootCtx initial apply
-	// (Start begins the initial watch explicitly once rootCtx exists).
+	// Begin (supersede) the post-swap convergence watch for the freshly
+	// installed runtime. rootCtx is nil only for an apply driven without Start,
+	// which has no App-lifetime context to run a watch under.
 	if a.rootCtx != nil {
 		a.startConvergenceWatch(a.rootCtx, plan.runtime, plan.logical)
 	}
@@ -427,8 +427,8 @@ func (a *App) closeSupersededHTTP(ctx context.Context, reg *factoryRegistry) {
 // — until some unrelated config arrived. Runtimes outlive the apply that built
 // them; only shutdown ends them.
 //
-// Before Start has published rootCtx (the initial boot apply) the caller's
-// context IS the process context, so it is the right one.
+// Without rootCtx — an apply driven without Start, since every apply Start
+// drives runs after it publishes rootCtx — the caller's context is all there is.
 func (a *App) runtimeStartCtx(ctx context.Context) context.Context {
 	if a.rootCtx != nil {
 		return a.rootCtx

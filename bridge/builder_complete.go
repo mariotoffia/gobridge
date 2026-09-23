@@ -291,7 +291,7 @@ func (b *Builder) wireRoutes(
 		// session manager reconciles a non-empty plan. sessionPlanFor is the
 		// per-session union of every receiver bound to the session, so the
 		// plan is identical for all routes sharing it — safe under the
-		// first-wins session-manager dedup in runtime/bridge_start.go.
+		// first-wins session-manager dedup in runtime/bridge_components.go.
 		// Without this the broker session declares no topology and
 		// subscribes to nothing. sessCfg is nil only when the route has
 		// no session, in which case there is nothing to reconcile.

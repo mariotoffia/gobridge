@@ -63,7 +63,7 @@ func (o InPlaceOutcome) String() string {
 // timeout; a budget spanning both would hand the commit a spent context. A nil
 // phase runs every phase under ctx. Each retire, and each stop of a part never
 // grafted, runs under r.DrainTimeout (the running configuration's drain timeout
-// when zero) detached from ctx, so a cancelled reload still leaves every unit
+// when not positive) detached from ctx, so a cancelled reload still leaves every unit
 // settled. The caller serializes reloads and stops of rt.
 //
 // The whole next document is validated and every added unit prepared before
