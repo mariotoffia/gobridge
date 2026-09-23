@@ -315,6 +315,9 @@ type storeResult struct {
 	dlqDurable               bool
 	managedSubscriptions     ports.ManagedSubscriptionStore
 	managedSubscriptionsDist bool
+	// borrowed marks stores a part took from the runtime it joins, which
+	// closes them: a failed build never does.
+	borrowed bool
 }
 
 func isDistributedFactory(sf ports.StoreFactory) bool {
@@ -388,9 +391,6 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 	if err != nil {
 		return nil, err
 	}
-	if requiresManagedSubscriptionStore(b.cfg) && res.managedSubscriptions == nil {
-		return nil, fmt.Errorf("bridge: persistent/exclusive MQTT sessions with desired subscriptions require stores.managed_subscriptions")
-	}
 	if sc := b.cfg.Stores.DLQ; sc != nil {
 		sf, ok := b.storeFactories[sc.Type]
 		if !ok {
@@ -408,55 +408,7 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 		res.dlqDurable = isCrashDurableFactory(sf)
 	}
 
-	// Clustered posture is implied by configured cluster endpoints even when
-	// deployment_mode is unset: forwarding between
-	// instances with a process-local lease/outbox/DLQ store silently breaks
-	// exclusivity and durability, so the store-distribution guard keys on
-	// either signal.
-	// IsClusteredDeployment is the SHARED predicate (bridge/convert.go): the same
-	// deployment_mode-or-static-endpoints definition used by the reload guard, so
-	// the store-distribution guard and the fail-closed reload guard never disagree
-	// on which deployments are clustered.
-	if IsClusteredDeployment(b.cfg) {
-		if res.lease != nil && !res.leaseDist {
-			return nil, fmt.Errorf("bridge: clustered deployment (deployment_mode or cluster.endpoints set) requires a distributed LeaseStore; the configured store is process-local")
-		}
-		if res.outbox != nil && !res.outboxDist {
-			return nil, fmt.Errorf("bridge: clustered deployment (deployment_mode or cluster.endpoints set) requires a distributed OutboxStore; the configured store is process-local")
-		}
-		if res.dlq != nil && !res.dlqDist {
-			return nil, fmt.Errorf("bridge: clustered deployment (deployment_mode or cluster.endpoints set) requires a distributed DLQStore; the configured store is process-local")
-		}
-		if res.managedSubscriptions != nil && !res.managedSubscriptionsDist {
-			return nil, fmt.Errorf("bridge: clustered deployment requires a distributed ManagedSubscriptionStore; the configured store is process-local")
-		}
-	}
-
-	// Split-brain-by-misconfiguration guard (LOW): a process-local (e.g. memory)
-	// lease store cannot arbitrate exclusive-session ownership ACROSS replicas.
-	// Clustered mode already hard-fails above, but two replicas EACH deployed as
-	// `standalone` with a memory lease will EACH believe they own every exclusive
-	// session and drive it concurrently (split brain) — a posture NOT detectable
-	// from any single process's config. deployment_mode cannot gate this warning:
-	// it is a gobridge-config assertion decoupled from the orchestrator's actual
-	// replica count (a pod set to `standalone` can still be scaled to replicas>1
-	// in k8s), so `standalone` does NOT prove single-replica and suppressing on
-	// it would blind the exact two-replica case this catches. So warn PROMINENTLY
-	// whenever exclusive sessions ride on a non-distributed lease store,
-	// regardless of deployment_mode, and spell out the safe remediation (run
-	// exactly one replica, or adopt a distributed lease store). Follows the same
-	// b.logger-nil-guarded warning idiom as the resolver-degradation path below.
-	if res.lease != nil && !res.leaseDist && hasExclusiveSessions(b.cfg) && b.logger != nil {
-		b.logger.Warn("SPLIT-BRAIN RISK: exclusive sessions are configured on a process-local (non-distributed) "+
-			"lease store; if more than one replica runs, each replica's lease grants ownership of every exclusive "+
-			"session independently and drives it concurrently. Run EXACTLY ONE replica (replicas=1) for this "+
-			"configuration, or switch to a distributed lease store (e.g. dynamodb) for high availability.",
-			"lease_store_type", b.cfg.Stores.Lease.Type,
-			"deployment_mode", b.cfg.Bridge.DeploymentMode,
-			"remediation", "set replicas=1, or use a distributed lease store")
-	}
-
-	if err := b.enforceStoreDurability(res); err != nil {
+	if err := b.checkStores(res); err != nil {
 		return nil, err
 	}
 

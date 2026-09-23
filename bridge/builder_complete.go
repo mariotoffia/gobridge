@@ -153,9 +153,6 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 			}
 		}
 		rt.AttachCredentialCloser(func(_ context.Context) { refresher.Close() })
-		// Retire hands the refresher the transports it takes out of the running
-		// runtime, so rotations stop reaching retired sessions and a refresher
-		// left watching nothing is closed.
 		rt.AttachCredentialForget(refresher.Forget)
 	}
 
@@ -205,9 +202,10 @@ func closeBuiltContextClosers[T any](ctx context.Context, logger *slog.Logger, k
 // io.Closer and are skipped, mirroring runtime.Stop's teardown. The order
 // (outbox, DLQ, lease) matches runtime.Stop for consistency; each Close is
 // best-effort and a failure is logged rather than propagated because the build
-// has already failed and every handle must still be attempted.
+// has already failed and every handle must still be attempted. Stores a part
+// borrowed belong to the runtime it joins and are never closed here.
 func (b *Builder) closeStoreHandles(stores *storeResult) {
-	if stores == nil {
+	if stores == nil || stores.borrowed {
 		return
 	}
 	for _, s := range []any{stores.managedSubscriptions, stores.outbox, stores.dlq, stores.lease} {
