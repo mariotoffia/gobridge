@@ -58,6 +58,7 @@ func TestErrorCodeToClass_IsAFunction(t *testing.T) {
 		shared.ErrStaleFencingToken,
 		shared.ErrDuplicateRecord,
 		shared.ErrTransportClosedPermanently,
+		shared.ErrSubscriptionRemoved,
 		// cluster routing
 		shared.ErrNoRouteOwner,
 		shared.ErrForwardFailed,

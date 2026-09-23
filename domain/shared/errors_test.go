@@ -152,6 +152,7 @@ func TestSentinelClasses(t *testing.T) {
 		{shared.ErrAlreadyExists, shared.ErrorPermanent},
 		{shared.ErrStaleFencingToken, shared.ErrorPermanent},
 		{shared.ErrDuplicateRecord, shared.ErrorPermanent},
+		{shared.ErrSubscriptionRemoved, shared.ErrorPermanent},
 		{shared.ErrInvalidPayload, shared.ErrorRejected},
 		{shared.ErrPayloadTooLarge, shared.ErrorRejected},
 		{shared.ErrInvalidTopic, shared.ErrorRejected},
