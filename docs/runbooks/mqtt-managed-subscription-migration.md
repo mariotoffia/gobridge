@@ -63,9 +63,11 @@ filter or migrated under maintenance as documented in the
 ## Dead-lettered deliveries: inspect, then redrive or purge
 
 Each record has error code `SUBSCRIPTION_REMOVED`, category `permanent`, the
-session ID, and the route ID of the session's single ingress route (empty when
-no single route rode on the session). The dead-letter store also keeps the
-removed filter as the record's address; the Admin API views do not show it.
+session ID, the route ID of the session's single ingress route (empty when no
+single route rides on the session: none or several), and `source_id`, which is
+the session ID; it scopes the record to the session, so two sessions' deliveries
+with the same message ID stay separate records. The dead-letter store also keeps
+the removed filter as the record's address; the Admin API views do not show it.
 
 1. **Find the records.** The Admin API cannot filter by error code, so list the
    `permanent` entries and select on the response. Page with `offset` while

@@ -81,8 +81,9 @@ cleanup:
 1. It writes the delivery to the dead-letter store. The record has error code
    `SUBSCRIPTION_REMOVED`, category `permanent`, reason `subscription removed`,
    the session ID, the route ID of the session's single ingress route (empty
-   when no single route rides on the session), and the removed filter, exactly
-   as configured (for example `$share/group/sensors/#`), as its address.
+   when no single route rides on the session), the session ID again as its
+   source ID, and the removed filter, exactly as configured (for example
+   `$share/group/sensors/#`), as its address.
 2. It acknowledges the delivery only after the write is durable.
 3. It keeps doing this until the current connection's replay-grace window
    (`unmatched_grace`, counted from the connection coming up) ends; a delivery

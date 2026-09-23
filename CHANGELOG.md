@@ -24,9 +24,10 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   filter and converges.
 - The record carries the new permanent error code **`SUBSCRIPTION_REMOVED`**
   (`shared.ErrSubscriptionRemoved`, reason `subscription removed`), the session
-  ID, the session's single ingress route ID (empty when there is none), and the
-  removed filter as its address. It is written whenever a dead-letter store
-  exists, independent of any route's `on_permanent_failure`.
+  ID, the session's single ingress route ID (empty when no single route rides
+  on the session: none or several), and the removed filter as its address. It
+  is written whenever a dead-letter store exists, independent of any route's
+  `on_permanent_failure`.
 - A failed dead-letter write leaves the delivery unacknowledged and fails the
   reconcile with a transient `UNAVAILABLE`; the session manager retries it with
   backoff and the process keeps running. The dead-letter writes of one
