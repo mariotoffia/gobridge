@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -89,6 +90,9 @@ type CredentialRefresher struct {
 	// A nil slice value means "poller starting/failed"; presence
 	// of the key means a poller has been (or is being) established.
 	watchers map[string][]CredentialAware
+	// pollers cancels each URI's poller alone, so Forget can stop polling a
+	// credential no target uses any more while the other URIs keep rotating.
+	pollers map[string]context.CancelFunc
 }
 
 // RefresherOption configures a CredentialRefresher.
@@ -140,6 +144,7 @@ func NewCredentialRefresher(push ports.PushCredentialStore, logger *slog.Logger,
 		ctx:          ctx,
 		cancel:       cancel,
 		watchers:     make(map[string][]CredentialAware),
+		pollers:      make(map[string]context.CancelFunc),
 	}
 	for _, o := range opts {
 		o(r)
@@ -237,18 +242,19 @@ func (r *CredentialRefresher) watchTarget(uri string, target any, kind string) {
 		r.mu.Unlock()
 		return
 	}
-	parent := r.ctx
 	_, alreadyWatching := r.watchers[uri]
 	r.watchers[uri] = append(r.watchers[uri], aware)
-	r.mu.Unlock()
-
 	if alreadyWatching {
 		// A poller already exists for this URI; the target we just appended
 		// will be served by it. Do not spawn a duplicate poller.
+		r.mu.Unlock()
 		return
 	}
+	pollCtx, stopPoll := context.WithCancel(r.ctx)
+	r.pollers[uri] = stopPoll
+	r.mu.Unlock()
 
-	ch, err := r.push.Watch(parent, uri)
+	ch, err := r.push.Watch(pollCtx, uri)
 	if err != nil {
 		if r.logger != nil {
 			r.logger.Warn("credential refresh: Watch failed", "uri", shared.RedactURI(uri), "error", shared.RedactURIError(err))
@@ -262,12 +268,62 @@ func (r *CredentialRefresher) watchTarget(uri string, target any, kind string) {
 		// establishing a poller rather than being suppressed as a duplicate.
 		r.mu.Lock()
 		delete(r.watchers, uri)
+		delete(r.pollers, uri)
 		r.mu.Unlock()
+		stopPoll()
 		return
 	}
 
 	r.wg.Add(1)
-	go r.run(parent, uri, ch)
+	go r.run(pollCtx, uri, ch)
+}
+
+// Forget stops rotating credentials into targets — the sessions, receivers and
+// senders a running runtime retired — matched by identity against what Watch,
+// WatchReceiver and WatchSender registered. A URI left with no target has its
+// poller stopped, so the credential source is no longer polled for material
+// nothing uses. idle reports that the refresher is left watching nothing, so
+// its owner can Close it.
+//
+// Forget does not wait for a rotation already being applied: an apply that
+// began before Forget may still reach a forgotten target. When that target's
+// URI is left with no target, the apply's context is cancelled.
+func (r *CredentialRefresher) Forget(targets []any) (idle bool) {
+	if r == nil {
+		return true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for uri, watched := range r.watchers {
+		kept := slices.DeleteFunc(watched, func(w CredentialAware) bool {
+			return slices.ContainsFunc(targets, func(t any) bool { return sameTarget(w, t) })
+		})
+		if len(kept) == len(watched) {
+			continue
+		}
+		if len(kept) > 0 {
+			r.watchers[uri] = kept
+			continue
+		}
+		if stopPoll := r.pollers[uri]; stopPoll != nil {
+			stopPoll()
+		}
+		delete(r.pollers, uri)
+		delete(r.watchers, uri)
+	}
+	return len(r.watchers) == 0
+}
+
+// sameTarget reports whether a and b are the same target. Targets match by
+// identity, which a value Go cannot compare (a struct holding a slice or map)
+// does not have: comparing two such values panics, so they never match.
+func sameTarget(a, b any) (same bool) {
+	defer func() {
+		if recover() != nil {
+			same = false
+		}
+	}()
+	return a == b
 }
 
 func (r *CredentialRefresher) run(

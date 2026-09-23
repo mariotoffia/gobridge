@@ -153,6 +153,10 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 			}
 		}
 		rt.AttachCredentialCloser(func(_ context.Context) { refresher.Close() })
+		// Retire hands the refresher the transports it takes out of the running
+		// runtime, so rotations stop reaching retired sessions and a refresher
+		// left watching nothing is closed.
+		rt.AttachCredentialForget(refresher.Forget)
 	}
 
 	// Contract: run the runtime's pre-start route validation now, while the
