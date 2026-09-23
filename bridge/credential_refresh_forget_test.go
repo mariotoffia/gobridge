@@ -16,7 +16,9 @@ import (
 
 // perURIPushStore gives every watched URI its own rotation channel and keeps
 // the context each Watch was handed, so a test can rotate one URI and see
-// whether that URI's poller, and only that one, was stopped.
+// whether that URI's poller, and only that one, was stopped. A rotation reaches
+// the latest Watch of its URI only: a stopped poller still selecting on a
+// shared channel could otherwise take it and drop it.
 type perURIPushStore struct {
 	mu   sync.Mutex
 	out  map[string]chan *connectivity.CredentialSet
@@ -31,10 +33,11 @@ func newPerURIPushStore() *perURIPushStore {
 }
 
 func (p *perURIPushStore) Watch(ctx context.Context, uri string) (<-chan *connectivity.CredentialSet, error) {
+	src := make(chan *connectivity.CredentialSet, 1)
 	p.mu.Lock()
 	p.ctxs[uri] = ctx
+	p.out[uri] = src
 	p.mu.Unlock()
-	src := p.rotations(uri)
 	ch := make(chan *connectivity.CredentialSet)
 	go func() {
 		defer close(ch)
