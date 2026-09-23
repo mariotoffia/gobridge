@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/mariotoffia/gobridge/logging"
@@ -22,8 +23,15 @@ import (
 // DLQ stores, all opened sessions (including unmanaged binding sessions), and
 // any session managers — even though no background goroutine ever ran. After
 // Stop the runtime is single-use and cannot be restarted (ADR-0004).
+//
+// Stores built WithSharedStores are left open for the runtime that owns them.
+// A part consumed by Graft holds nothing, so its Stop is a no-op.
 func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 	rt.mu.Lock()
+	if rt.consumed {
+		rt.mu.Unlock()
+		return nil
+	}
 	if (rt.terminal || rt.stopped) && !rt.running {
 		// A prior Stop already transitioned this runtime to stopped/terminal.
 		if rt.stopDone != nil {
@@ -120,14 +128,14 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 		cancel()
 	}
 
-	// Close credential refresher BEFORE session teardown so that a
-	// rotation in flight cannot race ApplyCredentials against session
-	// Close (see AttachCredentialCloser rationale). The closer is
-	// invoked under a bounded timeout so a stuck watcher cannot hang
-	// Stop past the user-supplied ctx.
+	// Close every credential refresher, grafted parts' included, BEFORE session
+	// teardown so that a rotation in flight cannot race ApplyCredentials against
+	// session Close (see AttachCredentialCloser rationale). The closers run
+	// concurrently under one bounded timeout, so a stuck watcher can neither
+	// hang Stop past the user-supplied ctx nor keep another refresher open.
 	rt.mu.Lock()
-	closeRefresher := rt.credRefresherClose
-	rt.credRefresherClose = nil
+	hooks := rt.credHooks
+	rt.credHooks = nil
 	rt.mu.Unlock()
 
 	closeTimeout := rt.shutdownTimeout
@@ -135,15 +143,21 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 		closeTimeout = 5 * time.Second
 	}
 
-	if closeRefresher != nil {
+	if len(hooks) > 0 {
 		refresherCtx, refresherCancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
-		// Spawn the closer with explicit lifetime; if it overruns the
+		// Spawn the closers with explicit lifetime; if they overrun the
 		// bounded timer or the caller's ctx, we move on (best-effort)
 		// rather than blocking Stop.
 		refresherDone := make(chan struct{})
 		go func() {
 			defer close(refresherDone)
-			closeRefresher(refresherCtx)
+			var closers sync.WaitGroup
+			for _, hook := range hooks {
+				if hook.close != nil {
+					closers.Go(func() { hook.close(refresherCtx) })
+				}
+			}
+			closers.Wait()
 		}()
 		select {
 		case <-refresherDone:
@@ -241,6 +255,7 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 		{"dlq", rt.dlqStore},
 		{"lease", rt.leaseStore},
 	}
+	sharedStores := rt.sharedStores
 	rt.mu.Unlock()
 
 	for _, mgr := range mgrs {
@@ -283,12 +298,17 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 		default:
 		}
 	}
-	if drainersDone {
+	switch {
+	case sharedStores:
+		// The stores belong to the runtime this one borrowed them from, which is
+		// still using them and closes them itself.
+	case drainersDone:
 		// Release store resources (e.g. SQLite file handles). Stores that hold
 		// OS resources implement io.Closer; in-memory stores do not and are
-		// skipped. Reconfiguration always builds a fresh runtime with its own
-		// store instances before Stopping the old one, so a closed handle is
-		// never shared with a live runtime.
+		// skipped. A full reconfiguration builds a fresh runtime with its own
+		// store instances before Stopping the old one, and a part that borrows a
+		// live runtime's stores never closes them (WithSharedStores), so a closed
+		// handle is never shared with a live runtime.
 		for _, s := range stores {
 			if c, ok := s.store.(io.Closer); ok {
 				if err := c.Close(); err != nil {
@@ -296,7 +316,7 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 				}
 			}
 		}
-	} else {
+	default:
 		errs = append(errs, errors.New("runtime: stop: drainers did not confirm done before store-close grace; leaving store handles open to avoid mid-send corruption"))
 	}
 

@@ -1,0 +1,206 @@
+package runtime
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"maps"
+	"slices"
+
+	"github.com/mariotoffia/gobridge/ports"
+)
+
+// Stores is the set of stores a runtime was built with.
+type Stores struct {
+	Lease                ports.LeaseStore
+	Outbox               ports.OutboxStore
+	DLQ                  ports.DLQStore
+	ManagedSubscriptions ports.ManagedSubscriptionStore
+}
+
+// Stores returns the stores this runtime was built with, so a part can be built
+// over them and grafted onto it. The options passed to New set them, and
+// nothing changes them afterwards, so no lock is needed.
+func (rt *Runtime) Stores() Stores {
+	return Stores{
+		Lease:                rt.leaseStore,
+		Outbox:               rt.outboxStore,
+		DLQ:                  rt.dlqStore,
+		ManagedSubscriptions: rt.managedSubscriptionStore,
+	}
+}
+
+// WithSharedStores marks the stores as owned by another runtime: Stop leaves
+// them open. Every part built for Graft carries it, because the part borrows
+// the stores of the runtime it joins, and that runtime closes them.
+func WithSharedStores() Option {
+	return func(rt *Runtime) { rt.sharedStores = true }
+}
+
+// Graft moves the routes, sessions and credential hooks of part into rt and
+// starts them, while every component rt already runs keeps running untouched.
+// part must be built over rt.Stores() with WithSharedStores and never started,
+// and may not reuse a route id or a session id rt already has. The grafted
+// components run with rt's settings (clock, metrics, logger, lease owner,
+// instance id), not with part's.
+//
+// On success part is consumed: it holds nothing, a later Start fails, and a
+// later Stop is a no-op. On a refusal part is left exactly as it was, and the
+// caller Stops it.
+//
+// Lock order is rt.mu, then part.mu. part is private to the caller until it is
+// grafted, so nothing takes the two locks in the other order.
+func (rt *Runtime) Graft(part *Runtime) error {
+	if part == nil || part == rt {
+		return errors.New("runtime: graft: part is nil or the runtime itself")
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if !rt.running || rt.stopped || rt.terminal || rt.fenced {
+		return errors.New("runtime: graft: runtime is not running")
+	}
+	part.mu.Lock()
+	defer part.mu.Unlock()
+	if part.running || part.stopped || part.consumed || part.terminal || part.fenced {
+		return errors.New("runtime: graft: part must be built and never started")
+	}
+	if !part.sharedStores || !sameStores(rt.Stores(), part.Stores()) {
+		return errors.New("runtime: graft: part must be built over this runtime's stores with WithSharedStores")
+	}
+	if err := rt.graftCollisionLocked(part); err != nil {
+		return err
+	}
+	// The checks Start runs, over rt's routes and session senders together with
+	// part's: a graft must never admit what a Start of both would refuse, such as
+	// two routes that drain one outbox partition under different policies.
+	entries := append(slices.Clone(rt.entries), part.entries...)
+	if err := validateRoutes(entries, rt.outboxStore != nil, rt.leaseStore != nil, rt.dlqStore != nil); err != nil {
+		return err
+	}
+	senders := maps.Clone(rt.sessionSenders)
+	maps.Copy(senders, part.sessionSenders)
+	if err := rt.sharedOutboxDrainerConflicts(entries, senders); err != nil {
+		return err
+	}
+
+	// The wiring pass resolves each session, and the route it feeds, through
+	// rt's collections, so part's are registered in rt before the pass runs.
+	set := componentSet{entries: part.entries, sessionSenders: part.sessionSenders, ingressSessions: part.ingressSessions}
+	rt.entries = append(rt.entries, part.entries...)
+	maps.Copy(rt.sessionSenders, part.sessionSenders)
+	maps.Copy(rt.ingressSessions, part.ingressSessions)
+	rt.credHooks = append(rt.credHooks, part.credHooks...)
+	rt.startComponentsLocked(set)
+
+	part.entries = nil
+	part.sessionSenders = make(map[string]*sessionSenderEntry)
+	part.ingressSessions = make(map[string]*ingressSessionEntry)
+	part.credHooks = nil
+	part.consumed = true
+	return nil
+}
+
+// sameStores reports whether a and b hold the same store instances. A store
+// whose dynamic type is not comparable panics on ==; it counts as different, so
+// the check refuses instead of crashing its caller.
+func sameStores(a, b Stores) (same bool) {
+	defer func() {
+		if recover() != nil {
+			same = false
+		}
+	}()
+	return a == b
+}
+
+// graftCollisionLocked refuses a part that reuses a route id or a session id of
+// rt: a route id names one route runner, and a session has exactly one manager.
+// The caller holds rt.mu and part.mu.
+func (rt *Runtime) graftCollisionLocked(part *Runtime) error {
+	routes := make(map[string]bool, len(rt.entries))
+	for _, entry := range rt.entries {
+		routes[entry.config.ID] = true
+	}
+	for _, entry := range part.entries {
+		if routes[entry.config.ID] {
+			return fmt.Errorf("runtime: graft: route %q is already registered", entry.config.ID)
+		}
+	}
+	sessions := rt.sessionIDsLocked()
+	for sid := range part.sessionIDsLocked() {
+		if sessions[sid] {
+			return fmt.Errorf("runtime: graft: session %q is already registered", sid)
+		}
+	}
+	return nil
+}
+
+// sessionIDsLocked returns every session id rt knows: managed, registered as a
+// session sender or an ingress session, or named by a route's session block.
+// The caller holds rt.mu.
+func (rt *Runtime) sessionIDsLocked() map[string]bool {
+	ids := make(map[string]bool)
+	for sid := range rt.sessionMgrs {
+		ids[sid] = true
+	}
+	for sid := range rt.sessionSenders {
+		ids[sid] = true
+	}
+	for sid := range rt.ingressSessions {
+		ids[sid] = true
+	}
+	for _, entry := range rt.entries {
+		if entry.sessCfg != nil {
+			ids[entry.sessCfg.SessionID] = true
+		}
+	}
+	return ids
+}
+
+// credentialHook is one credential refresher's hold on the runtime: Stop calls
+// close, and forget drops targets the runtime no longer runs.
+type credentialHook struct {
+	close  func(context.Context)
+	forget func(targets []any) (idle bool) // nil for a hook attached by AttachCredentialCloser only
+}
+
+// AttachCredentialCloser registers a close-on-stop hook with the runtime.
+// Each call adds a hook. The runtime invokes every hook during Stop, before
+// session teardown, so any goroutines that call ApplyCredentials on a session
+// can be cancelled safely. A closer receives a bounded ctx; honouring it lets
+// the runtime cap Stop latency when a watcher is unresponsive.
+//
+// Accepting a closure (rather than an interface value) deliberately keeps
+// runtime free of any structural reference to a caller-defined type:
+// the runtime sees only func(context.Context); deep architecture
+// analysis cannot infer a phantom dependency on the caller's package.
+func (rt *Runtime) AttachCredentialCloser(close func(context.Context)) {
+	if rt == nil || close == nil {
+		return
+	}
+	rt.mu.Lock()
+	rt.credHooks = append(rt.credHooks, credentialHook{close: close})
+	rt.mu.Unlock()
+}
+
+// AttachCredentialForget registers the forget half of a credential refresher.
+// forget stops the refresher from watching targets — sessions, receivers and
+// senders the runtime no longer runs — and reports whether the refresher is
+// left watching nothing, so a runtime that removes some of its components
+// while it keeps running can stop rotating credentials into closed transports
+// and close a refresher that has gone idle.
+//
+// The builder attaches a refresher's closer and then its forget, so forget
+// joins the last hook while that hook has none, and otherwise starts a hook of
+// its own.
+func (rt *Runtime) AttachCredentialForget(forget func(targets []any) (idle bool)) {
+	if rt == nil || forget == nil {
+		return
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if last := len(rt.credHooks) - 1; last >= 0 && rt.credHooks[last].forget == nil {
+		rt.credHooks[last].forget = forget
+		return
+	}
+	rt.credHooks = append(rt.credHooks, credentialHook{forget: forget})
+}

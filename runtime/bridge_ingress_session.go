@@ -80,19 +80,21 @@ func (rt *Runtime) routePrimarySessionLocked(sessionID string) (string, bool) {
 
 // attachIngressSessions gives every ingress session in ingress its manager and
 // enrols it in the settlement barrier for the routes of entries whose receivers
-// ride on it. It runs under rt.mu while a wiring pass starts its components,
-// after the route-primary and session-sender managers exist, so a lease-bearing
-// manager would always win — although registration already refuses that
-// overlap.
+// ride on it, and returns the ids of the managers it built. It runs under rt.mu
+// while a wiring pass starts its components, after the route-primary and
+// session-sender managers exist, so a lease-bearing manager would always win —
+// although registration already refuses that overlap.
 func (rt *Runtime) attachIngressSessions(
 	m ports.MetricsExporter,
 	ingress map[string]*ingressSessionEntry,
 	entries []*routeEntry,
 	settlementSessions map[string]ports.Session,
 	settlementRoutes map[string][]*routeEntry,
-) {
+) (created []string) {
 	for sid, entry := range ingress {
-		rt.ensureSessionManagerLocked(m, sid, entry.config, entry.session)
+		if rt.ensureSessionManagerLocked(m, sid, entry.config, entry.session) {
+			created = append(created, sid)
+		}
 		// A route rides on this session when its receiver subscribes through it
 		// (the builder says which), or — for a hand-wired runtime — when the
 		// session it was added with is this one and it names no primary of its
@@ -108,6 +110,7 @@ func (rt *Runtime) attachIngressSessions(
 			settlementRoutes[sid] = append(settlementRoutes[sid], route)
 		}
 	}
+	return created
 }
 
 // sessionRef is one session the runtime was handed, with the id it is managed

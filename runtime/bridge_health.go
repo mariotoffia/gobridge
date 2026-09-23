@@ -49,6 +49,92 @@ func (rt *Runtime) ComponentErrors() map[string]error {
 	return maps.Clone(rt.componentErrors)
 }
 
+// setComponentError records a background component's failure for ComponentErrors
+// (surfaced as failed_components in the health body).
+func (rt *Runtime) setComponentError(name string, err error) {
+	rt.mu.Lock()
+	rt.componentErrors[name] = err
+	rt.mu.Unlock()
+}
+
+// clearComponentError removes a previously-recorded component failure once the
+// component has recovered or stopped cleanly, so failed_components does not
+// report a stale phantom fault for the pod's remaining life.
+func (rt *Runtime) clearComponentError(name string) {
+	rt.mu.Lock()
+	delete(rt.componentErrors, name)
+	rt.mu.Unlock()
+}
+
+// routeStabilityWindow is how long a supervised route's CURRENT run must stay up
+// before it counts as recovered. Two places must agree on it: superviseRoute
+// resets the flap counter when a run RETURNS after this window, and the DeepHealth
+// route_dead projection suppresses a latched dead state when the LIVE run has
+// already outlived it (a recovered route that keeps running never re-enters
+// superviseRoute to reset). Equal to the supervisor backoff cap (30s): a run that
+// outlives one full backoff has cleared the flap regime.
+const routeStabilityWindow = 30 * time.Second
+
+// routeDeadRestartThreshold is the number of CONSECUTIVE sub-stability-window
+// route restarts (quick flaps with no stable run between them) after which
+// DeepHealth latches RouteHealth.RouteDead=true. A route that flaps this
+// many times has almost certainly wedged at the supervisor backoff cap — e.g. a
+// single-use receiver whose Run cannot be re-entered — so ops can alert on that
+// steady STATE rather than on the restart rate. Kept small: with the
+// 1→2→4→8→16s fast-backoff ramp it is ~31s of continuous flapping before the
+// signal latches.
+const routeDeadRestartThreshold = 5
+
+// recordRouteFlap increments a route's consecutive sub-stability-window restart
+// counter. Called by superviseRoute when a run fails before reaching the
+// stability window. Lazily allocates the map so it is safe even when a test
+// drives superviseRoute directly, bypassing Start's allocation.
+func (rt *Runtime) recordRouteFlap(name string) {
+	rt.mu.Lock()
+	if rt.routeFlaps == nil {
+		rt.routeFlaps = make(map[string]int)
+	}
+	rt.routeFlaps[name]++
+	rt.mu.Unlock()
+}
+
+// resetRouteFlap clears a route's consecutive-flap counter once a run stayed up
+// for the stability window (a recovery) or the route stopped cleanly, so a
+// recovered route drops route_dead instead of latching it forever. This
+// fires only when a run RETURNS after the window; a route that recovers and keeps
+// running is handled complementarily by the DeepHealth read-time liveness check
+// (see routeRunStart). delete on a nil map is a no-op, so this is safe even
+// before Start allocates the map.
+func (rt *Runtime) resetRouteFlap(name string) {
+	rt.mu.Lock()
+	delete(rt.routeFlaps, name)
+	rt.mu.Unlock()
+}
+
+// setRouteRunStart records the start time of a supervised route's current run so
+// DeepHealth can distinguish a live, recovered route (its run has outlived the
+// stability window) from one still wedged in the flap regime. Lazily
+// allocates the map like recordRouteFlap so tests driving superviseRoute directly
+// are safe.
+func (rt *Runtime) setRouteRunStart(name string, at time.Time) {
+	rt.mu.Lock()
+	if rt.routeRunStart == nil {
+		rt.routeRunStart = make(map[string]time.Time)
+	}
+	rt.routeRunStart[name] = at
+	rt.mu.Unlock()
+}
+
+// clearRouteRunStart drops the current-run marker when a run returns (the route is
+// now between runs — in backoff or being re-entered), so route_dead is not
+// suppressed while the route is not actually up. delete on a nil map is a
+// no-op.
+func (rt *Runtime) clearRouteRunStart(name string) {
+	rt.mu.Lock()
+	delete(rt.routeRunStart, name)
+	rt.mu.Unlock()
+}
+
 // DLQReader returns the DLQ read port if a DLQ store is configured, or
 // nil. It satisfies the read-side ports.RuntimeQuery driving port.
 func (rt *Runtime) DLQReader() ports.DLQReader {

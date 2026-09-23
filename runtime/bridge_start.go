@@ -45,6 +45,9 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
+	if rt.consumed {
+		return errors.New("runtime: cannot start a part whose routes and sessions were grafted onto another runtime")
+	}
 	if rt.terminal || rt.stopped || rt.fenced {
 		// Stop closes the outbox/DLQ/lease stores and cancels every
 		// drainer/manager, but the drainers/managers/entries are never rebuilt.
@@ -397,8 +400,14 @@ func sendersConflict(a, b ports.Sender) (conflict bool) {
 // policy. It walks entries in the SAME order and resolves the SAME session→config
 // mapping as the drainer-construction loop in wireRouteEntriesLocked, so what it
 // validates is exactly what would be built. Called under rt.mu before any wiring; caller
-// resets rt.running on error.
+// resets rt.running on error. It checks rt's own routes and session senders.
 func (rt *Runtime) checkSharedOutboxDrainerConflicts() error {
+	return rt.sharedOutboxDrainerConflicts(rt.entries, rt.sessionSenders)
+}
+
+// sharedOutboxDrainerConflicts is checkSharedOutboxDrainerConflicts over entries
+// and senders, so Graft can check rt's routes and a part's together.
+func (rt *Runtime) sharedOutboxDrainerConflicts(entries []*routeEntry, senders map[string]*sessionSenderEntry) error {
 	if rt.outboxStore == nil {
 		return nil
 	}
@@ -425,7 +434,7 @@ func (rt *Runtime) checkSharedOutboxDrainerConflicts() error {
 			prev.routeID, b.routeID, sid)
 	}
 
-	for _, entry := range rt.entries {
+	for _, entry := range entries {
 		if entry.config.Policy.DeliveryMode != routing.DeliverySharedOutbox {
 			continue
 		}
@@ -455,7 +464,7 @@ func (rt *Runtime) checkSharedOutboxDrainerConflicts() error {
 			if sid == "" {
 				continue
 			}
-			sse, ok := rt.sessionSenders[sid]
+			sse, ok := senders[sid]
 			if !ok {
 				// No standalone sender for this sid: either it is the route's own
 				// primary session (already claimed at site 1 for this route) or it

@@ -68,7 +68,10 @@ func (rt *Runtime) startComponentsLocked(set componentSet) {
 	settlementSessions := make(map[string]ports.Session)
 	settlementRoutes := make(map[string][]*routeEntry)
 
-	rt.wireRouteEntriesLocked(m, set, settlementSessions, settlementRoutes)
+	// created is every session id whose manager this pass builds. Only those
+	// managers are started and given the dead-letter path: a manager that
+	// already exists belongs to whatever built it, which owns its run.
+	created := rt.wireRouteEntriesLocked(m, set, settlementSessions, settlementRoutes)
 
 	// Every registered session sender gets a manager, whatever delivery mode
 	// the routes that reach it use. The shared-outbox wiring above creates one
@@ -83,7 +86,9 @@ func (rt *Runtime) startComponentsLocked(set componentSet) {
 	// gets the same settlement barrier a route-primary session gets before it
 	// recycles a broker connection.
 	for sid, sse := range set.sessionSenders {
-		rt.ensureSessionManagerLocked(m, sid, sse.config, sse.session)
+		if rt.ensureSessionManagerLocked(m, sid, sse.config, sse.session) {
+			created = append(created, sid)
+		}
 		for _, entry := range set.entries {
 			ridesOn := entry.config.SourceSessionID == sid ||
 				(entry.sessCfg == nil && entry.session == sse.session)
@@ -98,7 +103,7 @@ func (rt *Runtime) startComponentsLocked(set componentSet) {
 	// An ingress session carries only its receivers' subscriptions: it gets a
 	// plain manager (no lease, no drainer) and the settlement barrier for the
 	// routes riding on it.
-	rt.attachIngressSessions(m, set.ingressSessions, set.entries, settlementSessions, settlementRoutes)
+	created = append(created, rt.attachIngressSessions(m, set.ingressSessions, set.entries, settlementSessions, settlementRoutes)...)
 
 	for sid, sess := range settlementSessions {
 		configurer, ok := sess.(ports.IngressQuiescenceConfigurer)
@@ -119,14 +124,6 @@ func (rt *Runtime) startComponentsLocked(set componentSet) {
 		})
 	}
 
-	// A manager without a run is one this pass created: every earlier pass
-	// started the managers it created.
-	var created []string
-	for sid := range rt.sessionMgrs {
-		if _, started := rt.sessionRuns[sid]; !started {
-			created = append(created, sid)
-		}
-	}
 	rt.installRemovedSubscriptionDeadLetter(rt.dlqRouter, created)
 
 	// Only an exclusive session carries a lease, so only its DLQ writes are
@@ -197,13 +194,14 @@ func (rt *Runtime) startComponentsLocked(set componentSet) {
 // wireRouteEntriesLocked builds the route runner of every entry in set, gives
 // each route-primary session its manager and locator registration, builds the
 // shared-outbox drainers, and records which sessions each route's receiver
-// rides on for the settlement barriers. Caller holds rt.mu.
+// rides on for the settlement barriers. It returns the ids of the session
+// managers it built. Caller holds rt.mu.
 func (rt *Runtime) wireRouteEntriesLocked(
 	m ports.MetricsExporter,
 	set componentSet,
 	settlementSessions map[string]ports.Session,
 	settlementRoutes map[string][]*routeEntry,
-) {
+) (created []string) {
 	// drainerOwner maps a session ID to the route whose configuration
 	// (policy, sender, RouteID) its shared-outbox drainer was built from.
 	// Exactly one drainer exists per session partition, so when SEVERAL
@@ -275,7 +273,9 @@ func (rt *Runtime) wireRouteEntriesLocked(
 			sid := entry.sessCfg.SessionID
 			settlementSessions[sid] = entry.session
 			settlementRoutes[sid] = append(settlementRoutes[sid], entry)
-			rt.ensureSessionManagerLocked(m, sid, *entry.sessCfg, entry.session)
+			if rt.ensureSessionManagerLocked(m, sid, *entry.sessCfg, entry.session) {
+				created = append(created, sid)
+			}
 
 			if entry.sessCfg.Exclusive && rt.locator != nil {
 				rt.locator.RegisterRoute(entry.config.ID, sid)
@@ -310,24 +310,28 @@ func (rt *Runtime) wireRouteEntriesLocked(
 			if !ok {
 				continue
 			}
-			rt.ensureSessionManagerLocked(m, sid, sse.config, sse.session)
+			if rt.ensureSessionManagerLocked(m, sid, sse.config, sse.session) {
+				created = append(created, sid)
+			}
 			drainerOwner[sid] = entry.config.ID
 			rt.addDrainerLocked(m, entry, sid, &sse.config, sse.session, sse.sender)
 		}
 	}
+	return created
 }
 
 // ensureSessionManagerLocked gives session sid a manager unless it already has
-// one: a session has exactly one manager, built from whichever of its
-// registrations is wired first. Caller holds rt.mu.
-func (rt *Runtime) ensureSessionManagerLocked(m ports.MetricsExporter, sid string, cfg session.Config, sess ports.Session) {
+// one, and reports whether it built one: a session has exactly one manager,
+// built from whichever of its registrations is wired first. Caller holds rt.mu.
+func (rt *Runtime) ensureSessionManagerLocked(m ports.MetricsExporter, sid string, cfg session.Config, sess ports.Session) bool {
 	if _, exists := rt.sessionMgrs[sid]; exists {
-		return
+		return false
 	}
 	mgr := session.NewWithMetrics(cfg, sess, rt.leaseStore, rt.leaseOwnerID, rt.logger, m, rt.clk)
 	mgr.SetAudit(rt.audit)
 	mgr.SetEndpoints(rt.clusterEndpoints)
 	rt.sessionMgrs[sid] = mgr
+	return true
 }
 
 // addDrainerLocked builds the shared-outbox drainer of session partition sid —
