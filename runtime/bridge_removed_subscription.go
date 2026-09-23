@@ -29,7 +29,14 @@ func (rt *Runtime) installRemovedSubscriptionDeadLetter(dlqRouter *dlq.Router) {
 		sessionID := sid
 		routeID := rt.sourceRouteOn(sid)
 		configurer.SetRemovedSubscriptionDeadLetter(func(ctx context.Context, env *messaging.Envelope, filter string) error {
-			return dlqRouter.Route(ctx, env, routeID, "", filter, sessionID, "", shared.ErrSubscriptionRemoved, 0)
+			// The session is also the source: the entry identity (envelope,
+			// route, binding, source) must be scoped to the session, because a
+			// routeless record otherwise shares one scope across sessions and
+			// two sessions' deliveries with the same producer message ID would
+			// collapse into one record, acknowledging the second without its
+			// own copy. Envelope IDs are unique within a source, so the filter
+			// is not needed in the identity.
+			return dlqRouter.Route(ctx, env, routeID, "", filter, sessionID, sessionID, shared.ErrSubscriptionRemoved, 0)
 		})
 	}
 }
@@ -50,10 +57,12 @@ func (rt *Runtime) sourceRouteOn(sid string) string {
 	return routeID
 }
 
-// managedSession resolves the session a manager was built for.
+// managedSession resolves the session a manager was built for. A route whose
+// session block names sid but carries no session instance is skipped, so the
+// session registered as a sender or ingress session is found instead.
 func (rt *Runtime) managedSession(sid string) ports.Session {
 	for _, entry := range rt.entries {
-		if entry.sessCfg != nil && entry.sessCfg.SessionID == sid {
+		if entry.session != nil && entry.sessCfg != nil && entry.sessCfg.SessionID == sid {
 			return entry.session
 		}
 	}

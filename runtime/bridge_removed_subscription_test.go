@@ -93,6 +93,72 @@ func TestRemovedSubscriptionDeadLetterWritesSubscriptionRemovedEntry(t *testing.
 		t.Fatalf("DLQ entry session/route/address = %q/%q/%q, want source-session/source-route/%s",
 			entry.SessionID(), entry.RouteID(), entry.Address(), filter)
 	}
+	if entry.SourceID() != "source-session" {
+		t.Fatalf("DLQ entry source = %q, want the session ID source-session", entry.SourceID())
+	}
+	if entry.Category() != "permanent" {
+		t.Fatalf("DLQ entry category = %q, want permanent", entry.Category())
+	}
+}
+
+func TestRemovedSubscriptionDeadLetterKeepsOneEntryPerSessionForSameEnvelopeID(t *testing.T) {
+	store := NewFakeDLQStore()
+	rt := goruntime.New(goruntime.WithInstanceID("removed-sub-per-session"), goruntime.WithDLQStore(store))
+	sessions := map[string]*deadLetterSession{"session-a": newDeadLetterSession(), "session-b": newDeadLetterSession()}
+	for sid, sess := range sessions {
+		if err := rt.RegisterIngressSession(runsession.Config{SessionID: sid}, sess); err != nil {
+			t.Fatalf("RegisterIngressSession(%s): %v", sid, err)
+		}
+	}
+	startRuntime(t, rt)
+
+	// Both producers reuse one message ID; neither session carries a route, so
+	// only the session scopes the record's identity.
+	for sid, sess := range sessions {
+		env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "same-producer-id", Subject: "stale/one"})
+		if err := sess.deadLetter(t)(context.Background(), env, "stale/#"); err != nil {
+			t.Fatalf("dead-letter write through %s: %v", sid, err)
+		}
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.Entries) != 2 {
+		t.Fatalf("DLQ entries = %d, want 2", len(store.Entries))
+	}
+	a, b := store.Entries[0], store.Entries[1]
+	if a.ID() == b.ID() {
+		t.Fatalf("two sessions' deliveries share DLQ entry ID %q; the store would keep only the first", a.ID())
+	}
+	if a.SessionID() == b.SessionID() || sessions[a.SessionID()] == nil || sessions[b.SessionID()] == nil {
+		t.Fatalf("DLQ entry sessions = %q/%q, want one each of session-a and session-b", a.SessionID(), b.SessionID())
+	}
+}
+
+func TestRemovedSubscriptionDeadLetterResolvesSessionSenderBehindRouteWithoutSession(t *testing.T) {
+	store := NewFakeDLQStore()
+	rt := newTestRuntime("removed-sub-session-sender", NewFakeOutboxStore(), NewFakeLeaseStore(), store)
+	fan := newDeadLetterSession()
+	fanCfg := fastSessionConfig("fan-session")
+	if err := rt.RegisterSessionSender(fanCfg, fan, NewFakeSender()); err != nil {
+		t.Fatalf("RegisterSessionSender: %v", err)
+	}
+	// The route names fan-session in its session block but carries no session
+	// instance: the session is resolved through its registered sender.
+	cfg := goruntime.RouteConfig{
+		ID:       "fanout-route",
+		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliverySharedOutbox},
+		Bindings: []routing.DestinationBinding{{ID: "fan-binding", Address: "devices/fan", SessionID: "fan-session"}},
+	}
+	routeCfg := fanCfg
+	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), nil, &routeCfg); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	startRuntime(t, rt)
+
+	if got := fan.installs(); got != 1 {
+		t.Fatalf("dead-letter path installed %d times on the session sender, want 1", got)
+	}
 }
 
 func TestRemovedSubscriptionDeadLetterNotInstalledWithoutDLQStore(t *testing.T) {
