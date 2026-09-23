@@ -30,9 +30,9 @@ comment. The rest below is not machine-checked.
   `x-bridge.*` headers are stripped.
 - A test names the behaviour it pins. A test named for a class ("every",
   "any", "never") must fail if that class were broken, including the near miss.
-- No planning identifiers (`HIGH-3`, `T14`, `Chunk-11`, `SEC-011`, `round-2`)
-  in test names, comments or file names. The lint script skips `_test.go`, so
-  review holds tests to this rule (AGENTS.md).
+- No planning identifiers in test file names or in tokens the lint gate does
+  not know (`T14`, a `S10` suffix, a status matrix of task rows). The gate
+  reads test file contents but not file names (AGENTS.md).
 - CDK tests never call `jsii.Close()`. It races `cmd.Wait()` and crashes the
   binary (TESTS.md §2.7). Do not suggest adding it back.
 - Containers are named `gobridge-<package>-<uuid>` and started only through

@@ -47,7 +47,7 @@ the rules for each area.
 
 Naming, layering (`.go-arch-lint.yml`), plugin-config shape, the ACL boundary,
 `time.Now` / `time.Sleep` in production code, registry symmetry, planning
-identifiers in non-test Go source, gofmt, go vet and golangci-lint rules. If
+identifiers in Go source (tests included), gofmt, go vet and golangci-lint rules. If
 one of these is broken, CI is red; at most name the checker (see `LINT.md`).
 
 Build tags, compile errors and import cycles belong to the compiler and
@@ -86,9 +86,9 @@ These are the findings that past reviews got right and that authors fixed.
    `BridgeError` `Code` / `Class`, never by message text.
 9. **Tests pin the change.** A fix has a test that fails without it. The test
    asserts the exact value, not a substring. See `tests.instructions.md`.
-10. **No planning identifiers anywhere.** Test names, test comments, docs and
-    file names carry no review or task IDs (`HIGH-3`, `T14`, `SEC-011`,
-    `round-2`). Lint checks only non-test Go source, so review covers the rest.
+10. **No planning identifiers anywhere.** Lint gates Go source, tests
+    included, for the known forms. Review covers what it cannot see: Markdown,
+    YAML, shell, file names, and new forms such as `T14` or a `S10` suffix.
 11. **Secrets stay secret.** Credentials are loaded through `credentials_uri`
     and credential stores, never logged, and never put in an error message or
     metric label.
