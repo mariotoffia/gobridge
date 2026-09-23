@@ -180,12 +180,20 @@ first and acknowledged after the write is durable. The record carries error code
 `SUBSCRIPTION_REMOVED` (class `permanent`), the session ID, the session's ingress
 route ID (empty when no single route rides on the session), and the removed filter
 as its address. The cleanup then continues: the filter is forgotten and the
-session converges. The session keeps doing this until one `unmatched_grace`
-window passes with no matching delivery. If a write fails, the delivery stays
-unacknowledged, the reconcile fails with a transient error, and the session
-manager retries it with backoff; the process keeps running. All dead-letter
-writes in one reconcile share one `reconcile_timeout`, counted from the first
-write.
+session converges. The session dead-letters matching deliveries until the
+current connection's replay-grace window (`unmatched_grace`, counted from the
+connection coming up) ends; a delivery does not restart the window. If a write
+fails, the delivery stays unacknowledged, the reconcile fails with a transient
+error, and the session manager retries it with backoff; the process keeps
+running. The dead-letter writes of one replay-verification pass share one
+`reconcile_timeout`, counted from the first write.
+
+A delivery whose topic a still-desired filter also covers is not dead-lettered.
+That happens when a replacement overlaps the removed filter, for example
+`$share/old/a/#` replaced by `$share/new/a/#`: the delivery is live traffic
+for the new filter, so the session keeps it and delivers it to the route once
+the removed filter is forgotten. This also applies without a dead-letter store;
+previously such an overlap failed closed.
 
 Why the rule changed: MQTT 5 gives a client no way to hand a delivery back — a
 PUBACK with an error reason code ends it like a successful one. Holding it

@@ -84,15 +84,23 @@ cleanup:
    when no single route rides on the session), and the removed filter, exactly
    as configured (for example `$share/group/sensors/#`), as its address.
 2. It acknowledges the delivery only after the write is durable.
-3. It repeats until one `unmatched_grace` window passes with no matching
-   delivery, then forgets the filter and reaches Full.
+3. It keeps doing this until the current connection's replay-grace window
+   (`unmatched_grace`, counted from the connection coming up) ends; a delivery
+   does not restart the window. Then it forgets the filter and reaches Full.
+
+A delivery whose topic a still-desired filter also covers is not dead-lettered.
+That happens when a replacement overlaps the removed filter, for example
+`$share/old/a/#` replaced by `$share/new/a/#`, or `a/#` replaced by `a/b`:
+the delivery is live traffic for the new filter, so the session keeps it and
+delivers it to the route once the removed filter is forgotten. This also
+applies without a dead-letter store; previously such an overlap failed closed.
 
 If a write fails, the delivery stays unacknowledged and the filter stays in the
 managed history. The reconcile fails with a transient `UNAVAILABLE` error, the
 session manager retries it with backoff, and the process and every other route
-keep running. All dead-letter writes in one reconcile share one
-`reconcile_timeout`, counted from the first write; a write still running when it
-runs out fails the reconcile the same way. A retry can write the same delivery
+keep running. The dead-letter writes of one replay-verification pass share one
+`reconcile_timeout`, counted from the first write; a write still running when
+it runs out fails the reconcile the same way. A retry can write the same delivery
 again if its acknowledgement failed after the write; nothing is lost.
 
 Afterwards, inspect the `SUBSCRIPTION_REMOVED` records, then redrive or purge

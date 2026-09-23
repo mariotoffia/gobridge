@@ -29,15 +29,25 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   exists, independent of any route's `on_permanent_failure`.
 - A failed dead-letter write leaves the delivery unacknowledged and fails the
   reconcile with a transient `UNAVAILABLE`; the session manager retries it with
-  backoff and the process keeps running. All dead-letter writes in one
-  reconcile share one `reconcile_timeout`, counted from the first write.
+  backoff and the process keeps running. The dead-letter writes of one
+  replay-verification pass share one `reconcile_timeout`, counted from the
+  first write.
+- The session dead-letters matching deliveries until the current connection's
+  replay-grace window (`unmatched_grace`, counted from the connection coming
+  up) ends; a delivery does not restart the window.
+- A delivery whose topic a still-desired filter also covers is not
+  dead-lettered. When a replacement overlaps the removed filter (for example
+  `$share/old/a/#` replaced by `$share/new/a/#`), the delivery is live
+  traffic for the new filter and is delivered to the route once the removed
+  filter is forgotten. This also applies without a dead-letter store, where
+  such an overlap previously failed closed.
 - The post-acquire activation bound grows by those budgets, from
   `2×connect_timeout + 4×reconcile_timeout + 2×unmatched_grace` to
   `2×connect_timeout + 6×reconcile_timeout + 2×unmatched_grace`: 300 s instead
   of 240 s with the shipped defaults.
-- **Without a dead-letter store nothing changes:** acknowledging would lose the
-  delivery silently, so the session still fails closed and the restore, drain,
-  retry procedure still applies.
+- **Without a dead-letter store a removed filter's delivery still fails
+  closed:** acknowledging would lose it silently, so the restore, drain, retry
+  procedure still applies. Only the overlapping-replacement case above changes.
 - Operators inspect the `SUBSCRIPTION_REMOVED` records, then redrive or purge
   them by ID; see the
   [managed-filter migration runbook](docs/runbooks/mqtt-managed-subscription-migration.md#dead-lettered-deliveries-inspect-then-redrive-or-purge)

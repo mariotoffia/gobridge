@@ -33,6 +33,17 @@ session.
   disconnects, and enters a terminal state. It does not claim Full or portable
   redistribution. Follow [restore, drain, retry](#without-a-dead-letter-store-restore-drain-retry).
 
+Either way, a delivery whose topic a still-desired filter also covers is not
+settled as a removed filter's delivery. When a replacement overlaps the removed
+filter (for example `$share/old/a/#` replaced by `$share/new/a/#`), that
+delivery is live traffic for the new filter: GoBridge keeps it and delivers it
+to the route once the removed filter is forgotten. It is not dead-lettered, and
+without a dead-letter store it no longer fails the migration closed.
+
+Replay settlement lasts until the current connection's replay-grace window
+(`unmatched_grace`, counted from the connection coming up) ends; a delivery
+does not restart the window.
+
 ## Prepare a no-buffer cutover
 
 1. Record the old canonical broker URL, ClientID, session mode/expiry, managed
@@ -90,8 +101,9 @@ The request and response contracts are in the
 [Scenario 7: DLQ with HTTP API Management](../scenarios/07-dlq-with-http-api.md#http-api-dlq-operations).
 
 If the session keeps failing its reconcile with a transient `UNAVAILABLE`
-error, the dead-letter writes are failing: the store is down or too slow for
-one `reconcile_timeout`. Fix the store. The session retries by itself and the
+error, the dead-letter writes are failing: the store is down, or too slow to
+finish the writes of one replay-verification pass within one
+`reconcile_timeout`, counted from the first write. Fix the store. The session retries by itself and the
 held deliveries stay unacknowledged until a write succeeds; do not restore the
 old configuration for this.
 
