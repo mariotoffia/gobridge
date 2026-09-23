@@ -384,6 +384,15 @@ schemas:
         enum: [target_accept, outbox_persist]
       max_replay_attempts:
         type: integer
+      replay_budget:
+        type: string
+        description: >
+          Go duration string (e.g. "15m"). shared_outbox routes only: the
+          wall-clock ceiling, measured from a record's first attempt, on how
+          long the outbox drainer keeps redelivering it. A record is poisoned
+          to the DLQ only once both this budget and max_replay_attempts are
+          spent. Omitting the field or "0s" takes the 15m default. Negative is
+          rejected.
       send_retry_budget:
         type: string
         description: >
@@ -399,8 +408,39 @@ schemas:
       on_permanent_failure:
         type: string
         enum: [drop, dlq]
+      on_filtered:
+        type: string
+        enum: [drop, dlq]
+        description: >
+          What happens to a message a processor intentionally filters out.
+          Defaults to drop (dropped with a metric); dlq writes it to the DLQ and
+          needs a DLQ store.
       backoff:
         $ref: "#/schemas/BackoffDef"
+      send_timeout:
+        type: string
+        description: >
+          Go duration string (e.g. "30s"). Timeout for an individual send
+          operation. Omitting the field takes the 30s default; zero or negative
+          is rejected.
+      depth_cache_ttl:
+        type: string
+        description: >
+          Go duration string (e.g. "1s"). How long outbox depth counts are
+          cached for backpressure checks. Omitting the field takes the 1s
+          default; zero or negative is rejected.
+      allow_unfenced:
+        type: boolean
+        description: >
+          Allows a direct_hold route over a shared-consumer source, which the
+          bridge otherwise refuses to build. It only waives that check; no
+          fencing is provided. Default false.
+      allow_retry_drop:
+        type: boolean
+        description: >
+          Accepts that a failed message is dropped when the source cannot
+          retry or redeliver and no DLQ store is configured; without it the
+          bridge refuses to build such a route. Default false.
 
   BackoffDef:
     type: object
