@@ -17,7 +17,7 @@ import (
 // have become empty. Without a dead-letter store nothing is installed, and the
 // session keeps such a delivery unacknowledged, because acknowledging it
 // without a durable copy would lose it.
-func (rt *Runtime) installRemovedSubscriptionDeadLetter(dlqRouter *dlq.Router, settlementRoutes map[string][]string) {
+func (rt *Runtime) installRemovedSubscriptionDeadLetter(dlqRouter *dlq.Router) {
 	if !dlqRouter.HasStore() {
 		return
 	}
@@ -27,16 +27,27 @@ func (rt *Runtime) installRemovedSubscriptionDeadLetter(dlqRouter *dlq.Router, s
 			continue
 		}
 		sessionID := sid
-		// An MQTT session carries at most one ingress route; with several, or
-		// none, the record names no route.
-		routeID := ""
-		if routes := settlementRoutes[sid]; len(routes) == 1 {
-			routeID = routes[0]
-		}
+		routeID := rt.sourceRouteOn(sid)
 		configurer.SetRemovedSubscriptionDeadLetter(func(ctx context.Context, env *messaging.Envelope, filter string) error {
 			return dlqRouter.Route(ctx, env, routeID, "", filter, sessionID, "", shared.ErrSubscriptionRemoved, 0)
 		})
 	}
+}
+
+// sourceRouteOn names the one route whose receiver subscribes through session
+// sid. With none, or several, a record written for that session names no route.
+func (rt *Runtime) sourceRouteOn(sid string) string {
+	routeID := ""
+	for _, entry := range rt.entries {
+		if entry.config.SourceSessionID != sid {
+			continue
+		}
+		if routeID != "" {
+			return ""
+		}
+		routeID = entry.config.ID
+	}
+	return routeID
 }
 
 // managedSession resolves the session a manager was built for.

@@ -76,6 +76,7 @@ func TestRemovedSubscriptionDeadLetterWritesSubscriptionRemovedEntry(t *testing.
 	store := NewFakeDLQStore()
 	rt := goruntime.New(goruntime.WithInstanceID("removed-sub-dlq"), goruntime.WithDLQStore(store))
 	cfg, recv, sender := helperQuiescentRoute("source-route", nil)
+	cfg.SourceSessionID = "source-session"
 	sess := newDeadLetterSession()
 	sessCfg := runsession.Config{SessionID: "source-session"}
 	if err := rt.AddRoute(cfg, recv, sender, sess, &sessCfg); err != nil {
@@ -126,5 +127,26 @@ func TestRemovedSubscriptionDeadLetterInstalledOnSessionWithoutRoute(t *testing.
 	entry := writeHeldDelivery(t, idle, store, "stale/#")
 	if entry.RouteID() != "" || entry.SessionID() != "idle-session" {
 		t.Fatalf("DLQ entry route/session = %q/%q, want \"\"/idle-session", entry.RouteID(), entry.SessionID())
+	}
+}
+
+func TestRemovedSubscriptionDeadLetterNamesNoRouteWhoseReceiverRidesElsewhere(t *testing.T) {
+	store := NewFakeDLQStore()
+	rt := goruntime.New(goruntime.WithInstanceID("removed-sub-sender-only"), goruntime.WithDLQStore(store))
+	cfg, recv, sender := helperQuiescentRoute("sender-route", nil)
+	// The route's primary session block is source-session, but its receiver
+	// subscribes through another session: source-session carries no ingress
+	// route, so a delivery held for its removed filter names none.
+	cfg.SourceSessionID = "other-session"
+	sess := newDeadLetterSession()
+	sessCfg := runsession.Config{SessionID: "source-session"}
+	if err := rt.AddRoute(cfg, recv, sender, sess, &sessCfg); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	startRuntime(t, rt)
+
+	entry := writeHeldDelivery(t, sess, store, "stale/#")
+	if entry.RouteID() != "" || entry.SessionID() != "source-session" {
+		t.Fatalf("DLQ entry route/session = %q/%q, want empty/source-session", entry.RouteID(), entry.SessionID())
 	}
 }
