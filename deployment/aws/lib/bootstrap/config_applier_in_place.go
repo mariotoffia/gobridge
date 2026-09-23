@@ -33,12 +33,20 @@ func (a *App) applyInPlace(ctx context.Context, logical *ports.BridgeConfig, inp
 	if rt == nil || installed == nil || !rt.IsRunning() {
 		return false, nil
 	}
+	// ponytail: the MQTT memory profile shares one allocation equally among the
+	// MQTT ingress sessions and writes each share into the session's
+	// ingress_memory_budget_bytes and the receive_maximum derived from it, both
+	// part of the session's unit. Adding or removing one MQTT ingress session
+	// therefore changes every other MQTT unit, and this reload retires and
+	// rebuilds them all. A session that sets ingress_memory_budget_bytes itself,
+	// at most its share, keeps that budget and stays untouched. Upgrade path: an
+	// allocation that does not depend on how many sessions the config holds.
 	reload, ok := bridge.PlanInPlaceReload(installed.cfg, inputs.RuntimeConfig, installed.transports)
 	if !ok {
 		return false, nil
 	}
-	newBuilder := func(cfg *ports.BridgeConfig) *bridge.Builder { return installed.registerOn(a.newBuilder(cfg)) }
-	if err := a.seedManagedSubscriptionBaselines(ctx, inputs.RuntimeConfig, newBuilder(inputs.RuntimeConfig)); err != nil {
+	partBuilder := func(cfg *ports.BridgeConfig) *bridge.Builder { return installed.registerOn(a.newBuilder(cfg)) }
+	if err := a.seedManagedSubscriptionBaselines(ctx, inputs.RuntimeConfig, partBuilder(inputs.RuntimeConfig)); err != nil {
 		return true, err
 	}
 	if err := a.authorize(epoch); err != nil {
@@ -47,7 +55,7 @@ func (a *App) applyInPlace(ctx context.Context, logical *ports.BridgeConfig, inp
 	oldApplied := a.appliedRef.Get()
 	// Apply's teardown gets the budget every reload-path stop of this root gets.
 	reload.DrainTimeout = drainTimeout(oldApplied)
-	outcome, err := reload.Apply(ctx, rt, newBuilder, nil)
+	outcome, err := reload.Apply(ctx, rt, partBuilder, nil)
 	a.logInPlaceReload(reload, outcome, err)
 
 	switch outcome {
@@ -58,9 +66,11 @@ func (a *App) applyInPlace(ctx context.Context, logical *ports.BridgeConfig, inp
 		a.appliedRef.Set(logical)
 		a.apiKeysRef.Set(inputs.AdminAPIKey, inputs.MonitorAPIKey)
 		// The same factories and mux keep serving; only the configuration they
-		// run changed.
+		// run changed. The installed registry's builder was set up for the
+		// configuration it replaced, so the copy carries none.
 		reg := *installed
 		reg.cfg = inputs.RuntimeConfig
+		reg.builder = nil
 		a.registryRef.Store(&reg)
 		if a.rootCtx != nil {
 			a.startConvergenceWatch(a.rootCtx, rt, logical)
@@ -80,7 +90,9 @@ func (a *App) applyInPlace(ctx context.Context, logical *ports.BridgeConfig, inp
 		// Recovery installs a registry of its own, and a wedge serves none.
 		a.closeSupersededHTTP(ctx, installed)
 	case bridge.InPlaceWedged:
-		_ = stopRuntime(context.Background(), rt, oldApplied)
+		if stopErr := stopRuntime(context.Background(), rt, oldApplied); stopErr != nil {
+			err = errors.Join(err, fmt.Errorf("stop runtime: %w", stopErr))
+		}
 		a.enterWedgedState()
 		a.closeSupersededHTTP(ctx, installed)
 	}

@@ -224,6 +224,7 @@ type App struct {
 	convergenceDegraded    bool
 	convergenceReason      string
 	convergenceRt          *goruntime.Runtime
+	convergenceGen         uint64 // the newest watch's generation; see convergenceWatcherCurrent
 	convergenceWatchCancel context.CancelFunc
 
 	// mu protects started, watchCancel, and serializes config reloads.

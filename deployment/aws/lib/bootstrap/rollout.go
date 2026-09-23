@@ -112,7 +112,7 @@ func (h appRolloutHost) ApplyCommitted(ctx context.Context, cfg *ports.BridgeCon
 // member runs an older generation than its peers. It surfaces in deep health and
 // MetricConfigDegraded via the existing convergence-degraded latch.
 func (h appRolloutHost) MarkDegraded(reason string) {
-	h.a.markConvergenceDegraded(h.a.runtimeRef.Get(), reason)
+	h.a.markConvergenceDegraded(h.a.runtimeRef.Get(), h.a.convergenceGeneration(), reason)
 }
 
 func (h appRolloutHost) RolloutLogger() *slog.Logger { return h.a.logger }

@@ -35,7 +35,7 @@ func TestReconfig1_ConvergenceDegradedStateSurfaces(t *testing.T) {
 	}
 
 	// Budget elapsed without convergence: the watch marks degraded.
-	require.True(t, app.markConvergenceDegraded(rt, "config version 7 applied but transport sessions have not converged"))
+	require.True(t, app.markConvergenceDegraded(rt, app.convergenceGeneration(), "config version 7 applied but transport sessions have not converged"))
 	degraded, reason := app.degradedConfigWatch()
 	require.True(t, degraded, "applied-but-not-converged must surface as degraded")
 	require.Contains(t, reason, "not converged")
@@ -43,7 +43,7 @@ func TestReconfig1_ConvergenceDegradedStateSurfaces(t *testing.T) {
 		"ConfigDegraded gauge must flip to 1 (the signal the shipped process previously lacked)")
 
 	// Sessions converge later: the state clears.
-	app.clearConvergenceDegraded(rt)
+	app.clearConvergenceDegraded(rt, app.convergenceGeneration())
 	degraded2, _ := app.degradedConfigWatch()
 	require.False(t, degraded2, "convergence must clear the applied-but-not-converged state")
 }
@@ -76,7 +76,7 @@ func TestApp_ConvergenceWatch_DiagnosticsNameTheAdoptedDocument(t *testing.T) {
 	t.Cleanup(func() { cancel(); <-watchDone })
 	go func() {
 		defer close(watchDone)
-		app.runConvergenceWatch(ctx, rt, budget)
+		app.runConvergenceWatch(ctx, rt, app.convergenceGeneration(), budget)
 	}()
 	// The watch reads the clock for its deadline and then arms its poll timer, so
 	// an armed timer proves the deadline was taken from the start instant rather
@@ -126,7 +126,7 @@ func TestReconfig1_SupersededWatcherCannotMark(t *testing.T) {
 	app.runtimeRef.Set(current)
 	app.convergenceRt = current
 
-	require.False(t, app.markConvergenceDegraded(stale, "stale"),
+	require.False(t, app.markConvergenceDegraded(stale, app.convergenceGeneration(), "stale"),
 		"a superseded watcher must not mark degraded")
 	degraded, _ := app.degradedConfigWatch()
 	require.False(t, degraded)

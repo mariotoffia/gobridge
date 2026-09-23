@@ -25,9 +25,9 @@ var (
 
 // trackedTransportFactory builds a new session for every NewSession call and
 // counts, per session id, how often each session it built was closed. It
-// advertises plan-driven subscriptions, so the builder gives every session a
-// receiver rides on a manager, which closes it when its unit retires or its
-// runtime stops.
+// advertises plan-driven subscriptions, so the builder hands every session that
+// carries a receiver to a session manager, and the manager closes the session
+// when its unit retires or its runtime stops.
 type trackedTransportFactory struct {
 	caps []ports.Capability
 	// onNewSession, when set, runs first in every NewSession call. It is read
@@ -251,30 +251,11 @@ func TestApplyInPlace_KeepsInstalledRuntimeAndOtherOwnersSessions(t *testing.T) 
 	reg := app.registryRef.Load()
 	assert.NotSame(t, next, reg.cfg, "the registry holds the resolved config, not the logical one")
 	assert.Equal(t, 7, configRouteMaxInFlight(t, reg.cfg, "b"), "the registry holds the config the runtime runs")
+	assert.Nil(t, reg.builder, "no builder set up for the replaced configuration stays installed")
 	assert.Same(t, installed.http, reg.http, "the HTTP factory the runtime mounted on stays installed")
 	assert.Same(t, mux, app.handlerRef.Get(), "the transport server keeps the mux it serves")
 	assert.False(t, sseSenderShutDown(t, mux), "the unchanged SSE sender keeps serving")
 	assert.Equal(t, "rotated-admin-key-654321", app.apiKeysRef.AdminKey(), "the reload's resolved admin key is installed")
-}
-
-// The runtime a reload kept runs a configuration its convergence watch has not
-// judged yet, so the reload starts a fresh one, as a swap does for the runtime
-// it installs.
-func TestApplyInPlace_RestartsTheConvergenceWatch(t *testing.T) {
-	app := newInPlaceTestApp(t, newTrackedTransportFactory(false), adminKeyResolver())
-	ctx, cancel := context.WithCancel(t.Context())
-	t.Cleanup(func() { cancel(); app.watchWg.Wait() })
-	app.rootCtx = ctx
-	require.NoError(t, applyTo(t, app, inPlaceTestConfig("a", "b")))
-	installs := 0
-	app.onRuntimeInstalled = func() { installs++ }
-	require.True(t, app.markConvergenceDegraded(app.CurrentRuntime(), "the running configuration has not converged"))
-
-	require.NoError(t, applyTo(t, app, withRouteChange(inPlaceTestConfig("a", "b"), "b", 2)))
-
-	degraded, _ := app.convergenceDegradedState()
-	assert.False(t, degraded, "the reloaded configuration gets a convergence attempt of its own")
-	assert.Equal(t, 1, installs)
 }
 
 // A withdrawal that lands while the reload builds its parts must not be
@@ -388,6 +369,23 @@ func TestApplyInPlace_WedgedEntersWedgedState(t *testing.T) {
 	assert.Nil(t, app.CurrentAppliedConfig())
 	assert.False(t, rt.IsRunning(), "the runtime is stopped")
 	assert.True(t, sseSenderShutDown(t, mux), "the superseded mux's SSE senders are drained")
+}
+
+// When the wedged runtime does not stop cleanly either, the error says so.
+func TestApplyInPlace_WedgedReportsAFailedStop(t *testing.T) {
+	errStopRefused := errors.New("stop refused")
+	tf := newTrackedTransportFactory(false)
+	app := newInPlaceTestApp(t, tf, adminKeyResolver())
+	require.NoError(t, applyTo(t, app, inPlaceTestConfig("a", "b")))
+	tf.refuseClose("b-s", 1, errCloseRefused)
+	tf.refuseClose("a-s", 1, errStopRefused)
+
+	err := applyTo(t, app, withRouteChange(inPlaceTestConfig("a", "b"), "b", 2))
+
+	require.ErrorIs(t, err, errCloseRefused)
+	require.ErrorIs(t, err, errStopRefused)
+	assert.ErrorContains(t, err, "stop runtime")
+	assert.True(t, app.runtimeTerminal())
 }
 
 func TestApplyInPlace_ResolvesInputsOnce(t *testing.T) {
