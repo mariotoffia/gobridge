@@ -56,7 +56,9 @@ Two states deserve calling out because they look healthy from the outside:
   converged member. If starting empty is never acceptable for a deployment,
   the reference binary accepts `-start-empty=false`, which turns a missing
   config file back into a fatal startup error.
-- **Wedged.** A reconfiguration swap and its recovery both failed, so the
+- **Wedged.** A reconfiguration swap and its recovery both failed, or an
+  in-place reload left a retired reload unit, or a torn runtime, that did not
+  stop cleanly ([ADR 0018](adr/0018-reload-in-place-by-unit.md)), so the
   process holds no active runtime and routes nothing. This is reported through
   the supervisor's own terminal state, so `/live` answers 503 immediately
   rather than waiting for a coarse background backstop, and the orchestrator

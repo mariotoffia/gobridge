@@ -218,7 +218,7 @@ The whole runtime is still replaced, exactly as before, when:
 - the Supervisor was given an explicit `WithSwapMode(SwapOverlap)` or `WithSwapMode(SwapPrepareCommit)`;
 - there is no running runtime to keep, as on the first apply.
 
-The order inside an in-place reload follows the same rule as a full swap. When a retired or added unit holds an exclusive broker identity (`RequiresSerializedSwap`, see [SwapAuto](#swapauto-default)), the retired units stop before their replacements are built, so no MQTT client ID is ever connected twice. Otherwise the replacements are built while the old units still serve. Either way, inside the runtime a replaced unit stops before its replacement starts, so the changed unit has a short gap: its drain plus its start. The whole next document is validated, and every added unit prepared, before anything stops.
+The order inside an in-place reload follows the same rule as a full swap, `RequiresSerializedSwap` (see [SwapAuto](#swapauto-default)), asked of the retired units against the added ones. When an added unit claims an exclusive broker identity, or a retired unit holds one on a transport an added unit still attaches to, the retired units stop before their replacements are built, so no MQTT client ID is ever connected twice. Otherwise the replacements are built while the old units still serve. Either way, inside the runtime a replaced unit stops before its replacement starts, so the changed unit has a short gap: its drain plus its start. The whole next document is validated, and every added unit prepared, before anything stops.
 
 A failed in-place reload ends in one of three ways:
 
@@ -271,7 +271,7 @@ flowchart TD
 
 ### SwapInPlace
 
-Keep the running runtime and replace only the reload units that changed, as described in [What Reconnects on a Change](#what-reconnects-on-a-change). SwapAuto chooses it whenever `bridge.PlanInPlaceReload` accepts the change, and `SwapEvent.SwapMode` reports it. Passed to `WithSwapMode`, it acts as SwapAuto: a change the plan refuses still needs Overlap or PrepareCommit, and only SwapAuto picks the right one.
+Keep the running runtime and replace only the reload units that changed, as described in [What Reconnects on a Change](#what-reconnects-on-a-change). SwapAuto chooses it whenever a runtime is running and `bridge.PlanInPlaceReload` accepts the change, and `SwapEvent.SwapMode` reports it. Passed to `WithSwapMode`, it acts as SwapAuto: a change the plan refuses still needs Overlap or PrepareCommit, and only SwapAuto picks the right one.
 
 ### SwapOverlap
 

@@ -42,7 +42,11 @@ and `/live` fails closed.
 - **Wedge = swap failed AND recovery failed.** In the file-based bootstrap, the
   process is WEDGED only when a prepare/commit swap failed **and** the recovery
   back to the previous runtime also failed (`wedged atomic.Bool`,
-  `deployment/aws/lib/bootstrap/app.go`). `Run` exits
+  `deployment/aws/lib/bootstrap/app.go`). Since
+  [ADR 0018](0018-reload-in-place-by-unit.md) it also wedges when an in-place
+  reload leaves a retired reload unit, or a torn runtime, that does not stop
+  cleanly, since their sessions may still hold the broker identities a rebuild
+  would claim again. `Run` exits
   non-zero once terminal (`ErrRuntimeTerminal`, `app.go`), driven by a
   terminal backstop poll (`defaultTerminalPollInterval = 5s`, `app.go`).
 

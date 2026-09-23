@@ -15,8 +15,8 @@ import (
 // a merge or split of units is handled the same way.
 type InPlaceReload struct {
 	// DrainTimeout bounds each retire, and each stop of a part never grafted,
-	// in Apply. Zero or less uses the running configuration's drain timeout. A caller
-	// whose own stops fall back to a default of theirs for an unset
+	// in Apply. Zero or less uses the running configuration's drain timeout. A
+	// caller whose own stops fall back to a default of theirs for an unset
 	// drain_timeout sets it, so Apply's teardown gets the same budget.
 	DrainTimeout time.Duration
 

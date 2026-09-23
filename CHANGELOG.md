@@ -18,8 +18,9 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   sessions, receivers, senders, bindings and routes joined by the ids they
   reference — and keeps every unit whose content is unchanged running
   untouched: its sessions stay connected and its routes keep delivering. Only
-  the changed, added and removed units are drained, stopped, rebuilt and
-  started inside the running runtime
+  the units that changed are touched: a removed or changed unit is drained and
+  stopped, and an added or changed unit is built and started inside the
+  running runtime
   ([ADR 0018](docs/adr/0018-reload-in-place-by-unit.md)). Previously every
   accepted change disconnected every session of every owner.
 - Both composition roots do it: the Supervisor (`cmd/gobridge`) under
@@ -30,10 +31,14 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 - The whole runtime is still replaced when a bridge-wide section changes
   (`bridge`, `stores`, `config_watch`, `http`), when the derived outbox
   stale-claim duration changes, when a changed unit uses the `http`
-  transport, and in the Supervisor under an explicit `SwapOverlap` or
+  transport (or a transport with no registered factory), and in the
+  Supervisor under an explicit `SwapOverlap` or
   `SwapPrepareCommit`.
-- When a unit holds an exclusive broker identity, the old unit stops before
-  its replacement is built, as in a prepare/commit swap. Inside the runtime a
+- When an added unit claims an exclusive broker identity, or a retired unit
+  holds one on a transport an added unit still attaches to
+  (`RequiresSerializedSwap`, asked of the retired units against the added
+  ones), the old units stop before their replacements are built, as in a
+  prepare/commit swap. Inside the runtime a
   replaced unit always stops before its replacement starts, so a changed SQS
   unit has a short gap that the AWS runtime's overlap swap used to avoid;
   unchanged units have none.
@@ -52,7 +57,7 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   `retired_sessions` and `added_sessions`.
 - **AWS, several MQTT tenants:** the MQTT memory profile shares its
   reservation equally, so adding or removing an MQTT session that takes a
-  share reconnects every MQTT session that leaves
+  share reconnects every other MQTT session that leaves
   `ingress_memory_budget_bytes` unset. Pin it per session to keep the other
   tenants connected; see
   [keeping MQTT tenants connected](docs/aws-deployment/config-reload.md#keeping-mqtt-tenants-connected).

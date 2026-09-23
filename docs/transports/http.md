@@ -233,12 +233,18 @@ re-stamped on the trusted side; a client cannot inject them via the reserved
   drops the event for that subscriber (`SSEDroppedEvents`) rather than blocking
   the fan-out to healthy subscribers. A persistently slow subscriber is evicted
   by the per-write deadline (`write_timeout`), not by queue occupancy.
-- **Config reload and shutdown drain SSE subscribers.** A hot config reload
-  rebuilds the HTTP transport and shutdown closes it; both drain every open SSE
-  stream so clients disconnect and reconnect to the newly-installed instance,
-  rather than holding a live-but-event-less stream on a superseded sender.
-  Expect a brief reconnect on every reload -- even one that changed nothing
-  HTTP-related.
+- **A full config reload and shutdown drain SSE subscribers.** A hot config
+  reload that replaces the whole runtime rebuilds the HTTP transport, and
+  shutdown closes it; both drain every open SSE stream so clients disconnect
+  and reconnect to the newly-installed instance, rather than holding a
+  live-but-event-less stream on a superseded sender. Expect a brief reconnect
+  on every full replacement -- a change to a bridge-wide section (`bridge`,
+  `stores`, `config_watch`, `http`), a change touching a unit that uses the
+  `http` transport, or a change of the derived outbox stale-claim duration --
+  even when it changed nothing HTTP-related. An in-place reload
+  ([ADR 0018](../adr/0018-reload-in-place-by-unit.md)) never replaces a unit
+  that uses the `http` transport and keeps the HTTP transport it has, so open
+  SSE streams stay connected through it.
 - **SSE frames carry no `id:` field.** Emitting one would make `EventSource`
   clients send `Last-Event-ID` on reconnect and expect a replay window that does
   not exist. The envelope ID remains in the JSON payload.

@@ -108,11 +108,14 @@ library falls back to the [full swap](#swap-modes) when:
 - the outbox stale-claim duration changes (derived from the largest route
   `step_down_grace` unless `stores.outbox` sets `stale_claim_duration`);
 - a changed, added or removed unit uses the `http` transport, whose endpoints
-  cannot be unmounted from the transport server or mounted twice;
+  cannot be unmounted from the transport server or mounted twice, or a
+  transport with no registered factory, whose capabilities cannot be read;
 - no runtime is running.
 
-When a retired or added unit holds an exclusive broker identity (see the list
-under [Swap Modes](#swap-modes)), the retired units stop before their
+When an added unit claims an exclusive broker identity, or a retired unit holds
+one on a transport an added unit still attaches to (the
+`bridge.RequiresSerializedSwap` rule under [Swap Modes](#swap-modes), asked of
+the retired units against the added ones), the retired units stop before their
 replacements are built; otherwise the replacements are built first. Inside the
 runtime a replaced unit always stops before its replacement starts, so a
 changed unit has a short gap — its drain plus its start — even on SQS, where a

@@ -14,7 +14,9 @@ The Supervisor (`cmd/gobridge`) and the AWS runtime
 (`deployment/aws/lib/bootstrap`) built a new runtime from the new document and
 stopped the old one, in one of two orders:
 
-- **overlap** — build and start the new runtime, then stop the old one;
+- **overlap** — build the new runtime while the old one still runs, then hand
+  over: the Supervisor stops the old runtime and starts the new one, and the
+  AWS runtime starts the new runtime before it stops the old one;
 - **prepare/commit** — stop the old runtime first, then build and start the new
   one, because a session holds an exclusive broker identity (an MQTT client ID,
   an exclusive AMQP consumer, a pinned Service Bus session) that two runtimes
@@ -82,22 +84,28 @@ reload takes the full replacement exactly as before, when:
 The caller also needs a running runtime. The Supervisor reloads in place only
 under `SwapAuto`, the default. `WithSwapMode(SwapInPlace)` acts as `SwapAuto`;
 an explicit `SwapOverlap` or `SwapPrepareCommit` keeps the full replacement it
-asks for. The AWS runtime always tries in place first. Both run every existing
-check before they plan — no-op detection, the clustered-reload guard, the store
-identity, lease `session_id` and durable-backlog preflights — so an in-place
-reload never lets through a change a full replacement would refuse.
+asks for. The AWS runtime always tries in place first. Each root runs the
+checks its own full swap runs before an in-place reload changes anything: the
+Supervisor its no-op detection, clustered-reload guard, and store-identity,
+lease `session_id` and durable-backlog preflights; the AWS runtime its no-op
+content fingerprint, deployment-profile admission and cluster reload seam. So
+neither root's in-place reload lets through a change its own full swap would
+refuse.
 
 **How it runs.** `(*bridge.InPlaceReload).Apply` works in this order:
 
 1. It validates the whole next document with the builder's full preflight, and
-   prepares a part for every added unit. A part is a runtime built from one
-   added unit over the running runtime's own stores, never started. Nothing is
-   opened in this step, and a failure changes nothing.
-2. When an exclusive broker identity is involved —
-   `bridge.RequiresSerializedSwap` asked of the retired units against the added
-   ones — the reload is serialized: the retired units stop before the parts are
-   built, so no identity is ever held twice. Otherwise the parts are built while
-   the retired units still serve, and a failed build changes nothing.
+   plans a part for every added unit: the unit's own preflight, and the checks
+   a full build runs over its stores, applied to the running runtime's stores.
+   A part is a runtime built from one added unit over those stores and never
+   started; it is built in step 2 or after step 3. Nothing is opened in this
+   step, and a failure changes nothing.
+2. When `bridge.RequiresSerializedSwap`, asked of the retired units against the
+   added ones, is true — an added unit claims an exclusive broker identity, or a
+   retired unit holds one on a transport an added unit still attaches to — the
+   reload is serialized: the parts are built only after step 3, so no identity
+   is ever held twice. Otherwise the parts are built now, while the retired
+   units still serve, and a failed build changes nothing.
 3. It retires each retired unit with `runtime.Retire`: the unit's routes and
    sessions leave the runtime, its in-flight deliveries settle within the stop
    drain budget, its route runners, outbox drainers and session managers stop,
@@ -150,10 +158,12 @@ the running one — or it fails.
   session) now has a short gap — its drain plus its start — that the AWS
   runtime's overlap swap used to avoid by starting the new runtime first.
   Messages wait at the source meanwhile. Only that unit sees the gap.
-- The AWS runtime's MQTT memory profile gives every MQTT session that leaves
-  `ingress_memory_budget_bytes` unset an equal share of one reservation, and
-  writes the share into the session's configuration. Adding or removing an MQTT
-  session that takes a share changes every unpinned session, so each of their
+- The AWS runtime's MQTT memory profile divides one reservation equally among
+  every MQTT session that can receive — every session a receiver uses, and
+  every persistent or exclusive session in use, pinned or not. A session that
+  leaves `ingress_memory_budget_bytes` unset takes its share as its budget,
+  written into its configuration. So adding or removing one such MQTT session
+  changes the share of every other unpinned MQTT session, and each of their
   units is replaced. Pinning `ingress_memory_budget_bytes` per session, at or
   below its share, keeps the other units connected; see
   [keeping MQTT tenants connected](../aws-deployment/config-reload.md#keeping-mqtt-tenants-connected).

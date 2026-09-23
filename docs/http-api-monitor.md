@@ -48,8 +48,10 @@ itself as a fully working member of the pool.
 `live` reports the state of the **process**, not only of the runtime object it
 can see. A composition root that wires its supervisor's terminal state into the
 server answers 503 as soon as that supervisor is wedged -- a reconfiguration
-swap and its recovery both failed, so there is no active runtime and nothing is
-routed. Without that signal a wedged process is indistinguishable from a normal
+swap and its recovery both failed, or an in-place reload left a retired reload
+unit, or a torn runtime, that did not stop cleanly
+([ADR 0018](adr/0018-reload-in-place-by-unit.md)), so there is no active
+runtime and nothing is routed. Without that signal a wedged process is indistinguishable from a normal
 swap window and would keep answering 200 forever.
 
 ### Authenticated
