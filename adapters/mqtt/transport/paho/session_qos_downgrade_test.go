@@ -81,7 +81,7 @@ func newDowngradeSessionOnClock(
 	return s, fake, clk, rec
 }
 
-// withReceiver registers a receiver handler and names it in the plan, so the
+// withReceiver registers a receiver handler and names it in the session plan, so the
 // session can reach ServiceLevelFull.
 func withReceiver(s *Session, plan connectivity.SessionPlan) connectivity.SessionPlan {
 	s.router.Register("rx-sensors", func(*pahov5.Publish) {})

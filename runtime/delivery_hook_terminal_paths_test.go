@@ -22,8 +22,8 @@ func (p permanentProcessor) Process(_ context.Context, _ *messaging.Envelope, _ 
 	return p.err
 }
 
-// TestRouteRunner_TerminalPaths_EmitExactlyOneOnSettled is the finding-7
-// audit: EVERY terminal outcome must invoke DeliveryHook.OnSettled exactly
+// TestRouteRunner_TerminalPaths_EmitExactlyOneOnSettled audits the settle
+// contract: EVERY terminal outcome must invoke DeliveryHook.OnSettled exactly
 // once, with Terminal=true on the ingress direction. Before the fix several
 // terminal branches (route-expired, filtered, processor-permanent→DLQ,
 // resolve-error→DLQ, retry-unsupported→DLQ) ACKed the source without settling,

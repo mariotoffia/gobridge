@@ -37,7 +37,7 @@ func (s *blockingHealthSession) Health(context.Context) ports.SessionHealth {
 func (s *blockingHealthSession) Events() <-chan ports.SessionEvent { return nil }
 func (s *blockingHealthSession) Close(context.Context) error       { return nil }
 
-// Finding: DeepHealth must snapshot under rt.mu and invoke the blocking
+// DeepHealth must snapshot under rt.mu and invoke the blocking
 // plugin Session.Health OUTSIDE the lock, so a wedged broker client cannot stall
 // every other rt.mu user (Role, /live, /ready, Stop) for the duration. This test
 // blocks Health and proves Role() still returns promptly.

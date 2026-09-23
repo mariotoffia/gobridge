@@ -13,8 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
-// TestPollLoop_EmitsPollErrorsCounter is the regression for Finding 5 on the
-// poll path: a failed ReceiveMessage must increment the SQSPollErrors counter,
+// TestPollLoop_EmitsPollErrorsCounter pins the poll-path error metric: a failed ReceiveMessage must increment the SQSPollErrors counter,
 // not merely log a warning. The loop is driven with a fake clock so the
 // post-error backoff sleep blocks (no real time passes); cancelling the
 // context releases it and the loop returns.

@@ -11,7 +11,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GAP-15: SQS SendBatch with Empty Slice — Contract Compliance
+// SQS SendBatch with Empty Slice — Contract Compliance
 //
 // ports.BatchSender contract: SendBatch(ctx, []) returns an empty result and a nil error.
 // The for-loop skips entirely when len(envs)==0; verify this is stable.

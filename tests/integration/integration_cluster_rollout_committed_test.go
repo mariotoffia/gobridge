@@ -30,12 +30,12 @@ func rolloutDecoded(t *testing.T, cfg *ports.BridgeConfig) *ports.BridgeConfig {
 }
 
 // Coordinated cluster rollout — the durable last-committed config artifact
-// (design Phase-4 residual, closed in Phase 5A) against REAL DynamoDB and the
-// REAL config codec (parser.MarshalBridgeConfigJSON <-> parser.Parse). The unit
-// tests prove the joiner/applier logic over a fake codec; what only this layer
-// proves is that the artifact round-trips a real config THROUGH DynamoDB and back
-// with a digest the boot path accepts — the one Phase-5A risk a fake codec cannot
-// exercise. A member that boots on the committed config after an abort is passing
+// (docs/cluster/spec/cluster-config-rollout-protocol.md §11) against REAL
+// DynamoDB and the REAL config codec (parser.MarshalBridgeConfigJSON <->
+// parser.Parse). The unit tests prove the joiner/applier logic over a fake codec;
+// what only this layer proves is that the artifact round-trips a real config
+// THROUGH DynamoDB and back with a digest the boot path accepts — the one risk a
+// fake codec cannot exercise. A member that boots on the committed config after an abort is passing
 // that digest check end to end.
 
 // TestClusterRolloutDDB_CommitWritesCommittedArtifact proves a commit durably
@@ -72,8 +72,8 @@ func TestClusterRolloutDDB_CommitWritesCommittedArtifact(t *testing.T) {
 	}
 }
 
-// TestClusterRolloutDDB_BootsOnCommittedAfterAbort is the end-to-end proof of the
-// Phase-5A residual fix (seq 3) with the real codec: after a rollout aborts, a
+// TestClusterRolloutDDB_BootsOnCommittedAfterAbort is the end-to-end proof of
+// boot-on-committed with the real codec: after a rollout aborts, a
 // RESTARTED member — a fresh Supervisor over the SAME durable stores, booting on
 // the rejected candidate its config source still holds — starts on the last
 // COMMITTED config, not the aborted one. This exercises the full path: one member

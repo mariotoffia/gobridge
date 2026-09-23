@@ -468,11 +468,12 @@ func (h *warnCountingHandler) count() int {
 }
 
 // TestSessionPlanFor_WarnsOnDivergentPublisherTopology is the focused guard for
-// REV-2-topowarn: two senders naming the SAME exchange collapse to the FIRST
-// (broker first-declare-wins), but a sibling whose publisher.* topology ACTUALLY
-// DIFFERS from the kept first is otherwise silently discarded — a misconfig with
-// no signal. sessionPlanFor must warn on genuine divergence and stay silent on a
-// legitimate identical re-declaration (a plain fan-out of two senders).
+// the divergent-topology warning: two senders naming the SAME exchange collapse
+// to the FIRST (broker first-declare-wins), but a sibling whose publisher.*
+// topology ACTUALLY DIFFERS from the kept first is otherwise silently discarded —
+// a misconfig with no signal. sessionPlanFor must warn on genuine divergence and
+// stay silent on a legitimate identical re-declaration (a plain fan-out of two
+// senders).
 func TestSessionPlanFor_WarnsOnDivergentPublisherTopology(t *testing.T) {
 	t.Run("divergent topology on same exchange -> one warn + first-wins plan", func(t *testing.T) {
 		h := &warnCountingHandler{}

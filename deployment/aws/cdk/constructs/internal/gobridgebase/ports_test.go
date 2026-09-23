@@ -39,7 +39,7 @@ func TestDerivePortMappings(t *testing.T) {
 			},
 		},
 		{
-			// c15-cdk-ports: the AWS runtime IGNORES the bridge
+			// The AWS runtime IGNORES the bridge
 			// yaml `http:` block (lib/bootstrap.checkIgnoredHTTPBlock) and
 			// binds admin/monitor to the BootstrapConfig addresses only.
 			// The derived ports MUST therefore ignore http.admin_addr /

@@ -12,7 +12,7 @@ import (
 )
 
 // ══════════════════════════════════════════════════════════════════════════
-// Chunk 10 validation regressions
+// Validation regressions
 // ══════════════════════════════════════════════════════════════════════════
 
 // TestValidator_PipelineTimeExceedsVisibility_Rejected is the regression:

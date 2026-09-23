@@ -391,8 +391,8 @@ func TestValidator_MultipleRouteErrors(t *testing.T) {
 }
 
 // TestValidator_SharedOutbox_NonExclusiveSession_Rejected verifies that
-// finding 11 is enforced: a shared_outbox route bound to a non-exclusive
-// session is rejected at validation. A non-exclusive session never acquires
+// a shared_outbox route bound to a non-exclusive session is rejected at
+// validation. A non-exclusive session never acquires
 // a lease, so its outbox drainer's TokenFn reports "not held" every cycle and
 // the partition never drains — persisted records would silently strand. The
 // combo must therefore fail fast instead of ACKing the source into a black hole.
@@ -612,8 +612,8 @@ func TestValidator_SharedOutbox_FanOutAtLimit(t *testing.T) {
 		},
 		Bindings: bindings,
 	}
-	// shared_outbox requires an exclusive session with a lease store
-	// (finding 11); the subject here is the fan-out cardinality limit.
+	// shared_outbox requires an exclusive session with a lease store;
+	// the subject here is the fan-out cardinality limit.
 	sessCfg := session.DefaultConfig("sess", true)
 
 	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &sessCfg); err != nil {
@@ -881,8 +881,8 @@ func TestValidator_SharedOutbox_BindingInheritsRouteSession(t *testing.T) {
 			{ID: "b-inherit", Address: "topic/a"}, // no SessionID → inherits route session
 		},
 	}
-	// shared_outbox requires an exclusive session (finding 11); the subject
-	// here is that an empty binding session inherits the route session.
+	// shared_outbox requires an exclusive session; the subject here is that
+	// an empty binding session inherits the route session.
 	sessCfg := session.DefaultConfig("route-sess", true)
 
 	if err := rt.AddRoute(cfg, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &sessCfg); err != nil {

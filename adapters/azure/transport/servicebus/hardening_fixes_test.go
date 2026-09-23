@@ -15,7 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
-// --- Finding 4: ReceiveAndDelete settlement -------------------------------
+// --- ReceiveAndDelete settlement ------------------------------------------
 
 // In ReceiveAndDelete mode the broker removes the message at receive time,
 // so there is no lock to settle. Ack must be a no-op (the PeekLock-only
@@ -143,7 +143,7 @@ func TestReceiveAndDelete_DisablesAutoExtend(t *testing.T) {
 	}
 }
 
-// --- Finding 2: topic subscription delayed-retry fan-out ------------------
+// --- Topic subscription delayed-retry fan-out -----------------------------
 
 // A delivery whose receiver structurally disables delayed retry (a topic
 // subscription, scheduler == nil) must fall back to AbandonMessage on a
@@ -244,7 +244,7 @@ func TestReceiver_DelayedRetryDisabledWiring(t *testing.T) {
 	}
 }
 
-// --- Finding 3: emit failure cancels the per-delivery context -------------
+// --- Emit failure cancels the per-delivery context ------------------------
 
 // When emit returns an error the poll loop must cancel the delivery context
 // it handed to emit. That context parents the auto-extend goroutine, so
@@ -282,11 +282,11 @@ func TestReceiver_EmitError_CancelsDeliveryContext(t *testing.T) {
 		t.Fatal("emit was not called")
 	}
 	if emitCtx.Err() == nil {
-		t.Fatal("delivery context must be cancelled after emit error (finding 3: prevents auto-extend leak)")
+		t.Fatal("delivery context must be cancelled after emit error (prevents auto-extend leak)")
 	}
 }
 
-// --- Finding 6: auto-extend max failures cancels the processing context ----
+// --- Auto-extend max failures cancels the processing context ---------------
 
 // After autoExtendMaxFailures consecutive lock-renewal errors the loop must
 // cancel the processing (delivery) context — the one handed to emit — not
@@ -337,11 +337,11 @@ func TestAutoExtend_MaxFailures_CancelsProcessingContext(t *testing.T) {
 	select {
 	case <-deliveryCtx.Done():
 	case <-time.After(2 * time.Second):
-		t.Fatal("processing context must be cancelled after auto-extend max failures (finding 6)")
+		t.Fatal("processing context must be cancelled after auto-extend max failures")
 	}
 }
 
-// --- Finding 7: max_wait_time bounds the receive --------------------------
+// --- max_wait_time bounds the receive -------------------------------------
 
 // MaxWaitTime is applied as a per-receive context deadline (the Azure SDK
 // has no max-wait option of its own).
@@ -445,7 +445,7 @@ func TestReceiver_ParentCancel_SurfacesError(t *testing.T) {
 	}
 }
 
-// --- Finding 8: VisibilityTimeoutProvider ---------------------------------
+// --- VisibilityTimeoutProvider --------------------------------------------
 
 // The Factory must declare a visibility window so the runtime validator can
 // check SendTimeout against it.

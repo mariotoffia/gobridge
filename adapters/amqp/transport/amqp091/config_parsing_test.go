@@ -1,11 +1,11 @@
 // ═══════════════════════════════════════════════
 // Config Option Parsing Tests
 //
-// Validates BUG-3: amqp091 optDuration/optInt only accept
-// native Go types, rejecting JSON-sourced float64/string values.
+// Validates that amqp091 optDuration/optInt accept JSON-sourced
+// float64/string values, not only native Go types.
 //
-// Also validates API-1: SessionOptionsFromMap should call
-// validate() like amqp10 does.
+// Also validates that SessionOptionsFromMap calls validate()
+// like amqp10 does.
 // ═══════════════════════════════════════════════
 package amqp091
 
@@ -26,51 +26,53 @@ func TestOptDuration_NativeDuration(t *testing.T) {
 	}
 }
 
-// TestOptDuration_StringParsing exposes BUG-3: optDuration should parse
+// TestOptDuration_StringParsing pins that optDuration parses
 // duration strings like "5s", "100ms" (as JSON/YAML typically produce).
 func TestOptDuration_StringParsing(t *testing.T) {
 	m := map[string]any{"key": "5s"}
 	d, ok := optDuration(m, "key")
 	if !ok {
 		t.Fatal("expected ok=true for duration string '5s' — " +
-			"BUG-3: amqp091 optDuration only accepts time.Duration, not string")
+			"amqp091 optDuration only accepts time.Duration, not string")
 	}
 	if d != 5*time.Second {
 		t.Fatalf("duration = %v, want 5s", d)
 	}
 }
 
-// TestOptDuration_Float64 exposes BUG-3: JSON numbers decode as float64.
+// TestOptDuration_Float64 pins that optDuration accepts float64, the
+// type JSON numbers decode as.
 func TestOptDuration_Float64(t *testing.T) {
 	m := map[string]any{"key": float64(10)}
 	d, ok := optDuration(m, "key")
 	if !ok {
 		t.Fatal("expected ok=true for float64 — " +
-			"BUG-3: amqp091 optDuration does not handle float64 from JSON")
+			"amqp091 optDuration does not handle float64 from JSON")
 	}
 	if d != 10*time.Second {
 		t.Fatalf("duration = %v, want 10s", d)
 	}
 }
 
-// TestOptDuration_Int exposes BUG-3: int seconds should be supported.
+// TestOptDuration_Int pins that int seconds are supported.
 func TestOptDuration_Int(t *testing.T) {
 	m := map[string]any{"key": 30}
 	d, ok := optDuration(m, "key")
 	if !ok {
-		t.Fatal("expected ok=true for int — BUG-3: amqp091 optDuration does not handle int")
+		t.Fatal("expected ok=true for int — amqp091 optDuration does not handle int")
 	}
 	if d != 30*time.Second {
 		t.Fatalf("duration = %v, want 30s", d)
 	}
 }
 
-// TestOptInt_Float64 exposes BUG-3: JSON numbers decode as float64.
+// TestOptInt_Float64 pins that optInt accepts float64, the type JSON
+// numbers decode as.
 func TestOptInt_Float64(t *testing.T) {
 	m := map[string]any{"key": float64(42)}
 	v, ok := optInt(m, "key")
 	if !ok {
-		t.Fatal("expected ok=true for float64 — BUG-3: optInt does not handle float64")
+		t.Fatal("expected ok=true for float64 — optInt does not handle float64")
 	}
 	if v != 42 {
 		t.Fatalf("value = %d, want 42", v)
@@ -98,13 +100,13 @@ func TestOptInt_Missing(t *testing.T) {
 	}
 }
 
-// TestSessionOptionsFromMap_Validates exposes API-1: SessionOptionsFromMap
-// should validate the options (e.g., reject empty broker_url).
+// TestSessionOptionsFromMap_Validates pins that SessionOptionsFromMap
+// validates the options (e.g., rejects an empty broker_url).
 func TestSessionOptionsFromMap_Validates(t *testing.T) {
 	_, err := SessionOptionsFromMap(map[string]any{})
 	if err == nil {
 		t.Fatal("SessionOptionsFromMap should validate and return error " +
-			"for missing broker_url (API-1: no validation)")
+			"for missing broker_url")
 	}
 }
 

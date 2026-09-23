@@ -14,8 +14,8 @@ import (
 
 // TestHandleDeepHealth_ConfigWatchProjection asserts the deep-health endpoint
 // additively surfaces live-reconfiguration health from the DegradedProvider so a
-// bridge running blind on its last good config is observable to operators
-// (Finding 4). The projection is omitted entirely when no provider is wired.
+// bridge running blind on its last good config is observable to operators.
+// The projection is omitted entirely when no provider is wired.
 func TestHandleDeepHealth_ConfigWatchProjection(t *testing.T) {
 	tests := []struct {
 		name         string

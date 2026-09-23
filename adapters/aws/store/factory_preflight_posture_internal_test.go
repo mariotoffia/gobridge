@@ -38,7 +38,7 @@ func warnLogger() (*slog.Logger, *bytes.Buffer) {
 // COULD-NOT-VERIFY error — a DescribeTable throttle, an AccessDenied on a
 // least-privilege role, or DescribeTable being unsupported by an emulator. An
 // inability to verify the schema is not evidence the table is valid, so it must
-// block boot rather than be swallowed as success (c13-preflight-failopen). The
+// block boot rather than be swallowed as success. The
 // only escape is the explicit WithSchemaPreflightAdvisory dev/emulator opt-out,
 // which downgrades an unverifiable table to a loud WARN + fail-open.
 //

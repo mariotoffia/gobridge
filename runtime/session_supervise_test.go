@@ -130,7 +130,7 @@ func TestSuperviseSession_RestartsTransientErrorWithoutTerminating(t *testing.T)
 	}
 }
 
-// Finding: a ErrStaleFencingToken means another instance currently owns the
+// An ErrStaleFencingToken means another instance currently owns the
 // lease. Previously the supervisor stopped cleanly, which permanently abandoned
 // standby duty — the instance could never re-acquire when the active one later
 // stepped down, silently removing the only failover target. The corrected
@@ -198,7 +198,7 @@ func TestSuperviseSession_StaleFencingTokenRestartsKeepingStandbyDuty(t *testing
 	}
 }
 
-// Finding: a ErrSessionUnrecoverable (a single-use session that
+// An ErrSessionUnrecoverable (a single-use session that
 // cannot re-Start after a step-down Close) must be ESCALATED to terminal — the
 // supervisor RETURNS the error (so startBackground flips terminal and the pod
 // restarts with a fresh session) instead of looping on the dead instance, which

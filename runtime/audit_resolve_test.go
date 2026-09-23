@@ -13,7 +13,7 @@ import (
 // ═══════════════════════════════════════════════════════════════════
 // Resolve & Address Rendering Audit Tests
 //
-// Validates issues identified by SEC-005, SEC-006:
+// Validates the header-copy and address-rendering hazards:
 //   - copyHeaders performs shallow copy (mutable reference sharing)
 //   - RenderAddress control character injection
 //   - StaticResolver defensive copy
@@ -88,7 +88,7 @@ func TestCopyHeaders_Empty(t *testing.T) {
 
 // TestRenderAddress_ControlCharInjection validates that substituted
 // values containing control characters pass through (no sanitization).
-// This documents the SEC-005 finding for non-MQTT transports.
+// This documents that non-MQTT transports do not sanitize them.
 func TestRenderAddress_ControlCharInjection(t *testing.T) {
 	headers := map[string]any{
 		"queue": "my-queue\x00injected",
@@ -100,7 +100,7 @@ func TestRenderAddress_ControlCharInjection(t *testing.T) {
 	}
 
 	if !strings.Contains(result, "\x00") {
-		t.Fatal("expected null byte to pass through (documenting SEC-005)")
+		t.Fatal("expected null byte to pass through (no sanitization for non-MQTT transports)")
 	}
 }
 

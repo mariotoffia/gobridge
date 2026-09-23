@@ -11,7 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// Finding 9 — transport capabilities.
+// Transport capabilities.
 //
 // CapDelayedSend is declared (SQS supports DelaySeconds). CapSharedConsumer
 // is deliberately OMITTED: declaring it would force fencing on unfenced SQS
@@ -27,7 +27,7 @@ func TestFactory_Capabilities(t *testing.T) {
 		"shared_consumer must stay omitted; it would force fencing on SQS direct_hold routes")
 }
 
-// Finding 10 — poll-backoff / init-timeout knobs are deployable via plugin config.
+// Poll-backoff / init-timeout knobs are deployable via plugin config.
 
 func TestConfig_ToReceiverConfig_ThreadsResilienceKnobs(t *testing.T) {
 	c := Config{
@@ -121,7 +121,7 @@ func TestConfig_Validate_VisibilityTimeoutBounds(t *testing.T) {
 	})
 }
 
-// Finding 2 — per-route visibility timeout, threaded into the validator.
+// Per-route visibility timeout, threaded into the validator.
 //
 // EffectiveVisibilityTimeout exposes the configured value (default 30s);
 // the builder threads it (and AutoExtendEnabled) into the runtime

@@ -11,7 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 )
 
-// --- c6-empty-msgid: stable, entity-namespaced fallback ID -----------------
+// --- Empty MessageID: stable, entity-namespaced fallback ID ----------------
 
 // TestASBReceivedToEnvelope_EmptyMessageIDStableFromSequenceNumber proves
 // that a broker message with an empty MessageID maps to a STABLE envelope

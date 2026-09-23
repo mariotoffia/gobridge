@@ -64,10 +64,10 @@ func TestCountPendingQueryPlansAreIndexed(t *testing.T) {
 		query string
 		// args binds any ? placeholders so EXPLAIN QUERY PLAN can run.
 		args []any
-		// wantIndex must appear in the plan (proves the intended, bounded index
+		// wantIndex must appear in the query plan (proves the intended, bounded index
 		// serves the count).
 		wantIndex string
-		// bannedIndex must NOT appear in the plan. For the fleet-wide path this
+		// bannedIndex must NOT appear in the query plan. For the fleet-wide path this
 		// is the composite index, whose use here means a full covering scan of
 		// every row (the pre-fix bounded-cost violation).
 		bannedIndex string

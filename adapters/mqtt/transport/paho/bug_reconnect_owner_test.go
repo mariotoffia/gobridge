@@ -20,7 +20,7 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════
 // Single owner of reconnect reconciliation
 //
-// Finding: paho OnConnectionUp reconciled
+// Paho OnConnectionUp reconciled
 // subscriptions inline AND the runtime session manager reconciled again on
 // the same SessionConnected event. The real defect was silent message loss:
 //   - OnConnectionUp emitted SessionConnected BEFORE resetting activeSubs,

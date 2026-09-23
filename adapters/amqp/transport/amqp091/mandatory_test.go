@@ -1,17 +1,17 @@
 // ═══════════════════════════════════════════════
 // Production-readiness remediation tests: mandatory-publish safety
-// (c5-mandatory) and metrics threading (c5-metrics-dropped).
+// and metrics threading.
 //
-// c5-mandatory: with mandatory=false the broker CONFIRMS an unroutable
+// Mandatory publish: with mandatory=false the broker CONFIRMS an unroutable
 // publish and then silently DISCARDS it, so the bridge acks the source and
 // the message is lost with zero telemetry. The managed factory therefore
 // refuses to build a sender unless it is mandatory=true OR the operator has
 // explicitly opted into the loss via allow_unroutable_drop.
 //
-// c5-metrics-dropped: NewFactory stored the exporter but the sub-factories
-// only received the logger, so every managed sender/receiver metric went to
-// a NoopExporter in production. The factory now threads the exporter through
-// to the built SenderConfig/ReceiverConfig.
+// Metrics threading: NewFactory must thread its exporter through to the
+// built SenderConfig/ReceiverConfig. Handing the sub-factories only the
+// logger would send every managed sender/receiver metric to a NoopExporter
+// in production.
 // ═══════════════════════════════════════════════
 package amqp091
 

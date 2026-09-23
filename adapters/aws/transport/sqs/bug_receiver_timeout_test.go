@@ -12,14 +12,14 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// BUG RES-003/004: SQS Receiver ensureClient and ReceiveMessage no per-call
-// timeout. The fix wraps init in a 30s timeout and each ReceiveMessage
-// in a per-poll timeout derived from WaitTimeSeconds.
+// The SQS Receiver must bound ensureClient and every ReceiveMessage call:
+// init runs under a 30s timeout and each ReceiveMessage under a per-poll
+// timeout derived from WaitTimeSeconds.
 
-// TestBugRES003_EnsureClient_RespectsTimeout verifies that Run wraps the
+// TestReceiver_EnsureClient_RespectsTimeout verifies that Run wraps the
 // ensureClient + resolveQueueURL calls in a bounded timeout, so a slow
 // AWS config build does not hang indefinitely.
-func TestBugRES003_EnsureClient_RespectsTimeout(t *testing.T) {
+func TestReceiver_EnsureClient_RespectsTimeout(t *testing.T) {
 	// A mock client that blocks on GetQueueUrl until context expires.
 	blockingMock := &mockSQSClient{
 		GetQueueUrlFn: func(ctx context.Context, _ *awssqs.GetQueueUrlInput, _ ...func(*awssqs.Options)) (*awssqs.GetQueueUrlOutput, error) {
@@ -61,10 +61,10 @@ func TestBugRES003_EnsureClient_RespectsTimeout(t *testing.T) {
 	}
 }
 
-// TestBugRES004_PollLoop_UsesPerCallTimeout verifies that each
+// TestReceiver_PollLoop_UsesPerCallTimeout verifies that each
 // ReceiveMessage call gets a per-poll timeout so a stuck API call
 // does not block the entire loop.
-func TestBugRES004_PollLoop_UsesPerCallTimeout(t *testing.T) {
+func TestReceiver_PollLoop_UsesPerCallTimeout(t *testing.T) {
 	callCount := 0
 	var outerCancel context.CancelFunc
 	mock := &mockSQSClient{
@@ -109,9 +109,9 @@ func TestBugRES004_PollLoop_UsesPerCallTimeout(t *testing.T) {
 	}
 }
 
-// TestBugRES003_InitTimeout_ReturnsClassifiedError verifies the error
+// TestReceiver_InitTimeout_ReturnsClassifiedError verifies the error
 // from a timed-out initialisation is a BridgeError.
-func TestBugRES003_InitTimeout_ReturnsClassifiedError(t *testing.T) {
+func TestReceiver_InitTimeout_ReturnsClassifiedError(t *testing.T) {
 	blockingMock := &mockSQSClient{
 		GetQueueUrlFn: func(ctx context.Context, _ *awssqs.GetQueueUrlInput, _ ...func(*awssqs.Options)) (*awssqs.GetQueueUrlOutput, error) {
 			<-ctx.Done()

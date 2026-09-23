@@ -17,7 +17,7 @@ import (
 )
 
 // TestIntegration_AppCoordinatedRolloutOverDynamoDB is the production-faithful
-// proof of the Phase-6 ship: the shipped AWS App, given ONLY a DynamoDB
+// proof that the shipped AWS App hosts the rollout barrier: the shipped AWS App, given ONLY a DynamoDB
 // client, builds its OWN coordinated rollout barrier — the DynamoDB coordination
 // store (created via EnsureTable), the lease store, and the real config codec — and
 // drives a live-safe reload through it to a committed swap over REAL DynamoDB. The
@@ -74,7 +74,7 @@ func TestIntegration_AppCoordinatedRolloutOverDynamoDB(t *testing.T) {
 	assert.False(t, app.manager.ReconfigurePending(), "AdoptRunning re-synced the manager over real DynamoDB")
 
 	// The durable committed artifact was written to DynamoDB and decodes back with
-	// the App's REAL codec — the Phase-5A round-trip risk, proven through the App.
+	// the App's REAL codec — the artifact round-trip risk, proven through the App.
 	// Waited for, not read on the heels of the swap: the artifact write follows the
 	// local apply on the drive goroutine and is retried until it verifies, so the
 	// generation becoming the running config is NOT the instant the artifact

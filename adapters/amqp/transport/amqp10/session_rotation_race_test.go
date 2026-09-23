@@ -17,7 +17,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// ── Finding 2: connect()/ApplyCredentials data race ──────────────────
+// ── connect()/ApplyCredentials data race ─────────────────────────────
 
 // TestSession_ConnectRotation_NoRace drives concurrent reconnect dials
 // and credential rotations. The dial reads the TLS material the way
@@ -72,7 +72,7 @@ func TestSession_ConnectRotation_NoRace(t *testing.T) {
 }
 
 // TestApplyAMQP10TLSMaterial_SwapsPointer verifies the helper replaces
-// the *TLSConfig pointer (finding 2) rather than mutating the existing
+// the *TLSConfig pointer rather than mutating the existing
 // struct in place, and preserves file-based fields across the swap.
 func TestApplyAMQP10TLSMaterial_SwapsPointer(t *testing.T) {
 	orig := &TLSConfig{
@@ -87,7 +87,7 @@ func TestApplyAMQP10TLSMaterial_SwapsPointer(t *testing.T) {
 		t.Fatal("applyAMQP10TLSMaterial should report a change")
 	}
 	if tls == orig {
-		t.Fatal("pointer was not swapped; helper mutated the config in place (finding 2)")
+		t.Fatal("pointer was not swapped; helper mutated the config in place")
 	}
 	if orig.CertPEM.Reveal() != "old-cert" {
 		t.Fatalf("original config was mutated: CertPEM = %q", orig.CertPEM.Reveal())
@@ -100,7 +100,7 @@ func TestApplyAMQP10TLSMaterial_SwapsPointer(t *testing.T) {
 	}
 }
 
-// ── Finding 3: receiver pins sender-settle-mode ──────────────────────
+// ── receiver pins sender-settle-mode ─────────────────────────────────
 
 // TestReceiverLinkOptions_PinsUnsettled verifies the receiver requests
 // SenderSettleModeUnsettled so a broker downgrading to settled (pre-
@@ -109,7 +109,7 @@ func TestApplyAMQP10TLSMaterial_SwapsPointer(t *testing.T) {
 func TestReceiverLinkOptions_PinsUnsettled(t *testing.T) {
 	opts := receiverLinkOptions(10, 0, "queue", "")
 	if opts.RequestedSenderSettleMode == nil {
-		t.Fatal("RequestedSenderSettleMode is nil; broker settle-mode is unpinned (finding 3)")
+		t.Fatal("RequestedSenderSettleMode is nil; broker settle-mode is unpinned")
 	}
 	if *opts.RequestedSenderSettleMode != amqp.SenderSettleModeUnsettled {
 		t.Fatalf("RequestedSenderSettleMode = %v, want Unsettled", *opts.RequestedSenderSettleMode)
@@ -132,10 +132,10 @@ func TestReceiverLinkOptions_DurableStillPinsUnsettled(t *testing.T) {
 	}
 }
 
-// ── Finding 4: SendBatch attach is bounded ───────────────────────────
+// ── SendBatch attach is bounded ──────────────────────────────────────
 
 // TestSender_SendBatch_AttachBounded verifies SendBatch bounds the
-// initial link attach with cfg.Timeout (finding 4). The injected attach
+// initial link attach with cfg.Timeout. The injected attach
 // blocks until its context is done; before the fix ensureLink received
 // the raw (deadline-less) caller context and the call would hang
 // forever. With the fix the attach context carries cfg.Timeout, so the
@@ -169,7 +169,7 @@ func TestSender_SendBatch_AttachBounded(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("SendBatch did not return; attach was not bounded (finding 4)")
+		t.Fatal("SendBatch did not return; attach was not bounded")
 	}
 
 	if batchErr == nil {
@@ -181,7 +181,7 @@ func TestSender_SendBatch_AttachBounded(t *testing.T) {
 	}
 }
 
-// ── Finding 6: typed message-id preserved ────────────────────────────
+// ── typed message-id preserved ───────────────────────────────────────
 
 func TestMessageIDToString(t *testing.T) {
 	uuid := amqp.UUID{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
@@ -208,7 +208,7 @@ func TestMessageIDToString(t *testing.T) {
 
 // TestReceiver_ConvertMessage_UUIDMessageID_Deterministic verifies a
 // non-string (uuid) message-id yields a DETERMINISTIC envelope ID (its
-// canonical rendering), not a random one (finding 6), so downstream
+// canonical rendering), not a random one, so downstream
 // message-id dedup survives.
 func TestReceiver_ConvertMessage_UUIDMessageID_Deterministic(t *testing.T) {
 	uuid := amqp.UUID{0xaa, 0xbb, 0xcc, 0xdd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01}
@@ -241,7 +241,7 @@ func TestReceiver_ConvertMessage_UUIDMessageID_Deterministic(t *testing.T) {
 // headers, and envelopeToMessage must emit that string (not clobber it
 // with a fresh envelope ID). Dedup is preserved because the rendering is
 // stable. This supersedes the "preserve the typed amqp.UUID"
-// contract (finding 6), which leaked an SDK type into the envelope.
+// contract, which leaked an SDK type into the envelope.
 func TestEnvelope_RoundTrip_RendersTypedMessageIDToString(t *testing.T) {
 	uuid := amqp.UUID{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
 		0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00}
@@ -284,7 +284,7 @@ func TestEnvelope_Egress_StampsIDWhenNoMessageID(t *testing.T) {
 	}
 }
 
-// ── Finding 8: map config honors PEM keys ────────────────────────────
+// ── map config honors PEM keys ───────────────────────────────────────
 
 func TestSessionOptionsFromMap_HonorsPEMKeys(t *testing.T) {
 	opts, err := SessionOptionsFromMap(map[string]any{
@@ -303,7 +303,7 @@ func TestSessionOptionsFromMap_HonorsPEMKeys(t *testing.T) {
 		t.Fatal("TLS config nil")
 	}
 	if opts.TLS.CACertPEM.Reveal() != "--CA--" {
-		t.Fatalf("CACertPEM = %q, want --CA-- (finding 8: PEM keys dropped)", opts.TLS.CACertPEM.Reveal())
+		t.Fatalf("CACertPEM = %q, want --CA-- (PEM keys dropped)", opts.TLS.CACertPEM.Reveal())
 	}
 	if opts.TLS.CertPEM.Reveal() != "--CERT--" {
 		t.Fatalf("CertPEM = %q, want --CERT--", opts.TLS.CertPEM.Reveal())
@@ -313,11 +313,11 @@ func TestSessionOptionsFromMap_HonorsPEMKeys(t *testing.T) {
 	}
 }
 
-// ── Finding 9: SessionHealth.LastError + sender-link health ───────────
+// ── SessionHealth.LastError + sender-link health ──────────────────────
 
 // TestSession_Health_LastErrorPopulatedOnDegrade verifies a down
 // receiver link degrades the session AND surfaces the recorded cause via
-// LastError (finding 9).
+// LastError.
 func TestSession_Health_LastErrorPopulatedOnDegrade(t *testing.T) {
 	s := newTestSession()
 	s.mu.Lock()
@@ -338,12 +338,12 @@ func TestSession_Health_LastErrorPopulatedOnDegrade(t *testing.T) {
 		t.Fatalf("ServiceLevel = %q, want Degraded", h.ServiceLevel)
 	}
 	if h.LastError == nil {
-		t.Fatal("LastError is nil on a degraded session (finding 9)")
+		t.Fatal("LastError is nil on a degraded session")
 	}
 }
 
 // TestSession_Health_SenderSelfHealsAfterReconnect is the regression
-// test for the finding-9 sender-health self-heal gap: a broker blip
+// test for the sender-health self-heal gap: a broker blip
 // marks all registered senders down (notifyDisconnect →
 // markAllSendersDownLocked), but a Sender has no background reattach
 // path, so before the fix the session stayed ServiceLevelDegraded (with
@@ -406,7 +406,7 @@ func TestSession_Health_SenderSelfHealsAfterReconnect(t *testing.T) {
 
 // TestSession_Health_SenderLinkDownDegrades verifies a failing sender
 // link degrades ServiceLevel even when the connection and all receivers
-// are healthy (finding 9).
+// are healthy.
 func TestSession_Health_SenderLinkDownDegrades(t *testing.T) {
 	s := newTestSession()
 	s.mu.Lock()
@@ -427,7 +427,7 @@ func TestSession_Health_SenderLinkDownDegrades(t *testing.T) {
 	s.noteLinkError(errors.New("sender attach refused"))
 	h := s.Health(context.Background())
 	if h.ServiceLevel != ports.ServiceLevelDegraded {
-		t.Fatalf("with down sender ServiceLevel = %q, want Degraded (finding 9)", h.ServiceLevel)
+		t.Fatalf("with down sender ServiceLevel = %q, want Degraded", h.ServiceLevel)
 	}
 	if h.LastError == nil {
 		t.Fatal("LastError nil with a failing sender link")

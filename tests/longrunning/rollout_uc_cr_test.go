@@ -177,7 +177,7 @@ func TestUCCR1_HappyPathCommitsAcrossProcesses(t *testing.T) {
 		"(defaultRolloutTTL=5m has ample margin)", staging.Round(time.Millisecond))
 }
 
-// TestUCCR9_ConfirmWindowConfirmsAcrossProcesses is the Phase-7 confirm window
+// TestUCCR9_ConfirmWindowConfirmsAcrossProcesses is the confirm window
 // (cluster-config-rollout-protocol.md §8.1) across REAL separate processes: three bridge processes open a
 // confirm window, each provisionally swaps the candidate, records convergence
 // against its OWN runtime, and the fenced coordinator writes Confirmed once the
@@ -257,7 +257,7 @@ func tokenVersion(t *testing.T, tok string) int {
 }
 
 // TestUCCR3_KilledMemberRejoinsOnCommittedGen is the multi-process end-to-end
-// proof of the Phase-5A residual fix (design UC-CR3 / seq 3): after a real SIGKILL
+// proof of boot-on-committed (use case UC-CR3): after a real SIGKILL
 // leaves a rollout unable to complete, the coordinator aborts it on the deadline,
 // and the killed member — restarted as a fresh process whose config source still
 // holds the REJECTED candidate — rejoins on the last COMMITTED generation, not the

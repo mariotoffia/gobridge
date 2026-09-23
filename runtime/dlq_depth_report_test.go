@@ -48,8 +48,8 @@ func (fakeDLQNoDepth) List(context.Context, routing.DLQFilter) ([]routing.DLQEnt
 	return nil, nil
 }
 
-// H-OBS DLQ-1: ReportDLQDepth samples the standing DLQ backlog via the optional
-// reporter and emits it as MetricDLQDepth. Fails before the metric/hook exist.
+// ReportDLQDepth samples the standing DLQ backlog via the optional reporter
+// and emits it as MetricDLQDepth. Fails if the metric/hook is removed.
 func TestReportDLQDepth_EmitsGaugeWhenReporterPresent(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	store := &fakeDLQDepth{depth: 10000}
@@ -127,9 +127,10 @@ func (s *countingOutbox) CountPending(context.Context, string) (int, error) {
 	return s.pending, nil
 }
 
-// H-OBS: the instrumentation wrapper must FORWARD the optional
+// The instrumentation wrapper must FORWARD the optional
 // OutboxDepthReporter capability so the drainer (which in production holds the
-// wrapper, not the raw store) can read the true backlog. Fails before the fix.
+// wrapper, not the raw store) can read the true backlog. Fails if the wrapper
+// stops forwarding CountPending.
 func TestInstrumentedOutboxStore_CountPendingForwardsToInner(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	inner := &countingOutbox{OutboxStore: NewFakeOutboxStore(), pending: 4242}

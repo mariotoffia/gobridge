@@ -165,8 +165,8 @@ func TestSessionOptionsFromMap(t *testing.T) {
 				"username":        "user1",
 				"password":        "pass1",
 				"container_id":    "my-container",
-				// SASL PLAIN over plaintext amqp:// is gated by
-				// c7-plain-plaintext; this parse-shape test opts in so the
+				// SASL PLAIN over plaintext amqp:// is gated at
+				// validation; this parse-shape test opts in so the
 				// username/password fields decode without the security gate
 				// firing (the gate itself is covered in config_plaintext_test.go).
 				"allow_insecure_plain": true,

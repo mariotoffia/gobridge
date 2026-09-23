@@ -62,7 +62,7 @@ func TestBootstrapConfig_EffectiveCredentialEmitOnStart(t *testing.T) {
 		val  *bool
 		want bool
 	}{
-		{"nil defaults to true (Finding 1)", nil, true},
+		{"nil defaults to true", nil, true},
 		{"explicit true", &truePtr, true},
 		{"explicit false restores legacy", &falsePtr, false},
 	}

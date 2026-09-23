@@ -68,9 +68,10 @@ func TestRegistry_Register_ReturnsErrNilDecoderOnNil(t *testing.T) {
 
 // TestPortsSentinels_CodeClass pins the (Code, Class) pairing of the two
 // ports-level BridgeError sentinels so the contract layer stays code→class
-// consistent with the domain (finding 3). ErrNilDecoder was migrated off the
-// message-payload code onto the dedicated config code: a nil ConfigDecoder is a
-// registration/config defect, not a rejected message payload. Keeping it on
+// consistent with the domain (each code maps to exactly one class).
+// ErrNilDecoder was migrated off the message-payload code onto the dedicated
+// config code: a nil ConfigDecoder is a registration/config defect, not a
+// rejected message payload. Keeping it on
 // ErrCodeInvalidConfig preserves "INVALID_PAYLOAD is uniquely ErrorRejected"
 // across domain + ports.
 func TestPortsSentinels_CodeClass(t *testing.T) {

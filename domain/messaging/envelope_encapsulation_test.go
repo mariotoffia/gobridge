@@ -78,8 +78,8 @@ func TestEnvelope_SetExpiry(t *testing.T) {
 // TestEnvelope_AssignID covers all three AssignID branches. An ID-less
 // envelope is now obtained from a ZERO-VALUE Envelope: MustEnvelope
 // auto-assigns a unique ID, and NewEnvelope AND UnmarshalJSON both reject
-// an empty ID (finding 4 routed the ID invariant through checkEnvelopeID on
-// the rehydration path too), so a zero value is the only construction that
+// an empty ID (the ID invariant runs through checkEnvelopeID on the
+// rehydration path too), so a zero value is the only construction that
 // yields a blank identity for AssignID to fill. A library caller that hands
 // runtime.Inject such a zero-value envelope still reaches the
 // assign-if-empty branch.

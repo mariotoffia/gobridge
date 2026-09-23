@@ -52,7 +52,7 @@ func (b *deadLinkBuilder) buildCount() int {
 	return b.builds
 }
 
-// --- c6-dead-link: non-session receiver rebuilds a closed link -------------
+// --- Non-session receiver rebuilds a closed link ---------------------------
 
 // TestReceiver_NonSession_RebuildsDeadLinkOnClosedLink proves the
 // non-session poll loop REBUILDS a terminally-CLOSED receiver instead of
@@ -93,12 +93,12 @@ func TestReceiver_NonSession_RebuildsDeadLinkOnClosedLink(t *testing.T) {
 	require.ErrorIs(t, <-runErr, context.Canceled)
 }
 
-// --- c6-dead-link (fix #5): rebuild trigger is the TYPED closed-link code --
+// --- Dead-link rebuild trigger is the TYPED closed-link code ---------------
 
 // TestIsClosedLinkError_OnlyTypedCodeClosedTriggersRebuild pins the rebuild
 // trigger to the SDK's typed *azservicebus.Error{Code: CodeClosed} and to
 // NOTHING else. This is the exact classification that decides whether the
-// non-session poll loop rebuilds (fix #4) — a false positive on a permanent
+// non-session poll loop rebuilds — a false positive on a permanent
 // auth/config fault would mask the real cause behind an endless rebuild
 // loop; a false positive on the self-healing CodeConnectionLost would race
 // the SDK's own recovery.

@@ -645,7 +645,7 @@ func (s *Session) declareTopology(conn amqpConnection, plan connectivity.Session
 			// take a previously-working publish route DOWN. So warn + meter and
 			// continue: a genuinely-absent exchange the bridge cannot create
 			// still fails visibly at publish time (404 -> retry/DLQ), exactly as
-			// it did before this auto-declare existed (ADV).
+			// it did before this auto-declare existed.
 			s.metrics.Counter(MetricAMQP091PublisherDeclareFailed, 1,
 				shared.Tag{Key: shared.TagKeyEntity, Value: pub.Topic})
 			if s.logger != nil {

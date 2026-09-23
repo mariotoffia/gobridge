@@ -13,7 +13,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BUG-2: MQTT Session Start() TOCTOU Race — and its follow-up.
+// MQTT Session Start() TOCTOU Race — and its follow-up.
 //
 // Start() previously released the lock after the cm==nil check, performed
 // slow operations, then re-acquired. Two concurrent callers both passed the
@@ -30,10 +30,10 @@ import (
 // caller ever reports success for a session that is not connected.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestBug2_Start_ConcurrentCallers_BothGetDefiniteOutcome verifies that
+// TestSession_Start_ConcurrentCallers_BothGetDefiniteOutcome verifies that
 // with an unreachable broker, NEITHER of two concurrent Start() calls
 // returns a false success: both must return an error.
-func TestBug2_Start_ConcurrentCallers_BothGetDefiniteOutcome(t *testing.T) {
+func TestSession_Start_ConcurrentCallers_BothGetDefiniteOutcome(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping race test in -short mode (uses network timeout)")
 	}
@@ -81,10 +81,10 @@ func TestBug2_Start_ConcurrentCallers_BothGetDefiniteOutcome(t *testing.T) {
 	_ = sess.Close(context.Background())
 }
 
-// TestBug2_Start_WaiterExpiresWhileWinnerConnecting verifies a waiting
+// TestSession_Start_WaiterExpiresWhileWinnerConnecting verifies a waiting
 // Start caller whose context expires before the in-flight attempt
 // finishes gets a definite error (not nil, and without deadlocking).
-func TestBug2_Start_WaiterExpiresWhileWinnerConnecting(t *testing.T) {
+func TestSession_Start_WaiterExpiresWhileWinnerConnecting(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping race test in -short mode (uses network timeout)")
 	}
@@ -126,9 +126,9 @@ func TestBug2_Start_WaiterExpiresWhileWinnerConnecting(t *testing.T) {
 	_ = sess.Close(context.Background())
 }
 
-// TestBug2_Start_IdempotentAfterSuccess verifies that Start() on an
+// TestSession_Start_IdempotentAfterSuccess verifies that Start() on an
 // already-connected session returns nil without re-entering the slow path.
-func TestBug2_Start_IdempotentAfterSuccess(t *testing.T) {
+func TestSession_Start_IdempotentAfterSuccess(t *testing.T) {
 	sess := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
 		ClientID:   "bug2-idempotent",

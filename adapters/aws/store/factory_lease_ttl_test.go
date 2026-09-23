@@ -17,8 +17,9 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/ddblocal"
 )
 
-// TestFactory_LeaseTTLPreflight_FatalByDefault_TTLAdvisoryDowngrades is the
-// factory-parity regression (finding c13-lease-ttl-warn, factory operability).
+// TestFactory_LeaseTTLPreflight_FatalByDefault_TTLAdvisoryDowngrades pins that
+// the lease-table TTL check also guards the factory build path, not only a
+// directly constructed store.
 // It drives the WHOLE factory path — NewLeaseStore → store.Preflight →
 // checkLeaseTableTTL — against a real DynamoDB Local lease table that has
 // DynamoDB TTL ENABLED (the split-brain hazard on the fencing counter of record).

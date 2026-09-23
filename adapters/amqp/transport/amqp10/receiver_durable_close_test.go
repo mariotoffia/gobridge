@@ -1,4 +1,4 @@
-// Validates c7-durable-close: closing a DURABLE receiver performs a REAL
+// Validates that closing a DURABLE receiver performs a REAL
 // teardown of the live link (via connection drop) instead of merely
 // nil-ing the reference, so the broker stops delivering into an abandoned
 // link — while the durable subscription (terminus) is preserved because a
@@ -11,12 +11,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestReceiver_CloseLink_Durable_ForcesConnectionTeardown proves the
-// c7-durable-close fix. A durable receiver's Close must force a real
-// connection teardown (the only way go-amqp can detach the live link
-// WITHOUT sending a closing detach = UNSUBSCRIBE) so no message is
-// delivered into an abandoned live link. It must NOT full-close the link
-// (that would destroy the durable terminus).
+// TestReceiver_CloseLink_Durable_ForcesConnectionTeardown proves that a
+// durable receiver's Close forces a real connection teardown (the only
+// way go-amqp can detach the live link WITHOUT sending a closing detach
+// = UNSUBSCRIBE) so no message is delivered into an abandoned live link.
+// It must NOT full-close the link (that would destroy the durable
+// terminus).
 //
 // Mutation killed: revert closeLink's durable branch to nil-only (the
 // pre-fix behaviour that just clears r.link/r.linkConn). Then the
@@ -52,7 +52,7 @@ func TestReceiver_CloseLink_Durable_ForcesConnectionTeardown(t *testing.T) {
 	conn.mu.Unlock()
 	require.True(t, closed,
 		"durable Close must force a REAL connection teardown; a nil-only closeLink "+
-			"leaves the link attached and the broker keeps delivering into it (c7-durable-close)")
+			"leaves the link attached and the broker keeps delivering into it")
 
 	// The durable terminus must survive: go-amqp can only send a closing
 	// detach, which brokers read as UNSUBSCRIBE, so the link itself must

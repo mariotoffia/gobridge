@@ -462,7 +462,7 @@ func TestRolloutFencingIsRejectionOfReDecisionOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("documented gap: a pre-decision abort by a deposed coordinator is currently "+
 			"ACCEPTED; if this now errors the fence was strengthened — update this test and the "+
-			"design doc row: %v", err)
+			"failure-matrix row F5b in docs/cluster/spec/cluster-config-rollout-protocol.md §7: %v", err)
 	}
 	if aborted.State() != persistence.RolloutAborted {
 		t.Fatalf("state = %q, want aborted", aborted.State())

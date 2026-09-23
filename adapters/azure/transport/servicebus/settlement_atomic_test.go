@@ -14,7 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
-// --- c6-settle-atomic: exactly one settlement outcome wins -----------------
+// --- Exactly one settlement outcome wins -----------------------------------
 
 // TestDelivery_Settlement_ExactlyOneOutcomeUnderConcurrency drives many
 // concurrent Ack/Retry calls at a SINGLE delivery and asserts that exactly
@@ -100,7 +100,7 @@ func TestDelivery_Extend_NoOpAfterSettlement(t *testing.T) {
 	require.Zero(t, renewCount.Load(), "Extend must be a no-op after settlement")
 }
 
-// --- c6-renew-stop: renewal stays alive UNTIL settlement returns -----------
+// --- Renewal stays alive UNTIL settlement returns --------------------------
 
 // TestDelivery_Ack_KeepsRenewingUntilSettlementReturns proves lock
 // auto-renewal is NOT stopped before the terminal CompleteMessage returns.
@@ -164,7 +164,7 @@ func TestDelivery_Ack_KeepsRenewingUntilSettlementReturns(t *testing.T) {
 	<-clk.stopped // the deferred stop() cancelled the renewer AFTER settlement
 }
 
-// TestAutoExtendLoop_NoRenewAfterSettlementReturns is the fix #3 companion
+// TestAutoExtendLoop_NoRenewAfterSettlementReturns is the companion
 // to the renew-through-settle test above. Once the terminal broker call has
 // RETURNED (settleReturned set), a still-pending renewal tick must NOT fire
 // RenewMessageLock: the message is already settled, so a renew would hit an

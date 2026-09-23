@@ -53,7 +53,7 @@ func redriveBoundSetup(t *testing.T) (*http.ServeMux, *memorydlq.Store, *stubSen
 	return mux, dlq, sender
 }
 
-// TestHandleDLQRedrive_UnknownBinding_RejectsAndPreservesEntry is the finding-1
+// TestHandleDLQRedrive_UnknownBinding_RejectsAndPreservesEntry is the
 // out-of-band-confinement guard at the HTTP redrive boundary. An operator
 // redrives a DLQ entry whose recorded BindingID ("ghost-binding") no longer
 // exists on the route (it was renamed/removed to "b1"). The redrive threads that

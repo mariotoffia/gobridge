@@ -94,8 +94,7 @@ func discardLogger() *slog.Logger {
 }
 
 // TestNewDefaultCredentialResolver_FileStoreInitFailure_DoesNotAbort validates
-// adversarial Finding 2: when the native file:// store cannot initialize, the
-// stock resolver is still returned so a config that uses no file:// credentials
+// that when the native file:// store cannot initialize, the stock resolver is still returned so a config that uses no file:// credentials
 // boots, and file:// URIs fail cleanly at resolve time instead of aborting the
 // process at startup. A path whose parent is a regular file forces MkdirAll to
 // fail with ENOTDIR — deterministic on every OS and privilege level (root
@@ -111,7 +110,7 @@ func TestNewDefaultCredentialResolver_FileStoreInitFailure_DoesNotAbort(t *testi
 
 	res := newDefaultCredentialResolver(dir, discardLogger())
 	if res == nil {
-		t.Fatal("resolver must be built even when the file store cannot initialize (Finding 2)")
+		t.Fatal("resolver must be built even when the file store cannot initialize")
 	}
 	if _, err := res.Resolve(context.Background(), "file://x"); err == nil {
 		t.Fatal("file:// must fail at resolve time, not abort the process at startup")

@@ -23,7 +23,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// RES-nnn resilience regressions (TEST-6).
+// Resilience regressions.
 //
 // These were originally OBSERVATIONAL probes: each described an expected and a
 // "broken" outcome, injected a fault, then logged which occurred while only
@@ -31,17 +31,17 @@ import (
 // without ENFORCING the fixed behaviour. This file now injects each fault
 // DETERMINISTICALLY and asserts exactly one expected result per regression, so
 // a reintroduction of any gap turns the suite red instead of merely changing a
-// log line. Every referenced gap is fixed at this revision; these lock it in.
+// log line. Every gap covered here is fixed at this revision; these lock it in.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestRES003_MQTTSourceDropWithoutDLQ exposes the silent-drop hazard: an MQTT
+// TestResilience_MQTTSourceWithoutDLQRejectedAtAdmission exposes the silent-drop hazard: an MQTT
 // source (no Retry()) on a DirectHold route with NO DLQ store would drop a
 // failed delivery with only a Warn log.
 //
 // With fix: the runtime REJECTS the route at admission (AddRoute/Start) rather
 // than accepting a config that can silently lose messages — so the drop is
 // impossible, not merely improbable.
-func TestRES003_MQTTSourceDropWithoutDLQ(t *testing.T) {
+func TestResilience_MQTTSourceWithoutDLQRejectedAtAdmission(t *testing.T) {
 	_ = withFreshInfra(t)
 	const srcTopic = "res003/source"
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -77,12 +77,12 @@ func TestRES003_MQTTSourceDropWithoutDLQ(t *testing.T) {
 		"the rejection must name the silent-loss hazard so the operator can fix it (AllowRetryDrop / DLQ)")
 }
 
-// TestRES005_AutoExtendFailureDuplicates exposes duplicate delivery when SQS
+// TestResilience_AutoExtendPreventsDuplicates exposes duplicate delivery when SQS
 // auto-extend cannot keep a long-processing message invisible.
 //
 // With fix: auto-extend keeps pace (VisibilityTimeout=5s, processing=8s), so
 // SQS never redelivers and every message is delivered EXACTLY once.
-func TestRES005_AutoExtendFailureDuplicates(t *testing.T) {
+func TestResilience_AutoExtendPreventsDuplicates(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
 		msgCount = 50
@@ -140,13 +140,13 @@ func TestRES005_AutoExtendFailureDuplicates(t *testing.T) {
 		"every message delivered exactly once (no auto-extend duplicates)")
 }
 
-// TestRES001_NoCircuitBreakerOnSender injects a deterministic degraded sender
+// TestResilience_CircuitBreakerKeepsDegradedSenderProgressing injects a deterministic degraded sender
 // (fixed-seed 80% failure + latency) behind a circuit breaker.
 //
 // With fix: the transient failures are retried via SQS redelivery and NEVER
 // silently lost — the pipeline keeps making progress (not wedged) and no
 // transient error is misclassified into the DLQ.
-func TestRES001_NoCircuitBreakerOnSender(t *testing.T) {
+func TestResilience_CircuitBreakerKeepsDegradedSenderProgressing(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
 		msgCount = 100
@@ -198,12 +198,12 @@ func TestRES001_NoCircuitBreakerOnSender(t *testing.T) {
 		"the circuit breaker must keep the pipeline making progress under a degraded sender")
 }
 
-// TestRES006_DLQWriteBlocksSemaphore drives permanent failures through a slow
+// TestResilience_DLQWriteDoesNotBlockDeliverySlots drives permanent failures through a slow
 // (5s) DLQ store with MaxInFlight=10.
 //
 // With fix: DLQ writes are bulkheaded off the delivery slots, so every
 // permanently-failed message reaches the DLQ and none leaks to the output.
-func TestRES006_DLQWriteBlocksSemaphore(t *testing.T) {
+func TestResilience_DLQWriteDoesNotBlockDeliverySlots(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
 		msgCount = 50
@@ -243,12 +243,12 @@ func TestRES006_DLQWriteBlocksSemaphore(t *testing.T) {
 	require.Zero(t, collector.count(), "no permanently-failed message may reach the output")
 }
 
-// TestRES011_RouterPanicSwallowsMessages injects a processor that panics on
+// TestResilience_RouterPanicRoutesToDLQ injects a processor that panics on
 // every 10th message.
 //
 // With fix: a panicked message is recovered and routed to the DLQ — it is NOT
 // silently swallowed, so delivered + DLQ accounts for every message.
-func TestRES011_RouterPanicSwallowsMessages(t *testing.T) {
+func TestResilience_RouterPanicRoutesToDLQ(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (
 		msgCount   = 100

@@ -43,7 +43,7 @@ func waitFor(t *testing.T, cond func() bool, msg string) {
 	}
 }
 
-// ── Finding 1: outbound durability ─────────────────────────────────
+// ── outbound durability ────────────────────────────────────────────
 
 func TestEnvelopeToMessage_DurableHeader(t *testing.T) {
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "d1", Payload: []byte("x")})
@@ -73,7 +73,7 @@ func TestSenderConfig_DurableDefaultsTrue(t *testing.T) {
 	require.True(t, c.durable())
 }
 
-// ── Finding 6: disposition-aware send ──────────────────────────────
+// ── disposition-aware send ─────────────────────────────────────────
 
 func TestDispositionError(t *testing.T) {
 	tests := []struct {
@@ -169,7 +169,7 @@ func TestSender_Send_TransportError_StillDetachesLink(t *testing.T) {
 	require.True(t, detached, "transport errors must still detach the link")
 }
 
-// ── Finding 8: link-scoped vs connection-scoped errors ─────────────
+// ── link-scoped vs connection-scoped errors ────────────────────────
 
 func TestMapError_ScopedSDKErrors(t *testing.T) {
 	t.Run("link_error_nil_remote_is_transient", func(t *testing.T) {
@@ -240,7 +240,7 @@ func TestReceiver_HandleLinkError_LinkScoped_DoesNotTearDownConnection(t *testin
 	require.True(t, conn.closed, "conn-scoped fault must tear down the connection")
 }
 
-// ── Finding 3: cold start is not bridge-fatal ──────────────────────
+// ── cold start is not bridge-fatal ─────────────────────────────────
 
 func TestReceiver_Run_ColdStart_WaitsForSessionInsteadOfFailing(t *testing.T) {
 	sess := newTestSession() // never Started: no conn, no amqp session
@@ -270,7 +270,7 @@ func TestReceiver_Run_ColdStart_WaitsForSessionInsteadOfFailing(t *testing.T) {
 		"cold-start link failure must resolve to ctx cancellation, not a terminal transport error")
 }
 
-// ── Finding 5: backoff between failed link re-creations ────────────
+// ── backoff between failed link re-creations ───────────────────────
 
 func TestReceiver_ReceiveLoop_AttachFailure_BacksOff(t *testing.T) {
 	fake := clocktest.NewAt(time.Unix(1_700_000_000, 0))
@@ -307,7 +307,7 @@ func TestReceiver_ReceiveLoop_AttachFailure_BacksOff(t *testing.T) {
 	require.ErrorIs(t, <-done, context.Canceled)
 }
 
-// ── Findings 9/17: Close waits for in-flight settlements ───────────
+// ── Close waits for in-flight settlements ──────────────────────────
 
 func TestReceiver_Close_WaitsForInflightSettlement(t *testing.T) {
 	r, err := NewReceiver(ReceiverConfig{Address: "queue/in"}, nil)
@@ -382,7 +382,7 @@ func TestReceiver_EmitError_ReleasesInflightSlot(t *testing.T) {
 	require.NoError(t, del.Ack(context.Background()))
 }
 
-// ── Finding 17: concurrent settle reporting ────────────────────────
+// ── concurrent settle reporting ────────────────────────────────────
 
 // blockingSettler parks AcceptMessage until released, so a test can
 // observe the "in progress" state deterministically.
@@ -436,7 +436,7 @@ func TestDelivery_SettleAfterFailure_ReportsPreviousFailure(t *testing.T) {
 	require.Contains(t, err.Error(), "previously failed")
 }
 
-// ── Finding 10: bridge-to-bridge identity headers lifted ───────────
+// ── bridge-to-bridge identity headers lifted ───────────────────────
 
 func TestMessageToEnvelope_LiftsBridgeIdentityHeaders(t *testing.T) {
 	msg := &amqp.Message{
@@ -462,7 +462,7 @@ func TestMessageToEnvelope_LiftsBridgeIdentityHeaders(t *testing.T) {
 	require.Equal(t, "order-1", ord)
 }
 
-// ── Findings 14/16: receive latency + ingress reject isolation ─────
+// ── receive latency + ingress reject isolation ─────────────────────
 
 // seqLink yields a scripted sequence of (delivery, error) results and
 // then blocks until ctx is cancelled.
@@ -529,7 +529,7 @@ func TestReceiver_IngressReject_IsNonTerminal_AndCounted(t *testing.T) {
 	require.Len(t, rec.FindEntries(MetricAMQP10IngressRejected), 1)
 }
 
-// ── Finding 15: creation-time preservation ─────────────────────────
+// ── creation-time preservation ─────────────────────────────────────
 
 func TestCreationTime_PreservedAcrossRelay(t *testing.T) {
 	produced := time.Unix(1_600_000_000, 0).UTC()
@@ -563,7 +563,7 @@ func TestCreationTime_FallsBackToEnvelopeCreatedAt(t *testing.T) {
 	require.True(t, msg.Properties.CreationTime.Equal(created))
 }
 
-// ── Finding 11: delayed retry annotation ───────────────────────────
+// ── delayed retry annotation ───────────────────────────────────────
 
 func TestDelivery_DelayedRetry_SetsDeliveryTimeAnnotation(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
@@ -593,7 +593,7 @@ func TestDelivery_ImmediateRetry_NoAnnotation(t *testing.T) {
 	require.Equal(t, 0, ms.modifyCalls)
 }
 
-// ── Finding 2: durable subscription link naming ────────────────────
+// ── durable subscription link naming ───────────────────────────────
 
 func TestReceiver_LinkName(t *testing.T) {
 	newRecv := func(cfg ReceiverConfig, containerID string) *Receiver {
@@ -621,7 +621,7 @@ func TestReceiver_LinkName(t *testing.T) {
 	})
 
 	t.Run("durable_without_container_id_uses_generated_instance_id", func(t *testing.T) {
-		// Finding 16: an unset container_id is defaulted to a
+		// An unset container_id is defaulted to a
 		// per-instance "gobridge-<entropy>" id by applyDefaults, so the
 		// derived link name is deterministic WITHIN the session (every
 		// reconnect resumes the same durable subscription) while two
@@ -644,7 +644,7 @@ func TestReceiver_LinkName(t *testing.T) {
 	})
 }
 
-// ── Finding 12: routing string forms ───────────────────────────────
+// ── routing string forms ───────────────────────────────────────────
 
 func TestRoutingType_UnmarshalText(t *testing.T) {
 	tests := []struct {
@@ -675,12 +675,12 @@ func TestRoutingType_UnmarshalText(t *testing.T) {
 	}
 }
 
-// ── Finding 17: SASL mechanism knob ────────────────────────────────
+// ── SASL mechanism knob ────────────────────────────────────────────
 
 func TestSessionOptions_ValidateSASLMechanism(t *testing.T) {
 	// Mechanisms that need no client certificate validate with a plain
-	// address. SASL PLAIN over plaintext is otherwise gated by
-	// c7-plain-plaintext, so opt in explicitly here — this test pins the
+	// address. SASL PLAIN over plaintext is otherwise rejected at
+	// validation, so opt in explicitly here — this test pins the
 	// mechanism knob, not the cleartext-credentials gate.
 	for _, ok := range []string{"", "plain", "anonymous"} {
 		opts := SessionOptions{Address: "amqp://h", SASLMechanism: ok, AllowInsecurePlain: true}

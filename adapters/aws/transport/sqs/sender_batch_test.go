@@ -16,7 +16,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// BUG-2: SendBatch continues on partial failure
+// SendBatch continues on partial failure
 //
 // These tests verify that SendBatch keeps dispatching remaining chunks
 // after a partial or chunk-level failure. Under the ports.BatchSender
@@ -412,7 +412,7 @@ func batchSent(results []ports.BatchResult) int {
 // toSenderConfig into the built Sender and applied to EVERY batch entry's
 // DelaySeconds on a STANDARD queue. This keeps the batch-path delay
 // passthrough covered after the invalid FIFO+DelaySeconds factory fixture
-// was removed (delay_seconds is rejected on FIFO — Finding 5 — so the
+// was removed (delay_seconds is rejected on FIFO, so the
 // passthrough can only be exercised on a standard queue).
 func TestSendBatch_StandardQueue_DelaySecondsPassthrough(t *testing.T) {
 	var entryDelays []int32

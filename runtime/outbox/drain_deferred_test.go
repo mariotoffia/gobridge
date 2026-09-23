@@ -14,7 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// Coverage for finding 9 (audit): a batch-deadline/cancel abort mid-batch
+// Coverage for the batch-deadline/cancel abort: an abort mid-batch
 // must Release every claimed-but-undelivered record back to pending and count
 // it as DEFERRED — never as a success. Both drain-loop deferral sites are
 // pinned:
@@ -214,17 +214,17 @@ func TestDrainBatch_CtxCancelMidGroup_ReleasesUnattemptedTailAsDeferred(t *testi
 		t.Fatalf("drainBatch error: %v", res.err)
 	}
 	if res.success != 1 {
-		t.Fatalf("finding 9: success count got %d, want 1 (only rec-1 was sent+completed)", res.success)
+		t.Fatalf("success count got %d, want 1 (only rec-1 was sent+completed)", res.success)
 	}
 	if res.deferred != 2 {
-		t.Fatalf("finding 9: deferred count got %d, want 2 (unattempted tail must not count as success)", res.deferred)
+		t.Fatalf("deferred count got %d, want 2 (unattempted tail must not count as success)", res.deferred)
 	}
 	if got := store.completedIDs(); len(got) != 1 || got[0] != "rec-1" {
 		t.Fatalf("Complete calls got %v, want [rec-1]", got)
 	}
 	got := store.releasedIDs()
 	if len(got) != 2 || got[0] != "rec-2" || got[1] != "rec-3" {
-		t.Fatalf("finding 9: unattempted tail must be Released in order, got %v, want [rec-2 rec-3]", got)
+		t.Fatalf("unattempted tail must be Released in order, got %v, want [rec-2 rec-3]", got)
 	}
 }
 
@@ -269,13 +269,13 @@ func TestDrainBatch_BatchCancelMidSend_ReleasesAbortedRecordAsDeferred(t *testin
 		t.Fatalf("drainBatch error got %v, want ErrStaleFencingToken", err)
 	}
 	if success != 0 {
-		t.Fatalf("finding 9: success count got %d, want 0 (aborted send must not count as success)", success)
+		t.Fatalf("success count got %d, want 0 (aborted send must not count as success)", success)
 	}
 	if deferred != 1 {
-		t.Fatalf("finding 9: deferred count got %d, want 1 (mid-send abort must be deferred)", deferred)
+		t.Fatalf("deferred count got %d, want 1 (mid-send abort must be deferred)", deferred)
 	}
 	got := store.releasedIDs()
 	if len(got) != 1 || got[0] != "rec-b" {
-		t.Fatalf("finding 9: aborted record must be Released back to pending, got %v, want [rec-b]", got)
+		t.Fatalf("aborted record must be Released back to pending, got %v, want [rec-b]", got)
 	}
 }

@@ -29,7 +29,7 @@ func waitTimerCount(t *testing.T, clk *clocktest.Fake, n int) {
 	})
 }
 
-// --- shared test doubles for the Chunk-2 findings ---------------------------
+// --- shared test doubles for the terminal-path tests ------------------------
 
 // recordingDLQStore is a minimal DLQStore that counts Write calls so a test can
 // prove a terminal path DID or did NOT retain the payload in the DLQ. Only Write
@@ -93,8 +93,8 @@ func permanentSendErr() error {
 	return shared.NewBridgeError(shared.ErrCodeInternal, shared.ErrorPermanent, "permanent send failure")
 }
 
-// TestSendDirectHold_PermanentFailure_DropPolicyHonored proves Chunk-2 finding 1
-// (dispatch.go:215): on a PERMANENT send failure the direct_hold path must
+// TestSendDirectHold_PermanentFailure_DropPolicyHonored proves that
+// on a PERMANENT send failure (dispatch.go:215) the direct_hold path must
 // honour on_permanent_failure=drop even when a DLQ store IS configured — the
 // operator chose drop precisely so a sensitive payload is not retained in the
 // DLQ. Before the fix the path wrote to the DLQ whenever a store existed,
@@ -161,8 +161,8 @@ func TestSendDirectHold_PermanentFailure_DropPolicyHonored(t *testing.T) {
 	})
 }
 
-// TestHandleResolveError_PermanentFailure_DropPolicyHonored proves Chunk-2
-// finding 2 (dispatch.go:452): a PERMANENT/rejected resolve error must honour
+// TestHandleResolveError_PermanentFailure_DropPolicyHonored proves that
+// a PERMANENT/rejected resolve error (dispatch.go:452) must honour
 // on_permanent_failure=drop instead of unconditionally writing the DLQ when a
 // store exists.
 func TestHandleResolveError_PermanentFailure_DropPolicyHonored(t *testing.T) {
@@ -246,8 +246,8 @@ func (rc *oneShotReceiver) Run(ctx context.Context, emit func(context.Context, p
 }
 func (rc *oneShotReceiver) Close(context.Context) error { rc.closedAt.Add(1); return nil }
 
-// TestDeliveryHook_Panic_DoesNotDoubleSettle proves Chunk-2 finding 3
-// (dispatch.go:138): a panic in a delivery hook must NOT alter settlement. A
+// TestDeliveryHook_Panic_DoesNotDoubleSettle proves that
+// a panic in a delivery hook (dispatch.go:138) must NOT alter settlement. A
 // hook that panics in OnSettled after a successful Send would, before the fix,
 // unwind into the delivery goroutine's panic-recovery path — which, seeing the
 // delivery not yet Acked, RETRIES it → a downstream DUPLICATE. With the fix the
@@ -305,8 +305,8 @@ func (s *hangingSender) Send(context.Context, ports.OutboundMessage) error {
 	return nil
 }
 
-// TestBoundedSend_HungSenderDoesNotWedgeDispatch proves Chunk-2 finding 4
-// (dispatch.go:82): a sender that ignores its ctx/timeout must not wedge the
+// TestBoundedSend_HungSenderDoesNotWedgeDispatch proves that
+// a sender that ignores its ctx/timeout (dispatch.go:82) must not wedge the
 // dispatcher. boundedSend enforces a hard ceiling (SendTimeout), so on a hung
 // sender sendDirectHold unblocks, classifies the send as a transient timeout and
 // RETRIES (never falsely acks). Before the fix the dispatcher blocked forever on
@@ -378,10 +378,10 @@ func (rc *nonCooperativeReceiver) Close(context.Context) error {
 	return nil
 }
 
-// TestRun_NonCooperativeReceiver_ShutdownBounded proves Chunk-2 finding 5
-// (runner.go:192): receiver shutdown must not rely on a cooperative Run return.
+// TestRun_NonCooperativeReceiver_ShutdownBounded proves that
+// receiver shutdown (runner.go:192) must not rely on a cooperative Run return.
 // A receiver whose Run only unblocks on Close would, before the fix, deadlock —
-// Close was called only AFTER Run returned. Post Wave B the watcher grants a
+// Close was called only AFTER Run returned. Now the watcher grants a
 // bounded GRACE on cancellation and force-closes the still-stuck receiver only
 // after ReceiverCloseTimeout, driven here by the injected fake clock.
 func TestRun_NonCooperativeReceiver_ShutdownBounded(t *testing.T) {
@@ -417,7 +417,7 @@ func TestRun_NonCooperativeReceiver_ShutdownBounded(t *testing.T) {
 	}
 }
 
-// --- Wave B: drain-then-close preserves in-flight acks -----------
+// --- drain-then-close preserves in-flight acks -----------
 
 // torningDelivery models an in-flight ack that (a) takes ackDur to complete and
 // (b) depends on the receiver's transport still being alive. If Close tore the
@@ -499,8 +499,8 @@ func (rc *tearDownReceiver) Close(context.Context) error {
 	return nil
 }
 
-// TestRun_GracefulShutdown_DrainsBeforeClose proves Wave B finding #4/#5
-// (runner.go): on ctx cancellation the watcher must NOT force-close the receiver
+// TestRun_GracefulShutdown_DrainsBeforeClose proves that
+// on ctx cancellation (runner.go) the watcher must NOT force-close the receiver
 // concurrently with the in-flight ack drain. It grants a bounded grace so the
 // cooperative drain-then-close path can settle every in-flight ack FIRST; only a
 // genuinely-stuck receiver is force-closed after ReceiverCloseTimeout.
@@ -611,7 +611,7 @@ func TestRun_GracefulShutdown_DrainsBeforeClose(t *testing.T) {
 	}
 }
 
-// --- Wave B: cooperative drain-then-close ordering --------------
+// --- cooperative drain-then-close ordering --------------
 
 // coopReceiver models the REAL production shutdown ordering that protects
 // amqp091: Run returns PROMPTLY on ctx.Done() → the runner closes watchDone →

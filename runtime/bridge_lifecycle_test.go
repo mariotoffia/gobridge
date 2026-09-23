@@ -1,20 +1,12 @@
 package runtime_test
 
-// Tests for BUG-1: Runtime.Start() defer unlock fix.
+// Tests for Runtime.Start() releasing its mutex via defer.
 //
 // Validates that the mutex is correctly released on all exit paths
 // from Start(), including validation errors, normal stop, and
-// concurrent access.
-//
-// Summary:
-// +------+-----------------------------------------------------+
-// | ID   | Description                                         |
-// +------+-----------------------------------------------------+
-// | | Start after failed Start (validation error) |
-// | | Start after Stop completes (full lifecycle restart) |
-// | | Concurrent Start calls (only one succeeds) |
-// | | Stop works correctly after Start (no double unlock) |
-// +------+-----------------------------------------------------+
+// concurrent access: Start after a failed Start, Start after Stop
+// completes (full lifecycle restart), concurrent Start calls (only one
+// succeeds), and Stop after Start (no double unlock).
 
 import (
 	"context"

@@ -63,7 +63,7 @@ type Drainer struct {
 	idleSince time.Time
 
 	// drainStalled latches once the batch watchdog abandons a send goroutine
-	// because a Sender ignored context cancellation (CORE-RES-1). Run checks it
+	// because a Sender ignored context cancellation. Run checks it
 	// after each batch and stops scheduling further batches — each of which could
 	// leak another parked sender — escalating terminal so a restart reclaims the
 	// leaked goroutine. Set in waitBatch (Run goroutine), read in Run; atomic so a

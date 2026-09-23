@@ -118,7 +118,7 @@ func TestDynamoDBSpecificErrorMapping(t *testing.T) {
 	})
 
 	t.Run("ObservationWindowAbortsOnRenewal", func(t *testing.T) {
-		// Finding: the takeover observation window keys on the liveness tuple
+		// The takeover observation window keys on the liveness tuple
 		// (owner, version, renewed_at). If the owner renews after the taker
 		// begins observing, renewed_at advances, the tuple changes, and the
 		// observation window RESETS — the taker must NOT seize an actively

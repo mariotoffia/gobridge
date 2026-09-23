@@ -11,9 +11,9 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-func c12noop(_ context.Context, _ *messaging.Envelope) error { return nil }
+func noopNext(_ context.Context, _ *messaging.Envelope) error { return nil }
 
-// c12-transform-empty (bypass closure): empty bytes, whitespace-only input,
+// Empty-input bypass closure: empty bytes, whitespace-only input,
 // and a literal {} are three representations of "zero fields". A Required
 // mapping with NO default is unsatisfiable on all three, so all three MUST
 // reject with the IDENTICAL rejected error — no representation may slip
@@ -75,7 +75,7 @@ func TestJSONTransform_ZeroFieldInputs_RequiredRejectUniformly(t *testing.T) {
 	}
 }
 
-// c12-transform-empty (default parity): a Required mapping WITH a default is
+// Empty-input default parity: a Required mapping WITH a default is
 // SATISFIED from that default on empty bytes exactly as it is on {} — the case
 // the coarse `hasRequired` gate wrongly DLQ'd. Both paths must yield identical
 // output and no error.
@@ -97,7 +97,7 @@ func TestJSONTransform_ZeroFieldInputs_RequiredWithDefault_MatchesEmptyObject(t 
 	run := func(t *testing.T, payload []byte) []byte {
 		t.Helper()
 		env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: payload})
-		if err := newProc(t).Process(context.Background(), env, c12noop); err != nil {
+		if err := newProc(t).Process(context.Background(), env, noopNext); err != nil {
 			t.Fatalf("expected success from default, got %v", err)
 		}
 		return env.Payload()
@@ -114,7 +114,7 @@ func TestJSONTransform_ZeroFieldInputs_RequiredWithDefault_MatchesEmptyObject(t 
 	}
 }
 
-// c12-transform-empty (passthrough preserved): a non-required, non-FailOnError
+// Empty-input passthrough preserved: a non-required, non-FailOnError
 // config must STILL pass an empty/whitespace body straight through — next is
 // called, no error, bytes unchanged.
 func TestJSONTransform_EmptyPayload_BestEffortStillPasses(t *testing.T) {
@@ -142,10 +142,10 @@ func TestJSONTransform_EmptyPayload_BestEffortStillPasses(t *testing.T) {
 	}
 }
 
-// c12-transform-leak: a conversion failure on a payload value that carries a
-// recognizable secret must NOT echo the raw value (or a strconv error that
-// embeds it) into the returned error — only a redacted TYPE/LENGTH descriptor,
-// the field PATH, and the target type may appear. Reverting to the raw `%q`
+// Conversion errors must not leak payload values: a conversion failure on a
+// payload value that carries a recognizable secret must NOT echo the raw value
+// (or a strconv error that embeds it) into the returned error — only a redacted
+// TYPE/LENGTH descriptor, the field PATH, and the target type may appear. Reverting to the raw `%q`
 // (or the `%w` strconv chain) makes this FAIL.
 func TestJSONTransform_ConversionError_RedactsPayloadValue(t *testing.T) {
 	const secret = "4111111111111111-CVV-999-PAN"
@@ -175,7 +175,7 @@ func TestJSONTransform_ConversionError_RedactsPayloadValue(t *testing.T) {
 			}
 			env := messaging.MustEnvelope(messaging.EnvelopeInput{Payload: []byte(tc.payload)})
 
-			err = proc.Process(context.Background(), env, c12noop)
+			err = proc.Process(context.Background(), env, noopNext)
 			if err == nil {
 				t.Fatalf("expected conversion failure for %q -> %s", secret, tc.transform)
 			}
@@ -202,8 +202,9 @@ func TestJSONTransform_ConversionError_RedactsPayloadValue(t *testing.T) {
 	}
 }
 
-// c12-transform-leak (unit): the low-level converters must never surface the
-// raw failed value nor the strconv error that embeds it.
+// Conversion errors must not leak payload values, at the unit level: the
+// low-level converters must never surface the raw failed value nor the strconv
+// error that embeds it.
 func TestRedactValue_ContentFreeDescriptor(t *testing.T) {
 	const secret = "hunter2-topsecret"
 

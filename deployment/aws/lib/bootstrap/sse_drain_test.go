@@ -19,8 +19,8 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// These tests cover audit chunk finding 1: the bootstrap composition root
-// never drained the HTTP transport's SSE senders on config reload or shutdown.
+// These tests pin that the bootstrap composition root drains the HTTP
+// transport's SSE senders on config reload and shutdown.
 // adapters/http/transport.Factory.Close (invoked here via App.closeSupersededHTTP
 // on swap and via the Stop drain block) unblocks the long-lived SSE handlers so
 // (a) a fronting transport server.Shutdown does not hang the full budget on an

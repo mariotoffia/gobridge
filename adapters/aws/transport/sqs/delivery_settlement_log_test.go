@@ -72,8 +72,8 @@ func findAttr(records []slog.Record, key string) (slog.Value, bool) {
 	return slog.Value{}, false
 }
 
-// TestSettlementLog_MessageIDIsStringValue_NotMethodValue is the regression
-// for Finding 1. Several settlement/auto-extend log sites logged d.env.ID —
+// TestSettlementLog_MessageIDIsStringValue_NotMethodValue pins the logged
+// message_id. Several settlement/auto-extend log sites logged d.env.ID —
 // the bound METHOD value (a func) — instead of calling d.env.ID(). slog then
 // rendered message_id as an opaque function pointer, identical for every
 // message, destroying the diagnostic value of the field. Assert the logged
@@ -100,15 +100,15 @@ func TestSettlementLog_MessageIDIsStringValue_NotMethodValue(t *testing.T) {
 	}
 	if val.Kind() != slog.KindString {
 		t.Fatalf("message_id attr kind = %v, want String "+
-			"(Finding 1: logged the bound ID method value, not the ID)", val.Kind())
+			"(logged the bound ID method value, not the ID)", val.Kind())
 	}
 	if got := val.String(); got != "msg-42" {
 		t.Fatalf("message_id = %q, want %q", got, "msg-42")
 	}
 }
 
-// TestAutoExtend_UserExtendRefreshesDeadline_NoPrematureCancel is the
-// regression for Finding 2. A user Extend to now+120s stores the new
+// TestAutoExtend_UserExtendRefreshesDeadline_NoPrematureCancel pins the
+// refreshed window deadline. A user Extend to now+120s stores the new
 // visibility atomically, but the auto-extend loop must ALSO see the refreshed
 // window deadline: otherwise a transient auto-extend CMV failure at the old
 // (2s) boundary is mistaken for a lapsed window and cancels still-locked work.
@@ -163,12 +163,12 @@ func TestAutoExtend_UserExtendRefreshesDeadline_NoPrematureCancel(t *testing.T) 
 
 	if got := wait.StableFor(t, cancelled.Load, 50*time.Millisecond, 500*time.Millisecond); got {
 		t.Fatal("processing was cancelled by a transient auto-extend failure inside the " +
-			"user-extended window (Finding 2: stale window deadline)")
+			"user-extended window (stale window deadline)")
 	}
 }
 
-// TestAutoExtend_DeadReceiptHandle_CancelsImmediately is the regression for
-// Finding 8 (and covers the Finding 5 SQSAutoExtendFailures counter). When a
+// TestAutoExtend_DeadReceiptHandle_CancelsImmediately pins the lost-lock cancel
+// (and covers the SQSAutoExtendFailures counter). When a
 // ChangeMessageVisibility returns MessageNotInflight / ReceiptHandleIsInvalid
 // the lock is already lost; retrying only widens the duplicate window, so the
 // loop must cancel processing immediately instead of treating it as transient.
@@ -214,9 +214,9 @@ func TestAutoExtend_DeadReceiptHandle_CancelsImmediately(t *testing.T) {
 	}
 }
 
-// TestAck_EmitsSettlementErrorCounter covers Finding 5: a failed settlement
-// (DeleteMessage) must increment the SQSSettlementErrors counter, not just
-// log a warning.
+// TestAck_EmitsSettlementErrorCounter pins that a failed settlement
+// (DeleteMessage) increments the SQSSettlementErrors counter, not just logs
+// a warning.
 func TestAck_EmitsSettlementErrorCounter(t *testing.T) {
 	t.Parallel()
 
@@ -239,7 +239,7 @@ func TestAck_EmitsSettlementErrorCounter(t *testing.T) {
 	}
 }
 
-// TestRetry_EmitsSettlementErrorCounter covers Finding 5 for the Retry
+// TestRetry_EmitsSettlementErrorCounter pins the same counter for the Retry
 // settlement path (ChangeMessageVisibility failure).
 func TestRetry_EmitsSettlementErrorCounter(t *testing.T) {
 	t.Parallel()

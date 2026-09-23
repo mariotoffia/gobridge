@@ -14,7 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
-// Finding 3 — Extend()/ticker.Reset(0) panic.
+// Extend()/ticker.Reset(0) panic.
 //
 // Extend() could store a 0/1-second visibility timeout when the requested
 // deadline resolved to "now or earlier", which then drove the auto-extend

@@ -8,10 +8,10 @@ import (
 	"github.com/mariotoffia/gobridge/validate"
 )
 
-// TestValidateBlueprintGraph_SameSessionLoopWarns covers the Chunk-1 finding
-// that a same-broker feedback loop (a binding publishing to an address a
-// receiver on the same session subscribes to) was not surfaced. The static
-// exact-match case must now emit a warning.
+// TestValidateBlueprintGraph_SameSessionLoopWarns pins that a same-broker
+// feedback loop (a binding publishing to an address a receiver on the same
+// session subscribes to) is surfaced: the static exact-match case must emit a
+// warning.
 func TestValidateBlueprintGraph_SameSessionLoopWarns(t *testing.T) {
 	cfg := &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "test"},

@@ -173,7 +173,7 @@ func TestSave_CompareAndSet(t *testing.T) {
 	})
 }
 
-// TestSave_AdoptsVersionlessItem is the regression for the CAS-bricking finding:
+// TestSave_AdoptsVersionlessItem pins that a version-less row stays writable:
 // a row seeded outside this loader (AWS console / Terraform / data import) has
 // PK/SK/data but no `version` attribute. The old condition
 // "attribute_not_exists(#pk) OR #v = :expected" was permanently false for such a
@@ -220,7 +220,7 @@ func TestSave_AdoptsVersionlessItem(t *testing.T) {
 	}
 }
 
-// TestSave_RejectsOversizedConfig is the regression for the 400 KB item finding:
+// TestSave_RejectsOversizedConfig pins the 400 KB DynamoDB item limit:
 // a config whose serialized payload exceeds the per-item limit must fail with a
 // descriptive, actionable error BEFORE any SDK write, instead of surfacing an
 // opaque DynamoDB ValidationException after a round trip.

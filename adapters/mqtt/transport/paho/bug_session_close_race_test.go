@@ -11,7 +11,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GAP-2 (QA): MQTT Session Close vs pushEvent Race
+// MQTT Session Close vs pushEvent Race
 //
 // Close() sets s.closed=true then closes s.events. pushEvent checks s.closed
 // under the same mutex. This test verifies no panic occurs when pushEvent

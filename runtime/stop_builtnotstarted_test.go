@@ -1,10 +1,10 @@
 package runtime_test
 
-// Residual test coverage for the runtime side of production-readiness
-// Findings 2 and 6 (contract): Runtime.Stop must release EVERY resource a
-// build opened, even when the runtime was never Started (the supervisor stops
-// a runtime whose swap failed) and even for sessions no session manager owns
-// (non-shared_outbox binding sessions registered via RegisterSessionSender).
+// Test coverage for the runtime side of the Stop contract: Runtime.Stop must
+// release EVERY resource a build opened, even when the runtime was never
+// Started (the supervisor stops a runtime whose swap failed) and even for
+// sessions no session manager owns (non-shared_outbox binding sessions
+// registered via RegisterSessionSender).
 
 import (
 	"context"
@@ -30,8 +30,8 @@ func (s *closableFakeLeaseStore) Close() error {
 	return nil
 }
 
-// TestRuntime_Stop_BuiltNotStarted_ClosesSessionsAndStores validates
-// (Finding 2): a runtime that was BUILT but never Started still owns opened
+// TestRuntime_Stop_BuiltNotStarted_ClosesSessionsAndStores validates that
+// a runtime that was BUILT but never Started still owns opened
 // sessions (route entry + registered session sender) and store handles. Stop
 // on that runtime must close all of them — the supervisor relies on this to
 // avoid leaking one full connection set per failed swap when a config flaps
@@ -39,18 +39,18 @@ func (s *closableFakeLeaseStore) Close() error {
 func TestRuntime_Stop_BuiltNotStarted_ClosesSessionsAndStores(t *testing.T) {
 	lease := &closableFakeLeaseStore{}
 	rt := goruntime.New(
-		goruntime.WithInstanceID("c1-built-not-started"),
+		goruntime.WithInstanceID("stop-built-not-started"),
 		goruntime.WithLeaseStore(lease),
 	)
 
-	cfg, recv, snd := helperMinimalRoute("c1-route")
+	cfg, recv, snd := helperMinimalRoute("stop-route")
 	entrySess := NewFakeSession()
-	entryCfg := session.Config{SessionID: "c1-entry"}
+	entryCfg := session.Config{SessionID: "stop-entry"}
 	require.NoError(t, rt.AddRoute(cfg, recv, snd, entrySess, &entryCfg))
 
 	bindSess := NewFakeSession()
 	require.NoError(t, rt.RegisterSessionSender(
-		session.Config{SessionID: "c1-binding"}, bindSess, NewFakeSender()))
+		session.Config{SessionID: "stop-binding"}, bindSess, NewFakeSender()))
 
 	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -65,20 +65,20 @@ func TestRuntime_Stop_BuiltNotStarted_ClosesSessionsAndStores(t *testing.T) {
 }
 
 // TestRuntime_Stop_UnmanagedBindingSession_Closed validates the started-runtime
-// half of Finding 6: a session registered via RegisterSessionSender for a
+// half of the contract: a session registered via RegisterSessionSender for a
 // non-shared_outbox route never gets a session manager (only shared_outbox
 // drainer wiring creates one), so runtime.Stop's manager loop does not cover
 // it. Stop must still close it, or every reconfiguration swap leaks one broker
 // connection.
 func TestRuntime_Stop_UnmanagedBindingSession_Closed(t *testing.T) {
-	rt := goruntime.New(goruntime.WithInstanceID("c1-unmanaged"))
+	rt := goruntime.New(goruntime.WithInstanceID("stop-unmanaged"))
 
-	cfg, recv, snd := helperMinimalRoute("c1-direct-route")
+	cfg, recv, snd := helperMinimalRoute("stop-direct-route")
 	require.NoError(t, rt.AddRoute(cfg, recv, snd, nil, nil))
 
 	unmanaged := NewFakeSession()
 	require.NoError(t, rt.RegisterSessionSender(
-		session.Config{SessionID: "c1-unmanaged-binding"}, unmanaged, NewFakeSender()))
+		session.Config{SessionID: "stop-unmanaged-binding"}, unmanaged, NewFakeSender()))
 
 	require.NoError(t, rt.Start(context.Background()))
 
@@ -87,5 +87,5 @@ func TestRuntime_Stop_UnmanagedBindingSession_Closed(t *testing.T) {
 	require.NoError(t, rt.Stop(stopCtx))
 
 	assert.True(t, unmanaged.IsClosed(),
-		"a binding session without a session manager must be closed on Stop (Finding 6)")
+		"a binding session without a session manager must be closed on Stop")
 }

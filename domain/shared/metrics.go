@@ -62,7 +62,7 @@ const (
 	// breaching — the gauge is emitted continuously while an outbox exists, so
 	// silence means the drainer/bridge died. The per-cycle claim-batch liveness
 	// signal is kept SEPARATE as MetricOutboxClaimBatchSize so a full batch can
-	// never be mistaken for a shallow backlog (H-OBS).
+	// never be mistaken for a shallow backlog.
 	//
 	// When a supported OutboxDepthReporter is present but its CountPending
 	// returns a REAL error (DB/read failure — NOT ports.ErrOutboxDepthUnsupported),
@@ -77,7 +77,7 @@ const (
 	// size (the Claim ceiling) by design: a value at the ceiling means the drainer
 	// is running flat-out and there may be more pending, so consult
 	// MetricOutboxDepth for the true backlog. Split out from MetricOutboxDepth
-	// (H-OBS) so a saturating claim size can never masquerade as a healthy shallow
+	// so a saturating claim size can never masquerade as a healthy shallow
 	// depth. Tagged with the partition (TagKeyPartition), sharing the series shape
 	// with MetricOutboxDepth.
 	MetricOutboxClaimBatchSize = "OutboxClaimBatchSize"
@@ -107,7 +107,7 @@ const (
 	// saturating claimed-count fallback) and increments this counter, tagged with
 	// the partition (TagKeyPartition), alongside a structured error log. A rising
 	// value means the depth query itself is failing — investigate the store, not
-	// the backlog (H-OBS).
+	// the backlog.
 	MetricOutboxDepthFailures     = "OutboxDepthFailures"
 	MetricOutboxClaimRecoveries   = "OutboxClaimRecoveries"
 	MetricOutboxCompletions       = "OutboxCompletions"
@@ -189,7 +189,7 @@ const (
 	// and never decreases. DLQEntries answers "how many were ever DLQ'd";
 	// DLQDepth answers "how many are sitting in the DLQ right now", so a stale
 	// backlog after a burst (writes have since stopped) is visible and alarmable
-	// instead of requiring a manual storage scan (H-OBS DLQ-1). It is sampled
+	// instead of requiring a manual storage scan. It is sampled
 	// from a store's OPTIONAL ports.DLQDepthReporter capability via
 	// runtime.ReportDLQDepth and emitted with NO route dimension (a fleet total),
 	// so it matches the dimensionless default rollup alarm and stays low

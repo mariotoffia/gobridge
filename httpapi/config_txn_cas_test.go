@@ -25,19 +25,20 @@ import (
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// c1-txn-cas — config transaction commit must be an ATOMIC compare-and-swap
-// across cluster instances. A plain read-check-Save has a lost-update window
-// between the version read and the write; two instances committing from the
-// same base version against a shared backend would each pass the guard and the
-// second Save would clobber the first. When the store implements
+// Config transaction commit must be an ATOMIC compare-and-swap across cluster
+// instances. A plain read-check-Save has a lost-update window between the
+// version read and the write; two instances committing from the same base
+// version against a shared backend would each pass the guard and the second
+// Save would clobber the first. When the store implements
 // ports.ConditionalConfigStore the commit uses SaveIfVersion, which rejects a
 // concurrent advance instead of overwriting it.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TestConfigTxnCommit_CAS_RejectsConcurrentVersionBump pins c1-txn-cas: a commit
-// against a ConditionalConfigStore must use SaveIfVersion so a peer commit that
-// advanced the shared version between this transaction's read and its write is
-// REJECTED (errVersionConflict) rather than silently overwritten.
+// TestConfigTxnCommit_CAS_RejectsConcurrentVersionBump pins the commit
+// compare-and-swap: a commit against a ConditionalConfigStore must use
+// SaveIfVersion so a peer commit that advanced the shared version between this
+// transaction's read and its write is REJECTED (errVersionConflict) rather than
+// silently overwritten.
 //
 // Mutation reasoning — revert the SaveIfVersion CAS in commitDurable back to a
 // plain m.store.Save and this test fails: the plain Save clobbers the peer's
@@ -101,13 +102,13 @@ func TestConfigTxnCommit_CAS_SucceedsWhenNoConcurrentBump(t *testing.T) {
 }
 
 // TestConfigTxnRollback_CAS_DoesNotClobberConcurrentAdvance pins the rollback
-// half of c1-txn-cas: when an apply FAILS (non-in-flight) and the durable write
-// is rolled back, that restore write must be as version-conditional as the
-// forward commit. Here the commit lands version 6, the apply then fails, and a
-// peer instance commits version 7 in the window before the rollback restore
-// fires. The CAS restore must REFUSE (SaveIfVersion mismatch) rather than
-// clobber the peer's acknowledged version-7 commit with the stale version-5
-// prior.
+// half of the commit compare-and-swap: when an apply FAILS (non-in-flight) and
+// the durable write is rolled back, that restore write must be as
+// version-conditional as the forward commit. Here the commit lands version 6,
+// the apply then fails, and a peer instance commits version 7 in the window
+// before the rollback restore fires. The CAS restore must REFUSE (SaveIfVersion
+// mismatch) rather than clobber the peer's acknowledged version-7 commit with
+// the stale version-5 prior.
 //
 // Mutation reasoning — revert restoreConfig to a plain m.store.Save and this
 // test fails: the peer's version-7 config is overwritten by the version-5 prior
@@ -157,15 +158,16 @@ func TestConfigTxnRollback_CAS_DoesNotClobberConcurrentAdvance(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// c1-crash-unapplied — a commit whose in-band apply is merely IN-FLIGHT (the
-// runtime accepted the config but its running state is not confirmed) must NOT
-// roll the durable write back. ports.ErrApplyInFlight is the "committed, not
-// confirmed applied, do NOT roll back" signal; the durable write is retained so
-// a restart recovers the committed config, and the commit surfaces
-// committed_not_applied semantics.
+// A commit whose in-band apply is merely IN-FLIGHT (the runtime accepted the
+// config but its running state is not confirmed) must NOT roll the durable
+// write back. ports.ErrApplyInFlight is the "committed, not confirmed applied,
+// do NOT roll back" signal; the durable write is retained so a restart recovers
+// the committed config, and the commit surfaces committed_not_applied
+// semantics.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TestConfigTxnCommit_ApplyInFlight_DoesNotRollBack pins c1-crash-unapplied.
+// TestConfigTxnCommit_ApplyInFlight_DoesNotRollBack pins that an in-flight
+// apply retains the durable write instead of rolling it back.
 //
 // Mutation reasoning — drop the ports.ErrApplyInFlight branch in Commit and the
 // applier error falls through to rollbackAfterApplyFailure, which restores the
@@ -206,8 +208,8 @@ func TestConfigTxnCommit_ApplyInFlight_DoesNotRollBack(t *testing.T) {
 }
 
 // TestHandleConfigTxnCommit_ApplyInFlight_Returns202Applying pins the HTTP
-// mapping for c1-crash-unapplied: an in-flight apply is committed and converging,
-// NOT a failure, so the commit endpoint must answer 202 committed_applying — a
+// mapping for an in-flight apply: it is committed and converging, NOT a
+// failure, so the commit endpoint must answer 202 committed_applying — a
 // distinct, non-5xx outcome — rather than the generic 500 committed_not_applied
 // used for a genuine apply failure. Collapsing both into 500 would let an
 // operator/automation read "my change failed" and revert against a runtime that
@@ -247,11 +249,11 @@ func TestHandleConfigTxnCommit_ApplyInFlight_Returns202Applying(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// c1-dlq-redrive-loss — redrive must INJECT before it DELETES. Deleting first
-// opened an at-most-once loss window: a failed inject after the delete (and a
-// failed best-effort restore) lost the message and its DLQ evidence. Injecting
-// first and deleting only after a confirmed inject means a failed inject leaves
-// the entry fully intact.
+// Redrive must INJECT before it DELETES. Deleting first opened an at-most-once
+// loss window: a failed inject after the delete (and a failed best-effort
+// restore) lost the message and its DLQ evidence. Injecting first and deleting
+// only after a confirmed inject means a failed inject leaves the entry fully
+// intact.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // writeFailDLQStore is a DLQ store whose Write always fails, modelling the exact
@@ -267,7 +269,8 @@ func (s *writeFailDLQStore) Write(_ context.Context, _ routing.DLQEntry) error {
 	return s.writeErr
 }
 
-// TestHandleDLQRedrive_InjectFailure_NeverLosesEntry pins c1-dlq-redrive-loss.
+// TestHandleDLQRedrive_InjectFailure_NeverLosesEntry pins the inject-before-
+// delete redrive ordering.
 // The runtime cannot inject the entry (its recorded route no longer exists) AND
 // the store's restore Write is rigged to fail. With inject-then-delete the entry
 // is never deleted, so it survives.
@@ -324,13 +327,14 @@ func TestHandleDLQRedrive_InjectFailure_NeverLosesEntry(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// c1-apikey-weak — dynamic API-key providers must be validated on EVERY refresh
-// with the same strength floor startup enforces. A rotation returning a weak
-// (below-floor) key must be rejected and the last good key kept (fail closed),
-// never installed.
+// Dynamic API-key providers must be validated on EVERY refresh with the same
+// strength floor startup enforces. A rotation returning a weak (below-floor)
+// key must be rejected and the last good key kept (fail closed), never
+// installed.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TestAdminAuth_DynamicProviderRejectsWeakKey_KeepsLastGood pins c1-apikey-weak.
+// TestAdminAuth_DynamicProviderRejectsWeakKey_KeepsLastGood pins that a
+// dynamic API-key rotation is held to the startup key-strength floor.
 //
 // Mutation reasoning — drop the validatedKeyProvider wrapping in New (revert to
 // the bare shared.NewSecret(provider()) wrapper) and this test fails: the weak
@@ -377,9 +381,9 @@ func TestAdminAuth_DynamicProviderRejectsWeakKey_KeepsLastGood(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// c1-inject-deadline — admin inject and DLQ ops must apply a bounded backend
-// deadline so a wedged runtime/store cannot hang the handler (and, through it,
-// graceful shutdown) indefinitely on a patient client.
+// Admin inject and DLQ ops must apply a bounded backend deadline so a wedged
+// runtime/store cannot hang the handler (and, through it, graceful shutdown)
+// indefinitely on a patient client.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // deadlineProbeRuntime wraps a real runtime and observes the context passed to
@@ -422,9 +426,9 @@ func injectDeadlineRequest() *http.Request {
 	return req
 }
 
-// TestHandleInject_AppliesBackendDeadline pins c1-inject-deadline with zero
-// timing dependency: the backend inject must receive a context carrying a
-// deadline, not the raw (deadline-less) request context.
+// TestHandleInject_AppliesBackendDeadline pins the bounded backend deadline
+// with zero timing dependency: the backend inject must receive a context
+// carrying a deadline, not the raw (deadline-less) request context.
 //
 // Mutation reasoning — revert handleInject to rt.Inject(r.Context(), ...) and
 // this test fails: the httptest request context carries no deadline, so the
@@ -449,7 +453,7 @@ func TestHandleInject_AppliesBackendDeadline(t *testing.T) {
 // effective: a backend that hangs until its context is cancelled must not hang
 // the handler — it returns once the bounded deadline fires. Under the unfixed
 // code (raw request context, which never cancels here) this call would block
-// forever, which is the exact wedged-handler hazard the finding describes.
+// forever, which is the exact wedged-handler hazard the deadline prevents.
 func TestHandleInject_WedgedBackendFailsFast(t *testing.T) {
 	base := runtime.New(runtime.WithInstanceID("inject-wedge-test"))
 	rt := &deadlineProbeRuntime{Runtime: base, block: true}

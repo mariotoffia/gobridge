@@ -218,7 +218,7 @@ func TestReceiverOptionsFromMap_NonNilMap(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BUG-10: keep_alive validation (0..65535)
+// keep_alive validation (0..65535)
 //
 // SessionOptionsFromMap must reject keep_alive values outside uint16 range
 // and accept valid boundary values.
@@ -306,7 +306,7 @@ func TestKeepAlive_Float64(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BUG-11: QoS type validation in SenderOptionsFromMap
+// QoS type validation in SenderOptionsFromMap
 //
 // SenderOptionsFromMap must reject QoS values of the wrong type
 // and out-of-range integer values.

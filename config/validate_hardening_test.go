@@ -147,7 +147,7 @@ func TestValidate_BuildTimeConsumedFields_ValidPass(t *testing.T) {
 // nil pointer ("omitted") and an explicit zero mean different things.
 func ptrTo[T any](v T) *T { return &v }
 
-// TestManager_AppliedVersionSurfaced covers the cluster-convergence finding:
+// TestManager_AppliedVersionSurfaced pins cluster-convergence observability:
 // per-instance divergence must at least be OBSERVABLE. The manager stamps and
 // surfaces the version of the last config it applied so operators can detect
 // cross-instance version skew.
