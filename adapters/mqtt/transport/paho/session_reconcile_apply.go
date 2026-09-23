@@ -93,10 +93,12 @@ func (s *Session) reconcile(
 				verified = append(verified, filter)
 			}
 			sort.Strings(verified)
-			if err := s.verifyManagedReplay(ctx, verified); err != nil {
+			budget := s.newDeadLetterBudget(ctx)
+			defer budget.stop()
+			if err := s.settleManagedReplay(ctx, verified, budget); err != nil {
 				return err
 			}
-			if err := s.finalizeManagedCleanup(ctx, managedStore, managedIdentity, verified); err != nil {
+			if err := s.finalizeManagedCleanup(ctx, managedStore, managedIdentity, verified, budget); err != nil {
 				return err
 			}
 			for _, filter := range verified {

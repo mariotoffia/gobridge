@@ -3,6 +3,10 @@ package paho
 import (
 	"context"
 	"sort"
+
+	pahov5 "github.com/eclipse/paho.golang/paho"
+
+	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
 // setManagedCleanupFilters atomically replaces the exact history-minus-desired
@@ -150,22 +154,63 @@ func (r *router) resumeManagedDispatch(ctx context.Context) error {
 	}
 }
 
-// pendingMatching reports how many buffered publishes match exact managed
-// filters. It never settles or removes entries; migration uses it after a
-// cleanup recycle to detect broker-pinned QoS1 deliveries and fail closed.
-func (r *router) pendingMatching(filters []string) int {
+// deadLetterPending hands every buffered delivery of the current connection
+// generation that matches filters to write, and acknowledges each one only after
+// write returned nil. An acknowledged entry leaves the buffer and gives its
+// dispatch reservation back. It stops at the first write or acknowledgement
+// failure and returns it; that entry and every later one stay buffered with
+// their acknowledgement intact. write and ack run with r.mu released: the
+// acknowledgement wrapper takes r.mu.
+func (r *router) deadLetterPending(
+	ctx context.Context,
+	filters []string,
+	write func(context.Context, *messaging.Envelope, string) error,
+) (handled int, err error) {
 	if r == nil || len(filters) == 0 {
-		return 0
+		return 0, nil
+	}
+	type held struct {
+		pub    *pahov5.Publish
+		ack    func() error
+		filter string
 	}
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	count := 0
+	var matched []held
 	for _, pending := range r.pending {
-		if matchesAnyFilter(filters, pending.pub.Topic) {
-			count++
+		if pending.epoch != r.connEpoch {
+			continue
+		}
+		for _, filter := range filters {
+			if matchTopicFilter(filter, pending.pub.Topic) {
+				matched = append(matched, held{pub: pending.pub, ack: pending.ack, filter: filter})
+				break
+			}
 		}
 	}
-	return count
+	r.mu.RUnlock()
+
+	for _, entry := range matched {
+		if err := write(ctx, EnvelopeFromPublish(entry.pub, r.clk, r.metrics), entry.filter); err != nil {
+			return handled, err
+		}
+		if entry.ack != nil {
+			if err := entry.ack(); err != nil {
+				return handled, err
+			}
+		}
+		r.mu.Lock()
+		for i := range r.pending {
+			if r.pending[i].pub == entry.pub {
+				r.pending = append(r.pending[:i], r.pending[i+1:]...)
+				r.pendingBytes -= pubBytes(entry.pub)
+				r.releaseQueueReservationLocked(entry.pub)
+				break
+			}
+		}
+		r.mu.Unlock()
+		handled++
+	}
+	return handled, nil
 }
 
 // awaitManagedReplay waits through the current connection startup-grace window

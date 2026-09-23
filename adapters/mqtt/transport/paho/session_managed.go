@@ -3,6 +3,7 @@ package paho
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -20,6 +21,8 @@ func (s *Session) reconcileManagedUnsubscribe(
 	managedStore ports.ManagedSubscriptionStore,
 	managedIdentity string,
 ) error {
+	budget := s.newDeadLetterBudget(ctx)
+	defer budget.stop()
 	confirmation, err := s.unsubscribeConfirmed(ctx, cm, toUnsub, operationEpoch)
 	if err != nil {
 		return err
@@ -51,10 +54,10 @@ func (s *Session) reconcileManagedUnsubscribe(
 			return shared.ErrUnavailable.WithMessage("mqtt: recycle after managed subscription cleanup").Wrap(reloadErr)
 		}
 		if confirmation.firstErr != nil {
-			if err := s.verifyManagedReplay(ctx, confirmation.confirmed); err != nil {
+			if err := s.settleManagedReplay(ctx, confirmation.confirmed, budget); err != nil {
 				return err
 			}
-			if err := s.finalizeManagedCleanup(ctx, managedStore, managedIdentity, confirmation.confirmed); err != nil {
+			if err := s.finalizeManagedCleanup(ctx, managedStore, managedIdentity, confirmation.confirmed, budget); err != nil {
 				return err
 			}
 			return confirmation.failure()
@@ -67,10 +70,10 @@ func (s *Session) reconcileManagedUnsubscribe(
 	// recording in-memory verification/Forget; this replacement can still receive
 	// a delayed broker-pinned replay. Always wait the current generation's full
 	// replay-grace before Forget, even without managedCleanupVerification state.
-	if err := s.verifyManagedReplay(ctx, confirmation.confirmed); err != nil {
+	if err := s.settleManagedReplay(ctx, confirmation.confirmed, budget); err != nil {
 		return err
 	}
-	if err := s.finalizeManagedCleanup(ctx, managedStore, managedIdentity, confirmation.confirmed); err != nil {
+	if err := s.finalizeManagedCleanup(ctx, managedStore, managedIdentity, confirmation.confirmed, budget); err != nil {
 		return err
 	}
 	if confirmation.firstErr != nil {
@@ -79,15 +82,72 @@ func (s *Session) reconcileManagedUnsubscribe(
 	return nil
 }
 
-func (s *Session) verifyManagedReplay(ctx context.Context, filters []string) error {
+// settleManagedReplay deals with deliveries the broker hands this session for
+// filters it just removed. Without a dead-letter path it keeps them
+// unacknowledged and fails closed, as before. With one it dead-letters and
+// acknowledges each, waiting out the current generation's replay-grace window,
+// so a removed filter's queued traffic cannot stop the session. A failed write
+// is transient: the delivery stays buffered and the manager retries the
+// reconcile.
+func (s *Session) settleManagedReplay(ctx context.Context, filters []string, budget *deadLetterBudget) error {
 	if len(filters) == 0 || s.router == nil {
 		return nil
 	}
-	pinned, err := s.router.awaitManagedReplay(ctx, filters)
-	if err != nil || pinned {
-		return s.failClosedForManagedMigration(ctx)
+	s.mu.Lock()
+	deadLetter := s.removedSubscriptionDeadLetter
+	s.mu.Unlock()
+	if deadLetter == nil {
+		pinned, err := s.router.awaitManagedReplay(ctx, filters)
+		if err != nil || pinned {
+			return s.failClosedForManagedMigration(ctx)
+		}
+		return nil
 	}
-	return nil
+	for {
+		pinned, err := s.router.awaitManagedReplay(ctx, filters)
+		if err != nil {
+			return shared.ErrUnavailable.WithMessage("mqtt: await replay for removed managed subscriptions").Wrap(err)
+		}
+		if !pinned {
+			return nil
+		}
+		handled, err := s.router.deadLetterPending(budget.context(), filters, deadLetter)
+		if err != nil {
+			return shared.ErrUnavailable.WithMessage("mqtt: dead-letter a delivery held for a removed subscription").Wrap(err)
+		}
+		if handled == 0 {
+			// Only an entry of an older connection generation matched. Its
+			// acknowledgement is dead, so it cannot be settled here.
+			return s.failClosedForManagedMigration(ctx)
+		}
+	}
+}
+
+// deadLetterBudget bounds the dead-letter writes of one managed cleanup
+// reconcile to one reconcile timeout, shared by every write in it. The clock
+// starts at the first write, so the replay-grace wait before it is not charged.
+type deadLetterBudget struct {
+	parent  context.Context
+	timeout time.Duration
+	ctx     context.Context
+	cancel  context.CancelFunc
+}
+
+func (s *Session) newDeadLetterBudget(ctx context.Context) *deadLetterBudget {
+	return &deadLetterBudget{parent: ctx, timeout: s.reconcileTimeout()}
+}
+
+func (b *deadLetterBudget) context() context.Context {
+	if b.ctx == nil {
+		b.ctx, b.cancel = context.WithTimeout(b.parent, b.timeout)
+	}
+	return b.ctx
+}
+
+func (b *deadLetterBudget) stop() {
+	if b.cancel != nil {
+		b.cancel()
+	}
 }
 
 func (s *Session) finalizeManagedCleanup(
@@ -95,12 +155,13 @@ func (s *Session) finalizeManagedCleanup(
 	managedStore ports.ManagedSubscriptionStore,
 	managedIdentity string,
 	filters []string,
+	budget *deadLetterBudget,
 ) error {
 	if len(filters) == 0 {
 		return nil
 	}
-	if s.router != nil && s.router.pendingMatching(filters) > 0 {
-		return s.failClosedForManagedMigration(ctx)
+	if err := s.settleManagedReplay(ctx, filters, budget); err != nil {
+		return err
 	}
 	if err := managedStore.Forget(ctx, managedIdentity, filters); err != nil {
 		return shared.ErrUnavailable.WithMessage("mqtt: forget verified managed subscriptions").Wrap(err)

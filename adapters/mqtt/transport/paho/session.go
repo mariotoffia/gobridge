@@ -11,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -185,6 +186,10 @@ type Session struct {
 	// source RouteRunner settlement accounting. Managed cleanup invokes it only
 	// after the router has stopped accepting callbacks. Guarded by mu.
 	ingressQuiescenceWaiter func(context.Context) error
+	// removedSubscriptionDeadLetter is installed by the runtime when a
+	// dead-letter store exists. Managed cleanup writes a delivery held for a
+	// removed filter through it before ACKing. Guarded by mu.
+	removedSubscriptionDeadLetter func(context.Context, *messaging.Envelope, string) error
 
 	// sharedSubWarned latches the one-time advisory that shared
 	// subscriptions ($share) are configured on a stable/shared-ClientID
@@ -300,9 +305,19 @@ type mqttCredentials struct {
 }
 
 var (
-	_ ports.Session                     = (*Session)(nil)
-	_ ports.IngressQuiescenceConfigurer = (*Session)(nil)
+	_ ports.Session                                 = (*Session)(nil)
+	_ ports.IngressQuiescenceConfigurer             = (*Session)(nil)
+	_ ports.RemovedSubscriptionDeadLetterConfigurer = (*Session)(nil)
 )
+
+// SetRemovedSubscriptionDeadLetter installs the runtime-owned dead-letter write
+// for deliveries the broker hands this session for a removed managed filter.
+// Runtime.Start calls this before background work begins; nil removes it.
+func (s *Session) SetRemovedSubscriptionDeadLetter(fn func(context.Context, *messaging.Envelope, string) error) {
+	s.mu.Lock()
+	s.removedSubscriptionDeadLetter = fn
+	s.mu.Unlock()
+}
 
 // SetIngressQuiescenceWaiter installs the runtime-owned source-settlement
 // barrier used before a managed-subscription recycle disconnects the broker
