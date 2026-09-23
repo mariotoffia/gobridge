@@ -331,6 +331,9 @@ func TestRetire_ForgetsCredentialTargets(t *testing.T) {
 // TestRetire_ClosesTheSessionsOnlyTheUnitHeld pins which sessions Retire closes
 // besides its managers': a session no manager runs that only the unit held is
 // closed once, and a session a surviving manager runs is left to that manager.
+// The unit breaks Retire's closed-over-its-sessions precondition on purpose —
+// it names r2 but not the s2 it rides on — to pin that safety net: Retire never
+// closes a session under a manager it leaves running.
 func TestRetire_ClosesTheSessionsOnlyTheUnitHeld(t *testing.T) {
 	rt := New(WithInstanceID("retire-unmanaged"))
 	bare, s2 := newRetireSession(), newRetireSession()
@@ -346,6 +349,32 @@ func TestRetire_ClosesTheSessionsOnlyTheUnitHeld(t *testing.T) {
 	stopRuntime(t, rt)
 	assert.Equal(t, int32(1), bare.closes.Load(), "Stop does not close a session Retire closed")
 	assert.Equal(t, int32(1), s2.closes.Load())
+}
+
+// TestRetire_RetiresAnIngressSession pins that an ingress session retires with
+// the route riding on it: its manager closes it once, a credential refresher
+// forgets it, and another ingress session stays.
+func TestRetire_RetiresAnIngressSession(t *testing.T) {
+	rt := New(WithInstanceID("retire-ingress"))
+	i1, i2 := newRetireSession(), newRetireSession()
+	require.NoError(t, rt.RegisterIngressSession(session.Config{SessionID: "i1"}, i1))
+	require.NoError(t, rt.RegisterIngressSession(session.Config{SessionID: "i2"}, i2))
+	require.NoError(t, rt.AddRoute(ridingRoute("r1", "i1"), newComponentReceiver(), &componentSender{}, nil, nil))
+	var forgotten []any
+	rt.AttachCredentialForget(func(targets []any) bool { forgotten = targets; return false })
+	startComponentRuntime(t, rt)
+
+	retire(t, rt, Unit{Routes: []string{"r1"}, Sessions: []string{"i1"}})
+
+	assert.Equal(t, int32(1), i1.closes.Load(), "the retired ingress session is closed once")
+	assert.Zero(t, i2.closes.Load())
+	assert.True(t, slices.Contains(forgotten, any(i1)), "the retired ingress session is forgotten")
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	assert.NotContains(t, rt.ingressSessions, "i1")
+	assert.NotContains(t, rt.sessionMgrs, "i1")
+	assert.Contains(t, rt.sessionMgrs, "i2")
+	assert.Empty(t, rt.retiring, "a finished Retire leaves nothing behind")
 }
 
 // TestRetire_OnStoppedRuntimeReturnsError pins that only a running runtime

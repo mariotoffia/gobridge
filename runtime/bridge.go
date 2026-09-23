@@ -74,6 +74,7 @@ type Runtime struct {
 	ingressSessions map[string]*ingressSessionEntry
 	sessionMgrs     map[string]*session.Manager
 	drainers        []*drainerRun
+	retiring        []*retiredUnit // units a Retire has taken out and not yet finished with
 	globalSem       chan struct{}
 	running         bool
 	fenced          bool
@@ -85,8 +86,7 @@ type Runtime struct {
 	// exclusiveSessions marks the session ids that carry a lease. The DLQ
 	// router fences a write only for those (see dlqToken).
 	exclusiveSessions map[string]bool
-	// dlqRouter is the one DLQ router every route runner, drainer and session
-	// writes through. Start builds it.
+	// dlqRouter, built by Start, is the one DLQ router every component writes through.
 	dlqRouter *dlq.Router
 	// workCtx is the work context Start derives. Every component runs under a
 	// child of it, so it can be stopped alone, and rt.cancel still ends them all.

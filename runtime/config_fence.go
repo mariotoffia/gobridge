@@ -13,6 +13,12 @@ func (rt *Runtime) Fence() {
 	for _, d := range rt.drainers {
 		d.drainer.Fence()
 	}
+	// A drainer a Retire has taken out may still run its final batch.
+	for _, u := range rt.retiring {
+		for _, d := range u.drainers {
+			d.drainer.Fence()
+		}
+	}
 	if rt.cancel != nil {
 		rt.cancel()
 	}

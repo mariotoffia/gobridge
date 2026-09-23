@@ -16,12 +16,15 @@ type Unit struct {
 }
 
 // retiredUnit is what Retire took out of the runtime: the unit's registrations,
-// the runs of its route runners, session managers and drainers, its managers,
-// and the sessions no manager runs that only the unit held.
+// the runs of its route runners, session managers and drainers, its managers by
+// session id, its drainers, and the sessions no manager runs that only the unit
+// held. It stays in rt.retiring until Retire has finished with it, so Fence
+// still reaches its drainers and dlqToken still sees its managers' leases.
 type retiredUnit struct {
 	set       componentSet
 	runs      []componentRun
-	managers  []*session.Manager
+	managers  map[string]*session.Manager
+	drainers  []*drainerRun
 	unmanaged []sessionRef
 }
 
@@ -38,11 +41,16 @@ type retiredUnit struct {
 // runners, drainers and session managers stop, its managers close (releasing
 // their leases), and so does every session only the unit held. Credential
 // refreshers stop watching its transports, and one left watching nothing is
-// closed. Graft the successor after Retire returns: until then the retired ids'
-// health records and exclusive marks are still being cleared.
+// closed. Until Retire has finished with the unit, a Fence still fences its
+// drainers, and a DLQ write for one of its exclusive sessions is still fenced
+// on that session's lease. Graft the successor after Retire returns: until
+// then the retired ids' health records and exclusive marks are still being
+// cleared.
 //
 // The unit is gone from rt even when Retire returns an error; the error names
 // components that did not stop within ctx and sessions that failed to close.
+// A component that did not stop keeps its drainers reachable by Fence and its
+// exclusive sessions refusing DLQ writes, since nothing holds their lease.
 func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 	d, err := rt.detach(u)
 	if err != nil {
@@ -68,13 +76,14 @@ func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 	// Refreshers let go of the transports before those are closed, so a
 	// rotation is never applied to a session mid-close (as in Stop).
 	rt.forgetCredentialTargets(ctx, d.set.credentialTargets())
-	if !waitRuns(ctx, d.runs) {
+	finished := waitRuns(ctx, d.runs)
+	if !finished {
 		errs = append(errs, fmt.Errorf("runtime: retire: routes, drainers and session managers "+
 			"did not finish within the budget: %w", ctx.Err()))
 		// A drainer's final drain may still be mid-send: give it the grace Stop
 		// gives, so its Complete runs against a live lease.
 		graceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rt.clampedStoreCloseGrace(ctx, d.set.entries))
-		waitRuns(graceCtx, d.runs)
+		finished = waitRuns(graceCtx, d.runs)
 		cancel()
 	}
 
@@ -90,24 +99,27 @@ func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 			errs = append(errs, fmt.Errorf("runtime: retire: closing unmanaged session %q: %w", ref.sid, err))
 		}
 	}
-	rt.clearRetired(u, d.set.entries)
+	rt.finishRetire(d, u, finished)
 	return errors.Join(errs...)
 }
 
 // detach takes the routes and sessions u names out of rt: its route entries,
 // session senders, ingress sessions, session managers and their runs, drainers
 // and locator registrations. Nothing new reaches them afterwards, and a Stop
-// that follows leaves them to Retire.
-func (rt *Runtime) detach(u Unit) (retiredUnit, error) {
+// that follows leaves them to Retire. The unit joins rt.retiring.
+func (rt *Runtime) detach(u Unit) (*retiredUnit, error) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if !rt.running || rt.stopped || rt.terminal || rt.fenced {
-		return retiredUnit{}, errors.New("runtime: retire: runtime is not running")
+		return nil, errors.New("runtime: retire: runtime is not running")
 	}
-	d := retiredUnit{set: componentSet{
-		sessionSenders:  make(map[string]*sessionSenderEntry),
-		ingressSessions: make(map[string]*ingressSessionEntry),
-	}}
+	d := &retiredUnit{
+		set: componentSet{
+			sessionSenders:  make(map[string]*sessionSenderEntry),
+			ingressSessions: make(map[string]*ingressSessionEntry),
+		},
+		managers: make(map[string]*session.Manager),
+	}
 	// A new slice, never filtered in place: readers that took rt.entries under
 	// the lock iterate it after releasing the lock.
 	var kept []*routeEntry
@@ -141,7 +153,7 @@ func (rt *Runtime) detach(u Unit) (retiredUnit, error) {
 		delete(rt.sessionSenders, sid)
 		delete(rt.ingressSessions, sid)
 		if mgr, ok := rt.sessionMgrs[sid]; ok {
-			d.managers = append(d.managers, mgr)
+			d.managers[sid] = mgr
 			delete(rt.sessionMgrs, sid)
 		}
 		if run, ok := rt.sessionRuns[sid]; ok {
@@ -152,27 +164,34 @@ func (rt *Runtime) detach(u Unit) (retiredUnit, error) {
 	var drainers []*drainerRun
 	for _, dr := range rt.drainers {
 		if slices.Contains(u.Sessions, dr.sessionID) {
+			d.drainers = append(d.drainers, dr)
 			d.runs = append(d.runs, dr.run)
 			continue
 		}
 		drainers = append(drainers, dr)
 	}
 	rt.drainers = drainers
+	rt.retiring = append(rt.retiring, d)
 	return d, nil
 }
 
-// clearRetired forgets the unit's exclusive marks and route and session health
-// records once its components have stopped and its sessions are closed. Until
-// then an exclusive session stays marked, so a DLQ write for it is refused
-// rather than written unfenced while it has no manager here; and a supervisor
-// still winding down may record a fault again. A terminal runtime keeps the
-// faults that ended it.
-func (rt *Runtime) clearRetired(u Unit, entries []*routeEntry) {
+// finishRetire forgets the unit once its sessions are closed. finished reports
+// whether its components stopped. When they did, the unit leaves rt.retiring
+// and its exclusive marks are cleared. When one did not, both stay: the
+// straggler is still fenced by Fence, and a DLQ write for its session is still
+// refused, now that its manager has closed and released the lease. The route
+// and session health records are cleared either way, since a supervisor still
+// winding down may otherwise leave a fault for a successor under the same id;
+// a terminal runtime keeps the faults that ended it.
+func (rt *Runtime) finishRetire(d *retiredUnit, u Unit, finished bool) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	for _, sid := range u.Sessions {
-		if _, successor := rt.sessionMgrs[sid]; !successor {
-			delete(rt.exclusiveSessions, sid)
+	if finished {
+		rt.retiring = slices.DeleteFunc(rt.retiring, func(r *retiredUnit) bool { return r == d })
+		for _, sid := range u.Sessions {
+			if _, successor := rt.sessionMgrs[sid]; !successor {
+				delete(rt.exclusiveSessions, sid)
+			}
 		}
 	}
 	if rt.terminal {
@@ -181,12 +200,23 @@ func (rt *Runtime) clearRetired(u Unit, entries []*routeEntry) {
 	for _, sid := range u.Sessions {
 		delete(rt.componentErrors, "session:"+sid)
 	}
-	for _, entry := range entries {
+	for _, entry := range d.set.entries {
 		name := "route:" + entry.config.ID
 		delete(rt.componentErrors, name)
 		delete(rt.routeFlaps, name)
 		delete(rt.routeRunStart, name)
 	}
+}
+
+// retiringManagerLocked returns the manager of session sid a Retire has taken
+// out and not yet finished with. The caller holds rt.mu.
+func (rt *Runtime) retiringManagerLocked(sid string) (*session.Manager, bool) {
+	for _, u := range rt.retiring {
+		if mgr, ok := u.managers[sid]; ok {
+			return mgr, true
+		}
+	}
+	return nil, false
 }
 
 // waitRuns waits until every run is done, and reports false when ctx ends

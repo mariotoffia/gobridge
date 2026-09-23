@@ -385,7 +385,8 @@ func (rt *Runtime) addDrainerLocked(
 //     lease to fence on, so a standby may DLQ-write its own ingress failures.
 //   - exclusive session managed here: gate on THAT session's live lease, so a
 //     standby that does not own the lease cannot DLQ (and an unrelated lease
-//     cannot authorize a write for a route it does not own).
+//     cannot authorize a write for a route it does not own). A manager a Retire
+//     is still winding down counts: its lease is held until it closes.
 //   - exclusive session NOT managed here: refuse — the owning instance writes
 //     the entry, avoiding a cross-instance duplicate.
 //
@@ -399,6 +400,9 @@ func (rt *Runtime) dlqToken(sessionID string) (persistence.LeaseToken, bool) {
 	rt.mu.Lock()
 	exclusive := rt.exclusiveSessions[sessionID]
 	mgr, managed := rt.sessionMgrs[sessionID]
+	if !managed {
+		mgr, managed = rt.retiringManagerLocked(sessionID)
+	}
 	rt.mu.Unlock()
 	if !exclusive {
 		return persistence.LeaseToken{}, true
