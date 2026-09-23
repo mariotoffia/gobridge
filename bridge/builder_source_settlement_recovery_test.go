@@ -21,7 +21,10 @@ import (
 
 // settlementRecoveryTimingConfig answers the wait the way a real recycling
 // transport does: from the mode the session actually runs in, and only for the
-// durable modes that recycle at all.
+// durable modes that recycle at all. Its Kind is "sqs" only because the shared
+// direct_hold fixture (directHoldConfigWithVerdict) registers its source
+// transport under that name; the capability under test is transport-neutral,
+// and the MQTT adapter's own implementation is pinned in the paho package.
 type settlementRecoveryTimingConfig struct {
 	wait    time.Duration
 	sawMode connectivity.SessionMode
