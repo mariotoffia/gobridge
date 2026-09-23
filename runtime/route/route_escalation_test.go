@@ -17,7 +17,7 @@ import (
 )
 
 // ════════════════════════════════════════════════════════════════════════════
-// Chunk-2 HIGH findings — route runner & dispatch
+// Route runner & dispatch escalation paths
 //
 // Every test here is deterministic: no time.Sleep sequences logic. Timing-driven
 // paths use the injected fake clock; everything else is synchronous.
@@ -307,15 +307,15 @@ func TestProcessorTimeout_InvokesCircuitBreakerHook(t *testing.T) {
 	}
 }
 
-// TestCORE_RES2_ProcessorReturnHookFiresOnLateReturn proves the paired decrement
-// (CORE-RES-2): when a processor abandoned on a genuine timeout FINALLY returns,
-// the WithChainOnProcessorReturned hook fires exactly once, so the route breaker's
-// outstanding count drops back. A processor that never returns never fires it, so
-// its leak stays counted.
+// TestProcessorReturnHookFiresOnLateReturn proves the paired decrement of the
+// abandoned-processor count: when a processor abandoned on a genuine timeout
+// FINALLY returns, the WithChainOnProcessorReturned hook fires exactly once, so
+// the route breaker's outstanding count drops back. A processor that never
+// returns never fires it, so its leak stays counted.
 //
 // Mutation check: delete the done-waiter goroutine in chain.go's timeout branch
 // and this fails — the return hook never fires after the processor unblocks.
-func TestCORE_RES2_ProcessorReturnHookFiresOnLateReturn(t *testing.T) {
+func TestProcessorReturnHookFiresOnLateReturn(t *testing.T) {
 	proc := &blockingProcessor{entered: make(chan struct{}), release: make(chan struct{})}
 	clk := clocktest.New()
 	var abandons, returns atomic.Int32
@@ -354,7 +354,7 @@ func TestCORE_RES2_ProcessorReturnHookFiresOnLateReturn(t *testing.T) {
 	for returns.Load() == 0 {
 		select {
 		case <-deadline:
-			t.Fatal("return hook never fired after the abandoned processor returned (CORE-RES-2)")
+			t.Fatal("return hook never fired after the abandoned processor returned")
 		default:
 		}
 	}
@@ -363,7 +363,7 @@ func TestCORE_RES2_ProcessorReturnHookFiresOnLateReturn(t *testing.T) {
 	}
 }
 
-// TestAbandonedProcessorCircuitBreaker pins the CORE-RES-2 semantics: the
+// TestAbandonedProcessorCircuitBreaker pins the breaker semantics: the
 // breaker counts OUTSTANDING abandoned processor goroutines, not consecutive
 // abandons-since-settle. An abandoned goroutine that RETURNS (honours
 // cancellation, even late) decrements the count, so any number of

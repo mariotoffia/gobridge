@@ -1,8 +1,8 @@
 // ═══════════════════════════════════════════════
 // Receiver Message Conversion Tests
 //
-// Validates convertMessage behaviour including BUG-4:
-// missing envelope ID generation for ID-less messages.
+// Validates convertMessage behaviour, including envelope ID
+// generation for ID-less messages.
 // ═══════════════════════════════════════════════
 package amqp10
 
@@ -16,8 +16,8 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestReceiver_ConvertMessage_MissingID exposes BUG-4: when an AMQP 1.0
-// message has no MessageID property, the envelope ID should be auto-generated
+// TestReceiver_ConvertMessage_MissingID pins that when an AMQP 1.0
+// message has no MessageID property, the envelope ID is auto-generated
 // (like amqp091 does), not left empty.
 func TestReceiver_ConvertMessage_MissingID(t *testing.T) {
 	sess := newTestSession()
@@ -40,7 +40,7 @@ func TestReceiver_ConvertMessage_MissingID(t *testing.T) {
 	}
 
 	if env.ID() == "" {
-		t.Fatal("Envelope.ID() should be auto-generated when message has no MessageID (BUG-4)")
+		t.Fatal("Envelope.ID() should be auto-generated when message has no MessageID")
 	}
 }
 
@@ -98,8 +98,7 @@ func TestReceiver_ConvertMessage_ValueBodyExtraction(t *testing.T) {
 
 // TestReceiver_ConvertMessage_ValueBodyString validates that a STRING
 // amqp-value body (what Qpid-JMS/Artemis TextMessage produces) is
-// converted to bytes rather than forwarded as an empty payload
-// (finding 1).
+// converted to bytes rather than forwarded as an empty payload.
 func TestReceiver_ConvertMessage_ValueBodyString(t *testing.T) {
 	msg := &amqp.Message{Value: "hello-text"}
 
@@ -114,7 +113,7 @@ func TestReceiver_ConvertMessage_ValueBodyString(t *testing.T) {
 
 // TestReceiver_ConvertMessage_MultiSectionData validates that a body
 // carried in MULTIPLE data sections is concatenated, not truncated to
-// the first section (finding 1: previously Data[0] silently dropped the
+// the first section (reading only Data[0] would silently drop the
 // remaining sections).
 func TestReceiver_ConvertMessage_MultiSectionData(t *testing.T) {
 	msg := &amqp.Message{
@@ -130,8 +129,8 @@ func TestReceiver_ConvertMessage_MultiSectionData(t *testing.T) {
 	}
 }
 
-// TestReceiver_ConvertMessage_ValueBodyUnrepresentable pins the corrected
-// behaviour for finding 1: a non-string/[]byte amqp-value body cannot be
+// TestReceiver_ConvertMessage_ValueBodyUnrepresentable pins that a
+// non-string/[]byte amqp-value body cannot be
 // represented as a byte payload, so conversion REJECTS the message
 // (errUnrepresentableBody) instead of forwarding an empty envelope and
 // Acking-then-deleting the source (irrecoverable body loss). The receive
@@ -160,8 +159,7 @@ func TestReceiver_ConvertMessage_ValueBodyUnrepresentable(t *testing.T) {
 }
 
 // TestReceiver_ConvertMessage_SequenceBodyUnrepresentable pins that an
-// amqp-sequence-only body is rejected rather than forwarded empty
-// (finding 1).
+// amqp-sequence-only body is rejected rather than forwarded empty.
 func TestReceiver_ConvertMessage_SequenceBodyUnrepresentable(t *testing.T) {
 	msg := &amqp.Message{Sequence: [][]any{{"a", "b"}}}
 	_, err := messageToEnvelope(msg, nil)

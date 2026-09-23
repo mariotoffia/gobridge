@@ -199,7 +199,7 @@ func (c Config) PublisherTopic() string { return c.Sender.Exchange }
 // DECLARATION topology this sender contributes (ports.PublishingConfig), so the
 // bridge can distinguish a legitimate identical re-declaration of an
 // already-advertised exchange from a genuinely DIVERGENT one when it dedups
-// senders by exchange name (first-declare-wins) — REV-2-topowarn. It encodes
+// senders by exchange name (first-declare-wins). It encodes
 // EXACTLY the fields declarePublisher passes to ExchangeDeclare: exchange_type
 // (default "direct", mirroring publisherParams), durable, auto_delete, and the
 // exchange-argument table (keys sorted for determinism), all read from the

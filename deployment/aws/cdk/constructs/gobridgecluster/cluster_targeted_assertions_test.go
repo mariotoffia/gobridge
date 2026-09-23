@@ -260,7 +260,7 @@ func resourceTags(props map[string]any) map[string]string {
 	return out
 }
 
-// TestCluster_AdvertisesNonHA is the c15-cluster-notha honesty
+// TestCluster_AdvertisesNonHA is the non-HA honesty
 // guard. GoBridgeCluster is a filesystem-replicated SCALE-OUT topology,
 // not coordinated-failover HA (it forces topology=filesystem_replicated,
 // under which the runtime rejects shared_outbox / route.session, and

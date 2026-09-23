@@ -18,7 +18,7 @@ import (
 	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
-// TestRunChain_OuterSwallowsInnerTimeout_RefusesSuccessMerge proves finding 2:
+// TestRunChain_OuterSwallowsInnerTimeout_RefusesSuccessMerge proves that
 // when an inner processor times out (its goroutine is abandoned by design and
 // keeps running) and an OUTER best-effort processor swallows the resulting
 // ErrProcessorTimeout — returning nil — RunChain must NOT report success. A
@@ -94,7 +94,7 @@ func TestRunChain_OuterSwallowsInnerTimeout_RefusesSuccessMerge(t *testing.T) {
 	}
 }
 
-// TestRunChain_AbandonedInnerDoesNotRaceLiveOuterFrame is the finding-2
+// TestRunChain_AbandonedInnerDoesNotRaceLiveOuterFrame is the swallowed-timeout
 // intra-chain (sibling-frame) regression guard. RunChain gives each processor
 // frame a private clone of the envelope and merges a frame's mutations back onto
 // the caller's envelope ONLY once that frame's goroutine has cleanly returned. So
@@ -192,9 +192,9 @@ func TestRunChain_AbandonedInnerDoesNotRaceLiveOuterFrame(t *testing.T) {
 	}
 }
 
-// TestRunChain_PerProcessorTimeout_SummedBeyondBudgetSucceeds proves finding 3
-// (the per-processor budget is genuinely per-processor, not a shared shrinking
-// deadline): three processors, each taking under the per-processor timeout but
+// TestRunChain_PerProcessorTimeout_SummedBeyondBudgetSucceeds proves the
+// per-processor budget is genuinely per-processor, not a shared shrinking
+// deadline: three processors, each taking under the per-processor timeout but
 // together exceeding it, all succeed. The budget measures each processor's OWN
 // time — it is disarmed while a processor delegates to next() — so processor 0
 // is not charged for the whole downstream chain.
@@ -269,8 +269,9 @@ func TestRunChain_PerProcessorTimeout_SummedBeyondBudgetSucceeds(t *testing.T) {
 }
 
 // TestRunChain_PerProcessorTimeout_RealOverrunEmitsMetric proves the second half
-// of finding 3: a genuine per-processor overrun (root context NOT cancelled) is
-// classified processor-timeout and emits MetricProcessorTimeouts — it is no
+// of the per-processor budget: a genuine per-processor overrun (root context
+// NOT cancelled) is classified processor-timeout and emits
+// MetricProcessorTimeouts — it is no
 // longer misclassified as shutdown-grace (which would suppress the metric).
 //
 // Fails without the fix (neutralise the budget branch to always classify
@@ -331,8 +332,8 @@ func TestRunChain_PerProcessorTimeout_RealOverrunEmitsMetric(t *testing.T) {
 	}
 }
 
-// TestRouteRunner_OuterSwallowsInnerTimeout_MergeDoesNotRace is the finding-2
-// integration guard exercising the ACTUAL concurrent map access through the full
+// TestRouteRunner_OuterSwallowsInnerTimeout_MergeDoesNotRace is the
+// swallowed-timeout integration guard exercising the ACTUAL concurrent map access through the full
 // runner. An inner processor times out and is abandoned by design (its goroutine
 // keeps mutating the chain envelope's header map forever). An OUTER best-effort
 // processor swallows the resulting ErrProcessorTimeout and returns nil. Before

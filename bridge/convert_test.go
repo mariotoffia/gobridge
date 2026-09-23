@@ -161,10 +161,10 @@ func TestToSessionConfig_ConnectAfterLease_DefaultsOnForExclusive(t *testing.T) 
 	}
 }
 
-// Finding: AcquirePollInterval and RenewCallTimeout are now blueprint-
-// exposed. RenewCallTimeout in particular is part of the failover-safety
-// invariant (folded into renewWorstCaseSpan), so it must be tunable from a
-// blueprint. Verify both parse into the session config.
+// AcquirePollInterval and RenewCallTimeout are blueprint-exposed.
+// RenewCallTimeout in particular is part of the failover-safety invariant
+// (folded into renewWorstCaseSpan), so it must be tunable from a blueprint.
+// Verify both parse into the session config.
 func TestToSessionConfig_ExposesAcquirePollAndRenewCallTimeout(t *testing.T) {
 	rs := &ports.RouteSessionDef{
 		SessionID:           "s1",

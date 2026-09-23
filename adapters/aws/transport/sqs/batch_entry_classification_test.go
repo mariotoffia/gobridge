@@ -1,6 +1,6 @@
 package sqs
 
-// Production-readiness regression tests for Chunk 13 (AWS SQS plugin).
+// Production-readiness regression tests for the AWS SQS plugin.
 //
 //   - SendMessageBatch per-entry failures must classify the AWS
 //     error Code with the SAME policy as MapError (KMS + throttling codes)

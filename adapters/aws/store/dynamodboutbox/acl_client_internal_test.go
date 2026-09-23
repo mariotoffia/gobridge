@@ -332,8 +332,8 @@ func transactCanceled(codes ...string) error {
 	return &ddbtypes.TransactionCanceledException{CancellationReasons: reasons}
 }
 
-// Regression for the fence TOCTOU (finding: split-brain claims below a
-// concurrently raised high-water-mark): when the transaction's fence
+// Regression for the fence TOCTOU (split-brain claims below a concurrently
+// raised high-water-mark): when the transaction's fence
 // ConditionCheck fails — a higher-version owner advanced the fence between
 // our fence read and this claim — Claim must surface ErrStaleFencingToken,
 // not keep claiming.
@@ -488,8 +488,8 @@ func TestClaim_TransactionConflict_CountsMetricAndSkips(t *testing.T) {
 	})
 }
 
-// TestClaim_ThrottleCancellation_SurfacesRetryable is the c13-txn-throttle
-// regression. A claim TransactWriteItems canceled for a reason OTHER than the
+// TestClaim_ThrottleCancellation_SurfacesRetryable pins cancellation-reason
+// classification. A claim TransactWriteItems canceled for a reason OTHER than the
 // fence ConditionalCheckFailed — a throttle (ProvisionedThroughputExceeded /
 // ThrottlingError) or a permanent fault (ValidationError) — must NOT be
 // swallowed as a benign (nil, nil) skip. Swallowing it once dropped the record
@@ -549,8 +549,8 @@ func TestClaim_ThrottleCancellation_SurfacesRetryable(t *testing.T) {
 
 // A pure fence-conflict (item 0 ConditionalCheckFailed) remains benign
 // contention: it surfaces ErrStaleFencingToken, NOT a throttle/permanent
-// error, so the c13-txn-throttle fix does not over-classify a legitimate
-// preemption. (The full fence-TOCTOU semantics are pinned separately by
+// error, so the cancellation-reason classification does not over-classify a
+// legitimate preemption. (The full fence-TOCTOU semantics are pinned separately by
 // TestClaim_FenceRaceDetectedByTransaction_ReturnsStaleToken.)
 func TestClaim_FenceConflict_StaysBenignAfterThrottleFix(t *testing.T) {
 	f := newFakeDDB()
@@ -689,8 +689,8 @@ func TestClaim_ZeroLimit_FenceOnlyNoScan(t *testing.T) {
 	}
 }
 
-// TestClaim_IndexFastPath_StopsAtLimitWithoutPagingWholePartition is the
-// c13-claim-quadratic regression. Claim's fast path queries the age-ordered
+// TestClaim_IndexFastPath_StopsAtLimitWithoutPagingWholePartition pins a
+// bounded claim scan. Claim's fast path queries the age-ordered
 // ClaimIndex GSI oldest-first and must STOP as soon as `limit` records are
 // claimed, even when the partition holds a far deeper backlog (more index
 // pages exist). The pre-fix Claim paged the WHOLE partition every batch to

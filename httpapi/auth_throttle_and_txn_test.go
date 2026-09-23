@@ -24,7 +24,7 @@ import (
 )
 
 // ─────────────────────────────────────────────────────────────────────────
-// Finding 1 — auth throttle must not lock out valid credentials, and the
+// Auth throttle must not lock out valid credentials, and the
 // admin/monitor throttle scopes must be independent.
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -71,7 +71,7 @@ func TestAuthThrottle_MonitorScopeDoesNotLockAdminScope(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Finding 2 — config-txn GET must not panic when the txn expires concurrently.
+// Config-txn GET must not panic when the txn expires concurrently.
 // ─────────────────────────────────────────────────────────────────────────
 
 func newConfigTxnServer(t *testing.T, store ports.ConfigStore, clk *clocktest.Fake) *Server {
@@ -96,7 +96,7 @@ func configTxnGet(s *Server, txnID string) *httptest.ResponseRecorder {
 	return rec
 }
 
-// TestHandleConfigTxnGet_ExpiredReturns404NoPanic pins finding 2: an active GET
+// TestHandleConfigTxnGet_ExpiredReturns404NoPanic pins that an active GET
 // returns 200 with the txn metadata from ONE locked snapshot, and a GET after
 // the TTL elapses returns a clean 404 instead of dereferencing a nil
 // transaction (the pre-fix Preview()+Active() split raced expiry to nil here).
@@ -176,10 +176,10 @@ func TestHandleConfigTxnGet_ConcurrentTeardownNeverPanics(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Finding 3 — Commit must apply on a DETACHED context outside the manager lock.
+// Commit must apply on a DETACHED context outside the manager lock.
 // ─────────────────────────────────────────────────────────────────────────
 
-// TestConfigTxnCommit_ApplyDetachedFromRequestContext pins finding 3: the
+// TestConfigTxnCommit_ApplyDetachedFromRequestContext pins that the
 // durable save happens under the lock, then the applier runs on a context that
 // is NOT cancelled by a client disconnect and NOT under the manager lock. The
 // test cancels the request context mid-apply and asserts (a) the applier's
@@ -273,11 +273,11 @@ func TestConfigTxnCommit_ApplyFailureRollsBack(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Finding 4a — redrive without redrive-safe injection must not report a bare
+// Redrive without redrive-safe injection must not report a bare
 // success; it must surface the dedup-swallow hazard.
 // ─────────────────────────────────────────────────────────────────────────
 
-// TestHandleDLQRedrive_WarnsWhenNoRedriveSafeInjection pins finding 4a: a
+// TestHandleDLQRedrive_WarnsWhenNoRedriveSafeInjection pins the warning: a
 // runtime lacking InjectRedrive replays a COLLISION-FREE direct entry (empty
 // envelope id, no dedup key) via plain Inject; the response must still carry a
 // warning so a 200 does not hide the possible no-op on any deduped path. (An
@@ -324,10 +324,10 @@ func TestHandleDLQRedrive_NoWarningWhenRedriveSafe(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Finding 5 — redrive must emit a begin audit record BEFORE the first claim.
+// Redrive must emit a begin audit record BEFORE the first claim.
 // ─────────────────────────────────────────────────────────────────────────
 
-// TestHandleDLQRedrive_EmitsBeginAuditBeforeOutcome pins finding 5: a
+// TestHandleDLQRedrive_EmitsBeginAuditBeforeOutcome pins that a
 // dlq.redrive.begin record carrying the entry IDs is emitted BEFORE the outcome
 // record, so a crash between Delete and Inject leaves an audit trace of which
 // entries were in flight.
@@ -389,11 +389,11 @@ func newAuditedRedriveServer(t *testing.T) (*http.ServeMux, *memorydlq.Store, *r
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Finding 4b — inject with a caller-supplied envelope id must surface the
+// Inject with a caller-supplied envelope id must surface the
 // dedup-swallow hazard.
 // ─────────────────────────────────────────────────────────────────────────
 
-// TestHandleInject_CallerSuppliedID_SurfacesDedupWarning pins finding 4b: a
+// TestHandleInject_CallerSuppliedID_SurfacesDedupWarning pins the warning: a
 // caller-supplied envelope id can collide with a completed/poisoned outbox row
 // on a shared_outbox route and be silently swallowed, so the response carries a
 // warning and the audit detail flags caller_supplied_id.
@@ -432,10 +432,10 @@ func TestHandleInject_GeneratedID_NoDedupWarning(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Finding 7b — handleStart maps a controller-path failure to 500, not 409.
+// handleStart maps a controller-path failure to 500, not 409.
 // ─────────────────────────────────────────────────────────────────────────
 
-// TestHandleStart_ControllerFailure_Returns500NotConflict pins finding 7b: a
+// TestHandleStart_ControllerFailure_Returns500NotConflict pins that a
 // BridgeController StartBridge error is a genuine build/start failure (409 is
 // reserved for already-running), and the internal error text is not leaked.
 func TestHandleStart_ControllerFailure_Returns500NotConflict(t *testing.T) {
@@ -455,10 +455,10 @@ func TestHandleStart_ControllerFailure_Returns500NotConflict(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Finding 7d — /ready nil-runtime branch must set Cache-Control.
+// The /ready nil-runtime branch must set Cache-Control.
 // ─────────────────────────────────────────────────────────────────────────
 
-// TestHandleReady_NilRuntime_SetsCacheControl pins finding 7d: the nil-runtime
+// TestHandleReady_NilRuntime_SetsCacheControl pins the header: the nil-runtime
 // 503 must carry the no-cache header too, so a cached "not ready" (or a stale
 // "ready") never lingers at an intermediary.
 func TestHandleReady_NilRuntime_SetsCacheControl(t *testing.T) {
@@ -475,10 +475,10 @@ func TestHandleReady_NilRuntime_SetsCacheControl(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Finding 7e — ValidateMonitorKey mirrors the admin key length floor.
+// ValidateMonitorKey mirrors the admin key length floor.
 // ─────────────────────────────────────────────────────────────────────────
 
-// TestValidateMonitorKey pins finding 7e: the monitor key is validated against
+// TestValidateMonitorKey pins that the monitor key is validated against
 // the same minimum length as the admin key (empty is allowed — monitor auth is
 // optional), so a reload/bootstrap cannot install a too-short monitor key.
 func TestValidateMonitorKey(t *testing.T) {
@@ -491,7 +491,7 @@ func TestValidateMonitorKey(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Finding 8 — DLQ redrive outcomes must be metrically visible (route-tagged).
+// DLQ redrive outcomes must be metrically visible (route-tagged).
 // ─────────────────────────────────────────────────────────────────────────
 
 // recordingMetrics is a ports.MetricsExporter that records Counter calls so a
@@ -571,7 +571,7 @@ func newRedriveServerWithMetrics(t *testing.T, metrics ports.MetricsExporter) (*
 	return mux, dlq
 }
 
-// TestHandleDLQRedrive_EmitsRouteTaggedMetrics pins finding 8: a redrive emits
+// TestHandleDLQRedrive_EmitsRouteTaggedMetrics pins that a redrive emits
 // DLQRedrives for each entry successfully redriven and DLQRedriveFailures for a
 // claim-ok-but-inject-failed entry, each tagged with the entry's route_id, so
 // manual-recovery outcomes are visible to alerting. The batch mixes one entry

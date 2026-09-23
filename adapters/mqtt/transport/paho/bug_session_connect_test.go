@@ -20,7 +20,7 @@ import (
 // fakeLiveConn is a controllable pahoConnection double that records how
 // many times it was Disconnected. It stands in for a live autopaho
 // ConnectionManager via Session.connectOverride so the credential-driven
-// Reload (finding 1) and the Close/Start race (finding 3) can be exercised
+// Reload and the Close/Start race can be exercised
 // without a real broker.
 type fakeLiveConn struct {
 	disconnects *atomic.Int32
@@ -47,7 +47,7 @@ func (f *fakeLiveConn) Underlying() *autopaho.ConnectionManager { return nil }
 var _ pahoConnection = (*fakeLiveConn)(nil)
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Finding 1 (CRITICAL): password/username-only rotation permanently kills a
+// Password/username-only rotation permanently kills a
 // live session. The old path called cm.Disconnect, which in paho.golang
 // v0.23.0 cancels the CM root context TERMINALLY (autopaho mainLoop breaks,
 // never reconnects, skips OnConnectionDown → s.connected stays true, Health
@@ -114,7 +114,7 @@ func TestBug_PasswordRotation_OnLiveCM_RebuildsViaReload(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Finding 3 (HIGH): Close/Start race installs a zombie ConnectionManager.
+// Close/Start race installs a zombie ConnectionManager.
 // Start releases s.mu during the (≤30s) AwaitConnection and re-installs the
 // CM without re-checking s.closed; Close did not wait for an in-flight Start.
 // A Close landing during the connect window would return while Start went on
@@ -211,7 +211,8 @@ func TestBug_CloseDuringStart_NoZombie_Race(t *testing.T) {
 }
 
 // TestBug_CloseWaitsForInFlightStart asserts Close does not return before an
-// in-flight Start has settled (belt-and-braces half of finding 3), so no
+// in-flight Start has settled (belt-and-braces half of the Close/Start
+// race fix), so no
 // half-built CM can outlive Close.
 func TestBug_CloseWaitsForInFlightStart(t *testing.T) {
 	dialing := make(chan struct{})

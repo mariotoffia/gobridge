@@ -15,7 +15,7 @@ import (
 // TestApplyCredentials_BeforeStart_UpdatesLiveCreds verifies that
 // rotating credentials on a not-yet-connected session stores them so
 // the first dial picks them up via connect(). Uses an amqps:// (TLS)
-// scheme so the c7-plain-plaintext runtime gate permits the PLAIN
+// scheme so the plaintext-PLAIN runtime gate permits the PLAIN
 // credential rotation (a plaintext username rotation is fail-closed —
 // see TestApplyCredentials_PlainOverPlaintext_Refused).
 func TestApplyCredentials_BeforeStart_UpdatesLiveCreds(t *testing.T) {

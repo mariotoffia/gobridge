@@ -1,17 +1,16 @@
 package bridge
 
-// Residual test coverage for the builder-side production-readiness findings:
+// Builder-side session rules:
 //
-//   - Finding 4:  a shared_outbox route whose PRIMARY session resolves to nil
-//     (stateless transport) must be rejected at build time — otherwise the
-//     source is ACKed after the outbox persist but no drainer ever exists for
-//     the partition (silent message loss).
-//   - Finding 6:  an unreferenced SessionDef must not be constructed — nothing
-//     would ever manage or close it, so it would leak one connection per
-//     hot-reload swap.
-//   - Finding 10: a receiver/sender/binding that references a DECLARED session
-//     on a stateless transport must get a dedicated diagnosis, not the
-//     misleading "references unknown session".
+//   - a shared_outbox route whose PRIMARY session resolves to nil (stateless
+//     transport) must be rejected at build time — otherwise the source is
+//     ACKed after the outbox persist but no drainer ever exists for the
+//     partition (silent message loss).
+//   - an unreferenced SessionDef must not be constructed — nothing would ever
+//     manage or close it, so it would leak one connection per hot-reload swap.
+//   - a receiver/sender/binding that references a DECLARED session on a
+//     stateless transport must get a dedicated diagnosis, not the misleading
+//     "references unknown session".
 
 import (
 	"context"
@@ -31,9 +30,10 @@ func statelessSessionFn(_ context.Context, _ ports.SessionSpec) (ports.Session, 
 	return nil, nil
 }
 
-// finding4Config declares a shared_outbox route whose primary session lives on
-// the "stateless" transport, so the session resolves to nil at build time.
-func finding4Config() *ports.BridgeConfig {
+// statelessPrimarySharedOutboxConfig declares a shared_outbox route whose
+// primary session lives on the "stateless" transport, so the session resolves
+// to nil at build time.
+func statelessPrimarySharedOutboxConfig() *ports.BridgeConfig {
 	return &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "b-f4"},
 		Stores: ports.StoresConfig{
@@ -56,24 +56,24 @@ func finding4Config() *ports.BridgeConfig {
 }
 
 // TestBuilder_SharedOutboxRoute_StatelessPrimarySession_Rejected validates
-// Finding 4: the build must fail hard when a shared_outbox route's primary
-// session resolves to nil, instead of building a runtime that persists outbox
-// records into a partition no drainer will ever poll.
+// that the build fails hard when a shared_outbox route's primary session
+// resolves to nil, instead of building a runtime that persists outbox records
+// into a partition no drainer will ever poll.
 func TestBuilder_SharedOutboxRoute_StatelessPrimarySession_Rejected(t *testing.T) {
 	stateless := &countingTransportFactory{SessionFn: statelessSessionFn}
-	b := NewBuilder(finding4Config()).
+	b := NewBuilder(statelessPrimarySharedOutboxConfig()).
 		RegisterTransportFactory("fake", &fakeTransportFactory{}).
 		RegisterTransportFactory("stateless", stateless).
 		RegisterStoreFactory("memory", &fakeStoreFactory{})
 
 	_, err := b.Build(context.Background())
-	require.Error(t, err, "shared_outbox with a nil primary session must fail the build (Finding 4)")
+	require.Error(t, err, "shared_outbox with a nil primary session must fail the build")
 	assert.Contains(t, err.Error(), "shared_outbox")
 	assert.Contains(t, err.Error(), "stateless")
 	assert.Contains(t, err.Error(), `route "r-f4"`)
 }
 
-// TestBuilder_UnreferencedSession_NotConstructed validates Finding 6: a
+// TestBuilder_UnreferencedSession_NotConstructed validates that a
 // SessionDef that no route, binding, receiver, or sender references must not
 // be constructed at all — an unreferenced session gets no manager and is never
 // handed to the runtime, so building it would leak its connection on every
@@ -109,11 +109,11 @@ func TestBuilder_UnreferencedSession_NotConstructed(t *testing.T) {
 	})
 
 	assert.Equal(t, 1, counting.SessionCalls,
-		"only the referenced session must be constructed; an unreferenced one would leak (Finding 6)")
+		"only the referenced session must be constructed; an unreferenced one would leak")
 }
 
-// TestBuilder_StatelessSessionReference_DedicatedError validates Finding 10:
-// a receiver, sender, or shared_outbox binding that references a session which
+// TestBuilder_StatelessSessionReference_DedicatedError validates that a
+// receiver, sender, or shared_outbox binding that references a session which
 // IS declared but resolves to nil (stateless transport) must produce a
 // dedicated "stateless" diagnosis. The old code reported the misleading
 // "references unknown session" for a session that was plainly declared in the

@@ -16,14 +16,12 @@
 # canonical root document plus section, a live page under docs/, a UBIQUITOUS.md
 # term — or, best, the rule itself written out in plain English.
 #
-# This check greps every non-test .go file for the token shapes a planning
-# document mints. Unlike its advisory predecessor it is a GATE: there is no
-# annotation that sanctions a hit, because there is no case where a comment must
-# name a deleted worklist.
+# This check greps every .go file — test files included — for the token shapes
+# a planning document mints. Unlike its advisory predecessor it is a GATE: there
+# is no annotation that sanctions a hit, because there is no case where a
+# comment, a test name or an assertion message must name a deleted worklist.
 #
-# Scope: non-_test.go files. Test files are held to the same rule by review, but
-# a test name that happens to contain a number is a much noisier target and is
-# not gated here.
+# Scope: every .go file, _test.go included, outside .git, .worktrees and vendor.
 #
 # Usage:
 #   scripts/lint-planning-refs.sh              # scan; exit 0 clean, 1 on violations
@@ -54,7 +52,15 @@ readonly RE_BATCH='\b[Cc]hunk[ _-]?[0-9]+|\bRECONFIG-[0-9]+|\bPhase-[0-9]+|\b(ro
 readonly RE_FINDING='\b[Ff]indings?[ _-][0-9]+|\b[Ff]inding [A-Z]-?[0-9]+|\b[Ff]indings?:'
 
 # Severity/task identifiers from deleted review documents.
-readonly RE_SEVERITY='\b(CRITICAL|HIGH|MEDIUM|LOW|FIX|XCUT|TASK|ISSUE|ARCH)[-_ ][0-9]{1,3}\b'
+readonly RE_SEVERITY='\b(CRITICAL|HIGH|MEDIUM|MED|LOW|FIX|XCUT|TASK|ISSUE|ARCH)[-_ ][0-9]{1,3}\b'
+
+# Prefixed ticket IDs from deleted review and QA worklists — "BUG-3", "RES-007",
+# "SEC-1", "GAP-10", "REV-2-topowarn", "TEST-3", "API-1", the compound
+# "MQTT-OBS-2", "CORE-RES-1" and "H-OBS DLQ-1" — and the bare reviewer tags
+# "(ADV)" and "(QA)". The prefixes are listed, never generalised to
+# [A-Z]+-[0-9]+: UTF-8, SHA-256, ADR-0013, UC-CR7 and fixture names such as
+# SQS-OUT-1 or ORDER-KEY-1 share that shape and are legitimate.
+readonly RE_TICKET='\b(BUG|RES|SEC|GAP|REV|TEST|API|OBS)-[0-9]+|\bH-OBS\b|\((ADV|QA)\)'
 
 # Prose pointing at a document that is not in the repository.
 readonly RE_DOCPTR='\bdesign (doc|document|§|Phase)|\b(see|per|from|in) the (plan|spec|specification|design doc)\b|\bValidation Matrix\b'
@@ -65,9 +71,8 @@ readonly RE_DOCPTR='\bdesign (doc|document|§|Phase)|\b(see|per|from|in) the (pl
 scan_tree() {
 	local root="$1" matches
 	matches="$(grep -rnE --include='*.go' \
-		-e "$RE_BATCH" -e "$RE_FINDING" -e "$RE_SEVERITY" -e "$RE_DOCPTR" \
+		-e "$RE_BATCH" -e "$RE_FINDING" -e "$RE_SEVERITY" -e "$RE_TICKET" -e "$RE_DOCPTR" \
 		"$root" 2>/dev/null |
-		grep -v '_test\.go:' |
 		grep -v '/\.git/' |
 		grep -v '/\.worktrees/' |
 		grep -v '/vendor/' || true)"
@@ -82,11 +87,11 @@ scan_tree() {
 run_repo_scan() {
 	local output violations
 	if output="$(scan_tree "$ROOT")"; then
-		echo "planning references: OK (no planning-document identifiers in non-test Go source)"
+		echo "planning references: OK (no planning-document identifiers in Go source or tests)"
 		return 0
 	fi
 	violations="$(printf '%s\n' "$output" | wc -l | tr -d ' ')"
-	echo "planning references: FAIL ($violations planning-document identifier(s) in non-test Go source)" >&2
+	echo "planning references: FAIL ($violations planning-document identifier(s) in Go source or tests)" >&2
 	echo "" >&2
 	printf '%s\n' "$output" >&2
 	echo "" >&2
@@ -115,7 +120,24 @@ self_test() {
 		'// Ordering follows the Validation Matrix.' \
 		'// Behaviour is defined in the design doc.' \
 		'// Covers the HIGH-3 rule.' \
-		'// Keyed on the version (finding: stale acks regress running).'; do
+		'// Keyed on the version (finding: stale acks regress running).' \
+		'// Severity carried over from the review (MED-2).' \
+		'// BUG-3: the drain must meter QoS 0 deliveries.' \
+		'// Bounded retry budget (RES-007).' \
+		'// Covers RES-003/004.' \
+		'// Rejects a self-referencing key (SEC-001).' \
+		'// SEC-1: validate the override reference.' \
+		'// GAP-10: SQS delivery auto-extend boundary.' \
+		'// REV-2-topowarn: warn on a lopsided topology.' \
+		'// REV-3-routeiso: routes stay isolated.' \
+		'// TEST-3 (shipped composition root).' \
+		'// Also validates API-1.' \
+		'// Capped below Full (MQTT-OBS-2).' \
+		'// Latch the partition stalled (CORE-RES-1).' \
+		'// Alarmable without a storage scan (H-OBS DLQ-1).' \
+		'// Still works when the exchange already exists (ADV).' \
+		'// Tests for the Locate method (QA).' \
+		't.Errorf("BUG-3: got %d, want 1", n)'; do
 		printf 'package pkg\n\n%s\nconst X = 1\n' "$case" >"$tmp/pkg/a.go"
 		if scan_tree "$tmp" >/dev/null; then
 			echo "self-test FAIL: checker did not flag: $case" >&2
@@ -131,6 +153,12 @@ self_test() {
 		'// A stale claim is reclaimed by a higher fencing version, always immediately.' \
 		'// Phase 1 of the two-phase commit prepares; phase 2 applies.' \
 		'// Reads the body in 4096-byte pieces.' \
+		'// Payloads are UTF-8; digests are SHA-256.' \
+		'// UC-CR7 is defined in docs/cluster/spec/cluster-config-rollout-protocol.md.' \
+		'const q = "SQS-OUT-1" // fixture queue name' \
+		'const stage = "SQS-STAGE-0" // diagram node' \
+		'const k = "ORDER-KEY-1" // fixture ordering key' \
+		'const secret = "SECRET-KEY-12345" // fixture secret' \
 		'const fixture = "batch-0" // a batch is a real thing, not a worklist label'; do
 		printf 'package pkg\n\n%s\nconst X = 1\n' "$case" >"$tmp/pkg/a.go"
 		if ! scan_tree "$tmp" >/dev/null; then
@@ -140,15 +168,16 @@ self_test() {
 		fi
 	done
 
-	# A _test.go file is out of scope and MUST NOT be flagged.
+	# A _test.go file is in scope and MUST be flagged.
 	rm -f "$tmp/pkg/a.go"
 	printf 'package pkg\n\n// Covers Finding 2.\nconst X = 1\n' >"$tmp/pkg/a_test.go"
-	if ! scan_tree "$tmp" >/dev/null; then
-		echo "self-test FAIL: checker flagged a _test.go file, which is out of scope" >&2
+	if scan_tree "$tmp" >/dev/null; then
+		echo "self-test FAIL: checker did not flag a _test.go file" >&2
 		return 1
 	fi
+	rm -f "$tmp/pkg/a_test.go"
 
-	echo "planning-reference self-test: PASS (flags every planning shape, allows durable references and tests)"
+	echo "planning-reference self-test: PASS (flags every planning shape in source and tests, allows durable references)"
 	run_repo_scan
 }
 
@@ -156,7 +185,7 @@ main() {
 	case "${1:-}" in
 	--self-test) self_test ;;
 	"") run_repo_scan ;;
-	-h | --help) sed -n '2,32p' "${BASH_SOURCE[0]}" ;;
+	-h | --help) sed -n '2,30p' "${BASH_SOURCE[0]}" ;;
 	*)
 		echo "unknown argument: $1" >&2
 		echo "usage: $0 [--self-test]" >&2

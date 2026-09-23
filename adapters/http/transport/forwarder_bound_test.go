@@ -1,13 +1,12 @@
 package transport_test
 
-// Deterministic tests for audit chunk, findings 5 and 9 (HTTP cluster
-// forwarder):
+// Deterministic tests for the HTTP cluster forwarder:
 //
-//   - Finding 5: a forward is a POST with a body; the client must NOT
+//   - A forward is a POST with a body; the client must NOT
 //     follow a 3xx (following turns 301/302/303 into a bodyless GET,
 //     silently dropping the body). The redirect is surfaced as its own
 //     response and classified as a PERMANENT forward failure.
-//   - Finding 9: the response body must be drained FULLY before Close so
+//   - The response body must be drained FULLY before Close so
 //     the keep-alive connection is reusable; a large peer body must not
 //     force a fresh connection on the next forward.
 

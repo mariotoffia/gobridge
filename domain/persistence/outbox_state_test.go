@@ -396,7 +396,7 @@ func TestOutboxRecord_SnapshotRoundTrip(t *testing.T) {
 }
 
 // TestOutboxRecord_ReplayCountCountsClaimsNotFailures pins the documented
-// semantics (finding: deferral-burns-ReplayCount): ReplayCount counts the
+// semantics (a deferral burns ReplayCount): ReplayCount counts the
 // number of times a record was CLAIMED, not the number of failed sends. A
 // claim → release → re-claim cycle (a batch-deadline deferral, where no send
 // ever failed) increments it twice.

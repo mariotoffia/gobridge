@@ -11,7 +11,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestBug_MQTTOBS2_ReservedReceiverNotFullBeforeReconcile pins MQTT-OBS-2: a
+// TestSession_ReservedReceiverNotFullBeforeReconcile pins that a
 // connected session that has RESERVED an ingress receiver but has not yet
 // declared its first plan (Reconcile pending) must NOT report ServiceLevelFull —
 // it is a receiver still converging, not a sender-only session. A sender-only
@@ -19,7 +19,7 @@ import (
 //
 // Mutation check: delete the `ingressReserved && !planDeclared` case in Health
 // and this fails — the reserved receiver falls into the sender-only Full branch.
-func TestBug_MQTTOBS2_ReservedReceiverNotFullBeforeReconcile(t *testing.T) {
+func TestSession_ReservedReceiverNotFullBeforeReconcile(t *testing.T) {
 	connect := func(s *Session) {
 		s.mu.Lock()
 		s.cm = &pahoConn{cm: &autopaho.ConnectionManager{}}
@@ -36,7 +36,7 @@ func TestBug_MQTTOBS2_ReservedReceiverNotFullBeforeReconcile(t *testing.T) {
 		s.mu.Unlock()
 
 		if sl := s.Health(context.Background()).ServiceLevel; sl == ports.ServiceLevelFull {
-			t.Fatalf("reserved receiver before first Reconcile reported Full; want capped below Full (MQTT-OBS-2)")
+			t.Fatalf("reserved receiver before first Reconcile reported Full; want capped below Full")
 		}
 	})
 

@@ -1,5 +1,5 @@
-// Validates connection-loss handling driven by Conn.Done() (finding 1)
-// and receiver-link-aware Health reporting (finding 4).
+// Validates connection-loss handling driven by Conn.Done() and
+// receiver-link-aware Health reporting.
 package amqp10
 
 import (
@@ -33,8 +33,8 @@ func waitForEventType(t *testing.T, ch <-chan ports.SessionEvent, want ports.Ses
 	}
 }
 
-// TestSession_Monitor_ConnDone_TriggersReconnect proves the finding-1
-// fix: when the underlying connection's Done() channel fires, the monitor
+// TestSession_Monitor_ConnDone_TriggersReconnect proves that when the
+// underlying connection's Done() channel fires, the monitor
 // clears the dead connection and reconnects instead of busy-spinning on
 // the closed channel while still reporting Connected=true.
 func TestSession_Monitor_ConnDone_TriggersReconnect(t *testing.T) {
@@ -106,7 +106,7 @@ func TestSession_Monitor_ConnDone_NoSpinWhenStale(t *testing.T) {
 	}
 }
 
-// TestSession_Health_ReceiverLinkDown_Degrades proves the finding-4 fix:
+// TestSession_Health_ReceiverLinkDown_Degrades proves that
 // Health reports Degraded (not Full) when a registered receiver's link is
 // down while the session connection is still alive.
 func TestSession_Health_ReceiverLinkDown_Degrades(t *testing.T) {

@@ -10,12 +10,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// highFourFailingConfig returns a config whose prepare() succeeds (stores open)
-// but whose complete() fails: the direct_hold route defaults its failure
+// planCompleteFailingConfig returns a config whose prepare() succeeds (stores
+// open) but whose complete() fails: the direct_hold route defaults its failure
 // handling to "dlq" while no DLQ store is configured, so ValidateRoutes rejects
-// it at the end of complete — the same abandon-after-prepare shape Finding 2
-// exercises, reused here for the one-shot invariant.
-func highFourFailingConfig() *ports.BridgeConfig {
+// it at the end of complete — the same abandon-after-prepare shape
+// TestBuilder_CompleteFailure_ClosesPrepStores exercises, reused here for the
+// one-shot invariant.
+func planCompleteFailingConfig() *ports.BridgeConfig {
 	return &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "b1"},
 		Stores: ports.StoresConfig{
@@ -31,10 +32,10 @@ func highFourFailingConfig() *ports.BridgeConfig {
 	}
 }
 
-// highFourValidConfig returns a config whose prepare() AND complete() both
+// planValidConfig returns a config whose prepare() AND complete() both
 // succeed. It is used to exercise Close/Abort on a plan that is deliberately
 // never committed: the prep-opened stores must still be released.
-func highFourValidConfig() *ports.BridgeConfig {
+func planValidConfig() *ports.BridgeConfig {
 	return &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "b1"},
 		Stores: ports.StoresConfig{
@@ -65,7 +66,7 @@ func TestBuildPlan_FailedCommitIsNotRetryable(t *testing.T) {
 	outbox := &closableOutboxStore{}
 	lease := &closableLeaseStore{}
 
-	b := NewBuilder(highFourFailingConfig()).
+	b := NewBuilder(planCompleteFailingConfig()).
 		RegisterTransportFactory("fake", &fakeTransportFactory{}).
 		RegisterStoreFactory("closable", &closableStoreFactory{lease: lease, outbox: outbox})
 
@@ -97,7 +98,7 @@ func TestBuildPlan_CloseReleasesUncommittedStores(t *testing.T) {
 	outbox := &closableOutboxStore{}
 	lease := &closableLeaseStore{}
 
-	b := NewBuilder(highFourValidConfig()).
+	b := NewBuilder(planValidConfig()).
 		RegisterTransportFactory("fake", &fakeTransportFactory{}).
 		RegisterStoreFactory("closable", &closableStoreFactory{lease: lease, outbox: outbox})
 
@@ -121,7 +122,7 @@ func TestBuildPlan_CloseReleasesUncommittedStores(t *testing.T) {
 	assert.Contains(t, err.Error(), "after Close/Abort")
 }
 
-// TestBuildPlan_CloseAfterCommitIsNoOp covers's other half: once a plan
+// TestBuildPlan_CloseAfterCommitIsNoOp covers the other half: once a plan
 // is committed (successfully), Close must NOT close the store handles — the
 // runtime now owns them and closes them on Stop. Close on a committed plan is a
 // deliberate no-op so it can never double-close a live runtime's stores.
@@ -130,7 +131,7 @@ func TestBuildPlan_CloseAfterCommitIsNoOp(t *testing.T) {
 	outbox := &closableOutboxStore{}
 	lease := &closableLeaseStore{}
 
-	b := NewBuilder(highFourValidConfig()).
+	b := NewBuilder(planValidConfig()).
 		RegisterTransportFactory("fake", &fakeTransportFactory{}).
 		RegisterStoreFactory("closable", &closableStoreFactory{lease: lease, outbox: outbox})
 

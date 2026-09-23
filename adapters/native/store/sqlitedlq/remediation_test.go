@@ -132,7 +132,7 @@ func TestRetentionDisabledByDefault(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// c10-dlq-fatal — fatal storage-fault classification + store-health metric
+// Fatal storage-fault classification + store-health metric
 // ═══════════════════════════════════════════════════════════════════
 
 // recordingMeter is a counterMeter that captures every emitted counter so a
@@ -195,7 +195,7 @@ func assertPermanent(t *testing.T, err error) {
 }
 
 // TestFatalStorageError_ClassifiedPermanent is the direct mutation guard for
-// c10-dlq-fatal: a fatal storage fault (read-only / disk-full / corrupt /
+// fatal storage-fault classification: a fatal storage fault (read-only / disk-full / corrupt /
 // not-a-database) must map to a PERMANENT BridgeError, NOT the transient
 // ErrConnectionLost/ErrUnavailable fall-through. Remove the isFatalStorageErr
 // branch from mapError and every case here fails (the string falls through to

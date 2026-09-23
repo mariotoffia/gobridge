@@ -9,7 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
-// TestUnmarshalJSON_RejectsEmptyID pins finding 4: the rehydration path
+// TestUnmarshalJSON_RejectsEmptyID pins that the rehydration path
 // enforces the SAME non-empty-ID invariant NewEnvelope does, so a corrupt or
 // hand-forged record cannot rehydrate into an identity-less envelope that would
 // collide in the DLQ / outbox key space. Both an absent "ID" key and an

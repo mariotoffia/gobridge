@@ -18,7 +18,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// --- Finding: forwarder Retry-After parsing --------------------
+// --- forwarder Retry-After parsing -----------------------------
 
 func TestParseRetryAfter(t *testing.T) {
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
@@ -52,7 +52,7 @@ func TestParseRetryAfter(t *testing.T) {
 	}
 }
 
-// --- Finding: bounded ingress idempotency window ---------------
+// --- bounded ingress idempotency window ------------------------
 
 func TestDedupWindow_SeenAfterRecord(t *testing.T) {
 	d := newDedupWindow(4)
@@ -90,7 +90,7 @@ func TestDedupWindow_EmptyKeyIgnored(t *testing.T) {
 	}
 }
 
-// --- Finding: envelope-ID instance entropy ---------------------
+// --- envelope-ID instance entropy ------------------------------
 
 func TestGenerateHTTPEnvelopeID_CarriesInstanceEntropy(t *testing.T) {
 	fake := clocktest.NewAt(time.Unix(1700000000, 0))
@@ -108,7 +108,7 @@ func TestGenerateHTTPEnvelopeID_CarriesInstanceEntropy(t *testing.T) {
 	}
 }
 
-// --- Finding: SSE zero-delivery accounting ---------------------
+// --- SSE zero-delivery accounting ------------------------------
 
 func TestSSESender_Send_AllBuffersFullCountsAllDropped(t *testing.T) {
 	rec := &ports.RecordingExporter{}
@@ -169,7 +169,7 @@ func TestSSESender_Send_PartialDropIsNotAllDropped(t *testing.T) {
 	}
 }
 
-// --- Finding: SSE frame carries no id: field --------------------
+// --- SSE frame carries no id: field -----------------------------
 
 func TestFormatSSE_OmitsIDField(t *testing.T) {
 	frame := string(formatSSE("message", []byte(`{"id":"e1"}`)))
@@ -184,7 +184,7 @@ func TestFormatSSE_OmitsIDField(t *testing.T) {
 	}
 }
 
-// --- Finding: multi-line data is framed per SSE rules ------------
+// --- multi-line data is framed per SSE rules ---------------------
 
 // A data value that contains a line terminator must be emitted as one
 // "data:" line per segment. The pre-fix formatter wrote a single "data: "
@@ -248,7 +248,7 @@ func TestFormatSSE_MultilineDataIsSplitPerLine(t *testing.T) {
 	}
 }
 
-// --- Finding: mount-path validation -----------------------------
+// --- mount-path validation --------------------------------------
 
 func TestValidateMountPath(t *testing.T) {
 	cases := []struct {

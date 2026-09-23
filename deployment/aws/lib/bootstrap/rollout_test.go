@@ -18,7 +18,7 @@ import (
 )
 
 // The shipped AWS root (bootstrap.App) hosts the coordinated cluster
-// rollout barrier itself (design Phase 6): it builds a bridge.ClusterRolloutDriver
+// rollout barrier itself (ADR 0013): it builds a bridge.ClusterRolloutDriver
 // and, at the reload seam that ADR 0012 used to refuse outright, PROPOSES a
 // live-safe delta to the barrier instead of refusing. These are the composition
 // tests over memory coordination stores; the ddblocal integration test proves the
@@ -154,8 +154,8 @@ func TestApp_CoordinatedRollout_CommitsAndSwaps(t *testing.T) {
 		"AdoptRunning re-synced running to the committed config, so health is converged")
 }
 
-// TestApp_CoordinatedDeferral_IsApplyInFlight is the Finding-1 regression: a
-// coordinated live-safe delta that DEFERS to the barrier must be reported as
+// TestApp_CoordinatedDeferral_IsApplyInFlight is the deferral-classification
+// regression: a coordinated live-safe delta that DEFERS to the barrier must be reported as
 // ports.ErrApplyInFlight ("committed, will become running — do NOT roll back"),
 // not a definitive failure. The admin config-transaction layer (httpapi) rolls the
 // durable write BACK for any non-ErrApplyInFlight apply error — but the barrier

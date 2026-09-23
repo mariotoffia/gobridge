@@ -9,10 +9,10 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// TestErrorCodeToClass_IsAFunction is the finding-3 guard: it scans every
-// constructed / sentinel *shared.BridgeError produced inside the domain and
-// asserts that each ErrorCode maps to EXACTLY ONE ErrorClass — i.e. code→class
-// is a mathematical function.
+// TestErrorCodeToClass_IsAFunction is the code→class uniqueness guard: it scans
+// every constructed / sentinel *shared.BridgeError produced inside the domain
+// and asserts that each ErrorCode maps to EXACTLY ONE ErrorClass — i.e.
+// code→class is a mathematical function.
 //
 // This matters because BridgeError.Is matches on Code ALONE (see
 // TestBridgeError_Is_MatchesByCodeOnly). If one code carried two classes, the
@@ -110,7 +110,7 @@ func TestErrorCodeToClass_IsAFunction(t *testing.T) {
 		assign(be.Code, be.Class, "routing.Validate "+be.Message)
 	}
 
-	// Crux of finding 3, asserted explicitly for readability.
+	// Crux of the invariant, asserted explicitly for readability.
 	if got := codeToClass[shared.ErrCodeInvalidPayload]; got != shared.ErrorRejected {
 		t.Fatalf("INVALID_PAYLOAD class = %q, want %q (must stay uniquely rejected)", got, shared.ErrorRejected)
 	}

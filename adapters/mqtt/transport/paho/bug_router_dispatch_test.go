@@ -13,7 +13,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Finding 2 (HIGH): QoS 1/2 acked-and-dropped in the unregister→re-register
+// QoS 1/2 acked-and-dropped in the unregister→re-register
 // gap. beginGrace re-arms the grace window only on connection-up, never on
 // Unregister. A supervisor-restarted receiver (Run exits → Unregister → new
 // Run → RegisterFiltered) leaves a gap; a publish landing there matches no
@@ -79,7 +79,7 @@ func TestBug_UnregisterRearmsGrace_BuffersCoveredTopicInGap(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Finding 4 (MEDIUM): pending-flush + live dispatch must funnel through ONE
+// Pending-flush + live dispatch must funnel through ONE
 // serialized, in-order path (ports.Receiver emit is SEQUENTIAL, in-order).
 // The buffered (older) publishes must fully emit before any live (newer)
 // publish, and never concurrently, for a given handler.
@@ -157,7 +157,7 @@ func TestBug_FlushAndLiveDispatch_SerializedInOrder(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Finding 5 (MEDIUM): Unregister must await in-flight dispatch so emit is
+// Unregister must await in-flight dispatch so emit is
 // never invoked after Unregister returns (and therefore never after the
 // owning Receiver.Run has returned — ports.Receiver emit lifetime).
 // ═══════════════════════════════════════════════════════════════════════════
@@ -206,7 +206,7 @@ func TestBug_Unregister_AwaitsInFlightDispatch(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Finding 6 (MEDIUM): a QoS 0 flood must not stall the connection. On a full
+// A QoS 0 flood must not stall the connection. On a full
 // serialized dispatch queue a QoS 0 publish is dropped (no delivery
 // contract) so the paho read loop keeps moving (PINGRESP/PUBACK); QoS 1/2 is
 // bounded by the broker's Receive-Maximum window and blocks instead.
@@ -249,7 +249,7 @@ func TestBug_DispatchQueue_QoS0DroppedWhenFull(t *testing.T) {
 
 // TestBug_PendingByteCap_DropsOverByteCeiling verifies the pending buffer is
 // bounded in BYTES (not just entry count) so a flood of large publishes
-// during a grace window cannot buffer gigabytes (finding 6).
+// during a grace window cannot buffer gigabytes.
 func TestBug_PendingByteCap_DropsQoS0OverByteCeiling(t *testing.T) {
 	clk := testClock()
 	rec := &ports.RecordingExporter{}

@@ -108,7 +108,7 @@ func (r *RouteRunner) markSendHung(binding string) {
 // cancellation, even late); only genuinely-hung goroutines that never return
 // accumulate toward the ceiling.
 //
-// CORE-RES-2 — outstanding, not consecutive. The counter is now a true count of
+// Outstanding, not consecutive. The counter is a true count of
 // LIVE abandoned goroutines: onProcessorAbandoned increments when a processor is
 // abandoned on timeout, and onProcessorReturnedFromAbandon decrements when that
 // goroutine finally returns (via the chain's done-channel hook). It is NO LONGER
@@ -121,7 +121,7 @@ const maxAbandonedProcessors = 64
 
 // onProcessorAbandoned is the WithChainOnProcessorTimeout callback. It increments
 // the count of OUTSTANDING abandoned processor goroutines and wedges the route
-// once that live count crosses the ceiling (CORE-RES-2).
+// once that live count crosses the ceiling.
 func (r *RouteRunner) onProcessorAbandoned() {
 	if r.abandonedProc.Add(1) >= int64(maxAbandonedProcessors) {
 		_ = r.wedge(fmt.Errorf("%w (%d abandoned processor goroutines outstanding)", errProcessorWedged, maxAbandonedProcessors))
@@ -130,7 +130,7 @@ func (r *RouteRunner) onProcessorAbandoned() {
 
 // onProcessorReturnedFromAbandon is the WithChainOnProcessorReturned callback: an
 // abandoned processor goroutine finally returned, so decrement the outstanding
-// count (CORE-RES-2). Paired one-to-one with onProcessorAbandoned via the chain's
+// count. Paired one-to-one with onProcessorAbandoned via the chain's
 // per-abandon done-channel waiter, so the counter cannot drift negative.
 func (r *RouteRunner) onProcessorReturnedFromAbandon() {
 	r.abandonedProc.Add(-1)

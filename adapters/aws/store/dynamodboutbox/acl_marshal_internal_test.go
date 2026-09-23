@@ -128,8 +128,8 @@ func TestMarshalRecord_PendingWithExpiry_OmitsReapingTTL(t *testing.T) {
 	}
 }
 
-// TestSortKey_HistoricallyCollidingPairsAreDistinct is the c13-sk-collision
-// regression. The RAW-concat sort key ("OUTBOX#"+env+"#"+binding) was NOT
+// TestSortKey_HistoricallyCollidingPairsAreDistinct pins an injective sort key.
+// The RAW-concat sort key ("OUTBOX#"+env+"#"+binding) was NOT
 // injective: within one partition the DISTINCT pairs (env="order",
 // binding="eu#prod") and (env="order#eu", binding="prod") both marshaled to
 // "OUTBOX#order#eu#prod", so the second record hit attribute_not_exists(SK),

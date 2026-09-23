@@ -19,7 +19,8 @@ import (
 // ports.OutboxDepthReporter. Claim returns a small batch (simulating the claim
 // ceiling) while CountPending reports a large standing backlog, so a test can
 // prove the drain-path MetricOutboxDepth reflects the TRUE backlog rather than
-// the claim batch size (H-OBS OutboxDepth collapse).
+// the claim batch size, which would otherwise collapse OutboxDepth to the
+// claim ceiling.
 type depthReportingStore struct {
 	claimable    []*persistence.OutboxRecord
 	pendingCount int
@@ -64,12 +65,12 @@ func (s *depthReportingStore) CountPending(context.Context, string) (int, error)
 	return s.pendingCount, nil
 }
 
-// TestDrainBatch_OutboxDepthReportsBacklogNotBatchSize pins the H-OBS fix: when
+// TestDrainBatch_OutboxDepthReportsBacklogNotBatchSize pins that when
 // the store reports a true pending count via ports.OutboxDepthReporter, the
 // drain path emits that backlog as MetricOutboxDepth — NOT the (saturating)
 // claim batch size — and emits the claimed count separately as
-// MetricOutboxClaimBatchSize. Fails before the fix (OutboxDepth would be the
-// 2-record claim size, masking a 9500-deep backlog).
+// MetricOutboxClaimBatchSize. Fails if the drain path reports the claim size
+// instead (OutboxDepth would be 2, masking a 9500-deep backlog).
 func TestDrainBatch_OutboxDepthReportsBacklogNotBatchSize(t *testing.T) {
 	const partition = "SESSION#sess-backlog"
 
@@ -168,9 +169,9 @@ func TestDrainBatch_OutboxDepthFallsBackToClaimCount(t *testing.T) {
 	}
 }
 
-// TestDrainBatch_OutboxDepthRealErrorNotMaskedAsFallback pins the H-OBS
-// blocking fix: when a SUPPORTED depth reporter's CountPending returns a REAL
-// error (a DB/read failure, NOT ports.ErrOutboxDepthUnsupported), the drainer
+// TestDrainBatch_OutboxDepthRealErrorNotMaskedAsFallback pins that when a
+// SUPPORTED depth reporter's CountPending returns a REAL error (a DB/read
+// failure, NOT ports.ErrOutboxDepthUnsupported), the drainer
 // must NOT mask it behind the saturating claimed-count fallback. It skips the
 // OutboxDepth emission for that cycle (so the missing-data alarm can catch a
 // persistently broken query) and records the failure on MetricOutboxDepthFailures

@@ -3,14 +3,15 @@ package sqs
 import "testing"
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BUG-4: SQS WaitTimeSeconds Default
+// SQS WaitTimeSeconds Default
 //
-// applyDefaults() does not set WaitTimeSeconds to 20 when the value is 0.
+// applyDefaults() must set WaitTimeSeconds to 20 when the value is 0, else
+// the receiver short-polls.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestBug4_ApplyDefaults_WaitTimeSecondsZero_StaysZero exposes that
-// WaitTimeSeconds=0 is not defaulted to 20, causing short-polling.
-func TestBug4_ApplyDefaults_WaitTimeSecondsZero_StaysZero(t *testing.T) {
+// TestApplyDefaults_WaitTimeSeconds_DefaultsTo20 pins that a zero or negative
+// WaitTimeSeconds defaults to 20 (long polling) and a value over 20 is clamped.
+func TestApplyDefaults_WaitTimeSeconds_DefaultsTo20(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    int32
@@ -36,15 +37,15 @@ func TestBug4_ApplyDefaults_WaitTimeSecondsZero_StaysZero(t *testing.T) {
 				t.Errorf("WaitTimeSeconds = %d, want %d", cfg.WaitTimeSeconds, tc.expected)
 			}
 			if tc.isBug {
-				t.Logf("BUG-4 EVIDENCE: WaitTimeSeconds=%d after applyDefaults() — should be 20", cfg.WaitTimeSeconds)
+				t.Logf("WaitTimeSeconds=%d after applyDefaults() — should be 20", cfg.WaitTimeSeconds)
 			}
 		})
 	}
 }
 
-// TestBug4_ApplyDefaults_MaxMessages_CorrectlyDefaulted contrasts with
-// MaxMessages which IS correctly defaulted to 10 when zero.
-func TestBug4_ApplyDefaults_MaxMessages_CorrectlyDefaulted(t *testing.T) {
+// TestApplyDefaults_MaxMessages_CorrectlyDefaulted pins that MaxMessages is
+// defaulted to 10 when zero.
+func TestApplyDefaults_MaxMessages_CorrectlyDefaulted(t *testing.T) {
 	cfg := ReceiverConfig{
 		QueueURL:    "https://sqs.us-west-1.amazonaws.com/123/q",
 		MaxMessages: 0,

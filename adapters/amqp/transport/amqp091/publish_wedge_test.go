@@ -1,6 +1,5 @@
 // ═══════════════════════════════════════════════
-// Production-readiness remediation tests: publish-wedge cancellation
-// (c5-publish-wedge).
+// Production-readiness remediation tests: publish-wedge cancellation.
 //
 // The SDK's PublishWithDeferredConfirmWithContext IGNORES ctx and blocks
 // indefinitely while the broker holds connection.blocked flow control — and

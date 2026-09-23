@@ -238,7 +238,7 @@ func TestBuilder_Prepare_ClusteredNonDistributedStore_Rejected(t *testing.T) {
 // TestBuilder_Prepare_ClusterEndpointsImplyClustered validates that configured
 // cluster endpoints imply clustered posture even when deployment_mode is
 // unset: process-local stores must be rejected, or cross-instance forwarding
-// would silently break lease exclusivity (cluster finding 11).
+// would silently break lease exclusivity.
 func TestBuilder_Prepare_ClusterEndpointsImplyClustered(t *testing.T) {
 	cfg := testConfig()
 	cfg.Bridge.DeploymentMode = ""

@@ -34,7 +34,7 @@ const transientRetryFloor = 5 * time.Second
 const drainWedgeGrace = 30 * time.Second
 
 // ErrDrainStalled is returned by Run once the batch watchdog has abandoned a
-// send goroutine because a Sender ignored context cancellation (CORE-RES-1).
+// send goroutine because a Sender ignored context cancellation.
 // Scheduling further batches would leak one parked sender (plus its waiter) per
 // batch, unbounded. Returning it from Run stops all further batches immediately
 // and, via startBackground's terminal-on-error path, escalates to a runtime
@@ -96,7 +96,7 @@ func (d *Drainer) Run(ctx context.Context) error {
 			d.hasDrained = true
 			n, transient, err := d.drainBatch(ctx, token)
 			if d.drainStalled.Load() {
-				// CORE-RES-1: the batch watchdog abandoned a send goroutine because a
+				// The batch watchdog abandoned a send goroutine because a
 				// Sender ignored cancellation. Stop scheduling batches (each could leak
 				// another) and escalate terminal so a restart reclaims the leaked
 				// goroutine — Go cannot force-return the hung Send.
@@ -244,7 +244,7 @@ func (d *Drainer) maybeExpire(ctx context.Context, token persistence.LeaseToken)
 //   - MetricOutboxClaimBatchSize: the honest claimed count (claimedThisCycle) —
 //     a liveness/throughput signal that saturates at the claim ceiling. Kept
 //     SEPARATE from depth so a full batch cannot masquerade as a shallow
-//     backlog. Emitted EVERY cycle (H-OBS).
+//     backlog. Emitted EVERY cycle.
 //   - MetricOutboxDepth: the TRUE pending backlog. When the store implements
 //     ports.OutboxDepthReporter (the InstrumentedOutboxStore wrapper forwards
 //     it), CountPending is read on EVERY drain cycle — INCLUDING zero-claim
@@ -254,7 +254,7 @@ func (d *Drainer) maybeExpire(ctx context.Context, token persistence.LeaseToken)
 //     false-healthy zero. The COUNT runs on the drain cadence (not a tight
 //     loop), so the extra query on caught-up cycles is acceptable.
 //
-// Error handling distinguishes the two failure modes (H-OBS):
+// Error handling distinguishes the two failure modes:
 //   - ports.ErrOutboxDepthUnsupported (the inner store has not adopted the
 //     capability): benign — fall back to claimedThisCycle, a saturating LOWER
 //     BOUND, so the continuously emitted gauge and its breaching-on-missing
@@ -425,7 +425,7 @@ func (d *Drainer) drainBatch(ctx context.Context, token persistence.LeaseToken) 
 	if err != nil {
 		return 0, 0, err
 	}
-	// Report the partition backlog on the drainer's own poll cadence (H-OBS).
+	// Report the partition backlog on the drainer's own poll cadence.
 	// Runs on every drain cycle this partition actually runs (lease held AND
 	// egress ready), independent of MaxOutboxDepth and of the ingress
 	// QueryPending path, so the gauges are continuous while an outbox exists.
@@ -718,7 +718,7 @@ func (d *Drainer) waitBatch(ctx context.Context, wg *sync.WaitGroup, batchTimeou
 		return
 	case <-watchdog.C():
 		d.metrics.Counter(shared.MetricOutboxDrainStalled, 1, tags...)
-		// CORE-RES-1: latch the partition stalled so Run stops scheduling further
+		// Latch the partition stalled so Run stops scheduling further
 		// batches. Without this, every later batch could leak another parked
 		// sender+waiter (a sender ignoring ctx never returns), unbounded.
 		d.drainStalled.Store(true)
@@ -731,14 +731,14 @@ func (d *Drainer) waitBatch(ctx context.Context, wg *sync.WaitGroup, batchTimeou
 	// returns long before this via the <-done case above, so reaching here
 	// means a Sender is ignoring context cancellation and its goroutine will
 	// never return. We deliberately do NOT block on <-done any longer: doing so
-	// wedges this drainer forever — no other record drains and shutdown hangs
-	// (the finding). Instead we RETURN and let drainBatch proceed, treating the
+	// wedges this drainer forever — no other record drains and shutdown hangs.
+	// Instead we RETURN and let drainBatch proceed, treating the
 	// stuck record as transient: it was never Completed (Complete runs only
 	// after Send returns nil, which has not happened), so it stays Claimed and
 	// is re-claimed on a later cycle — at-least-once preserved, nothing falsely
 	// completed. The abandoned goroutine LEAKS until its hung Send eventually
 	// returns (if ever); its late atomic increments land on heap-escaped batch
-	// counters and are harmless. CORE-RES-1: we latch drainStalled here so Run
+	// counters and are harmless. We latch drainStalled here so Run
 	// stops scheduling further batches (each could leak another parked
 	// sender+waiter) and escalates terminal — bounding the leak to the ONE
 	// goroutine that tripped the watchdog rather than one-per-batch forever.

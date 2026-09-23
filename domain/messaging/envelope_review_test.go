@@ -7,10 +7,10 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════
-// Envelope Deep Copy Review Tests
+// Envelope Deep Copy Tests
 //
-// Validates deep copy completeness for header value types that were
-// identified as missing by expert review (SEC-011).
+// Validates deep copy completeness for header value types such as []byte,
+// including []byte nested inside slices and maps.
 // ═══════════════════════════════════════════════════════════════════
 
 // TestEnvelope_Clone_DeepCopiesByteSliceHeaders validates that []byte header

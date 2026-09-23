@@ -9,7 +9,7 @@ import (
 
 // TestEnvelopeFromPublish_RetainedAndQoSHeaders verifies the inbound
 // conversion records the MQTT retained flag and QoS level under the
-// reserved mqtt.* header namespace (finding 8). Without the fix these
+// reserved mqtt.* header namespace. Without the fix these
 // transport facts were dropped and never reached the pipeline.
 func TestEnvelopeFromPublish_RetainedAndQoSHeaders(t *testing.T) {
 	pub := &pahov5.Publish{

@@ -1,19 +1,11 @@
 package runtime_test
 
 // ═══════════════════════════════════════════════
-// Session Manager Jitter Clamp Tests (RES-010)
+// Session Manager Jitter Clamp Tests
 //
-// Validates that renewal intervals cannot go
-// near-zero or negative even with large jitter.
-//
-// Summary:
-// ┌──────┬────────────────────────────────────────────┬──────────┐
-// │ ID   │ Description                                │ Status   │
-// ├──────┼────────────────────────────────────────────┼──────────┤
-// │ T001 │ Large jitter doesn't produce near-zero     │ PASS     │
-// │ T002 │ Normal jitter works correctly              │ PASS     │
-// │ T003 │ GlobalMaxInFlight negative clamp           │ PASS     │
-// └──────┴────────────────────────────────────────────┴──────────┘
+// Validates that renewal intervals cannot go near-zero or negative even with
+// large jitter, that normal jitter still works, and that a negative
+// GlobalMaxInFlight clamps to 0.
 // ═══════════════════════════════════════════════
 
 import (
@@ -64,7 +56,7 @@ func TestSessionManager_LargeJitter_NoHotLoop(t *testing.T) {
 }
 
 // TestGlobalMaxInFlight_NegativeClamp validates that negative values
-// are clamped to 0, meaning no global semaphore is created (QA).
+// are clamped to 0, meaning no global semaphore is created.
 func TestGlobalMaxInFlight_NegativeClamp(t *testing.T) {
 	receiver := NewFakeReceiver()
 	sender := NewFakeSender()

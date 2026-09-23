@@ -12,7 +12,7 @@ import (
 )
 
 // ════════════════════════════════════════════════════════════════════════════
-// Chunk-1 — shared-outbox zero-plan fail-closed guard (resolvePlans).
+// Shared-outbox zero-plan fail-closed guard (resolvePlans).
 //
 // Deterministic: no time.Sleep sequences logic; the delivery pipeline is driven
 // synchronously through HandleDelivery.

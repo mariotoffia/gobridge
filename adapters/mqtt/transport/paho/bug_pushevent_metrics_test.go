@@ -8,24 +8,24 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BUG RES-011: MQTT Session pushEvent drops without metrics
+// MQTT Session pushEvent drops emit metrics
 //
 // When the event channel is full and pushEvent drops an event (the final
 // default case), no metric is emitted. The fix adds a counter for
 // MetricMQTTEventDropped so operators can detect event loss.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestBugRES011_PushEvent_DropOldest_EmitsMetric verifies the drop-oldest
+// TestSession_PushEvent_DropOldest_EmitsMetric verifies the drop-oldest
 // eviction — the COMMON back-pressure path when the event buffer is full —
 // increments MetricMQTTEventDropped for the evicted event, while preserving the
 // newest event and the buffer depth.
 //
-// NOTE: the original RES-011 test asserted this path emitted NO
+// NOTE: an earlier version of this test asserted this path emitted NO
 // metric ("normal drop-oldest"), which was precisely the doc/code disagreement
 // identified — the comment and operator guidance promise an alertable
 // MetricMQTTEventDropped that the common eviction never incremented. Evicting
 // the oldest undelivered event IS event loss, so it now meters exactly one drop.
-func TestBugRES011_PushEvent_DropOldest_EmitsMetric(t *testing.T) {
+func TestSession_PushEvent_DropOldest_EmitsMetric(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	s := NewSession(
 		SessionOptions{BrokerURLs: []string{"tcp://localhost:1883"}, ClientID: "test"},
@@ -71,9 +71,9 @@ done:
 	}
 }
 
-// TestBugRES011_MetricConstant_Exists verifies MetricMQTTEventDropped
+// TestMetricMQTTEventDropped_Exists verifies MetricMQTTEventDropped
 // is defined and usable.
-func TestBugRES011_MetricConstant_Exists(t *testing.T) {
+func TestMetricMQTTEventDropped_Exists(t *testing.T) {
 	if MetricMQTTEventDropped == "" {
 		t.Fatal("MetricMQTTEventDropped should not be empty")
 	}

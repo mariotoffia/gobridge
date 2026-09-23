@@ -13,8 +13,8 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestCheckIgnoredHTTPBlock_FailsClosedOnTLSPair pins Chunk 16 Finding 2 (Fix 2):
-// the AWS profile cannot serve in-process TLS (TLS terminates at the
+// TestCheckIgnoredHTTPBlock_FailsClosedOnTLSPair pins that the AWS profile fails
+// closed on a TLS pair: the AWS profile cannot serve in-process TLS (TLS terminates at the
 // load balancer), so a tls_cert_file/tls_key_file entry in the bridge config
 // `http:` block is an "encrypt this" instruction the profile cannot honor.
 // Continuing would silently serve the admin API in plaintext, so the check must

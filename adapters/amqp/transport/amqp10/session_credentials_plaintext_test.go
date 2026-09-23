@@ -1,10 +1,10 @@
-// Validates c7-plain-plaintext on the RUNTIME credential-rotation path:
-// Session.ApplyCredentials must fail closed when a rotation would newly
-// expose SASL PLAIN over a non-TLS scheme. This closes the last c7
-// injection point the build-time gate (config/factory/Config.ApplyCredentials)
-// does not cover — a session that passed the build gate with NO username
-// could otherwise be rotated to a username and ship cleartext creds on the
-// next dial.
+// Validates the SASL PLAIN over plaintext gate on the RUNTIME
+// credential-rotation path: Session.ApplyCredentials must fail closed when
+// a rotation would newly expose SASL PLAIN over a non-TLS scheme. This
+// closes the last injection point the build-time gate
+// (config/factory/Config.ApplyCredentials) does not cover — a session that
+// passed the build gate with NO username could otherwise be rotated to a
+// username and ship cleartext creds on the next dial.
 package amqp10
 
 import (

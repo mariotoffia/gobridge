@@ -103,10 +103,9 @@ func TestDefaultAlarms_TreatMissingData(t *testing.T) {
 	}
 }
 
-// H-OBS: the silent-loss counters and the DLQ-depth backlog gauge must be in
-// the default rollup set, else a dimensionless fleet alarm can never match
-// their route/partition-dimensioned base series. Fails before the fix
-// that added them to DefaultRollupMetrics.
+// The silent-loss counters and the DLQ-depth backlog gauge must be in the
+// default rollup set, else a dimensionless fleet alarm can never match their
+// route/partition-dimensioned base series.
 func TestDefaultRollupMetrics_CoversSilentLossCounters(t *testing.T) {
 	rollups := map[string]bool{}
 	for _, name := range DefaultRollupMetrics() {
@@ -146,9 +145,8 @@ func TestDefaultRollupMetrics_CoversClusterRolloutConvergence(t *testing.T) {
 	}
 }
 
-// H-OBS: message loss must be alarmable out-of-the-box. A terminal drop is
-// critical (any drop), sustained expiry is a warning, and a non-empty DLQ is a
-// warning. Fails before the fix that shipped these default alarms.
+// Message loss must be alarmable out-of-the-box. A terminal drop is critical
+// (any drop), sustained expiry is a warning, and a non-empty DLQ is a warning.
 func TestDefaultAlarms_ShipSilentLossAlarms(t *testing.T) {
 	byMetric := map[string]AlarmDefinition{}
 	for _, a := range DefaultAlarms("", "") {

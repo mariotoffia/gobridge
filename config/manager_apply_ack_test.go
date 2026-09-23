@@ -18,7 +18,7 @@ import (
 // fields (unlike fakePluginConfig, whose only field is unexported and therefore
 // invisible to json.Marshal). It lets the fingerprint tests vary a plugin OPTION
 // and a plugin SECRET and assert the fingerprint changes even though the
-// blueprint tags every plugin Config field json:"-" (finding: plugin options
+// blueprint tags every plugin Config field json:"-" (plugin options must not be
 // omitted from the fingerprint).
 type optPluginConfig struct {
 	Broker string        `json:"broker,omitempty"`

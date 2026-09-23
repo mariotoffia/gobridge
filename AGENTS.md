@@ -71,7 +71,7 @@ Otherwise write the rule in plain English: what must hold, and why.
 Name test files and functions after the behaviour they pin, never after the
 batch that produced them (`numeric_bounds_test.go`, not `prodready_c15_test.go`).
 
-This rule is machine-enforced for non-test Go source: `make lint` runs
+This rule is machine-enforced for every Go file, test files included: `make lint` runs
 `scripts/lint-planning-refs.sh`, which rejects these token shapes and has no
 annotation escape hatch. Read `reports/planning-refs.log` when it is red.
 

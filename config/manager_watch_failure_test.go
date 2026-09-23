@@ -1,7 +1,7 @@
 package config
 
-// Finding 1 (config-manager side): a config layer watcher failure must never
-// silently shut the bridge down.
+// Config-manager side of watcher-failure handling: a config layer watcher
+// failure must never silently shut the bridge down.
 //
 //   - BOOT: a watcher that fails its FIRST establishment attempt is fatal —
 //     Watch returns *WatchStartError so the composition root exits non-zero
@@ -68,7 +68,7 @@ func (w *reWatcher) channel(i int) chan *ports.BridgeConfig {
 }
 
 // TestManager_Watch_BootWatcherFailure_ReturnsWatchStartError validates the
-// boot half of Finding 1: a layer watcher that cannot establish at Watch time
+// boot half of watcher-failure handling: a layer watcher that cannot establish at Watch time
 // fails the Watch call with a typed *WatchStartError (wrapping the cause) so
 // the composition root can exit non-zero, instead of the old behaviour of
 // logging Warn and closing the change channel (which drained and stopped the
@@ -98,11 +98,11 @@ func TestManager_Watch_BootWatcherFailure_ReturnsWatchStartError(t *testing.T) {
 }
 
 // TestManager_Watch_SteadyStateWatcherDeath_KeepsChannelOpenAndReestablishes
-// validates the steady-state half of Finding 1: when an established layer
-// watcher dies (its change channel closes without ctx cancellation), the
-// manager must NOT close its output channel. It records the degraded state,
-// re-establishes the watcher after backoff, clears the degraded state, and
-// resumes emitting merged configs.
+// validates the steady-state half of watcher-failure handling: when an
+// established layer watcher dies (its change channel closes without ctx
+// cancellation), the manager must NOT close its output channel. It records the
+// degraded state, re-establishes the watcher after backoff, clears the degraded
+// state, and resumes emitting merged configs.
 func TestManager_Watch_SteadyStateWatcherDeath_KeepsChannelOpenAndReestablishes(t *testing.T) {
 	clk := clocktest.New()
 	w := &reWatcher{}

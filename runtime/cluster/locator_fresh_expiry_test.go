@@ -9,7 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/persistence"
 )
 
-// Finding: the fresh-read path must apply the SAME ExpiresAt bound
+// The fresh-read path must apply the SAME ExpiresAt bound
 // the cached stale-fallback path enforces. An expired-but-not-yet-seized lease
 // row names a corpse owner; serving it as authoritative forwards exclusive
 // traffic to a dead owner for up to TTL+observation. Past ExpiresAt the locator
@@ -68,8 +68,8 @@ func TestLocator_FreshRead_BoundedByLeaseExpiry(t *testing.T) {
 	}
 }
 
-// TestLocator_FastCacheHit_BoundedByLeaseExpiry is the regression for finding
-// the fast cache-hit path must apply the SAME ExpiresAt bound as the
+// TestLocator_FastCacheHit_BoundedByLeaseExpiry is the regression for the rule
+// that the fast cache-hit path must apply the SAME ExpiresAt bound as the
 // fresh-read and stale-fallback paths. A lease can expire INSIDE its CacheTTL
 // window (nothing pins CacheTTL below lease_ttl), so a live owner cached and then
 // dying while the cache entry is still "fresh" would be served as a corpse for

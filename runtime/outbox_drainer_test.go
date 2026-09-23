@@ -346,7 +346,7 @@ func TestOutboxDrainer_PermanentSendError(t *testing.T) {
 //   - Run returns before the timeout guard (no deadlock/semaphore leak)
 //   - At least one record is sent
 //
-// Note (findings 9 & 10): on cancellation the main-loop batch releases its
+// Note: on cancellation the main-loop batch releases its
 // unsent, claimed records back to pending instead of stranding them, and
 // Run then performs a bounded finalDrain that flushes those released records
 // during graceful shutdown. Consequently the total send count may reach the
@@ -479,7 +479,7 @@ func TestOutboxDrainer_CancelBeforeBatch_ExitsPromptly(t *testing.T) {
 //   - Run returns before the timeout guard (no semaphore imbalance hang)
 //   - At least one record is sent
 //
-// Note (findings 9 & 10): as with CancelDuringBatch, released records are
+// Note: as with CancelDuringBatch, released records are
 // flushed by the bounded finalDrain on shutdown, so the total send count may
 // reach the full batch. This test's subject is semaphore consistency and
 // prompt, deadlock-free return — not a partial-send count.

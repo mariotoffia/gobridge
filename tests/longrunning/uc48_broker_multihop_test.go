@@ -195,7 +195,7 @@ func TestUC48_BrokerDownMultiHop(t *testing.T) {
 // Broker restarts 3 times during message processing.
 // DOCUMENTATION TEST: proves SharedOutbox handles broker instability
 // better than DirectHold. DirectHold may lose messages during flaps.
-// PRODUCTION FIX NEEDED: RES-001 (autopaho reconnect to restarted broker).
+// PRODUCTION FIX NEEDED: autopaho reconnect to a restarted broker.
 // =========================================================================
 
 func TestUC49_SharedOutboxVsDirectHold_BrokerFlapping(t *testing.T) {
@@ -338,7 +338,7 @@ func TestUC49_SharedOutboxVsDirectHold_BrokerFlapping(t *testing.T) {
 // MQTT session with short SessionExpiryInterval + slow processor.
 // If the session expires mid-processing, the bridge must reconnect.
 //
-// PRODUCTION FIX NEEDED: RES-001 (autopaho reconnect).
+// PRODUCTION FIX NEEDED: autopaho reconnect.
 // =========================================================================
 
 func TestUC50_SessionExpiryDuringProcessing(t *testing.T) {
@@ -415,7 +415,7 @@ func TestUC50_SessionExpiryDuringProcessing(t *testing.T) {
 // Messages published during broker downtime should be queued by the
 // broker (persistent session) and delivered after restart.
 //
-// PRODUCTION FIX NEEDED: RES-001 (autopaho reconnect).
+// PRODUCTION FIX NEEDED: autopaho reconnect.
 // =========================================================================
 
 func TestUC51_PersistentSessionRecovery(t *testing.T) {

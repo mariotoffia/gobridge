@@ -116,8 +116,8 @@ func TestBugRPS_ClassifyAllRejected_NoSuccessesAndFirstErrorRetained(t *testing.
 	}
 }
 
-// TestBugRPS_ClassifyShortReasons_TreatedAsFailure pins the c4-short-suback
-// fix: a SUBACK carrying FEWER reason codes than requested subscriptions
+// TestBugRPS_ClassifyShortReasons_TreatedAsFailure pins the short-SUBACK
+// rule: a SUBACK carrying FEWER reason codes than requested subscriptions
 // leaves the tail topics unconfirmed by the broker. Those topics must be
 // treated as a FAILURE (surfaced via firstErr, excluded from succeeded), not
 // conservatively assumed accepted — an unconfirmed subscription is silently
@@ -134,7 +134,7 @@ func TestBugRPS_ClassifyShortReasons_TreatedAsFailure(t *testing.T) {
 	// Broker sent only 1 reason: 'a' is confirmed, 'b' and 'c' are not.
 	succ, firstErr, errTopic := classifySubackReasons(toSub, []byte{0x00})
 	if firstErr == nil {
-		t.Fatal("c4-short-suback: a short SUBACK must be treated as a failure")
+		t.Fatal("a short SUBACK must be treated as a failure")
 	}
 	if firstErr.Code != shared.ErrProtocolError.Code {
 		t.Errorf("short-SUBACK err code = %s, want ErrProtocolError", firstErr.Code)

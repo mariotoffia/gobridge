@@ -15,16 +15,16 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BUG-6: SQS Batch Error Classification
+// SQS Batch Error Classification
 //
-// SendBatch wraps ALL batch failures with shared.ErrUnavailable (Transient)
-// regardless of the SenderFault flag. When SenderFault=true, the error
-// should be Permanent (client's request was malformed).
+// SendBatch must classify each failed batch entry by its SenderFault flag:
+// a server fault is Transient, while SenderFault=true (the client's request
+// was malformed) is a non-retriable Rejected error.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestBug6_SendBatch_SenderFaultClassifiedAsPermanent verifies that batch
+// TestSendBatch_SenderFaultClassifiedAsPermanent verifies that batch
 // failures with SenderFault=true are classified as Permanent (not Transient).
-func TestBug6_SendBatch_SenderFaultClassifiedAsPermanent(t *testing.T) {
+func TestSendBatch_SenderFaultClassifiedAsPermanent(t *testing.T) {
 	mock := &mockSQSClient{
 		SendMessageBatchFn: func(_ context.Context, _ *awssqs.SendMessageBatchInput, _ ...func(*awssqs.Options)) (*awssqs.SendMessageBatchOutput, error) {
 			return &awssqs.SendMessageBatchOutput{
@@ -83,12 +83,12 @@ func TestBug6_SendBatch_SenderFaultClassifiedAsPermanent(t *testing.T) {
 	if be.Class != shared.ErrorRejected {
 		t.Errorf("expected ErrorRejected for SenderFault=true, got %s", be.Class)
 	}
-	t.Logf("BUG-6 FIX VERIFIED: SenderFault=true classified as %s", be.Class)
+	t.Logf("SenderFault=true classified as %s", be.Class)
 }
 
-// TestBug6_SendBatch_AllFailuresCorrectClassification verifies that server
+// TestSendBatch_AllFailuresCorrectClassification verifies that server
 // faults are classified as Transient and sender faults as Rejected.
-func TestBug6_SendBatch_AllFailuresCorrectClassification(t *testing.T) {
+func TestSendBatch_AllFailuresCorrectClassification(t *testing.T) {
 	tests := []struct {
 		name          string
 		senderFault   bool
@@ -150,7 +150,7 @@ func TestBug6_SendBatch_AllFailuresCorrectClassification(t *testing.T) {
 				t.Errorf("SenderFault=%v Code=%s: expected %s, got %s",
 					tc.senderFault, tc.code, tc.expectedClass, be.Class)
 			}
-			t.Logf("BUG-6 FIX VERIFIED: SenderFault=%v Code=%s → %s",
+			t.Logf("SenderFault=%v Code=%s → %s",
 				tc.senderFault, tc.code, be.Class)
 		})
 	}

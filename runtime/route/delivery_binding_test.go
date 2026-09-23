@@ -62,7 +62,7 @@ func (s *gateSender) Send(context.Context, ports.OutboundMessage) error {
 	return nil
 }
 
-// TestHandleDelivery_OutOfBandBinding_UnknownBindingRejected proves finding 1:
+// TestHandleDelivery_OutOfBandBinding_UnknownBindingRejected proves that
 // an OUT-OF-BAND binding override (operator DLQ redrive via
 // Runtime.InjectToBinding, carried on a bindingOverrider delivery) whose
 // recorded binding no longer exists on a reconfigured route is rejected as a
@@ -74,7 +74,7 @@ func (s *gateSender) Send(context.Context, ports.OutboundMessage) error {
 // Fails without the fix: doHandleDelivery would strip headers, re-stamp the
 // override, then directHold's unknown-binding fall-through resolves the single
 // live binding-a and sends there (MessagesReceived==1, MessagesSent==1) — the
-// silent fan-out the finding describes.
+// silent fan-out this test guards against.
 func TestHandleDelivery_OutOfBandBinding_UnknownBindingRejected(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	r := NewRouteRunnerFromConfig(RouteRunnerConfig{
@@ -126,7 +126,7 @@ func TestHandleDelivery_OutOfBandBinding_KnownBindingPasses(t *testing.T) {
 	}
 }
 
-// TestSendDirectHold_CancelledDeliveryCtx_StillAcks proves finding 4: after a
+// TestSendDirectHold_CancelledDeliveryCtx_StillAcks proves that after a
 // successful send, the happy-path Ack must land even when the delivery ctx has
 // already been cancelled (shutdown). settleContext strips the cancellation
 // (keeping values) and applies a short bound, so a successful send is never
@@ -161,7 +161,7 @@ func TestSendDirectHold_CancelledDeliveryCtx_StillAcks(t *testing.T) {
 	}
 }
 
-// TestHandleDelivery_CountsInFlightForSynchronousInject proves finding 5: a
+// TestHandleDelivery_CountsInFlightForSynchronousInject proves that a
 // synchronous admin inject (Runtime.Inject/InjectToBinding → HandleDelivery)
 // participates in the SAME in-flight accounting the receive loop uses, so
 // Runtime.InFlight()/WaitQuiescent can observe an in-progress inject and a

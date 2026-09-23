@@ -1,5 +1,5 @@
 // Deterministic unit tests for the default container-id instance
-// entropy (finding 16): an unset container_id must not fall through to
+// entropy: an unset container_id must not fall through to
 // the SDK, which generates a NEW random container-id on every dial —
 // changing the broker-side durable-subscription identity
 // (container-id + link name) on every reconnect and colliding replicas

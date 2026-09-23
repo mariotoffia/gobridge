@@ -492,11 +492,11 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	// drain fault — stale token, transient egress, claim failure — is absorbed and
 	// retried inside the poll loop (runtime/outbox/loop.go), so the normal return
 	// is ctx.Err() (filtered by startBackground's ctx.Err()==nil guard). The one
-	// deliberate non-ctx return is outbox.ErrDrainStalled (CORE-RES-1): a Sender
+	// deliberate non-ctx return is outbox.ErrDrainStalled: a Sender
 	// that ignores context cancellation leaks a goroutine the batch watchdog can
 	// only abandon, so Run stops draining and returns terminal to trigger a restart
 	// that reclaims it — the escalation the terminal-on-error path exists for. No
-	// per-drainer supervisor wrapper is warranted (REV-3-routeiso).
+	// per-drainer supervisor wrapper is warranted.
 	for i, drainer := range rt.drainers {
 		name := "drainer:" + drainer.PartitionKey()
 		if name == "drainer:" {
@@ -512,7 +512,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	// that link) is NOT a global fault: crashing the whole pod would punish every
 	// healthy co-tenant route and, since the fault is permanent, just
 	// CrashLoopBackOff without fixing anything. This
-	// supersedes the former REV-3-routeiso fail-fast rationale (which assumed
+	// supersedes the former fail-fast rationale (which assumed
 	// every receiver error is global-and-unrecoverable); superviseRoute isolates
 	// the failing route with jittered capped backoff, keeps global healthy/
 	// terminal untouched, and keeps the fault observable via MetricRouteRestarts

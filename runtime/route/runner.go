@@ -849,7 +849,8 @@ func (r *RouteRunner) doHandleDelivery(ctx context.Context, del ports.Delivery) 
 
 func (r *RouteRunner) directHold(ctx context.Context, del ports.Delivery, env *messaging.Envelope) error {
 	// Consume HeaderRouteOverride set by processor chain (e.g., filter ActionRoute).
-	// SEC-1: validate the override references a binding declared on this route.
+	// The override must name a binding declared on this route; any other value
+	// is ignored with a warning, so a header can never reach a foreign binding.
 	if override, ok := messaging.GetHeaderString(env.Headers(), messaging.HeaderRouteOverride); ok {
 		env.DeleteHeader(messaging.HeaderRouteOverride)
 		if r.hasBinding(override) {

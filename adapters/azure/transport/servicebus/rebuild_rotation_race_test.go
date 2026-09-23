@@ -11,11 +11,11 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// --- c6-dead-link (fix #1): rebuild commit is fenced against a rotation ------
+// --- Dead-link rebuild commit is fenced against a rotation -------------------
 
 // TestReceiver_NonSessionRebuild_RotationWinsStaleRebuildDiscarded pins the
 // generation fence on the non-session dead-link rebuild path. The exact
-// interleaving the re-review flagged:
+// interleaving it guards against:
 //
 //	cold init builds stack0 (conn=rotCS1)
 //	  → poll loop starts rebuildReceiver (captures the current generation,

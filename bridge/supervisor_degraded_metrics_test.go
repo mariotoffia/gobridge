@@ -38,7 +38,7 @@ func gaugeHasValue(entries []ports.MetricEntry, v float64) bool {
 // TestSupervisor_StreamClose_ExportsDegradedGauge asserts that losing the
 // config-change stream — previously visible only in the logs — now also flips
 // the exported ConfigDegraded gauge to 1 so operators can alert on a bridge
-// running blind on its last good config (Finding 4).
+// running blind on its last good config.
 func TestSupervisor_StreamClose_ExportsDegradedGauge(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	s := newTestSupervisor(WithSupervisorMetrics(rec))
@@ -71,7 +71,7 @@ func TestSupervisor_StreamClose_ExportsDegradedGauge(t *testing.T) {
 
 // TestSupervisor_SuccessfulReload_ExportsReloadSuccess asserts a live
 // reconfiguration exports a success-tagged reload counter and resets the
-// degraded gauge to 0 (Finding 4).
+// degraded gauge to 0.
 func TestSupervisor_SuccessfulReload_ExportsReloadSuccess(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	onSwap, swaps := swapChan(1)
@@ -93,7 +93,7 @@ func TestSupervisor_SuccessfulReload_ExportsReloadSuccess(t *testing.T) {
 
 // TestSupervisor_FailedReload_ExportsReloadFailure asserts a rejected live
 // reconfiguration exports a failure-tagged reload counter so a config that
-// keeps being rejected by the running runtime is observable (Finding 4).
+// keeps being rejected by the running runtime is observable.
 func TestSupervisor_FailedReload_ExportsReloadFailure(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	onSwap, swaps := swapChan(1)

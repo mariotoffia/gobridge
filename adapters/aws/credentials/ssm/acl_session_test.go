@@ -19,7 +19,7 @@ import (
 // Mutation reasoning: restoring the pre-fix ensure() that memoised the
 // first init error via sync.Once/initErr makes the second call return the
 // cached error instead of retrying — the require.NoError below then fails.
-// This is the c12-ssm-poison regression guard: a cold/standby pod hitting
+// This guards against a poisoned session: a cold/standby pod hitting
 // a one-time IMDS/token/deadline blip must not stay poisoned until restart.
 func TestSession_InitFailureThenSuccessRecovers(t *testing.T) {
 	t.Parallel()

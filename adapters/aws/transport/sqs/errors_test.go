@@ -47,7 +47,7 @@ func TestMapError_QueueDoesNotExist(t *testing.T) {
 
 // Verifies MessageNotInflight maps to ErrUnavailable (transient): the
 // visibility timeout already expired, SQS will redeliver the message, so
-// classifying it permanent would pollute DLQ categorization (Finding 3).
+// classifying it permanent would pollute DLQ categorization.
 func TestMapError_MessageNotInflight(t *testing.T) {
 	err := MapError(&sqstypes.MessageNotInflight{Message: strPtr("nope")})
 	if !errors.Is(err, shared.ErrUnavailable) {
@@ -57,7 +57,7 @@ func TestMapError_MessageNotInflight(t *testing.T) {
 
 // Verifies ReceiptHandleIsInvalid maps to ErrUnavailable (transient):
 // an expired/stale receipt handle means SQS will redeliver — not a
-// permanent payload fault (Finding 3).
+// permanent payload fault.
 func TestMapError_ReceiptHandleIsInvalid(t *testing.T) {
 	err := MapError(&sqstypes.ReceiptHandleIsInvalid{Message: strPtr("bad")})
 	if !errors.Is(err, shared.ErrUnavailable) {

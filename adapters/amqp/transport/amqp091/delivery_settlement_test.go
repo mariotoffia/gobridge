@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════
 // Delivery Settlement Bug Tests (amqp091)
 //
-// Validates BUG-2: sync.Once swallows settlement failure.
-// When Ack fails, a subsequent Retry should not silently
-// return nil.
+// Validates that a failed settlement is not swallowed by
+// sync.Once: when Ack fails, a subsequent Retry does not
+// silently return nil.
 // ═══════════════════════════════════════════════
 package amqp091
 
@@ -22,7 +22,8 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestDelivery091_AckFails_ThenRetry_ReportsError exposes BUG-2 in amqp091.
+// TestDelivery091_AckFails_ThenRetry_ReportsError pins that a Retry after a
+// failed Ack reports an error in amqp091.
 func TestDelivery091_AckFails_ThenRetry_ReportsError(t *testing.T) {
 	acker := newMockAcknowledger()
 	acker.AckFn = func(uint64, bool) error {
@@ -43,7 +44,7 @@ func TestDelivery091_AckFails_ThenRetry_ReportsError(t *testing.T) {
 
 	err2 := d.Retry(context.Background(), 0, nil)
 	if err2 == nil {
-		t.Fatal("Retry() after failed Ack() should not silently succeed (BUG-2)")
+		t.Fatal("Retry() after failed Ack() should not silently succeed")
 	}
 }
 
@@ -68,7 +69,7 @@ func TestDelivery091_RetryFails_ThenAck_ReportsError(t *testing.T) {
 
 	err2 := d.Ack(context.Background())
 	if err2 == nil {
-		t.Fatal("Ack() after failed Retry() should not silently succeed (BUG-2)")
+		t.Fatal("Ack() after failed Retry() should not silently succeed")
 	}
 }
 

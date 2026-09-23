@@ -941,8 +941,8 @@ func TestBuilder_PolicyFieldsReachRuntime(t *testing.T) {
 		DepthCacheTTL:  "100ms",
 		AllowUnfenced:  true,
 		AllowRetryDrop: true,
-		// drop policies keep the route valid under build-time ValidateRoutes
-		// (Finding 5); this test exercises the OTHER policy fields.
+		// drop policies keep the route valid under build-time ValidateRoutes;
+		// this test exercises the OTHER policy fields.
 		OnPermanentFailure: "drop",
 		OnExpired:          "drop",
 	}
@@ -1003,7 +1003,7 @@ func TestBuilder_WiresSourceVisibilityTimeout(t *testing.T) {
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		Build(context.Background())
 
-	require.Error(t, err, "the SendTimeout/VisibilityTimeout mismatch must fail at build (Finding 5)")
+	require.Error(t, err, "the SendTimeout/VisibilityTimeout mismatch must fail at build")
 	assert.Contains(t, err.Error(), "SendTimeout")
 	assert.Contains(t, err.Error(), "VisibilityTimeout")
 }
@@ -1035,7 +1035,7 @@ func TestBuilder_ReceiverConfigVisibilityTimeoutOverridesFactory(t *testing.T) {
 		RegisterStoreFactory("memory", &fakeStoreFactory{}).
 		Build(context.Background())
 
-	require.Error(t, err, "the shorter receiver-config window must fail the route at build (Finding 5)")
+	require.Error(t, err, "the shorter receiver-config window must fail the route at build")
 	assert.Contains(t, err.Error(), "SendTimeout")
 	assert.Contains(t, err.Error(), "VisibilityTimeout")
 }

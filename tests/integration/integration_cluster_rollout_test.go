@@ -21,7 +21,7 @@ import (
 // parser.Parse over a registry. This is what a real composition root injects; the
 // unit tests use a fake codec, so wiring the REAL one here is what proves the
 // durable committed artifact round-trips a config through DynamoDB and back with a
-// digest the joiner/reconcile paths accept (the Phase-5A open item).
+// digest the joiner/reconcile paths accept.
 func rolloutRealCodec() (func(*ports.BridgeConfig) ([]byte, error), func([]byte) (*ports.BridgeConfig, error)) {
 	encode := func(cfg *ports.BridgeConfig) ([]byte, error) {
 		return parser.MarshalBridgeConfigJSON(cfg)

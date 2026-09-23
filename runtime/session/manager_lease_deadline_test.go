@@ -16,7 +16,7 @@ import (
 )
 
 // partitionRenewStore models the split-brain-inducing asymmetric partition
-// (finding: renew-write-fails / Current-read-succeeds). Every Renew fails with a
+// (renew-write-fails / Current-read-succeeds). Every Renew fails with a
 // TRANSIENT error (write path partitioned), while Current keeps returning THIS
 // owner with a far-future ExpiresAt (read path healthy / stale). Without the
 // local-lease-deadline gate the renew loop's authoritative-read mitigation
@@ -75,7 +75,7 @@ func (s *partitionRenewStore) releaseCount() int32 { return atomic.LoadInt32(&s.
 var _ ports.LeaseStore = (*partitionRenewStore)(nil)
 
 // TestSessionManager_RenewFailReadSucceed_ForcesStepDownPastDeadline is the
-// regression test for the CRITICAL split-brain finding
+// regression test for the split-brain hazard
 // (manager_lease.go:495): a write-fails / read-succeeds partition must NOT keep
 // an EXPIRED owner active on the strength of the authoritative Current read. The
 // owner is bounded by its own local lease deadline and must fail closed (step
@@ -219,7 +219,7 @@ func TestSessionManager_TransientBlipBeforeDeadline_NoStepDown(t *testing.T) {
 }
 
 // TestNewManager_StepDownGraceClampedBelowLeaseTTL is the regression test for
-// the HIGH finding (manager.go:160): the construction path must not accept a
+// the StepDownGrace clamp (manager.go:160): the construction path must not accept a
 // StepDownGrace >= LeaseTTL (a stepping-down owner would drain past its own
 // lease and overlap the new owner). Config.Validate rejects it as a hard error;
 // newManager — which returns no error — must defensively clamp it below the TTL.
