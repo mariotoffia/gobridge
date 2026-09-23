@@ -384,6 +384,13 @@ schemas:
         enum: [target_accept, outbox_persist]
       max_replay_attempts:
         type: integer
+      send_retry_budget:
+        type: string
+        description: >
+          Go duration string (e.g. "60s"). direct_hold routes only: how long a
+          recoverable send failure is retried inside the bridge while the
+          source message is still held. Omitting the field takes the 60s
+          default; "0s" turns in-process send retry off. Negative is rejected.
       max_outbox_depth:
         type: integer
       on_expired:

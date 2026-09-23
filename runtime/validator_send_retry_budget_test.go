@@ -220,13 +220,17 @@ func TestValidator_AcceptsTheSendRetryBudgetOptOut(t *testing.T) {
 
 // TestValidator_AbsurdDurationsStillFailTheFixedWindow pins the worst-case
 // pipeline sum against terms near the maximum duration: the total saturates at
-// the maximum instead of wrapping, so a fixed-window source is rejected.
+// the maximum instead of wrapping, so a fixed-window source is rejected. A
+// saturated total is longer than the largest duration there is, so it is
+// rejected even against a window of that largest duration, which it would
+// otherwise compare equal to.
 func TestValidator_AbsurdDurationsStillFailTheFixedWindow(t *testing.T) {
 	cases := []struct {
 		name             string
 		budget           time.Duration
 		processorTimeout time.Duration
 		processors       []ports.Processor
+		window           time.Duration // 120s when zero
 	}{
 		{name: "send retry budget near the maximum duration",
 			budget: time.Duration(math.MaxInt64)},
@@ -236,6 +240,13 @@ func TestValidator_AbsurdDurationsStillFailTheFixedWindow(t *testing.T) {
 			budget:           routing.SendRetryBudgetDisabled,
 			processorTimeout: time.Duration(math.MaxInt64) / 2,
 			processors:       []ports.Processor{&timeoutProcessor{}, &timeoutProcessor{}, &timeoutProcessor{}}},
+		{name: "saturated sum against the largest window",
+			budget: time.Duration(math.MaxInt64), window: time.Duration(math.MaxInt64)},
+		{name: "saturated product against the largest window",
+			budget:           routing.SendRetryBudgetDisabled,
+			processorTimeout: time.Duration(math.MaxInt64) / 2,
+			processors:       []ports.Processor{&timeoutProcessor{}, &timeoutProcessor{}, &timeoutProcessor{}},
+			window:           time.Duration(math.MaxInt64)},
 	}
 
 	for _, tc := range cases {
@@ -251,6 +262,9 @@ func TestValidator_AbsurdDurationsStillFailTheFixedWindow(t *testing.T) {
 			cfg.Policy.ProcessorTimeout = tc.processorTimeout
 			cfg.Processors = tc.processors
 			cfg.SourceVisibilityTimeout = 120 * time.Second
+			if tc.window != 0 {
+				cfg.SourceVisibilityTimeout = tc.window
+			}
 			cfg.SourceAutoExtend = false
 
 			if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
@@ -260,6 +274,11 @@ func TestValidator_AbsurdDurationsStillFailTheFixedWindow(t *testing.T) {
 			messages := validationMessages(t, rt)
 			if !containsMessage(messages, "worst-case pipeline time") {
 				t.Fatalf("a hold that outlives every window must be rejected, not wrapped into fitting: %v", messages)
+			}
+			// The clamped total prints as the largest duration; without "over"
+			// the message would claim that value exceeds an equal window.
+			if !containsMessage(messages, "worst-case pipeline time (over ") {
+				t.Fatalf("a saturated total must read as over the largest duration: %v", messages)
 			}
 		})
 	}

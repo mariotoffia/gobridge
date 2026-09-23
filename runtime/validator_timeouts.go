@@ -62,8 +62,14 @@ func validateTimeouts(ve *ValidationError, prefix string, entry *routeEntry, has
 	}
 	nProc := len(entry.config.Processors)
 	retry := sendRetryBudgetFor(policy)
-	total := saturatingSum(saturatingProduct(nProc, policy.ProcessorTimeout), retry, policy.SendTimeout, dlqBudget)
-	if total > vis {
+	procHold, procClamped := saturatingProduct(nProc, policy.ProcessorTimeout)
+	total, sumClamped := saturatingSum(procHold, retry, policy.SendTimeout, dlqBudget)
+	clamped := procClamped || sumClamped
+	if clamped || total > vis {
+		shown := total.String()
+		if clamped {
+			shown = "over " + shown
+		}
 		fix := ""
 		if retry > 0 {
 			fix = " (lower send_retry_budget, set it to 0s to turn in-process send retry off, " +
@@ -73,7 +79,7 @@ func validateTimeouts(ve *ValidationError, prefix string, entry *routeEntry, has
 			"worst-case pipeline time (%s = %d processors × ProcessorTimeout %s + SendRetryBudget %s + "+
 				"SendTimeout %s + DLQ budget %s) exceeds source VisibilityTimeout (%s); "+
 				"source may redeliver mid-pipeline causing duplicate processing%s",
-			total, nProc, policy.ProcessorTimeout, retry, policy.SendTimeout, dlqBudget, vis, fix))
+			shown, nProc, policy.ProcessorTimeout, retry, policy.SendTimeout, dlqBudget, vis, fix))
 	}
 }
 
@@ -85,39 +91,43 @@ const maxDuration = time.Duration(math.MaxInt64)
 // be near maxDuration; added with plain arithmetic the total wraps NEGATIVE,
 // and a negative total is under every visibility window — so the route with the
 // longest possible hold would be the one this check waves through. Clamping
-// keeps an absurd term absurd. Neither helper reports the clamp: a saturated
-// total is already past every window a source can have, which is the answer the
-// caller needs. The runtime has no shared saturating duration helper to reuse
-// (the failover-budget sum lives in the composition root and the MQTT one is
+// keeps an absurd term absurd.
+//
+// Both helpers also report whether they clamped, and the caller rejects on a
+// clamp whatever the window. The clamped value alone is not enough: a source
+// may report a window of exactly maxDuration, a clamped total compares EQUAL to
+// it, and `total > vis` would admit a hold that is really longer. A clamp means
+// the true total is past maxDuration, so it is past every window a source can
+// have. The runtime has no shared saturating duration helper to reuse (the
+// failover-budget sum lives in the composition root and the MQTT one is
 // adapter-local; neither may be imported here), so these stay unexported beside
 // their only caller.
 //
 // Non-positive terms are skipped rather than added: every term is a
 // validated-or-defaulted budget, and a negative one must not shrink the worst
 // case into passing.
-func saturatingSum(parts ...time.Duration) time.Duration {
-	var total time.Duration
+func saturatingSum(parts ...time.Duration) (total time.Duration, clamped bool) {
 	for _, part := range parts {
 		if part <= 0 {
 			continue
 		}
 		if total > maxDuration-part {
-			return maxDuration
+			return maxDuration, true
 		}
 		total += part
 	}
-	return total
+	return total, false
 }
 
 // saturatingProduct is n copies of d with the same clamp.
-func saturatingProduct(n int, d time.Duration) time.Duration {
+func saturatingProduct(n int, d time.Duration) (product time.Duration, clamped bool) {
 	if n <= 0 || d <= 0 {
-		return 0
+		return 0, false
 	}
 	if int64(n) > int64(maxDuration)/int64(d) {
-		return maxDuration
+		return maxDuration, true
 	}
-	return time.Duration(n) * d
+	return time.Duration(n) * d, false
 }
 
 // dlqWriteBudget is the bounded wall-clock time the inline failure path may spend
@@ -199,8 +209,9 @@ func validateSendRetryBudget(ve *ValidationError, prefix string, entry *routeEnt
 	if retry > wait-policy.SendTimeout {
 		ve.add(prefix + fmt.Sprintf(
 			"send_retry_budget %s + send_timeout %s exceeds the source's settlement-recovery wait %s; "+
-				"a held retry would outlive the MQTT connection recycle and fail it "+
-				"(lower send_retry_budget or send_timeout, or raise the session's connect/reconcile timeouts)",
+				"a held retry would outlive the wait and fail the source's recycle "+
+				"(lower send_retry_budget or send_timeout, or raise the source session's "+
+				"settlement-recovery wait through its transport's own timeouts)",
 			retry, policy.SendTimeout, wait))
 	}
 }

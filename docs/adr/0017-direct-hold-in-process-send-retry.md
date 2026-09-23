@@ -170,9 +170,11 @@ production traffic.
    budget and may then run its full `send_timeout`, so `send_retry_budget +
    send_timeout` is the hold the wait has to cover. The rejection reads
    `send_retry_budget … + send_timeout … exceeds the source's
-   settlement-recovery wait …; a held retry would outlive the MQTT connection
-   recycle and fail it (lower send_retry_budget or send_timeout, or raise the
-   session's connect/reconcile timeouts)`.
+   settlement-recovery wait …; a held retry would outlive the wait and fail the
+   source's recycle (lower send_retry_budget or send_timeout, or raise the
+   source session's settlement-recovery wait through its transport's own
+   timeouts)`. For an MQTT session those timeouts are its connect and
+   reconcile timeouts.
 
 The session reports that wait through a new optional typed-config capability,
 `ports.SettlementRecoveryTimingConfig`, which the MQTT transport implements
