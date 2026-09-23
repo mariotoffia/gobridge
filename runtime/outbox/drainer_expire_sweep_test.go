@@ -665,8 +665,8 @@ func TestDrainer_WedgedSender_UnblocksDrainerWithoutFalseComplete(t *testing.T) 
 
 	// The drainer must UNBLOCK now even though the send is still hung on
 	// <-unblock. If waitBatch still blocked on <-done this receive would hang
-	// (and the -timeout in CI would fail the test) — that is the wedge the
-	// finding is about.
+	// (and the -timeout in CI would fail the test) — that is the wedge this
+	// test guards against.
 	res := <-resCh
 	if res.err != nil {
 		t.Fatalf("drainBatch err = %v, want nil (a wedged sender must not surface an error)", res.err)
@@ -682,14 +682,14 @@ func TestDrainer_WedgedSender_UnblocksDrainerWithoutFalseComplete(t *testing.T) 
 	if got := metrics.sum(shared.MetricOutboxDrainStalled, nil); got != 1 {
 		t.Errorf("OutboxDrainStalled = %d, want 1 (emitted once for the wedged batch)", got)
 	}
-	// CORE-RES-1: the watchdog must LATCH the partition stalled so Run stops
-	// scheduling further batches (each could leak another parked sender).
+	// The watchdog must LATCH the partition stalled so Run stops scheduling
+	// further batches (each could leak another parked sender).
 	if !d.drainStalled.Load() {
-		t.Errorf("drainStalled not latched after watchdog abandoned a hung sender (CORE-RES-1)")
+		t.Errorf("drainStalled not latched after watchdog abandoned a hung sender")
 	}
 }
 
-// TestDrainer_CORE_RES1_StalledLatchEscalatesTerminal proves the CORE-RES-1
+// TestDrainer_StalledLatchEscalatesTerminal proves the stalled-partition
 // bound: once the partition is latched stalled, Run stops scheduling batches and
 // returns ErrDrainStalled — a terminal (non-ctx) error so startBackground
 // escalates to a runtime restart that reclaims the leaked goroutine, instead of
@@ -697,7 +697,7 @@ func TestDrainer_WedgedSender_UnblocksDrainerWithoutFalseComplete(t *testing.T) 
 //
 // Mutation check: remove the drainStalled check in Run's loop and this hangs
 // (Run keeps polling and never returns the terminal error).
-func TestDrainer_CORE_RES1_StalledLatchEscalatesTerminal(t *testing.T) {
+func TestDrainer_StalledLatchEscalatesTerminal(t *testing.T) {
 	clk := &signalingClock{Fake: clocktest.NewAt(budgetBase), timerCreated: make(chan struct{}, 4)}
 	store := &deferredFakeStore{} // empty: drainBatch returns fast, exercising only the latch gate
 	d := New(Config{
@@ -726,7 +726,7 @@ func TestDrainer_CORE_RES1_StalledLatchEscalatesTerminal(t *testing.T) {
 			t.Fatalf("Run returned %v, want ErrDrainStalled (terminal escalation)", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not return after the stall latch; it kept scheduling batches (CORE-RES-1)")
+		t.Fatal("Run did not return after the stall latch; it kept scheduling batches")
 	}
 }
 
@@ -895,8 +895,8 @@ func TestDrainer_WatchdogAbandonedSend_LaterReturnsNil_DoesNotComplete(t *testin
 }
 
 // ---------------------------------------------------------------------------
-// FINDING 1 (adversarial): the pre-send lease re-check must compare the live
-// token VERSION to the claim token, not merely presence. A lease reacquired at a
+// The pre-send lease re-check must compare the live token VERSION to the
+// claim token, not merely presence. A lease reacquired at a
 // HIGHER version by a new owner BEFORE this record's Send still returns
 // (hasLease=true); a bare !hasLease check would Send a record claimed under the
 // superseded version — a duplicate target-side delivery the post-send fence can
@@ -952,9 +952,10 @@ func TestDrainer_LeaseReacquiredBeforeSend_DoesNotSend(t *testing.T) {
 // in-memory outbox backend (ports/stores.go): a record is claimable only when
 // Pending or when Claimed at a STRICTLY-OLDER claim_version. There is NO
 // same-version time-stale reclaim, so a record left Claimed at the CURRENT lease
-// version can never be re-claimed by the same owner — the exact stranding
-// finding 2 is about. Complete/Release are owner+version+status fenced. It is
-// deliberately minimal (single partition, no wall-clock, no high-water-mark).
+// version can never be re-claimed by the same owner — the stranding the
+// completion fence must prevent. Complete/Release are owner+version+status
+// fenced. It is deliberately minimal (single partition, no wall-clock, no
+// high-water-mark).
 type versionOnlyRecord struct {
 	rec       *persistence.OutboxRecord
 	state     string // "pending" | "claimed" | "completed"
@@ -1065,9 +1066,9 @@ var _ ports.OutboxStore = (*versionOnlyStore)(nil)
 var _ ports.OutboxReleaser = (*versionOnlyStore)(nil)
 
 // ---------------------------------------------------------------------------
-// FINDING 2 (adversarial): errCompletionFenced must RELEASE the fenced head AND
-// the never-attempted ordering-group suffix back to pending, or they strand
-// Claimed forever on a version-only store (the in-memory backend). Proof end to
+// errCompletionFenced must RELEASE the fenced head AND the never-attempted
+// ordering-group suffix back to pending, or they strand Claimed forever on a
+// version-only store (the in-memory backend). Proof end to
 // end: two records in ONE ordering group; the head is abandoned by the watchdog
 // and its slow Send later returns nil (errCompletionFenced); a SECOND drain with
 // the SAME lease token must re-claim and deliver BOTH — only possible because the

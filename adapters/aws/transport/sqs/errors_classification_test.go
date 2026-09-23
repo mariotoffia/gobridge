@@ -9,7 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// TestMapError_KMSClassification is the regression for Finding 3. The
+// TestMapError_KMSClassification pins typed KMS classification. The
 // substring fallback classified anything containing "AccessDenied" — including
 // the SSE-KMS code "KmsAccessDenied" — as permanent ErrNotAuthorized, which
 // false-DLQs every send during the 10-120s a freshly-granted KMS key policy /
@@ -69,7 +69,7 @@ func TestMapError_KMSClassification(t *testing.T) {
 }
 
 // TestMapError_PlainAPIAuthStaysPermanent documents the deliberate residual of
-// Finding 3: MapError is a stateless pure function, so a plain IAM/STS auth
+// KMS classification: MapError is a stateless pure function, so a plain IAM/STS auth
 // failure (no code-distinguishable KMS type) cannot implement a
 // first-N-then-permanent scheme and is kept permanent. Only the typed KMS
 // codes are re-classified.

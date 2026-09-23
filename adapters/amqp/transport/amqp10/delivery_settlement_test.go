@@ -2,10 +2,10 @@
 // Delivery Settlement Bug Tests
 //
 // Validates the sync.Once settlement idempotency,
-// specifically testing BUG-2: when Ack fails, subsequent
-// Retry should not silently return nil.
+// specifically that when Ack fails, a subsequent
+// Retry does not silently return nil.
 //
-// Scenario (BUG-2):
+// Failure mode guarded against:
 // ───────────────────────────────────────────────
 //
 //	Ack() → AcceptMessage fails → returns error ✓
@@ -30,9 +30,9 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestDelivery_AckFails_ThenRetry_ReportsError exposes BUG-2: when Ack
-// fails, a subsequent Retry call should indicate the delivery was already
-// settled (or attempted), not silently return nil.
+// TestDelivery_AckFails_ThenRetry_ReportsError pins that when Ack
+// fails, a subsequent Retry call indicates the delivery was already
+// settled (or attempted), rather than silently returning nil.
 func TestDelivery_AckFails_ThenRetry_ReportsError(t *testing.T) {
 	settler := newMockSettler()
 	settler.acceptErr = errors.New("network error during accept")
@@ -47,12 +47,12 @@ func TestDelivery_AckFails_ThenRetry_ReportsError(t *testing.T) {
 	}
 
 	err2 := d.Retry(context.Background(), 0, nil)
-	// BUG-2: With current sync.Once implementation, err2 is nil even
-	// though the delivery was never successfully settled. After the fix,
-	// err2 should be non-nil (ErrAlreadySettled or the original error).
+	// A bare sync.Once would leave err2 nil even though the delivery
+	// was never successfully settled; err2 must be non-nil
+	// (ErrAlreadySettled or the original error).
 	if err2 == nil {
 		t.Fatal("Retry() after failed Ack() should not silently succeed — " +
-			"the delivery was never settled (BUG-2: sync.Once swallows failure)")
+			"the delivery was never settled (sync.Once swallows failure)")
 	}
 }
 
@@ -72,7 +72,7 @@ func TestDelivery_RetryFails_ThenAck_ReportsError(t *testing.T) {
 
 	err2 := d.Ack(context.Background())
 	if err2 == nil {
-		t.Fatal("Ack() after failed Retry() should not silently succeed (BUG-2)")
+		t.Fatal("Ack() after failed Retry() should not silently succeed")
 	}
 }
 

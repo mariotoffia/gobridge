@@ -12,7 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
-// Finding 4 — credential-rotation data race.
+// Credential-rotation data race.
 //
 // The SQS client used to be a plain struct field read unlocked on the hot
 // send/receive path while ApplyCredentials/ensureClient swapped it under

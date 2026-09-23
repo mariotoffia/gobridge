@@ -11,11 +11,11 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestManager_Watch_PoisonedLayerDoesNotBlockOtherLayers covers the Chunk-1
-// finding that a bad layer was cached BEFORE the merged-result validation, so
-// every later good update from another layer re-merged against the poison and
-// was dropped forever. The fix validates the merged result before caching a
-// layer, so a rejected update leaves the previous good value in place.
+// TestManager_Watch_PoisonedLayerDoesNotBlockOtherLayers pins that the manager
+// validates the merged result BEFORE caching a layer. Caching a bad layer first
+// would make every later good update from another layer re-merge against the
+// poison and be dropped forever; validating first means a rejected update
+// leaves the previous good value in place.
 //
 // Scenario: base + overlay A + overlay B (both watched). B emits a poison
 // update that makes the merged config invalid; the update must be dropped and

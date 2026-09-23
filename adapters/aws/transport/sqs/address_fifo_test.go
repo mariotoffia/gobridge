@@ -16,7 +16,7 @@ import (
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
-// Finding 1 — queue-name binding address.
+// Queue-name binding address.
 //
 // Scenario configs bind `address: <queue-name>` while the sender resolves
 // a fully-qualified queue URL. The sender previously rejected any non-empty
@@ -61,7 +61,7 @@ func TestSend_AddressMismatch_RejectedWithoutSDK(t *testing.T) {
 	require.True(t, errors.Is(err, shared.ErrInvalidTopic), "want ErrInvalidTopic, got %v", err)
 }
 
-// Finding 5 — FIFO per-MessageGroupId ordering.
+// FIFO per-MessageGroupId ordering.
 //
 // The route runner dispatches deliveries concurrently, so a ReceiveMessage
 // that returned several messages of one group could reorder them. Forcing
@@ -146,7 +146,7 @@ func TestReceiver_Run_FIFO_RequestsSingleMessage(t *testing.T) {
 	assert.Equal(t, int32(1), r.cfg.MaxMessages)
 }
 
-// Finding 1 (build-time) — ValidateAddress mirrors the send-time queue
+// Queue-name binding address at build time — ValidateAddress mirrors the send-time queue
 // match so a misconfigured static binding address fails when the bridge is
 // built, not at first send. It is deliberately more lenient than the
 // send-time check for QueueName-only senders, whose URL is resolved lazily

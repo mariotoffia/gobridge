@@ -88,7 +88,7 @@ func capabilityStoresConfig() (*ports.BridgeConfig, *capabilityStoreFactory) {
 }
 
 // TestBuildStores_WithMetrics_WrapsStoresPreservingCapabilities validates the
-// Finding 15 composition wiring: with WithMetrics configured, buildStores
+// store-metrics composition wiring: with WithMetrics configured, buildStores
 // returns instrumented stores whose operations emit through the exporter,
 // while the inner stores' optional io.Closer / ports.OutboxReleaser
 // capabilities remain reachable through the decorators.

@@ -20,8 +20,8 @@ func newSenderForTest(t *testing.T, opts ...SenderOption) *Sender {
 	return s
 }
 
-// TestBuildAttributes_SubjectBytesChargedBeforeSelection is the regression for
-// Finding 4(b). The Subject attribute is written AFTER the size-budget loop,
+// TestBuildAttributes_SubjectBytesChargedBeforeSelection pins the Subject
+// byte charge. The Subject attribute is written AFTER the size-budget loop,
 // so its bytes must be pre-charged into the size accumulator BEFORE header
 // selection — otherwise a request just under the ceiling can be pushed over
 // the real broker limit by the un-counted Subject bytes.
@@ -47,7 +47,7 @@ func TestBuildAttributes_SubjectBytesChargedBeforeSelection(t *testing.T) {
 	attrsWith := s.buildAttributes(withSub)
 	_, hasHeaderWith := attrsWith["h"]
 	assert.False(t, hasHeaderWith,
-		"header must drop once Subject bytes are charged against the ceiling (Finding 4b)")
+		"header must drop once Subject bytes are charged against the ceiling")
 	_, hasSubject := attrsWith[sqsSubjectAttributeName]
 	assert.True(t, hasSubject, "the reserved Subject attribute is always written")
 
@@ -63,8 +63,8 @@ func TestBuildAttributes_SubjectBytesChargedBeforeSelection(t *testing.T) {
 	assert.True(t, hasHeaderNo, "the same header fits when no Subject consumes the ceiling")
 }
 
-// TestWithMaxMessageBytes_OversizedBodyKeepsRank0AttributeAtRaisedCeiling is
-// the regression for Finding 4(a). On a queue configured with a larger
+// TestWithMaxMessageBytes_OversizedBodyKeepsRank0AttributeAtRaisedCeiling pins
+// the configurable size ceiling. On a queue configured with a larger
 // MaximumMessageSize, a body over the stale hardcoded 256 KiB ceiling dropped
 // ALL attributes — including the rank-0 idempotency key — while the send still
 // succeeded, silently losing bridge identity. Making the ceiling configurable
@@ -87,7 +87,7 @@ func TestWithMaxMessageBytes_OversizedBodyKeepsRank0AttributeAtRaisedCeiling(t *
 	sDefault := newSenderForTest(t)
 	_, keptDefault := sDefault.buildAttributes(newEnv())[messaging.HeaderIdempotencyKey]
 	assert.False(t, keptDefault,
-		"at the default 256 KiB ceiling an oversized body drops the rank-0 idempotency key (Finding 4a)")
+		"at the default 256 KiB ceiling an oversized body drops the rank-0 idempotency key")
 
 	// Raised ceiling (fits body + attribute): the identity attribute survives.
 	sRaised := newSenderForTest(t, WithMaxMessageBytes(len(body)+4096))
@@ -96,8 +96,8 @@ func TestWithMaxMessageBytes_OversizedBodyKeepsRank0AttributeAtRaisedCeiling(t *
 		"raising the ceiling to the queue's real limit keeps the idempotency key for an oversized body")
 }
 
-// TestBuildAttributes_RelaySubjectDoesNotDropRealHeader is the regression for
-// Finding 7. A SQS->SQS relay keeps a plain "Subject" header (ingress) AND the
+// TestBuildAttributes_RelaySubjectDoesNotDropRealHeader pins relay slot use.
+// A SQS->SQS relay keeps a plain "Subject" header (ingress) AND the
 // sender reserves a Subject slot from env.Subject(). The stray "Subject" header
 // must NOT also compete for one of the 10 attribute slots — otherwise a relay
 // carrying >=10 application headers drops a real header for a duplicate that
@@ -133,5 +133,5 @@ func TestBuildAttributes_RelaySubjectDoesNotDropRealHeader(t *testing.T) {
 		}
 	}
 	assert.Equal(t, sqsMaxMessageAttributes-1, appCount,
-		"all non-Subject slots must carry real application headers, none wasted on a duplicate Subject (Finding 7)")
+		"all non-Subject slots must carry real application headers, none wasted on a duplicate Subject")
 }

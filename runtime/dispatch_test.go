@@ -13,7 +13,7 @@ import (
 )
 
 // ══════════════════════════════════════════════════════════════════════════
-// Chunk 10 dispatch regressions
+// Dispatch regressions
 // ══════════════════════════════════════════════════════════════════════════
 
 // newDLQFailRunner builds a direct_hold runner whose DLQ store ALWAYS fails to

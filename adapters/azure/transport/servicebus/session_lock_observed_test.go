@@ -28,7 +28,7 @@ var (
 	_ sessionLockDeadliner = (*sessionDeadlineMock)(nil)
 )
 
-// --- c6-session-lock: renewal paces off the OBSERVED lock deadline ---------
+// --- Session renewal paces off the OBSERVED lock deadline ------------------
 
 // TestSessionRenewer_PacesFromObservedLockDeadline proves the session
 // renewer schedules against the broker's ACTUAL lock deadline
@@ -116,7 +116,7 @@ func TestSessionRenewInterval_PrefersObservedOverConfigured(t *testing.T) {
 	require.Equal(t, time.Second, recv.sessionRenewInterval(15*time.Second))
 }
 
-// TestSessionRenewInterval_LapsedLockReArmsAtFloor covers the fix #4
+// TestSessionRenewInterval_LapsedLockReArmsAtFloor covers the
 // remaining<=0 branch: when the OBSERVED session lock has already lapsed,
 // the renewer must re-arm at the FLOOR (ASAP) so it attempts to reclaim the
 // session immediately — NOT at the wider configured fallback (up to

@@ -403,7 +403,7 @@ func TestClusteredReload(t *testing.T) {
 		oldRt := app.CurrentRuntime()
 		require.NotNil(t, oldRt)
 		// Capture the EXACT applied reference and version before the rejected
-		// reload so we can prove neither is mutated (finding 2).
+		// reload so we can prove neither is mutated.
 		beforeApplied := app.CurrentAppliedConfig()
 		require.NotNil(t, beforeApplied)
 
@@ -443,7 +443,7 @@ func TestClusteredReload(t *testing.T) {
 	})
 
 	t.Run("committed clustered reload surfaces committed_not_applied", func(t *testing.T) {
-		// Finding 2: exercise the EXISTING committed failure path. An admin commit
+		// Exercise the EXISTING committed failure path. An admin commit
 		// that carries a clustered reload must be rejected through
 		// applyCommittedConfig (which wraps the guard error as
 		// committed_not_applied), leaving runtime, applied reference/version, and

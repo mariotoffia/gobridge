@@ -199,9 +199,8 @@ func TestDelivery_AutoExtend_StopsOnAck(t *testing.T) {
 	}
 
 	// Ack issues a single pre-delete visibility-margin extension for this
-	// small (vis=2) window (Finding: c8-autoextend-margin); capture the
-	// count right after Ack, then assert the background auto-extend loop
-	// makes NO further extensions.
+	// small (vis=2) window; capture the count right after Ack, then assert
+	// the background auto-extend loop makes NO further extensions.
 	afterAck := extendCount.Load()
 
 	// NEGATIVE: verify no further ChangeMessageVisibility after Ack
@@ -366,8 +365,8 @@ func TestDelivery_Ack_StopsAutoExtendThenDeletes(t *testing.T) {
 	}
 
 	// Ack issues one pre-delete visibility-margin extension for this small
-	// (vis=2) window (Finding: c8-autoextend-margin); capture the count now
-	// and assert the background loop makes NO further extensions below.
+	// (vis=2) window; capture the count now and assert the background loop
+	// makes NO further extensions below.
 	afterAck := extendCount.Load()
 
 	mock.mu.Lock()

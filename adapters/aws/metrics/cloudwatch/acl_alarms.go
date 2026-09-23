@@ -89,7 +89,7 @@ func DefaultRollupMetrics() []string {
 		shared.MetricDLQWriteFailures,
 		shared.MetricCredentialRefreshFailures,
 		metricSQSVisibilityExtensions,
-		// Silent-loss + backlog counters (H-OBS). These are emitted with a
+		// Silent-loss + backlog counters. These are emitted with a
 		// route/partition dimension by the runtime, so a dimensionless fleet
 		// alarm never matches their base series without a zero-dimension rollup
 		// copy. DLQDepth and MessagesDropped/Expired have default alarms below;
@@ -230,7 +230,7 @@ func DefaultAlarms(namespace, snsTopicARN string) []AlarmDefinition {
 		},
 		// DLQ depth: any outstanding dead-letter entry is worth attention. A
 		// gauge (Maximum), so notBreaching — absence means no DLQ store / no
-		// sampler, not a healthy zero (H-OBS DLQ-1).
+		// sampler, not a healthy zero.
 		{
 			Name:             "GoBridge-DLQDepth-Warning",
 			MetricName:       shared.MetricDLQDepth,

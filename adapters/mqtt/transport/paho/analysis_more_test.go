@@ -163,7 +163,7 @@ func TestAnaMore_ReconcileMetric_NotEmittedOnNoOp(t *testing.T) {
 	// successfully reconciled". NOTE the prior setup used a plan WITH a
 	// subscription and an empty activeSubs — that is now the reconnect-window
 	// TEARDOWN case (the broker may still hold the resumed sub), not a no-op,
-	// so it must NOT be pinned here (c4-remove-subs gates teardown on
+	// so it must NOT be pinned here (empty-plan teardown is gated on
 	// applied-state history, not activeSubs).
 	s.plan = &connectivity.SessionPlan{}
 	s.appliedPlan = &connectivity.SessionPlan{}

@@ -58,7 +58,7 @@ func leafCommonName(t *testing.T, cert *tls.Certificate) string {
 	return leaf.Subject.CommonName
 }
 
-// TestCertReloader_PicksUpRotatedCert pins finding 6: an in-process cert-manager
+// TestCertReloader_PicksUpRotatedCert pins that an in-process cert-manager
 // renewal (atomic file replace, which bumps mtime) must be served on the next
 // handshake WITHOUT a restart, while unchanged files keep serving the cached
 // certificate (no per-handshake reload).

@@ -84,7 +84,7 @@ func TestDelivery_Retry_SettlesAfterShutdownCancel(t *testing.T) {
 }
 
 // Verifies a live delivery context is now bounded by an unconditional
-// settlement deadline (Finding 5): the SDK HTTP client has no overall
+// settlement deadline: the SDK HTTP client has no overall
 // request timeout, so a black-holed connection during DeleteMessage would
 // otherwise wedge the delivery goroutine for the TCP RTO (tens of
 // minutes), holding a MaxInFlight slot. Ack/Retry/Extend/auto-extend all
@@ -110,7 +110,7 @@ func TestDelivery_Ack_LiveContextIsBounded(t *testing.T) {
 }
 
 // TestDelivery_Retry_LiveContextIsBounded mirrors the Ack case for the
-// nack path (Finding 5).
+// nack path.
 func TestDelivery_Retry_LiveContextIsBounded(t *testing.T) {
 	var hadDeadline bool
 	mock := &mockSQSClient{
@@ -131,7 +131,7 @@ func TestDelivery_Retry_LiveContextIsBounded(t *testing.T) {
 }
 
 // TestDelivery_Extend_LiveContextIsBounded mirrors the Ack case for the
-// explicit Extend path (Finding 5).
+// explicit Extend path.
 func TestDelivery_Extend_LiveContextIsBounded(t *testing.T) {
 	var hadDeadline bool
 	mock := &mockSQSClient{

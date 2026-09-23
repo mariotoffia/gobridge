@@ -1,6 +1,6 @@
-// Validates durable subscriptions end-to-end (finding: durability_mode
-// previously configured only the client terminus and links had random
-// names, so a durable subscriber lost everything published while
+// Validates durable subscriptions end-to-end (durability_mode must
+// configure more than the client terminus and links must not get random
+// names, or a durable subscriber loses everything published while
 // detached). The broker must retain messages published to a multicast
 // address while the durable subscriber is detached, and deliver them
 // when a link with the SAME container-id + subscription name reattaches.

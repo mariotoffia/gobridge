@@ -148,7 +148,7 @@ func TestParse_InvalidJSON(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestParse_SenderInheritsTransportFromSession validates Finding 12: a sender
+// TestParse_SenderInheritsTransportFromSession validates that a sender
 // (and a binding through it) that omits its own transport inherits the
 // transport of the session it references, so the session-inherited-transport
 // feature the builder already supports is reachable from YAML.
@@ -191,8 +191,8 @@ routes:
 }
 
 // TestParse_SenderWithoutTransportOrSession_Errors validates that the parser
-// still rejects a sender that resolves to no transport at all (Finding 12 keeps
-// the "something must resolve" invariant).
+// still rejects a sender that resolves to no transport at all (session
+// inheritance keeps the "something must resolve" invariant).
 func TestParse_SenderWithoutTransportOrSession_Errors(t *testing.T) {
 	input := `
 bridge:

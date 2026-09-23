@@ -194,7 +194,7 @@ bridge:
 }
 
 // TestGoBridgeSingle_SuppliedEfsConfig_SubnetMismatchFailsSynth is the
-// facade half of Validation Matrix row 14. The parity check itself is
+// facade half of the EFS subnet parity check. The parity check itself is
 // unit-tested in constructs/efs_config_validation_test.go; this proves
 // GoBridgeSingle actually CALLS it on the supplied-EfsConfig path — the
 // only path where the mismatch is possible, since an auto-created config

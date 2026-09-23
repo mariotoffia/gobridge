@@ -15,7 +15,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GAP-10: SQS Delivery Auto-Extend Boundary Conditions
+// SQS Delivery Auto-Extend Boundary Conditions
 //
 // Auto-extend is skipped when visibilityTimeout <= 1. Test boundaries:
 // - visibilityTimeout == 1: auto-extend should NOT start
@@ -56,9 +56,8 @@ func TestAutoExtend_Boundary_Timeout1_Disabled(t *testing.T) {
 		"auto-extend should NOT register a ticker when visibilityTimeout == 1")
 
 	// Measured BEFORE Ack: Ack issues a single final pre-delete
-	// visibility-margin extension for such a small window
-	// (Finding: c8-autoextend-margin), which is unrelated to whether the
-	// background auto-extend loop started.
+	// visibility-margin extension for such a small window, which is
+	// unrelated to whether the background auto-extend loop started.
 	mock.mu.Lock()
 	callsBeforeAck := len(mock.ChangeVisibilityCalls)
 	mock.mu.Unlock()

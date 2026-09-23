@@ -90,8 +90,8 @@ func TestAnaIntg_StartAfterClose_RealBroker_DoesNotReconnect(t *testing.T) {
 }
 
 // TestAnaIntg_ReconcileEmptyPlan_UnsubscribesManagedSubs verifies the
-// intentional "remove all subscriptions" behaviour against a real broker
-// (c4-remove-subs). After applying a non-empty plan, calling Reconcile with an
+// intentional "remove all subscriptions" behaviour against a real broker.
+// After applying a non-empty plan, calling Reconcile with an
 // empty plan MUST unsubscribe the previously-established subscriptions —
 // otherwise the broker keeps delivering on stale subscriptions. Health's
 // broker-confirmed SubscriptionsActive is the deterministic signal: it drops

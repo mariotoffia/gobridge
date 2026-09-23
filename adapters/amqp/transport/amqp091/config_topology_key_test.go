@@ -4,7 +4,7 @@ import "testing"
 
 // TestConfig_PublisherTopologyKey verifies the descriptor the bridge uses to
 // tell a legitimate identical re-declaration of an exchange from a genuinely
-// divergent one when it dedups senders by exchange name (REV-2-topowarn). Two
+// divergent one when it dedups senders by exchange name. Two
 // configs that declare the SAME exchange topology must yield an identical key;
 // any difference in a field ExchangeDeclare actually consumes must change it;
 // and per-message routing keys must NOT affect it.

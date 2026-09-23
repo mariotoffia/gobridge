@@ -9,7 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestBug_MQTTOBS1_DrainOnStop_MetersQoS0 pins MQTT-OBS-1: when the serialized
+// TestRouter_DrainOnStop_MetersQoS0 pins that when the serialized
 // dispatch worker stops with publishes still buffered in dispatchCh, a QoS 0
 // entry must be metered as a drop rather than vanishing silently, while a QoS 1/2
 // entry is left UNACKED for broker redelivery (not counted as a drop). Both
@@ -18,7 +18,7 @@ import (
 // Mutation check: delete the drainDispatchOnStop call in dispatchLoop's stop
 // branch and this fails — the QoS 0 drop is never counted and the reservations
 // leak.
-func TestBug_MQTTOBS1_DrainOnStop_MetersQoS0(t *testing.T) {
+func TestRouter_DrainOnStop_MetersQoS0(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	r := newRouter(nil, rec)
 

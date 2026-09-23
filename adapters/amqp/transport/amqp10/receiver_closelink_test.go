@@ -1,5 +1,5 @@
 // Validates that receiver link teardown is bounded by LinkCloseTimeout
-// (finding 3) so a graceful shutdown cannot hang the Run goroutine on an
+// so a graceful shutdown cannot hang the Run goroutine on an
 // unresponsive broker.
 package amqp10
 
@@ -37,8 +37,8 @@ func (l *recordingLink) Close(ctx context.Context) error {
 	return nil
 }
 
-// TestReceiver_CloseLink_BoundedByLinkCloseTimeout proves the finding-3
-// fix: closeLink hands link.Close a context with a deadline derived from
+// TestReceiver_CloseLink_BoundedByLinkCloseTimeout proves that
+// closeLink hands link.Close a context with a deadline derived from
 // SessionOptions.LinkCloseTimeout, rather than an unbounded
 // context.Background().
 func TestReceiver_CloseLink_BoundedByLinkCloseTimeout(t *testing.T) {

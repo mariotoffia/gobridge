@@ -55,8 +55,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	planDeclared := s.plan != nil
 	// A reserved ingress receiver (Factory.NewReceiver) that has not yet declared
 	// its first plan is a RECEIVER whose Reconcile is still pending — not a
-	// sender-only session — so it must not be reported Full before it subscribes
-	// (MQTT-OBS-2).
+	// sender-only session — so it must not be reported Full before it subscribes.
 	ingressReserved := s.ingressReceiverReserved
 	if planDeclared {
 		expectedReceiverIDs = append(expectedReceiverIDs, s.plan.ExpectedReceiverIDs...)
@@ -114,7 +113,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 	case ingressReserved && !planDeclared:
 		// Reserved ingress receiver, first Reconcile still pending: connected but
 		// not yet subscribed, so cap below Full so a ?level=full readiness probe
-		// cannot pass during the pre-first-Reconcile window (MQTT-OBS-2). The
+		// cannot pass during the pre-first-Reconcile window. The
 		// sender-only Full branch below must not claim this receiver.
 		sl = ports.ServiceLevelDegraded
 	case wantedCount == 0 && len(expectedReceiverIDs) == 0 && (!planDeclared || subscriptionsSatisfied) && !recoveryPending:

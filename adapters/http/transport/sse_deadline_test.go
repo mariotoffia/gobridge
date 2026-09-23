@@ -1,8 +1,8 @@
 package transport_test
 
-// Deterministic tests for the SSE per-write deadline introduced in the
-// prod-ready remediation (findings: unbounded SSE writes / fronting
-// WriteTimeout killing healthy streams). Both tests inject a fake clock
+// Deterministic tests for the SSE per-write deadline, which guards against
+// unbounded SSE writes and a fronting WriteTimeout killing healthy
+// streams. Both tests inject a fake clock
 // so the asserted deadline values are exact, and a fake ResponseWriter
 // exposing SetWriteDeadline so the handler's http.ResponseController
 // path is driven without a real socket — no sleeps, no wall-clock
@@ -104,7 +104,7 @@ func newDeadlineSSESender(t *testing.T, id string, writeTimeout time.Duration, s
 }
 
 // The per-write deadline must be re-armed before every frame using the
-// current WALL clock (finding 8: SetWriteDeadline is an OS/kernel socket
+// current WALL clock (SetWriteDeadline is an OS/kernel socket
 // deadline, so the sender uses time.Now(), not the injected clock), so a
 // healthy long-lived stream keeps pushing its deadline forward
 // (overriding a fronting server's fixed WriteTimeout) instead of being

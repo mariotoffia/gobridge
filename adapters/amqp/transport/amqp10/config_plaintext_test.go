@@ -1,4 +1,4 @@
-// Validates c7-plain-plaintext: SASL PLAIN (username/password) is
+// Validates that SASL PLAIN (username/password) is
 // REJECTED at config validation over a non-TLS scheme unless the operator
 // explicitly opts in via allow_insecure_plain. SASL PLAIN sends the
 // credentials in cleartext, so on a plaintext amqp:// address they travel

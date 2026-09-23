@@ -16,18 +16,18 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BUG-3: SQS processingCancel Race Window
+// SQS processingCancel Race Window
 //
-// newDelivery() starts autoExtendLoop goroutine immediately (line 69-71),
-// but processingCancel is set AFTER newDelivery returns (receiver.go:140).
-// If auto-extend fails fast, processingCancel is nil.
+// newDelivery() starts the autoExtendLoop goroutine immediately, so
+// processingCancel must be set during construction: assigned only after
+// newDelivery returns, an auto-extend that fails fast would see it nil.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestBug3_Delivery_ProcessingCancelSetAfterConstruction verifies that
+// TestDelivery_ProcessingCancelSetAfterConstruction verifies that
 // processingCancel is set during newDelivery when passed as a parameter,
 // eliminating the race window where the auto-extend goroutine could
 // observe a nil processingCancel.
-func TestBug3_Delivery_ProcessingCancelSetAfterConstruction(t *testing.T) {
+func TestDelivery_ProcessingCancelSetAfterConstruction(t *testing.T) {
 	mock := &mockSQSClient{}
 
 	_, cancel := context.WithCancel(context.Background())
@@ -51,18 +51,18 @@ func TestBug3_Delivery_ProcessingCancelSetAfterConstruction(t *testing.T) {
 	if del.processingCancel == nil {
 		t.Error("expected processingCancel to be set after newDelivery when passed as parameter")
 	} else {
-		t.Log("BUG-3 FIX VERIFIED: processingCancel is set during construction")
+		t.Log("processingCancel is set during construction")
 	}
 }
 
-// TestBug3_Delivery_AutoExtendExhaustsCancelsProcessing verifies that
+// TestDelivery_AutoExtendExhaustsCancelsProcessing verifies that
 // when auto-extend exhausts its max failures, the processingCancel
 // function (now passed at construction time) is called, properly
 // cancelling the processing context.
 // The 10s/10s/5s failure cadence is driven by a clocktest.Fake, so this
 // completes in microseconds and runs on every `make test` — it is a
 // regression guard, not an integration test.
-func TestBug3_Delivery_AutoExtendExhaustsCancelsProcessing(t *testing.T) {
+func TestDelivery_AutoExtendExhaustsCancelsProcessing(t *testing.T) {
 	// Atomic because the mock callback is invoked from the auto-extend
 	// goroutine while wait.Until predicates read it from the test goroutine.
 	var extendCalls atomic.Int32
@@ -83,7 +83,7 @@ func TestBug3_Delivery_AutoExtendExhaustsCancelsProcessing(t *testing.T) {
 	// visibilityTimeout=30 → tick at vis/3 = 10s, then a 5s retry after
 	// the second failure; three consecutive failures land before the 30s
 	// window lapses so the consecutive-failure ceiling (not the deadline)
-	// drives the give-up (Finding 5).
+	// drives the give-up.
 	// autoExtend=true → goroutine starts immediately
 	// processingCancel is set at construction — the fix.
 	fake := clocktest.New()
@@ -145,10 +145,10 @@ func TestBug3_Delivery_AutoExtendExhaustsCancelsProcessing(t *testing.T) {
 	wait.Until(t, time.Second, "processing context cancelled", func() bool {
 		return processingCtx.Err() != nil
 	})
-	t.Log("BUG-3 FIX VERIFIED: processingCancel was called on extend exhaustion")
+	t.Log("processingCancel was called on extend exhaustion")
 
 	final := extendCalls.Load()
-	t.Logf("BUG-3 FIX: auto-extend called ChangeMessageVisibility %d times", final)
+	t.Logf("auto-extend called ChangeMessageVisibility %d times", final)
 
 	if final < 3 {
 		t.Errorf("expected at least 3 extend calls, got %d", final)

@@ -177,7 +177,7 @@ func publishQueuedQoS(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BUG-3 Integration: Reconcile updates activeSubs on success
+// Integration: Reconcile updates activeSubs on success
 //
 // Verifies that after a successful Reconcile with a changed plan,
 // messages arrive on newly added topics and do NOT arrive on removed
@@ -280,7 +280,7 @@ func TestIntegration_ReconcileSuccess_UpdatesActiveSubs(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BUG-4 Integration: Cancel context stops reconcile
+// Integration: Cancel context stops reconcile
 //
 // Verifies that cancelling the Start context prevents the session from
 // hanging on reconcile operations.
@@ -338,7 +338,7 @@ func TestIntegration_CancelContext_ReconcileDoesNotHang(t *testing.T) {
 		}
 		// Either error or nil is acceptable; the point is it did not hang.
 	case <-time.After(5 * time.Second):
-		t.Fatal("Reconcile hung after context cancellation -- BUG-4 not fixed")
+		t.Fatal("Reconcile hung after context cancellation")
 	}
 }
 
@@ -372,7 +372,7 @@ func TestIntegration_SessionStartStoresContext(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BUG-3 Integration: Concurrent reconcile does not corrupt activeSubs
+// Integration: Concurrent reconcile does not corrupt activeSubs
 // (race condition test)
 // ═══════════════════════════════════════════════════════════════════════════
 

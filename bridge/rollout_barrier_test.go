@@ -14,9 +14,9 @@ import (
 )
 
 // TestSupervisorCoordinatedRollout_LiveSafeDeltaIsProposedToTheBarrier proves the
-// Phase-4 guard lift: with the rollout barrier wired, a live-safe delta in a
-// coordinated cluster is PROPOSED cluster-wide and deferred locally, instead of
-// the Phase-3 fail-closed error.
+// coordinated-rollout guard lift: with the rollout barrier wired, a live-safe
+// delta in a coordinated cluster is PROPOSED cluster-wide and deferred locally,
+// instead of being refused with the ADR 0012 fail-closed error.
 //
 // The two halves that make this safe are asserted together: the delta reaches
 // the barrier (a Proposed rollout carrying this config's version and digest),

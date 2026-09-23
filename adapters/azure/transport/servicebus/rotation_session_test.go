@@ -52,7 +52,7 @@ func driveFakeClockFor[T any](t *testing.T, fake *clocktest.Fake, done <-chan T,
 	return got
 }
 
-// --- Finding: credential rotation nil-panics the receiver poll loop --------
+// --- Credential rotation nil-panics the receiver poll loop -----------------
 
 // Swapping the receiver stack while pollAndConvert runs concurrently
 // must be race-free and panic-free: the poll loop snapshots the client
@@ -151,7 +151,7 @@ func TestReceiver_ApplyCredentials_NotStarted_StashesOnly(t *testing.T) {
 	require.Nil(t, recv.currentClient())
 }
 
-// --- Finding: sender client swap races with in-flight sends ----------------
+// --- Sender client swap races with in-flight sends -------------------------
 
 // Concurrent Send calls during a client swap must be race-free (-race)
 // and every send must land on one of the two clients.
@@ -200,7 +200,7 @@ func TestSender_SendDuringSwap_NoRace(t *testing.T) {
 	require.Positive(t, n2, "sends must continue on the swapped-in client")
 }
 
-// --- Finding: SendBatch shares one timeout across all chunks ---------------
+// --- SendBatch shares one timeout across all chunks ------------------------
 
 // cfg.Timeout is documented per call: each chunk must get its OWN
 // deadline context, not share one across the whole batch.
@@ -242,7 +242,7 @@ func TestSender_SendBatch_PerChunkContext(t *testing.T) {
 	}
 }
 
-// --- Finding: one-shot session accept crash-loops rolling deploys ----------
+// --- One-shot session accept crash-loops rolling deploys -------------------
 
 // com.microsoft:session-cannot-be-locked is EXPECTED while the old pod
 // still holds the session lock; accept must retry with backoff and
@@ -315,7 +315,7 @@ func TestAcceptSessionWithRetry_ExhaustsAttempts(t *testing.T) {
 	require.Equal(t, int32(sessionAcceptMaxAttempts), attempts.Load())
 }
 
-// --- Finding: session gaps ---------------------------------------------
+// --- Session gaps ------------------------------------------------------
 
 // A non-session receiver on a session-enabled entity can never receive;
 // the poll loop must fail fast with ErrNotSupported instead of
@@ -406,7 +406,7 @@ func TestPollLoop_SessionMode_SingleRenewer(t *testing.T) {
 	require.ErrorIs(t, <-done, context.Canceled)
 }
 
-// --- Finding: batch-tail locks lapse under backpressure ---------------------
+// --- Batch-tail locks lapse under backpressure ------------------------------
 
 // Lock auto-renewal must start for EVERY message of the batch right
 // after receive — before the (blocking) emit loop — so the tail of a
@@ -465,7 +465,7 @@ func TestPollLoop_BatchWideAutoExtendStart(t *testing.T) {
 	require.ErrorIs(t, <-done, context.Canceled)
 }
 
-// --- Finding: unbounded lock renewal -----------------------------------
+// --- Unbounded lock renewal --------------------------------------------
 
 // Renewal must stop at MaxLockRenewalDuration: processing is cancelled,
 // the cap metric fires, and no further renewals happen.
@@ -518,7 +518,7 @@ func TestAutoExtend_MaxLockRenewalCap(t *testing.T) {
 	require.Len(t, rec.FindEntries(MetricASBLockRenewalCapExceeded), 1)
 }
 
-// --- Finding: poll receive failures unobservable -----------------------
+// --- Poll receive failures unobservable --------------------------------
 
 // Failed polls must increment MetricASBReceiveFailures.
 func TestPollLoop_ReceiveFailureMetric(t *testing.T) {
@@ -553,7 +553,7 @@ func TestPollLoop_ReceiveFailureMetric(t *testing.T) {
 	require.ErrorIs(t, <-done, context.Canceled)
 }
 
-// --- Finding: validation gaps (receive_mode / sub_queue / clamp) -----------
+// --- Validation gaps (receive_mode / sub_queue / clamp) --------------------
 
 func TestReceiverConfig_Validate_ReceiveModeAndSubQueue(t *testing.T) {
 	t.Parallel()
@@ -648,7 +648,7 @@ func TestReceiverConfig_ReceiveAndDeleteCaseInsensitive(t *testing.T) {
 	}
 }
 
-// --- Finding: ReceiveAndDelete shutdown loss window --------------------
+// --- ReceiveAndDelete shutdown loss window -----------------------------
 
 // ReceiveAndDelete pre-settles at the broker; MaxMessages must be
 // clamped to 1 so at most one message is in the loss window.
@@ -675,7 +675,7 @@ func TestNewReceiver_ReceiveAndDeleteClampsMaxMessages(t *testing.T) {
 	require.Equal(t, 50, recv2.cfg.MaxMessages)
 }
 
-// --- Finding: max_lock_renewal_duration default -------------------------
+// --- max_lock_renewal_duration default ----------------------------------
 
 func TestReceiverConfig_ApplyDefaults_MaxLockRenewal(t *testing.T) {
 	t.Parallel()

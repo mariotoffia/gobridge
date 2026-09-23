@@ -48,10 +48,9 @@ func TestDeriveRenewTimings_SatisfyInvariant(t *testing.T) {
 }
 
 // TestNewManager_DerivesFromTTLOnly verifies the full construction-time
-// derivation path (findings 1, 4, 6): a Config carrying only LeaseTTL
-// derives a safe renew interval, jitter, acquire-poll cadence, and per-call
-// timeout, and the standby acquire-poll is no slower than the owner's renew
-// cadence (finding 6).
+// derivation path: a Config carrying only LeaseTTL derives a safe renew
+// interval, jitter, acquire-poll cadence, and per-call timeout, and the
+// standby acquire-poll is no slower than the owner's renew cadence.
 func TestNewManager_DerivesFromTTLOnly(t *testing.T) {
 	cfg := Config{SessionID: "s-derive", Exclusive: true, LeaseTTL: 45 * time.Second}
 
@@ -67,15 +66,15 @@ func TestNewManager_DerivesFromTTLOnly(t *testing.T) {
 	if worst >= m.leaseTTL {
 		t.Fatalf("derived worst-case span %s must be < leaseTTL %s", worst, m.leaseTTL)
 	}
-	// Finding 6: standbys must poll for acquisition at least as fast as the
+	// Standbys must poll for acquisition at least as fast as the
 	// owner renews, otherwise the poll cadence adds to failover time.
 	if m.acquirePoll > m.renewInterval {
-		t.Fatalf("acquirePoll %s must be <= renewInterval %s (finding 6)", m.acquirePoll, m.renewInterval)
+		t.Fatalf("acquirePoll %s must be <= renewInterval %s", m.acquirePoll, m.renewInterval)
 	}
 	if m.acquirePoll <= 0 {
 		t.Fatalf("acquirePoll not derived: %s", m.acquirePoll)
 	}
-	// Finding 3: a per-call timeout must be set and bounded.
+	// A per-call timeout must be set and bounded.
 	if m.renewCallTimeout <= 0 || m.renewCallTimeout > 5*time.Second {
 		t.Fatalf("renewCallTimeout out of bounds: %s", m.renewCallTimeout)
 	}
@@ -106,7 +105,7 @@ func TestNewManager_HonorsPinnedIntervalWithZeroJitter(t *testing.T) {
 	}
 }
 
-// TestConfigValidate pins finding 1's rejection requirement: an explicit renew
+// TestConfigValidate pins the rejection requirement: an explicit renew
 // combination whose worst-case jittered span reaches the TTL is rejected, while
 // safe explicit and derive (zero) configs pass.
 func TestConfigValidate(t *testing.T) {

@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════
 // Production-readiness remediation tests: pipelined SendBatch wedge +
-// abandoned-publish budget (Chunk-11).
+// abandoned-publish budget.
 //
 // the SDK's PublishWithDeferredConfirmWithContext IGNORES ctx and
 // blocks while the broker holds connection.blocked flow control. The pipelined

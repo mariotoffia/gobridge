@@ -320,8 +320,8 @@ func TestReceiver_Close_ReturnsNilWhenCloseCompletesFirst(t *testing.T) {
 	}
 }
 
-// TestReceiver_Run_SessionClosedWhileActive_ReturnsError covers the
-// MINOR/SUSPECT finding: when the session is closed while the route ctx is
+// TestReceiver_Run_SessionClosedWhileActive_ReturnsError covers the case
+// where the session is closed while the route ctx is
 // still live, waitForReconnect returns false (its event stream is closed).
 // Run previously returned ctx.Err() == nil there — a silent clean stop that
 // left the route dead while the runtime believed it healthy. Run must now

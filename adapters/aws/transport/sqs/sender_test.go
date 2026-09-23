@@ -464,7 +464,7 @@ func TestSender_SendBatch_APIError_ContinuesRemaining(t *testing.T) {
 	}
 }
 
-// Verifies each batch gets its own timeout (BUG-9 regression test).
+// Verifies each batch gets its own timeout.
 func TestSender_SendBatch_PerBatchTimeout(t *testing.T) {
 	var deadlines []time.Time
 	mock := &mockSQSClient{

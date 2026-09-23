@@ -10,7 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// TestMetricConstants_TransportAgnostic enforces Finding 12's invariant: the
+// TestMetricConstants_TransportAgnostic enforces the invariant that the
 // shared kernel (domain/shared/metrics.go) must contain ONLY generic,
 // transport-agnostic metric names. A contributor must not be able to add a
 // provider-flavored metric (e.g. MetricSQSPolls = "SQSPolls") to the shared

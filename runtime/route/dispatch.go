@@ -438,10 +438,10 @@ func (r *RouteRunner) ackDelivery(ctx context.Context, del ports.Delivery) error
 		// here keeps the ledger holding only keys for count-less messages still in
 		// their retry window.
 		//
-		// CORE-RES-2: the abandoned-processor breaker is NO LONGER reset here. It now
-		// counts OUTSTANDING abandoned goroutines (decremented when each finally
-		// returns via the chain's done hook), so a terminal settle must not zero it —
-		// a genuine leak that persists across settles must stay counted.
+		// The abandoned-processor breaker is NOT reset here. It counts OUTSTANDING
+		// abandoned goroutines (decremented when each finally returns via the
+		// chain's done hook), so a terminal settle must not zero it — a genuine
+		// leak that persists across settles must stay counted.
 		//
 		// eviction happens ONLY after del.Ack SUCCEEDS. If the terminal Ack fails
 		// (a broker hiccup at settle) the source redelivers a message we already

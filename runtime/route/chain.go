@@ -46,7 +46,7 @@ type chainOptions struct {
 	onProcessorTimeout func()
 	// onProcessorReturned, when set, is called exactly once when a goroutine that
 	// was ABANDONED on a genuine timeout finally returns (its done channel closes)
-	// the paired decrement to onProcessorTimeout's increment (CORE-RES-2). It
+	// the paired decrement to onProcessorTimeout's increment. It
 	// lets the route breaker track OUTSTANDING abandoned goroutines rather than
 	// consecutive-since-settle abandons: a truly hung processor never fires it, so
 	// its leak stays counted until a restart clears it. Never fired for
@@ -107,7 +107,7 @@ func WithChainOnProcessorTimeout(fn func()) ChainOption {
 
 // WithChainOnProcessorReturned registers a callback invoked exactly once when a
 // goroutine ABANDONED on a genuine per-processor timeout finally returns — the
-// paired decrement to WithChainOnProcessorTimeout's increment (CORE-RES-2). It
+// paired decrement to WithChainOnProcessorTimeout's increment. It
 // lets the RouteRunner's breaker measure the count of OUTSTANDING abandoned
 // goroutines instead of consecutive-since-settle abandons, so interleaved
 // successful traffic no longer masks a real leak. A nil callback is a no-op.
@@ -322,7 +322,7 @@ func invokeProcessor(
 		if cfg.onProcessorTimeout != nil {
 			cfg.onProcessorTimeout()
 		}
-		// CORE-RES-2: pair the abandon-increment with a decrement when THIS
+		// Pair the abandon-increment with a decrement when THIS
 		// goroutine finally returns, so the breaker counts OUTSTANDING abandoned
 		// goroutines. done is closed exactly once by runProcessor's LIFO defers, so
 		// the waiter fires onProcessorReturned exactly once. A truly hung processor

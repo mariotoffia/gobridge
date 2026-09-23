@@ -10,8 +10,8 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestManager_AdoptRunning_ReconcilesABarrierDrivenSwap is the Phase-6
-// config-manager reconcile. A coordinated cluster rollout applies a config the
+// TestManager_AdoptRunning_ReconcilesABarrierDrivenSwap pins the config-manager
+// reconcile after a rollout barrier swap. A coordinated cluster rollout applies a config the
 // manager never EMITTED — the applier's frozen clone, or the durable committed
 // artifact decoded at boot/reconcile — which is a DIFFERENT pointer than the one
 // the manager stamped as desired. NotifyApplyResult correlates by that exact

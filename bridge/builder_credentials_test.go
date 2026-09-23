@@ -80,7 +80,7 @@ func TestWithPushCredentialStore(t *testing.T) {
 
 // TestWithPolledCredentialStore_WrapsPullStore verifies that the convenience
 // option registers the pull store AND that the push wrapper is produced at
-// build time (Finding 13). The wrapper is NOT constructed eagerly at
+// build time. The wrapper is NOT constructed eagerly at
 // option-application time — doing so captured whatever logger was set so far,
 // making the result depend on option ordering. The pull store and poll config
 // are recorded and effectivePushStore builds the wrapper with the fully-resolved
@@ -100,7 +100,7 @@ func TestWithPolledCredentialStore_WrapsPullStore(t *testing.T) {
 	}))
 
 	require.Same(t, pull, b.credStore, "pull store must be registered")
-	require.Nil(t, b.pushCredStore, "poll wrapper must NOT be built eagerly (Finding 13)")
+	require.Nil(t, b.pushCredStore, "poll wrapper must NOT be built eagerly")
 	require.Same(t, pull, b.pollCredStore, "pull store must be recorded for lazy wrapping")
 
 	// The wrapper is resolved at build time and must be usable.
@@ -115,7 +115,7 @@ func TestWithPolledCredentialStore_WrapsPullStore(t *testing.T) {
 }
 
 // TestWithPolledCredentialStore_OrderIndependent verifies the poll wrapper picks
-// up a logger set by a LATER option (Finding 13): before the fix, WithLogger
+// up a logger set by a LATER option: before the fix, WithLogger
 // applied after WithPolledCredentialStore was silently ignored because the
 // wrapper had already captured a nil logger.
 func TestWithPolledCredentialStore_OrderIndependent(t *testing.T) {
@@ -139,8 +139,8 @@ func TestWithPolledCredentialStore_OrderIndependent(t *testing.T) {
 	require.NotNil(t, b.effectivePushStore(), "wrapper resolves regardless of option order")
 }
 
-// TestPullCacheInvalidation_OnlyForExplicitPushStore validates adversarial
-// Finding 1: the post-rotation InvalidateCache (contract) must be wired ONLY
+// TestPullCacheInvalidation_OnlyForExplicitPushStore validates that the
+// post-rotation InvalidateCache (contract) must be wired ONLY
 // for an explicitly-registered push store, which rotates out of band from the
 // pull cache. The lazy poll wrapper (WithPolledCredentialStore) wraps the same
 // resolver and refreshes its cache on the detecting poll, so invalidating there
@@ -154,7 +154,7 @@ func TestPullCacheInvalidation_OnlyForExplicitPushStore(t *testing.T) {
 
 	polled := NewBuilder(cfg, WithPolledCredentialStore(pull, ports.PollBasedWrapperConfig{PollInterval: time.Second}))
 	require.False(t, polled.pullCacheNeedsRotationInvalidation(),
-		"coherent lazy-wrapper path must NOT invalidate the pull cache on rotation (Finding 1)")
+		"coherent lazy-wrapper path must NOT invalidate the pull cache on rotation")
 
 	decoupled := NewBuilder(cfg, WithPushCredentialStore(&fakePushStore{}))
 	require.True(t, decoupled.pullCacheNeedsRotationInvalidation(),
@@ -279,7 +279,7 @@ func (p *countingPushStore) Watch(ctx context.Context, _ string) (<-chan *connec
 	return proxy, nil
 }
 
-// TestCredentialRefresher_DedupesWatchPerURI validates Finding 14: two targets
+// TestCredentialRefresher_DedupesWatchPerURI validates that two targets
 // that share the same credentials URI must spawn exactly ONE poller (not one
 // per Watch call), and a single rotation must fan out to BOTH targets. Before
 // the fix the watchers map was write-only, so every Watch spawned a duplicate

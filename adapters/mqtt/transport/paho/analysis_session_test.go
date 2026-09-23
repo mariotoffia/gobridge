@@ -196,7 +196,7 @@ func TestAnaSession_ReconcileBeforeStart_StashesPlanForOnConnectionUp(t *testing
 }
 
 // TestAnaSession_ReconcileEmptyPlanWithPriorPlan_UnsubscribesManagedSubs
-// pins the intentional "remove all subscriptions" behaviour (c4-remove-subs):
+// pins the intentional "remove all subscriptions" behaviour:
 // an empty plan handed to Reconcile while managed subscriptions are still
 // active MUST unsubscribe them and clear activeSubs. The prior behaviour left
 // the subscriptions alive, so the broker kept delivering on stale

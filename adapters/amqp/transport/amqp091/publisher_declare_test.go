@@ -29,8 +29,8 @@ func newDeclareTestSession(rec *ports.RecordingExporter) *Session {
 	}
 }
 
-// A publisher-exchange declare that the broker rejects must NOT abort reconcile
-// (ADV). Before this fix the amqp091 sender never declared its exchange,
+// A publisher-exchange declare that the broker rejects must NOT abort reconcile.
+// Originally the amqp091 sender never declared its exchange,
 // so publishing to an externally-managed or least-privilege exchange worked; an
 // unconditional auto-declare that returned the error would take that route down
 // on PRECONDITION_FAILED / ACCESS_REFUSED. Instead the failure is metered and

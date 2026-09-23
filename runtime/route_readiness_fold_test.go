@@ -17,7 +17,7 @@ import (
 )
 
 // ════════════════════════════════════════════════════════════════════════════
-// Chunk-1 — DeepHealth route-readiness aggregation and the
+// DeepHealth route-readiness aggregation and the
 // concurrent, deadline-bounded session-health probe.
 //
 // Deterministic: timeouts are driven by the injected fake clock; no

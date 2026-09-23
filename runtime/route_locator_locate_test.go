@@ -3,18 +3,9 @@ package runtime_test
 // ═══════════════════════════════════════════════
 // Route Locator Locate() Tests
 //
-// Tests for the Locate method (QA).
-//
-// Summary:
-// ┌──────┬────────────────────────────────────────────┬──────────┐
-// │ ID   │ Description                                │ Status   │
-// ├──────┼────────────────────────────────────────────┼──────────┤
-// │ T001 │ Non-exclusive route returns local=true     │ PASS     │
-// │ T002 │ Exclusive route, local owner → local=true  │ PASS     │
-// │ T003 │ Exclusive route, remote owner → PeerInfo   │ PASS     │
-// │ T004 │ LeaseStore error propagates                │ PASS     │
-// │ T005 │ Nil leaseStore returns local=true          │ PASS     │
-// └──────┴────────────────────────────────────────────┴──────────┘
+// Tests for the Locate method: a non-exclusive route is always local, an
+// exclusive route resolves to the local owner or a remote PeerInfo, a
+// LeaseStore error propagates, and a nil leaseStore reports local.
 // ═══════════════════════════════════════════════
 
 import (

@@ -1,7 +1,7 @@
 package transport_test
 
-// Deterministic tests for audit chunk, finding 2: SSE zero-delivery
-// acknowledgement semantics. SSE egress is now SAFE-BY-DEFAULT:
+// Deterministic tests for SSE zero-delivery acknowledgement semantics.
+// SSE egress is now SAFE-BY-DEFAULT:
 // a broadcast that reached nobody returns a TRANSIENT (Unavailable-class)
 // error so the route runner retries/DLQs instead of acking a lost event.
 // Every zero-delivery outcome is also loud (ERROR level + counter).

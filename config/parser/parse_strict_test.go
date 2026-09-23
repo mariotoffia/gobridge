@@ -10,10 +10,10 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestParse_StrictDecode_RejectsUnknownKeys covers the Chunk-1 finding that the
-// stage-1 outer decode was lax: a typo like `shutdown_timout:` or a stray
-// `config_wacth:` section was silently discarded instead of reported. Strict
-// decoding (yaml KnownFields / json DisallowUnknownFields) must now surface it.
+// TestParse_StrictDecode_RejectsUnknownKeys pins that the stage-1 outer decode
+// is strict: a typo like `shutdown_timout:` or a stray `config_wacth:` section
+// must be reported, not silently discarded. Strict decoding (yaml KnownFields /
+// json DisallowUnknownFields) must surface it.
 func TestParse_StrictDecode_RejectsUnknownKeys(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -88,9 +88,9 @@ func TestParse_StrictDecode_AcceptsCanonicalRoundTrip(t *testing.T) {
 	assert.Equal(t, "bridge-1", got.Bridge.ID)
 }
 
-// TestParse_StrictDecode_RejectsTrailingJSON covers the Chunk-1 finding that the
-// JSON stage-1 decode lost json.Unmarshal's trailing-data rejection when it
-// moved to json.NewDecoder (which stops at the first top-level value). A second
+// TestParse_StrictDecode_RejectsTrailingJSON pins that the JSON stage-1 decode
+// keeps json.Unmarshal's trailing-data rejection even though it uses
+// json.NewDecoder (which stops at the first top-level value). A second
 // document or trailing garbage after the config object must be rejected;
 // insignificant trailing whitespace must still parse.
 func TestParse_StrictDecode_RejectsTrailingJSON(t *testing.T) {

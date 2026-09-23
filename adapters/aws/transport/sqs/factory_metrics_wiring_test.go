@@ -17,10 +17,10 @@ import (
 )
 
 // recordingExporter is a minimal ports.MetricsExporter used to prove the
-// factory threads a real exporter into the Receiver/Sender (Finding 8).
+// factory threads a real exporter into the Receiver/Sender.
 type recordingExporter struct{ ports.NoopExporter }
 
-// Finding 8 (HIGH) — factory dead-metrics wiring.
+// Factory dead-metrics wiring.
 //
 // NewFactory previously accepted no exporter and never set cfg.Metrics,
 // so every Receiver/Sender it built fell back to a Noop exporter and all
@@ -76,7 +76,7 @@ func TestFactory_NoMetricsStillNoop(t *testing.T) {
 	assert.True(t, isNoop, "no exporter → Noop, never nil")
 }
 
-// Finding 3 (HIGH) — credentials_uri material silently discarded.
+// credentials_uri material silently discarded.
 //
 // ApplyCredentials used to clear CredentialsURIRef and drop the resolved
 // material, so the INITIAL client always fell back to the ambient SDK
@@ -102,7 +102,7 @@ func TestApplyCredentials_ThreadsInitialCredentials(t *testing.T) {
 	assert.Equal(t, "AKIAEXAMPLE", sc.InitialCredentials.Username())
 }
 
-// Finding 6 (MEDIUM) — temporary/STS credentials brick the client.
+// Temporary/STS credentials brick the client.
 //
 // A connectivity.CredentialSet carries only username/password, no session
 // token. Applying an ASIA-prefixed (STS) access key via a static provider
@@ -149,7 +149,7 @@ func TestSender_ApplyCredentials_TemporaryPreservesClient(t *testing.T) {
 	assert.True(t, before == snd.loadClient(), "a rejected rotation must not swap the client")
 }
 
-// Finding 5 (MEDIUM) — delay_seconds>0 + FIFO passes build then every
+// delay_seconds>0 + FIFO passes build then every
 // send fails. AWS rejects a non-zero DelaySeconds on a FIFO send entry.
 // Reject the combination in validate() (mirrors the FIFO group check).
 func TestSenderConfig_DelayPlusFIFO_Rejected(t *testing.T) {
@@ -177,7 +177,7 @@ func TestNewSender_DelayPlusFIFO_Rejected(t *testing.T) {
 	require.Error(t, err)
 }
 
-// Finding 12 (MINOR) — wait_time_seconds:0 / max_messages:0 silently
+// wait_time_seconds:0 / max_messages:0 silently
 // coerced. The registry decoder decodes into a DefaultConfig() so an
 // OMITTED key keeps the documented default while an EXPLICIT 0 is rejected
 // with a clear error instead of being silently coerced back.
@@ -238,7 +238,7 @@ func (m rawMap) Decode(target any) error {
 	return nil
 }
 
-// Finding 3 (MEDIUM) — auto-extend interval leaves margin after one
+// The auto-extend interval leaves margin after one
 // failure. The tick fires at vis/3 (not vis/2) so a retry at the next
 // tick (2·vis/3) still lands strictly before the window lapses at vis.
 func TestAutoExtendInterval_IsOneThirdOfVisibility(t *testing.T) {
@@ -249,7 +249,7 @@ func TestAutoExtendInterval_IsOneThirdOfVisibility(t *testing.T) {
 	assert.Equal(t, time.Second, autoExtendInterval(1))
 }
 
-// Finding 9 (MINOR) — deprecated AttributeNames on receive. The runtime
+// Deprecated AttributeNames on receive. The runtime
 // retry cap depends on ApproximateReceiveCount, which rides the system
 // attributes. Migrate to MessageSystemAttributeNames = [All].
 func TestReceive_UsesMessageSystemAttributeNames(t *testing.T) {

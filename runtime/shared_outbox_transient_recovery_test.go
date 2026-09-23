@@ -217,8 +217,8 @@ func envID(i int) string {
 }
 
 // TestSharedOutbox_OrderingGroup_TransientFailure_NoOvertake is the
-// ordering-overtake regression (adversarial review finding 1). Records A and
-// B share one ordering key, so they form a single ordering group processed
+// ordering-overtake regression. Records A and B share one ordering key, so
+// they form a single ordering group processed
 // in persisted order A→B. The egress sender fails A transiently on its first
 // attempt and succeeds on retry; B always succeeds. The drainer MUST stop
 // the ordering group the moment A is released for retry, so B is never sent

@@ -3,25 +3,10 @@ package runtime
 // ═══════════════════════════════════════════════
 // RenderAddress Security & Correctness Tests
 //
-// Tests validating fixes for:
-// SEC-012: Infinite loop via self-referencing headers
-// SEC-013: Template injection leaking header values
-// StaticResolver mutable slice return
-//
-// Summary:
-// ┌──────┬────────────────────────────────────────────┬──────────┐
-// │ ID   │ Description                                │ Status   │
-// ├──────┼────────────────────────────────────────────┼──────────┤
-// │ T001 │ Self-referencing header no infinite loop   │ PASS     │
-// │ T002 │ Growing value no OOM                       │ PASS     │
-// │ T003 │ Template injection prevented               │ PASS     │
-// │ T004 │ Multiple placeholders in single template   │ PASS     │
-// │ T005 │ Adjacent braces handled correctly          │ PASS     │
-// │ T006 │ Empty placeholder returns error            │ PASS     │
-// │ T007 │ Missing key returns error                  │ PASS     │
-// │ T008 │ Literal braces in value not re-expanded    │ PASS     │
-// │ T009 │ StaticResolver returns independent copy    │ PASS     │
-// └──────┴────────────────────────────────────────────┴──────────┘
+// Tests that RenderAddress cannot loop forever on self-referencing headers,
+// cannot leak other header values through template injection, and handles
+// placeholder edge cases; and that StaticResolver returns an independent copy
+// rather than its mutable slice.
 // ═══════════════════════════════════════════════
 
 import (
@@ -34,7 +19,7 @@ import (
 )
 
 // TestRenderAddress_SelfReference validates that a header value containing
-// the same placeholder key does not cause an infinite loop (SEC-012).
+// the same placeholder key does not cause an infinite loop.
 //
 // Scenario:
 // ───────────────────────────────────────────────
@@ -57,7 +42,7 @@ func TestRenderAddress_SelfReference(t *testing.T) {
 }
 
 // TestRenderAddress_GrowingValue validates no OOM from a value that
-// grows the string on each substitution pass (SEC-012 variant).
+// grows the string on each substitution pass.
 func TestRenderAddress_GrowingValue(t *testing.T) {
 	vars := map[string]any{"x": "grow{x}"}
 	result, err := route.RenderAddress("{x}", vars)
@@ -70,7 +55,7 @@ func TestRenderAddress_GrowingValue(t *testing.T) {
 }
 
 // TestRenderAddress_TemplateInjection validates that substituted values
-// cannot leak other header values (SEC-013).
+// cannot leak other header values.
 //
 // Scenario:
 // ───────────────────────────────────────────────

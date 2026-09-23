@@ -252,14 +252,14 @@ func TestOutboxDrainer_ScaledTimeout_SlowSenderBatchCompletes(t *testing.T) {
 }
 
 // TestOutboxDrainer_SmallCeiling_SlowSenderWithinSendBudget_NotCancelled
-// verifies the finding-10 protection when the configured batch ceiling is far
+// verifies the send-budget floor holds when the configured batch ceiling is far
 // SMALLER than one record's send budget: the per-batch work budget still scales
 // with the send depth and can never be undercut below one record's SendTimeout +
 // Complete margin. A 500ms ceiling against a 30s default SendTimeout therefore
 // no longer prematurely cancels an otherwise-healthy batch — all records
 // complete instead of stranding-and-poisoning every cycle.
 //
-// Before finding 10 the old formula min(max(1.5×SendTimeout, floor), ceiling)
+// The old formula min(max(1.5×SendTimeout, floor), ceiling)
 // collapsed the batch budget to a 500ms ceiling and cancelled mid-batch; this
 // test proves that regression stays closed when the configured ceiling is far
 // SMALLER than one record's send budget.
@@ -316,8 +316,8 @@ func TestOutboxDrainer_SmallCeiling_SlowSenderWithinSendBudget_NotCancelled(t *t
 		DrainMaxBatchSize:   recordCount,
 		DrainMaxConcurrency: 1,
 		// A ceiling well below the serial-batch duration (5 * 250ms = 1250ms >
-		// 500ms) AND below one record's SendTimeout budget. Under finding 10 the
-		// ceiling may only RAISE the batch budget, never undercut a single send,
+		// 500ms) AND below one record's SendTimeout budget. The ceiling may
+		// only RAISE the batch budget, never undercut a single send,
 		// so the batch is expected to complete all records rather than strand
 		// them.
 		MaxDrainTimeout:   500 * time.Millisecond,
@@ -343,9 +343,9 @@ func TestOutboxDrainer_SmallCeiling_SlowSenderWithinSendBudget_NotCancelled(t *t
 		close(done)
 	}()
 
-	// Capture the success count from the first drain batch. Under finding
-	// 10 the legacy DrainTimeout can no longer undercut the send budget, so
-	// the whole batch should complete.
+	// Capture the success count from the first drain batch. The legacy
+	// DrainTimeout can no longer undercut the send budget, so the whole batch
+	// should complete.
 	var firstBatch int
 	select {
 	case firstBatch = <-batchCh:
@@ -358,7 +358,7 @@ func TestOutboxDrainer_SmallCeiling_SlowSenderWithinSendBudget_NotCancelled(t *t
 	<-done
 
 	if firstBatch != recordCount {
-		t.Fatalf("finding 10: legacy DrainTimeout must not undercut the send "+
+		t.Fatalf("legacy DrainTimeout must not undercut the send "+
 			"budget; expected all %d records to complete in the first batch, "+
 			"got %d", recordCount, firstBatch)
 	}
