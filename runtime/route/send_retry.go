@@ -68,15 +68,20 @@ func (r *RouteRunner) sendHeld(ctx context.Context, sender ports.Sender, msg por
 // SendRetryBudgetExhausted on the way out, so both places that give up on the
 // budget report it identically.
 //
-// The comparison is against what is LEFT of the budget rather than elapsed plus
-// need: a destination's RetryAfter hint is authoritative and used verbatim, so
-// it can be near the largest duration there is, and adding even a second of
-// elapsed time to that wraps the sum negative — which reads as "fits", arming a
-// centuries-long timer on a one-minute route. The subtraction cannot overflow:
-// the budget is positive here (retryableInProcess required it) and elapsed time
-// is never negative.
+// The budget is spent when elapsed + need would EXCEED it, never when the two
+// merely reach it: a budget set to exactly one backoff interval covers exactly
+// one wait, and both callers have to agree on that or a route configured at its
+// own first interval retries once by one measure and never by the other.
+//
+// The comparison is made against what is LEFT of the budget rather than by
+// adding elapsed to need: a destination's RetryAfter hint is authoritative and
+// used verbatim, so it can be near the largest duration there is, and adding
+// even a second of elapsed time to that wraps the sum negative — which reads as
+// "fits", arming a centuries-long timer on a one-minute route. The subtraction
+// cannot overflow: the budget is positive here (retryableInProcess required it)
+// and elapsed time is never negative.
 func (r *RouteRunner) sendRetryBudgetSpent(start time.Time, need time.Duration) bool {
-	if remaining := r.policy.SendRetryBudget - r.clk.Since(start); remaining > 0 && need <= remaining {
+	if remaining := r.policy.SendRetryBudget - r.clk.Since(start); need <= remaining {
 		return false
 	}
 	r.metrics.Counter(shared.MetricSendRetryBudgetExhausted, 1,

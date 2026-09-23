@@ -16,6 +16,67 @@ import (
 // across that park — the state a held delivery is in can change while it sleeps,
 // and the delay it is sleeping for is a number the destination chose.
 
+// TestSendRetry_BudgetBoundaryIsInclusive pins the exact edge of the budget
+// stop condition. A retry is refused when the time already spent PLUS the wait
+// would EXCEED the budget, so a budget that exactly covers the first wait still
+// gets its retry, and one nanosecond short of it does not.
+//
+// Both ends of the loop have to measure it the same way — the check before the
+// wait and the re-measure after it — or a route whose budget is set to exactly
+// its first backoff interval silently never retries at all, while the operator
+// reads the two numbers as fitting.
+//
+// Mutation check: declare the budget spent at elapsed >= budget after the wait
+// and this fails — the exactly-covered budget performs no retry.
+func TestSendRetry_BudgetBoundaryIsInclusive(t *testing.T) {
+	// The fixture's backoff is 1 s doubling to 30 s, un-jittered, so the first
+	// wait is exactly one second.
+	const firstWait = time.Second
+	cases := []struct {
+		name          string
+		budget        time.Duration
+		wantSends     int32
+		wantRetries   int
+		wantExhausted int
+	}{
+		{name: "a budget that exactly covers the first wait retries",
+			budget: firstWait, wantSends: 2, wantRetries: 1},
+		{name: "one nanosecond short of it does not",
+			budget: firstWait - 1, wantSends: 1, wantExhausted: 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sender := &flakySender{err: shared.ErrUnavailable, failures: 1}
+			f := newSendRetryFixture(tc.budget, sender)
+			del := &stubDelivery{env: countLessEnv("send-retry-boundary")}
+
+			done := f.handle(context.Background(), del)
+			if tc.wantSends > 1 {
+				f.awaitRetryWait(t, 1)
+				f.clk.Advance(firstWait)
+			}
+			if err := wait.RequireReceive(t, done, 5*time.Second); err != nil {
+				t.Fatalf("HandleDelivery: %v", err)
+			}
+
+			if got := sender.sends.Load(); got != tc.wantSends {
+				t.Fatalf("sends = %d, want %d", got, tc.wantSends)
+			}
+			// The retry cures the failure, so the exactly-covered budget acks;
+			// the budget one nanosecond short never sends again, and its
+			// count-less message goes back to the source.
+			if tc.wantSends > 1 && (!del.acked || del.retried) {
+				t.Errorf("settlement acked=%v retried=%v, want the ack the successful retry earns", del.acked, del.retried)
+			}
+			if tc.wantSends == 1 && (!del.retried || del.acked) {
+				t.Errorf("settlement acked=%v retried=%v, want a source redelivery", del.acked, del.retried)
+			}
+			f.assertRetryMetrics(t, tc.wantRetries, tc.wantExhausted)
+		})
+	}
+}
+
 // TestSendRetry_WedgeDuringTheWaitStopsTheNextSend pins the wedge as a stop
 // condition across the wait, not only immediately after a send. Another
 // delivery in flight can latch the route's terminal wedge while this one backs

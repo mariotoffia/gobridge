@@ -153,7 +153,9 @@ func sendRetryBudgetFor(policy routing.RoutePolicy) time.Duration {
 // still running when that wait runs out fails the recovery attempt and
 // terminalizes the session. The retry loop starts its last send before the
 // budget ends and that send may then run its full SendTimeout, so budget +
-// SendTimeout is the hold the wait has to cover.
+// SendTimeout is the hold the wait has to cover. A source that reports a
+// negative wait is rejected rather than skipped: zero is the capability's no-op,
+// so a negative value is a broken transport, not a source without a recycle.
 func validateSendRetryBudget(ve *ValidationError, prefix string, entry *routeEntry, policy routing.RoutePolicy) {
 	if policy.SendRetryBudget < 0 && policy.SendRetryBudget != routing.SendRetryBudgetDisabled {
 		ve.add(prefix + fmt.Sprintf(
@@ -164,13 +166,33 @@ func validateSendRetryBudget(ve *ValidationError, prefix string, entry *routeEnt
 
 	retry := sendRetryBudgetFor(policy)
 	wait := entry.config.SourceSettlementRecoveryWait
-	if retry <= 0 || wait <= 0 {
+	if retry <= 0 {
+		// No in-process retry means no held delivery for a recycle to wait on,
+		// so this route has no hold for the source's wait to cover.
+		return
+	}
+	if wait < 0 {
+		// ZERO is the capability's documented no-op — "this session never
+		// recycles to recover stranded settlements" — and skipping the check on
+		// it is right. A NEGATIVE wait is not a second way of saying that: it is
+		// a SettlementRecoveryTimingConfig that is broken, and reading it as "no
+		// check" would silently disarm this gate for the one route that most
+		// needs it. Fail closed and name the reported value, so an operator sees
+		// a misbehaving transport instead of losing a safety check.
+		ve.add(prefix + fmt.Sprintf(
+			"source settlement-recovery wait (%s) is negative; a transport reports zero when its "+
+				"session never recycles to recover stranded settlements, so this is a broken "+
+				"SettlementRecoveryTimingConfig and the held-retry check cannot run",
+			wait))
+		return
+	}
+	if wait == 0 {
 		return
 	}
 	// Compare by SUBTRACTION, never by adding the two holds together: both come
 	// from parsed configuration and either may be near the largest duration
 	// there is, and a wrapped sum is under every wait. Both terms here are
-	// positive — the guard above returns on a non-positive wait, and
+	// positive — the guards above return on every non-positive wait, and
 	// WithDefaults fills a non-positive send timeout — so wait - SendTimeout
 	// cannot underflow, and a send timeout that alone outlives the wait leaves a
 	// negative remainder that every enabled budget exceeds.

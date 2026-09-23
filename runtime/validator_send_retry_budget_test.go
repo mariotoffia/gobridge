@@ -119,15 +119,26 @@ func TestValidator_SendRetryBudgetAgainstSettlementRecoveryWait(t *testing.T) {
 		sendTimeout  time.Duration
 		wait         time.Duration
 		wantRejected bool
+		wantMessage  string
 	}{
 		{name: "default budget fits the recycle wait", deliveryMode: routing.DeliveryDirectHold,
 			sendTimeout: 30 * time.Second, wait: 240 * time.Second},
 		{name: "budget and send timeout exactly fill the recycle wait", deliveryMode: routing.DeliveryDirectHold,
 			budget: 210 * time.Second, sendTimeout: 30 * time.Second, wait: 240 * time.Second},
 		{name: "budget and send timeout outlive the recycle wait", deliveryMode: routing.DeliveryDirectHold,
-			budget: 220 * time.Second, sendTimeout: 30 * time.Second, wait: 240 * time.Second, wantRejected: true},
+			budget: 220 * time.Second, sendTimeout: 30 * time.Second, wait: 240 * time.Second, wantRejected: true,
+			wantMessage: "send_retry_budget 3m40s + send_timeout 30s"},
+		// Zero is the capability's no-op: the session never recycles for
+		// settlement recovery, so there is nothing to fit inside.
 		{name: "a source that never recycles is not checked", deliveryMode: routing.DeliveryDirectHold,
 			budget: 220 * time.Second, sendTimeout: 30 * time.Second},
+		// A NEGATIVE wait is not a second way of saying zero — it is a broken
+		// SettlementRecoveryTimingConfig. Reading it as "no check" would turn
+		// the gate off for the route that most needs it, so it fails closed and
+		// names the value the transport reported.
+		{name: "a negative reported wait is a broken transport, not a no-op", deliveryMode: routing.DeliveryDirectHold,
+			budget: 220 * time.Second, sendTimeout: 30 * time.Second, wait: -5 * time.Second, wantRejected: true,
+			wantMessage: "source settlement-recovery wait (-5s) is negative"},
 		// A disabled budget holds the delivery for one send, exactly as a route
 		// did before in-process retry existed, so the recycle wait is the
 		// operator's own pre-existing SendTimeout choice to make.
@@ -155,8 +166,8 @@ func TestValidator_SendRetryBudgetAgainstSettlementRecoveryWait(t *testing.T) {
 			if rejected != tc.wantRejected {
 				t.Fatalf("rejected against the recycle wait = %v, want %v: %v", rejected, tc.wantRejected, messages)
 			}
-			if tc.wantRejected && !containsMessage(messages, "send_retry_budget 3m40s + send_timeout 30s") {
-				t.Fatalf("the rejection must name both durations it added: %v", messages)
+			if tc.wantMessage != "" && !containsMessage(messages, tc.wantMessage) {
+				t.Fatalf("the rejection must read %q so an operator can act on it: %v", tc.wantMessage, messages)
 			}
 		})
 	}

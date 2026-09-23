@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -66,22 +67,49 @@ func (h *egressHook) snapshot() ([]ports.DeliveryAttempt, int) {
 	return append([]ports.DeliveryAttempt(nil), h.attempts...), h.settled
 }
 
+// deliverySend is one OnDelivery invocation: the envelope handed to the
+// callback and that physical send's error.
+type deliverySend struct {
+	env *messaging.Envelope
+	err error
+}
+
+// deliveryCallbackLog records every OnDelivery invocation in order.
+type deliveryCallbackLog struct {
+	mu    sync.Mutex
+	sends []deliverySend
+}
+
+func (l *deliveryCallbackLog) record(env *messaging.Envelope, err error) {
+	l.mu.Lock()
+	l.sends = append(l.sends, deliverySend{env: env, err: err})
+	l.mu.Unlock()
+}
+
+func (l *deliveryCallbackLog) snapshot() []deliverySend {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]deliverySend(nil), l.sends...)
+}
+
 type sendRetryFixture struct {
-	r     *RouteRunner
-	clk   *clocktest.Fake
-	hook  *egressHook
-	rec   *ports.RecordingExporter
-	store *recordingDLQStore
+	r          *RouteRunner
+	clk        *clocktest.Fake
+	hook       *egressHook
+	rec        *ports.RecordingExporter
+	store      *recordingDLQStore
+	onDelivery *deliveryCallbackLog
 }
 
 // newSendRetryFixture builds a direct_hold route with the given budget. A zero
 // budget is unset, so the route runs with the default budget.
 func newSendRetryFixture(budget time.Duration, sender ports.Sender) *sendRetryFixture {
 	f := &sendRetryFixture{
-		clk:   clocktest.New(),
-		hook:  &egressHook{},
-		rec:   &ports.RecordingExporter{},
-		store: &recordingDLQStore{},
+		clk:        clocktest.New(),
+		hook:       &egressHook{},
+		rec:        &ports.RecordingExporter{},
+		store:      &recordingDLQStore{},
+		onDelivery: &deliveryCallbackLog{},
 	}
 	f.r = NewRouteRunnerFromConfig(RouteRunnerConfig{
 		RouteID: sendRetryRoute,
@@ -95,11 +123,12 @@ func newSendRetryFixture(budget time.Duration, sender ports.Sender) *sendRetryFi
 				JitterFactor:    routing.JitterDisabled,
 			},
 		},
-		Sender:  sender,
-		DLQ:     dlq.New(f.store),
-		Metrics: f.rec,
-		Hook:    f.hook,
-		Clock:   f.clk,
+		Sender:     sender,
+		DLQ:        dlq.New(f.store),
+		Metrics:    f.rec,
+		Hook:       f.hook,
+		Clock:      f.clk,
+		OnDelivery: f.onDelivery.record,
 	})
 	return f
 }
