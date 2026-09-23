@@ -73,8 +73,9 @@ func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 			run.cancel()
 		}
 	}
-	// Refreshers let go of the transports before those are closed, so a
-	// rotation is never applied to a session mid-close (as in Stop).
+	// Refreshers let go of the transports before those are closed, so no
+	// rotation that starts from here on reaches them. Forget does not wait for
+	// a rotation already being applied; the transport refuses it once closed.
 	rt.forgetCredentialTargets(ctx, d.set.credentialTargets())
 	finished := waitRuns(ctx, d.runs)
 	if !finished {

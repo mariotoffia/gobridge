@@ -34,8 +34,9 @@ type InPlaceReload struct {
 //     store takes it when it is opened, and an in-place reload keeps the
 //     running store open;
 //  4. a retired or added unit attaches to a transport whose factory advertises
-//     ports.CapHTTPEndpoint. The HTTP transport mounts on a stdlib ServeMux,
-//     which can neither unmount a path nor mount it twice.
+//     ports.CapHTTPEndpoint, or that transports has no factory for. The HTTP
+//     transport mounts on a stdlib ServeMux, which can neither unmount a path
+//     nor mount it twice, and a transport with no factory may be one that does.
 //
 // An empty delta — no unit retired and none added — is eligible and applies
 // nothing. Nothing here validates next: the caller preflights it in full before
@@ -62,12 +63,9 @@ func PlanInPlaceReload(running, next *ports.BridgeConfig, transports map[string]
 		retire:  unitsMissingFrom(runningUnits, nextUnits),
 		add:     unitsMissingFrom(nextUnits, runningUnits),
 	}
-	for _, units := range [][]reloadUnit{plan.retire, plan.add} {
-		for i := range units {
-			units[i].httpEndpoint = attachesHTTPEndpoint(units[i].sub, transports)
-			if units[i].httpEndpoint {
-				return nil, false
-			}
+	for _, u := range slices.Concat(plan.retire, plan.add) {
+		if mayAttachHTTPEndpoint(u.sub, transports) {
+			return nil, false
 		}
 	}
 	plan.serialized = RequiresSerializedSwap(unionSub(running, plan.retire), unionSub(next, plan.add), transports)
@@ -121,11 +119,13 @@ func staleClaimDurationDiffers(running, next *ports.BridgeConfig) bool {
 	return aerr != nil || berr != nil || aok != bok || a != b
 }
 
-// attachesHTTPEndpoint reports whether sub attaches anything — a receiver, a
+// mayAttachHTTPEndpoint reports whether sub attaches anything — a receiver, a
 // sender or a session something references — to a transport whose factory
-// advertises ports.CapHTTPEndpoint.
-func attachesHTTPEndpoint(sub *ports.BridgeConfig, transports map[string]ports.TransportFactory) bool {
+// advertises ports.CapHTTPEndpoint, or to one transports has no factory for:
+// its capabilities cannot be read, so it counts as one that mounts.
+func mayAttachHTTPEndpoint(sub *ports.BridgeConfig, transports map[string]ports.TransportFactory) bool {
 	return slices.ContainsFunc(attachedTransportKinds(sub), func(kind string) bool {
-		return hasTransportCapability(transports[kind], ports.CapHTTPEndpoint)
+		tf := transports[kind]
+		return tf == nil || hasTransportCapability(tf, ports.CapHTTPEndpoint)
 	})
 }

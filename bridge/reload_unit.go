@@ -38,9 +38,6 @@ type reloadUnit struct {
 	// members, in their original relative order: a config the Builder can
 	// build on its own. It shares plugin configs with the source config.
 	sub *ports.BridgeConfig
-	// httpEndpoint reports that a member attaches to a transport whose factory
-	// advertises ports.CapHTTPEndpoint. PlanInPlaceReload sets it.
-	httpEndpoint bool
 }
 
 // splitUnits partitions cfg's sessions, receivers, senders, bindings and

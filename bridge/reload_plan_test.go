@@ -96,7 +96,16 @@ func TestPlanInPlaceReload_HTTPEndpointUnitIsNotEligible(t *testing.T) {
 	withFakeOwner := reloadTestConfig("a", "h")
 	plan := mustPlanInPlace(t, reloadTestConfig("a"), withFakeOwner)
 	require.Len(t, plan.add, 1)
-	require.False(t, plan.add[0].httpEndpoint)
+}
+
+// A transport the caller registered no factory for has capabilities nobody can
+// read, so it may mount an HTTP endpoint: the reload is not planned in place.
+func TestPlanInPlaceReload_UnknownTransportIsNotEligible(t *testing.T) {
+	withUnknownOwner := reloadTestConfig("a")
+	addReloadTestOwner(withUnknownOwner, "u", "unregistered")
+
+	requireNotInPlace(t, reloadTestConfig("a"), withUnknownOwner)
+	requireNotInPlace(t, withUnknownOwner, reloadTestConfig("a"))
 }
 
 func TestPlanInPlaceReload_UnchangedHTTPUnitStaysEligible(t *testing.T) {
