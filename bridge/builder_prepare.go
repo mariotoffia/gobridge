@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"math"
 	"sync"
-	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
-	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // preparedBuild holds pre-validated state from the prepare phase.
@@ -562,82 +560,25 @@ func (b *Builder) resolveClusterEndpoints(ctx context.Context) (map[string]strin
 	return nil, nil
 }
 
-// outboxRuntimeOptions derives the runtime tuning passed to outbox
-// store factories. StaleClaimDuration is sourced in this priority:
-//
-//  1. an explicit `stale_claim_duration` entry in the outbox YAML
-//     options (read via StoreConfig.Raw()) — supports either a
-//     duration string ("2m") or a time.Duration value;
-//  2. a value derived from the maximum session step-down grace
-//     across all routes, plus a buffer.
-//
-// The derivation keeps the outbox reclaim timeout aligned with the
-// lease lifecycle without forcing every plugin config schema to
-// carry the runtime knob.
+// outboxRuntimeOptions derives the runtime tuning passed to outbox store
+// factories. StaleClaimDuration comes from staleClaimDuration, the same
+// derivation the in-place reload eligibility check reads.
 func (b *Builder) outboxRuntimeOptions(sc *ports.StoreConfig) (ports.OutboxRuntimeOptions, error) {
 	if sc == nil {
 		return ports.OutboxRuntimeOptions{Metrics: b.metrics}, nil
 	}
-
-	if explicit, ok, err := explicitStaleClaimDuration(sc); err != nil {
+	staleClaim, err := staleClaimDuration(b.cfg, sc)
+	if err != nil {
 		return ports.OutboxRuntimeOptions{}, err
-	} else if ok {
-		return ports.OutboxRuntimeOptions{StaleClaimDuration: explicit, Metrics: b.metrics}, nil
 	}
-
-	maxStepDownGrace := session.DefaultConfig("", true).StepDownGrace
-	for _, r := range b.cfg.Routes {
-		if r.Session == nil {
-			continue
-		}
-		sessCfg, err := toSessionConfigE(r.Session, IsClusteredDeployment(b.cfg))
-		if err != nil {
-			return ports.OutboxRuntimeOptions{}, fmt.Errorf("bridge: route %q: %w", r.ID, err)
-		}
-		if sessCfg != nil && sessCfg.StepDownGrace > maxStepDownGrace {
-			maxStepDownGrace = sessCfg.StepDownGrace
-		}
-	}
-
-	staleClaimBuffer := max(2*maxStepDownGrace, 15*time.Second)
 	return ports.OutboxRuntimeOptions{
-		StaleClaimDuration: maxStepDownGrace + staleClaimBuffer,
+		StaleClaimDuration: staleClaim,
 		// Thread the builder's exporter (the same one handed to routes) so
 		// the DynamoDB outbox store emits shared.MetricOutboxClaimConflicts in
 		// production; nil when no exporter is configured (factory treats nil as
 		// no-op).
 		Metrics: b.metrics,
 	}, nil
-}
-
-// explicitStaleClaimDuration looks for a user-provided override in
-// the outbox blueprint's raw stage-1 options. It returns ok=false
-// when the override is absent.
-func explicitStaleClaimDuration(sc *ports.StoreConfig) (time.Duration, bool, error) {
-	raw := sc.Raw()
-	if raw == nil {
-		return 0, false, nil
-	}
-	var probe struct {
-		StaleClaimDuration any `mapstructure:"stale_claim_duration" yaml:"stale_claim_duration" json:"stale_claim_duration"`
-	}
-	if err := raw.Decode(&probe); err != nil {
-		return 0, false, nil
-	}
-	switch v := probe.StaleClaimDuration.(type) {
-	case nil:
-		return 0, false, nil
-	case time.Duration:
-		return v, true, nil
-	case string:
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			return 0, false, fmt.Errorf("bridge: outbox stale_claim_duration: invalid duration %q: %w", v, err)
-		}
-		return d, true, nil
-	default:
-		return 0, false, fmt.Errorf("bridge: outbox stale_claim_duration: must be a duration string or time.Duration, got %T", v)
-	}
 }
 
 // validateDedicatedIngressSessions enforces transport-declared session
