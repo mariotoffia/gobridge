@@ -113,13 +113,16 @@ type RouteRunnerConfig struct {
 	PanicRetryTimeout    time.Duration
 	ReceiverCloseTimeout time.Duration
 	Clock                clock.Clock
-	// OnDelivery is invoked (non-blocking) once per PHYSICAL send of a held
-	// (direct_hold) delivery — in-process send retries included — on failure as
-	// well as on success. Receives the envelope and that send's error. Optional.
-	OnDelivery func(env *messaging.Envelope, err error)
-	// OnAck is invoked (non-blocking) after the source delivery is acked or
-	// retried. Receives the envelope and the ack error (nil on successful ack).
+	// OnDelivery is invoked synchronously, on the delivery goroutine, once per
+	// PHYSICAL send of a held (direct_hold) delivery — in-process send retries
+	// included — on failure as well as on success. Receives the envelope and that
+	// send's error. It must return promptly: a slow callback delays settlement
+	// and, after a failed send, the next in-process retry. A panic is recovered.
 	// Optional.
+	OnDelivery func(env *messaging.Envelope, err error)
+	// OnAck is invoked synchronously, on the delivery goroutine, after the source
+	// delivery is acked or retried. Receives the envelope and the ack error (nil
+	// on successful ack). It must return promptly; a panic is recovered. Optional.
 	OnAck func(env *messaging.Envelope, err error)
 }
 
