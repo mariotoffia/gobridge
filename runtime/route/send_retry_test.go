@@ -104,6 +104,16 @@ type sendRetryFixture struct {
 // newSendRetryFixture builds a direct_hold route with the given budget. A zero
 // budget is unset, so the route runs with the default budget.
 func newSendRetryFixture(budget time.Duration, sender ports.Sender) *sendRetryFixture {
+	return newSendRetryFixtureWithBackoff(budget, routing.BackoffPolicy{
+		InitialInterval: time.Second,
+		MaxInterval:     30 * time.Second,
+		Multiplier:      2,
+		JitterFactor:    routing.JitterDisabled,
+	}, sender)
+}
+
+// newSendRetryFixtureWithBackoff is newSendRetryFixture with its own backoff.
+func newSendRetryFixtureWithBackoff(budget time.Duration, backoff routing.BackoffPolicy, sender ports.Sender) *sendRetryFixture {
 	f := &sendRetryFixture{
 		clk:        clocktest.New(),
 		hook:       &egressHook{},
@@ -116,12 +126,7 @@ func newSendRetryFixture(budget time.Duration, sender ports.Sender) *sendRetryFi
 		Policy: routing.RoutePolicy{
 			DeliveryMode:    routing.DeliveryDirectHold,
 			SendRetryBudget: budget,
-			Backoff: routing.BackoffPolicy{
-				InitialInterval: time.Second,
-				MaxInterval:     30 * time.Second,
-				Multiplier:      2,
-				JitterFactor:    routing.JitterDisabled,
-			},
+			Backoff:         backoff,
 		},
 		Sender:     sender,
 		DLQ:        dlq.New(f.store),

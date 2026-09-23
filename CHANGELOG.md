@@ -27,23 +27,40 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   restores the previous behaviour** (`routing.SendRetryBudgetDisabled`
   programmatically); any other negative value is rejected at config load.
   `replay_budget` is unchanged and remains `shared_outbox`-drainer-only.
+- No wait between two in-process sends is shorter than **100 ms**. A shorter
+  backoff interval or destination `RetryAfter` hint is raised to it, which
+  caps one delivery at budget ÷ 100 ms sends — about 600 at the 60 s default,
+  where a legal `initial_interval: 1ms` with `multiplier: 1` would otherwise
+  mean some 60,000. The default backoff (first wait 1 s) never reaches it.
 - New counters `SendRetries` and `SendRetryBudgetExhausted`, both tagged
   `route_id`, emitted only while the budget is enabled. `RouteErrors` on a
   `direct_hold` route is now raised when the retry gives up rather than on the
   first failed send, so alert on `SendRetries` for the earlier signal.
 - **A configuration that loaded before may now be rejected**, purely because of
-  the new default. Two checks count the budget:
+  the new default. Two checks count the budget, and both size the last send by
+  the **send wedge ceiling**, `send_timeout + min(send_timeout, 5s)` — how long
+  a send that ignores its timeout holds the message — printed as the send
+  timeout followed by `(+5s wedge grace)`:
   - a `direct_hold` route on a **fixed** SQS visibility window (no auto-extend)
-    must satisfy `processors × processor_timeout + send_retry_budget +
-    send_timeout + DLQ budget ≤ visibility timeout` — a 90 s window with a 30 s
-    send timeout and a DLQ store now fails;
-  - `send_retry_budget + send_timeout` must fit inside an MQTT persistent or
-    exclusive source session's settlement-recovery wait (240 s with the shipped
-    defaults).
+    must satisfy `processors × processor_timeout + send_retry_budget + send
+    wedge ceiling + DLQ budget ≤ visibility timeout` — a 90 s window with a 30 s
+    send timeout and a DLQ store now fails (105.5 s);
+  - `send_retry_budget` + send wedge ceiling must fit inside an MQTT persistent
+    or exclusive source session's settlement-recovery wait (240 s with the
+    shipped defaults).
 
   No configuration shipped with GoBridge hits either, and both rejection
   messages name the knobs. The one-line fix on an affected route is
   `send_retry_budget: 0s`.
+- **Upgrade note: the fixed-window check now counts the wedge grace on every
+  `direct_hold` route.** Its per-send term used to be `send_timeout`; for a
+  `direct_hold` route it is now the send wedge ceiling, up to 5 s longer,
+  whether or not the route retries in process. A `direct_hold` route whose
+  worst case sat within 5 s of its fixed window is rejected even with
+  `send_retry_budget: 0s` — it could already hold its source past the window
+  when a sender ignored its timeout. Lower `send_timeout`, widen the window,
+  or turn on auto-extend. Other delivery modes settle their source before
+  they send, so their check is unchanged.
 - Delivery hooks: `OnAttempt` fires once per physical send, so a hook now sees
   every retry and its error. `DeliveryAttempt.Attempt` still carries the
   delivery-level attempt number that `max_replay_attempts` caps, so repeated

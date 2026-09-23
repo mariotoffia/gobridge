@@ -60,6 +60,16 @@ from the destination (SQS throttling, for example) is authoritative and is used
 as written, and otherwise the route's `backoff` applies — 1 s doubling to 30 s
 with jitter, by default. The first wait is therefore about one second.
 
+**No wait is shorter than 100 ms.** A shorter backoff interval or `RetryAfter`
+hint is raised to that floor before the budget is asked whether it can cover
+the wait, so a budget too short for even the raised first wait is spent at once.
+The floor caps one delivery at budget ÷ 100 ms sends — about 600 at the
+60-second default — where a legal `initial_interval: 1ms` with `multiplier: 1`
+would otherwise mean some 60,000 sends, and a jittered nanosecond interval a
+CPU-bound loop against the destination. It never binds under the default
+backoff, and it is a floor on the pace only: the stop conditions below are
+unchanged.
+
 **It stops** on the first of:
 
 - the send succeeding;
@@ -150,31 +160,41 @@ unrelated routes sharing it.
 
 **Two validation rules keep the hold inside what the source will tolerate.**
 Both run when the configuration is loaded, so a bad combination never reaches
-production traffic.
+production traffic. Both size the last physical send by the **send wedge
+ceiling**, `send_timeout + min(send_timeout, 5s)`: a sender that ignores its
+context keeps the delivery that long before the route gives up on it and
+wedges. The validator and the dispatch path read the same function,
+`route.SendWedgeCeiling`, so the two cannot drift apart. The ceiling applies
+to `direct_hold` routes only, because only they send while the source is
+still held. Every other delivery mode settles its source before it sends — a
+`shared_outbox` route acks once the outbox record is persisted — so its
+fixed-window sum keeps plain `send_timeout`, unchanged.
 
 1. On a source with a **fixed** visibility window — an SQS queue without
    auto-extend — the budget is counted into the worst case the message may
    spend before it is settled:
-   `processors × processor_timeout + send_retry_budget + send_timeout + DLQ
-   budget ≤ visibility timeout`. Over that, the source redelivers mid-pipeline
-   and the message is processed twice. The rejection reads `worst-case pipeline
-   time (…) exceeds source VisibilityTimeout (…); source may redeliver
-   mid-pipeline causing duplicate processing (lower send_retry_budget, set it
-   to 0s to turn in-process send retry off, or auto-extend the source window)`.
-   A source that auto-extends its window is skipped, as it always was.
+   `processors × processor_timeout + send_retry_budget + send wedge ceiling +
+   DLQ budget ≤ visibility timeout`. Over that, the source redelivers
+   mid-pipeline and the message is processed twice. The rejection reads
+   `worst-case pipeline time (… + SendRetryBudget … + SendTimeout … (+… wedge
+   grace) + DLQ budget …) exceeds source VisibilityTimeout (…); source may
+   redeliver mid-pipeline causing duplicate processing (lower
+   send_retry_budget, set it to 0s to turn in-process send retry off, or
+   auto-extend the source window)`. A source that auto-extends its window is
+   skipped, as it always was.
 2. On a source session that recycles its broker connection to recover stranded
    settlements — an MQTT persistent or exclusive session — that recycle first
    waits a bounded time for the deliveries the runtime already accepted to
    settle. A held retry still running when the wait runs out fails the recovery
    attempt and terminalizes the session. The last send starts just inside the
-   budget and may then run its full `send_timeout`, so `send_retry_budget +
-   send_timeout` is the hold the wait has to cover. The rejection reads
-   `send_retry_budget … + send_timeout … exceeds the source's
-   settlement-recovery wait …; a held retry would outlive the wait and fail the
-   source's recycle (lower send_retry_budget or send_timeout, or raise the
-   source session's settlement-recovery wait through its transport's own
-   timeouts)`. For an MQTT session those timeouts are its connect and
-   reconcile timeouts.
+   budget and may then hold the delivery until its send wedge ceiling, so
+   `send_retry_budget` + send wedge ceiling is the hold the wait has to cover.
+   The rejection reads `send_retry_budget … + send_timeout … (+… wedge grace)
+   exceeds the source's settlement-recovery wait …; a held retry would outlive
+   the wait and fail the source's recycle (lower send_retry_budget or
+   send_timeout, or raise the source session's settlement-recovery wait through
+   its transport's own timeouts)`. For an MQTT session those timeouts are its
+   connect and reconcile timeouts.
 
 The session reports that wait through a new optional typed-config capability,
 `ports.SettlementRecoveryTimingConfig`, which the MQTT transport implements
@@ -185,13 +205,12 @@ therefore cannot disagree about how long a held delivery may take to settle.
 deadline for the *whole* recovery attempt, not a budget reserved for settling:
 the same 240 seconds also covers waiting for the session serialization gate, the
 teardown drain, and the disconnect, reconnect and reconcile that follow it. And
-one held delivery can occupy more of that wait than `send_retry_budget +
-send_timeout`: the message runs its processor chain first, where each processor
-may take up to `processor_timeout`; a parked send holds the delivery for
-`send_timeout` plus up to five seconds more before the wedge ceiling trips; and
-a message that ends up dead-lettered spends a further 10.5 seconds on that
-write. With the shipped defaults and no processors, the worst case one delivery
-can hold grew from about 40 seconds to about 100 seconds of the same 240. The
+one held delivery can occupy more of that wait than `send_retry_budget` + send
+wedge ceiling: the message runs its processor chain first, where each processor
+may take up to `processor_timeout`, and a message that ends up dead-lettered
+spends a further 10.5 seconds on that write. With the shipped defaults and no
+processors, the worst case one delivery can hold grew from about 45 seconds to
+about 105 seconds of the same 240. The
 rule catches the obvious overrun, and a long processor chain plus a dead-letter
 write can still crowd the recycle on a route that passes it. The cure is a
 smaller `send_retry_budget`, or larger session `connect_timeout` /
@@ -226,15 +245,16 @@ smaller `send_retry_budget`, or larger session `connect_timeout` /
   [MQTT behaviour](../transports/mqtt-behavior.md)); the budget decides how
   many copies that requirement has to absorb.
 - **The route's `backoff` now decides how hard a failing destination is hit.**
-  In-process retries are bounded by wall clock only; before this change
-  `max_replay_attempts` bounded the number of sends. The default ladder (1 s
-  doubling to 30 s) makes a 60-second budget about six sends, but an aggressive
-  ladder — `initial_interval: 1ms` with `multiplier: 1`, both legal — turns the
-  same budget into tens of thousands of sends at a destination that is already
-  unwell. Keep the default backoff, or lower the budget. No send-count cap is
-  added: the budget plus the route's own backoff is the bound.
+  In-process retries are bounded by wall clock, not by a send count; before
+  this change `max_replay_attempts` bounded the number of sends. The default
+  ladder (1 s doubling to 30 s) makes a 60-second budget about six sends. An
+  aggressive ladder — `initial_interval: 1ms` with `multiplier: 1`, both legal —
+  is raised to the 100 ms floor, which still allows about 600 sends inside the
+  same budget at a destination that is already unwell. Keep the default
+  backoff, or lower the budget. No send-count cap is added: the budget, the
+  route's own backoff and the 100 ms floor are the bound.
 - Deliveries are held longer. Worst case one message occupies its route slot
-  and a runtime-wide in-flight slot for the budget plus one `send_timeout`,
+  and a runtime-wide in-flight slot for the budget plus one send wedge ceiling,
   and a destination that is down slows the whole route rather than draining it
   to the dead-letter store.
 - `Stop` waits up to its drain budget (25 seconds by default, `WithStopQuiesce`)
@@ -247,9 +267,17 @@ smaller `send_retry_budget`, or larger session `connect_timeout` /
 - A configuration that was valid before can be rejected after an upgrade,
   purely because of the 60-second default: a `direct_hold` route on a fixed SQS
   visibility window whose worst case now overruns it, or an MQTT route whose
-  budget plus send timeout overruns the session's recovery wait. Both rejections
-  name the knobs, and `send_retry_budget: 0s` restores the previous behaviour on
-  that route.
+  budget plus send wedge ceiling overruns the session's recovery wait. Both
+  rejections name the knobs, and `send_retry_budget: 0s` restores the previous
+  behaviour on that route.
+- The fixed-window sum counts the send wedge ceiling for **every `direct_hold`
+  route**, not only one that retries in process, where it used to count
+  `send_timeout`. A `direct_hold` route whose worst case sat within five seconds
+  of its fixed window — the most the grace adds — is rejected after an upgrade
+  even with `send_retry_budget: 0s`. That route could already hold its source
+  past the window whenever a sender ignored its context. Lower `send_timeout`
+  or a processor timeout, widen the window, or turn auto-extend on. Routes in
+  any other delivery mode are validated exactly as before.
 - `replay_budget` stays what it was: the drainer's wall-clock poison gate. The
   two budgets never apply to the same route.
 

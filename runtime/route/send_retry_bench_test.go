@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -16,8 +17,8 @@ import (
 // costs: first the healthy path, where the loop must add nothing but one clock
 // read, then a delivery that fails twice and succeeds on its third send.
 
-// benchSendRetryRunner builds a direct_hold route on the real clock with the
-// default send retry budget.
+// benchSendRetryRunner builds a direct_hold route with the default send retry
+// budget, on the real clock except that the floored retry wait fires at once.
 func benchSendRetryRunner(sender ports.Sender) *RouteRunner {
 	return NewRouteRunnerFromConfig(RouteRunnerConfig{
 		RouteID: "bench-send-retry",
@@ -25,7 +26,21 @@ func benchSendRetryRunner(sender ports.Sender) *RouteRunner {
 		Sender:  sender,
 		DLQ:     dlq.New(&recordingDLQStore{}),
 		Metrics: &ports.NoopExporter{},
+		Clock:   floorSkippingClock{clock.System},
 	})
+}
+
+// floorSkippingClock is the real clock, except that a timer armed for exactly
+// minSendRetryWait fires at once. Every retry wait in these benchmarks is raised
+// to that floor, so each op would otherwise sleep 100 ms per retry and measure
+// the sleep; the wedge-ceiling timer every send arms is a real timer as always.
+type floorSkippingClock struct{ clock.Clock }
+
+func (c floorSkippingClock) NewTimer(d time.Duration) clock.Timer {
+	if d == minSendRetryWait {
+		d = 0
+	}
+	return c.Clock.NewTimer(d)
 }
 
 // BenchmarkSendDirectHold_FirstSendSucceeds measures a held send that succeeds
@@ -42,8 +57,8 @@ func BenchmarkSendDirectHold_FirstSendSucceeds(b *testing.B) {
 
 // BenchmarkSendDirectHold_RetriesThenSucceeds measures a held send that fails
 // twice and succeeds on the third send. The failures carry a 1 ns RetryAfter
-// hint, so the waits are real timers that cost next to nothing and the
-// measurement is the retry machinery itself.
+// hint, which the loop raises to minSendRetryWait; the bench clock fires that
+// wait at once, so the measurement is the retry machinery itself.
 func BenchmarkSendDirectHold_RetriesThenSucceeds(b *testing.B) {
 	hinted := shared.ErrUnavailable.WithRetryAfter(time.Nanosecond)
 	var sends atomic.Int64

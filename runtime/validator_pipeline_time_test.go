@@ -19,7 +19,7 @@ import (
 // per-processor budgets are own-time-only and disarm during next(), so N
 // compliant processors legally consume N×ProcessorTimeout before the send. On a
 // FIXED-visibility source (auto-extend off) the validator must reject a route
-// whose worst-case pipeline time (N×ProcessorTimeout + SendTimeout + DLQ budget)
+// whose worst-case pipeline time (N×ProcessorTimeout + send wedge ceiling + DLQ budget)
 // exceeds the window, even though every individual timeout passes its own check
 // (SendTimeout here is well under VisibilityTimeout/2).
 func TestValidator_PipelineTimeExceedsVisibility_Rejected(t *testing.T) {
@@ -109,7 +109,7 @@ func TestValidator_PipelineTime_DLQBudgetExcludedForDropPolicy(t *testing.T) {
 	cfg.Policy.SendTimeout = 2 * time.Second // < vis/2 (12.5s): the send-window check stays green
 	cfg.Policy.SendRetryBudget = routing.SendRetryBudgetDisabled
 	cfg.Processors = []ports.Processor{&timeoutProcessor{}, &timeoutProcessor{}}
-	// 2×8s + 2s = 18s < 25s window (passes); + 10.5s DLQ budget = 28.5s > 25s
+	// 2×8s + 2s send + 2s wedge grace = 20s < 25s window (passes); + 10.5s DLQ budget = 30.5s > 25s
 	// (would fail if the budget were counted). Drop policy → budget excluded.
 
 	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
@@ -139,7 +139,7 @@ func TestValidator_PipelineTime_DLQBudgetCountedWhenDLQConfigured(t *testing.T) 
 	cfg.Policy.SendTimeout = 2 * time.Second
 	cfg.Policy.SendRetryBudget = routing.SendRetryBudgetDisabled
 	cfg.Processors = []ports.Processor{&timeoutProcessor{}, &timeoutProcessor{}}
-	// 2×8s + 2s = 18s < 25s window, but + 10.5s DLQ budget = 28.5s > 25s: the route
+	// 2×8s + 2s send + 2s wedge grace = 20s < 25s window, but + 10.5s DLQ budget = 30.5s > 25s: the route
 	// holds the source through the DLQ write past the window → rejected.
 
 	if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
@@ -147,7 +147,7 @@ func TestValidator_PipelineTime_DLQBudgetCountedWhenDLQConfigured(t *testing.T) 
 	}
 	err := rt.Start(context.Background())
 	if err == nil {
-		t.Fatal("expected rejection: 2×8s + 2s + 10.5s DLQ budget exceeds the 25s window")
+		t.Fatal("expected rejection: 2×8s + 2s send + 2s wedge grace + 10.5s DLQ budget exceeds the 25s window")
 	}
 	if !strings.Contains(err.Error(), "worst-case pipeline time") {
 		t.Fatalf("unexpected error: %v", err)

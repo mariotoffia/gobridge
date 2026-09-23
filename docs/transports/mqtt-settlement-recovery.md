@@ -104,15 +104,16 @@ config knob:
   that same number to the route validator through
   `ports.SettlementRecoveryTimingConfig`, which only reports it; the route
   validator is what then rejects, at config load, any `direct_hold` route whose
-  `send_retry_budget` + `send_timeout` would not fit inside it — a held retry
-  that outlives the drain would fail the recovery attempt and terminalize the
-  session. That check is **necessary, not sufficient**: those 240 seconds also
-  pay for the gate wait, the disconnect, the reconnect and the reconcile, and a
-  held delivery can occupy more of them than the two settings it compares — its
-  processor chain (up to `processor_timeout` each), up to five seconds past
-  `send_timeout` before a parked send trips the wedge ceiling, and 10.5 seconds
-  for a dead-letter write. With the shipped defaults and no processors the
-  worst-case hold grew from about 40 s to about 100 s of the same 240 s. If a
+  `send_retry_budget` + send wedge ceiling would not fit inside it — a held
+  retry that outlives the drain would fail the recovery attempt and terminalize
+  the session. The send wedge ceiling is `send_timeout` plus
+  `min(send_timeout, 5s)`, the longest a parked last send can hold the delivery
+  before the route gives up on it. That check is **necessary, not sufficient**:
+  those 240 seconds also pay for the gate wait, the disconnect, the reconnect
+  and the reconcile, and a held delivery can occupy more of them than the terms
+  it compares — its processor chain (up to `processor_timeout` each) and 10.5
+  seconds for a dead-letter write. With the shipped defaults and no processors
+  the worst-case hold grew from about 45 s to about 105 s of the same 240 s. If a
   recycle keeps failing on a route the validator accepted, lower that route's
   `send_retry_budget`, or raise the session's `connect_timeout` /
   `reconcile_timeout`, which is what the 240 s is made of;

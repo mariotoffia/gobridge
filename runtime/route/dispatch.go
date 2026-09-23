@@ -259,6 +259,11 @@ func (r *RouteRunner) dropOnPermanentFailure() bool {
 	return r.policy.OnPermanentFailure == routing.FailureDrop || !r.dlq.HasStore()
 }
 
+// sendWedgeCeiling is SendWedgeCeiling for this route's SendTimeout.
+func (r *RouteRunner) sendWedgeCeiling() time.Duration {
+	return SendWedgeCeiling(r.policy.SendTimeout)
+}
+
 // boundedSend runs sender.Send under ctx (already bounded by SendTimeout) but
 // guarantees the DISPATCHER unblocks when ctx fires even if the sender ignores
 // cancellation entirely. A cooperative sender returns via the buffered done
@@ -292,34 +297,6 @@ func (r *RouteRunner) dropOnPermanentFailure() bool {
 // window as far as the cooperative race allows (the residual
 // send-success-after-ceiling duplicate is inherent to any send timeout and is
 // already a documented at-least-once window).
-// sendWedgeCeiling returns how long a send may run before boundedSend classifies
-// it as GENUINELY hung (ctx-ignoring) and WEDGES the route. It is deliberately
-// LARGER than SendTimeout — SendTimeout + min(SendTimeout, 5s) — so a COOPERATIVE
-// sender that aborts AT SendTimeout via its ctx always returns through `done` and
-// wins the ceiling race; only a send still parked WELL PAST SendTimeout (having
-// ignored ctx the whole time) trips the wedge. Conflating the two — a bare
-// SendTimeout ceiling equal to the sendCtx deadline — flaky-wedges a healthy route
-// whenever a cooperative sender legitimately hits SendTimeout under load, turning
-// ordinary transient slowness into a false pod restart. The per-send TRANSIENT
-// timeout (retry) still happens at SendTimeout via sendCtx; only the wedge
-// decision uses this larger bound. Mirrors the outbox completeBudget /
-// bridge completeBudgetCeiling shape.
-func (r *RouteRunner) sendWedgeCeiling() time.Duration {
-	st := r.policy.SendTimeout
-	if st <= 0 {
-		return 0 // no bound (SendTimeout disabled) — await completion, as before
-	}
-	margin := st
-	if margin > sendWedgeCeilingMargin {
-		margin = sendWedgeCeilingMargin
-	}
-	return st + margin
-}
-
-// sendWedgeCeilingMargin caps the extra grace past SendTimeout before a parked
-// send wedges the route (see sendWedgeCeiling).
-const sendWedgeCeilingMargin = 5 * time.Second
-
 func (r *RouteRunner) boundedSend(ctx context.Context, sender ports.Sender, msg ports.OutboundMessage, binding string) error {
 	// cap parked (leaked) send goroutines to at most ONE per binding. A
 	// prior send to this binding already timed out and left its goroutine parked

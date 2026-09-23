@@ -123,8 +123,9 @@ func TestSendRetry_WedgeDuringTheWaitStopsTheNextSend(t *testing.T) {
 // guarantees a minimum delay and nothing more: scheduler pressure or a GC pause
 // can resume a parked delivery long after the budget the delay was measured
 // against. Starting another send there would put the last physical send past
-// the budget and let it run a further send_timeout — the very hold both route
-// validator rules are sized on, so the source window they protect would be
+// the budget and let it hold the delivery a further send wedge ceiling — the
+// very hold both route validator rules are sized on, so the source window they
+// protect would be
 // overrun by a route the validator accepted.
 //
 // Mutation check: re-check only the retry predicate when the wait ends and this

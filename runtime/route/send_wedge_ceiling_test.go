@@ -2,6 +2,7 @@ package route
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -11,6 +12,29 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
+
+// TestSendWedgeCeiling_IsTheSendTimeoutPlusACappedGrace pins the shared bound
+// dispatch enforces and the route validator sizes a held delivery with: the send
+// timeout plus a grace of the timeout itself, capped at 5s. A timeout within the
+// grace of the largest duration saturates instead of wrapping negative — a
+// negative ceiling reads as "no bound" to dispatch and as a hold shorter than
+// any window to the validator.
+//
+// Mutation check: drop the cap on the grace and the 30s case fails at 60s.
+func TestSendWedgeCeiling_IsTheSendTimeoutPlusACappedGrace(t *testing.T) {
+	cases := []struct{ timeout, want time.Duration }{
+		{timeout: 0, want: 0},
+		{timeout: -time.Second, want: 0},
+		{timeout: 2 * time.Second, want: 4 * time.Second},
+		{timeout: 30 * time.Second, want: 35 * time.Second},
+		{timeout: time.Duration(math.MaxInt64) - time.Second, want: time.Duration(math.MaxInt64)},
+	}
+	for _, tc := range cases {
+		if got := SendWedgeCeiling(tc.timeout); got != tc.want {
+			t.Errorf("SendWedgeCeiling(%v) = %v, want %v", tc.timeout, got, tc.want)
+		}
+	}
+}
 
 // TestSendWedgeCeiling_ZeroSendTimeoutIsUnbounded proves the documented
 // contract of a zero send timeout: NO wedge bound, await completion.

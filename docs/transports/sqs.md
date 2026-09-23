@@ -451,13 +451,22 @@ so neither can be injected through an attribute.
 - **Worst-case pipeline time vs. visibility window.** With `auto_extend`
   disabled, the builder also rejects a route whose whole worst case overruns the
   window, not just its send: `processors × processor_timeout` +
-  `send_retry_budget` + `send_timeout` + the DLQ-write budget must fit inside
+  `send_retry_budget` + the send term + the DLQ-write budget must fit inside
   the effective `visibility_timeout`, or SQS redelivers mid-pipeline and the
-  message is processed twice. `send_retry_budget` is the in-process send retry a
-  `direct_hold` route spends with the message still invisible; it defaults to
-  60s, so a fixed-window route that validated before this default existed can
-  now be rejected. The rejection names the knobs; `send_retry_budget: 0s` on the
-  route, a longer window, or `auto_extend` each resolve it. See the
+  message is processed twice. On a `direct_hold` route the send term is the
+  send wedge ceiling, `send_timeout` plus a grace of `min(send_timeout, 5s)`: it
+  sends while the message is still invisible, and a send that ignores its
+  timeout holds the message that long before the route gives up on it, so the
+  rejection prints it as `SendTimeout 30s (+5s wedge grace)`. Any other
+  delivery mode settles the message before it sends, and its send term stays
+  plain `send_timeout`, unchanged. `send_retry_budget` is the in-process
+  send retry a `direct_hold` route spends with the message still invisible; it
+  defaults to 60s, so a fixed-window route that validated before this default
+  existed can now be rejected. The rejection names the knobs;
+  `send_retry_budget: 0s` on the route, a longer window, or `auto_extend` each
+  resolve it. The wedge grace is counted on every `direct_hold` route, so one
+  within five seconds of its window is rejected even at `0s`; a shorter
+  `send_timeout`, a longer window or `auto_extend` resolves that one. See the
   [`send_retry_budget` policy row](../routes-and-runtime-reference.md#routespolicy----delivery-policy).
 
 > **Tip:** Set the SQS native DLQ `maxReceiveCount` to at least

@@ -35,7 +35,7 @@ func (r *RouteRunner) sendHeld(ctx context.Context, sender ports.Sender, msg por
 		if !r.retryableInProcess(ctx, err) {
 			return err
 		}
-		delay := RetryDelay(r.policy, try, err)
+		delay := max(RetryDelay(r.policy, try, err), minSendRetryWait)
 		if r.sendRetryBudgetSpent(start, delay) {
 			return err
 		}
@@ -52,8 +52,8 @@ func (r *RouteRunner) sendHeld(ctx context.Context, sender ports.Sender, msg por
 		// goroutine long after the budget the delay was measured against. The
 		// bound has to hold on the wall clock, because both route-validator
 		// rules size a held delivery as "the last send starts inside the budget
-		// and runs at most one SendTimeout" — a send started after the budget
-		// overruns the very source window those rules protect.
+		// and holds the delivery at most one SendWedgeCeiling" — a send started
+		// after the budget overruns the very source window those rules protect.
 		if r.sendRetryBudgetSpent(start, 0) {
 			return err
 		}
@@ -61,6 +61,19 @@ func (r *RouteRunner) sendHeld(ctx context.Context, sender ports.Sender, msg por
 			shared.Tag{Key: shared.TagKeyRouteID, Value: r.routeID})
 	}
 }
+
+// minSendRetryWait is the shortest wait between two in-process sends of one
+// held delivery. Validation accepts a backoff that starts at 1 ms and never
+// grows, and a destination's RetryAfter hint is used verbatim, so without it a
+// 60 s budget could make tens of thousands of sends for one delivery — and a
+// jittered nanosecond interval rounds the wait to zero, which is a CPU-bound
+// loop against the destination. The floor caps a delivery at budget/100ms
+// sends (about 600 at the 60 s default), which also bounds the loop RetryDelay
+// runs to compute each backoff. It never binds under the default backoff,
+// whose first wait is 1 s. It raises the cadence only: the stop conditions are
+// unchanged, and a budget too short to cover even the floored first wait is
+// spent before that wait, like any other.
+const minSendRetryWait = 100 * time.Millisecond
 
 // sendRetryBudgetSpent reports whether the route's in-process send-retry budget
 // can still cover need — the delay a wait is about to take, or zero when only

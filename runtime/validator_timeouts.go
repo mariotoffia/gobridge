@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/routing"
+	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
 // How long one message may hold its source before it is settled, and what puts a
@@ -44,11 +45,12 @@ func validateTimeouts(ve *ValidationError, prefix string, entry *routeEntry, has
 	// checked against the fixed visibility window. Per-processor budgets are
 	// own-time-only and disarm during next() (route/chain.go), so N compliant
 	// processors can legally consume N×ProcessorTimeout before the send even
-	// starts; add the in-process send-retry budget, the send budget and the
-	// bounded DLQ-write budget the failure path may spend. When this total exceeds
-	// the window the source redelivers mid-pipeline and the message is processed
-	// concurrently — the very duplicate this validator exists to prevent — even
-	// though every individual timeout passes its own check.
+	// starts; add the in-process send-retry budget, the longest one send can hold
+	// the source (sendHoldFor) and the bounded DLQ-write budget the failure path
+	// may spend. When this total exceeds the window the source redelivers
+	// mid-pipeline and the message is processed concurrently — the very duplicate
+	// this validator exists to prevent — even though every individual timeout
+	// passes its own check.
 	//
 	// dlqWriteBudget is the DLQ-write time the failure path may spend before it
 	// settles the source (see the package const). It is counted into the worst
@@ -62,8 +64,9 @@ func validateTimeouts(ve *ValidationError, prefix string, entry *routeEntry, has
 	}
 	nProc := len(entry.config.Processors)
 	retry := sendRetryBudgetFor(policy)
+	sendHold := sendHoldFor(policy)
 	procHold, procClamped := saturatingProduct(nProc, policy.ProcessorTimeout)
-	total, sumClamped := saturatingSum(procHold, retry, policy.SendTimeout, dlqBudget)
+	total, sumClamped := saturatingSum(procHold, retry, sendHold, dlqBudget)
 	clamped := procClamped || sumClamped
 	if clamped || total > vis {
 		shown := total.String()
@@ -75,12 +78,30 @@ func validateTimeouts(ve *ValidationError, prefix string, entry *routeEntry, has
 			fix = " (lower send_retry_budget, set it to 0s to turn in-process send retry off, " +
 				"or auto-extend the source window)"
 		}
+		sendTerm := policy.SendTimeout.String()
+		if grace := sendHold - policy.SendTimeout; grace > 0 {
+			sendTerm += fmt.Sprintf(" (+%s wedge grace)", grace)
+		}
 		ve.add(prefix + fmt.Sprintf(
 			"worst-case pipeline time (%s = %d processors × ProcessorTimeout %s + SendRetryBudget %s + "+
 				"SendTimeout %s + DLQ budget %s) exceeds source VisibilityTimeout (%s); "+
 				"source may redeliver mid-pipeline causing duplicate processing%s",
-			shown, nProc, policy.ProcessorTimeout, retry, policy.SendTimeout, dlqBudget, vis, fix))
+			shown, nProc, policy.ProcessorTimeout, retry, sendTerm, dlqBudget, vis, fix))
 	}
+}
+
+// sendHoldFor is the longest one physical send can hold the SOURCE message. A
+// direct_hold route sends while the source is still unsettled, so a sender that
+// ignores its context holds it until route.SendWedgeCeiling — the bound dispatch
+// enforces, read from the same function so the two cannot drift. Every other
+// delivery mode settles its source before it sends (shared_outbox acks once the
+// outbox record is persisted), so the wedge grace is no part of its hold and
+// its term stays SendTimeout, exactly as before in-process send retry existed.
+func sendHoldFor(policy routing.RoutePolicy) time.Duration {
+	if policy.DeliveryMode != routing.DeliveryDirectHold {
+		return policy.SendTimeout
+	}
+	return route.SendWedgeCeiling(policy.SendTimeout)
 }
 
 // maxDuration is the ceiling the two helpers below clamp at.
@@ -162,8 +183,10 @@ func sendRetryBudgetFor(policy routing.RoutePolicy) time.Duration {
 // bounded time for the deliveries it already accepted to settle; a held retry
 // still running when that wait runs out fails the recovery attempt and
 // terminalizes the session. The retry loop starts its last send before the
-// budget ends and that send may then run its full SendTimeout, so budget +
-// SendTimeout is the hold the wait has to cover. A source that reports a
+// budget ends and that send may then hold the delivery until its wedge ceiling
+// (sendHoldFor — the same per-send bound the fixed-window sum above counts;
+// only a direct_hold route with an enabled budget gets this far), so budget +
+// that ceiling is the hold the wait has to cover. A source that reports a
 // negative wait is rejected rather than skipped: zero is the capability's no-op,
 // so a negative value is a broken transport, not a source without a recycle.
 func validateSendRetryBudget(ve *ValidationError, prefix string, entry *routeEntry, policy routing.RoutePolicy) {
@@ -202,16 +225,18 @@ func validateSendRetryBudget(ve *ValidationError, prefix string, entry *routeEnt
 	// Compare by SUBTRACTION, never by adding the two holds together: both come
 	// from parsed configuration and either may be near the largest duration
 	// there is, and a wrapped sum is under every wait. Both terms here are
-	// positive — the guards above return on every non-positive wait, and
-	// WithDefaults fills a non-positive send timeout — so wait - SendTimeout
-	// cannot underflow, and a send timeout that alone outlives the wait leaves a
-	// negative remainder that every enabled budget exceeds.
-	if retry > wait-policy.SendTimeout {
+	// positive — the guards above return on every non-positive wait, WithDefaults
+	// fills a non-positive send timeout, and the ceiling saturates rather than
+	// wrapping — so wait - sendHold cannot underflow, and a send that alone
+	// outlives the wait leaves a negative remainder that every enabled budget
+	// exceeds.
+	sendHold := sendHoldFor(policy)
+	if retry > wait-sendHold {
 		ve.add(prefix + fmt.Sprintf(
-			"send_retry_budget %s + send_timeout %s exceeds the source's settlement-recovery wait %s; "+
-				"a held retry would outlive the wait and fail the source's recycle "+
+			"send_retry_budget %s + send_timeout %s (+%s wedge grace) exceeds the source's "+
+				"settlement-recovery wait %s; a held retry would outlive the wait and fail the source's recycle "+
 				"(lower send_retry_budget or send_timeout, or raise the source session's "+
 				"settlement-recovery wait through its transport's own timeouts)",
-			retry, policy.SendTimeout, wait))
+			retry, policy.SendTimeout, sendHold-policy.SendTimeout, wait))
 	}
 }

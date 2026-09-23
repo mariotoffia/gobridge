@@ -60,12 +60,13 @@ func TestValidator_FixedWindowCountsTheSendRetryBudget(t *testing.T) {
 		window       time.Duration
 		wantRejected bool
 	}{
-		// 60s budget + 30s send + 10.5s DLQ budget = 100.5s.
+		// 60s budget + 30s send + 5s wedge grace + 10.5s DLQ budget = 105.5s.
 		{name: "default budget fits the window", deliveryMode: routing.DeliveryDirectHold,
 			window: 120 * time.Second},
 		{name: "default budget outlives the window", deliveryMode: routing.DeliveryDirectHold,
 			window: 90 * time.Second, wantRejected: true},
-		// 30s send + 10.5s DLQ budget = 40.5s once in-process retry is off.
+		// 30s send + 5s wedge grace + 10.5s DLQ budget = 45.5s once in-process
+		// retry is off.
 		{name: "disabled budget is not counted", deliveryMode: routing.DeliveryDirectHold,
 			budget: routing.SendRetryBudgetDisabled, window: 90 * time.Second},
 		{name: "shared_outbox never retries in process", deliveryMode: routing.DeliverySharedOutbox,
@@ -105,12 +106,123 @@ func TestValidator_FixedWindowCountsTheSendRetryBudget(t *testing.T) {
 	}
 }
 
+// TestValidator_FixedWindowCountsTheSendWedgeGrace pins the per-send term of the
+// worst-case sum as the send wedge ceiling, not SendTimeout. A sender that
+// ignores its context keeps the delivery until the ceiling, SendTimeout plus
+// min(SendTimeout, 5s), so a route whose SendTimeout-based sum just fits its
+// window can still hold the source past it. With a 60s budget, a 30s send
+// timeout and the 10.5s DLQ budget the real worst case is 105.5s, not 100.5s.
+//
+// Mutation check: sum SendTimeout instead of the ceiling and this fails — the
+// 100.5s window is accepted.
+func TestValidator_FixedWindowCountsTheSendWedgeGrace(t *testing.T) {
+	cases := []struct {
+		name         string
+		window       time.Duration
+		wantRejected bool
+	}{
+		{name: "a window that only fits the send timeout is rejected",
+			window: 100500 * time.Millisecond, wantRejected: true},
+		{name: "a window that exactly fits the wedge ceiling is accepted",
+			window: 105500 * time.Millisecond},
+		{name: "a 90s window is rejected with the ceiling in the message",
+			window: 90 * time.Second, wantRejected: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := runtime.New(
+				runtime.WithInstanceID("test-bridge"),
+				runtime.WithDLQStore(NewFakeDLQStore()),
+			)
+			cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+			cfg.Policy.OnPermanentFailure = routing.FailureDLQ
+			cfg.Policy.SendTimeout = 30 * time.Second
+			cfg.SourceVisibilityTimeout = tc.window
+			cfg.SourceAutoExtend = false
+
+			if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+				t.Fatal(err)
+			}
+
+			messages := validationMessages(t, rt)
+			rejected := containsMessage(messages, "worst-case pipeline time")
+			if rejected != tc.wantRejected {
+				t.Fatalf("rejected for pipeline time = %v, want %v: %v", rejected, tc.wantRejected, messages)
+			}
+			if tc.wantRejected && !containsMessage(messages, "worst-case pipeline time (1m45.5s = ") {
+				t.Fatalf("the rejection must print the 105.5s worst case: %v", messages)
+			}
+			if tc.wantRejected && !containsMessage(messages, "SendTimeout 30s (+5s wedge grace)") {
+				t.Fatalf("the rejection must name the per-send bound it counted: %v", messages)
+			}
+		})
+	}
+}
+
+// TestValidator_WedgeGraceCountsOnlyWhereTheSendHoldsTheSource pins which
+// routes pay the wedge grace in the fixed-window sum. The sum sizes how long the
+// SOURCE is held. A direct_hold route sends while holding it, so a
+// context-ignoring send holds it until the wedge ceiling, retrying or not. A
+// shared_outbox route settles its source once the outbox record is persisted,
+// so its send never holds the source, and its sum keeps plain SendTimeout
+// exactly as before in-process send retry existed. The window below is exactly
+// 2×30s processors + 10s send + 10.5s DLQ budget.
+//
+// Mutation check: count the ceiling for every delivery mode and the
+// shared_outbox route is rejected at a window its hold fits exactly.
+func TestValidator_WedgeGraceCountsOnlyWhereTheSendHoldsTheSource(t *testing.T) {
+	cases := []struct {
+		name         string
+		deliveryMode routing.DeliveryMode
+		wantRejected bool
+	}{
+		{name: "shared_outbox whose hold exactly fits the window is accepted",
+			deliveryMode: routing.DeliverySharedOutbox},
+		{name: "direct_hold with retry off pays the 5s wedge grace",
+			deliveryMode: routing.DeliveryDirectHold, wantRejected: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := runtime.New(
+				runtime.WithInstanceID("test-bridge"),
+				runtime.WithDLQStore(NewFakeDLQStore()),
+			)
+			cfg, rx, tx, sess, sessCfg := validDirectHoldEntry()
+			cfg.Policy.DeliveryMode = tc.deliveryMode
+			cfg.Policy.OnPermanentFailure = routing.FailureDLQ
+			cfg.Policy.SendTimeout = 10 * time.Second
+			cfg.Policy.SendRetryBudget = routing.SendRetryBudgetDisabled
+			cfg.Policy.ProcessorTimeout = 30 * time.Second
+			cfg.Processors = []ports.Processor{&timeoutProcessor{}, &timeoutProcessor{}}
+			cfg.SourceVisibilityTimeout = 80500 * time.Millisecond
+			cfg.SourceAutoExtend = false
+
+			if err := rt.AddRoute(cfg, rx, tx, sess, sessCfg); err != nil {
+				t.Fatal(err)
+			}
+
+			messages := validationMessages(t, rt)
+			rejected := containsMessage(messages, "worst-case pipeline time")
+			if rejected != tc.wantRejected {
+				t.Fatalf("rejected for pipeline time = %v, want %v: %v", rejected, tc.wantRejected, messages)
+			}
+			if tc.wantRejected && !containsMessage(messages, "SendTimeout 10s (+5s wedge grace)") {
+				t.Fatalf("the rejection must name the per-send bound it counted: %v", messages)
+			}
+		})
+	}
+}
+
 // TestValidator_SendRetryBudgetAgainstSettlementRecoveryWait pins the second
 // ceiling. An MQTT session that recycles to recover stranded settlements waits a
 // bounded time for the deliveries the runtime already accepted to settle; a held
 // retry that is still running when that wait runs out fails the recycle and
 // terminalizes the session. The last send starts before the budget ends and may
-// then run its full SendTimeout, so budget + send timeout is what has to fit.
+// then hold the delivery until its send wedge ceiling — SendTimeout plus
+// min(SendTimeout, 5s) for a sender that ignores its context — so budget + that
+// ceiling is what has to fit.
 func TestValidator_SendRetryBudgetAgainstSettlementRecoveryWait(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -123,11 +235,17 @@ func TestValidator_SendRetryBudgetAgainstSettlementRecoveryWait(t *testing.T) {
 	}{
 		{name: "default budget fits the recycle wait", deliveryMode: routing.DeliveryDirectHold,
 			sendTimeout: 30 * time.Second, wait: 240 * time.Second},
-		{name: "budget and send timeout exactly fill the recycle wait", deliveryMode: routing.DeliveryDirectHold,
-			budget: 210 * time.Second, sendTimeout: 30 * time.Second, wait: 240 * time.Second},
+		// 205s + 30s send + 5s wedge grace = 240s.
+		{name: "budget and send wedge ceiling exactly fill the recycle wait", deliveryMode: routing.DeliveryDirectHold,
+			budget: 205 * time.Second, sendTimeout: 30 * time.Second, wait: 240 * time.Second},
+		// 210s + 30s fills the wait, but a context-ignoring last send holds
+		// the delivery 5s longer than its send timeout.
+		{name: "the wedge grace past the send timeout outlives the recycle wait", deliveryMode: routing.DeliveryDirectHold,
+			budget: 210 * time.Second, sendTimeout: 30 * time.Second, wait: 240 * time.Second, wantRejected: true,
+			wantMessage: "send_retry_budget 3m30s + send_timeout 30s (+5s wedge grace)"},
 		{name: "budget and send timeout outlive the recycle wait", deliveryMode: routing.DeliveryDirectHold,
 			budget: 220 * time.Second, sendTimeout: 30 * time.Second, wait: 240 * time.Second, wantRejected: true,
-			wantMessage: "send_retry_budget 3m40s + send_timeout 30s"},
+			wantMessage: "send_retry_budget 3m40s + send_timeout 30s (+5s wedge grace)"},
 		// Zero is the capability's no-op: the session never recycles for
 		// settlement recovery, so there is nothing to fit inside.
 		{name: "a source that never recycles is not checked", deliveryMode: routing.DeliveryDirectHold,
