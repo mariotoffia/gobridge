@@ -60,6 +60,21 @@ type RouteConfig struct {
 	// auto-extend is valid and must not be rejected.
 	SourceAutoExtend bool
 
+	// SourceSettlementRecoveryWait is how long the source's session waits for the
+	// deliveries this route already accepted to settle before it recycles its
+	// broker connection to recover stranded settlements (MQTT persistent and
+	// exclusive sessions do). It is the OUTER bound of the WHOLE recovery
+	// attempt, not a budget reserved for the settling: the same wait also covers
+	// the session serialization gate, the teardown drain, and the disconnect,
+	// reconnect and reconcile that follow. The validator checks
+	// send_retry_budget + route.SendWedgeCeiling(send_timeout) — the send timeout
+	// plus its wedge grace — against it, which is necessary but not
+	// sufficient — a long processor chain or a dead-letter write on the same
+	// held delivery still eats into what is left for the recycle. Zero means the
+	// source never recycles for that reason, or the transport has no opinion,
+	// and the check is skipped.
+	SourceSettlementRecoveryWait time.Duration
+
 	// SourceTransport is the identity of the transport feeding this route
 	// (the RegisterTransportFactory name declared under `transport:`, or the
 	// adapter's canonical PluginConfig.Kind). The runtime uses it to strip

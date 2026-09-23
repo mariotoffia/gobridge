@@ -44,6 +44,9 @@ func newDirectHoldRedriveRuntime(t *testing.T, sender *FakeSender) *goruntime.Ru
 			MaxReplayAttempts:  3,
 			SendTimeout:        time.Second,
 			OnPermanentFailure: routing.FailureDrop,
+			// One send per delivery: these pin the replay decision, not the
+			// in-process send retry that precedes it.
+			SendRetryBudget: routing.SendRetryBudgetDisabled,
 		},
 		Bindings: []routing.DestinationBinding{
 			{ID: "binding-a", Address: "devices/a/state"},
@@ -162,6 +165,9 @@ func TestInjectRedrive_StripsSourceRedeliveryCount(t *testing.T) {
 			DeliveryMode:      routing.DeliveryDirectHold,
 			MaxReplayAttempts: 3,
 			SendTimeout:       time.Second,
+			// One send per delivery: this pins the replay decision, not the
+			// in-process send retry that precedes it.
+			SendRetryBudget: routing.SendRetryBudgetDisabled,
 		},
 		Bindings: []routing.DestinationBinding{
 			{ID: "binding-a", Address: "devices/a/state"},

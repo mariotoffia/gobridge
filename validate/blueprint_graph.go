@@ -427,36 +427,33 @@ func collectIDs(ve *ports.BlueprintValidationError, section string, n int, fn fu
 }
 
 // validateRoutePolicyBuildFields validates the route-policy fields that
-// bridge/convert.go (toRoutePolicyE) parses at BUILD time — replay_budget and
-// the retry backoff block — so a bad value fails validation instead of passing
-// the config transaction and durable write only to fail at apply/restart.
-// The checks mirror
-// the builder exactly: replay_budget must be a non-negative duration, the
-// backoff intervals must be parseable durations, and backoff.jitter must be in
-// [0,1]. send_timeout and depth_cache_ttl are validated inline at the call site.
+// bridge/convert.go (toRoutePolicyE) parses at BUILD time — replay_budget,
+// send_retry_budget and the retry backoff block — so a bad value fails
+// validation instead of passing the config transaction and durable write only
+// to fail at apply/restart. The checks mirror the builder exactly: the two
+// budgets and the backoff intervals must be non-negative durations, and
+// backoff.jitter must be in [0,1]. send_timeout and depth_cache_ttl are
+// validated inline at the call site.
 func validateRoutePolicyBuildFields(ve *ports.BlueprintValidationError, i int, p ports.PolicyDef) {
-	if p.ReplayBudget != "" {
-		if d, err := time.ParseDuration(p.ReplayBudget); err != nil {
-			ve.Addf("routes[%d].policy.replay_budget: invalid duration %q: %v", i, p.ReplayBudget, err)
-		} else if d < 0 {
-			ve.Addf("routes[%d].policy.replay_budget: must not be negative, got %s", i, p.ReplayBudget)
-		}
-	}
-	// time.ParseDuration accepts a leading '-', and a negative retry interval is
-	// nonsensical in both directions: a negative max_interval never clamps
-	// (route.retryDelay gates the clamp on `> 0`), so the exponential grows to
-	// +Inf and feeds Retry a near-infinite or negative delay.
+	// time.ParseDuration accepts a leading '-', and a negative value is
+	// nonsensical for each of these. A negative max_interval is the dangerous
+	// one: it never clamps (route.retryDelay gates the clamp on `> 0`), so the
+	// exponential grows to +Inf and feeds Retry a near-infinite or negative
+	// delay. An explicit zero send_retry_budget is legal: it turns in-process
+	// send retry off.
 	for _, f := range []struct{ name, val string }{
-		{"initial_interval", p.Backoff.InitialInterval},
-		{"max_interval", p.Backoff.MaxInterval},
+		{"replay_budget", p.ReplayBudget},
+		{"send_retry_budget", p.SendRetryBudget},
+		{"backoff.initial_interval", p.Backoff.InitialInterval},
+		{"backoff.max_interval", p.Backoff.MaxInterval},
 	} {
 		if f.val == "" {
 			continue
 		}
 		if d, err := time.ParseDuration(f.val); err != nil {
-			ve.Addf("routes[%d].policy.backoff.%s: invalid duration %q: %v", i, f.name, f.val, err)
+			ve.Addf("routes[%d].policy.%s: invalid duration %q: %v", i, f.name, f.val, err)
 		} else if d < 0 {
-			ve.Addf("routes[%d].policy.backoff.%s: must not be negative, got %s", i, f.name, f.val)
+			ve.Addf("routes[%d].policy.%s: must not be negative, got %s", i, f.name, f.val)
 		}
 	}
 	// A multiplier in (0,1) is decaying, not gentle, backoff: each retry fires

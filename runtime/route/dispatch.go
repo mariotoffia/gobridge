@@ -79,9 +79,6 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		)
 	}
 
-	sendCtx, sendCancel := context.WithTimeout(ctx, r.policy.SendTimeout)
-	defer sendCancel()
-
 	rc := r.effectiveAttempt(env)
 	// a redelivery-count header that is present but uninterpretable makes
 	// receiveCount fail open to a first delivery (native rc==0) so a good message
@@ -124,7 +121,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 	// (buildOutboxRecords) — symmetric with this hop — so a drained record still
 	// propagates this bridge hop downstream rather than the bare upstream
 	// traceparent the clone carried (OTEL).
-	if injected := r.tracer.Inject(sendCtx, map[string]any{}); len(injected) > 0 {
+	if injected := r.tracer.Inject(ctx, map[string]any{}); len(injected) > 0 {
 		outbound.DeleteHeader(messaging.HeaderTraceParent)
 		outbound.DeleteHeader(messaging.HeaderTraceState)
 		for k, v := range injected {
@@ -132,20 +129,7 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 		}
 	}
 
-	sendErr := r.boundedSend(sendCtx, sender, ports.OutboundMessage{Envelope: outbound, Address: plan.Address}, plan.BindingID)
-
-	r.invokeOnDelivery(outbound, sendErr)
-
-	r.hook.OnAttempt(ctx, ports.DeliveryAttempt{
-		Direction:   ports.DirectionEgress,
-		RouteID:     r.routeID,
-		BindingID:   plan.BindingID,
-		Address:     plan.Address,
-		Envelope:    outbound,
-		Attempt:     attempt,
-		MaxAttempts: r.policy.MaxReplayAttempts,
-		Err:         sendErr,
-	})
+	sendErr := r.sendHeld(ctx, sender, ports.OutboundMessage{Envelope: outbound, Address: plan.Address}, plan, attempt)
 
 	if sendErr == nil {
 		r.metrics.Counter(shared.MetricMessagesSent, 1,
@@ -178,9 +162,9 @@ func (r *RouteRunner) sendDirectHold(ctx context.Context, del ports.Delivery, en
 
 		// route the terminal decision through the single gate
 		// so a count-less source is capped by the bridge-owned ledger AND an
-		// uncountable adapter-generated identity (which the ledger cannot count) is
-		// sinked terminally on its first failure instead of recycling the source
-		// session forever.
+		// uncountable adapter-generated identity (which the ledger cannot count)
+		// is sunk terminally — but only after sendHeld has spent the route's
+		// send_retry_budget in process (a 0s budget sinks it on the first failure).
 		if _, over := r.replayCapReached(env); over {
 			poisonErr, category := r.replayCapPoison(env, rc, sendErr, "max_retries")
 			if logging.DebugEnabled(r.logger) {
@@ -275,6 +259,11 @@ func (r *RouteRunner) dropOnPermanentFailure() bool {
 	return r.policy.OnPermanentFailure == routing.FailureDrop || !r.dlq.HasStore()
 }
 
+// sendWedgeCeiling is SendWedgeCeiling for this route's SendTimeout.
+func (r *RouteRunner) sendWedgeCeiling() time.Duration {
+	return SendWedgeCeiling(r.policy.SendTimeout)
+}
+
 // boundedSend runs sender.Send under ctx (already bounded by SendTimeout) but
 // guarantees the DISPATCHER unblocks when ctx fires even if the sender ignores
 // cancellation entirely. A cooperative sender returns via the buffered done
@@ -308,34 +297,6 @@ func (r *RouteRunner) dropOnPermanentFailure() bool {
 // window as far as the cooperative race allows (the residual
 // send-success-after-ceiling duplicate is inherent to any send timeout and is
 // already a documented at-least-once window).
-// sendWedgeCeiling returns how long a send may run before boundedSend classifies
-// it as GENUINELY hung (ctx-ignoring) and WEDGES the route. It is deliberately
-// LARGER than SendTimeout — SendTimeout + min(SendTimeout, 5s) — so a COOPERATIVE
-// sender that aborts AT SendTimeout via its ctx always returns through `done` and
-// wins the ceiling race; only a send still parked WELL PAST SendTimeout (having
-// ignored ctx the whole time) trips the wedge. Conflating the two — a bare
-// SendTimeout ceiling equal to the sendCtx deadline — flaky-wedges a healthy route
-// whenever a cooperative sender legitimately hits SendTimeout under load, turning
-// ordinary transient slowness into a false pod restart. The per-send TRANSIENT
-// timeout (retry) still happens at SendTimeout via sendCtx; only the wedge
-// decision uses this larger bound. Mirrors the outbox completeBudget /
-// bridge completeBudgetCeiling shape.
-func (r *RouteRunner) sendWedgeCeiling() time.Duration {
-	st := r.policy.SendTimeout
-	if st <= 0 {
-		return 0 // no bound (SendTimeout disabled) — await completion, as before
-	}
-	margin := st
-	if margin > sendWedgeCeilingMargin {
-		margin = sendWedgeCeilingMargin
-	}
-	return st + margin
-}
-
-// sendWedgeCeilingMargin caps the extra grace past SendTimeout before a parked
-// send wedges the route (see sendWedgeCeiling).
-const sendWedgeCeilingMargin = 5 * time.Second
-
 func (r *RouteRunner) boundedSend(ctx context.Context, sender ports.Sender, msg ports.OutboundMessage, binding string) error {
 	// cap parked (leaked) send goroutines to at most ONE per binding. A
 	// prior send to this binding already timed out and left its goroutine parked

@@ -227,6 +227,9 @@ func TestDeliveryHook_DirectHold_TransientRetry_NoSettled(t *testing.T) {
 	receiver, sender, _, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 		cfg.Hook = hook
 		cfg.Policy.DeliveryMode = routing.DeliveryDirectHold
+		// One send per delivery: this pins the replay decision, not the
+		// in-process send retry that precedes it.
+		cfg.Policy.SendRetryBudget = routing.SendRetryBudgetDisabled
 	})
 	sender.SendErr = shared.ErrUnavailable
 
@@ -344,8 +347,13 @@ func TestDeliveryHook_DirectHold_Drop_NoDLQ_RetryUnsupported(t *testing.T) {
 	receiver := NewFakeReceiver()
 
 	runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
-		RouteID:    "test-route",
-		Policy:     routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold}.WithDefaults(),
+		RouteID: "test-route",
+		// One send per delivery: this pins the replay decision, not the
+		// in-process send retry that precedes it.
+		Policy: routing.RoutePolicy{
+			DeliveryMode:    routing.DeliveryDirectHold,
+			SendRetryBudget: routing.SendRetryBudgetDisabled,
+		}.WithDefaults(),
 		Receiver:   receiver,
 		Sender:     sender,
 		DLQ:        dlq.New(nil),

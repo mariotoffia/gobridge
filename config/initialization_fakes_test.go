@@ -3,7 +3,9 @@ package config
 import (
 	"context"
 	"maps"
+	"time"
 
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 )
@@ -58,8 +60,21 @@ func (p *initialPlugin) FreezePluginConfig() ports.PluginConfig {
 	return &initialPlugin{Values: maps.Clone(p.Values)}
 }
 
+// recoveryTimedInitialPlugin reports a settlement-recovery wait and freezes to a
+// plain initialPlugin, which does not. It models an adapter whose
+// FreezePluginConfig returns a type that quietly drops one of its optional
+// capabilities: the frozen value is non-nil and keeps its kind, so nothing but
+// the capability check notices.
+type recoveryTimedInitialPlugin struct{ initialPlugin }
+
+func (*recoveryTimedInitialPlugin) SettlementRecoveryWait(connectivity.SessionMode) time.Duration {
+	return time.Minute
+}
+
 var (
-	_ ports.ConfigStore       = (*initialStore)(nil)
-	_ ports.ConfigInitializer = (*initialStore)(nil)
-	_ ports.FreezableConfig   = (*initialPlugin)(nil)
+	_ ports.ConfigStore                    = (*initialStore)(nil)
+	_ ports.ConfigInitializer              = (*initialStore)(nil)
+	_ ports.FreezableConfig                = (*initialPlugin)(nil)
+	_ ports.FreezableConfig                = (*recoveryTimedInitialPlugin)(nil)
+	_ ports.SettlementRecoveryTimingConfig = (*recoveryTimedInitialPlugin)(nil)
 )

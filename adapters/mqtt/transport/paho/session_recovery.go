@@ -16,11 +16,13 @@ import (
 //
 // There is deliberately NO separate drain limit. The recovery drain waits for
 // deliveries the runtime already ACCEPTED to settle, and every settlement path
-// is bounded by the ROUTE that owns it — the send-wedge ceiling, the processor
-// budget, the store and dead-letter call deadlines. An adapter-local drain
-// bound could therefore only be SHORTER than a legitimate settlement, and since
-// a failed drain is unrecoverable in-process (old work could still mutate after
-// a recycle), it would convert one slow target into a terminal session and a
+// is bounded by the ROUTE that owns it — a direct_hold route's in-process
+// send-retry budget (send_retry_budget, 60 s by default, and typically the
+// largest of these terms), the send-wedge ceiling, the
+// processor budget, the store and dead-letter call deadlines. An adapter-local
+// drain bound could therefore only be SHORTER than a legitimate settlement, and
+// since a failed drain is unrecoverable in-process (old work could still mutate
+// after a recycle), it would convert one slow target into a terminal session and a
 // restart of every unrelated route in the process. The recovery attempt budget
 // is the outer bound; the adapter's own reconcile timeout still bounds the
 // adapter's own teardown phase (see Session.quiesceForRecycle).
@@ -31,7 +33,7 @@ func (s *Session) recoveryAttemptTimeout() time.Duration {
 	opts := s.opts
 	mode := s.mode
 	s.mu.Unlock()
-	return (Config{Session: opts}).PostAcquireActivationTiming(mode).WorstCaseDuration
+	return (Config{Session: opts}).SettlementRecoveryWait(mode)
 }
 
 // contextWithClockTimeout applies a cancellable hard bound using the injected

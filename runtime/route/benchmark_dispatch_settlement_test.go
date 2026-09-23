@@ -36,6 +36,9 @@ func benchDropPolicy() routing.RoutePolicy {
 		MaxReplayAttempts:  5,
 		SendTimeout:        time.Second,
 		OnPermanentFailure: routing.FailureDrop,
+		// One send per delivery, so "retried" measures the replay path; the
+		// in-process send retry has its own benchmarks.
+		SendRetryBudget: routing.SendRetryBudgetDisabled,
 	}.WithDefaults()
 }
 

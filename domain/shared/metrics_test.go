@@ -2,7 +2,6 @@ package shared_test
 
 import (
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"strconv"
 	"strings"
@@ -93,28 +92,22 @@ func TestMetricNamespace_NonEmpty(t *testing.T) {
 // TestMetricConstants_NonEmpty validates that every Metric* name
 // constant is non-empty and unique across the entire set.
 //
-// The constants are DISCOVERED from metrics.go's AST rather than
-// mirrored into a literal slice here. A hand-kept list has a silent
-// blind spot: adding `MetricFoo = "Foo"` and forgetting to extend the
-// slice leaves the set unchecked and nothing fails. (That is not
+// The constants are DISCOVERED from the AST of every metrics*.go file
+// rather than mirrored into a literal slice here. A hand-kept list has a
+// silent blind spot: adding `MetricFoo = "Foo"` and forgetting to extend
+// the slice leaves the set unchecked and nothing fails. (That is not
 // hypothetical — the literal this replaced had drifted to 34 of the 57
 // declared constants, so 23 were never checked for collisions.)
 //
 // go test runs a package's binary with the working directory set to the
-// package directory, so metrics.go is right here.
+// package directory, so the metrics*.go files are right here.
 func TestMetricConstants_NonEmpty(t *testing.T) {
 	// MetricNamespace is the CloudWatch namespace, not a metric name.
 	exempt := map[string]struct{}{"MetricNamespace": {}}
 
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "metrics.go", nil, parser.SkipObjectResolution)
-	if err != nil {
-		t.Fatalf("parse metrics.go: %v", err)
-	}
-
 	seen := make(map[string]string) // value -> declaring constant
 	found := 0
-	for _, decl := range f.Decls {
+	for _, decl := range metricSourceDecls(t) {
 		gd, ok := decl.(*ast.GenDecl)
 		if !ok || gd.Tok != token.CONST {
 			continue
@@ -155,7 +148,7 @@ func TestMetricConstants_NonEmpty(t *testing.T) {
 	// Guard against the discovery itself silently breaking (a renamed
 	// file, a refactor to typed constants) and reporting a clean zero.
 	if found < 30 {
-		t.Fatalf("discovered only %d Metric* constants in metrics.go; "+
+		t.Fatalf("discovered only %d Metric* constants in metrics*.go; "+
 			"the AST scan is probably no longer matching the declarations", found)
 	}
 }

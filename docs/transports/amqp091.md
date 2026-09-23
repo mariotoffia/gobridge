@@ -235,12 +235,18 @@ envelope ID, so for an unmarked unstable identity `max_replay_attempts` could
 never fire and a deterministically-failing message would requeue forever,
 never draining and never producing DLQ evidence.
 
-> **Behavior consequence -- no retry budget without a `message_id`.** Because
-> such a message is uncountable, the runtime does not retry it: the FIRST
-> transient failure settles it terminally, to the DLQ (or dropped, per the
-> route's `on_permanent_failure`). Setting `message_id` on the publisher is the
-> fix and the only one — this adapter derives identity from that property alone.
-> Watch `DLQEntries` after upgrading if your producers do not set it.
+> **Behavior consequence -- no requeue budget without a `message_id`.** Because
+> such a message is uncountable, the runtime never asks the broker to requeue
+> it. On a `direct_hold` route a recoverable send failure is still retried
+> **inside the bridge** first, with the delivery unacknowledged, for
+> `send_retry_budget` (default 60s), so a short destination outage costs
+> nothing. Once that budget is spent the message is settled terminally, to the
+> DLQ (or dropped, per the route's `on_permanent_failure`); with
+> `send_retry_budget: 0s` that happens on the FIRST transient failure, as in
+> releases before in-process send retry existed. Setting `message_id` on the
+> publisher is the fix and the only one — this adapter derives identity from
+> that property alone. Watch `DLQEntries` after upgrading if your producers do
+> not set it.
 
 ## Header Mapping
 

@@ -55,6 +55,23 @@ func toRoutePolicyE(r ports.RouteDef) (routing.RoutePolicy, error) {
 		}
 		p.ReplayBudget = d
 	}
+	// send_retry_budget is tri-state on the wire, like jitter: omitted leaves the
+	// field zero so WithDefaults fills the 60s default, and an explicit zero is an
+	// operator turning in-process retry OFF, which only
+	// routing.SendRetryBudgetDisabled can carry through defaulting.
+	if r.Policy.SendRetryBudget != "" {
+		d, err := time.ParseDuration(r.Policy.SendRetryBudget)
+		if err != nil {
+			return p, fmt.Errorf("invalid send_retry_budget %q: %w", r.Policy.SendRetryBudget, err)
+		}
+		if d < 0 {
+			return p, fmt.Errorf("invalid send_retry_budget %q: must not be negative", r.Policy.SendRetryBudget)
+		}
+		p.SendRetryBudget = d
+		if d == 0 {
+			p.SendRetryBudget = routing.SendRetryBudgetDisabled
+		}
+	}
 	// The retry rules below mirror validate.ValidateBlueprintGraph exactly, so a
 	// route built directly through the library API cannot receive a policy the
 	// config path would refuse. A negative interval is the dangerous one: the

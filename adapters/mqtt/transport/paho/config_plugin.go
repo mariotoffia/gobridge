@@ -21,6 +21,8 @@ var (
 	_ ports.ReplicaIdentityConfig             = (*Config)(nil)
 	_ ports.PostAcquireActivationTimingConfig = Config{}
 	_ ports.PostAcquireActivationTimingConfig = (*Config)(nil)
+	_ ports.SettlementRecoveryTimingConfig    = Config{}
+	_ ports.SettlementRecoveryTimingConfig    = (*Config)(nil)
 	_ ports.TransportFailoverTimingConfig     = Config{}
 	_ ports.TransportFailoverTimingConfig     = (*Config)(nil)
 	_ ports.IngressMemoryConfig               = Config{}
@@ -103,6 +105,16 @@ func (c Config) PostAcquireActivationTiming(mode connectivity.SessionMode) ports
 		reconcileTimeout, reconcileTimeout, reconcileTimeout, reconcileTimeout,
 		replayGrace, replayGrace,
 	)}
+}
+
+// SettlementRecoveryWait implements ports.SettlementRecoveryTimingConfig. A
+// settlement-recovery recycle drains the deliveries the runtime already accepted
+// and then runs the same sequential phases a post-acquire activation does, so
+// the activation worst case is also the recovery attempt's bound. The session's
+// own recoveryAttemptTimeout reads it here, so the route validator and the
+// adapter cannot disagree about how long a held delivery may take to settle.
+func (c Config) SettlementRecoveryWait(mode connectivity.SessionMode) time.Duration {
+	return c.PostAcquireActivationTiming(mode).WorstCaseDuration
 }
 
 // conservativeActivationDuration saturates instead of allowing a maliciously

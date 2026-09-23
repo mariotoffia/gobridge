@@ -74,6 +74,52 @@ func TestConfigTransportFailoverTimingIncludesManagedMigrationRecycleAndReplay(t
 	}
 }
 
+// TestConfigSettlementRecoveryWaitIsTheActivationWorstCase pins the wait a
+// settlement-recovery recycle gives the deliveries the runtime already accepted:
+// the recycle runs the same sequential phases an activation does, so it is the
+// same bound. The route validator reads it through the port to keep an
+// in-process send retry inside it, and a mode that never recycles reports zero.
+func TestConfigSettlementRecoveryWaitIsTheActivationWorstCase(t *testing.T) {
+	want := 2*DefaultConnectTimeout + 4*DefaultReconcileTimeout + 2*DefaultUnmatchedGrace
+	if got := (Config{}).SettlementRecoveryWait(connectivity.SessionPersistent); got != want {
+		t.Fatalf("default persistent settlement-recovery wait = %s, want %s", got, want)
+	}
+	if got := (Config{}).SettlementRecoveryWait(connectivity.SessionEphemeral); got != 0 {
+		t.Fatalf("ephemeral settlement-recovery wait = %s, want 0", got)
+	}
+
+	cfg := Config{Session: SessionOptions{
+		ConnectTimeout: 7 * time.Second, ReconcileTimeout: 8 * time.Second, UnmatchedGrace: 9 * time.Second,
+	}}
+	for _, mode := range []connectivity.SessionMode{
+		connectivity.SessionPersistent, connectivity.SessionExclusive, connectivity.SessionEphemeral, "",
+	} {
+		activation := cfg.PostAcquireActivationTiming(mode).WorstCaseDuration
+		if got := cfg.SettlementRecoveryWait(mode); got != activation {
+			t.Fatalf("settlement-recovery wait for mode %q = %s, want the activation worst case %s",
+				mode, got, activation)
+		}
+	}
+}
+
+// TestSessionRecoveryAttemptTimeoutIsTheConfiguredSettlementRecoveryWait keeps
+// the adapter's own recovery attempt and the route validator on one function: a
+// validator that admitted a longer hold than the session waits for would let the
+// recycle fail on a delivery the operator was told was safe.
+func TestSessionRecoveryAttemptTimeoutIsTheConfiguredSettlementRecoveryWait(t *testing.T) {
+	opts := SessionOptions{
+		BrokerURLs: []string{"tcp://192.0.2.1:1883"}, ClientID: "settlement-recovery-wait",
+		ConnectTimeout: 7 * time.Second, ReconcileTimeout: 8 * time.Second, UnmatchedGrace: 9 * time.Second,
+	}
+	s := NewSession(opts, connectivity.SessionPersistent, nil)
+	t.Cleanup(func() { s.Router().shutdown() })
+
+	want := (Config{Session: opts}).SettlementRecoveryWait(connectivity.SessionPersistent)
+	if got := s.recoveryAttemptTimeout(); got != want {
+		t.Fatalf("session recovery attempt timeout = %s, want the configured wait %s", got, want)
+	}
+}
+
 func TestConfigTransportFailoverTimingSaturatesCompleteActivationOverflow(t *testing.T) {
 	cfg := Config{Session: SessionOptions{
 		ConnectTimeout: time.Duration(1<<63 - 1), ReconcileTimeout: time.Second,

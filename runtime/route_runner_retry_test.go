@@ -65,6 +65,9 @@ func TestRouteRunner_DirectHoldTransientSendUsesBackoff(t *testing.T) {
 			Multiplier:      2.0,
 		}
 		cfg.Policy.MaxReplayAttempts = 5
+		// One send per delivery: this pins the replay backoff, not the
+		// in-process send retry that precedes it.
+		cfg.Policy.SendRetryBudget = routing.SendRetryBudgetDisabled
 	})
 	sender.SendErr = shared.ErrUnavailable
 
@@ -144,6 +147,9 @@ func TestRouteRunner_DirectHold_MaxReplay_PerTransportCount(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			receiver, sender, dlqStore, _, runner := makeRunner(t, func(cfg *route.RouteRunnerConfig) {
 				cfg.Policy.MaxReplayAttempts = 3
+				// One send per delivery: this pins the replay-cap boundary, not
+				// the in-process send retry that precedes it.
+				cfg.Policy.SendRetryBudget = routing.SendRetryBudgetDisabled
 			})
 			sender.SendErr = shared.ErrUnavailable // recoverable: retries while under cap
 

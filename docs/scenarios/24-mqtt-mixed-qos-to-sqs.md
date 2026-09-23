@@ -200,14 +200,19 @@ killed bridge cannot count its crash gap.
 queued alarms. Alarms published while no subscription exists are not protected.
 Expiry limits recovery; it does not guarantee storage for an unlimited outage.
 
-**Destination failure while running.** Actual QoS 0 Retry is unsupported. The
-route uses its DLQ fallback. If bounded DLQ persistence also fails, it counts
-one `MessagesDropped{reason=retry_unsupported_dlq_failed}`, surfaces the error,
-and releases its slot so later messages can progress. It does not recycle the
-MQTT session for that QoS 0 failure. This is distinct from
+**Destination failure while running.** A recoverable SQS failure is retried
+**inside the bridge** first, with backoff and the MQTT delivery still held, for
+`send_retry_budget` (default 60s). A destination outage shorter than that is
+absorbed and nothing is dead-lettered. Only once the budget is spent does the
+route make its terminal decision. Actual QoS 0 Retry is then unsupported, so
+the route uses its DLQ fallback. If bounded DLQ persistence also fails, it
+counts one `MessagesDropped{reason=retry_unsupported_dlq_failed}`, surfaces the
+error, and releases its slot so later messages can progress. It does not
+recycle the MQTT session for that QoS 0 failure. This is distinct from
 `MQTTReceiverEmitRejected{outcome=lost}`, which counts immediate refusal at the
-receiver boundary. Generated message IDs can first take the existing
-`unstable_identity` terminal path.
+receiver boundary. Generated message IDs can then take the existing
+`unstable_identity` terminal path — with `send_retry_budget: 0s` they take it
+on the first failure, as in earlier releases.
 
 QoS 2 adds protection on the MQTT hop only. It does not make SQS delivery
 exactly-once.

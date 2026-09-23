@@ -73,8 +73,11 @@ func TestMQTTBestEffortDelivery_TerminalOutcomes(t *testing.T) {
 				if tc.store {
 					sink = store
 				}
+				// One send per delivery: this pins the terminal outcome of the first
+				// failure, not the in-process send retry that precedes it.
 				policy := routing.RoutePolicy{
 					DeliveryMode: routing.DeliveryDirectHold, MaxInFlight: 1, AllowRetryDrop: tc.drop,
+					SendRetryBudget: routing.SendRetryBudgetDisabled,
 				}
 				if tc.drop {
 					policy.OnPermanentFailure = routing.FailureDrop
@@ -210,7 +213,9 @@ func TestMQTTBestEffortDelivery_CancellationIsNotLoss(t *testing.T) {
 				del := paho.NewDelivery(bestEffortEnvelope("canceled", generated, 0), opts...)
 				runner := route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
 					RouteID: "canceled", SourceTransport: "mqtt.paho", Clock: clk, Metrics: rec, Hook: hook,
-					Policy: routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
+					// One send per delivery: the retry and DLQ phases cancel after the
+					// first failure, not during an in-process send retry.
+					Policy: routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold, SendRetryBudget: routing.SendRetryBudgetDisabled},
 					DLQ:    dlq.NewFromConfig(dlq.Config{Store: store, Clock: clk, Metrics: rec, WriteMaxAttempts: 1}),
 					Sender: bestEffortSender(func(context.Context, ports.OutboundMessage) error {
 						if phase == "send" {

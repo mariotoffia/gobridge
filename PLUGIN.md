@@ -382,26 +382,21 @@ Both methods are mandatory and both must do real work — an empty
 Typed transport configs may also implement narrowly scoped optional capabilities
 from `ports/plugin_config.go`:
 
-- `DurableSessionIdentityConfig` returns opaque, secret-safe fingerprints for
-  transport-owned durable broker state and one broker/client ownership domain per
-  canonical endpoint. Include effective storage identity only; exclude credentials
-  and runtime tuning. Never return or log raw descriptors. A durable identity config
-  must also implement `FreezableConfig`.
-- `FreezableConfig` lets the adapter produce a deep-owned immutable configuration
-  snapshot while intentionally preserving opaque runtime dependencies whose identity
-  must remain stable. Core code never reflect-clones adapter configs.
-  Initialization requires it for mutable custom configs, such as a config with
-  a map or slice. Deeply immutable scalar value configs, such as a value struct
-  containing only strings and numbers, need not implement it. See
-  [initialization snapshots](docs/aws-deployment/config-initialization.md#snapshot-ownership).
-- `ReplicaIdentityConfig` declares the effective per-replica identity strategy
-  used by clustered shared consumers. Validation fails closed when a shared
-  subscription cannot prove a strategy.
-- `TransportFailoverTimingConfig` exposes one conservative complete post-takeover
-  activation bound through `ServiceLevelFull`, including connect, cleanup/replay,
-  recycle/reconnect, and final reconciliation exactly once. A declared
-  `failover_slo` fails closed when the aggregate bound is unavailable; core code
-  must not add nested phases again and remains transport-neutral.
+| Capability | What it exposes, and what an absent or zero value means |
+|---|---|
+| `DurableSessionIdentityConfig` | Opaque, secret-safe fingerprints for transport-owned durable broker state, and one broker/client ownership domain per canonical endpoint. Include effective storage identity only; exclude credentials and runtime tuning. Never return or log raw descriptors. A durable identity config must also implement `FreezableConfig`. |
+| `FreezableConfig` | A deep-owned immutable configuration snapshot that intentionally preserves opaque runtime dependencies whose identity must remain stable. Core code never reflect-clones adapter configs. Initialization requires it for mutable custom configs, such as a config with a map or slice; deeply immutable scalar value configs, such as a value struct containing only strings and numbers, need not implement it. See [initialization snapshots](docs/aws-deployment/config-initialization.md#snapshot-ownership). |
+| `ReplicaIdentityConfig` | The effective per-replica identity strategy used by clustered shared consumers. Validation fails closed when a shared subscription cannot prove a strategy. |
+| `TransportFailoverTimingConfig` | One conservative complete post-takeover activation bound through `ServiceLevelFull`, including connect, cleanup/replay, recycle/reconnect, and final reconciliation exactly once. A declared `failover_slo` fails closed when the aggregate bound is unavailable; core code must not add nested phases again and remains transport-neutral. |
+| `PostAcquireActivationTimingConfig` | The conservative bound for every sequential phase between exclusive lease acquisition and convergence, for a transport whose reconciliation can include a mandatory replay-verification wait. Zero when the selected session mode has no such sequence. |
+| `SettlementRecoveryTimingConfig` | How long a source session's recovery recycle waits for already-accepted deliveries to settle, so the route validator can reject a `direct_hold` hold (`send_retry_budget` + the send wedge ceiling, `send_timeout` + `min(send_timeout, 5s)`) the source would not tolerate. Return the same number the adapter's own recycle uses, so the two cannot disagree; zero when the session mode never recycles for this reason. |
+
+**Every capability above must survive freezing**, and a new one must be added to
+**both** guard lists: `freezePluginConfig` (`bridge/builder_resolve.go`) and
+`freezeInitialPlugin` (`config/initial_snapshot.go`). A capability the frozen
+value drops is otherwise silent — the config still validates and keeps its kind,
+while the core code reading it sees an absent value and skips the very check the
+capability exists for.
 
 These capabilities keep `bridge/` and `validate/` transport-neutral: core code
 asserts the generic interface and never switches on a transport name or imports

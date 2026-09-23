@@ -147,6 +147,25 @@ const (
 	// FirstAttemptedAt, before the outbox drainer poisons it to the DLQ. It is
 	// the age half of the poison AND-gate; the count half is MaxReplayAttempts.
 	DefaultReplayBudget = 15 * time.Minute
+	// DefaultSendRetryBudget is how long a direct_hold route keeps retrying a
+	// recoverable send inside the bridge, with backoff, before it makes the
+	// replay-or-dead-letter decision. 60s rides out a destination policy that is
+	// still propagating (up to about a minute on SQS) and fits inside an MQTT
+	// settlement-recovery recycle wait (240s with the shipped defaults), the one
+	// bound a held delivery must not outlive; validateSendRetryBudget enforces
+	// that per route. A Stop is deliberately shorter: it drains in-flight
+	// deliveries for ~25s and then cancels, truncating a held retry part-way
+	// through its budget and leaving the delivery unsettled. A source that
+	// redelivers replays it into the next process; a best-effort (QoS 0) source
+	// does not, and that message is then lost with no dead-letter record, so a
+	// route whose source cannot redeliver wants a small budget or none at all.
+	// See ADR-0017.
+	DefaultSendRetryBudget = 60 * time.Second
+	// SendRetryBudgetDisabled is the explicit opt-out from in-process send retry,
+	// kept distinct from the zero value so WithDefaults can tell "unset" from
+	// "off, deliberately" (the JitterDisabled pattern). A route carrying it sends
+	// once and makes the replay-or-dead-letter decision on the first failure.
+	SendRetryBudgetDisabled time.Duration = -1
 	// DefaultJitterFactor is the recommended equal-jitter fraction: 20%
 	// de-correlates retries across competing senders without materially changing
 	// the backoff envelope. It is the ONE default — WithDefaults and
@@ -192,12 +211,22 @@ type RoutePolicy struct {
 	// ReplayBudget bounds the total wall-clock time, measured from a record's
 	// FirstAttemptedAt, that the drainer keeps redelivering before poisoning it
 	// to the DLQ. It is the age half of the poison AND-gate (the count half is
-	// MaxReplayAttempts). Zero means DefaultReplayBudget (15m): WithDefaults
+	// MaxReplayAttempts). It applies to the shared_outbox drainer only; a
+	// direct_hold route never reads it (its in-process bound is
+	// SendRetryBudget). Zero means DefaultReplayBudget (15m): WithDefaults
 	// fills it; Validate rejects a negative value. YAML: replay_budget.
-	ReplayBudget   time.Duration
-	MaxOutboxDepth int
-	AllowUnfenced  bool
-	AllowRetryDrop bool
+	ReplayBudget time.Duration
+	// SendRetryBudget bounds how long a direct_hold route retries a recoverable
+	// send inside the bridge, with backoff and the source message still held,
+	// before it makes the replay-or-dead-letter decision. It applies to
+	// direct_hold only: the shared_outbox drainer never reads it, just as
+	// ReplayBudget is drainer-only. Zero means DefaultSendRetryBudget (60s):
+	// WithDefaults fills it. SendRetryBudgetDisabled turns in-process retry off;
+	// Validate rejects any other negative value. YAML: send_retry_budget.
+	SendRetryBudget time.Duration
+	MaxOutboxDepth  int
+	AllowUnfenced   bool
+	AllowRetryDrop  bool
 	// TrustBridgeHeaders, when true, makes the route preserve the
 	// BRIDGE-TO-BRIDGE PROPAGATED reserved headers (correlation-id,
 	// causation-id, idempotency-key, dedup-id, ordering-key, tenant-id,
@@ -239,6 +268,9 @@ func (p RoutePolicy) WithDefaults() RoutePolicy {
 	}
 	if p.ReplayBudget <= 0 {
 		p.ReplayBudget = DefaultReplayBudget
+	}
+	if p.SendRetryBudget == 0 {
+		p.SendRetryBudget = DefaultSendRetryBudget
 	}
 	if p.MaxOutboxDepth <= 0 {
 		p.MaxOutboxDepth = DefaultMaxOutboxDepth
@@ -299,8 +331,9 @@ func (p RoutePolicy) WithDefaults() RoutePolicy {
 // Validate reports the first invalid enum value or negative duration carried by
 // p as a permanent BridgeError with code shared.ErrCodeInvalidConfig. A
 // zero-valued enum or duration is treated as "use default" (handled by
-// WithDefaults) and is NOT considered invalid here; only a NEGATIVE ReplayBudget
-// is rejected. Callers that want strict rejection of typos like
+// WithDefaults) and is NOT considered invalid here; a NEGATIVE ReplayBudget,
+// SendRetryBudget (other than the SendRetryBudgetDisabled opt-out) or Backoff
+// interval is rejected. Callers that want strict rejection of typos like
 // RoutePolicy{DeliveryMode: "wat"} should call Validate before (or instead of)
 // WithDefaults.
 //
@@ -330,6 +363,9 @@ func (p RoutePolicy) Validate() error {
 	}
 	if p.ReplayBudget < 0 {
 		return invalidDuration("ReplayBudget", p.ReplayBudget)
+	}
+	if p.SendRetryBudget < 0 && p.SendRetryBudget != SendRetryBudgetDisabled {
+		return invalidDuration("SendRetryBudget", p.SendRetryBudget)
 	}
 	// Reject negative Backoff fields. WithDefaults fills only ZERO fields, so
 	// a negative survives it. A negative MaxInterval is the dangerous one:

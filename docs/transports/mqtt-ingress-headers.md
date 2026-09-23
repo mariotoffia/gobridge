@@ -92,7 +92,8 @@ property that carries it between the callback and envelope construction is
 stripped from every inbound publish before ingress decides whether to mint. A
 publisher that sends `mqtt.generated-id` alongside its own stable
 `mqtt.message-id` therefore cannot have that identity classified as unstable —
-which would otherwise terminalize (DLQ or drop) its first transient failure.
+which would otherwise terminalize (DLQ or drop) the message as soon as its
+`send_retry_budget` ran out instead of asking the source to redeliver it.
 
 **Binary correlation data round-trips.** Raw correlation bytes that cannot be a
 header string are retained under the reserved `x-bridge.correlation-data`
@@ -118,10 +119,15 @@ fresh envelope id on every broker redelivery, the runtime's replay ledger — wh
 keys count-less sources on that id — cannot accumulate attempts for it. The
 adapter marks such an envelope as adapter-generated (`x-bridge.generated-id`,
 an internal-only header that never leaves the process). On a transient delivery
-failure the runtime therefore refuses to retry it: rather than recycling the
-whole source session forever (a single poison message could head-of-line-block
-all ingress), it terminally routes the message to the DLQ (or drops it, per
-`OnPermanentFailure`) with reason `unstable_identity`. A producer that supplies
+failure a `direct_hold` route first retries the send **in process**, with the
+delivery still held, for `send_retry_budget` (default 60s), so a short
+destination outage costs nothing. Once that budget is spent the runtime refuses
+to hand the message back to its source: rather than recycling the whole source
+session forever (a single poison message could head-of-line-block all ingress),
+it terminally routes the message to the DLQ (or drops it, per
+`OnPermanentFailure`) with reason `unstable_identity`. With
+`send_retry_budget: 0s` that happens on the first transient failure, as in
+releases before in-process send retry existed. A producer that supplies
 a stable `mqtt.message-id`/correlation data — or a trusted bridge-to-bridge
 `x-bridge.dedup-id`/`x-bridge.idempotency-key` — restores countability and gets
 the full `MaxReplayAttempts` retry budget.
