@@ -266,7 +266,7 @@ func TestManagedSubscriptionDeadLetterAckFailureKeepsDeliveryPending(t *testing.
 	}
 }
 
-func TestManagedSubscriptionDeadLetterWritesShareOneReconcileBudget(t *testing.T) {
+func TestManagedSubscriptionBlockedDeadLetterWriteEndsAtTheReconcileTimeout(t *testing.T) {
 	fake := &deadLetterFake{block: true}
 	operations := []string{}
 	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
@@ -282,17 +282,17 @@ func TestManagedSubscriptionDeadLetterWritesShareOneReconcileBudget(t *testing.T
 	t.Cleanup(func() { _ = session.Close(context.Background()) })
 	session.router.dispatch(&pahov5.Publish{Topic: "stale/held", QoS: 1}, fake.ack("stale/held", nil))
 
-	// The reconcile context has no deadline: only the dead-letter budget can
-	// end the blocked write.
+	// The reconcile context has no deadline: only the reconcile timeout on
+	// dead-letter writes can end the blocked write.
 	reconcileDone := make(chan error, 1)
 	go func() { reconcileDone <- session.Reconcile(t.Context(), connectivity.SessionPlan{}) }()
 	err := wait.RequireReceive(t, reconcileDone, 2*time.Second)
 	requireTransientNotTerminal(t, session, err)
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("budgeted reconcile error = %v, want the budget deadline as cause", err)
+		t.Fatalf("blocked dead-letter reconcile error = %v, want the reconcile timeout as cause", err)
 	}
 	if got := session.Router().PendingCount(); got != 1 {
-		t.Fatalf("pending after exhausted budget = %d, want 1", got)
+		t.Fatalf("pending after the timed-out write = %d, want 1", got)
 	}
 }
 
