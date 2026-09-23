@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"maps"
 	"net/http"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -51,7 +52,9 @@ type factoryRegistry struct {
 	http       *httptransport.Factory
 }
 
-func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistry {
+// newBuilder returns a builder for cfg with every option this root builds a
+// runtime with, and no factory registered.
+func (a *App) newBuilder(cfg *ports.BridgeConfig) *bridge.Builder {
 	// Blueprint validation on EVERY build this root performs. The config manager
 	// validates what it emits, but the coordinated rollout paths build configs the
 	// manager never emitted — the vote's candidate and the bytes decoded from the
@@ -104,11 +107,14 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 	// collector, so adapters/otel/tracing would ship dead config plus its
 	// full OTel dependency tree. A future traces_exporter selection would be
 	// wired here via bridge.WithTracer.
-	builder := bridge.NewBuilder(runtimeCfg, opts...)
-	if runtimeCfg != nil && runtimeCfg.Bridge.DeploymentMode == "clustered" {
+	builder := bridge.NewBuilder(cfg, opts...)
+	if cfg != nil && cfg.Bridge.DeploymentMode == "clustered" {
 		builder.RegisterEndpointResolver(ecscluster.NewEcsEndpointResolver(ecscluster.WithLogger(a.logger)))
 	}
+	return builder
+}
 
+func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistry {
 	// The metrics exporter is threaded into the MQTT and SQS transport
 	// factories (nil keeps each adapter's internal Noop fallback) so their
 	// self-instrumented metrics actually emit on this config-driven path —
@@ -141,29 +147,39 @@ func (a *App) newFactoryRegistry(runtimeCfg *ports.BridgeConfig) *factoryRegistr
 
 	// Optional families (AMQP 0-9-1, AMQP 1.0, Azure Service Bus) are selected
 	// at build time and extend the same map before it is registered, so an
-	// alias they add reaches the builder through the single loop below and is
-	// visible to detectSwapMode like any base-set transport.
+	// alias they add reaches the builder through registerOn like any base-set
+	// transport and is visible to detectSwapMode.
 	wireOptionalTransports(transports, a.logger, a.metricsExporter)
+	maps.Copy(transports, a.extraTransports)
 
-	for name, factory := range transports {
-		builder.RegisterTransportFactory(name, factory)
-	}
 	stores := map[string]ports.StoreFactory{
 		"memory":              nativestore.NewMemoryStoreFactory(),
 		"sqlite":              nativestore.NewSQLiteStoreFactory(),
 		awsstore.DynamoDBKind: awsstore.NewDynamoDBStoreFactory(a.dynamoDBClient),
 	}
-	for name, factory := range stores {
-		builder.RegisterStoreFactory(name, factory)
-	}
 
-	return &factoryRegistry{
+	reg := &factoryRegistry{
 		cfg:        runtimeCfg,
-		builder:    builder,
 		transports: transports,
 		stores:     stores,
 		http:       httpFactory,
 	}
+	reg.builder = reg.registerOn(a.newBuilder(runtimeCfg))
+	return reg
+}
+
+// registerOn registers every factory of r on b and returns b. A builder of a
+// part grafted onto the runtime r built takes r's own factory instances: the
+// HTTP transport mounts on r's mux, which keeps serving, and a factory latches
+// capabilities from what it built.
+func (r *factoryRegistry) registerOn(b *bridge.Builder) *bridge.Builder {
+	for name, factory := range r.transports {
+		b.RegisterTransportFactory(name, factory)
+	}
+	for name, factory := range r.stores {
+		b.RegisterStoreFactory(name, factory)
+	}
+	return b
 }
 
 // detectSwapMode asks the same question the Supervisor asks, through the same

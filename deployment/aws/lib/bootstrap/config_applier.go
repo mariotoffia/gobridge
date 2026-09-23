@@ -16,7 +16,9 @@ import (
 // before starting the new one), while everything else can overlap (build and
 // start the new runtime, then stop the old). The overlap mode keeps serving
 // across the swap; the prepare/commit mode accepts a gap to keep the identity
-// single-owner, and carries the recovery path for a commit that failed.
+// single-owner, and carries the recovery path for a commit that failed. A
+// change confined to reload units takes neither: config_applier_in_place.go
+// reloads the installed runtime in place.
 
 type swapMode int
 
@@ -68,7 +70,17 @@ func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfi
 		}
 	}
 
-	plan, err := a.prepareRuntimePlan(ctx, logical, seedBaselines)
+	// One resolution serves the whole apply: the in-place attempt and, when the
+	// change is not confined to reload units, the full swap after it.
+	epoch := a.applyEpoch(ctx)
+	inputs, err := a.resolveApplyInputs(ctx, logical)
+	if err != nil {
+		return err
+	}
+	if handled, err := a.applyInPlace(ctx, logical, inputs, epoch); handled {
+		return err
+	}
+	plan, err := a.prepareRuntimePlan(ctx, epoch, logical, inputs, seedBaselines)
 	if err != nil {
 		return err
 	}
@@ -100,11 +112,21 @@ func (a *App) swapModeFor(registry *factoryRegistry, next *ports.BridgeConfig) s
 	return registry.detectSwapMode(a.appliedRef.Get(), next)
 }
 
-func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfig, seed bool) (*runtimePlan, error) {
-	epoch := a.observationEpoch.Load()
+// applyEpoch is the observation epoch an apply is authorized under: the one its
+// repository observation carried when ctx has it, the current one otherwise. An
+// apply reads it before resolving anything, so a withdrawal during the
+// resolution is seen.
+func (a *App) applyEpoch(ctx context.Context) uint64 {
 	if observed, ok := ctx.Value(repositoryEpochKey{}).(uint64); ok {
-		epoch = observed
+		return observed
 	}
+	return a.observationEpoch.Load()
+}
+
+// resolveApplyInputs resolves what applying logical takes from outside the
+// document — the control-plane keys and the secrets it references — into the
+// runtime config, sized by the MQTT memory profile.
+func (a *App) resolveApplyInputs(ctx context.Context, logical *ports.BridgeConfig) (*resolvedInputs, error) {
 	inputs, err := resolveInputs(ctx, a.parameterResolver, a.cfg, a.pluginRegistry, logical)
 	if err != nil {
 		return nil, err
@@ -112,7 +134,12 @@ func (a *App) prepareRuntimePlan(ctx context.Context, logical *ports.BridgeConfi
 	if err := applyMQTTMemoryProfile(inputs.RuntimeConfig, a.cfg); err != nil {
 		return nil, err
 	}
+	return inputs, nil
+}
 
+func (a *App) prepareRuntimePlan(ctx context.Context, epoch uint64, logical *ports.BridgeConfig, inputs *resolvedInputs,
+	seed bool,
+) (*runtimePlan, error) {
 	registry := a.newFactoryRegistry(inputs.RuntimeConfig)
 	// Managed-subscription history is a prerequisite of durable MQTT sessions.
 	// Apply the bootstrap attestations before building a runtime that needs them,
@@ -290,7 +317,12 @@ func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) 
 	lifetime := a.runtimeStartCtx(ctx)
 	ctx, finish := a.recoveryContext(ctx)
 	defer finish()
-	plan, err := a.prepareRuntimePlan(ctx, logical, skipBaselineSeed)
+	epoch := a.applyEpoch(ctx)
+	inputs, err := a.resolveApplyInputs(ctx, logical)
+	var plan *runtimePlan
+	if err == nil {
+		plan, err = a.prepareRuntimePlan(ctx, epoch, logical, inputs, skipBaselineSeed)
+	}
 	if err != nil {
 		if a.recoveryRevoked(ctx) {
 			return
@@ -404,8 +436,12 @@ func (a *App) runtimeStartCtx(ctx context.Context) context.Context {
 	return ctx
 }
 
-func (a *App) authorizePlan(plan *runtimePlan) error {
-	if a.missing.Load() || a.wedged.Load() || plan.epoch != a.observationEpoch.Load() {
+func (a *App) authorizePlan(plan *runtimePlan) error { return a.authorize(plan.epoch) }
+
+// authorize refuses to act on a configuration observed under epoch once it is
+// withdrawn, the App is wedged, or the App is shutting down.
+func (a *App) authorize(epoch uint64) error {
+	if a.missing.Load() || a.wedged.Load() || epoch != a.observationEpoch.Load() {
 		return fmt.Errorf("bootstrap: configuration authorization withdrawn")
 	}
 	if a.rootCtx != nil {

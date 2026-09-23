@@ -150,8 +150,10 @@ type App struct {
 	// shuts down. Draining unblocks the long-lived SSE handlers so a fronting
 	// transport server.Shutdown does not hang, and disconnects clients pinned
 	// to the superseded mux so they reconnect to the newly installed one.
-	// Stored by installPlan alongside the other refs; an atomic.Pointer
-	// because Stop reads it after releasing a.mu (like the other refs).
+	// Stored by installPlan alongside the other refs, and by an in-place
+	// reload as a copy naming the configuration the runtime now runs; an
+	// atomic.Pointer because Stop reads it after releasing a.mu (like the
+	// other refs).
 	registryRef atomic.Pointer[factoryRegistry]
 
 	// Coordinated cluster rollout (design cluster-config-rollout-protocol.md
@@ -241,11 +243,15 @@ type App struct {
 
 	// onRuntimeInstalled and onReloadSkipped are test seams (nil in
 	// production). onRuntimeInstalled fires on every successful runtime
-	// install (swap); onReloadSkipped fires when applyLogicalIfChanged
-	// recognises an already-applied config and skips the rebuild. Tests use
-	// them to assert exactly one rebuild per admin commit.
+	// install (swap) and in-place reload; onReloadSkipped fires when
+	// applyLogicalIfChanged recognises an already-applied config and skips the
+	// rebuild. Tests use them to assert exactly one rebuild per admin commit.
 	onRuntimeInstalled func()
 	onReloadSkipped    func()
+	// extraTransports is a test seam (nil in production): newFactoryRegistry
+	// adds these factories to every registry, so a test runs a transport fake
+	// down every path a runtime is built on — first apply, swap and recovery.
+	extraTransports map[string]ports.TransportFactory
 }
 
 func NewApp(cfg deployinfra.BootstrapConfig, opts ...Option) *App {
