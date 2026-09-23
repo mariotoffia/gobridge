@@ -185,6 +185,12 @@ type router struct {
 	// They are matched before handlers so overlapping desired handlers cannot
 	// ACK traffic delivered through a stale wildcard/shared subscription.
 	managedCleanupFilters []string
+	// managedDesiredFilters are the plan's filters the cleanup gate was computed
+	// against. A gated delivery one of them also covers is live traffic for a
+	// replacement that overlaps a removed filter: replay settlement leaves it
+	// buffered, and resumeManagedDispatch delivers it once the gate narrows.
+	// Guarded by mu.
+	managedDesiredFilters []string
 
 	// clk sources time for the startup grace window. Defaults to
 	// clock.System; the Session injects its (possibly fake) clock.

@@ -304,7 +304,7 @@ func (s *Session) loadManagedSubscriptionHistory(ctx context.Context) error {
 		// Desired state is not declared until Reconcile. Gate every durable
 		// historical filter before broker activation so resumed traffic cannot
 		// reach a handler through a stale wildcard/shared subscription.
-		s.router.setManagedCleanupFilters(filters)
+		s.router.setManagedCleanupFilters(filters, nil)
 	}
 	return nil
 }
@@ -332,5 +332,9 @@ func (s *Session) syncManagedCleanupGate(plan connectivity.SessionPlan) {
 	if s.router == nil {
 		return
 	}
-	s.router.setManagedCleanupFilters(s.managedCleanupFilters(plan))
+	desired := make([]string, 0, len(plan.Subscriptions))
+	for _, sub := range plan.Subscriptions {
+		desired = append(desired, sub.Topic)
+	}
+	s.router.setManagedCleanupFilters(s.managedCleanupFilters(plan), desired)
 }

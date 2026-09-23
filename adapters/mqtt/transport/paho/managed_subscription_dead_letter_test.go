@@ -296,6 +296,78 @@ func TestManagedSubscriptionDeadLetterWritesShareOneReconcileBudget(t *testing.T
 	}
 }
 
+// reconcileOverlappingReplacement replaces the removed shared filter
+// $share/old/a/# with $share/new/a/#, which covers the same topics. A live
+// delivery on a/x reaches the replacement generation while the removed filter
+// still gates it. It returns the topics the new filter's handler received,
+// the durable history afterwards and the reconcile error.
+func reconcileOverlappingReplacement(t *testing.T, fake *deadLetterFake) (<-chan string, []string, error) {
+	t.Helper()
+	const oldFilter, newFilter = "$share/old/a/#", "$share/new/a/#"
+	operations := []string{}
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
+		"safe-session-id": {oldFilter: {}},
+	}}
+	first := &managedConnFake{operations: &operations}
+	replacement := &managedConnFake{operations: &operations}
+	session := newManagedTestSession(t, store, first)
+	if fake != nil {
+		session.SetRemovedSubscriptionDeadLetter(fake.write)
+	}
+	dials := 0
+	session.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		dials++
+		if dials == 1 {
+			return first, func() {}, nil
+		}
+		session.handleConnectionUp()
+		session.router.dispatch(&pahov5.Publish{Topic: "a/x", QoS: 1}, func() error { return nil })
+		return replacement, func() {}, nil
+	}
+	if err := session.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+	delivered := make(chan string, 4)
+	session.router.RegisterFiltered("replacement", []string{newFilter}, func(pub *pahov5.Publish, _ func() error) {
+		delivered <- pub.Topic
+	})
+
+	plan := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: newFilter, QoS: 1}}}
+	err := session.Reconcile(t.Context(), plan)
+	return delivered, store.snapshot("safe-session-id"), err
+}
+
+func TestManagedSubscriptionOverlappingReplacementDeliversLiveTrafficInsteadOfDeadLettering(t *testing.T) {
+	fake := &deadLetterFake{}
+	delivered, history, err := reconcileOverlappingReplacement(t, fake)
+	if err != nil {
+		t.Fatalf("overlapping replacement must converge: %v", err)
+	}
+	if log, _ := fake.snapshot(); len(log) != 0 {
+		t.Fatalf("live delivery for the replacement filter was dead-lettered: %v", log)
+	}
+	if got := wait.RequireReceive(t, delivered, 2*time.Second); got != "a/x" {
+		t.Fatalf("replacement handler received %q, want a/x", got)
+	}
+	if !equalManagedStrings(history, []string{"$share/new/a/#"}) {
+		t.Fatalf("history after overlapping replacement = %v, want only the new filter", history)
+	}
+}
+
+func TestManagedSubscriptionOverlappingReplacementWithoutDeadLetterPathDoesNotFailClosed(t *testing.T) {
+	delivered, history, err := reconcileOverlappingReplacement(t, nil)
+	if err != nil {
+		t.Fatalf("overlapping replacement without a dead-letter path must converge: %v", err)
+	}
+	if got := wait.RequireReceive(t, delivered, 2*time.Second); got != "a/x" {
+		t.Fatalf("replacement handler received %q, want a/x", got)
+	}
+	if !equalManagedStrings(history, []string{"$share/new/a/#"}) {
+		t.Fatalf("history after overlapping replacement = %v, want only the new filter", history)
+	}
+}
+
 func TestRouterDeadLetterPendingStopsAtFirstFailure(t *testing.T) {
 	r := newRouter(nil, nil)
 	r.mu.Lock()
