@@ -395,7 +395,7 @@ func TestRetire_OnStoppedRuntimeReturnsError(t *testing.T) {
 			prepare(t, rt)
 			closes := s1.closes.Load()
 
-			require.ErrorContains(t, rt.Retire(context.Background(), Unit{Sessions: []string{"s1"}}), "runtime is not running")
+			require.ErrorIs(t, rt.Retire(context.Background(), Unit{Sessions: []string{"s1"}}), ErrNotRunning)
 
 			assert.Equal(t, closes, s1.closes.Load(), "a refused Retire closes nothing")
 		})

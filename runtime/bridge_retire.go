@@ -15,6 +15,11 @@ type Unit struct {
 	Sessions []string
 }
 
+// ErrNotRunning is wrapped by a Retire or Graft that the runtime refuses
+// because it is not running: never started, stopped, terminal or fenced. Such a
+// refusal changes nothing, since nothing was taken out or moved in.
+var ErrNotRunning = errors.New("runtime is not running")
+
 // retiredUnit is what Retire took out of the runtime: the unit's registrations,
 // the runs of its route runners, session managers and drainers, its managers by
 // session id, its drainers, and the sessions no manager runs that only the unit
@@ -75,7 +80,8 @@ func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 	}
 	// Refreshers let go of the transports before those are closed, so no
 	// rotation that starts from here on reaches them. Forget does not wait for
-	// a rotation already being applied; the transport refuses it once closed.
+	// a rotation already being applied: an MQTT or AMQP session refuses it once
+	// closed, and any other transport at most swaps a client on a closed object.
 	rt.forgetCredentialTargets(ctx, d.set.credentialTargets())
 	finished := waitRuns(ctx, d.runs)
 	if !finished {
@@ -112,7 +118,7 @@ func (rt *Runtime) detach(u Unit) (*retiredUnit, error) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if !rt.running || rt.stopped || rt.terminal || rt.fenced {
-		return nil, errors.New("runtime: retire: runtime is not running")
+		return nil, fmt.Errorf("runtime: retire: %w", ErrNotRunning)
 	}
 	d := &retiredUnit{
 		set: componentSet{

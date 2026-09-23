@@ -67,7 +67,7 @@ func (rt *Runtime) Graft(part *Runtime) error {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if !rt.running || rt.stopped || rt.terminal || rt.fenced {
-		return errors.New("runtime: graft: runtime is not running")
+		return fmt.Errorf("runtime: graft: %w", ErrNotRunning)
 	}
 	part.mu.Lock()
 	defer part.mu.Unlock()

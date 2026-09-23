@@ -49,7 +49,8 @@ type preparedBuild struct {
 //
 // A BuildPlan that is prepared but never committed MUST be released via
 // BuildPlan.Close (or its alias Abort) so the transport-independent stores the
-// prepare phase opened (SQLite files, DynamoDB clients) are not leaked.
+// prepare phase opened (SQLite files, DynamoDB clients) are not leaked. A part's
+// plan borrows its stores from a running runtime and holds nothing to release.
 type BuildPlan struct {
 	b    *Builder
 	prep *preparedBuild
@@ -209,8 +210,7 @@ func (b *Builder) Preflight(ctx context.Context) error {
 	if err := b.validateIngressMemory(); err != nil {
 		return err
 	}
-
-	return nil
+	return validateManagedSubscriptionStore(b.cfg)
 }
 
 func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {

@@ -102,10 +102,6 @@ func (b *Builder) borrowStores(host runtime.Stores) (*storeResult, error) {
 // checkStores judges the stores a build runs over, whether it opened them or
 // borrowed them from the runtime a part joins.
 func (b *Builder) checkStores(res *storeResult) error {
-	if requiresManagedSubscriptionStore(b.cfg) && res.managedSubscriptions == nil {
-		return fmt.Errorf("bridge: persistent/exclusive MQTT sessions with desired subscriptions require stores.managed_subscriptions")
-	}
-
 	// Clustered posture is implied by configured cluster endpoints even when
 	// deployment_mode is unset: forwarding between
 	// instances with a process-local lease/outbox/DLQ store silently breaks

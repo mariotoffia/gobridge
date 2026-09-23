@@ -135,6 +135,30 @@ func TestBuildPart_RequiresManagedSubscriptionStoreWhenSubConfigNeedsIt(t *testi
 	assert.Nil(t, plan)
 }
 
+// The same requirement refuses a full build before it opens any store: it
+// reads only the configuration, so Preflight judges it.
+func TestBuild_MissingManagedSubscriptionStoreIsRefusedBeforeAnyStoreOpens(t *testing.T) {
+	sf := &openCountingStoreFactory{closableStoreFactory: closableStoreFactory{
+		lease: &closableLeaseStore{}, outbox: &closableOutboxStore{},
+	}}
+	cfg := applyTestConfig("m")
+	cfg.Stores = ports.StoresConfig{
+		Lease:  &ports.StoreConfig{Type: "closable"},
+		Outbox: &ports.StoreConfig{Type: "closable"},
+	}
+	cfg.Sessions[0].Transport = "mqtt"
+	cfg.Sessions[0].SessionMode = "persistent"
+	cfg.Receivers[0].Topics = []ports.SubscriptionDef{{Topic: "sensors/m", QoS: 1}}
+
+	_, err := NewBuilder(cfg).
+		RegisterTransportFactory("mqtt", newPerSessionTransportFactory(false)).
+		RegisterStoreFactory("closable", sf).
+		Build(context.Background())
+
+	require.ErrorContains(t, err, "stores.managed_subscriptions")
+	assert.Zero(t, sf.opens.Load(), "no store is opened for a configuration Preflight refuses")
+}
+
 // A part joins a runtime that was built for the same bridge-wide sections, so
 // a store the configuration names must be one the host holds.
 func TestBuildPart_RefusesStoresTheHostDoesNotHold(t *testing.T) {

@@ -88,9 +88,15 @@ func (r *InPlaceReload) Apply(ctx context.Context, rt *runtime.Runtime, newBuild
 			return InPlaceUnchanged, err
 		}
 	}
-	for _, u := range r.retire {
+	for i, u := range r.retire {
 		if err := r.retireUnit(ctx, rt, u); err != nil {
-			return InPlaceWedged, errors.Join(err, r.stopParts(ctx, parts))
+			// A first retire refused because rt stopped running took nothing out:
+			// nothing changed and no ownership is in doubt.
+			outcome := InPlaceWedged
+			if i == 0 && errors.Is(err, runtime.ErrNotRunning) {
+				outcome = InPlaceUnchanged
+			}
+			return outcome, errors.Join(err, r.stopParts(ctx, parts))
 		}
 	}
 	if r.serialized {

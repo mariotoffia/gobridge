@@ -232,7 +232,7 @@ func TestGraft_RefusesWhenHostNotRunning(t *testing.T) {
 			part := New(stores.options(WithSharedStores())...)
 			require.NoError(t, part.AddRoute(componentRoute("r2"), newComponentReceiver(), &componentSender{}, nil, nil))
 
-			require.ErrorContains(t, host.Graft(part), "runtime is not running")
+			require.ErrorIs(t, host.Graft(part), ErrNotRunning)
 
 			assert.Equal(t, []string{"r2"}, routeIDs(part), "a refused part keeps its routes")
 			assert.Empty(t, routeIDs(host))

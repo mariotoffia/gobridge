@@ -69,6 +69,16 @@ func sessionHasDesiredSubscriptions(cfg *ports.BridgeConfig, sessionID string) b
 	return false
 }
 
+// validateManagedSubscriptionStore refuses a configuration whose durable MQTT
+// sessions want subscriptions but that names no store to remember them. It
+// reads only the configuration, so Preflight refuses it before any store opens.
+func validateManagedSubscriptionStore(cfg *ports.BridgeConfig) error {
+	if requiresManagedSubscriptionStore(cfg) && cfg.Stores.ManagedSubscriptions == nil {
+		return fmt.Errorf("bridge: persistent/exclusive MQTT sessions with desired subscriptions require stores.managed_subscriptions")
+	}
+	return nil
+}
+
 func requiresManagedSubscriptionStore(cfg *ports.BridgeConfig) bool {
 	if cfg == nil {
 		return false
