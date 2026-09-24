@@ -234,8 +234,8 @@ table. See [ADR 0005](../adr/0005-outbox-partition-claim-design.md) and the
 | `DLQDepth` | none | Count (gauge) | CURRENT outstanding DLQ entries — the standing backlog "right now", so a stale burst after traffic stops is visible. Sampled via the store's optional `ports.DLQDepthReporter`; emitted as a dimensionless fleet total. |
 | `DLQWriteFailures` | none | Count | DLQ write attempts that failed after retries, or were skipped with no held lease |
 | `DLQDuplicateSuppressed` | none | Count | DLQ writes the store refused as an existing entry — the same terminal event recorded twice, collapsed onto one row and reported as success. A rising value means settlement is failing after DLQ writes land, not that the DLQ store is unhealthy |
-| `DLQRedrives` | `route_id` | Count | DLQ entries an admin redrive re-injected successfully |
-| `DLQRedriveFailures` | `route_id` | Count | Redrive attempts that failed during or after the claim |
+| `DLQRedrives` | `route_id` | Count | DLQ entries an admin or automatic redrive re-injected successfully |
+| `DLQRedriveFailures` | `route_id` | Count | Admin or automatic redrive attempts whose inject failed or was refused; the entry is kept |
 | `DLQWriteHold` | none | Milliseconds | Wall-clock time a synchronous DLQ write held its caller, and with it a route and a global concurrency slot. The write is deliberately synchronous and confirmed **before** the source delivery is settled — evidence must be at least as durable as the message it describes — so a DLQ-store outage backpressures intake instead of losing evidence. The hold is bounded by the router's attempt/timeout/backoff budget (10.5 s in the shipped wiring). Emitted on every route call, success and failure, so the series has a baseline instead of silence; a sustained maximum approaching the ceiling means the DLQ store, not the route, is stalling intake |
 
 **Circuit breaker**

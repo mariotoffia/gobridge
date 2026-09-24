@@ -178,9 +178,9 @@ a `direct_hold` route retries a recoverable send inside the bridge for that
 route's `send_retry_budget` (60s by default), so against a destination that is
 still down an entry fails after its 10 seconds and the next entry is still
 attempted; such a batch reaches about three entries. An entry the batch does not
-reach comes back with `redrive deadline exceeded before entry lookup`, or with
-`inject failed: context deadline exceeded` on a store whose lookup ignores the
-deadline (the in-memory store). A lookup that runs out of time reports the
+reach comes back with `redrive deadline exceeded before entry lookup`, or, on a
+store whose lookup ignores the deadline (the in-memory store), with an
+`inject failed: …` error that names the context deadline. A lookup that runs out of time reports the
 deadline, never `entry not found`. The delete that follows a confirmed inject is
 bounded by the batch only, so the entry's deadline cannot cut it off. Nothing is
 lost -- inject happens before delete, so an entry that was not redriven is still

@@ -80,9 +80,21 @@ and deletes each one once the route has delivered it
 ([automatic redrive](../http-api-admin.md#automatic-redrive)). It does not
 redrive records older than the window, records with an empty `route_id`,
 records filed under a route that was since renamed, or any record while the
-session has no single ingress route: redrive those by hand as below. A record
-whose automatic redrive failed stays in the store; its `dlq.redrive.auto` audit
-record has outcome `failure` and names the error.
+session has no single ingress route: redrive those by hand as below.
+
+A record whose automatic redrive failed stays in the store. The bridge logs a
+warning, `automatic redrive failed; the DLQ record is kept`, with the record's
+`dlq_id` and the error. It also writes a `dlq.redrive.auto` audit record with
+outcome `failure`, but only when the runtime has an audit logger: the AWS
+profile gives it one, the reference binary `cmd/gobridge` does not. When a
+failure stops the pass, the records after it are not attempted and get no log
+line or audit record of their own; they wait for the next time the filter is
+added back, or for you. An admin redrive you start while an automatic pass is
+running is not serialized with it, so one record can be redriven twice (a
+duplicate, as [ADR 0015](../adr/0015-dlq-redrive-inject-then-delete.md)
+allows, never a loss). Redrive by hand after the pass has ended: the bridge
+logs `automatic redrive pass finished` at debug level, with the counts of
+records redriven and failed.
 
 1. **Find the records.** The Admin API cannot filter by error code, so list the
    `permanent` entries and select on the response. Page with `offset` while

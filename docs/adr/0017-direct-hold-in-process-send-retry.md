@@ -240,8 +240,9 @@ smaller `send_retry_budget`, or larger session `connect_timeout` /
 - Because each entry has its own bound, a slow first entry fails on its own
   and the later entries of the batch are still attempted. Entries the batch
   does not reach before its 30 seconds end still come back `redrive deadline
-  exceeded before entry lookup` (or `inject failed: context deadline exceeded`
-  on a store whose lookup ignores its context), and stay in the store:
+  exceeded before entry lookup` (or, on a store whose lookup ignores its
+  context, an `inject failed: …` error that names the context deadline), and
+  stay in the store:
   inject-then-delete is unchanged. Against a destination that is down each
   attempted entry can use its full 10 seconds, so a batch reaches about three
   entries; retry the failed ids once the destination is healthy.

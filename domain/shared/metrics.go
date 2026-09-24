@@ -218,11 +218,11 @@ const (
 	// call (success and failure) so the alarm has a baseline instead of silence.
 	MetricDLQWriteHold   = "DLQWriteHold"
 	MetricDeliveryPanics = "DeliveryPanics"
-	// MetricDLQRedrives counts DLQ entries an admin redrive claimed and
+	// MetricDLQRedrives counts DLQ entries an admin or automatic redrive
 	// re-injected successfully (route_id-tagged). MetricDLQRedriveFailures counts
-	// redrive attempts that failed after (or during) the claim — inject failed,
-	// claim failed, or a restore was attempted — so an operator can alert on
-	// manual-recovery churn that the batch-level audit record does not surface.
+	// admin or automatic redrive attempts whose inject failed or was refused (the
+	// entry is kept), so an operator can alert on recovery churn that the
+	// batch-level audit record does not surface (ADR 0015, ADR 0019).
 	MetricDLQRedrives        = "DLQRedrives"
 	MetricDLQRedriveFailures = "DLQRedriveFailures"
 )

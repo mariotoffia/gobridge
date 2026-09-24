@@ -3,10 +3,10 @@
 Status: accepted
 Date: 2026-09-24
 Deciders: GoBridge core
+Amends: [0017](0017-direct-hold-in-process-send-retry.md) (its redrive-batch
+consequence: each entry of an admin redrive batch now has its own bound)
 Relates to: [0015](0015-dlq-redrive-inject-then-delete.md) (every rule of an
 admin redrive also holds for an automatic one),
-[0017](0017-direct-hold-in-process-send-retry.md) (its redrive-batch
-consequence is amended: each entry now has its own bound),
 [0003](0003-mqtt-persistent-session-hygiene.md) (the removed-subscription
 dead-letter this redrives)
 
@@ -161,12 +161,16 @@ unchanged.
   cannot lose a race with the entry bound.
 - A lookup that ends because a bound ran out reports `redrive deadline exceeded
   before entry lookup`, not `entry not found`. An entry the batch never reaches
-  reports that label, or `inject failed: context deadline exceeded` on a store
-  whose lookup ignores its context (the in-memory store).
+  reports that label, or, on a store whose lookup ignores its context (the
+  in-memory store), an `inject failed: …` error that names the context
+  deadline.
 - The automatic pass needs no bound per record. It stops at the first failure
   that is not about one message, so a destination that is down costs one
-  attempt, and each inject is already bounded by the route's own budgets
-  (`send_timeout`, `send_retry_budget`, `processor_timeout`).
+  attempt. Once an inject holds an in-flight slot on the route, the route's own
+  budgets bound it (`send_timeout`, `send_retry_budget`, `processor_timeout`).
+  The wait for that slot is bounded only by the pass's context, the runtime's
+  work context, which has no deadline: behind a full route the pass waits
+  until a slot frees or the runtime stops.
 
 ## Consequences
 
@@ -174,8 +178,9 @@ unchanged.
   dead-letters that are younger than the window, with no operator action. The
   runbook `docs/runbooks/mqtt-managed-subscription-migration.md` says what an
   operator still does by hand.
-- Known limits. Each of these leaves the records in the store for a manual
-  redrive; none loses a message.
+- Known limits. None of them loses a message: a record the pass does not
+  redrive stays in the store for a manual redrive, and a duplicate is the
+  at-least-once duplicate ADR 0015 already accepts.
   - Records filed under a route that was since renamed, or with an empty route
     (no single ingress route when they were written), are never listed: the
     pass lists by the current route.
@@ -192,11 +197,13 @@ unchanged.
     successful retry does not fire the trigger.
   - "One redrive per record across two events" relies on the DLQ store's read
     consistency. On DynamoDB the route index is eventually consistent, so the
-    same filter reported twice inside that lag can redrive a record twice. That
-    is a duplicate, which ADR 0015 already accepts (at-least-once).
-  - More than 100 records that were not redriven and share one `failed_at`
-    millisecond stop the paging for that pass; later records wait for the next
-    event.
+    same filter reported twice inside that lag can redrive a record twice.
+  - The pass lock serializes automatic passes only. An admin redrive of the
+    same record at the same time is not serialized with a pass, so the record
+    can be redriven twice.
+  - 100 or more records that were not redriven and share one `failed_at`
+    millisecond stop the paging for that pass: a full page of records already
+    seen gives nothing new. Later records wait for the next event.
   - A pass that waits for readiness holds one goroutine until the runtime is
     ready or stops.
 - A change of `auto_redrive_window` is a `stores` change, so a reload replaces

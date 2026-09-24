@@ -49,9 +49,13 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   `ports.SubscriptionAddedHookConfigurer` (the MQTT session implements both),
   `runtime.WithAutoRedriveWindow` (24h when not given),
   `ports.DefaultAutoRedriveWindow`,
-  `(*ports.StoreConfig).AutoRedriveWindowDuration`, `routing.RedriveMode`,
-  `(routing.DLQEntry).RedriveMode` / `ExtraInfo`, and `dlq.EntryOption` /
-  `dlq.AutoRedrive` as a variadic last argument of `(*dlq.Router).Route`.
+  `(*ports.StoreConfig).AutoRedriveWindowDuration`, `routing.RedriveMode`
+  with `routing.RedriveManual` / `routing.RedriveAuto`, the ExtraInfo keys
+  `routing.ExtraInfoSessionID` / `routing.ExtraInfoSubscription` /
+  `routing.ExtraInfoManagedIdentity`, `routing.DLQEntrySpec` fields
+  `RedriveMode` / `ExtraInfo`, `(routing.DLQEntry).RedriveMode` / `ExtraInfo`,
+  and `dlq.EntryOption` / `dlq.AutoRedrive` as a variadic last argument of
+  `(*dlq.Router).Route`.
 
 ### Changed — each redriven entry has its own deadline
 
@@ -59,10 +63,10 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   each entry's lookup and inject now also get at most 10 seconds of it. A first
   entry whose destination is down no longer uses up the whole batch: it fails
   on its own and the later entries are still attempted. Entries the batch does
-  not reach still report `redrive deadline exceeded before entry lookup` (or
-  `inject failed: context deadline exceeded` on the in-memory store), and so
-  does a lookup that runs past its own 10 seconds. Inject-then-delete is
-  unchanged. See the
+  not reach still report `redrive deadline exceeded before entry lookup` (on
+  the in-memory store, an `inject failed: …` error that names the context
+  deadline), and so does a lookup that runs past its own 10 seconds.
+  Inject-then-delete is unchanged. See the
   [Admin API reference](docs/http-api-admin.md#dlq-redrive).
 
 ### Added — a configuration change reconnects only what it changed
