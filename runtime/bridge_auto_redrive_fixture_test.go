@@ -265,8 +265,9 @@ func (a *recordingAudit) autoRedrives() []ports.AuditEvent {
 	return out
 }
 
-// autoRedriveFixture is one runtime with route r1, a direct_hold route whose
-// receiver subscribes through the managed session plant-a, over a DLQ store.
+// autoRedriveFixture is one runtime with route routeID (r1 unless a test built
+// its own), a direct_hold route whose receiver subscribes through the managed
+// session plant-a, over a DLQ store.
 type autoRedriveFixture struct {
 	clk     *clocktest.Fake
 	store   *orderedDLQStore
@@ -276,6 +277,7 @@ type autoRedriveFixture struct {
 	metrics *ports.RecordingExporter
 	logs    *logCaptureHandler
 	rt      *goruntime.Runtime
+	routeID string
 }
 
 // newAutoRedriveFixture builds, without starting it, a runtime over its own
@@ -304,6 +306,7 @@ func newAutoRedriveRuntime(tb testing.TB, store *orderedDLQStore, instanceID, id
 		audit:   &recordingAudit{},
 		metrics: &ports.RecordingExporter{},
 		logs:    &logCaptureHandler{},
+		routeID: route.ID,
 	}
 	base := []goruntime.Option{
 		goruntime.WithInstanceID(instanceID),
@@ -347,6 +350,14 @@ func (f *autoRedriveFixture) start(tb testing.TB) {
 		tb.Fatalf("Start: %v", err)
 	}
 	tb.Cleanup(func() { _ = f.rt.Stop(context.Background()) })
+	// A pass that finds the route runner not yet in Run waits on the fake clock,
+	// which a test that does not advance it never moves. Wait for the runner, so
+	// every pass the test starts sees a ready route on its first check.
+	ctx, cancel := context.WithTimeout(context.Background(), autoRedriveWait)
+	defer cancel()
+	if err := f.rt.WaitRouteReady(ctx, f.routeID); err != nil {
+		tb.Fatalf("WaitRouteReady %s: %v", f.routeID, err)
+	}
 }
 
 // seed stores record(id, age, mutate...).
