@@ -66,8 +66,9 @@ func (s *Supervisor) planInPlace(oldRt *runtime.Runtime, oldCfg, newCfg *ports.B
 // changed or the retired units were restored, oldRt keeps serving the running
 // configuration. When oldRt runs neither configuration, it is replaced as a
 // failed swap replaces the old runtime: stopped, then the running configuration
-// built afresh, or a wedge when either step fails. When a retired unit did not
-// stop cleanly, the Supervisor stops oldRt and wedges (ADR-0004).
+// built afresh, or a wedge when either step fails. When a retired unit, or a
+// part built for a serialized reload, did not stop cleanly, the Supervisor
+// stops oldRt and wedges (ADR-0004).
 func (s *Supervisor) applyInPlace(ctx context.Context, oldRt *runtime.Runtime, oldCfg *ports.BridgeConfig, plan *InPlaceReload) (*runtime.Runtime, error) {
 	plan.DrainTimeout = s.drainTimeoutFrom(oldCfg)
 	outcome, err := plan.Apply(ctx, oldRt, s.newBuilder, s.swapPhaseCtx)

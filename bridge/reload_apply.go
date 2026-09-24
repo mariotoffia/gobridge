@@ -27,10 +27,11 @@ const (
 	// replaces the runtime: it stops it and builds the running configuration
 	// afresh.
 	InPlaceTorn
-	// InPlaceWedged: a retired unit did not stop cleanly, so whether its
-	// sessions still hold their broker identities is unknown. The caller stops
-	// the runtime and wedges instead of building anything that could claim them
-	// a second time (ADR-0004).
+	// InPlaceWedged: a retired unit did not stop cleanly, or a part built for a
+	// serialized reload did not stop, so whether its sessions still hold their
+	// broker identities is unknown. The caller stops the runtime and wedges
+	// instead of building anything that could claim them a second time
+	// (ADR-0004).
 	InPlaceWedged
 )
 
@@ -81,7 +82,9 @@ func (o InPlaceOutcome) String() string {
 // parts are built after, so no exclusive broker identity is ever held twice;
 // otherwise the parts are built while the retired units still serve, and a
 // failed build changes nothing. A failure once a unit has retired restores the
-// retired units from the running configuration, unless rt stopped running.
+// retired units from the running configuration, unless rt stopped running or
+// something that may still hold an identity they claim did not stop (see
+// restore).
 func (r *InPlaceReload) Apply(ctx context.Context, rt *runtime.Runtime, newBuilder func(*ports.BridgeConfig) *Builder,
 	phase func(context.Context) (context.Context, context.CancelFunc),
 ) (InPlaceOutcome, error) {
@@ -99,7 +102,7 @@ func (r *InPlaceReload) Apply(ctx context.Context, rt *runtime.Runtime, newBuild
 	var parts []*runtime.Runtime
 	if !r.serialized {
 		if parts, err = r.buildParts(ctx, plans, phase); err != nil {
-			return InPlaceUnchanged, err
+			return InPlaceUnchanged, errors.Join(err, r.stopParts(ctx, parts))
 		}
 	}
 	for i, u := range r.retire {
@@ -119,7 +122,7 @@ func (r *InPlaceReload) Apply(ctx context.Context, rt *runtime.Runtime, newBuild
 	}
 	if r.serialized {
 		if parts, err = r.buildParts(ctx, plans, phase); err != nil {
-			return r.restore(ctx, rt, newBuilder, phase, nil, nil, err)
+			return r.restore(ctx, rt, newBuilder, phase, nil, parts, err)
 		}
 	}
 	for i, part := range parts {
@@ -153,8 +156,9 @@ func (r *InPlaceReload) prepareParts(ctx context.Context, rt *runtime.Runtime, n
 }
 
 // buildParts commits the plan of every added unit, in order, in one phase. On
-// a failure it stops the parts already built, so a failed build leaves nothing
-// open.
+// a failure it returns the parts already built with the error, for the caller
+// to stop: whether a part that does not stop wedges the reload depends on
+// whether it is serialized.
 func (r *InPlaceReload) buildParts(ctx context.Context, plans []*BuildPlan,
 	phase func(context.Context) (context.Context, context.CancelFunc),
 ) ([]*runtime.Runtime, error) {
@@ -164,8 +168,7 @@ func (r *InPlaceReload) buildParts(ctx context.Context, plans []*BuildPlan,
 	for i, plan := range plans {
 		part, err := plan.Commit(buildCtx)
 		if err != nil {
-			err = fmt.Errorf("in-place reload: build unit (%v): %w", r.add[i], err)
-			return nil, errors.Join(err, r.stopParts(ctx, parts))
+			return parts, fmt.Errorf("in-place reload: build unit (%v): %w", r.add[i], err)
 		}
 		parts = append(parts, part)
 	}
@@ -180,12 +183,20 @@ func (r *InPlaceReload) buildParts(ctx context.Context, plans []*BuildPlan,
 //
 // A grafted unit that does not retire cleanly wedges, as a retired unit does
 // in Apply: its sessions may still hold the identities the restored units
-// claim.
+// claim. When r is serialized, so does a part that does not stop: a serialized
+// reload's parts may contend with the restored units for an exclusive
+// identity, which some transports claim as a part is built. A build-first
+// reload's parts contend for none, so restore carries on.
 func (r *InPlaceReload) restore(ctx context.Context, rt *runtime.Runtime, newBuilder func(*ports.BridgeConfig) *Builder,
 	phase func(context.Context) (context.Context, context.CancelFunc),
 	grafted []reloadUnit, unused []*runtime.Runtime, cause error,
 ) (InPlaceOutcome, error) {
-	cause = errors.Join(cause, r.stopParts(ctx, unused))
+	if err := r.stopParts(ctx, unused); err != nil {
+		cause = errors.Join(cause, err)
+		if r.serialized {
+			return InPlaceWedged, cause
+		}
+	}
 	for _, u := range grafted {
 		if err := r.retireUnit(ctx, rt, u); err != nil {
 			return InPlaceWedged, errors.Join(cause, err)
