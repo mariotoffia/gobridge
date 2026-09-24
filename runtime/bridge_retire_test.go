@@ -297,6 +297,10 @@ func TestGraft_RefusesTheIDsOfAUnitStillBeingRetired(t *testing.T) {
 	sameSession := New(stores.options(WithSharedStores())...)
 	require.NoError(t, sameSession.RegisterSessionSender(session.Config{SessionID: "s1"}, newRetireSession(), nopRouteSender{}))
 	require.ErrorContains(t, rt.Graft(sameSession), `session "s1" is still being retired`)
+
+	sameSessionObject := New(stores.options(WithSharedStores())...)
+	require.NoError(t, sameSessionObject.AddRoute(componentRoute("r2"), newComponentReceiver(), &componentSender{}, s1, nil))
+	require.ErrorContains(t, rt.Graft(sameSessionObject), `part route "r2" uses a session object of the runtime`)
 }
 
 // TestRetire_UnregistersExclusiveRouteFromLocator pins that a retired exclusive

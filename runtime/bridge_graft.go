@@ -55,7 +55,8 @@ func WithSharedStores() Option {
 // wiring pass wires a session together with the routes that come with it, so
 // such a route would get no drainer or settlement barrier for the other side's
 // session, and the two sides would no longer be separate reload units. Graft
-// refuses a part that breaks this where the route names the session by id.
+// refuses a part that breaks this, whether the route names the session by id or
+// was added with the other side's session object.
 //
 // On success part is consumed: it holds nothing, a later Start fails, and a
 // later Stop is a no-op. On a refusal part is left exactly as it was, and the
@@ -166,7 +167,71 @@ func (rt *Runtime) graftCollisionLocked(part *Runtime) error {
 				"retire the route with the unit that brings its session", entry.config.ID, sid)
 		}
 	}
+	return rt.graftSessionObjectsLocked(part)
+}
+
+// graftSessionObjectsLocked is the closure check by object: a hand-wired route
+// with no session block rides on the session registered with the object it was
+// added with, even when its configuration names no session id (see
+// attachIngressSessions), so the id check alone cannot see it. The runtime side
+// counts the units still being retired, as the id check does. The caller holds
+// rt.mu and part.mu.
+func (rt *Runtime) graftSessionObjectsLocked(part *Runtime) error {
+	hostObjects := componentSet{entries: rt.entries, sessionSenders: rt.sessionSenders, ingressSessions: rt.ingressSessions}.registeredSessions()
+	for _, u := range rt.retiring {
+		hostObjects = append(hostObjects, u.set.registeredSessions()...)
+	}
+	partObjects := componentSet{entries: part.entries, sessionSenders: part.sessionSenders, ingressSessions: part.ingressSessions}.registeredSessions()
+	for _, entry := range part.entries {
+		if ridesOnSessionObject(entry, hostObjects) {
+			return fmt.Errorf("runtime: graft: part route %q uses a session object of the runtime; "+
+				"a part must bring every session its routes use", entry.config.ID)
+		}
+	}
+	for _, entry := range rt.entries {
+		if ridesOnSessionObject(entry, partObjects) {
+			return fmt.Errorf("runtime: graft: route %q uses a session object the part brings; "+
+				"retire the route with the unit that brings its session", entry.config.ID)
+		}
+	}
 	return nil
+}
+
+// registeredSessions returns the session objects s gives a manager: route
+// primary sessions, session senders and ingress sessions. A session a route
+// merely holds is left out, since no manager or barrier comes with it.
+func (s componentSet) registeredSessions() []ports.Session {
+	var objs []ports.Session
+	for _, entry := range s.entries {
+		if entry.sessCfg != nil && entry.session != nil {
+			objs = append(objs, entry.session)
+		}
+	}
+	for _, sse := range s.sessionSenders {
+		objs = append(objs, sse.session)
+	}
+	for _, ise := range s.ingressSessions {
+		objs = append(objs, ise.session)
+	}
+	return objs
+}
+
+// ridesOnSessionObject reports whether entry rides on one of objs by the rule
+// the wiring pass uses: a route with no session block of its own rides on the
+// session it was added with. A route with a session block is managed under its
+// own id, which the id check covers. A session whose dynamic type is not
+// comparable panics on ==; it counts as shared, so the check refuses instead
+// of crashing its caller.
+func ridesOnSessionObject(entry *routeEntry, objs []ports.Session) (shared bool) {
+	if entry.sessCfg != nil || entry.session == nil {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			shared = true
+		}
+	}()
+	return slices.Contains(objs, entry.session)
 }
 
 // usedSessionIn returns the session of ids that entry's route rides on or binds
