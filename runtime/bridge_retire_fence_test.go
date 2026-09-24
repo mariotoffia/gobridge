@@ -123,6 +123,33 @@ func TestRetire_DLQWritesDuringTheDrainAreFencedOnTheHeldLease(t *testing.T) {
 	require.NoError(t, wait.RequireReceive(t, u.retired, 5*time.Second))
 }
 
+// TestRetire_RepeatedRetireKeepsTheDrainingUnitFenced pins that a second Retire
+// naming the ids of a unit still draining takes nothing out and so clears
+// nothing: the exclusive mark stays, and a DLQ write for the session is still
+// fenced on the draining manager's lease rather than let through unfenced. The
+// draining Retire clears the mark once it finishes.
+func TestRetire_RepeatedRetireKeepsTheDrainingUnitFenced(t *testing.T) {
+	u := startRetiringUnit(t)
+
+	retire(t, u.rt, Unit{Routes: []string{"r1"}, Sessions: []string{"s1"}})
+
+	u.rt.mu.Lock()
+	marked := u.rt.exclusiveSessions["s1"]
+	u.rt.mu.Unlock()
+	assert.True(t, marked, "the draining unit's exclusive mark stays")
+	want, held := u.mgr.Token()
+	require.True(t, held, "precondition: the draining session still holds its lease")
+	got, allowed := u.rt.dlqToken("s1")
+	assert.True(t, allowed)
+	assert.Equal(t, want, got, "the write is fenced on the draining manager's lease")
+
+	u.release()
+	require.NoError(t, wait.RequireReceive(t, u.retired, 5*time.Second))
+	u.rt.mu.Lock()
+	defer u.rt.mu.Unlock()
+	assert.NotContains(t, u.rt.exclusiveSessions, "s1", "the draining Retire clears its mark once it finishes")
+}
+
 // TestRetire_KeepsRefusingDLQWritesWhenAComponentDidNotStop pins that when a
 // retired component does not stop, its exclusive session keeps refusing DLQ
 // writes: the lease is released once the manager closes, so a write from the

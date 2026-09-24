@@ -116,7 +116,7 @@ func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 			errs = append(errs, fmt.Errorf("runtime: retire: closing unmanaged session %q: %w", ref.sid, err))
 		}
 	}
-	rt.finishRetire(d, u, finished)
+	rt.finishRetire(d, finished)
 	return errors.Join(errs...)
 }
 
@@ -207,12 +207,20 @@ func (rt *Runtime) detach(u Unit) (*retiredUnit, error) {
 // and session health records are cleared either way, since a supervisor still
 // winding down may otherwise leave a fault for a successor under the same id;
 // a terminal runtime keeps the faults that ended it.
-func (rt *Runtime) finishRetire(d *retiredUnit, u Unit, finished bool) {
+//
+// Only what d took out is cleared, never every id the caller named: a second
+// Retire naming a unit still draining takes nothing out, and clearing the
+// draining unit's exclusive mark would let a DLQ write for its session through
+// unfenced, while clearing its supervisors' records would hide a fault of a
+// component still winding down.
+func (rt *Runtime) finishRetire(d *retiredUnit, finished bool) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if finished {
 		rt.retiring = slices.DeleteFunc(rt.retiring, func(r *retiredUnit) bool { return r == d })
-		for _, sid := range u.Sessions {
+		detached := make(map[string]bool)
+		addSessionIDs(detached, d.set, d.managers)
+		for sid := range detached {
 			if _, successor := rt.sessionMgrs[sid]; !successor {
 				delete(rt.exclusiveSessions, sid)
 			}
@@ -221,7 +229,8 @@ func (rt *Runtime) finishRetire(d *retiredUnit, u Unit, finished bool) {
 	if rt.terminal {
 		return
 	}
-	for _, sid := range u.Sessions {
+	// Session health records are written by the supervisors of managers only.
+	for sid := range d.managers {
 		delete(rt.componentErrors, "session:"+sid)
 	}
 	for _, entry := range d.set.entries {
