@@ -17,9 +17,18 @@ type InPlaceOutcome int
 const (
 	// InPlaceApplied: the runtime runs the next configuration. The error is nil.
 	InPlaceApplied InPlaceOutcome = iota
-	// InPlaceUnchanged: the runtime still runs the running configuration,
-	// because nothing was retired or the retired units were restored. The error
-	// says why the reload failed; the caller keeps the runtime.
+	// InPlaceUnchanged: the reload left the runtime's units as it found them:
+	// no unit was retired or grafted, or every unit grafted was retired again
+	// and every retired unit restored. The error says why the reload failed;
+	// the caller keeps the runtime.
+	//
+	// It makes no claim that the runtime is running. A runtime stops or goes
+	// terminal while a reload runs only through shutdown, a terminal component
+	// failure or a configuration fence, and whoever did that owns it exactly as
+	// without a reload: the shutdown path, the terminal backstop that restarts
+	// the process (ADR-0004), or the path that withdrew the configuration.
+	// Reporting torn instead would have the caller rebuild a terminal runtime
+	// in-process, which no other terminal runtime gets.
 	InPlaceUnchanged
 	// InPlaceTorn: the runtime runs neither configuration, because a failure
 	// after units were retired could not restore them, or the runtime stopped
@@ -74,7 +83,9 @@ func (o InPlaceOutcome) String() string {
 // one: the watcher Start leaves on its context stops rt at shutdown whatever
 // the caller holds. Stop leaves a unit being retired to its Retire and may
 // close rt's stores before that Retire releases the unit's leases through them,
-// so a reload caught by shutdown fails, and at worst reports wedged.
+// so a reload caught by shutdown fails, and at worst reports wedged. A reload
+// that finds rt not running before it retires anything reports unchanged, as it
+// touched nothing, and leaves rt to whatever stopped it (see InPlaceUnchanged).
 //
 // The whole next document is validated and every added unit prepared before
 // anything is retired, so a configuration a full build would refuse changes

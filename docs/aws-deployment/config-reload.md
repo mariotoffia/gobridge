@@ -133,7 +133,9 @@ outcome and the error, and ends one of three ways:
 
 - **unchanged** — nothing was retired, or the retired units were rebuilt from
   the running configuration and put back. The runtime keeps serving the old
-  configuration, and the change is rejected like any failed apply;
+  configuration, unless a shutdown, terminal failure or configuration fence
+  stopped it meanwhile, which that path handles as it would without a reload,
+  and the change is rejected like any failed apply;
 - **torn** — units were retired and could not be restored, or the runtime
   stopped running before the rest were retired. The runtime is stopped and the
   previous configuration rebuilt, as after a failed prepare/commit swap;
