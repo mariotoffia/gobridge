@@ -81,6 +81,56 @@ func (p *perURIPushStore) watchCtx(t *testing.T, uri string) context.Context {
 
 var _ ports.PushCredentialStore = (*perURIPushStore)(nil)
 
+// ctxBoundWatchStore is a push store whose single Watch blocks until the
+// context it was handed ends, then returns a channel holding a rotation: a
+// poller started after that finds the rotation and the cancellation both ready
+// and may take either.
+type ctxBoundWatchStore struct {
+	entered  chan struct{}
+	returned chan struct{}
+	ctx      context.Context // set before entered closes
+}
+
+func (s *ctxBoundWatchStore) Watch(ctx context.Context, _ string) (<-chan *connectivity.CredentialSet, error) {
+	s.ctx = ctx
+	close(s.entered)
+	<-ctx.Done()
+	ch := make(chan *connectivity.CredentialSet, 1)
+	ch <- connectivity.NewCredentialSet(pwCred("late", "p"), nil)
+	close(s.returned)
+	return ch, nil
+}
+
+var _ ports.PushCredentialStore = (*ctxBoundWatchStore)(nil)
+
+// TestClose_WaitsForFirstWatchInFlight pins that a Close racing the first Watch
+// of a URI waits for that Watch, and that no poller starts once Close has
+// cancelled it: none outlives Close to rotate credentials into a closed target.
+func TestClose_WaitsForFirstWatchInFlight(t *testing.T) {
+	t.Parallel()
+
+	push := &ctxBoundWatchStore{entered: make(chan struct{}), returned: make(chan struct{})}
+	r := NewCredentialRefresher(push, nil)
+	target := newCredTarget()
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		r.Watch(t.Context(), "file://creds", target)
+	}()
+	wait.RequireClosed(t, push.entered, 2*time.Second)
+
+	r.Close()
+
+	require.Error(t, push.ctx.Err(), "Close cancels the Watch in flight")
+	select {
+	case <-push.returned:
+	default:
+		t.Fatal("Close returned while the first Watch of a URI was still establishing its poller")
+	}
+	wait.RequireClosed(t, watched, 2*time.Second)
+	require.Empty(t, target.applied, "no poller may start after Close and apply the rotation")
+}
+
 func newCredTarget() *credAwareFakeSession {
 	return &credAwareFakeSession{fakeSession: &fakeSession{}, applied: make(chan *connectivity.CredentialSet, 4)}
 }

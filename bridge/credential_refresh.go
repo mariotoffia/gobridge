@@ -252,6 +252,9 @@ func (r *CredentialRefresher) watchTarget(uri string, target any, kind string) {
 	}
 	pollCtx, stopPoll := context.WithCancel(r.ctx)
 	r.pollers[uri] = stopPoll
+	// Counted while the refresher is still open: a Close from here on waits
+	// for this poller instead of returning while Watch is still establishing it.
+	r.wg.Add(1)
 	r.mu.Unlock()
 
 	ch, err := r.push.Watch(pollCtx, uri)
@@ -271,10 +274,17 @@ func (r *CredentialRefresher) watchTarget(uri string, target any, kind string) {
 		delete(r.pollers, uri)
 		r.mu.Unlock()
 		stopPoll()
+		r.wg.Done()
 		return
 	}
 
-	r.wg.Add(1)
+	// Close or Forget may have cancelled the poller while Watch ran. Starting it
+	// anyway is not harmless: its select may find a rotation ready alongside the
+	// cancellation and apply it to a target that is closed or forgotten.
+	if pollCtx.Err() != nil {
+		r.wg.Done()
+		return
+	}
 	go r.run(pollCtx, uri, ch)
 }
 
@@ -432,8 +442,9 @@ func (r *CredentialRefresher) applyOne(
 	}
 }
 
-// Close cancels all watcher goroutines and waits for them to exit.
-// After Close, further Watch calls are no-ops.
+// Close cancels all watcher goroutines and waits for them to exit, including
+// the push store Watch of a poller still being established, so no poller runs
+// once Close returns. After Close, further Watch calls are no-ops.
 func (r *CredentialRefresher) Close() {
 	if r == nil {
 		return
