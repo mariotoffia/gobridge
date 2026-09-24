@@ -104,8 +104,10 @@ ADR-0018, `docs/internals/architecture-message-flow.md`,
   or the rebuild fails; `wedged` stops it and wedges without building anything.
 - A serialized reload wedges, rather than restore, when a part built for it
   does not stop: that part may still hold the exclusive identity a restored
-  unit would claim. A build-first part claims none, so its stop failure leaves
-  the reload `unchanged`.
+  unit would claim. It wedges, rather than tear, when a restored part whose
+  graft is refused does not stop, as the torn rebuild would claim its identity.
+  A build-first part claims none, so its stop failure leaves the reload
+  `unchanged`.
 
 ## Timers, waits and locks
 

@@ -58,6 +58,52 @@ func TestApply_SerializedGraftRefusalWithAPartThatDoesNotStopIsWedged(t *testing
 	assert.Equal(t, []int{0}, tf.closeCounts("a-s"))
 }
 
+// A restored unit whose graft is refused leaves the runtime running neither
+// configuration. The part built to restore it claims the exclusive identity the
+// retired unit held, so in a serialized reload a part that does not stop wedges
+// the reload: the caller's torn handling would rebuild the running
+// configuration and claim that identity beside it. A part that stops leaves no
+// ownership in doubt, and the reload is torn.
+//
+// One retired unit listed twice, a plan no split produces, makes the second
+// restore collide with the first; its second retire finds nothing to retire.
+func TestApply_SerializedRestoreGraftRefusal(t *testing.T) {
+	cases := map[string]struct {
+		closeErr error
+		want     InPlaceOutcome
+	}{
+		"a restored part that does not stop is wedged": {closeErr: errCloseRefused, want: InPlaceWedged},
+		"a restored part that stops is torn":           {want: InPlaceTorn},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			tf := newPerSessionTransportFactory(true)
+			newBuilder := applyTestBuilder(tf)
+			running := applyTestConfig("a", "b")
+			rt := startApplyTestRuntime(t, newBuilder, running)
+			plan := planApplyTest(t, tf, running, changeRoute(applyTestConfig("a", "b"), "b"))
+			require.True(t, plan.Serialized())
+			plan.retire = append(plan.retire, plan.retire[0])
+			tf.refuseSessions("b-s", 1) // the added unit's part fails to build, so restore runs
+			// #1 the running unit, retired; #2 the first restore, grafted; #3 the
+			// second restore, refused.
+			if tc.closeErr != nil {
+				tf.refuseClose("b-s", 3, tc.closeErr)
+			}
+
+			outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
+
+			require.ErrorIs(t, err, errSessionRefused)
+			require.ErrorContains(t, err, "already registered")
+			if tc.closeErr != nil {
+				require.ErrorIs(t, err, tc.closeErr)
+			}
+			assert.Equal(t, tc.want, outcome)
+			assert.Equal(t, []int{1, 0, 1}, tf.closeCounts("b-s"), "the refused restored part is stopped")
+		})
+	}
+}
+
 // A build-first reload's added units claim no exclusive identity, so a part
 // that does not stop after a failed build holds nothing the running units
 // claim: the reload changes nothing and reports the stop failure.

@@ -36,9 +36,9 @@ const (
 	// replaces the runtime: it stops it and builds the running configuration
 	// afresh.
 	InPlaceTorn
-	// InPlaceWedged: a retired unit did not stop cleanly, or a part built for a
-	// serialized reload did not stop, so whether its sessions still hold their
-	// broker identities is unknown. The caller stops the runtime and wedges
+	// InPlaceWedged: a retired unit did not stop cleanly, or a part a serialized
+	// reload built or restored did not stop, so whether its sessions still hold
+	// their broker identities is unknown. The caller stops the runtime and wedges
 	// instead of building anything that could claim them a second time
 	// (ADR-0004).
 	InPlaceWedged
@@ -197,7 +197,10 @@ func (r *InPlaceReload) buildParts(ctx context.Context, plans []*BuildPlan,
 // claim. When r is serialized, so does a part that does not stop: a serialized
 // reload's parts may contend with the restored units for an exclusive
 // identity, which some transports claim as a part is built. A build-first
-// reload's parts contend for none, so restore carries on.
+// reload's parts contend for none, so restore carries on. For the same reason a
+// serialized reload wedges, rather than tear, when a restored part whose graft
+// is refused does not stop: the caller's torn handling would rebuild the
+// running configuration and claim that part's identity beside it.
 func (r *InPlaceReload) restore(ctx context.Context, rt *runtime.Runtime, newBuilder func(*ports.BridgeConfig) *Builder,
 	phase func(context.Context) (context.Context, context.CancelFunc),
 	grafted []reloadUnit, unused []*runtime.Runtime, cause error,
@@ -216,14 +219,19 @@ func (r *InPlaceReload) restore(ctx context.Context, rt *runtime.Runtime, newBui
 	buildCtx, cancel := phase(ctx)
 	defer cancel()
 	for _, u := range r.retire {
+		outcome := InPlaceTorn
 		part, err := newBuilder(u.sub).buildPart(buildCtx, rt)
 		if err == nil {
 			if err = rt.Graft(part); err != nil {
-				err = errors.Join(err, r.stopParts(ctx, []*runtime.Runtime{part}))
+				stopErr := r.stopParts(ctx, []*runtime.Runtime{part})
+				if stopErr != nil && r.serialized {
+					outcome = InPlaceWedged
+				}
+				err = errors.Join(err, stopErr)
 			}
 		}
 		if err != nil {
-			return InPlaceTorn, errors.Join(cause, fmt.Errorf("in-place reload: restore unit (%v): %w", u, err))
+			return outcome, errors.Join(cause, fmt.Errorf("in-place reload: restore unit (%v): %w", u, err))
 		}
 	}
 	return InPlaceUnchanged, cause
