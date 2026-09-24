@@ -37,6 +37,10 @@ type retiredUnit struct {
 	// with every component stopped. Until then its routes may still use the
 	// sessions they hold, so another Retire leaves those open.
 	stopped bool
+	// forgot is set under rt.mu once Retire has let go of the unit's credential
+	// targets. Until then its routes may still be draining through them, so
+	// another Retire keeps them watched.
+	forgot bool
 }
 
 // Retire drains, stops and removes the routes and sessions u names, while every
@@ -54,8 +58,9 @@ type retiredUnit struct {
 // runs and no route left running was added with. Such a session held by a unit
 // another Retire has not yet stopped stays open, and the Retire finishing last
 // closes it. Credential
-// refreshers stop watching its transports no route left running holds, and one
-// left watching nothing is closed. Until Retire has finished with the unit, a Fence still fences its
+// refreshers stop watching its transports no route left running holds, nor a
+// unit another Retire is still draining, and one left watching nothing is
+// closed. Until Retire has finished with the unit, a Fence still fences its
 // drainers, and a DLQ write for one of its exclusive sessions is still fenced
 // on that session's lease. Graft refuses the unit's ids until Retire returns:
 // until then the retired ids' health records and exclusive marks are still
@@ -319,11 +324,24 @@ func (s componentSet) credentialTargets() []any {
 	return targets
 }
 
-// releasedCredentialTargets returns the credential targets of d that rt no
-// longer holds. A hand-wired route left running may still ride on a session
-// object d held (see detach), and that route's credentials must keep rotating.
+// releasedCredentialTargets returns the credential targets of d whose
+// credentials nothing may still need rotated: rt no longer holds one, since a
+// hand-wired route left running may still ride on a session object d held, and
+// no other unit being retired that has not yet let go of its own targets holds
+// one, since its routes may still be draining through it. d lets go under the
+// same lock, so of two Retires sharing a target the one that gets here second
+// forgets it, exactly once. A unit lets go here whether or not its components
+// then stop, as its own targets are forgotten here too.
 func (rt *Runtime) releasedCredentialTargets(d *retiredUnit) []any {
-	held := rt.CredentialTargets()
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	d.forgot = true
+	held := componentSet{entries: rt.entries, sessionSenders: rt.sessionSenders, ingressSessions: rt.ingressSessions}.credentialTargets()
+	for _, u := range rt.retiring {
+		if !u.forgot {
+			held = append(held, u.set.credentialTargets()...)
+		}
+	}
 	return slices.DeleteFunc(d.set.credentialTargets(), func(target any) bool {
 		return holdsTarget(held, target)
 	})
