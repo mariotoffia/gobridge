@@ -308,10 +308,13 @@ func (rt *Runtime) autoRedriveOne(ctx context.Context, routeID, sid string, e ro
 // error. A synchronous inject has no per-delivery recover, so a panic in the
 // route (a sender, say) would otherwise reach startBackground's recover and make
 // the whole runtime terminal; as an error it keeps the record and stops the pass.
+// The panic is counted as a delivery panic of the route, as the route runner
+// counts one it recovers.
 func (rt *Runtime) autoRedriveInject(ctx context.Context, routeID string, e routing.DLQEntry) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("runtime: automatic redrive of %q panicked: %v", e.ID(), r)
+			rt.countAutoRedrive(shared.MetricDeliveryPanics, routeID)
 			if rt.logger != nil {
 				rt.logger.Error("automatic redrive panicked; the DLQ record is kept",
 					"dlq_id", e.ID(), "route_id", routeID, "panic", r, "stack", string(goruntime.Stack()))
@@ -321,7 +324,8 @@ func (rt *Runtime) autoRedriveInject(ctx context.Context, routeID string, e rout
 	return rt.injectRedrive(ctx, routeID, e.BindingID(), e.Snapshot(), true)
 }
 
-// countAutoRedrive emits a route-tagged redrive counter, as the admin redrive does.
+// countAutoRedrive emits a route-tagged counter, as the admin redrive and the
+// route runner do.
 func (rt *Runtime) countAutoRedrive(name, routeID string) {
 	if rt.metrics != nil {
 		rt.metrics.Counter(name, 1, shared.Tag{Key: shared.TagKeyRouteID, Value: routeID})

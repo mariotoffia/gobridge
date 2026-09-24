@@ -147,8 +147,9 @@ unchanged.
   binding, a runtime that is stopping or fenced. The destination is probably
   down, and trying the remaining records would only repeat the failure.
 - A panic during the inject (a sender bug, say) is recovered by the pass and
-  handled as such a failure, logged at error level with the panic value. It
-  does not make the runtime terminal.
+  handled as such a failure, logged at error level with the panic value and
+  counted on `DeliveryPanics` (`route_id`) as the route runner counts a panic
+  it recovers. It does not make the runtime terminal.
 
 ### Clustering
 

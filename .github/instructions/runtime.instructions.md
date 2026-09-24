@@ -53,9 +53,9 @@ ADR-0019, `docs/internals/architecture-message-flow.md`,
   exclusive bound over millisecond-precision stores), so records written later
   in the pass wait for the next event and one written in its own millisecond
   is still included.
-- The automatic inject recovers a panic into a failure (counted, audited,
-  record kept, pass stopped); a synchronous inject has no per-delivery
-  recover of its own.
+- The automatic inject recovers a panic into a failure (counted as a redrive
+  failure and a delivery panic, audited, record kept, pass stopped); a
+  synchronous inject has no per-delivery recover of its own.
 - An error wrapping `ports.ErrInjectNotDelivered` moves the pass to the next
   record; any other error stops it. A failed record keeps its `RedriveMode`
   and `ExtraInfo`.

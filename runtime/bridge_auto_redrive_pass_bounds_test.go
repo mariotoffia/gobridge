@@ -48,6 +48,10 @@ func TestAutoRedriveAPanicKeepsTheRecordAndTheRuntimeHealthy(t *testing.T) {
 	if n := f.counted(shared.MetricDLQRedriveFailures); n != 1 {
 		t.Fatalf("%s for route r1 = %d, want 1", shared.MetricDLQRedriveFailures, n)
 	}
+	// Counted once, as the route runner counts a panic it recovers.
+	if n := f.counted(shared.MetricDeliveryPanics); n != 1 {
+		t.Fatalf("%s for route r1 = %d, want 1", shared.MetricDeliveryPanics, n)
+	}
 	if n := f.logged("automatic redrive panicked; the DLQ record is kept"); n != 1 {
 		t.Fatalf("panic log lines = %d, want 1", n)
 	}

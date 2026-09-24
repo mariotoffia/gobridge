@@ -261,7 +261,7 @@ table. See [ADR 0005](../adr/0005-outbox-partition-claim-design.md) and the
 | `ReconcileFailures` | `session_id` | Count | Reconcile-on-reconnect failures |
 | `SessionRestarts` | `session_id` | Count | Per-session supervised restarts (isolated, capped backoff) |
 | `RouteRestarts` | `route_id` | Count | Per-route supervised restarts (isolated, jittered capped backoff) |
-| `DeliveryPanics` | `route_id` | Count | Delivery-goroutine panics recovered in the route runner |
+| `DeliveryPanics` | `route_id` | Count | Delivery-goroutine panics recovered in the route runner, and panics recovered in an automatic DLQ redrive |
 
 **Credentials**
 
