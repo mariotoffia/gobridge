@@ -373,7 +373,7 @@ schemas:
         example:
           session_id: plant-a
           subscription: sensors/+/temp
-          managed_identity: "tcp://broker:1883|plant-a"
+          managed_identity: "3f1c9a7e5b2d8f406a1e9c3b7d5f2a8e0c4b6d9f1a3e5c7b9d2f4a6c8e0b1d3f"
 
   DLQMessagesResponse:
     type: object
