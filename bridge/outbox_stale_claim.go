@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
@@ -57,8 +58,20 @@ func staleClaimDuration(cfg *ports.BridgeConfig, sc *ports.StoreConfig) (time.Du
 		}
 	}
 
-	staleClaimBuffer := max(2*maxStepDownGrace, 15*time.Second)
-	return maxStepDownGrace + staleClaimBuffer, nil
+	// A grace near time.Duration's maximum is valid configuration, and plain
+	// arithmetic would wrap it into a negative timeout; saturating keeps an
+	// absurd grace an absurd (never-reclaim) timeout instead.
+	staleClaimBuffer := max(saturatingAdd(maxStepDownGrace, maxStepDownGrace), 15*time.Second)
+	return saturatingAdd(maxStepDownGrace, staleClaimBuffer), nil
+}
+
+// saturatingAdd returns a+b for non-negative a and b, clamped at the largest
+// time.Duration rather than wrapping negative.
+func saturatingAdd(a, b time.Duration) time.Duration {
+	if a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
 }
 
 // explicitStaleClaimDuration looks for a user-provided override in

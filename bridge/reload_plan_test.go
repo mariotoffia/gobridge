@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -209,4 +210,24 @@ func TestDerivedStaleClaimDuration_IsWhatTheOutboxStoreIsHanded(t *testing.T) {
 	opts, err := NewBuilder(cfg).outboxRuntimeOptions(cfg.Stores.Outbox)
 	require.NoError(t, err)
 	require.Equal(t, opts.StaleClaimDuration, got)
+}
+
+// A lease TTL and a step-down grace near time.Duration's maximum parse and keep
+// grace below TTL, so they are valid configuration. The derivation doubles and
+// adds the grace; it must saturate at the maximum rather than wrap into a
+// negative timeout the outbox store would be handed.
+func TestDerivedStaleClaimDuration_SaturatesNearTheDurationLimit(t *testing.T) {
+	cfg := reloadTestConfig("a")
+	cfg.Stores.Outbox = &ports.StoreConfig{Type: "memory"}
+	cfg.Routes[0].Session = &ports.RouteSessionDef{
+		SessionID: "a-s", SenderID: "a-tx",
+		LeaseTTL:      "2562047h47m16.854775807s",
+		StepDownGrace: "2562047h47m16.854775806s",
+	}
+
+	got, ok, err := derivedStaleClaimDuration(cfg)
+
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, time.Duration(math.MaxInt64), got)
 }
