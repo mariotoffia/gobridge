@@ -61,6 +61,9 @@ func (a *App) applyInPlace(ctx context.Context, logical *ports.BridgeConfig, inp
 	switch outcome {
 	case bridge.InPlaceApplied:
 		if err := a.authorize(epoch); err != nil {
+			// rt already runs the withdrawn configuration: fence it, as installPlan
+			// fences a runtime it installed.
+			rt.Fence()
 			return true, err
 		}
 		a.appliedRef.Set(logical)

@@ -259,18 +259,21 @@ func TestApplyInPlace_KeepsInstalledRuntimeAndOtherOwnersSessions(t *testing.T) 
 }
 
 // A withdrawal that lands while the reload builds its parts must not be
-// recorded as an applied configuration.
+// recorded as an applied configuration. The runtime already runs that
+// configuration, so it is fenced, as a full swap fences a runtime it installed
+// when authorization is withdrawn.
 func TestApplyInPlace_WithdrawalDuringApplyIsNotRecordedApplied(t *testing.T) {
 	tf := newTrackedTransportFactory(false)
 	app := newInPlaceTestApp(t, tf, adminKeyResolver())
 	require.NoError(t, applyTo(t, app, inPlaceTestConfig("a", "b")))
-	applied := app.CurrentAppliedConfig()
+	rt, applied := app.CurrentRuntime(), app.CurrentAppliedConfig()
 	tf.onNewSession = func(string) { app.observationEpoch.Add(1) }
 
 	err := applyTo(t, app, withRouteChange(inPlaceTestConfig("a", "b"), "b", 2))
 
 	require.ErrorContains(t, err, "authorization withdrawn")
 	assert.Same(t, applied, app.CurrentAppliedConfig())
+	assert.False(t, rt.IsRunning(), "the runtime running the withdrawn configuration is fenced")
 }
 
 // A part that cannot be built while the retired unit still serves changes
