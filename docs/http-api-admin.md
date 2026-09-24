@@ -278,8 +278,11 @@ with `session_id`, `subscription` (the removed filter) and `managed_identity`
 added back on the same broker session and the broker grants it, the runtime
 waits until it can deliver (readiness `subscribed` and the session's route
 started), then redrives that route's matching entries that failed within
-`stores.dlq.auto_redrive_window` (default `24h`), oldest first, with the same
-inject-then-delete rules as the endpoint above.
+`stores.dlq.auto_redrive_window` (default `24h`) and before the redrive began,
+oldest first, with the same inject-then-delete rules as the endpoint above.
+The readiness wait is runtime-wide: every session of the runtime must be
+connected and subscribed, so a session that is down, even one unrelated to the
+filter, postpones the redrive.
 
 - Each entry is audited as `dlq.redrive.auto` (actor: the runtime's instance
   ID; outcome `success` or `failure`) and counted on `DLQRedrives` or

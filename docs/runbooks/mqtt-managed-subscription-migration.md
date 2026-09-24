@@ -80,7 +80,10 @@ and deletes each one once the route has delivered it
 ([automatic redrive](../http-api-admin.md#automatic-redrive)). It does not
 redrive records older than the window, records with an empty `route_id`,
 records filed under a route that was since renamed, or any record while the
-session has no single ingress route: redrive those by hand as below.
+session has no single ingress route: redrive those by hand as below. The
+redrive waits until the runtime is ready, and that wait is runtime-wide: every
+session of the runtime must be connected and subscribed, so an unrelated
+session that is down postpones it.
 
 A record whose automatic redrive failed stays in the store. The bridge logs a
 warning, `automatic redrive failed; the DLQ record is kept`, with the record's

@@ -101,10 +101,12 @@ first entry of a batch could use all 30 seconds, and every later id came back
    so two events cannot redrive one record twice.
 3. **List.** The pass lists that route's records that failed inside the window,
    `stores.dlq.auto_redrive_window`: 24 hours by default, and `0s` turns
-   automatic redrive off. It reads pages of 100, oldest first, paging forward
-   from the last `failed_at` it saw and skipping records it has already seen. It
-   stops on a short page or on a page with nothing new. Each list call has its
-   own 30-second bound.
+   automatic redrive off. It lists only records that failed before the pass
+   started, so a route that keeps dead-lettering during the pass cannot keep it
+   paging; those records wait for the next event. It reads pages of 100,
+   oldest first, paging forward from the last `failed_at` it saw and skipping
+   records it has already seen. It stops on a short page or on a page with
+   nothing new. Each list call has its own 30-second bound.
 4. **Redrive each match, oldest first**, inject-then-delete with the rules of
    ADR 0015: a fresh envelope ID with a causation link to the original, the
    replay confined to the record's binding, and a delete only after a confirmed
@@ -141,6 +143,9 @@ unchanged.
 - Any other failure stops the pass: a held temporary failure, a missing route or
   binding, a runtime that is stopping or fenced. The destination is probably
   down, and trying the remaining records would only repeat the failure.
+- A panic during the inject (a sender bug, say) is recovered by the pass and
+  handled as such a failure, logged at error level with the panic value. It
+  does not make the runtime terminal.
 
 ### Clustering
 
@@ -206,6 +211,11 @@ unchanged.
     seen gives nothing new. Later records wait for the next event.
   - A pass that waits for readiness holds one goroutine until the runtime is
     ready or stops.
+  - A reload of the session's unit while a pass waits or runs can end that
+    pass: between Retire and Graft the session has no single ingress route, so
+    a waiting pass gives up, and a running inject fails and stops the pass. The
+    re-grafted session does not fire the trigger again, because the filter is
+    already in its managed history. The records stay for a manual redrive.
 - A change of `auto_redrive_window` is a `stores` change, so a reload replaces
   the whole runtime rather than reloading in place (ADR 0018 reloads only
   sessions, receivers, senders, bindings and routes in place). The validator
