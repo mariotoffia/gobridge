@@ -33,6 +33,9 @@ type trackedTransportFactory struct {
 	// onNewSession, when set, runs first in every NewSession call. It is read
 	// without the lock, so set it before the calls it must see.
 	onNewSession func(id string)
+	// onClose, when set, runs first in every session Close. It is read without
+	// the lock, so set it before the calls it must see.
+	onClose func(id string)
 
 	mu        sync.Mutex
 	closes    map[string][]int // session id → close count of each session built for it, oldest first
@@ -48,9 +51,13 @@ func newTrackedTransportFactory(exclusive bool) *trackedTransportFactory {
 	return &trackedTransportFactory{caps: caps, closes: map[string][]int{}, refusals: map[string]int{}, closeErrs: map[string]error{}}
 }
 
-func (f *trackedTransportFactory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.Session, error) {
+func (f *trackedTransportFactory) NewSession(ctx context.Context, spec ports.SessionSpec) (ports.Session, error) {
 	if f.onNewSession != nil {
 		f.onNewSession(spec.ID)
+	}
+	// A real transport cannot dial a broker on a context that has ended.
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -105,6 +112,9 @@ func (s *trackedSession) Health(context.Context) ports.SessionHealth            
 func (s *trackedSession) Events() <-chan ports.SessionEvent                         { return nil }
 
 func (s *trackedSession) Close(context.Context) error {
+	if s.factory.onClose != nil {
+		s.factory.onClose(s.id)
+	}
 	s.factory.mu.Lock()
 	defer s.factory.mu.Unlock()
 	s.factory.closes[s.id][s.n-1]++
@@ -335,6 +345,32 @@ func TestApplyInPlace_TornRecoversPrevious(t *testing.T) {
 	assert.Equal(t, 0, routeMaxInFlight(t, recovered.Routes(), "b"), "the recovered runtime runs the running configuration")
 	assert.Equal(t, []int{1, 0}, tf.closeCounts("a-s"), "owner a is rebuilt with the recovered runtime")
 	assert.True(t, sseSenderShutDown(t, mux), "the superseded mux's SSE senders are drained")
+}
+
+// A serialized reload retires owner b before it builds b's successor, and a
+// retire may spend the whole of the apply's deadline. The successor is built
+// under a budget of its own taken from the App-lifetime context, so the reload
+// still ends in place instead of tearing into a full rebuild.
+func TestApplyInPlace_SerializedBuildOutlivesTheApplyContext(t *testing.T) {
+	tf := newTrackedTransportFactory(true)
+	app := newInPlaceTestApp(t, tf, adminKeyResolver())
+	root, stopRoot := context.WithCancel(t.Context())
+	t.Cleanup(func() { stopRoot(); app.watchWg.Wait() })
+	app.rootCtx = root
+	require.NoError(t, applyTo(t, app, inPlaceTestConfig("a", "b")))
+	rt := app.CurrentRuntime()
+	applyCtx, endApply := context.WithCancel(t.Context())
+	tf.onClose = func(string) { endApply() }
+
+	app.mu.Lock()
+	err := app.applyLogicalConfig(applyCtx, withRouteChange(inPlaceTestConfig("a", "b"), "b", 2), false)
+	app.mu.Unlock()
+
+	require.NoError(t, err)
+	require.Error(t, applyCtx.Err(), "retiring owner b ended the apply's context")
+	assert.Same(t, rt, app.CurrentRuntime(), "the reload stays in place")
+	assert.Equal(t, []int{1, 0}, tf.closeCounts("b-s"), "owner b's successor is built after its retire")
+	assert.Equal(t, 7, routeMaxInFlight(t, rt.Routes(), "b"), "the runtime runs owner b's new route")
 }
 
 // A torn runtime whose stop fails may still hold the identities a rebuild

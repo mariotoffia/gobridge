@@ -55,7 +55,21 @@ func (a *App) applyInPlace(ctx context.Context, logical *ports.BridgeConfig, inp
 	oldApplied := a.appliedRef.Get()
 	// Apply's teardown gets the budget every reload-path stop of this root gets.
 	reload.DrainTimeout = drainTimeout(oldApplied)
-	outcome, err := reload.Apply(ctx, rt, partBuilder, nil)
+	// Each build phase gets a fresh budget of one apply attempt, taken from the
+	// App-lifetime context rather than from ctx. A serialized reload retires
+	// units between preparing and committing, each retire detached from ctx and
+	// bounded by the drain timeout, so a slow drain can spend all of ctx's
+	// deadline: the successor's commit, and the restore after it, would start on
+	// a spent context and tear the reload into a full rebuild, the very thing
+	// reloading in place avoids. Shutdown still ends a phase through rootCtx;
+	// ctx's deadline no longer does, so an admin commit's in-band apply waits
+	// past its deadline for the result the reload ends with. The phase context
+	// drops ctx's values: the only one an apply carries, the observation epoch,
+	// was read before the reload began.
+	phase := func(context.Context) (context.Context, context.CancelFunc) {
+		return context.WithTimeout(a.runtimeStartCtx(ctx), applyAttemptBudget)
+	}
+	outcome, err := reload.Apply(ctx, rt, partBuilder, phase)
 	a.logInPlaceReload(reload, outcome, err)
 
 	switch outcome {
