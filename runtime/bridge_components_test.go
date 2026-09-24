@@ -151,12 +151,13 @@ func TestStartComponent_CancelStopsOnlyThatComponent(t *testing.T) {
 	assert.Empty(t, rt.ComponentErrors())
 }
 
-// TestDLQToken_ReadsManagersUnderLock pins the rules the DLQ router's token
-// function applies per owning session: a write with no owning session or for a
-// session that carries no lease is allowed, a write for an exclusive session
-// managed here is gated on that manager's lease, and a write for an exclusive
-// session this instance does not manage is refused so its owner writes it.
-func TestDLQToken_ReadsManagersUnderLock(t *testing.T) {
+// TestDLQToken_AllowsLeaselessAndFencesExclusiveOnLocalLease pins the four
+// rules the DLQ router's token function applies per owning session: a write
+// with no owning session or for a session that carries no lease is allowed, a
+// write for an exclusive session managed here is gated on that manager's
+// lease, and a write for an exclusive session this instance does not manage is
+// refused so its owner writes it.
+func TestDLQToken_AllowsLeaselessAndFencesExclusiveOnLocalLease(t *testing.T) {
 	rt := New(WithInstanceID("dlq-token"), WithLeaseStore(&roleGrantingLeaseStore{}))
 	sess := &roleFakeSession{events: make(chan ports.SessionEvent, 1)}
 	require.NoError(t, rt.RegisterSessionSender(session.Config{SessionID: "s1", Exclusive: true}, sess, nopRouteSender{}))

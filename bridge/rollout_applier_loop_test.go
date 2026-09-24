@@ -26,6 +26,7 @@ type applierFixture struct {
 	applier *rolloutApplier
 	changes chan *ports.BridgeConfig
 	swaps   <-chan SwapEvent
+	sender  *fakeSender // every sender the fake transport builds
 }
 
 func newApplierFixture(t *testing.T, memberID string) *applierFixture {
@@ -38,7 +39,8 @@ func newApplierFixture(t *testing.T, memberID string) *applierFixture {
 	rc := testRolloutConfig(store, memberID)
 	rc.PollInterval = time.Hour
 	rc.LeaseTTL = time.Hour
-	s := newTestSupervisor(WithOnSwap(onSwap), WithClusterRollout(rc))
+	sender := &fakeSender{}
+	s := newTestSupervisorTransport(&dispatchTransportFactory{sender: sender}, WithOnSwap(onSwap), WithClusterRollout(rc))
 
 	changes := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, coordinatedClusteredCfg("r1"), changes)
@@ -50,6 +52,7 @@ func newApplierFixture(t *testing.T, memberID string) *applierFixture {
 		applier: &rolloutApplier{host: supervisorRolloutHost{s}, barrier: s.rollout, store: store, memberID: memberID},
 		changes: changes,
 		swaps:   swaps,
+		sender:  sender,
 	}
 }
 
@@ -217,10 +220,11 @@ func TestRolloutApplier_AdoptsCommittedGeneration(t *testing.T) {
 	assert.Equal(t, 99, f.sup.Config().Version, "the committed generation is applied locally")
 	ev := awaitSwap(t, f.swaps)
 	require.NoError(t, ev.Error)
-	assert.False(t, ev.Deferred, "the swap really happened")
+	assert.Equal(t, SwapInPlace, ev.SwapMode, "the committed generation is reloaded, not acknowledged as a no-op")
 	assert.Equal(t, 99, ev.NewConfig.Version)
-	assert.True(t, f.sup.Runtime().IsRunning())
-	assert.Equal(t, "addr/rolled", f.sup.Config().Bindings[0].Address)
+	assert.Same(t, oldRt, f.sup.Runtime(), "an in-place reload keeps the running runtime")
+	assert.Equal(t, "addr/rolled", deliveredAddress(t, f.sup.Runtime(), f.sender, "r1"),
+		"the running runtime delivers to the committed binding address")
 }
 
 // TestRolloutApplier_AbortedGenerationNeverSwaps proves the abort path: a member

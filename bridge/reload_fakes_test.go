@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -184,6 +185,17 @@ func planApplyTest(t *testing.T, tf ports.TransportFactory, running, next *ports
 	plan, ok := PlanInPlaceReload(running, next, map[string]ports.TransportFactory{"tracked": tf})
 	require.True(t, ok, "expected the reload to be eligible in place")
 	return plan
+}
+
+// deliveredAddress injects one message into route routeID of rt and returns the
+// address rt handed sender for it: where the running runtime really delivers.
+func deliveredAddress(t *testing.T, rt *runtime.Runtime, sender *fakeSender, routeID string) string {
+	t.Helper()
+	probe := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "probe", Subject: "probe", Payload: []byte("probe")})
+	require.NoError(t, rt.Inject(context.Background(), routeID, probe), "a nil error means the message was delivered")
+	sent := sender.snapshot()
+	require.NotEmpty(t, sent)
+	return sent[len(sent)-1].Address
 }
 
 func runtimeRouteIDs(rt *runtime.Runtime) []string {
