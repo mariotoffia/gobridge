@@ -5,7 +5,7 @@ applyTo: "adapters/mqtt/**"
 # MQTT transport (paho)
 
 Adds to `adapters.instructions.md`. Sources: ADR-0002, ADR-0003, ADR-0009,
-ADR-0010, ADR-0011 and `docs/transports/mqtt*.md`.
+ADR-0010, ADR-0011, ADR-0019 and `docs/transports/mqtt*.md`.
 
 ## Settlement and ingress
 
@@ -47,6 +47,11 @@ ADR-0010, ADR-0011 and `docs/transports/mqtt*.md`.
   or partial unsubscribe stays durable. A pinned shared replay is never acked
   or dropped; it takes the migration-required fail-closed path
   (`mqtt-durable-sessions.md`).
+- The subscription-added hook reports only filters that were absent from the
+  managed history when a reconcile first saw them and that a SUBACK then
+  granted (a lower grant counts). A re-subscribe after a reconnect or restart
+  never reports. It is called outside `s.mu`, from inside the reconcile, so it
+  must not block or call back into the session (ADR-0019).
 
 ## Loop prevention and client IDs
 

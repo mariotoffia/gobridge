@@ -10,6 +10,61 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Added — automatic redrive of a removed subscription's dead-letters
+
+- **Behaviour change, on by default** (#57). When a configuration change
+  removes a filter from a persistent or exclusive MQTT session, the deliveries
+  the broker still hands the session for it are dead-lettered with
+  `SUBSCRIPTION_REMOVED` (#56). Now, when the same filter is added back on the
+  same broker session (a rollback, or the filter enabled again) and the broker
+  grants it, the bridge redrives those records by itself: the ones filed under
+  the session's ingress route that failed inside the window, oldest first,
+  inject-then-delete like an admin redrive
+  ([ADR 0019](docs/adr/0019-dlq-auto-redrive-by-system-event.md)).
+- New configuration key `stores.dlq.auto_redrive_window` (a duration, default
+  `24h`; `0s` turns automatic redrive off). A negative or malformed value, or
+  the key on another store role, is rejected. Changing it replaces the whole
+  runtime on reload. See the
+  [configuration reference](docs/configuration-reference.md#automatic-dlq-redrive).
+- A failed automatic redrive keeps the record unchanged, and a temporary
+  failure writes no second record. The bridge skips a message the route
+  dropped, filtered, expired or dead-lettered, and stops on any other failure;
+  it tries again the next time the filter is added back. Each record is
+  audited as `dlq.redrive.auto` and counted on `DLQRedrives` /
+  `DLQRedriveFailures`.
+- Not redriven automatically: records older than the window, records with an
+  empty route ID or filed under a route that was since renamed, and records of
+  a session with no single ingress route. ADR 0019 lists the other limits.
+- Dead-letter records carry two new fields, `redrive_mode` (`auto`, or empty
+  for manual) and `extra_info` (the facts a trigger matches on; `{}` when
+  none), in every DLQ store, on the Admin API DLQ views and in the OpenAPI
+  `DLQEntryView`.
+- **SQLite DLQ upgrade:** an existing DLQ file gains the two columns the first
+  time the new release opens it. Its rows are kept, and nothing is dropped or
+  rewritten; two processes upgrading the same file at once both succeed. An
+  older release can still open the upgraded file. The DynamoDB DLQ table needs
+  no change.
+- New API: optional session capabilities
+  `ports.ManagedSubscriptionIdentityReporter` and
+  `ports.SubscriptionAddedHookConfigurer` (the MQTT session implements both),
+  `runtime.WithAutoRedriveWindow` (24h when not given),
+  `ports.DefaultAutoRedriveWindow`,
+  `(*ports.StoreConfig).AutoRedriveWindowDuration`, `routing.RedriveMode`,
+  `(routing.DLQEntry).RedriveMode` / `ExtraInfo`, and `dlq.EntryOption` /
+  `dlq.AutoRedrive` as a variadic last argument of `(*dlq.Router).Route`.
+
+### Changed — each redriven entry has its own deadline
+
+- (#70) `POST /api/v1/admin/dlq/redrive` still gives a batch 30 seconds, and
+  each entry's lookup and inject now also get at most 10 seconds of it. A first
+  entry whose destination is down no longer uses up the whole batch: it fails
+  on its own and the later entries are still attempted. Entries the batch does
+  not reach still report `redrive deadline exceeded before entry lookup` (or
+  `inject failed: context deadline exceeded` on the in-memory store), and so
+  does a lookup that runs past its own 10 seconds. Inject-then-delete is
+  unchanged. See the
+  [Admin API reference](docs/http-api-admin.md#dlq-redrive).
+
 ### Added — a configuration change reconnects only what it changed
 
 - **Behaviour change, on by default** (#53). A change confined to sessions,
@@ -119,8 +174,8 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   them by ID; see the
   [managed-filter migration runbook](docs/runbooks/mqtt-managed-subscription-migration.md#dead-lettered-deliveries-inspect-then-redrive-or-purge)
   and the amended [ADR 0003](docs/adr/0003-mqtt-persistent-session-hygiene.md#addendum-durable-exact-filter-migration).
-  #57 will redrive these records automatically when the subscription is added
-  back.
+  Adding the subscription back now redrives these records automatically (#57,
+  see its entry above).
 - New optional session capability `ports.RemovedSubscriptionDeadLetterConfigurer`;
   the runtime installs it on every managed session when a dead-letter store
   exists.

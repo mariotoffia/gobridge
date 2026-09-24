@@ -5,6 +5,8 @@ Date: 2026-09-22
 Deciders: GoBridge core
 Relates to: 0015 (a redrive whose inject fails only temporarily is dead-lettered
 again less often), 0004 (a wedged route stops the loop)
+Amended by: [0019](0019-dlq-auto-redrive-by-system-event.md) (each entry of an
+admin redrive batch has its own bound)
 
 ## Context
 
@@ -225,21 +227,24 @@ smaller `send_retry_budget`, or larger session `connect_timeout` /
   entries or MQTT session recycles. Messages without a producer id — the common
   MQTT publish — benefit most: they were dead-lettered on the first failure and
   now get a full minute of retries first.
-- A dead-letter redrive through the admin API inherits this. The redrive runs
-  under a 30-second bound, so a redrive whose destination stays down spends
-  that time retrying in process; when the bound passes the retry loop stops,
-  the inject returns an error and the entry is **not** deleted (0015), so
-  nothing is lost. The bound stops the retrying, not a send already in
-  progress: against a sender that ignores its context the request can run up
-  to one send wedge ceiling past the 30 seconds.
-- That bound covers a whole redrive **batch**, whose entries are redriven one
-  after another, so against a destination that is down the first entry can now
-  spend the entire 30 seconds retrying and every remaining id comes back
-  `redrive deadline exceeded before entry lookup`. Nothing is lost — inject
-  happens before delete, so an entry that was not redriven is still there — but
-  an operator redriving a hundred ids during an outage gets one attempt and
-  ninety-nine deadline errors. Redrive after the destination is healthy, or in
-  small batches.
+- A dead-letter redrive through the admin API inherits this. A redrive batch
+  runs under a 30-second bound, and each entry's lookup and inject under the
+  smaller of 10 seconds and what is left of the batch
+  ([ADR 0019](0019-dlq-auto-redrive-by-system-event.md) amends this
+  consequence). An entry whose destination stays down spends its bound
+  retrying in process; when the bound passes the retry loop stops, the inject
+  returns an error and the entry is **not** deleted (0015), so nothing is
+  lost. The bound stops the retrying, not a send already in progress: against
+  a sender that ignores its context the request can run up to one send wedge
+  ceiling past the 30 seconds.
+- Because each entry has its own bound, a slow first entry fails on its own
+  and the later entries of the batch are still attempted. Entries the batch
+  does not reach before its 30 seconds end still come back `redrive deadline
+  exceeded before entry lookup` (or `inject failed: context deadline exceeded`
+  on a store whose lookup ignores its context), and stay in the store:
+  inject-then-delete is unchanged. Against a destination that is down each
+  attempted entry can use its full 10 seconds, so a batch reaches about three
+  entries; retry the failed ids once the destination is healthy.
 - A synchronous `Inject` / `InjectToBinding` into a `direct_hold` route now
   returns only when the retry loop is done with it. Once the call has an
   in-flight slot it can block for up to

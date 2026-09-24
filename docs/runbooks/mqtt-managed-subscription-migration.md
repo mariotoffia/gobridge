@@ -67,7 +67,22 @@ session ID, the route ID of the session's single ingress route (empty when no
 single route rides on the session: none or several), and `source_id`, which is
 the session ID; it scopes the record to the session, so two sessions' deliveries
 with the same message ID stay separate records. The dead-letter store also keeps
-the removed filter as the record's address; the Admin API views do not show it.
+the removed filter as the record's address; the Admin API views do not show the
+address, but they show the filter as `extra_info.subscription` on a record with
+`redrive_mode` `auto`.
+
+**Adding the filter back redrives them by itself.** When the removed filter is
+added back on the same persistent or exclusive session (you roll the
+configuration back, or enable the filter again) and the broker grants it,
+GoBridge redrives that filter's records that are younger than
+`stores.dlq.auto_redrive_window` (default `24h`) through the session's route,
+and deletes each one once the route has delivered it
+([automatic redrive](../http-api-admin.md#automatic-redrive)). It does not
+redrive records older than the window, records with an empty `route_id`,
+records filed under a route that was since renamed, or any record while the
+session has no single ingress route: redrive those by hand as below. A record
+whose automatic redrive failed stays in the store; its `dlq.redrive.auto` audit
+record has outcome `failure` and names the error.
 
 1. **Find the records.** The Admin API cannot filter by error code, so list the
    `permanent` entries and select on the response. Page with `offset` while

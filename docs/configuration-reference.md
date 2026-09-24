@@ -190,6 +190,7 @@ Configures the backing stores for lease coordination, outbox persistence, dead-l
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | string | **yes** | Store backend: `memory`, `sqlite`, `dynamodb` |
+| `auto_redrive_window` | duration | no | `dlq` only, any backend. How old a dead-letter entry may be and still be redriven by the bridge itself when its cause is gone. Default `24h`; `0s` turns automatic redrive off. A negative or malformed value, or the key on any other store role, is rejected. See [automatic redrive](#automatic-dlq-redrive). |
 | `options` | map | no | Backend-specific options |
 
 **Memory**: no options required. Memory does **not** implement `managed_subscriptions`, because process-local history cannot survive restart.
@@ -283,6 +284,7 @@ stores:
       stale_claim_duration: 30s
   dlq:
     type: memory
+    auto_redrive_window: 24h
     options:
       # In-memory DLQ entries are lost on restart, erasing the terminal
       # evidence of dropped messages; the loss must be acknowledged.
@@ -292,6 +294,20 @@ stores:
     options:
       table_name: gobridge-managed-subscriptions
 ```
+
+### Automatic DLQ redrive
+
+`stores.dlq.auto_redrive_window` sets how far back the bridge looks when it
+redrives dead-letter entries by itself. Today that happens in one case: a
+persistent or exclusive MQTT session dead-lettered deliveries for a filter a
+configuration change removed, and the same filter is added back on the same
+broker session. The bridge then redrives those entries that failed within the
+window, oldest first; older entries wait for an operator
+([Admin API: automatic redrive](http-api-admin.md#automatic-redrive),
+[ADR 0019](adr/0019-dlq-auto-redrive-by-system-event.md)). Leaving the key out
+means `24h`; `0s` turns automatic redrive off. Changing the value replaces the
+whole runtime on reload, because `stores` is never reloaded in place
+([ADR 0018](adr/0018-reload-in-place-by-unit.md)).
 
 ## `sessions` -- Transport Sessions
 

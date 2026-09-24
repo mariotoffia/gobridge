@@ -109,12 +109,18 @@ curl -s -H "X-API-Key: change-me-to-a-real-secret-key" \
       "reason": "invalid payload", "category": "rejected",
       "error_code": "INVALID_PAYLOAD",
       "last_error": "json: cannot unmarshal string into Go value of type int",
-      "failed_at": "2026-03-28T10:15:30Z", "attempts": 3
+      "failed_at": "2026-03-28T10:15:30Z", "attempts": 3,
+      "redrive_mode": "", "extra_info": {}
     }
   ],
   "limit": 10, "offset": 0, "has_more": false
 }
 ```
+
+`redrive_mode` is `auto` when the bridge may redrive the entry by itself (see
+[Automatic redrive](#automatic-redrive)), and empty when only an operator
+redrives it. `extra_info` holds the facts such a redrive matches on; it is
+always an object, `{}` when there are none.
 
 The response no longer carries a `total` field (the old `total` reported
 `min(matched, limit+offset)`, which under-reported once the backlog exceeded the
@@ -164,20 +170,26 @@ binding that failed, not to its healthy siblings. It is **not** a header:
 at ingress before any consumption site reads them, so a header cannot steer the
 replay.
 
-**One 30-second budget covers the whole batch, and entries are redriven one
-after another.** A replay into a `direct_hold` route now retries a recoverable
-send inside the bridge for that route's `send_retry_budget` (60s by default), so
-against a destination that is still down the **first** entry can spend the whole
-30 seconds retrying and every remaining id comes back with `redrive deadline
-exceeded before entry lookup`. Nothing is lost -- inject happens before delete,
-so an entry that was not redriven is still in the store with its evidence (see
-[ADR 0015](adr/0015-dlq-redrive-inject-then-delete.md)) -- but the batch
-reports one attempt and the rest as deadline errors. The 30 seconds stops the
+**Each entry has its own deadline inside the batch.** The whole batch has 30
+seconds, and entries are redriven one after another. Each entry's lookup and
+inject get at most 10 seconds, or what is left of the 30 seconds when that is
+less ([ADR 0019](adr/0019-dlq-auto-redrive-by-system-event.md)). A replay into
+a `direct_hold` route retries a recoverable send inside the bridge for that
+route's `send_retry_budget` (60s by default), so against a destination that is
+still down an entry fails after its 10 seconds and the next entry is still
+attempted; such a batch reaches about three entries. An entry the batch does not
+reach comes back with `redrive deadline exceeded before entry lookup`, or with
+`inject failed: context deadline exceeded` on a store whose lookup ignores the
+deadline (the in-memory store). A lookup that runs out of time reports the
+deadline, never `entry not found`. The delete that follows a confirmed inject is
+bounded by the batch only, so the entry's deadline cannot cut it off. Nothing is
+lost -- inject happens before delete, so an entry that was not redriven is still
+in the store with its evidence (see
+[ADR 0015](adr/0015-dlq-redrive-inject-then-delete.md)). The deadlines stop the
 retrying, not a send already in progress: that send is still waited for, so
 against a sender that ignores its context the request can take up to one send
 wedge ceiling (`send_timeout` + `min(send_timeout, 5s)`, 35s at the default
-`send_timeout`) longer. Redrive **after** the destination is healthy, or in
-small batches; retry the failed ids once it is.
+`send_timeout`) longer. Retry the failed ids once the destination is healthy.
 
 An inject is "confirmed" only when the route actually delivered the message. A
 replay the route **dropped** (`on_permanent_failure: drop`), filtered, expired,
@@ -253,6 +265,36 @@ reconfigured route, the redrive fails that entry with `route or binding not
 found` (a permanent `ErrNotFound`) and the DLQ entry is preserved -- the failing
 inject never reaches the delete -- rather than being fanned out to the route's
 current bindings. Re-file the entry against a binding that exists.
+
+### Automatic redrive
+
+Some entries are redriven by the bridge itself once the cause is gone
+([ADR 0019](adr/0019-dlq-auto-redrive-by-system-event.md)). Today there is one
+case: a delivery that a persistent or exclusive MQTT session dead-lettered
+because a configuration change removed its filter. Such an entry has
+`error_code` `SUBSCRIPTION_REMOVED`, `redrive_mode` `auto`, and `extra_info`
+with `session_id`, `subscription` (the removed filter) and `managed_identity`
+(an opaque fingerprint of the broker-side session). When the same filter is
+added back on the same broker session and the broker grants it, the runtime
+waits until it can deliver (readiness `subscribed` and the session's route
+started), then redrives that route's matching entries that failed within
+`stores.dlq.auto_redrive_window` (default `24h`), oldest first, with the same
+inject-then-delete rules as the endpoint above.
+
+- Each entry is audited as `dlq.redrive.auto` (actor: the runtime's instance
+  ID; outcome `success` or `failure`) and counted on `DLQRedrives` or
+  `DLQRedriveFailures`.
+- A failed entry is kept unchanged, and a temporary failure writes no second
+  entry. When the route dropped, filtered, expired or dead-lettered the message,
+  the bridge goes on to the next entry; on any other failure it stops, and tries
+  again the next time the filter is added back. A route that dead-letters the
+  replay writes a new entry for it, as for an admin redrive.
+- These entries are left for an admin redrive: ones older than the window, ones
+  with an empty `route_id` or filed under a route that was since renamed, and
+  ones of a session that no longer has exactly one ingress route.
+- To turn automatic redrive off, set `stores.dlq.auto_redrive_window: 0s`.
+  Entries are still marked `auto`, and stay until an operator redrives or
+  deletes them.
 
 ### DLQ purge
 
@@ -355,6 +397,7 @@ Notable actions include `bridge.status`, `bridge.start`, `bridge.stop`,
 | `auth.throttled` | A request is rejected with 429 because the client is over its failure limit |
 | `dlq.read_payload` | A single DLQ entry (with full payload) is read via `GET .../dlq/messages/{id}` |
 | `dlq.redrive.begin` | Emitted (outcome `pending`) before the inject→delete loop of a redrive batch, recording the requested IDs |
+| `dlq.redrive.auto` | The runtime redrove one entry by itself (see [Automatic redrive](#automatic-redrive)); written by the runtime's audit logger (`bridge.WithAuditLogger`), not the admin server's, with the runtime's instance ID as actor |
 
 `route.inject` records outcome `not_delivered` (alongside `success` and
 `failure`) when the route processed the message and settled it without
