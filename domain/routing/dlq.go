@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"maps"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
@@ -35,7 +36,27 @@ type DLQEntry struct {
 	lastError     string
 	failedAt      time.Time
 	attempts      int
+	redriveMode   RedriveMode
+	extraInfo     map[string]string
 }
+
+// RedriveMode says whether automation may redrive a DLQ record (ADR 0019).
+type RedriveMode string
+
+const (
+	// RedriveManual is the default: only an operator redrives the record.
+	RedriveManual RedriveMode = ""
+	// RedriveAuto lets a matching system event redrive the record by itself.
+	RedriveAuto RedriveMode = "auto"
+)
+
+// ExtraInfo keys of a removed-subscription dead-letter: the facts the
+// subscription-added redrive trigger matches on (ADR 0019).
+const (
+	ExtraInfoSessionID       = "session_id"
+	ExtraInfoSubscription    = "subscription"
+	ExtraInfoManagedIdentity = "managed_identity"
+)
 
 // ID returns the DLQ entry identifier.
 func (e DLQEntry) ID() string { return e.id }
@@ -76,6 +97,14 @@ func (e DLQEntry) FailedAt() time.Time { return e.failedAt }
 // Attempts returns the number of delivery attempts made before DLQ routing.
 func (e DLQEntry) Attempts() int { return e.attempts }
 
+// RedriveMode reports whether a matching system event may redrive the entry.
+func (e DLQEntry) RedriveMode() RedriveMode { return e.redriveMode }
+
+// ExtraInfo returns a copy of the facts a redrive trigger matches on, or nil
+// when the entry carries none. A copy, so no value copy of the entry can change
+// what another copy or the store holds.
+func (e DLQEntry) ExtraInfo() map[string]string { return maps.Clone(e.extraInfo) }
+
 // DLQEntrySpec carries the inputs required to construct a DLQEntry.
 // The supplied Envelope is deep-cloned by NewDLQEntry so callers may
 // continue to use their reference without affecting the persisted
@@ -95,14 +124,19 @@ type DLQEntrySpec struct {
 	LastError     string
 	FailedAt      time.Time
 	Attempts      int
+	RedriveMode   RedriveMode
+	// ExtraInfo holds the facts a redrive trigger matches on; NewDLQEntry copies it.
+	ExtraInfo map[string]string
 }
 
 // NewDLQEntry constructs a DLQEntry, deep-cloning the supplied envelope
 // so the resulting entry owns an isolated copy. This is the snapshot
 // boundary the DDD aggregate rules require: subsequent mutations of
 // the input envelope (headers, payload) do not leak into the entry.
+// ExtraInfo is copied for the same reason.
 func NewDLQEntry(spec DLQEntrySpec) DLQEntry {
 	spec.Envelope = *spec.Envelope.Clone()
+	spec.ExtraInfo = maps.Clone(spec.ExtraInfo)
 	return RehydrateDLQEntry(spec)
 }
 
@@ -110,8 +144,10 @@ func NewDLQEntry(spec DLQEntrySpec) DLQEntry {
 // the envelope. It is the storage-adapter boundary for entries read back
 // from durable rows, where the envelope was freshly decoded (JSON
 // unmarshal, attribute decode) and is therefore already owned, so a
-// second deep clone would be wasted work. Runtime code that still holds
-// a live reference to the envelope MUST use NewDLQEntry instead.
+// second deep clone would be wasted work. The ExtraInfo map, like the
+// envelope, is already owned and is assigned without a copy. Runtime code
+// that still holds a live reference to the envelope MUST use NewDLQEntry
+// instead.
 func RehydrateDLQEntry(spec DLQEntrySpec) DLQEntry {
 	return DLQEntry{
 		id:            spec.ID,
@@ -128,6 +164,8 @@ func RehydrateDLQEntry(spec DLQEntrySpec) DLQEntry {
 		lastError:     spec.LastError,
 		failedAt:      spec.FailedAt,
 		attempts:      spec.Attempts,
+		redriveMode:   spec.RedriveMode,
+		extraInfo:     spec.ExtraInfo,
 	}
 }
 
