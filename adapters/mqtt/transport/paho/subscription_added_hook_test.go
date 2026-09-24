@@ -128,6 +128,76 @@ func TestSubscriptionAddedHookSurvivesAFailedSubscribe(t *testing.T) {
 	requireAddedCalls(t, recorder, [][]string{{"sensors/+/temp"}})
 }
 
+// Removing a managed filter forgets it once the replacement connection proves
+// no replay is pinned; adding it back afterwards is a genuinely added
+// subscription again.
+func TestSubscriptionAddedHookReportsAFilterAddedBackAfterItsCleanup(t *testing.T) {
+	session, conn, recorder := startHookedManagedSession(t, "sensors/+/temp")
+	store := session.managedStore.(*managedHistoryFake)
+
+	// UNSUBACK 0x00 removed broker state, so the reconcile recycles the
+	// connection and finalizes the cleanup on the replacement generation.
+	if err := session.Reconcile(t.Context(), connectivity.SessionPlan{}); err != nil {
+		t.Fatalf("Reconcile removing the filter: %v", err)
+	}
+	if !equalManagedStrings(conn.unsubscribed, []string{"sensors/+/temp"}) || conn.disconnects != 1 {
+		t.Fatalf("UNSUBSCRIBE %v, disconnects %d, want the filter removed and one recycle", conn.unsubscribed, conn.disconnects)
+	}
+	if got := store.snapshot("safe-session-id"); len(got) != 0 {
+		t.Fatalf("managed history after the cleanup = %v, want the filter forgotten", got)
+	}
+	requireAddedCalls(t, recorder, nil)
+
+	if err := session.Reconcile(t.Context(), sensorsPlan()); err != nil {
+		t.Fatalf("Reconcile adding the filter back: %v", err)
+	}
+	requireAddedCalls(t, recorder, [][]string{{"sensors/+/temp"}})
+
+	if err := session.Reconcile(t.Context(), sensorsPlan()); err != nil {
+		t.Fatalf("Reconcile of the unchanged plan: %v", err)
+	}
+	requireAddedCalls(t, recorder, [][]string{{"sensors/+/temp"}})
+}
+
+// A filter added back while its cleanup still awaits verification is forgotten
+// at the top of the re-add reconcile, so it is reported as added exactly once.
+func TestSubscriptionAddedHookReportsAFilterAddedBackWhileItsCleanupIsPending(t *testing.T) {
+	session, _, recorder := startHookedManagedSession(t, "sensors/+/temp")
+	store := session.managedStore.(*managedHistoryFake)
+	store.mu.Lock()
+	store.forgetErr = errors.New("history unavailable")
+	store.mu.Unlock()
+
+	if err := session.Reconcile(t.Context(), connectivity.SessionPlan{}); err == nil {
+		t.Fatal("Reconcile removing the filter succeeded, want the Forget outage")
+	}
+	session.mu.Lock()
+	_, pending := session.managedCleanupVerification["sensors/+/temp"]
+	session.mu.Unlock()
+	if !pending {
+		t.Fatal("the confirmed removal is not awaiting cleanup verification")
+	}
+	if got := store.snapshot("safe-session-id"); !equalManagedStrings(got, []string{"sensors/+/temp"}) {
+		t.Fatalf("managed history after the failed Forget = %v, want the filter kept", got)
+	}
+	requireAddedCalls(t, recorder, nil)
+
+	store.mu.Lock()
+	store.forgetErr = nil
+	store.mu.Unlock()
+	opsBefore := len(*store.operations)
+	if err := session.Reconcile(t.Context(), sensorsPlan()); err != nil {
+		t.Fatalf("Reconcile adding the filter back: %v", err)
+	}
+	if got := (*store.operations)[opsBefore:]; !slices.Equal(got, []string{"forget", "remember", "subscribe"}) {
+		t.Fatalf("re-add operations = %v, want the pending cleanup finalized before the write-ahead and SUBSCRIBE", got)
+	}
+	requireAddedCalls(t, recorder, [][]string{{"sensors/+/temp"}})
+	if got := store.snapshot("safe-session-id"); !equalManagedStrings(got, []string{"sensors/+/temp"}) {
+		t.Fatalf("managed history after the re-add = %v, want the filter remembered", got)
+	}
+}
+
 func TestSubscriptionAddedHookNeverFiresForAnUnmanagedSession(t *testing.T) {
 	operations := []string{}
 	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{}}

@@ -192,7 +192,7 @@ type Session struct {
 	removedSubscriptionDeadLetter func(context.Context, *messaging.Envelope, string) error
 	// subscriptionAddedHook is installed by the runtime (ADR 0019); managedAdded
 	// holds the desired filters that were absent from the managed history when a
-	// reconcile first saw them and that no SUBACK has granted yet.
+	// reconcile first saw them and that no SUBACK has granted yet. Guarded by mu.
 	subscriptionAddedHook func([]string)
 	managedAdded          map[string]struct{}
 
