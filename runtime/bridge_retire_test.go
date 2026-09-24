@@ -275,6 +275,30 @@ func (r stuckReceiver) Run(context.Context, func(context.Context, ports.Delivery
 	return nil
 }
 
+// TestGraft_RefusesTheIDsOfAUnitStillBeingRetired pins that a unit whose
+// Retire left a component running keeps its route and session ids: the
+// straggler still runs under them, so a part reusing one would run beside it.
+func TestGraft_RefusesTheIDsOfAUnitStillBeingRetired(t *testing.T) {
+	stores := newGraftStores()
+	rt := New(stores.options(WithInstanceID("retire-straggler"))...)
+	s1, release := newRetireSession(), make(chan struct{})
+	require.NoError(t, rt.RegisterSessionSender(session.Config{SessionID: "s1"}, s1, nopRouteSender{}))
+	require.NoError(t, rt.AddRoute(ridingRoute("r1", "s1"), stuckReceiver{release: release}, &componentSender{}, s1, nil))
+	startComponentRuntime(t, rt)
+	t.Cleanup(func() { close(release) })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	require.ErrorContains(t, rt.Retire(ctx, Unit{Routes: []string{"r1"}, Sessions: []string{"s1"}}), "did not finish")
+
+	sameRoute := New(stores.options(WithSharedStores())...)
+	require.NoError(t, sameRoute.AddRoute(componentRoute("r1"), newComponentReceiver(), &componentSender{}, nil, nil))
+	require.ErrorContains(t, rt.Graft(sameRoute), `route "r1" is still being retired`)
+
+	sameSession := New(stores.options(WithSharedStores())...)
+	require.NoError(t, sameSession.RegisterSessionSender(session.Config{SessionID: "s1"}, newRetireSession(), nopRouteSender{}))
+	require.ErrorContains(t, rt.Graft(sameSession), `session "s1" is still being retired`)
+}
+
 // TestRetire_UnregistersExclusiveRouteFromLocator pins that a retired exclusive
 // route is no longer located through its session's lease.
 func TestRetire_UnregistersExclusiveRouteFromLocator(t *testing.T) {

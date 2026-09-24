@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // Stores is the set of stores a runtime was built with.
@@ -42,7 +43,9 @@ func WithSharedStores() Option {
 // Graft moves the routes, sessions and credential hooks of part into rt and
 // starts them, while every component rt already runs keeps running untouched.
 // part must be built over rt.Stores() with WithSharedStores and never started,
-// and may not reuse a route id or a session id rt already has. The grafted
+// and may not reuse a route id or a session id rt already has, nor one of a
+// unit still being retired — its Retire has not returned, or left a component
+// running — since a straggler may still run under it. The grafted
 // components run with rt's settings (clock, metrics, logger, lease owner,
 // instance id), not with part's.
 //
@@ -124,16 +127,21 @@ func sameStores(a, b Stores) (same bool) {
 
 // graftCollisionLocked refuses a part that reuses a route id or a session id of
 // rt — a route id names one route runner, and a session has exactly one manager
-// — or that is not closed over its sessions (see Graft). The caller holds rt.mu
+// — or of a unit still being retired, whose stragglers may still run under it,
+// or that is not closed over its sessions (see Graft). The caller holds rt.mu
 // and part.mu.
 func (rt *Runtime) graftCollisionLocked(part *Runtime) error {
 	routes := make(map[string]bool, len(rt.entries))
 	for _, entry := range rt.entries {
 		routes[entry.config.ID] = true
 	}
+	retiringRoutes, retiringSessions := rt.retiringIDsLocked()
 	for _, entry := range part.entries {
 		if routes[entry.config.ID] {
 			return fmt.Errorf("runtime: graft: route %q is already registered", entry.config.ID)
+		}
+		if retiringRoutes[entry.config.ID] {
+			return fmt.Errorf("runtime: graft: route %q is still being retired", entry.config.ID)
 		}
 	}
 	sessions := rt.sessionIDsLocked()
@@ -141,6 +149,9 @@ func (rt *Runtime) graftCollisionLocked(part *Runtime) error {
 	for sid := range partSessions {
 		if sessions[sid] {
 			return fmt.Errorf("runtime: graft: session %q is already registered", sid)
+		}
+		if retiringSessions[sid] {
+			return fmt.Errorf("runtime: graft: session %q is still being retired", sid)
 		}
 	}
 	for _, entry := range part.entries {
@@ -178,21 +189,41 @@ func usedSessionIn(entry *routeEntry, ids map[string]bool) string {
 // The caller holds rt.mu.
 func (rt *Runtime) sessionIDsLocked() map[string]bool {
 	ids := make(map[string]bool)
-	for sid := range rt.sessionMgrs {
+	addSessionIDs(ids, componentSet{entries: rt.entries, sessionSenders: rt.sessionSenders, ingressSessions: rt.ingressSessions}, rt.sessionMgrs)
+	return ids
+}
+
+// retiringIDsLocked returns the route ids and the session ids of every unit a
+// Retire has taken out and not finished with. The caller holds rt.mu.
+func (rt *Runtime) retiringIDsLocked() (routes, sessions map[string]bool) {
+	routes, sessions = make(map[string]bool), make(map[string]bool)
+	for _, u := range rt.retiring {
+		for _, entry := range u.set.entries {
+			routes[entry.config.ID] = true
+		}
+		addSessionIDs(sessions, u.set, u.managers)
+	}
+	return routes, sessions
+}
+
+// addSessionIDs adds to ids every session id of set and managers: managed,
+// registered as a session sender or an ingress session, or named by a route's
+// session block.
+func addSessionIDs(ids map[string]bool, set componentSet, managers map[string]*session.Manager) {
+	for sid := range managers {
 		ids[sid] = true
 	}
-	for sid := range rt.sessionSenders {
+	for sid := range set.sessionSenders {
 		ids[sid] = true
 	}
-	for sid := range rt.ingressSessions {
+	for sid := range set.ingressSessions {
 		ids[sid] = true
 	}
-	for _, entry := range rt.entries {
+	for _, entry := range set.entries {
 		if entry.sessCfg != nil {
 			ids[entry.sessCfg.SessionID] = true
 		}
 	}
-	return ids
 }
 
 // credentialHook is one credential refresher's hold on the runtime: Stop calls

@@ -24,7 +24,8 @@ var ErrNotRunning = errors.New("runtime is not running")
 // the runs of its route runners, session managers and drainers, its managers by
 // session id, its drainers, and the sessions no manager runs that only the unit
 // held. It stays in rt.retiring until Retire has finished with it, so Fence
-// still reaches its drainers and dlqToken still sees its managers' leases.
+// still reaches its drainers, dlqToken still sees its managers' leases, and
+// Graft still refuses its ids.
 type retiredUnit struct {
 	set       componentSet
 	runs      []componentRun
@@ -41,21 +42,22 @@ type retiredUnit struct {
 // session its routes ride on, bind to or hold as their primary session, and no
 // route left running uses a session it names. Ids rt does not have are ignored.
 //
-// The unit leaves rt at once, so its ids are free for a successor. Its
+// The unit leaves rt at once, so nothing new reaches it. Its
 // in-flight deliveries then settle within the budget Stop uses, its route
 // runners, drainers and session managers stop, its managers close (releasing
 // their leases), and so does every session only the unit held. Credential
 // refreshers stop watching its transports, and one left watching nothing is
 // closed. Until Retire has finished with the unit, a Fence still fences its
 // drainers, and a DLQ write for one of its exclusive sessions is still fenced
-// on that session's lease. Graft the successor after Retire returns: until
-// then the retired ids' health records and exclusive marks are still being
-// cleared.
+// on that session's lease. Graft refuses the unit's ids until Retire returns:
+// until then the retired ids' health records and exclusive marks are still
+// being cleared.
 //
 // The unit is gone from rt even when Retire returns an error; the error names
 // components that did not stop within ctx and sessions that failed to close.
-// A component that did not stop keeps its drainers reachable by Fence and its
-// exclusive sessions refusing DLQ writes, since nothing holds their lease. A
+// A component that did not stop keeps its drainers reachable by Fence, its
+// exclusive sessions refusing DLQ writes, since nothing holds their lease, and
+// the unit's ids refused by Graft, since it still runs under them. A
 // close error is the caller's to act on: once every component has stopped,
 // nothing writes under the unit's sessions, though an in-place reload wedges on
 // any Retire error all the same.
