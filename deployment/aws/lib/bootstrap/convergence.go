@@ -175,14 +175,13 @@ func (a *App) convergenceGeneration() uint64 {
 	return a.convergenceGen
 }
 
-// markConvergenceDegraded latches the degraded state iff rt is still installed
-// and gen is the newest watch generation.
+// markConvergenceDegraded latches the degraded state iff rt is still installed,
+// the App not wedged, and gen the newest watch generation.
 func (a *App) markConvergenceDegraded(rt *goruntime.Runtime, gen uint64, reason string) bool {
-	if !a.convergenceWatcherCurrent(rt, gen) {
-		return false
-	}
 	a.convergenceMu.Lock()
-	if a.convergenceRt != rt || a.convergenceGen != gen {
+	// installPlan publishes a runtime before its watch replaces this one, so the
+	// installed runtime is read under the lock that gates the mark, not before it.
+	if a.convergenceRt != rt || a.convergenceGen != gen || a.runtimeRef.Get() != rt || a.wedged.Load() {
 		a.convergenceMu.Unlock()
 		return false
 	}
