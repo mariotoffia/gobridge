@@ -57,8 +57,8 @@ Two states deserve calling out because they look healthy from the outside:
   the reference binary accepts `-start-empty=false`, which turns a missing
   config file back into a fatal startup error.
 - **Wedged.** A reconfiguration swap and its recovery both failed, or an
-  in-place reload left a retired reload unit, or a torn runtime, that did not
-  stop cleanly ([ADR 0018](adr/0018-reload-in-place-by-unit.md)), so the
+  in-place reload left a retired reload unit, a part built for a serialized
+  reload, or a torn runtime that did not stop cleanly ([ADR 0018](adr/0018-reload-in-place-by-unit.md)), so the
   process holds no active runtime and routes nothing. This is reported through
   the supervisor's own terminal state, so `/live` answers 503 immediately
   rather than waiting for a coarse background backstop, and the orchestrator

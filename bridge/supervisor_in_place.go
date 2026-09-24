@@ -94,7 +94,7 @@ func (s *Supervisor) applyInPlace(ctx context.Context, oldRt *runtime.Runtime, o
 		s.recoverOldOrWedge(ctx, oldCfg)
 	case InPlaceWedged:
 		s.stopAbandoned(ctx, oldRt, oldCfg)
-		s.wedgeAfterFailedStop("a retired reload unit did not stop cleanly", err)
+		s.wedgeAfterFailedStop("an in-place reload could not stop a retired unit or a built part cleanly", err)
 	}
 	return nil, fmt.Errorf("in-place reload (%s): %w", outcome, err)
 }

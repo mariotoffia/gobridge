@@ -211,7 +211,7 @@ func TestSupervisorInPlace_WedgedWhenRetireFails(t *testing.T) {
 	assert.False(t, rt.IsRunning(), "the runtime is stopped")
 	degraded, reason := s.Degraded()
 	assert.True(t, degraded)
-	assert.Contains(t, reason, "a retired reload unit did not stop cleanly")
+	assert.Contains(t, reason, "an in-place reload could not stop a retired unit or a built part cleanly")
 	assert.NotContains(t, reason, "old runtime stop failed", "the runtime's own stop did not fail")
 }
 
