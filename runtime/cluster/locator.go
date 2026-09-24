@@ -135,6 +135,15 @@ func (rl *Locator) RegisterRoute(routeID, sessionID string) {
 	rl.mu.Unlock()
 }
 
+// UnregisterRoute forgets a route's exclusive session, so Locate treats the
+// route as non-exclusive again. The cached lease of its session is kept: other
+// routes may still use that session.
+func (rl *Locator) UnregisterRoute(routeID string) {
+	rl.mu.Lock()
+	delete(rl.routeSessionMap, routeID)
+	rl.mu.Unlock()
+}
+
 // Locate determines if a route should be handled locally or forwarded.
 // Non-exclusive routes always return local=true.
 // Exclusive routes check the lease owner and return PeerInfo if remote.

@@ -51,6 +51,10 @@ func (a *App) admitInitialConfig(ctx context.Context, cfg *ports.BridgeConfig) e
 
 type repositoryEpochKey struct{}
 
+// applyAttemptBudget bounds one attempt of the repository worker to apply an
+// observed configuration.
+const applyAttemptBudget = 30 * time.Second
+
 type repositoryEvent struct {
 	observation ports.ConfigObservation
 	epoch       uint64
@@ -109,7 +113,7 @@ func (a *App) observeRepository(ctx context.Context, target ports.ConfigStore) {
 			if retry != nil && !a.missing.Load() && !a.wedged.Load() && a.runtimeRef.Get() == nil {
 				a.mu.Lock()
 				if retry.epoch == a.observationEpoch.Load() {
-					attempt, cancel := context.WithTimeout(context.WithValue(ctx, repositoryEpochKey{}, retry.epoch), 30*time.Second)
+					attempt, cancel := context.WithTimeout(context.WithValue(ctx, repositoryEpochKey{}, retry.epoch), applyAttemptBudget)
 					err := a.activateRepository(attempt, retry.observation.Config)
 					cancel()
 					if err == nil {
@@ -146,7 +150,7 @@ func (a *App) observeRepository(ctx context.Context, target ports.ConfigStore) {
 				a.mu.Lock()
 				if ctx.Err() == nil && !a.wedged.Load() && ev.epoch == a.observationEpoch.Load() {
 					a.missing.Store(false)
-					attempt, cancel := context.WithTimeout(context.WithValue(ctx, repositoryEpochKey{}, ev.epoch), 30*time.Second)
+					attempt, cancel := context.WithTimeout(context.WithValue(ctx, repositoryEpochKey{}, ev.epoch), applyAttemptBudget)
 					err := a.activateRepository(attempt, ev.observation.Config)
 					cancel()
 					if err != nil {

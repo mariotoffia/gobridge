@@ -58,7 +58,9 @@ var _ ports.TransportFactory = (*slowDrainTransportFactory)(nil)
 // runtime reported terminal for the entire swap, so the liveness backstop
 // killed the process mid-swap.
 func TestSupervisor_TerminalFalseDuringHealthySwap(t *testing.T) {
-	s := NewSupervisor(WithSupervisorBlueprintValidator(config.Validate))
+	// Overlap stops the old runtime inside the swap window; the route change
+	// alone would reload in place and stop no runtime.
+	s := NewSupervisor(WithSupervisorBlueprintValidator(config.Validate), WithSwapMode(SwapOverlap))
 	s.RegisterTransport("fake", &slowDrainTransportFactory{delay: 800 * time.Millisecond})
 	s.RegisterStoreFactory("memory", &fakeStoreFactory{})
 
@@ -134,7 +136,10 @@ var _ ports.MetricsExporter = (*reloadExporter)(nil)
 func TestSupervisor_SharedExporterSurvivesReload(t *testing.T) {
 	exp := &reloadExporter{}
 
-	s := NewSupervisor(WithSupervisorBlueprintValidator(config.Validate), WithSupervisorMetrics(exp))
+	// Overlap replaces the runtime on every reload; the route change alone would
+	// reload in place and stop no runtime.
+	s := NewSupervisor(WithSupervisorBlueprintValidator(config.Validate), WithSupervisorMetrics(exp),
+		WithSwapMode(SwapOverlap))
 	s.RegisterTransport("fake", &fakeTransportFactory{})
 	s.RegisterStoreFactory("memory", &fakeStoreFactory{})
 
@@ -342,7 +347,9 @@ func TestStopAbandoned_ReleasesBuiltRuntimeSessions(t *testing.T) {
 // bounded by the swap deadline and route into recoverOldOrWedge, which resumes
 // the old config.
 func TestSupervisor_HungSwapCompleteBoundedByDeadline(t *testing.T) {
-	s, ef := newTestSupervisorWithExclusive(WithSwapDeadline(150 * time.Millisecond))
+	// The route change alone would reload in place; this pins the prepare-commit
+	// swap, whose complete phase runs after the old runtime has stopped.
+	s, ef := newTestSupervisorWithExclusive(WithSwapDeadline(150*time.Millisecond), WithSwapMode(SwapPrepareCommit))
 	var hangNext atomic.Bool
 	ef.SessionFn = func(ctx context.Context, spec ports.SessionSpec) (ports.Session, error) {
 		if hangNext.CompareAndSwap(true, false) {

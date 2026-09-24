@@ -69,6 +69,16 @@ func sessionHasDesiredSubscriptions(cfg *ports.BridgeConfig, sessionID string) b
 	return false
 }
 
+// validateManagedSubscriptionStore refuses a configuration whose durable MQTT
+// sessions want subscriptions but that names no store to remember them. It
+// reads only the configuration, so Preflight refuses it before any store opens.
+func validateManagedSubscriptionStore(cfg *ports.BridgeConfig) error {
+	if requiresManagedSubscriptionStore(cfg) && cfg.Stores.ManagedSubscriptions == nil {
+		return fmt.Errorf("bridge: persistent/exclusive MQTT sessions with desired subscriptions require stores.managed_subscriptions")
+	}
+	return nil
+}
+
 func requiresManagedSubscriptionStore(cfg *ports.BridgeConfig) bool {
 	if cfg == nil {
 		return false
@@ -126,7 +136,7 @@ func senderSpecFrom(def ports.SenderDef) ports.SenderSpec {
 // order for subscriptions; sorted, deduplicated receiver IDs) and independent
 // of which route triggers it, so every route
 // sharing the session derives an identical plan. That keeps the runtime's
-// first-wins session-manager dedup (runtime/bridge_start.go) safe:
+// first-wins session-manager dedup (runtime/bridge_components.go) safe:
 // whichever route's sessCfg the manager is built from carries the same
 // subscriptions.
 //

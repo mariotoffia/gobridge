@@ -212,8 +212,8 @@ func TestBuilder_StoreDurability_RejectionNamesDrainingRoutes(t *testing.T) {
 // durabilityReloadConfig is twoSessionReloadConfig's shape reduced to one
 // exclusive shared_outbox route, on separately named lease and outbox store
 // types so each half of the pairing carries its own durability posture across a
-// reload. address changes the binding, which is the accepted delta that forces
-// the supervisor to reconstruct every store.
+// reload. address changes the binding, an accepted delta confined to the route's
+// reload unit.
 func durabilityReloadConfig(version int, leaseType, outboxType, address string) *ports.BridgeConfig {
 	return &ports.BridgeConfig{
 		Version: version,
@@ -251,10 +251,12 @@ func newDurabilitySupervisor(leaseDurable, outboxDurable bool, opts ...Superviso
 	return s
 }
 
-// Verifies every accepted pairing survives a reload. A reload reconstructs each
-// store from its factory, so the composition guard runs again on the new
-// generation — a guard that mis-read the rebuilt stores would turn a routine
-// config edit into a failed swap that strands the fleet on the old runtime.
+// Verifies every accepted pairing survives a reload, down both paths a reload
+// takes. A full replacement reconstructs each store from its factory, and an
+// in-place reload builds its parts over the running stores; either way the
+// composition guard runs again — a guard that mis-read the stores would turn a
+// routine config edit into a failed swap that strands the fleet on the old
+// runtime.
 func TestSupervisorReload_StoreDurability_AcceptedPairingsSwap(t *testing.T) {
 	for _, tc := range []struct {
 		name                        string
@@ -264,24 +266,35 @@ func TestSupervisorReload_StoreDurability_AcceptedPairingsSwap(t *testing.T) {
 		{"volatile lease and volatile outbox", false, false},
 		{"durable lease and volatile outbox", true, false},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			onSwap, swaps := swapChan(1)
-			s := newDurabilitySupervisor(tc.leaseDurable, tc.outboxDurable, WithOnSwap(onSwap))
-			ch := make(chan *ports.BridgeConfig, 1)
-			cancel, errCh := quickSupervisorRun(s,
-				durabilityReloadConfig(1, "lease-store", "outbox-store", "topic/r1"), ch)
-			defer func() { cancel(); <-errCh }()
+		for _, path := range []struct {
+			name string
+			opts []SupervisorOption
+			want SwapMode
+		}{
+			{"full replacement", []SupervisorOption{WithSwapMode(SwapPrepareCommit)}, SwapPrepareCommit},
+			{"in place", nil, SwapInPlace},
+		} {
+			t.Run(tc.name+"/"+path.name, func(t *testing.T) {
+				onSwap, swaps := swapChan(1)
+				s := newDurabilitySupervisor(tc.leaseDurable, tc.outboxDurable,
+					append([]SupervisorOption{WithOnSwap(onSwap)}, path.opts...)...)
+				ch := make(chan *ports.BridgeConfig, 1)
+				cancel, errCh := quickSupervisorRun(s,
+					durabilityReloadConfig(1, "lease-store", "outbox-store", "topic/r1"), ch)
+				defer func() { cancel(); <-errCh }()
 
-			oldRt := s.Runtime()
-			require.NotNil(t, oldRt, "the accepted pairing must start")
+				oldRt := s.Runtime()
+				require.NotNil(t, oldRt, "the accepted pairing must start")
 
-			require.True(t, sendConfig(ch,
-				durabilityReloadConfig(2, "lease-store", "outbox-store", "topic/r1-moved"), time.Second))
-			ev := awaitSwap(t, swaps)
+				require.True(t, sendConfig(ch,
+					durabilityReloadConfig(2, "lease-store", "outbox-store", "topic/r1-moved"), time.Second))
+				ev := awaitSwap(t, swaps)
 
-			require.NoError(t, ev.Error, "an accepted pairing must survive store reconstruction")
-			assert.Equal(t, 2, s.Config().Version)
-		})
+				require.NoError(t, ev.Error, "an accepted pairing must survive the reload")
+				assert.Equal(t, path.want, ev.SwapMode)
+				assert.Equal(t, 2, s.Config().Version)
+			})
+		}
 	}
 }
 

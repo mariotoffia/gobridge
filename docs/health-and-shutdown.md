@@ -56,7 +56,9 @@ Two states deserve calling out because they look healthy from the outside:
   converged member. If starting empty is never acceptable for a deployment,
   the reference binary accepts `-start-empty=false`, which turns a missing
   config file back into a fatal startup error.
-- **Wedged.** A reconfiguration swap and its recovery both failed, so the
+- **Wedged.** A reconfiguration swap and its recovery both failed, or an
+  in-place reload left a retired reload unit, a part built for a serialized
+  reload, or a torn runtime that did not stop cleanly ([ADR 0018](adr/0018-reload-in-place-by-unit.md)), so the
   process holds no active runtime and routes nothing. This is reported through
   the supervisor's own terminal state, so `/live` answers 503 immediately
   rather than waiting for a coarse background backstop, and the orchestrator
@@ -85,7 +87,7 @@ bridge:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `shutdown_timeout` | `30s` | Total grace period for clean shutdown. In the file-based deployment it IS the process budget: the config watcher join, the rollout-drive stop, the HTTP shutdown, the runtime drain, store close and telemetry flush all run inside it. Read from the **running** configuration when shutdown starts, so a value raised through a reload takes effect without a restart. |
-| `drain_timeout` | `30s` | Ceiling on `Runtime.Stop` when the supervisor stops a runtime (shutdown or reconfiguration swap). Not a per-batch outbox budget. |
+| `drain_timeout` | `30s` | Ceiling on `Runtime.Stop` when the supervisor stops a runtime (shutdown or reconfiguration swap), and on each retire of a reload unit in an in-place reload. Not a per-batch outbox budget. |
 | `per_record_drain_timeout` | `3s` | Per-record budget in the scaled formula. |
 | `max_drain_timeout` | `10s` | Absolute ceiling for the scaled formula. |
 
@@ -174,7 +176,11 @@ cancelled its work context and closed its managers, sessions and stores, and a
 stopped runtime is single-use. The supervisor (and the file-based bootstrap app)
 therefore **wedges** rather than keeping the torn-down runtime installed:
 `/live` fails closed and the orchestrator restarts the task with freshly-built
-transports, which is also the only thing that clears hung plugin residue. See
+transports, which is also the only thing that clears hung plugin residue. An
+in-place reload whose retired reload unit, or a part built for a serialized
+reload, does not stop cleanly wedges the same way, because its sessions may
+still hold their broker identities
+([ADR 0018](adr/0018-reload-in-place-by-unit.md)). See
 [ADR-0004](adr/0004-single-use-runtime-lifecycle.md).
 
 ### Exit Codes

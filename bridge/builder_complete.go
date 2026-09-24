@@ -97,8 +97,8 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 		return nil, err
 	}
 
-	// Start credential refresh watchers for any session, receiver, or
-	// sender that carries a credentials_uri AND whose target implements
+	// Start credential refresh watchers for any session, and any receiver or
+	// sender rt holds, that carries a credentials_uri AND whose target implements
 	// CredentialAware. Gated on the effective push store so builds without
 	// one skip this entirely, preserving legacy behavior. effectivePushStore
 	// resolves an explicitly-registered push store, or lazily wraps a polled
@@ -137,22 +137,9 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 				refresher.Close()
 			}
 		}()
-		for sid, uri := range sessionURIs {
-			if sess, ok := sessions[sid]; ok {
-				refresher.Watch(ctx, uri, sess)
-			}
-		}
-		for rid, uri := range receiverURIs {
-			if recv, ok := receivers[rid]; ok {
-				refresher.WatchReceiver(ctx, uri, recv)
-			}
-		}
-		for sid, uri := range senderURIs {
-			if snd, ok := senders[sid]; ok {
-				refresher.WatchSender(ctx, uri, snd)
-			}
-		}
+		watchCredentials(ctx, refresher, rt, sessions, receivers, senders, sessionURIs, receiverURIs, senderURIs)
 		rt.AttachCredentialCloser(func(_ context.Context) { refresher.Close() })
+		rt.AttachCredentialForget(refresher.Forget)
 	}
 
 	// Contract: run the runtime's pre-start route validation now, while the
@@ -201,9 +188,10 @@ func closeBuiltContextClosers[T any](ctx context.Context, logger *slog.Logger, k
 // io.Closer and are skipped, mirroring runtime.Stop's teardown. The order
 // (outbox, DLQ, lease) matches runtime.Stop for consistency; each Close is
 // best-effort and a failure is logged rather than propagated because the build
-// has already failed and every handle must still be attempted.
+// has already failed and every handle must still be attempted. Stores a part
+// borrowed belong to the runtime it joins and are never closed here.
 func (b *Builder) closeStoreHandles(stores *storeResult) {
-	if stores == nil {
+	if stores == nil || stores.borrowed {
 		return
 	}
 	for _, s := range []any{stores.managedSubscriptions, stores.outbox, stores.dlq, stores.lease} {
@@ -289,7 +277,7 @@ func (b *Builder) wireRoutes(
 		// session manager reconciles a non-empty plan. sessionPlanFor is the
 		// per-session union of every receiver bound to the session, so the
 		// plan is identical for all routes sharing it — safe under the
-		// first-wins session-manager dedup in runtime/bridge_start.go.
+		// first-wins session-manager dedup in runtime/bridge_components.go.
 		// Without this the broker session declares no topology and
 		// subscribes to nothing. sessCfg is nil only when the route has
 		// no session, in which case there is nothing to reconcile.

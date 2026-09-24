@@ -6,7 +6,7 @@ Update a running bridge -- add routes, change policies, or swap endpoints -- wit
 
 You operate a message bridge in production and need to evolve its configuration over time: adding new routes for newly discovered device types, adjusting backpressure limits in response to traffic patterns, or changing broker endpoints during maintenance windows. Restarting the process is unacceptable because it interrupts in-flight message processing and may cause duplicate deliveries downstream.
 
-GoBridge solves this with a layered configuration system, file watchers, and a Supervisor that coordinates runtime swaps safely **within a single process**. Reconfiguration is per-process, not cluster-coordinated -- see [Cluster Semantics and Limitations](#cluster-semantics-and-limitations) for the boundaries this implies in a multi-instance deployment.
+GoBridge solves this with a layered configuration system, file watchers, and a Supervisor that coordinates runtime swaps safely **within a single process** and reconnects only the parts of the configuration a change touches. Reconfiguration is per-process, not cluster-coordinated -- see [Cluster Semantics and Limitations](#cluster-semantics-and-limitations) for the boundaries this implies in a multi-instance deployment.
 
 ## Dynamic Reconfiguration Lifecycle
 
@@ -35,10 +35,16 @@ sequenceDiagram
     Ch->>Strat: Raw config event
     Strat->>Strat: Filter / debounce / window
     Strat->>Sup: Filtered config
-    Sup->>Sup: Detect swap mode
-    Sup->>New: Build new runtime
-    Sup->>Old: Stop (drain in-flight)
-    Sup->>New: Start
+    Sup->>Sup: Plan in-place reload
+    alt Only reload units changed
+        Sup->>Old: Retire changed units (drain, stop)
+        Sup->>Old: Graft their replacements (start)
+    else Bridge-wide change, HTTP endpoint, or explicit swap mode
+        Sup->>Sup: Detect swap mode
+        Sup->>New: Build new runtime
+        Sup->>Old: Stop (drain in-flight)
+        Sup->>New: Start
+    end
     Sup->>Sup: Emit SwapEvent callback
 ```
 
@@ -196,12 +202,50 @@ Key points:
 - **`WithOnSwap`** -- Callback invoked after every swap attempt, successful or not. Useful for alerting and metrics.
 - **`sup.Run`** -- Blocks until the context is cancelled. Config change failures are logged but do not stop the supervisor.
 
+## What Reconnects on a Change
+
+A change reconnects only what it touches. The Supervisor splits every configuration into **reload units**: groups of sessions, receivers, senders, bindings and routes joined by the ids they reference -- a receiver's, sender's or binding's `session_id`, a binding's `sender_id`, and a route's `receiver_id`, `bindings` and `session` block. When a new configuration arrives, every unit whose content is the same in both documents keeps running untouched: its sessions stay connected and its routes keep delivering through the reload. Only the units that differ are replaced. The old ones are drained, stopped and removed; the new ones are built and started inside the running runtime. This is an **in-place reload** ([ADR 0018](../adr/0018-reload-in-place-by-unit.md)).
+
+In the configuration above, every entry references the session `mqtt`, so the whole bridge is one unit, and changing the route's policy reconnects `mqtt`. Add a second owner -- a session `mqtt-b` with its own receiver, sender, binding and route that reference only `mqtt-b` -- and the reload adds one unit: `mqtt-b` connects, and `mqtt` and the `process` route are not touched. Changing or removing that owner's route later reconnects or disconnects `mqtt-b` only. (A new persistent MQTT session still needs its managed-subscription baseline before it can start; see [MQTT durable sessions](../transports/mqtt-durable-sessions.md).)
+
+The unit is the smallest thing replaced. Two routes that share a session are one unit, so changing one of them reconnects the shared session and restarts the other route too. Give each owner its own session when owners must not disturb each other.
+
+The whole runtime is still replaced, exactly as before, when:
+
+- the change touches a bridge-wide section: `bridge`, `stores`, `config_watch` or `http`;
+- the outbox stale-claim duration changes. Unless `stores.outbox` sets `stale_claim_duration`, it is derived from the largest `step_down_grace` of any route session;
+- a changed, added or removed unit uses the `http` transport (or a transport with no registered factory), because an HTTP path cannot be unmounted or mounted twice;
+- the Supervisor was given an explicit `WithSwapMode(SwapOverlap)` or `WithSwapMode(SwapPrepareCommit)`;
+- there is no running runtime to keep, as on the first apply.
+
+The order inside an in-place reload follows the same rule as a full swap, `RequiresSerializedSwap` (see [SwapAuto](#swapauto-default)), asked of the retired units against the added ones. When an added unit claims an exclusive broker identity, or a retired unit holds one on a transport an added unit still attaches to, the retired units stop before their replacements are built, so no MQTT client ID is ever connected twice. Otherwise the replacements are built while the old units still serve. Either way, inside the runtime a replaced unit stops before its replacement starts, so the changed unit has a short gap: its drain plus its start. The whole next document is validated, and every added unit prepared, before anything stops.
+
+A failed in-place reload ends in one of three ways:
+
+- **Unchanged.** Nothing was retired, or the retired units were rebuilt from the running configuration and put back. The runtime keeps serving the old configuration, unless a shutdown, terminal failure or configuration fence stopped it meanwhile, which that path handles as it would without a reload, and the failed `SwapEvent` carries the error.
+- **Torn.** Units were retired and could not be restored, or the runtime stopped running before the rest were retired. The Supervisor stops the runtime and builds the old configuration afresh, as after a failed full swap; if that stop or build fails, it wedges.
+- **Wedged.** A retired unit, or a part a serialized reload built or restored, did not stop cleanly, so its sessions may still hold their broker identities. The Supervisor stops the runtime and wedges; `/live` fails and the orchestrator restarts the process ([ADR 0004](../adr/0004-single-use-runtime-lifecycle.md)).
+
+An in-place reload reports `SwapEvent.SwapMode == bridge.SwapInPlace`, and its success log line names what it replaced:
+
+```text
+INFO supervisor: reconfiguration complete swap_mode=in_place ... retired_routes=[process-b] added_routes=[process-b] retired_sessions=[mqtt-b] added_sessions=[mqtt-b]
+```
+
+A route or session id that is both retired and added belongs to a unit that changed.
+
 ## Swap Modes
 
-The Supervisor supports three swap modes that control how it transitions between old and new runtimes.
+The Supervisor supports four swap modes that control how it moves from the running configuration to the new one.
 
 ```mermaid
 flowchart TD
+    subgraph SwapInPlace ["SwapInPlace (only reload units changed)"]
+        direction TB
+        I1["Validate + prepare added units"] --> I2["Retire changed units"]
+        I2 --> I3["Graft replacement units"]
+    end
+
     subgraph SwapOverlap ["SwapOverlap (stateless transports)"]
         direction TB
         O1["Build new runtime"] --> O2["Stop old runtime"]
@@ -217,11 +261,17 @@ flowchart TD
 
     subgraph SwapAuto ["SwapAuto (default)"]
         direction TB
-        A1["RequiresSerializedSwap(running, new)"]
+        A0["PlanInPlaceReload(running, new)"]
+        A0 -->|"only reload units changed"| A4["Use InPlace"]
+        A0 -->|"refused"| A1["RequiresSerializedSwap(running, new)"]
         A1 -->|"exclusive identity found"| A2["Use PrepareCommit"]
         A1 -->|"none"| A3["Use Overlap"]
     end
 ```
+
+### SwapInPlace
+
+Keep the running runtime and replace only the reload units that changed, as described in [What Reconnects on a Change](#what-reconnects-on-a-change). SwapAuto chooses it whenever a runtime is running and `bridge.PlanInPlaceReload` accepts the change, and `SwapEvent.SwapMode` reports it. Passed to `WithSwapMode`, it acts as SwapAuto: a change the plan refuses still needs Overlap or PrepareCommit, and only SwapAuto picks the right one.
 
 ### SwapOverlap
 
@@ -233,7 +283,7 @@ Split the build into two phases. **Prepare** validates the config and builds sto
 
 ### SwapAuto (Default)
 
-Asks `bridge.RequiresSerializedSwap` whether the new config claims an exclusive broker identity, or the running config holds one on a transport the new config still uses (an ordinary consumer is refused beside an exclusive one that is still attached, while a transport dropped altogether keeps Overlap). A config claims an identity when the config declares it (`session_mode: exclusive`, a route `session` block, or a session a route binding names by `session_id` — the last two always run a single-owner, lease-managed session), a factory declares `CapExclusiveIdentity`, or a factory reports it from a receiver config (an exclusive AMQP 0-9-1 consumer, a pinned Service Bus `session_id`). If so, the supervisor uses PrepareCommit; otherwise Overlap. This is the recommended default -- it adapts automatically to the transports in use.
+First asks `bridge.PlanInPlaceReload` whether the change is confined to reload units; if so, the supervisor reloads in place (SwapInPlace). Otherwise it asks `bridge.RequiresSerializedSwap` whether the new config claims an exclusive broker identity, or the running config holds one on a transport the new config still uses (an ordinary consumer is refused beside an exclusive one that is still attached, while a transport dropped altogether keeps Overlap). A config claims an identity when the config declares it (`session_mode: exclusive`, a route `session` block, or a session a route binding names by `session_id` — the last two always run a single-owner, lease-managed session), a factory declares `CapExclusiveIdentity`, or a factory reports it from a receiver config (an exclusive AMQP 0-9-1 consumer, a pinned Service Bus `session_id`). If so, the supervisor uses PrepareCommit; otherwise Overlap. This is the recommended default -- it adapts automatically to the transports in use.
 
 ## Cluster Semantics and Limitations
 
@@ -274,11 +324,11 @@ To operate safely:
 
 ## ReconfigStrategy Comparison
 
-Three built-in strategies control when config changes trigger a rebuild.
+Three built-in strategies control when config changes trigger a reload.
 
 | Strategy | Constructor | Behaviour | Best For |
 |----------|-------------|-----------|----------|
-| `DirectStrategy` | `NewDirectStrategy()` | Every change triggers immediate rebuild | Development |
+| `DirectStrategy` | `NewDirectStrategy()` | Every change triggers an immediate reload | Development |
 | `DebouncedStrategy` | `NewDebouncedStrategy(quietPeriod, clk)` | Waits for quiet period with no new changes; resets timer on each change | Burst edits |
 | `WindowedStrategy` | `NewWindowedStrategy(quietPeriod, maxDelay, clk)` | Like Debounced, but forces emit after `maxDelay` even if changes keep arriving | Production |
 
@@ -299,21 +349,21 @@ gantt
     Change 4          :milestone, c4, 8, 0
 
     section DirectStrategy
-    Rebuild 1         :crit, d1, 0, 1
-    Rebuild 2         :crit, d2, 3, 1
-    Rebuild 3         :crit, d3, 6, 1
-    Rebuild 4         :crit, d4, 8, 1
+    Reload 1          :crit, d1, 0, 1
+    Reload 2          :crit, d2, 3, 1
+    Reload 3          :crit, d3, 6, 1
+    Reload 4          :crit, d4, 8, 1
 
     section DebouncedStrategy (quiet=5s)
     Wait              :active, dw, 8, 13
-    Rebuild           :crit, dr, 13, 1
+    Reload            :crit, dr, 13, 1
 
     section WindowedStrategy (quiet=5s max=10s)
     Window cap        :active, ww, 0, 10
-    Rebuild           :crit, wr, 10, 1
+    Reload            :crit, wr, 10, 1
 ```
 
-- **DirectStrategy** rebuilds four times -- once per change.
+- **DirectStrategy** reloads four times -- once per change.
 - **DebouncedStrategy** waits 5 seconds after the last change (Change 4 at t=8), emitting at t=13. Only the latest config is applied.
 - **WindowedStrategy** would normally wait for quiet, but the max delay (10s from Change 1 at t=0) fires first at t=10. The latest config at that moment is applied.
 
@@ -332,7 +382,7 @@ The debounce in `config_watch` is the **file watcher** debounce -- it controls h
 
 1. **File watcher debounce** (`config_watch.debounce: 200ms`) -- Prevents reading a partially written file. An editor that writes in multiple steps (truncate, write, rename) generates several events; the debounce ensures the watcher reads the final state.
 
-2. **ReconfigStrategy debounce** (`WindowedStrategy(10s, 30s)`) -- Prevents rebuilding the runtime for every small edit. An operator making several related changes (add a receiver, add a route, adjust a policy) gets a single rebuild after the quiet period.
+2. **ReconfigStrategy debounce** (`WindowedStrategy(10s, 30s)`) -- Prevents a reload for every small edit. An operator making several related changes (add a receiver, add a route, adjust a policy) gets a single reload after the quiet period.
 
 ## Key Decisions
 
@@ -412,3 +462,5 @@ sup := bridge.NewSupervisor(
 ```
 
 Use this when SwapAuto picks the wrong mode -- for example, a custom transport that requires exclusive access but neither declares `CapExclusiveIdentity` nor implements `ConfigRequiresExclusiveIdentity`, under a config that does not mark the session exclusive.
+
+An explicit `SwapOverlap` or `SwapPrepareCommit` also turns off in-place reload: every change then replaces the whole runtime and reconnects every session. `WithSwapMode(bridge.SwapInPlace)` changes nothing; it behaves as SwapAuto.

@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"math"
 	"sync"
-	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
-	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // preparedBuild holds pre-validated state from the prepare phase.
@@ -51,7 +49,8 @@ type preparedBuild struct {
 //
 // A BuildPlan that is prepared but never committed MUST be released via
 // BuildPlan.Close (or its alias Abort) so the transport-independent stores the
-// prepare phase opened (SQLite files, DynamoDB clients) are not leaked.
+// prepare phase opened (SQLite files, DynamoDB clients) are not leaked. A part's
+// plan borrows its stores from a running runtime and holds nothing to release.
 type BuildPlan struct {
 	b    *Builder
 	prep *preparedBuild
@@ -211,8 +210,7 @@ func (b *Builder) Preflight(ctx context.Context) error {
 	if err := b.validateIngressMemory(); err != nil {
 		return err
 	}
-
-	return nil
+	return validateManagedSubscriptionStore(b.cfg)
 }
 
 func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
@@ -317,6 +315,9 @@ type storeResult struct {
 	dlqDurable               bool
 	managedSubscriptions     ports.ManagedSubscriptionStore
 	managedSubscriptionsDist bool
+	// borrowed marks stores a part took from the runtime it joins, which
+	// closes them: a failed build never does.
+	borrowed bool
 }
 
 func isDistributedFactory(sf ports.StoreFactory) bool {
@@ -390,9 +391,6 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 	if err != nil {
 		return nil, err
 	}
-	if requiresManagedSubscriptionStore(b.cfg) && res.managedSubscriptions == nil {
-		return nil, fmt.Errorf("bridge: persistent/exclusive MQTT sessions with desired subscriptions require stores.managed_subscriptions")
-	}
 	if sc := b.cfg.Stores.DLQ; sc != nil {
 		sf, ok := b.storeFactories[sc.Type]
 		if !ok {
@@ -410,55 +408,7 @@ func (b *Builder) buildStores(ctx context.Context) (_ *storeResult, retErr error
 		res.dlqDurable = isCrashDurableFactory(sf)
 	}
 
-	// Clustered posture is implied by configured cluster endpoints even when
-	// deployment_mode is unset: forwarding between
-	// instances with a process-local lease/outbox/DLQ store silently breaks
-	// exclusivity and durability, so the store-distribution guard keys on
-	// either signal.
-	// IsClusteredDeployment is the SHARED predicate (bridge/convert.go): the same
-	// deployment_mode-or-static-endpoints definition used by the reload guard, so
-	// the store-distribution guard and the fail-closed reload guard never disagree
-	// on which deployments are clustered.
-	if IsClusteredDeployment(b.cfg) {
-		if res.lease != nil && !res.leaseDist {
-			return nil, fmt.Errorf("bridge: clustered deployment (deployment_mode or cluster.endpoints set) requires a distributed LeaseStore; the configured store is process-local")
-		}
-		if res.outbox != nil && !res.outboxDist {
-			return nil, fmt.Errorf("bridge: clustered deployment (deployment_mode or cluster.endpoints set) requires a distributed OutboxStore; the configured store is process-local")
-		}
-		if res.dlq != nil && !res.dlqDist {
-			return nil, fmt.Errorf("bridge: clustered deployment (deployment_mode or cluster.endpoints set) requires a distributed DLQStore; the configured store is process-local")
-		}
-		if res.managedSubscriptions != nil && !res.managedSubscriptionsDist {
-			return nil, fmt.Errorf("bridge: clustered deployment requires a distributed ManagedSubscriptionStore; the configured store is process-local")
-		}
-	}
-
-	// Split-brain-by-misconfiguration guard (LOW): a process-local (e.g. memory)
-	// lease store cannot arbitrate exclusive-session ownership ACROSS replicas.
-	// Clustered mode already hard-fails above, but two replicas EACH deployed as
-	// `standalone` with a memory lease will EACH believe they own every exclusive
-	// session and drive it concurrently (split brain) — a posture NOT detectable
-	// from any single process's config. deployment_mode cannot gate this warning:
-	// it is a gobridge-config assertion decoupled from the orchestrator's actual
-	// replica count (a pod set to `standalone` can still be scaled to replicas>1
-	// in k8s), so `standalone` does NOT prove single-replica and suppressing on
-	// it would blind the exact two-replica case this catches. So warn PROMINENTLY
-	// whenever exclusive sessions ride on a non-distributed lease store,
-	// regardless of deployment_mode, and spell out the safe remediation (run
-	// exactly one replica, or adopt a distributed lease store). Follows the same
-	// b.logger-nil-guarded warning idiom as the resolver-degradation path below.
-	if res.lease != nil && !res.leaseDist && hasExclusiveSessions(b.cfg) && b.logger != nil {
-		b.logger.Warn("SPLIT-BRAIN RISK: exclusive sessions are configured on a process-local (non-distributed) "+
-			"lease store; if more than one replica runs, each replica's lease grants ownership of every exclusive "+
-			"session independently and drives it concurrently. Run EXACTLY ONE replica (replicas=1) for this "+
-			"configuration, or switch to a distributed lease store (e.g. dynamodb) for high availability.",
-			"lease_store_type", b.cfg.Stores.Lease.Type,
-			"deployment_mode", b.cfg.Bridge.DeploymentMode,
-			"remediation", "set replicas=1, or use a distributed lease store")
-	}
-
-	if err := b.enforceStoreDurability(res); err != nil {
+	if err := b.checkStores(res); err != nil {
 		return nil, err
 	}
 
@@ -562,82 +512,25 @@ func (b *Builder) resolveClusterEndpoints(ctx context.Context) (map[string]strin
 	return nil, nil
 }
 
-// outboxRuntimeOptions derives the runtime tuning passed to outbox
-// store factories. StaleClaimDuration is sourced in this priority:
-//
-//  1. an explicit `stale_claim_duration` entry in the outbox YAML
-//     options (read via StoreConfig.Raw()) — supports either a
-//     duration string ("2m") or a time.Duration value;
-//  2. a value derived from the maximum session step-down grace
-//     across all routes, plus a buffer.
-//
-// The derivation keeps the outbox reclaim timeout aligned with the
-// lease lifecycle without forcing every plugin config schema to
-// carry the runtime knob.
+// outboxRuntimeOptions derives the runtime tuning passed to outbox store
+// factories. StaleClaimDuration comes from staleClaimDuration, the same
+// derivation the in-place reload eligibility check reads.
 func (b *Builder) outboxRuntimeOptions(sc *ports.StoreConfig) (ports.OutboxRuntimeOptions, error) {
 	if sc == nil {
 		return ports.OutboxRuntimeOptions{Metrics: b.metrics}, nil
 	}
-
-	if explicit, ok, err := explicitStaleClaimDuration(sc); err != nil {
+	staleClaim, err := staleClaimDuration(b.cfg, sc)
+	if err != nil {
 		return ports.OutboxRuntimeOptions{}, err
-	} else if ok {
-		return ports.OutboxRuntimeOptions{StaleClaimDuration: explicit, Metrics: b.metrics}, nil
 	}
-
-	maxStepDownGrace := session.DefaultConfig("", true).StepDownGrace
-	for _, r := range b.cfg.Routes {
-		if r.Session == nil {
-			continue
-		}
-		sessCfg, err := toSessionConfigE(r.Session, IsClusteredDeployment(b.cfg))
-		if err != nil {
-			return ports.OutboxRuntimeOptions{}, fmt.Errorf("bridge: route %q: %w", r.ID, err)
-		}
-		if sessCfg != nil && sessCfg.StepDownGrace > maxStepDownGrace {
-			maxStepDownGrace = sessCfg.StepDownGrace
-		}
-	}
-
-	staleClaimBuffer := max(2*maxStepDownGrace, 15*time.Second)
 	return ports.OutboxRuntimeOptions{
-		StaleClaimDuration: maxStepDownGrace + staleClaimBuffer,
+		StaleClaimDuration: staleClaim,
 		// Thread the builder's exporter (the same one handed to routes) so
 		// the DynamoDB outbox store emits shared.MetricOutboxClaimConflicts in
 		// production; nil when no exporter is configured (factory treats nil as
 		// no-op).
 		Metrics: b.metrics,
 	}, nil
-}
-
-// explicitStaleClaimDuration looks for a user-provided override in
-// the outbox blueprint's raw stage-1 options. It returns ok=false
-// when the override is absent.
-func explicitStaleClaimDuration(sc *ports.StoreConfig) (time.Duration, bool, error) {
-	raw := sc.Raw()
-	if raw == nil {
-		return 0, false, nil
-	}
-	var probe struct {
-		StaleClaimDuration any `mapstructure:"stale_claim_duration" yaml:"stale_claim_duration" json:"stale_claim_duration"`
-	}
-	if err := raw.Decode(&probe); err != nil {
-		return 0, false, nil
-	}
-	switch v := probe.StaleClaimDuration.(type) {
-	case nil:
-		return 0, false, nil
-	case time.Duration:
-		return v, true, nil
-	case string:
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			return 0, false, fmt.Errorf("bridge: outbox stale_claim_duration: invalid duration %q: %w", v, err)
-		}
-		return d, true, nil
-	default:
-		return 0, false, fmt.Errorf("bridge: outbox stale_claim_duration: must be a duration string or time.Duration, got %T", v)
-	}
 }
 
 // validateDedicatedIngressSessions enforces transport-declared session

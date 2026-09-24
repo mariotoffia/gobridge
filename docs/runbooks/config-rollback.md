@@ -70,14 +70,15 @@ delivery. The transaction flow is reversible, which is the point of this runbook
    version lags the others has not yet converged.
 
 5. **`ConfigDegraded == 1` — applied but not converged.** A reload reports
-   success once the new runtime is *built and started*, but MQTT dials and
+   success once the new runtime (or, for an in-place reload, the replaced
+   units) is *built and started*, but MQTT dials and
    reconciles in background goroutines. A syntactically-valid-but-broker-invalid
    config (denied credentials, an ACL-rejected topic filter) therefore commits
    as a **successful** reload while the transport never reaches broker truth.
    Past the transport's activation budget the post-swap convergence watch flips
    `ConfigDegraded` to `1`. Both the generic runtime **and** the shipped AWS
-   bootstrap emit this signal (the bootstrap gained a post-swap convergence
-   watch — RECONFIG-1). Read the reason from deep health:
+   bootstrap emit this signal (the bootstrap has its own post-swap convergence
+   watch). Read the reason from deep health:
 
    ```bash
    curl -s -H "X-API-Key: ${ADMIN_KEY}" \

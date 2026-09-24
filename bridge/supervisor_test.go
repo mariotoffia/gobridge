@@ -103,9 +103,11 @@ func TestSupervisor_RuntimeAccessorBeforeRun(t *testing.T) {
 	assert.Nil(t, s.Runtime())
 }
 
-// TestSupervisor_OverlapSwap validates that a config change swaps runtimes via overlap.
+// TestSupervisor_OverlapSwap validates that a config change swaps runtimes via
+// overlap. The route change alone would reload in place, so overlap is explicit
+// in this group.
 func TestSupervisor_OverlapSwap(t *testing.T) {
-	s := newTestSupervisor()
+	s := newTestSupervisor(WithSwapMode(SwapOverlap))
 	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
@@ -116,7 +118,7 @@ func TestSupervisor_OverlapSwap(t *testing.T) {
 
 // TestSupervisor_OverlapSwap_OldRuntimeStopsCleanly validates the old runtime stops after swap.
 func TestSupervisor_OverlapSwap_OldRuntimeStopsCleanly(t *testing.T) {
-	s := newTestSupervisor()
+	s := newTestSupervisor(WithSwapMode(SwapOverlap))
 	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
@@ -129,7 +131,7 @@ func TestSupervisor_OverlapSwap_OldRuntimeStopsCleanly(t *testing.T) {
 
 // TestSupervisor_OverlapSwap_NewRuntimeGetsNewRoutes validates new routes after swap.
 func TestSupervisor_OverlapSwap_NewRuntimeGetsNewRoutes(t *testing.T) {
-	s := newTestSupervisor()
+	s := newTestSupervisor(WithSwapMode(SwapOverlap))
 	ch := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, quickCfg("r1"), ch)
 	defer func() { cancel(); <-errCh }()
@@ -195,8 +197,15 @@ func TestSupervisor_AutoDetect(t *testing.T) {
 			func() *ports.BridgeConfig { return supervisorTestConfigWithSession("r2", "s1") },
 			SwapPrepareCommit},
 		{"NonExclusiveUseOverlap", false, nil,
-			func() *ports.BridgeConfig { return quickCfg("r2") },
+			func() *ports.BridgeConfig {
+				c := quickCfg("r2")
+				c.Bridge.DrainTimeout = "2s" // bridge-wide, so the runtime is replaced
+				return c
+			},
 			SwapOverlap},
+		{"UnitOnlyChangeReloadsInPlace", false, nil,
+			func() *ports.BridgeConfig { return quickCfg("r2") },
+			SwapInPlace},
 		{"MixedTransports", true, nil,
 			func() *ports.BridgeConfig {
 				c := supervisorTestConfigWithSession("r2", "s1")
@@ -385,7 +394,7 @@ func TestSupervisor_SwapCallback_Success(t *testing.T) {
 	assert.Equal(t, "r1", ev.OldConfig.Routes[0].ID)
 	assert.Equal(t, "r2", ev.NewConfig.Routes[0].ID)
 	assert.Greater(t, ev.Duration, time.Duration(0))
-	assert.Equal(t, SwapOverlap, ev.SwapMode)
+	assert.Equal(t, SwapInPlace, ev.SwapMode, "a route change reloads the running runtime in place")
 }
 
 func TestSupervisor_SwapCallback_UsesInjectedClockForDuration(t *testing.T) {
@@ -565,6 +574,7 @@ func TestSupervisor_SwapUpdatesObservableConfigVersion(t *testing.T) {
 	okRec := lastLogRecord(t, &logBuf, "supervisor: reconfiguration complete")
 	assert.Equal(t, float64(8), okRec["config_version"])
 	assert.Equal(t, float64(7), okRec["old_config_version"])
+	assert.Equal(t, "in_place", okRec["swap_mode"], "the swap mode is logged by name")
 
 	// A failed swap (unresolvable transport, fails at build) must not advance
 	// the observable version — the old config keeps running.
@@ -584,6 +594,7 @@ func TestSupervisor_SwapUpdatesObservableConfigVersion(t *testing.T) {
 	failRec := lastLogRecord(t, &logBuf, "supervisor: reconfiguration failed")
 	assert.Equal(t, float64(8), failRec["config_version"])
 	assert.Equal(t, float64(9), failRec["attempted_config_version"])
+	assert.Equal(t, "overlap", failRec["swap_mode"], "a unit on a transport with no factory takes a full swap")
 }
 
 // lastLogRecord returns the last JSON log line in buf whose "msg" equals want,
@@ -764,6 +775,8 @@ func TestSupervisorClusteredReload(t *testing.T) {
 
 		ev := awaitSwap(t, swaps)
 		require.NoError(t, ev.Error, "a standalone route change must apply")
-		assert.NotSame(t, oldRt, s.Runtime(), "a real change must build and publish a new runtime")
+		assert.Equal(t, SwapInPlace, ev.SwapMode, "a real change is applied, not acknowledged as a no-op")
+		assert.Equal(t, "r2", s.Config().Routes[0].ID)
+		assert.Equal(t, []string{"r2"}, runtimeRouteIDs(s.Runtime()), "the running runtime serves the new route")
 	})
 }

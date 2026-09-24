@@ -25,9 +25,14 @@ sequenceDiagram
             M->>M: Merge layers + validate
             M->>A: Config change event
             A->>A: resolveInputs (SSM keys)
-            A->>RT: Build new runtime
-            A->>RT: Start new runtime
-            A->>RT: Stop old runtime
+            alt only reload units changed
+                A->>RT: Retire changed units
+                A->>RT: Graft their replacements
+            else bridge-wide or HTTP change
+                A->>RT: Build new runtime
+                A->>RT: Start new runtime
+                A->>RT: Stop old runtime
+            end
         end
     end
 ```
@@ -78,12 +83,109 @@ retry a failed apply. Restoring old content through CAS creates a new version.
 This ordering rule does not apply to operator-controlled file versions, to
 coordinated boot/barrier decisions, or to recovery of the last good runtime.
 
+### In-place reload
+
+A change reconnects only what it touches. The bootstrap library splits each
+configuration into **reload units**: groups of sessions, receivers, senders,
+bindings and routes joined by the ids they reference (a `session_id`, a
+binding's `sender_id`, a route's `receiver_id`, `bindings` and `session`
+block). On a change it compares the units of the running and the new
+configuration. A unit whose content is the same in both keeps running
+untouched: its sessions stay connected and its routes keep delivering. A unit
+that changed, or was removed, is drained, stopped and removed from the running
+runtime; a unit that changed, or was added, is built over the running runtime's
+stores and started inside it. Routes that share a session are one unit, so give
+each tenant its own sessions when tenants must not disturb each other. See
+[ADR 0018](../adr/0018-reload-in-place-by-unit.md).
+
+The in-place attempt runs after the same deployment-profile admission and
+cluster checks as every apply, with the secrets and the MQTT memory profile
+resolved once for it and for the full swap that may follow. The bootstrap
+library falls back to the [full swap](#swap-modes) when:
+
+- the change touches a bridge-wide section: `bridge`, `stores`, `config_watch`
+  or `http`;
+- the outbox stale-claim duration changes (derived from the largest route
+  `step_down_grace` unless `stores.outbox` sets `stale_claim_duration`);
+- a changed, added or removed unit uses the `http` transport, whose endpoints
+  cannot be unmounted from the transport server or mounted twice, or a
+  transport with no registered factory, whose capabilities cannot be read;
+- no runtime is running.
+
+When an added unit claims an exclusive broker identity, or a retired unit holds
+one on a transport an added unit still attaches to (the
+`bridge.RequiresSerializedSwap` rule under [Swap Modes](#swap-modes), asked of
+the retired units against the added ones), the retired units stop before their
+replacements are built; otherwise the replacements are built first. Inside the
+runtime a replaced unit always stops before its replacement starts, so a
+changed unit has a short gap — its drain plus its start — even on SQS, where a
+full overlap swap has none. Unchanged units have no gap.
+
+A successful in-place reload keeps the same runtime and transport factories,
+restarts the post-swap convergence watch, and logs:
+
+```text
+bootstrap: reloaded in place  outcome=applied retired_routes=[...] added_routes=[...] retired_sessions=[...] added_sessions=[...]
+```
+
+A failure logs `bootstrap: in-place reload failed` with the same fields, the
+outcome and the error, and ends one of three ways:
+
+- **unchanged** — nothing was retired, or the retired units were rebuilt from
+  the running configuration and put back. The runtime keeps serving the old
+  configuration, unless a shutdown, terminal failure or configuration fence
+  stopped it meanwhile, which that path handles as it would without a reload,
+  and the change is rejected like any failed apply;
+- **torn** — units were retired and could not be restored, or the runtime
+  stopped running before the rest were retired. The runtime is stopped and the
+  previous configuration rebuilt, as after a failed prepare/commit swap;
+- **wedged** — a retired unit, a part a serialized reload built or restored,
+  or the torn runtime did not stop cleanly, so its sessions may still hold their broker
+  identities. The process wedges, `/live`
+  fails and the orchestrator replaces the task
+  ([ADR 0004](../adr/0004-single-use-runtime-lifecycle.md)).
+
+### Keeping MQTT tenants connected
+
+The MQTT memory profile reserves 25% of task memory for MQTT ingress and gives
+each MQTT session that can receive an equal share: every session a receiver
+uses, and every persistent or exclusive session in use. For a session that
+leaves `ingress_memory_budget_bytes` unset, the share becomes its
+`ingress_memory_budget_bytes`, and its `receive_maximum` is derived from it.
+Both are part of the session's reload unit. So adding or removing one such
+MQTT session changes the share of every other unpinned MQTT session, and every
+one of those units is replaced: each tenant's MQTT session disconnects and
+connects again.
+
+In a multi-tenant deployment, set `ingress_memory_budget_bytes` on every MQTT
+session. A pinned budget is kept as it is, and `receive_maximum` is then
+derived from the budget, the payload size and the session's own routes, so a
+tenant added or removed elsewhere leaves the session connected. Pick a budget
+no larger than the share at the largest number of such sessions you plan for
+(25% of task memory divided by that number): a pinned budget above the current
+share is rejected, and the share shrinks as sessions are added.
+
+```yaml
+sessions:
+  - id: tenant-a
+    transport: mqtt
+    session_mode: persistent
+    options:
+      session:
+        broker_url: tls://broker.example.com:8883
+        client_id: bridge-tenant-a
+        ingress_memory_budget_bytes: 67108864   # 64 MiB: the share of a 1 GiB task at 4 MQTT sessions
+```
+
+See the [ingress byte model](../transports/mqtt-options.md#ingress-byte-model)
+for what the budget must hold.
+
 ### Swap Modes
 
-When a config change is detected, the bootstrap library must swap the old
-runtime for the new one. The swap strategy is **auto-detected** from the new
-config through `bridge.RequiresSerializedSwap`, the same check the Supervisor
-uses.
+When a config change cannot be reloaded in place, the bootstrap library must
+swap the old runtime for a new one. The swap strategy is **auto-detected** from
+the new config through `bridge.RequiresSerializedSwap`, the same check the
+Supervisor uses.
 
 **Overlap mode** (default): The new runtime is started first, then the old
 runtime is stopped. This provides zero-downtime for stateless transports
@@ -159,8 +261,10 @@ Follow this workflow for safe configuration updates in production.
    `http_receiver_api_key_params` / `http_sender_api_key_params` from SSM
    Parameter Store with decryption.
 
-5. **New runtime is built and swapped in.** The appropriate swap mode
-   (overlap or prepare/commit) is selected and the runtime is replaced.
+5. **The change is applied.** When only reload units changed, the running
+   runtime is reloaded in place and only those units reconnect. Otherwise the
+   appropriate swap mode (overlap or prepare/commit) is selected and the
+   runtime is replaced.
 
 6. **If validation or build fails:** The change is rejected, the last good
    runtime continues running, and a warning is logged:

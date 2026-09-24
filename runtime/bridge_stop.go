@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/mariotoffia/gobridge/logging"
-	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // Stop gracefully shuts down the runtime. It cancels all goroutines,
@@ -22,8 +23,20 @@ import (
 // DLQ stores, all opened sessions (including unmanaged binding sessions), and
 // any session managers — even though no background goroutine ever ran. After
 // Stop the runtime is single-use and cannot be restarted (ADR-0004).
+//
+// Stores built WithSharedStores are left open for the runtime that owns them.
+// A part consumed by Graft holds nothing, so its Stop is a no-op. A unit a
+// Retire in progress has taken out is that Retire's to close. Nothing
+// serializes the two: the watcher Start leaves on its context calls Stop at
+// shutdown whatever reload is running, so Stop may close closable stores while
+// that Retire still releases the unit's leases through them, and the Retire
+// then reports the failure.
 func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 	rt.mu.Lock()
+	if rt.consumed {
+		rt.mu.Unlock()
+		return nil
+	}
 	if (rt.terminal || rt.stopped) && !rt.running {
 		// A prior Stop already transitioned this runtime to stopped/terminal.
 		if rt.stopDone != nil {
@@ -66,6 +79,8 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 	// restarts the process, while a clean admin/swap Stop leaves /live at 200.
 	rt.stopped = true
 	cancel := rt.cancel
+	// No route joins or leaves once running is false: Graft and Retire refuse.
+	entries := rt.entries
 	rt.mu.Unlock()
 
 	// close(stopDone) MUST be the very last thing Stop does. Registered first
@@ -120,38 +135,18 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 		cancel()
 	}
 
-	// Close credential refresher BEFORE session teardown so that a
-	// rotation in flight cannot race ApplyCredentials against session
-	// Close (see AttachCredentialCloser rationale). The closer is
-	// invoked under a bounded timeout so a stuck watcher cannot hang
-	// Stop past the user-supplied ctx.
+	// Close every credential refresher, grafted parts' included, BEFORE session
+	// teardown so that a rotation in flight cannot race ApplyCredentials against
+	// session Close (see AttachCredentialCloser rationale). The closers run
+	// concurrently under one bounded timeout, so a stuck watcher can neither
+	// hang Stop past the user-supplied ctx nor keep another refresher open.
 	rt.mu.Lock()
-	closeRefresher := rt.credRefresherClose
-	rt.credRefresherClose = nil
+	hooks := rt.credHooks
+	rt.credHooks = nil
 	rt.mu.Unlock()
 
-	closeTimeout := rt.shutdownTimeout
-	if closeTimeout <= 0 {
-		closeTimeout = 5 * time.Second
-	}
-
-	if closeRefresher != nil {
-		refresherCtx, refresherCancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
-		// Spawn the closer with explicit lifetime; if it overruns the
-		// bounded timer or the caller's ctx, we move on (best-effort)
-		// rather than blocking Stop.
-		refresherDone := make(chan struct{})
-		go func() {
-			defer close(refresherDone)
-			closeRefresher(refresherCtx)
-		}()
-		select {
-		case <-refresherDone:
-		case <-refresherCtx.Done():
-		case <-ctx.Done():
-		}
-		refresherCancel()
-	}
+	closeTimeout := rt.closeTimeout()
+	closeCredentialHooks(ctx, hooks, closeTimeout)
 
 	var errs []error
 
@@ -203,7 +198,7 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 	// a genuinely stuck drainer is the lesser evil), but in the common case
 	// finalDrain's Complete runs against a live manager/lease.
 	if !drainersDone {
-		graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), rt.clampedStoreCloseGrace(ctx))
+		graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), rt.clampedStoreCloseGrace(ctx, entries))
 		select {
 		case <-waitDone:
 			drainersDone = true
@@ -222,13 +217,12 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 	// broker client's Close must not hold rt.mu — that would stall Role(),
 	// DeepHealth and the /live+/ready probes for the whole Stop duration.
 	rt.mu.Lock()
-	managed := make(map[string]bool, len(rt.sessionMgrs))
-	mgrs := make([]*session.Manager, 0, len(rt.sessionMgrs))
-	for sid, mgr := range rt.sessionMgrs {
-		managed[sid] = true
-		mgrs = append(mgrs, mgr)
-	}
-	unmanagedSessions := rt.unmanagedSessionRefsLocked(managed)
+	mgrs := slices.Collect(maps.Values(rt.sessionMgrs))
+	unmanagedSessions := rt.unmanagedSessionRefsLocked(componentSet{
+		entries:         rt.entries,
+		sessionSenders:  rt.sessionSenders,
+		ingressSessions: rt.ingressSessions,
+	})
 	metrics := rt.metrics
 	// Role-tagged so a close failure names the store an operator has to go and
 	// look at, rather than an anonymous "close: file is locked".
@@ -241,6 +235,7 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 		{"dlq", rt.dlqStore},
 		{"lease", rt.leaseStore},
 	}
+	sharedStores := rt.sharedStores
 	rt.mu.Unlock()
 
 	for _, mgr := range mgrs {
@@ -283,12 +278,17 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 		default:
 		}
 	}
-	if drainersDone {
+	switch {
+	case sharedStores:
+		// The stores belong to the runtime this one borrowed them from, which is
+		// still using them and closes them itself.
+	case drainersDone:
 		// Release store resources (e.g. SQLite file handles). Stores that hold
 		// OS resources implement io.Closer; in-memory stores do not and are
-		// skipped. Reconfiguration always builds a fresh runtime with its own
-		// store instances before Stopping the old one, so a closed handle is
-		// never shared with a live runtime.
+		// skipped. A full reconfiguration builds a fresh runtime with its own
+		// store instances before Stopping the old one, and a part that borrows a
+		// live runtime's stores never closes them (WithSharedStores), so a closed
+		// handle is never shared with a live runtime.
 		for _, s := range stores {
 			if c, ok := s.store.(io.Closer); ok {
 				if err := c.Close(); err != nil {
@@ -296,7 +296,7 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 				}
 			}
 		}
-	} else {
+	default:
 		errs = append(errs, errors.New("runtime: stop: drainers did not confirm done before store-close grace; leaving store handles open to avoid mid-send corruption"))
 	}
 
@@ -329,125 +329,6 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 	return errors.Join(errs...)
 }
 
-// storeCloseGrace is the FLOOR that Stop waits for the drainer waitgroup to
-// confirm done before (a) closing session managers and (b) releasing durable
-// store handles, when the caller ctx has already expired. It is a
-// floor, not the whole budget: effectiveStoreCloseGrace raises it to cover the
-// configured policies' worst-case single in-flight completion so a legitimate
-// final drainer send is never cut off mid-flight (see effectiveStoreCloseGrace).
-const storeCloseGrace = 15 * time.Second
-
-// completeBudgetCeiling mirrors the drainer's completeCtx/completeBudget clamp
-// (outbox/retry.go): the post-send Complete/Release window is bounded to at most
-// 5s (min(SendTimeout, 5s) for a positive SendTimeout). Kept here as a named
-// ceiling so effectiveStoreCloseGrace derives the SAME worst-case the drainer
-// actually uses without a ports/outbox change.
-const completeBudgetCeiling = 5 * time.Second
-
-// effectiveStoreCloseGrace returns the grace Stop must wait for the drainers to
-// confirm done, coherent with the drainers' worst-case single in-flight send.
-//
-// The inherited hazard (outbox/retry.go:131-141): a drainer's finalDrain runs
-// under context.WithoutCancel and can legitimately spend up to SendTimeout on the
-// final send plus up to completeBudget() (== min(SendTimeout, 5s)) on the
-// post-send Complete. If the bare 15s storeCloseGrace elapses first, Stop closes
-// the session manager — which clears the lease — so the drainer's runtime-side
-// post-send lease fence refuses the final Complete and the record resurfaces on
-// restart as an AVOIDABLE duplicate. To stay coherent, the grace must be at least
-// the largest such worst-case across every shared-outbox route policy:
-//
-//	worst(entry) = SendTimeout + min(SendTimeout, 5s)   // after WithDefaults
-//	grace        = max(storeCloseGrace floor, max_entries worst(entry))
-//
-// The floor (15s) still applies when no policy demands more (e.g. no routes, or
-// tiny SendTimeouts). Single-owner failover semantics are preserved: the grace is
-// still a BOUNDED wait — once it elapses Stop closes managers and releases the
-// lease regardless (the "lesser evil" of a stale-token Complete from a genuinely
-// stuck drainer, per the wait sites' comments), so leases always eventually
-// release for a standby to take over.
-func (rt *Runtime) effectiveStoreCloseGrace() time.Duration {
-	grace := storeCloseGrace
-	rt.mu.Lock()
-	entries := rt.entries
-	rt.mu.Unlock()
-	for i := range entries {
-		p := entries[i].config.Policy.WithDefaults()
-		st := p.SendTimeout
-		if st <= 0 {
-			continue
-		}
-		complete := st
-		if complete > completeBudgetCeiling {
-			complete = completeBudgetCeiling
-		}
-		if worst := st + complete; worst > grace {
-			grace = worst
-		}
-	}
-	return grace
-}
-
-// storeCloseGraceMargin is subtracted from the incoming shutdown ctx's remaining
-// deadline when clamping the store-close grace, so the bounded manager-close wait
-// leaves a little headroom for the caller to observe the clamp rather than
-// consuming the ENTIRE remaining budget right up to the platform kill instant.
-const storeCloseGraceMargin = 1 * time.Second
-
-// clampedStoreCloseGrace bounds the derived store-close grace by the incoming
-// shutdown ctx's remaining deadline.
-//
-// effectiveStoreCloseGrace can derive a grace as large as
-// SendTimeout + min(SendTimeout, 5s) (~65s for a 60s SendTimeout), and the
-// grace-wait DETACHES from ctx via context.WithoutCancel so the drain survives
-// caller cancellation. Detaching an UNCLAMPED grace lets that wait outlive the
-// platform's OWN kill budget — ECS StopTimeout / K8s terminationGracePeriod,
-// default 60s — so the process is SIGKILLed mid-drain: the exact avoidable
-// duplicate + lost in-flight the coherence raise was meant to PREVENT (raising
-// the bare 15s floor is what created this exposure). So when the caller ctx
-// carries a deadline, clamp the grace to the remaining time (minus a small margin
-// for the close phase that follows); with no deadline the derived grace stands (a
-// deadline-less Background caller cannot be SIGKILLed by a platform budget this
-// layer can observe). The value-detachment (trace/correlation) at the wait site
-// is unaffected — only the WAIT duration is bounded, never below zero.
-func (rt *Runtime) clampedStoreCloseGrace(ctx context.Context) time.Duration {
-	grace := rt.effectiveStoreCloseGrace()
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return grace
-	}
-	// Compute the remaining budget via the injected clock (never time.Until):
-	// rt.clk is clock.System (real wall-clock) in production — matching both the
-	// caller's real-time ctx deadline and the WithTimeout timer below — and is a
-	// fake clock only under test.
-	if remaining := deadline.Sub(rt.clk.Now()) - storeCloseGraceMargin; remaining < grace {
-		grace = remaining
-	}
-	if grace < 0 {
-		grace = 0
-	}
-	return grace
-}
-
-// defaultStopDrainBudget caps the pre-cancel in-flight settle phase of Stop when
-// no explicit WithStopQuiesce budget was set. It is the ceiling that keeps a Stop
-// with a deadline-less caller ctx (e.g. context.Background()) from blocking
-// forever behind a wedged sender: at worst Stop settles for this long, then falls
-// through to cancel + broker redelivery (deadline fallback). A caller ctx with a
-// shorter deadline still wins — the drain honours whichever fires first.
-const defaultStopDrainBudget = 25 * time.Second
-
-// stopDrainBudget returns the bounded budget for Stop's pre-cancel in-flight
-// settle phase. An explicit WithStopQuiesce wins; otherwise the default ceiling
-// applies. The caller ctx additionally bounds the wait (see the WithTimeout(ctx,
-// budget) at the call site), so a short SIGTERM grace period is respected without
-// this method having to inspect the deadline.
-func (rt *Runtime) stopDrainBudget() time.Duration {
-	if rt.stopQuiesce > 0 {
-		return rt.stopQuiesce
-	}
-	return defaultStopDrainBudget
-}
-
 // anyRouteInFlight reports whether any route runner currently has an in-flight
 // delivery. Stop uses it to SKIP the pre-cancel drain when the runtime is already
 // quiescent — the common case — so an idle Stop cancels promptly instead of
@@ -457,10 +338,5 @@ func (rt *Runtime) stopDrainBudget() time.Duration {
 func (rt *Runtime) anyRouteInFlight() bool {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	for _, e := range rt.entries {
-		if e.runner != nil && e.runner.InFlight() > 0 {
-			return true
-		}
-	}
-	return false
+	return anyInFlight(rt.entries)
 }

@@ -78,38 +78,39 @@ func (rt *Runtime) routePrimarySessionLocked(sessionID string) (string, bool) {
 	return "", false
 }
 
-// attachIngressSessions gives every ingress session its manager and enrols it
-// in the settlement barrier for the routes whose receivers ride on it. It runs
-// under rt.mu during Start, after the route-primary and session-sender
-// managers exist, so a lease-bearing manager would always win — although
-// registration already refuses that overlap.
+// attachIngressSessions gives every ingress session in ingress its manager and
+// enrols it in the settlement barrier for the routes of entries whose receivers
+// ride on it, and returns the ids of the managers it built. It runs under rt.mu
+// while a wiring pass starts its components, after the route-primary and
+// session-sender managers exist, so a lease-bearing manager would always win —
+// although registration already refuses that overlap.
 func (rt *Runtime) attachIngressSessions(
 	m ports.MetricsExporter,
+	ingress map[string]*ingressSessionEntry,
+	entries []*routeEntry,
 	settlementSessions map[string]ports.Session,
-	settlementRoutes map[string][]string,
-) {
-	for sid, entry := range rt.ingressSessions {
-		if _, exists := rt.sessionMgrs[sid]; !exists {
-			mgr := session.NewWithMetrics(entry.config, entry.session, rt.leaseStore, rt.leaseOwnerID, rt.logger, m, rt.clk)
-			mgr.SetAudit(rt.audit)
-			mgr.SetEndpoints(rt.clusterEndpoints)
-			rt.sessionMgrs[sid] = mgr
+	settlementRoutes map[string][]*routeEntry,
+) (created []string) {
+	for sid, entry := range ingress {
+		if rt.ensureSessionManagerLocked(m, sid, entry.config, entry.session) {
+			created = append(created, sid)
 		}
 		// A route rides on this session when its receiver subscribes through it
 		// (the builder says which), or — for a hand-wired runtime — when the
 		// session it was added with is this one and it names no primary of its
 		// own. A route whose primary session is a DIFFERENT, lease-held session
 		// still rides its receiver on this one and still needs the barrier.
-		for _, route := range rt.entries {
+		for _, route := range entries {
 			ridesOn := route.config.SourceSessionID == sid ||
 				(route.sessCfg == nil && route.session == entry.session)
 			if !ridesOn {
 				continue
 			}
 			settlementSessions[sid] = entry.session
-			settlementRoutes[sid] = append(settlementRoutes[sid], route.config.ID)
+			settlementRoutes[sid] = append(settlementRoutes[sid], route)
 		}
 	}
+	return created
 }
 
 // sessionRef is one session the runtime was handed, with the id it is managed
@@ -119,50 +120,56 @@ type sessionRef struct {
 	sess ports.Session
 }
 
-// unmanagedSessionRefsLocked returns every session the runtime was handed that
-// no manager owns, so Stop can close it. managed is the set of session ids that
-// have a manager. A session is matched by id where the entry carries one and by
-// pointer otherwise: a route entry that only rides on a binding-managed or
-// ingress session names no id of its own, and treating it as unmanaged would
-// close a session its manager has already closed. The caller holds rt.mu.
-func (rt *Runtime) unmanagedSessionRefsLocked(managed map[string]bool) []sessionRef {
-	managedSessions := make(map[ports.Session]bool, len(managed))
+// unmanagedSessionRefsLocked returns every session of set that no manager of rt
+// owns, so Stop or Retire can close it. A session is matched by id where the
+// entry carries one and by pointer otherwise: a route entry that only rides on
+// a binding-managed or ingress session names no id of its own, and treating it
+// as unmanaged would close a session its manager has already closed. The
+// managers are matched across all of rt, so set must still be registered in rt:
+// a session a manager outside set runs is never taken for unmanaged. The caller
+// holds rt.mu.
+func (rt *Runtime) unmanagedSessionRefsLocked(set componentSet) []sessionRef {
+	managed := func(sid string) bool {
+		_, ok := rt.sessionMgrs[sid]
+		return ok
+	}
+	managedSessions := make(map[ports.Session]bool, len(rt.sessionMgrs))
 	for _, entry := range rt.entries {
-		if entry.sessCfg != nil && entry.session != nil && managed[entry.sessCfg.SessionID] {
+		if entry.sessCfg != nil && entry.session != nil && managed(entry.sessCfg.SessionID) {
 			managedSessions[entry.session] = true
 		}
 	}
 	for sid, sse := range rt.sessionSenders {
-		if managed[sid] {
+		if managed(sid) {
 			managedSessions[sse.session] = true
 		}
 	}
 	for sid, ise := range rt.ingressSessions {
-		if managed[sid] {
+		if managed(sid) {
 			managedSessions[ise.session] = true
 		}
 	}
 
-	refs := make([]sessionRef, 0, len(rt.entries)+len(rt.sessionSenders)+len(rt.ingressSessions))
+	refs := make([]sessionRef, 0, len(set.entries)+len(set.sessionSenders)+len(set.ingressSessions))
 	seen := make(map[ports.Session]bool)
 	add := func(sid string, sess ports.Session) {
-		if sess == nil || managed[sid] || managedSessions[sess] || seen[sess] {
+		if sess == nil || managed(sid) || managedSessions[sess] || seen[sess] {
 			return
 		}
 		seen[sess] = true
 		refs = append(refs, sessionRef{sid: sid, sess: sess})
 	}
-	for _, entry := range rt.entries {
+	for _, entry := range set.entries {
 		sid := ""
 		if entry.sessCfg != nil {
 			sid = entry.sessCfg.SessionID
 		}
 		add(sid, entry.session)
 	}
-	for sid, sse := range rt.sessionSenders {
+	for sid, sse := range set.sessionSenders {
 		add(sid, sse.session)
 	}
-	for sid, ise := range rt.ingressSessions {
+	for sid, ise := range set.ingressSessions {
 		add(sid, ise.session)
 	}
 	return refs

@@ -88,11 +88,8 @@ func (h appRolloutHost) PlanCandidate(ctx context.Context, cfg *ports.BridgeConf
 	if err := h.a.admitDeploymentProfile(ctx, cfg, "vote"); err != nil {
 		return nil, err
 	}
-	inputs, err := resolveInputs(ctx, h.a.parameterResolver, h.a.cfg, h.a.pluginRegistry, cfg)
+	inputs, err := h.a.resolveApplyInputs(ctx, cfg)
 	if err != nil {
-		return nil, err
-	}
-	if err := applyMQTTMemoryProfile(inputs.RuntimeConfig, h.a.cfg); err != nil {
 		return nil, err
 	}
 	plan, err := h.a.newFactoryRegistry(inputs.RuntimeConfig).builder.Plan(ctx)
@@ -115,7 +112,7 @@ func (h appRolloutHost) ApplyCommitted(ctx context.Context, cfg *ports.BridgeCon
 // member runs an older generation than its peers. It surfaces in deep health and
 // MetricConfigDegraded via the existing convergence-degraded latch.
 func (h appRolloutHost) MarkDegraded(reason string) {
-	h.a.markConvergenceDegraded(h.a.runtimeRef.Get(), reason)
+	h.a.markConvergenceDegraded(h.a.runtimeRef.Get(), h.a.convergenceGeneration(), reason)
 }
 
 func (h appRolloutHost) RolloutLogger() *slog.Logger { return h.a.logger }

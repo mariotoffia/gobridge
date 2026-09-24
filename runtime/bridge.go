@@ -15,7 +15,7 @@ import (
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/cluster"
-	"github.com/mariotoffia/gobridge/runtime/outbox"
+	"github.com/mariotoffia/gobridge/runtime/dlq"
 	"github.com/mariotoffia/gobridge/runtime/route"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
@@ -59,7 +59,12 @@ type Runtime struct {
 	// so the jittered wait is reproducible under the fake clock.
 	randFloat func() float64
 
-	credRefresherClose func(context.Context)
+	// credHooks holds the credential refreshers attached to this runtime and to
+	// every part grafted onto it; Stop closes each of them.
+	credHooks []*credentialHook
+	// sharedStores marks the stores as owned by another runtime, so Stop leaves
+	// them open (WithSharedStores).
+	sharedStores bool
 
 	mu             sync.Mutex
 	entries        []*routeEntry
@@ -68,12 +73,28 @@ type Runtime struct {
 	// subscribe through them and for nothing else (RegisterIngressSession).
 	ingressSessions map[string]*ingressSessionEntry
 	sessionMgrs     map[string]*session.Manager
-	drainers        []*outbox.Drainer
+	drainers        []*drainerRun
+	retiring        []*retiredUnit // units a Retire has taken out and not yet finished with
 	globalSem       chan struct{}
 	running         bool
 	fenced          bool
 	healthy         bool
 	terminal        bool
+	// sessionRuns holds, by session id, the run of every session manager a
+	// wiring pass started.
+	sessionRuns map[string]componentRun
+	// exclusiveSessions marks the session ids that carry a lease. The DLQ
+	// router fences a write only for those (see dlqToken).
+	exclusiveSessions map[string]bool
+	// dlqRouter, built by Start, is the one DLQ router every component writes through.
+	dlqRouter *dlq.Router
+	// workCtx is the work context Start derives. Every component runs under a
+	// child of it, so it can be stopped alone, and rt.cancel still ends them all.
+	workCtx context.Context
+	// consumed marks a part whose routes, sessions and credential hooks Graft
+	// moved into another runtime. It holds nothing any more: Start refuses it
+	// and Stop has nothing to do.
+	consumed bool
 	// stopped records a clean, DELIBERATE Stop (an admin pause or a
 	// supervisor swap of the old runtime). Unlike terminal it is NOT an
 	// unrecoverable death: /live stays 200 and the liveness backstop must not
@@ -116,6 +137,8 @@ type routeEntry struct {
 	sender   ports.Sender
 	session  ports.Session
 	sessCfg  *session.Config
+	// run is the route runner's own run, set when it is started.
+	run componentRun
 }
 
 // sessionSenderEntry pairs a session with its sender and configuration,
@@ -275,25 +298,6 @@ func New(opts ...Option) *Runtime {
 	// source-id header); only the lease ownership token is nonce-suffixed.
 	rt.leaseOwnerID = rt.instanceID + "#" + generateID()
 	return rt
-}
-
-// AttachCredentialCloser registers a close-on-stop hook with the runtime.
-// The runtime invokes this closure during Stop, before session teardown,
-// so any goroutines that call ApplyCredentials on a session can be
-// cancelled safely. The closer receives a bounded ctx; honouring it lets
-// the runtime cap Stop latency when a watcher is unresponsive.
-//
-// Accepting a closure (rather than an interface value) deliberately keeps
-// runtime free of any structural reference to a caller-defined type:
-// the runtime sees only func(context.Context); deep architecture
-// analysis cannot infer a phantom dependency on the caller's package.
-func (rt *Runtime) AttachCredentialCloser(close func(context.Context)) {
-	if rt == nil || close == nil {
-		return
-	}
-	rt.mu.Lock()
-	rt.credRefresherClose = close
-	rt.mu.Unlock()
 }
 
 func (rt *Runtime) startBackground(ctx context.Context, name string, fn func(context.Context) error) {
@@ -664,90 +668,4 @@ func (rt *Runtime) superviseRoute(routeID string, run func(context.Context) erro
 func equalJitter(backoff time.Duration, randFloat func() float64) time.Duration {
 	half := backoff / 2
 	return half + time.Duration(randFloat()*float64(half))
-}
-
-// setComponentError records a background component's failure for ComponentErrors
-// (surfaced as failed_components in the health body).
-func (rt *Runtime) setComponentError(name string, err error) {
-	rt.mu.Lock()
-	rt.componentErrors[name] = err
-	rt.mu.Unlock()
-}
-
-// clearComponentError removes a previously-recorded component failure once the
-// component has recovered or stopped cleanly, so failed_components does not
-// report a stale phantom fault for the pod's remaining life.
-func (rt *Runtime) clearComponentError(name string) {
-	rt.mu.Lock()
-	delete(rt.componentErrors, name)
-	rt.mu.Unlock()
-}
-
-// routeStabilityWindow is how long a supervised route's CURRENT run must stay up
-// before it counts as recovered. Two places must agree on it: superviseRoute
-// resets the flap counter when a run RETURNS after this window, and the DeepHealth
-// route_dead projection suppresses a latched dead state when the LIVE run has
-// already outlived it (a recovered route that keeps running never re-enters
-// superviseRoute to reset). Equal to the supervisor backoff cap (30s): a run that
-// outlives one full backoff has cleared the flap regime.
-const routeStabilityWindow = 30 * time.Second
-
-// routeDeadRestartThreshold is the number of CONSECUTIVE sub-stability-window
-// route restarts (quick flaps with no stable run between them) after which
-// DeepHealth latches RouteHealth.RouteDead=true. A route that flaps this
-// many times has almost certainly wedged at the supervisor backoff cap — e.g. a
-// single-use receiver whose Run cannot be re-entered — so ops can alert on that
-// steady STATE rather than on the restart rate. Kept small: with the
-// 1→2→4→8→16s fast-backoff ramp it is ~31s of continuous flapping before the
-// signal latches.
-const routeDeadRestartThreshold = 5
-
-// recordRouteFlap increments a route's consecutive sub-stability-window restart
-// counter. Called by superviseRoute when a run fails before reaching the
-// stability window. Lazily allocates the map so it is safe even when a test
-// drives superviseRoute directly, bypassing Start's allocation.
-func (rt *Runtime) recordRouteFlap(name string) {
-	rt.mu.Lock()
-	if rt.routeFlaps == nil {
-		rt.routeFlaps = make(map[string]int)
-	}
-	rt.routeFlaps[name]++
-	rt.mu.Unlock()
-}
-
-// resetRouteFlap clears a route's consecutive-flap counter once a run stayed up
-// for the stability window (a recovery) or the route stopped cleanly, so a
-// recovered route drops route_dead instead of latching it forever. This
-// fires only when a run RETURNS after the window; a route that recovers and keeps
-// running is handled complementarily by the DeepHealth read-time liveness check
-// (see routeRunStart). delete on a nil map is a no-op, so this is safe even
-// before Start allocates the map.
-func (rt *Runtime) resetRouteFlap(name string) {
-	rt.mu.Lock()
-	delete(rt.routeFlaps, name)
-	rt.mu.Unlock()
-}
-
-// setRouteRunStart records the start time of a supervised route's current run so
-// DeepHealth can distinguish a live, recovered route (its run has outlived the
-// stability window) from one still wedged in the flap regime. Lazily
-// allocates the map like recordRouteFlap so tests driving superviseRoute directly
-// are safe.
-func (rt *Runtime) setRouteRunStart(name string, at time.Time) {
-	rt.mu.Lock()
-	if rt.routeRunStart == nil {
-		rt.routeRunStart = make(map[string]time.Time)
-	}
-	rt.routeRunStart[name] = at
-	rt.mu.Unlock()
-}
-
-// clearRouteRunStart drops the current-run marker when a run returns (the route is
-// now between runs — in backoff or being re-entered), so route_dead is not
-// suppressed while the route is not actually up. delete on a nil map is a
-// no-op.
-func (rt *Runtime) clearRouteRunStart(name string) {
-	rt.mu.Lock()
-	delete(rt.routeRunStart, name)
-	rt.mu.Unlock()
 }

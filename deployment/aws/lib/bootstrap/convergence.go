@@ -48,7 +48,7 @@ func (a *App) startConvergenceWatch(parent context.Context, rt *goruntime.Runtim
 	}
 	// Shutdown race guard: Stop cancels rootCtx (== parent) under a.mu, then
 	// releases a.mu and blocks on watchWg.Wait(). startConvergenceWatch is only
-	// ever reached under a.mu (installPlan), so once Stop has cancelled rootCtx an
+	// ever reached under a.mu (installPlan, applyInPlace), so once Stop has cancelled rootCtx an
 	// admin-commit-driven install racing shutdown observes parent.Err() != nil here
 	// and does NOT call watchWg.Go — which would otherwise Add concurrently with
 	// Stop's Wait and panic the shutdown goroutine, stranding the lease/cleanup.
@@ -62,6 +62,8 @@ func (a *App) startConvergenceWatch(parent context.Context, rt *goruntime.Runtim
 	ctx, cancel := context.WithCancel(parent)
 	a.convergenceWatchCancel = cancel
 	a.convergenceRt = rt
+	a.convergenceGen++
+	gen := a.convergenceGen
 	wasDegraded := a.convergenceDegraded
 	a.convergenceDegraded = false
 	a.convergenceReason = ""
@@ -72,7 +74,7 @@ func (a *App) startConvergenceWatch(parent context.Context, rt *goruntime.Runtim
 
 	budget := a.convergenceBudget(cfg)
 	a.watchWg.Go(func() {
-		a.runConvergenceWatch(ctx, rt, budget)
+		a.runConvergenceWatch(ctx, rt, gen, budget)
 	})
 }
 
@@ -113,18 +115,21 @@ func (a *App) convergenceBudget(cfg *ports.BridgeConfig) time.Duration {
 // version the App reports as applied can move while this watch runs. Every
 // diagnostic below therefore reads the version at the moment it is written,
 // which is what CurrentAppliedConfig reports to the operator at that moment.
-func (a *App) runConvergenceWatch(ctx context.Context, rt *goruntime.Runtime, budget time.Duration) {
+//
+// gen is the watch generation startConvergenceWatch gave it; see
+// convergenceWatcherCurrent.
+func (a *App) runConvergenceWatch(ctx context.Context, rt *goruntime.Runtime, gen uint64, budget time.Duration) {
 	deadline := a.clk.Now().Add(budget)
 	timer := a.clk.NewTimer(bootstrapConvergencePollInterval)
 	defer timer.Stop()
 
 	marked := false
 	for {
-		if !a.convergenceWatcherCurrent(rt) {
+		if !a.convergenceWatcherCurrent(rt, gen) {
 			return
 		}
 		if rt.ReadinessLevel(ctx) >= bootstrapConvergenceReadyLevel {
-			a.clearConvergenceDegraded(rt)
+			a.clearConvergenceDegraded(rt, gen)
 			return
 		}
 		if !marked && !a.clk.Now().Before(deadline) {
@@ -135,7 +140,7 @@ func (a *App) runConvergenceWatch(ctx context.Context, rt *goruntime.Runtime, bu
 					"its declared broker state — check session health / broker-side denials and revert the "+
 					"config if the sessions cannot converge",
 				configVersion, bootstrapConvergenceReadyLevel, budget)
-			if a.markConvergenceDegraded(rt, reason) {
+			if a.markConvergenceDegraded(rt, gen, reason) {
 				marked = true
 				a.logger.Warn("bootstrap: reload applied but NOT converged — apply succeeded while the "+
 					"transport has not reached its declared broker state; ConfigDegraded=1 with "+
@@ -155,19 +160,28 @@ func (a *App) runConvergenceWatch(ctx context.Context, rt *goruntime.Runtime, bu
 }
 
 // convergenceWatcherCurrent reports whether rt is still the App's installed
-// runtime and the App is not wedged, so a superseded watcher never clobbers its
-// successor's state.
-func (a *App) convergenceWatcherCurrent(rt *goruntime.Runtime) bool {
-	return a.runtimeRef.Get() == rt && !a.wedged.Load()
+// runtime, gen the newest watch generation, and the App not wedged, so a
+// superseded watcher never clobbers its successor's state. The runtime alone
+// cannot tell the watches apart: an in-place reload keeps the runtime while the
+// configuration it runs — and so the budget it is judged by — changes.
+func (a *App) convergenceWatcherCurrent(rt *goruntime.Runtime, gen uint64) bool {
+	return a.runtimeRef.Get() == rt && !a.wedged.Load() && a.convergenceGeneration() == gen
 }
 
-// markConvergenceDegraded latches the degraded state iff rt is still installed.
-func (a *App) markConvergenceDegraded(rt *goruntime.Runtime, reason string) bool {
-	if !a.convergenceWatcherCurrent(rt) {
-		return false
-	}
+// convergenceGeneration is the generation of the newest convergence watch.
+func (a *App) convergenceGeneration() uint64 {
 	a.convergenceMu.Lock()
-	if a.convergenceRt != rt {
+	defer a.convergenceMu.Unlock()
+	return a.convergenceGen
+}
+
+// markConvergenceDegraded latches the degraded state iff rt is still installed,
+// the App not wedged, and gen the newest watch generation.
+func (a *App) markConvergenceDegraded(rt *goruntime.Runtime, gen uint64, reason string) bool {
+	a.convergenceMu.Lock()
+	// installPlan publishes a runtime before its watch replaces this one, so the
+	// installed runtime is read under the lock that gates the mark, not before it.
+	if a.convergenceRt != rt || a.convergenceGen != gen || a.runtimeRef.Get() != rt || a.wedged.Load() {
 		a.convergenceMu.Unlock()
 		return false
 	}
@@ -188,16 +202,16 @@ func (a *App) appliedConfigVersion() int {
 	return applied.Version
 }
 
-// clearConvergenceDegraded clears the degraded state iff rt is still installed and
-// the mark belongs to this runtime.
+// clearConvergenceDegraded clears the degraded state iff rt is still installed,
+// gen is the newest watch generation, and the mark belongs to this runtime.
 //
 // The version logged is read here, for the same reason the mark reads it where it
 // writes its reason: it must name the document the App holds now, not one a
 // skipped reload has already adopted in its place.
-func (a *App) clearConvergenceDegraded(rt *goruntime.Runtime) {
+func (a *App) clearConvergenceDegraded(rt *goruntime.Runtime, gen uint64) {
 	configVersion := a.appliedConfigVersion()
 	a.convergenceMu.Lock()
-	owned := a.convergenceRt == rt && a.convergenceDegraded
+	owned := a.convergenceRt == rt && a.convergenceGen == gen && a.convergenceDegraded
 	if owned {
 		a.convergenceDegraded = false
 		a.convergenceReason = ""

@@ -74,7 +74,7 @@ func TestSuperviseRoute_TerminalReceiverEscalates(t *testing.T) {
 // clear the lease and make the drainer's post-send fence refuse the final
 // Complete, resurfacing the record on restart as an avoidable duplicate.
 //
-// Mutation check: replace rt.effectiveStoreCloseGrace() with the bare
+// Mutation check: replace effectiveStoreCloseGrace(entries) with the bare
 // storeCloseGrace const at the Stop grace-wait and the "raises above the floor"
 // sub-case fails (35s/45s collapse back to 15s).
 func TestEffectiveStoreCloseGrace_DerivesFromPolicyTimeouts(t *testing.T) {
@@ -86,19 +86,19 @@ func TestEffectiveStoreCloseGrace_DerivesFromPolicyTimeouts(t *testing.T) {
 
 	t.Run("no entries: the floor applies", func(t *testing.T) {
 		rt := &Runtime{}
-		assert.Equal(t, storeCloseGrace, rt.effectiveStoreCloseGrace())
+		assert.Equal(t, storeCloseGrace, effectiveStoreCloseGrace(rt.entries))
 	})
 
 	t.Run("small SendTimeout: floor still dominates", func(t *testing.T) {
 		rt := &Runtime{entries: []*routeEntry{policyEntry(2 * time.Second)}}
 		// worst = 2s + min(2s,5s) = 4s < 15s floor.
-		assert.Equal(t, storeCloseGrace, rt.effectiveStoreCloseGrace())
+		assert.Equal(t, storeCloseGrace, effectiveStoreCloseGrace(rt.entries))
 	})
 
 	t.Run("default SendTimeout raises the grace above the floor", func(t *testing.T) {
 		// WithDefaults() gives SendTimeout=30s -> worst = 30s + min(30s,5s) = 35s.
 		rt := &Runtime{entries: []*routeEntry{policyEntry(0)}}
-		assert.Equal(t, 35*time.Second, rt.effectiveStoreCloseGrace())
+		assert.Equal(t, 35*time.Second, effectiveStoreCloseGrace(rt.entries))
 	})
 
 	t.Run("takes the MAX worst-case across entries", func(t *testing.T) {
@@ -108,7 +108,7 @@ func TestEffectiveStoreCloseGrace_DerivesFromPolicyTimeouts(t *testing.T) {
 			policyEntry(10 * time.Second), // worst 15s
 		}}
 		// grace = max(15s floor, 25s, 45s, 15s) = 45s.
-		assert.Equal(t, 45*time.Second, rt.effectiveStoreCloseGrace())
+		assert.Equal(t, 45*time.Second, effectiveStoreCloseGrace(rt.entries))
 	})
 }
 
@@ -121,9 +121,30 @@ func TestEffectiveStoreCloseGrace_NeverBelowFloor(t *testing.T) {
 		{config: RouteConfig{Policy: routing.RoutePolicy{SendTimeout: -1}}},
 		{config: RouteConfig{Policy: routing.RoutePolicy{SendTimeout: time.Millisecond}}},
 	}}
-	if got := rt.effectiveStoreCloseGrace(); got < storeCloseGrace {
+	if got := effectiveStoreCloseGrace(rt.entries); got < storeCloseGrace {
 		t.Fatalf("effectiveStoreCloseGrace = %v, must never drop below the %v floor", got, storeCloseGrace)
 	}
+}
+
+// TestEffectiveStoreCloseGrace_SaturatesAHugeSendTimeout: a SendTimeout this
+// close to the largest Duration must saturate the worst case, not wrap it
+// negative — a wrapped sum falls back to the floor, and the teardown would close
+// the manager while that drainer is still inside its send window.
+func TestEffectiveStoreCloseGrace_SaturatesAHugeSendTimeout(t *testing.T) {
+	entries := []*routeEntry{{config: RouteConfig{
+		Policy: routing.RoutePolicy{SendTimeout: maxDuration - time.Second},
+	}}}
+	assert.Equal(t, maxDuration, effectiveStoreCloseGrace(entries))
+}
+
+// TestClampedStoreCloseGrace_DeadlineFarInThePastIsZero: the time left to a
+// deadline far in the past saturates at the smallest Duration, and taking the
+// margin off that must not wrap it into a huge wait past the deadline.
+func TestClampedStoreCloseGrace_DeadlineFarInThePastIsZero(t *testing.T) {
+	rt := &Runtime{clk: clocktest.NewAt(time.Unix(0, 0))}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Time{})
+	defer cancel()
+	assert.Equal(t, time.Duration(0), rt.clampedStoreCloseGrace(ctx, nil))
 }
 
 // TestClampedStoreCloseGrace_BoundedByShutdownDeadline guards the store-close
@@ -135,7 +156,7 @@ func TestEffectiveStoreCloseGrace_NeverBelowFloor(t *testing.T) {
 // coherence raise was meant to prevent. clampedStoreCloseGrace bounds the wait to
 // the incoming shutdown ctx's remaining deadline (minus a small margin).
 //
-// Mutation: drop the clamp (return rt.effectiveStoreCloseGrace() directly at the
+// Mutation: drop the clamp (return effectiveStoreCloseGrace(entries) directly at the
 // grace-wait) and the derived 65s wait exceeds the 20s deadline → the ≤20s
 // assertion fails.
 func TestClampedStoreCloseGrace_BoundedByShutdownDeadline(t *testing.T) {
@@ -149,14 +170,14 @@ func TestClampedStoreCloseGrace_BoundedByShutdownDeadline(t *testing.T) {
 			{config: RouteConfig{Policy: routing.RoutePolicy{SendTimeout: 60 * time.Second}}},
 		},
 	}
-	require.Equal(t, 65*time.Second, rt.effectiveStoreCloseGrace(),
+	require.Equal(t, 65*time.Second, effectiveStoreCloseGrace(rt.entries),
 		"precondition: the policy must derive a grace that exceeds the shutdown deadline")
 
 	t.Run("deadline shorter than derived grace clamps to the deadline", func(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(20*time.Second))
 		defer cancel()
 
-		got := rt.clampedStoreCloseGrace(ctx)
+		got := rt.clampedStoreCloseGrace(ctx, rt.entries)
 		// Must never outlive the platform's 20s budget...
 		assert.LessOrEqual(t, got, 20*time.Second,
 			"a detached grace-wait longer than the shutdown deadline would be SIGKILLed mid-drain")
@@ -170,13 +191,13 @@ func TestClampedStoreCloseGrace_BoundedByShutdownDeadline(t *testing.T) {
 	t.Run("no deadline: the derived grace stands", func(t *testing.T) {
 		// A deadline-less caller cannot be SIGKILLed by a platform budget this
 		// layer can observe, so the full policy-derived grace is preserved.
-		assert.Equal(t, 65*time.Second, rt.clampedStoreCloseGrace(context.Background()))
+		assert.Equal(t, 65*time.Second, rt.clampedStoreCloseGrace(context.Background(), rt.entries))
 	})
 
 	t.Run("already-expired deadline clamps to zero, never negative", func(t *testing.T) {
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 		defer cancel()
-		got := rt.clampedStoreCloseGrace(ctx)
+		got := rt.clampedStoreCloseGrace(ctx, rt.entries)
 		assert.GreaterOrEqual(t, got, time.Duration(0), "clamp must floor at zero, never pass a negative to WithTimeout")
 		assert.LessOrEqual(t, got, time.Duration(0)) // exactly zero: no time left to wait
 	})

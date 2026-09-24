@@ -3,6 +3,8 @@
 Status: accepted
 Date: 2026-07-03
 Deciders: GoBridge core
+Amended by: 0018 (a running runtime may retire and graft reload units; it is
+still started once, stopped once and never restarted)
 
 ## Context
 
@@ -28,7 +30,10 @@ and `/live` fails closed.
   rather than resetting state: `"runtime: cannot start a stopped runtime
   (single-use lifecycle); build a new runtime"`
   (`runtime/bridge_start.go`). Configuration changes replace the instance
-  (swap mode); they never restart one.
+  (swap mode); they never restart one. Since
+  [ADR 0018](0018-reload-in-place-by-unit.md), a change confined to reload
+  units instead retires those units from the running instance and grafts
+  freshly built ones onto it; nothing is restarted or reset.
 
 - **Terminal state on the port.** `ports.Runtime` exposes `Terminal() bool`
   (`ports/runtime.go`). A runtime that can never serve again reports
@@ -37,7 +42,11 @@ and `/live` fails closed.
 - **Wedge = swap failed AND recovery failed.** In the file-based bootstrap, the
   process is WEDGED only when a prepare/commit swap failed **and** the recovery
   back to the previous runtime also failed (`wedged atomic.Bool`,
-  `deployment/aws/lib/bootstrap/app.go`). `Run` exits
+  `deployment/aws/lib/bootstrap/app.go`). Since
+  [ADR 0018](0018-reload-in-place-by-unit.md) it also wedges when an in-place
+  reload leaves a retired reload unit, a part built for a serialized reload, or
+  a torn runtime that does not stop cleanly, since their sessions may still hold the broker identities a rebuild
+  would claim again. `Run` exits
   non-zero once terminal (`ErrRuntimeTerminal`, `app.go`), driven by a
   terminal backstop poll (`defaultTerminalPollInterval = 5s`, `app.go`).
 
@@ -51,7 +60,9 @@ and `/live` fails closed.
 ## Consequences
 
 - No in-place restart path exists, so no half-reset runtime can leak resources.
-  A config change builds a fresh instance or it fails.
+  A config change builds a fresh instance or it fails. ADR 0018 widens this:
+  a config change builds fresh components — a whole instance, or reload units
+  grafted onto the running one — or it fails.
 - A wedged process exits non-zero and fails `/live`. The orchestrator restarts
   the task from a clean slate instead of holding a dead one behind a green
   health check.

@@ -4,17 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
-	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/cluster"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
-	"github.com/mariotoffia/gobridge/runtime/outbox"
-	"github.com/mariotoffia/gobridge/runtime/route"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
@@ -49,6 +45,9 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
+	if rt.consumed {
+		return errors.New("runtime: cannot start a part whose routes and sessions were grafted onto another runtime")
+	}
 	if rt.terminal || rt.stopped || rt.fenced {
 		// Stop closes the outbox/DLQ/lease stores and cancels every
 		// drainer/manager, but the drainers/managers/entries are never rebuilt.
@@ -69,6 +68,8 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	rt.componentErrors = make(map[string]error)
 	rt.routeFlaps = make(map[string]int)
 	rt.routeRunStart = make(map[string]time.Time)
+	rt.sessionRuns = make(map[string]componentRun)
+	rt.exclusiveSessions = make(map[string]bool)
 
 	if err := validateRoutes(rt.entries, rt.outboxStore != nil, rt.leaseStore != nil, rt.dlqStore != nil); err != nil {
 		rt.running = false
@@ -112,6 +113,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	// the watcher below turns it into a Stop.
 	stopSignal := ctx.Done()
 	ctx, rt.cancel = context.WithCancel(context.WithoutCancel(ctx))
+	rt.workCtx = ctx
 
 	// Watch the caller-supplied Start context. If it is cancelled WITHOUT a Stop
 	// (the caller cancels the ctx it passed to Start, rather than calling Stop),
@@ -172,7 +174,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		m = &ports.NoopExporter{}
 	}
 
-	dlqRouter := dlq.NewFromConfig(dlq.Config{
+	rt.dlqRouter = dlq.NewFromConfig(dlq.Config{
 		Store:            rt.dlqStore,
 		Clock:            rt.clk,
 		WriteTimeout:     dlq.RuntimeWriteTimeout,
@@ -197,331 +199,16 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		rt.locator = cluster.NewLocator(rt.leaseOwnerID, rt.leaseStore, locatorCfg, rt.clk)
 	}
 
-	// drainerOwner maps a session ID to the route whose configuration
-	// (policy, sender, RouteID) its shared-outbox drainer was built from.
-	// Exactly one drainer exists per session partition, so when SEVERAL
-	// shared_outbox routes reference the same session, every route's records
-	// drain under the FIRST route's configuration — a silent config bleed
-	// (send timeouts, replay budget, drain strategy, metrics route tag).
-	// warnDrainerConfigBleed surfaces it.
-	drainerOwner := make(map[string]string)
-	// Source route settlement barriers are installed on sessions after every
-	// RouteRunner exists and before any background goroutine starts.
-	settlementSessions := make(map[string]ports.Session)
-	settlementRoutes := make(map[string][]string)
-	warnDrainerConfigBleed := func(sid, owner, routeID string) {
-		if owner == routeID || rt.logger == nil {
-			return
-		}
-		rt.logger.Warn("shared outbox drainer config bleed: session drainer was built from another route's policy/sender; this route's records drain under that configuration",
-			"session_id", sid,
-			"drainer_route_id", owner,
-			"route_id", routeID,
-		)
-	}
+	// Installed always, not only when this pass creates a manager: routes and
+	// sessions added to the running runtime later write through the same
+	// router, and dlqToken reads the live managers under rt.mu.
+	rt.dlqRouter.SetTokenFn(rt.dlqToken)
 
-	for _, entry := range rt.entries {
-		// For shared_outbox routes with a primary session, bindings that
-		// omit their own SessionID inherit the route session. This keeps each
-		// outbox record's partition (SESSION#<routeSession>) aligned with the
-		// drainer that polls it; without this, records persist under
-		// BINDING#<id> while the only drainer polls SESSION#<routeSession>, so
-		// they never drain even though the source was ACKed after persist.
-		if entry.config.Policy.DeliveryMode == routing.DeliverySharedOutbox && entry.sessCfg != nil {
-			for i := range entry.config.Bindings {
-				if entry.config.Bindings[i].SessionID == "" {
-					entry.config.Bindings[i].SessionID = entry.sessCfg.SessionID
-				}
-			}
-		}
-
-		entry.runner = route.NewRouteRunnerFromConfig(route.RouteRunnerConfig{
-			RouteID:           entry.config.ID,
-			Policy:            entry.config.Policy,
-			SourceTransport:   entry.config.SourceTransport,
-			Receiver:          entry.receiver,
-			Sender:            entry.sender,
-			Senders:           entry.config.Senders,
-			AddressValidators: entry.config.AddressValidators,
-			OutboxStore:       rt.outboxStore,
-			DLQ:               dlqRouter,
-			Resolver:          entry.config.Resolver,
-			Processors:        entry.config.Processors,
-			Bindings:          entry.config.Bindings,
-			InstanceID:        rt.instanceID,
-			Metrics:           m,
-			Tracer:            rt.tracer,
-			Hook:              rt.hook,
-			Logger:            rt.logger,
-			GlobalSem:         rt.globalSem,
-			DepthCacheTTL:     entry.config.Policy.DepthCacheTTL,
-			Clock:             rt.clk,
-		})
-
-		if rt.locator != nil {
-			if setter, ok := entry.receiver.(interface{ SetRouteID(string) }); ok {
-				setter.SetRouteID(entry.config.ID)
-			}
-			if setter, ok := entry.sender.(interface{ SetRouteID(string) }); ok {
-				setter.SetRouteID(entry.config.ID)
-			}
-		}
-
-		if entry.session != nil && entry.sessCfg != nil {
-			sid := entry.sessCfg.SessionID
-			settlementSessions[sid] = entry.session
-			settlementRoutes[sid] = append(settlementRoutes[sid], entry.config.ID)
-			if _, exists := rt.sessionMgrs[sid]; !exists {
-				mgr := session.NewWithMetrics(*entry.sessCfg, entry.session, rt.leaseStore, rt.leaseOwnerID, rt.logger, m, rt.clk)
-				mgr.SetAudit(rt.audit)
-				mgr.SetEndpoints(rt.clusterEndpoints)
-				rt.sessionMgrs[sid] = mgr
-			}
-
-			if entry.sessCfg.Exclusive && rt.locator != nil {
-				rt.locator.RegisterRoute(entry.config.ID, sid)
-			}
-
-			if entry.config.Policy.DeliveryMode == routing.DeliverySharedOutbox && rt.outboxStore != nil {
-				if owner, exists := drainerOwner[sid]; exists {
-					warnDrainerConfigBleed(sid, owner, entry.config.ID)
-				} else {
-					drainerOwner[sid] = entry.config.ID
-					mgr := rt.sessionMgrs[sid]
-					sess := entry.session
-					drainer := outbox.New(outbox.Config{
-						OutboxStore:           rt.outboxStore,
-						LeaseStore:            rt.leaseStore,
-						Sender:                entry.sender,
-						DLQ:                   dlqRouter,
-						RouteID:               entry.config.ID,
-						PartitionKey:          persistence.OutboxPartitionKey(sid, ""),
-						LeaseID:               sid,
-						Policy:                entry.config.Policy.WithDefaults(),
-						Strategy:              entry.sessCfg.DrainStrategy,
-						DrainBatchSize:        entry.sessCfg.DrainBatchSize,
-						DrainMaxBatchSize:     entry.sessCfg.DrainMaxBatchSize,
-						DrainMaxConcurrency:   entry.sessCfg.DrainMaxConcurrency,
-						PerRecordDrainTimeout: entry.sessCfg.PerRecordDrainTimeout,
-						MaxDrainTimeout:       entry.sessCfg.MaxDrainTimeout,
-						Metrics:               m,
-						Hook:                  rt.hook,
-						Logger:                rt.logger,
-						TokenFn:               mgr.Token,
-						Clock:                 rt.clk,
-						ReadyFn: func(ctx context.Context) bool {
-							return sess.Health(ctx).Connected
-						},
-					})
-					rt.drainers = append(rt.drainers, drainer)
-					// let step-down early-complete its grace when this
-					// session's outbox has no in-flight records to settle.
-					mgr.SetDrainIdleCheck(func() bool { _, idle := drainer.IdleSince(); return idle })
-				}
-			}
-		}
-
-		// For SharedOutbox routes, create drainers for every target
-		// session referenced by bindings that was not already covered
-		// by the route's primary session.
-		if entry.config.Policy.DeliveryMode == routing.DeliverySharedOutbox && rt.outboxStore != nil {
-			for _, binding := range entry.config.Bindings {
-				sid := binding.SessionID
-				if sid == "" {
-					continue
-				}
-				if owner, exists := drainerOwner[sid]; exists {
-					warnDrainerConfigBleed(sid, owner, entry.config.ID)
-					continue
-				}
-
-				sse, ok := rt.sessionSenders[sid]
-				if !ok {
-					continue
-				}
-
-				if _, exists := rt.sessionMgrs[sid]; !exists {
-					mgr := session.NewWithMetrics(sse.config, sse.session, rt.leaseStore, rt.leaseOwnerID, rt.logger, m, rt.clk)
-					mgr.SetAudit(rt.audit)
-					mgr.SetEndpoints(rt.clusterEndpoints)
-					rt.sessionMgrs[sid] = mgr
-				}
-
-				drainerOwner[sid] = entry.config.ID
-				mgr := rt.sessionMgrs[sid]
-				fanSess := sse.session
-				drainer := outbox.New(outbox.Config{
-					OutboxStore:           rt.outboxStore,
-					LeaseStore:            rt.leaseStore,
-					Sender:                sse.sender,
-					DLQ:                   dlqRouter,
-					RouteID:               entry.config.ID,
-					PartitionKey:          persistence.OutboxPartitionKey(sid, ""),
-					LeaseID:               sid,
-					Policy:                entry.config.Policy.WithDefaults(),
-					Strategy:              sse.config.DrainStrategy,
-					DrainBatchSize:        sse.config.DrainBatchSize,
-					DrainMaxBatchSize:     sse.config.DrainMaxBatchSize,
-					DrainMaxConcurrency:   sse.config.DrainMaxConcurrency,
-					PerRecordDrainTimeout: sse.config.PerRecordDrainTimeout,
-					MaxDrainTimeout:       sse.config.MaxDrainTimeout,
-					Metrics:               m,
-					Hook:                  rt.hook,
-					Logger:                rt.logger,
-					TokenFn:               mgr.Token,
-					Clock:                 rt.clk,
-					ReadyFn: func(ctx context.Context) bool {
-						return fanSess.Health(ctx).Connected
-					},
-				})
-				rt.drainers = append(rt.drainers, drainer)
-				// let step-down early-complete its grace when this session's
-				// outbox has no in-flight records to settle.
-				mgr.SetDrainIdleCheck(func() bool { _, idle := drainer.IdleSince(); return idle })
-			}
-		}
-	}
-
-	// Every registered session sender gets a manager, whatever delivery mode
-	// the routes that reach it use. The shared-outbox wiring above creates one
-	// because it needs a drainer; a direct_hold route that names the session on
-	// a binding needs one just as much — a plan-driven session (MQTT, AMQP
-	// 0-9-1) connects and subscribes only when a manager reconciles its plan,
-	// and the builder admits that binding precisely as the way to get one. A
-	// session sender left without a manager is a session that never connects,
-	// a receiver that never subscribes, and a bridge that reports ready while
-	// transporting nothing. Such a session is also the INGRESS of every route
-	// whose receiver rides on it, so it joins settlementSessions below and
-	// gets the same settlement barrier a route-primary session gets before it
-	// recycles a broker connection.
-	for sid, sse := range rt.sessionSenders {
-		if _, exists := rt.sessionMgrs[sid]; !exists {
-			mgr := session.NewWithMetrics(sse.config, sse.session, rt.leaseStore, rt.leaseOwnerID, rt.logger, m, rt.clk)
-			mgr.SetAudit(rt.audit)
-			mgr.SetEndpoints(rt.clusterEndpoints)
-			rt.sessionMgrs[sid] = mgr
-		}
-		for _, entry := range rt.entries {
-			ridesOn := entry.config.SourceSessionID == sid ||
-				(entry.sessCfg == nil && entry.session == sse.session)
-			if !ridesOn {
-				continue
-			}
-			settlementSessions[sid] = sse.session
-			settlementRoutes[sid] = append(settlementRoutes[sid], entry.config.ID)
-		}
-	}
-
-	// An ingress session carries only its receivers' subscriptions: it gets a
-	// plain manager (no lease, no drainer) and the settlement barrier for the
-	// routes riding on it.
-	rt.attachIngressSessions(m, settlementSessions, settlementRoutes)
-
-	for sid, sess := range settlementSessions {
-		configurer, ok := sess.(ports.IngressQuiescenceConfigurer)
-		if !ok {
-			continue
-		}
-		routes := append([]string(nil), settlementRoutes[sid]...)
-		configurer.SetIngressQuiescenceWaiter(func(waitCtx context.Context) error {
-			return rt.WaitQuiescent(waitCtx, QuiescenceOptions{
-				Routes: routes,
-				// Router ingress is already closed, so no additional quiet window
-				// is required; only accepted RouteRunner settlements matter.
-				MinQuiet: -1,
-			})
-		})
-	}
-	rt.installRemovedSubscriptionDeadLetter(dlqRouter)
-
-	// DLQ writes are fenced PER OWNING SESSION, not by an
-	// instance-global "any lease held" gate. Build the set of exclusive
-	// sessions (only they carry a lease) so the router can decide per DLQ entry:
-	//   - empty sessionID (ingress failure with no owning session): allow — no
-	//     lease governs it.
-	//   - non-exclusive session (not in the set): allow — there is no lease to
-	//     fence on, so a standby may DLQ-write its own ingress failures.
-	//   - exclusive session managed here: gate on THAT session's live lease, so a
-	//     standby that does not own the lease cannot DLQ (and an unrelated lease
-	//     cannot authorize a write for a route it does not own).
-	//   - exclusive session NOT managed here: refuse — the owning instance writes
-	//     the entry, avoiding a cross-instance duplicate.
-	exclusiveSessions := make(map[string]bool)
-	for _, entry := range rt.entries {
-		if entry.sessCfg != nil && entry.sessCfg.Exclusive {
-			exclusiveSessions[entry.sessCfg.SessionID] = true
-		}
-	}
-	for sid, sse := range rt.sessionSenders {
-		if sse.config.Exclusive {
-			exclusiveSessions[sid] = true
-		}
-	}
-	if len(rt.sessionMgrs) > 0 {
-		mgrs := rt.sessionMgrs
-		dlqRouter.SetTokenFn(func(sessionID string) (persistence.LeaseToken, bool) {
-			if sessionID == "" {
-				return persistence.LeaseToken{}, true
-			}
-			if !exclusiveSessions[sessionID] {
-				return persistence.LeaseToken{}, true
-			}
-			if mgr, ok := mgrs[sessionID]; ok {
-				return mgr.Token()
-			}
-			return persistence.LeaseToken{}, false
-		})
-	}
-
-	// Session managers run under superviseSession (NOT bare startBackground): a
-	// transient session fault — including a reconcile-on-reconnect blip
-	// (session/manager.go handleSessionEvent, session/manager_lease.go
-	// afterRenewLoopExit) — restarts JUST this session with capped backoff
-	// instead of tearing down the whole runtime. A PERMANENT reconcile failure
-	// (e.g. an ACL that keeps rejecting SUBSCRIBE) is likewise not escalated to
-	// a pod restart; it stays observable via MetricReconcileFailures +
-	// MetricSessionRestarts + per-session readiness. This supersedes the old
-	// "reconcile blip terminates the whole bridge" behaviour, so no extra
-	// in-manager reconcile retry is added: it would duplicate this isolation and
-	// risk masking a permanent failure behind another retry layer.
-	for sid, mgr := range rt.sessionMgrs {
-		rt.startBackground(ctx, "session:"+sid, rt.superviseSession(sid, mgr.Run))
-	}
-
-	// Drainers run under startBackground (terminal-on-error). Every RECOVERABLE
-	// drain fault — stale token, transient egress, claim failure — is absorbed and
-	// retried inside the poll loop (runtime/outbox/loop.go), so the normal return
-	// is ctx.Err() (filtered by startBackground's ctx.Err()==nil guard). The one
-	// deliberate non-ctx return is outbox.ErrDrainStalled: a Sender
-	// that ignores context cancellation leaks a goroutine the batch watchdog can
-	// only abandon, so Run stops draining and returns terminal to trigger a restart
-	// that reclaims it — the escalation the terminal-on-error path exists for. No
-	// per-drainer supervisor wrapper is warranted.
-	for i, drainer := range rt.drainers {
-		name := "drainer:" + drainer.PartitionKey()
-		if name == "drainer:" {
-			name = "drainer:" + drainer.RouteID() + ":" + strconv.Itoa(i)
-		}
-		rt.startBackground(ctx, name, drainer.Run)
-	}
-
-	// Route runners run under superviseRoute (per-route isolation) — NOT the
-	// terminal-on-error startBackground the sessions' pre-fix path used. A
-	// runtime hosts MANY routes, and a fault that is permanent for ONE route
-	// (its source queue deleted, its credential revoked, a protocol mismatch on
-	// that link) is NOT a global fault: crashing the whole pod would punish every
-	// healthy co-tenant route and, since the fault is permanent, just
-	// CrashLoopBackOff without fixing anything. This
-	// supersedes the former fail-fast rationale (which assumed
-	// every receiver error is global-and-unrecoverable); superviseRoute isolates
-	// the failing route with jittered capped backoff, keeps global healthy/
-	// terminal untouched, and keeps the fault observable via MetricRouteRestarts
-	// + failed_components + per-route readiness. See superviseRoute for the full
-	// weighing of the replaced argument and its honest tradeoff (single-use
-	// receivers settle at the backoff cap rather than reconnect).
-	for _, entry := range rt.entries {
-		rt.startBackground(ctx, "route:"+entry.config.ID, rt.superviseRoute(entry.config.ID, entry.runner.Run))
-	}
+	rt.startComponentsLocked(componentSet{
+		entries:         rt.entries,
+		sessionSenders:  rt.sessionSenders,
+		ingressSessions: rt.ingressSessions,
+	})
 
 	// DLQ-depth sampler: periodically emit the standing DLQ backlog as
 	// shared.MetricDLQDepth so operators can alarm on records sitting in the DLQ
@@ -559,26 +246,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 		})
 	}
 
-	rt.logBestEffortSubscriptions()
 	return nil
-}
-
-func (rt *Runtime) logBestEffortSubscriptions() {
-	if rt.logger == nil {
-		return
-	}
-	for _, entry := range rt.entries {
-		if entry.config.Policy.WithDefaults().DeliveryMode != routing.DeliveryDirectHold {
-			continue
-		}
-		for _, topic := range entry.config.SourceBestEffortTopics {
-			rt.logger.Info("direct_hold subscription is best-effort; QoS 0 messages may be lost if the process stops",
-				"route_id", entry.config.ID,
-				"receiver_id", entry.config.SourceReceiverID,
-				"topic", topic,
-			)
-		}
-	}
 }
 
 // drainerFingerprint captures the drain-relevant inputs a shared_outbox drainer
@@ -614,7 +282,8 @@ type drainerBinding struct {
 
 // drainFingerprint derives the fingerprint from a route's (defaulted) policy and
 // the session config the drainer's tuning comes from. It mirrors the fields read
-// off Policy/sessCfg at the two drainer-construction sites in Start.
+// off Policy/sessCfg at the two drainer-construction sites in
+// wireRouteEntriesLocked.
 //
 // The drain-tuning fields are NORMALIZED to the values outbox.New would store,
 // not compared raw: outbox.New defaults a zero DrainBatchSize/DrainMaxBatchSize/
@@ -729,10 +398,16 @@ func sendersConflict(a, b ports.Sender) (conflict bool) {
 // the second route's records under the first route's sender and policy — records
 // sent via the wrong sender, or poisoned under the wrong replay budget/DLQ
 // policy. It walks entries in the SAME order and resolves the SAME session→config
-// mapping as the drainer-construction loop in Start, so what it validates is
-// exactly what would be built. Called under rt.mu before any wiring; caller
-// resets rt.running on error.
+// mapping as the drainer-construction loop in wireRouteEntriesLocked, so what it
+// validates is exactly what would be built. Called under rt.mu before any wiring; caller
+// resets rt.running on error. It checks rt's own routes and session senders.
 func (rt *Runtime) checkSharedOutboxDrainerConflicts() error {
+	return rt.sharedOutboxDrainerConflicts(rt.entries, rt.sessionSenders)
+}
+
+// sharedOutboxDrainerConflicts is checkSharedOutboxDrainerConflicts over entries
+// and senders, so Graft can check rt's routes and a part's together.
+func (rt *Runtime) sharedOutboxDrainerConflicts(entries []*routeEntry, senders map[string]*sessionSenderEntry) error {
 	if rt.outboxStore == nil {
 		return nil
 	}
@@ -759,14 +434,15 @@ func (rt *Runtime) checkSharedOutboxDrainerConflicts() error {
 			prev.routeID, b.routeID, sid)
 	}
 
-	for _, entry := range rt.entries {
+	for _, entry := range entries {
 		if entry.config.Policy.DeliveryMode != routing.DeliverySharedOutbox {
 			continue
 		}
 		p := entry.config.Policy.WithDefaults()
 
 		// Site 1: the route's primary session (matches the primary-session
-		// drainer built in Start when entry.session != nil && entry.sessCfg != nil).
+		// drainer built in wireRouteEntriesLocked when entry.session != nil &&
+		// entry.sessCfg != nil).
 		if entry.session != nil && entry.sessCfg != nil {
 			b := drainerBinding{routeID: entry.config.ID, sender: entry.sender, fp: drainFingerprint(p, *entry.sessCfg)}
 			if err := claim(entry.sessCfg.SessionID, b); err != nil {
@@ -775,11 +451,12 @@ func (rt *Runtime) checkSharedOutboxDrainerConflicts() error {
 		}
 
 		// Site 2: fan-out target sessions referenced by bindings (matches the
-		// per-binding drainer built in Start from rt.sessionSenders).
+		// per-binding drainer wireRouteEntriesLocked builds from the session
+		// senders).
 		for _, binding := range entry.config.Bindings {
 			sid := binding.SessionID
 			if sid == "" && entry.sessCfg != nil {
-				// Mirror Start's binding-session inheritance: a shared_outbox
+				// Mirror the wiring's binding-session inheritance: a shared_outbox
 				// binding that omits its SessionID inherits the route's primary
 				// session.
 				sid = entry.sessCfg.SessionID
@@ -787,11 +464,11 @@ func (rt *Runtime) checkSharedOutboxDrainerConflicts() error {
 			if sid == "" {
 				continue
 			}
-			sse, ok := rt.sessionSenders[sid]
+			sse, ok := senders[sid]
 			if !ok {
 				// No standalone sender for this sid: either it is the route's own
 				// primary session (already claimed at site 1 for this route) or it
-				// is not drainer-backed here. Start likewise skips it.
+				// is not drainer-backed here. The wiring likewise skips it.
 				continue
 			}
 			b := drainerBinding{routeID: entry.config.ID, sender: sse.sender, fp: drainFingerprint(p, sse.config)}

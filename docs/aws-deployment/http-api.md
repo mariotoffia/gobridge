@@ -164,7 +164,7 @@ sequenceDiagram
 
     Note over EFS,I2: Poll watcher detects change
     EFS-->>I2: bridge.yaml changed
-    I2->>I2: rebuild runtime
+    I2->>I2: reload runtime (in place or full swap)
 ```
 
 ### Transaction Endpoints

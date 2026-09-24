@@ -442,13 +442,16 @@ The `Supervisor` manages runtime lifecycle during reconfigurations:
 
 ### Swap Modes
 
-How the Supervisor transitions between old and new runtimes:
+How the Supervisor moves from the running configuration to a new one:
 
 | Mode | Behaviour | When Used |
 |------|-----------|-----------|
+| `SwapInPlace` | Keep the running runtime; retire the changed reload units and graft their replacements, so unchanged sessions stay connected | Chosen by `SwapAuto` when only sessions, receivers, senders, bindings or routes changed ([ADR 0018](adr/0018-reload-in-place-by-unit.md)) |
 | `SwapOverlap` | Build new while old runs, then swap | Stateless transports (SQS) |
 | `SwapPrepareCommit` | Validate first, stop old, then build new | Exclusive broker identities: MQTT client IDs, exclusive AMQP consumers, pinned Service Bus sessions |
-| `SwapAuto` (default) | Asks `RequiresSerializedSwap`: exclusivity in the new config, or held by the running config on a transport the new one keeps | Recommended default |
+| `SwapAuto` (default) | Reloads in place when `PlanInPlaceReload` accepts the change; otherwise asks `RequiresSerializedSwap`: exclusivity in the new config, or held by the running config on a transport the new one keeps | Recommended default |
+
+An explicit `SwapOverlap` or `SwapPrepareCommit` turns in-place reload off, and `WithSwapMode(SwapInPlace)` acts as `SwapAuto`. See [Scenario 10](scenarios/10-dynamic-reconfiguration.md#what-reconnects-on-a-change) for what reconnects on each kind of change.
 
 ## What's Next
 

@@ -39,8 +39,9 @@ func soloCohortConfig(version int) *ports.BridgeConfig {
 // runSoloCohort starts a Supervisor wired as the only member of a coordinated
 // cohort, with a cadence short enough that the barrier resolves promptly. The
 // lease TTL doubles as the coordinator's lock delay, so it bounds how long the
-// first decision takes.
-func runSoloCohort(t *testing.T, rec *ports.RecordingExporter) (*Supervisor, chan *ports.BridgeConfig, <-chan SwapEvent) {
+// first decision takes. The returned sender is every sender the fake transport
+// builds.
+func runSoloCohort(t *testing.T, rec *ports.RecordingExporter) (*Supervisor, chan *ports.BridgeConfig, <-chan SwapEvent, *fakeSender) {
 	t.Helper()
 	store := memoryrollout.NewStore()
 	rc := testRolloutConfig(store, "node-a")
@@ -52,12 +53,13 @@ func runSoloCohort(t *testing.T, rec *ports.RecordingExporter) (*Supervisor, cha
 	if rec != nil {
 		opts = append(opts, WithSupervisorMetrics(rec))
 	}
-	s := newTestSupervisor(opts...)
+	sender := &fakeSender{}
+	s := newTestSupervisorTransport(&dispatchTransportFactory{sender: sender}, opts...)
 
 	changes := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, soloCohortConfig(0), changes)
 	t.Cleanup(func() { cancel(); <-errCh })
-	return s, changes, swaps
+	return s, changes, swaps, sender
 }
 
 // rolloutState reads the barrier's state through the Supervisor's own published
@@ -76,7 +78,7 @@ func rolloutState(s *Supervisor) string {
 // coordinator, or the wiring between them regressed.
 func TestClusterRollout_EndToEnd_HappyPath(t *testing.T) {
 	rec := &ports.RecordingExporter{}
-	s, changes, swaps := runSoloCohort(t, rec)
+	s, changes, swaps, sender := runSoloCohort(t, rec)
 	oldRt := s.Runtime()
 	require.NotNil(t, oldRt)
 
@@ -96,8 +98,13 @@ func TestClusterRollout_EndToEnd_HappyPath(t *testing.T) {
 		return s.Config().Version == 99
 	})
 
-	assert.Equal(t, "addr/rolled", s.Config().Bindings[0].Address)
-	assert.NotSame(t, oldRt, s.Runtime(), "the committed generation really swapped")
+	ev = awaitSwap(t, swaps)
+	require.NoError(t, ev.Error)
+	assert.Equal(t, SwapInPlace, ev.SwapMode, "the committed generation is reloaded, not acknowledged as a no-op")
+	assert.Equal(t, 99, ev.NewConfig.Version)
+	assert.Same(t, oldRt, s.Runtime(), "an in-place reload keeps the running runtime")
+	assert.Equal(t, "addr/rolled", deliveredAddress(t, s.Runtime(), sender, "r1"),
+		"the running runtime delivers to the committed binding address")
 	assert.Equal(t, string(persistence.RolloutCommitted), rolloutState(s))
 	assert.Equal(t, 1, countEntries(rec, shared.MetricClusterRolloutResolved, shared.TagKeyOutcome, "committed"),
 		"the resolution must be observable exactly once")
@@ -158,7 +165,7 @@ func TestClusterRollout_EndToEnd_AbortLeavesTheRunningConfigServing(t *testing.T
 // the next one. A one-shot barrier would look identical in every single-rollout
 // test and fail the first time an operator made two changes.
 func TestClusterRollout_EndToEnd_SecondChangeRollsAfterTheFirst(t *testing.T) {
-	s, changes, swaps := runSoloCohort(t, nil)
+	s, changes, swaps, _ := runSoloCohort(t, nil)
 
 	// Only the FIRST swap event is asserted directly. After a barrier commit the
 	// applier's own swap fires onSwap too, so the channel interleaves deferrals
@@ -191,7 +198,7 @@ func TestClusterRollout_EndToEnd_SecondChangeRollsAfterTheFirst(t *testing.T) {
 // The roster is the epoch the barrier freezes, so it is the one change the
 // barrier structurally cannot carry.
 func TestClusterRollout_EndToEnd_ReplacementRequiredDeltaIsRefused(t *testing.T) {
-	s, changes, swaps := runSoloCohort(t, nil)
+	s, changes, swaps, _ := runSoloCohort(t, nil)
 
 	destructive := soloCohortConfig(99)
 	destructive.Bridge.Cluster.Members = []string{"node-a", "node-b"}

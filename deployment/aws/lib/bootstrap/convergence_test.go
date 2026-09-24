@@ -2,6 +2,8 @@ package bootstrap
 
 import (
 	"context"
+	"runtime/pprof"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // TestApp_ConvergenceDegradedStateSurfaces pins reconfiguration observability:
@@ -35,7 +38,7 @@ func TestApp_ConvergenceDegradedStateSurfaces(t *testing.T) {
 	}
 
 	// Budget elapsed without convergence: the watch marks degraded.
-	require.True(t, app.markConvergenceDegraded(rt, "config version 7 applied but transport sessions have not converged"))
+	require.True(t, app.markConvergenceDegraded(rt, app.convergenceGeneration(), "config version 7 applied but transport sessions have not converged"))
 	degraded, reason := app.degradedConfigWatch()
 	require.True(t, degraded, "applied-but-not-converged must surface as degraded")
 	require.Contains(t, reason, "not converged")
@@ -43,7 +46,7 @@ func TestApp_ConvergenceDegradedStateSurfaces(t *testing.T) {
 		"ConfigDegraded gauge must flip to 1 (the signal the shipped process previously lacked)")
 
 	// Sessions converge later: the state clears.
-	app.clearConvergenceDegraded(rt)
+	app.clearConvergenceDegraded(rt, app.convergenceGeneration())
 	degraded2, _ := app.degradedConfigWatch()
 	require.False(t, degraded2, "convergence must clear the applied-but-not-converged state")
 }
@@ -76,7 +79,7 @@ func TestApp_ConvergenceWatch_DiagnosticsNameTheAdoptedDocument(t *testing.T) {
 	t.Cleanup(func() { cancel(); <-watchDone })
 	go func() {
 		defer close(watchDone)
-		app.runConvergenceWatch(ctx, rt, budget)
+		app.runConvergenceWatch(ctx, rt, app.convergenceGeneration(), budget)
 	}()
 	// The watch reads the clock for its deadline and then arms its poll timer, so
 	// an armed timer proves the deadline was taken from the start instant rather
@@ -126,10 +129,50 @@ func TestApp_ConvergenceWatch_SupersededWatcherCannotMark(t *testing.T) {
 	app.runtimeRef.Set(current)
 	app.convergenceRt = current
 
-	require.False(t, app.markConvergenceDegraded(stale, "stale"),
+	require.False(t, app.markConvergenceDegraded(stale, app.convergenceGeneration(), "stale"),
 		"a superseded watcher must not mark degraded")
 	degraded, _ := app.degradedConfigWatch()
 	require.False(t, degraded)
+}
+
+// installPlan publishes a runtime before it starts that runtime's watch, so for
+// a moment the superseded watch still holds the newest generation. A mark it
+// began before the publish must still see the runtime that replaced it.
+func TestApp_ConvergenceWatch_SupersededWatchCannotMarkThePublishedRuntime(t *testing.T) {
+	app, _ := newConvergenceTestApp(t)
+	require.NoError(t, applyTo(t, app, inPlaceTestConfig("a", "b")))
+	old, gen := app.CurrentRuntime(), app.convergenceGeneration()
+	// The helper's cleanup stops whichever runtime is installed.
+	t.Cleanup(func() { app.runtimeRef.Set(old) })
+
+	// Holding the lock parks the mark at the lock that gates it; the runtime is
+	// published while it waits, without its watch, as installPlan publishes one.
+	app.convergenceMu.Lock()
+	marked := make(chan bool, 1)
+	go func() { marked <- app.markConvergenceDegraded(old, gen, "stale") }()
+	wait.Until(t, 5*time.Second, "the mark waits for the convergence lock", func() bool {
+		return parkedOnMutexIn("(*App).markConvergenceDegraded")
+	})
+	app.runtimeRef.Set(&goruntime.Runtime{})
+	app.convergenceMu.Unlock()
+
+	assert.False(t, wait.RequireReceive(t, marked, 5*time.Second),
+		"the superseded watch cannot mark the runtime published in its place")
+	degraded, _ := app.convergenceDegradedState()
+	assert.False(t, degraded, "the published runtime is not degraded before its own watch judges it")
+}
+
+// parkedOnMutexIn reports whether a goroutine running fn is parked acquiring a
+// sync.Mutex: the only signal that it has reached the lock without a hook.
+func parkedOnMutexIn(fn string) bool {
+	var stacks strings.Builder
+	_ = pprof.Lookup("goroutine").WriteTo(&stacks, 2)
+	for g := range strings.SplitSeq(stacks.String(), "\n\n") {
+		if strings.Contains(g, "[sync.Mutex.Lock") && strings.Contains(g, fn) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestApp_ConvergenceWatch_CancelledParentSkipsWatch pins the shutdown-race guard: when the

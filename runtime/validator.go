@@ -96,8 +96,8 @@ func drainRelevant(p routing.RoutePolicy) drainRelevantPolicy {
 // validateSharedOutboxPartitions rejects a configuration where two or more
 // shared_outbox routes drain the SAME session partition with divergent
 // drain-relevant policy. A session partition has
-// exactly one drainer — the first route to claim it wins (bridge_start
-// drainerSessions guard) — so the other routes' records would be silently
+// exactly one drainer — the first route to claim it wins (wireRouteEntriesLocked
+// drainerOwner guard) — so the other routes' records would be silently
 // drained under the first route's SendTimeout / MaxReplayAttempts / ReplayBudget
 // / OnExpired / OnPermanentFailure. The OnPermanentFailure case is the
 // message-loss hazard: a record persisted by a dlq-policy route,
@@ -131,7 +131,7 @@ func validateSharedOutboxPartitions(ve *ValidationError, entries []*routeEntry) 
 
 		// Distinct effective sessions this route persists records under. An
 		// empty binding session inherits the route session (mirrors the
-		// inheritance bridge_start applies before creating drainers).
+		// inheritance wireRouteEntriesLocked applies before creating drainers).
 		seen := make(map[string]bool)
 		for _, b := range entry.config.Bindings {
 			eff := b.SessionID

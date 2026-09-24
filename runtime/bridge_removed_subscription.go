@@ -9,19 +9,19 @@ import (
 	"github.com/mariotoffia/gobridge/runtime/dlq"
 )
 
-// installRemovedSubscriptionDeadLetter gives every managed session that supports
-// it a dead-letter path for deliveries the broker still hands it for a
-// subscription it removed. The session writes such a delivery here before
-// acknowledging it, recorded as SUBSCRIPTION_REMOVED against the removed filter.
-// A session with no route riding on it still gets the path: its plan may just
-// have become empty. Without a dead-letter store nothing is installed, and the
-// session keeps such a delivery unacknowledged, because acknowledging it
-// without a durable copy would lose it.
-func (rt *Runtime) installRemovedSubscriptionDeadLetter(dlqRouter *dlq.Router) {
+// installRemovedSubscriptionDeadLetter gives every managed session of
+// sessionIDs that supports it a dead-letter path for deliveries the broker still
+// hands it for a subscription it removed. The session writes such a delivery
+// here before acknowledging it, recorded as SUBSCRIPTION_REMOVED against the
+// removed filter. A session with no route riding on it still gets the path: its
+// plan may just have become empty. Without a dead-letter store nothing is
+// installed, and the session keeps such a delivery unacknowledged, because
+// acknowledging it without a durable copy would lose it. Caller holds rt.mu.
+func (rt *Runtime) installRemovedSubscriptionDeadLetter(dlqRouter *dlq.Router, sessionIDs []string) {
 	if !dlqRouter.HasStore() {
 		return
 	}
-	for sid := range rt.sessionMgrs {
+	for _, sid := range sessionIDs {
 		configurer, ok := rt.managedSession(sid).(ports.RemovedSubscriptionDeadLetterConfigurer)
 		if !ok {
 			continue

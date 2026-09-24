@@ -5,7 +5,7 @@ applyTo: "runtime/**,bridge/**,adapters/native/cluster/**,adapters/aws/cluster/*
 # Runtime, composition root and clustering
 
 Sources: ADR-0001, ADR-0004, ADR-0009, ADR-0012 to ADR-0015, ADR-0017,
-`docs/internals/architecture-message-flow.md`,
+ADR-0018, `docs/internals/architecture-message-flow.md`,
 `docs/internals/architecture-contracts-and-clustering.md` and
 `docs/cluster/spec/cluster-config-rollout-protocol.md`.
 
@@ -38,9 +38,13 @@ Sources: ADR-0001, ADR-0004, ADR-0009, ADR-0012 to ADR-0015, ADR-0017,
 
 ## Lifecycle
 
-- A runtime is single-use. `Start` on a stopped runtime errors; a config
-  change builds a new instance. `Terminal()` is true only when both the swap and
-  the recovery failed (ADR-0004).
+- A runtime starts once, stops once and is never restarted: `Start` on a
+  stopped runtime errors. A change confined to reload units retires and grafts
+  units inside the running runtime (ADR-0018); any other change builds a new
+  instance. A reload wedges the process (`Terminal()`) only when a swap and its
+  recovery both fail, when a runtime that must stop before its replacement
+  starts does not stop cleanly, or when a unit an in-place reload retires does
+  not stop cleanly (ADR-0004).
 - Lease lifecycle: acquire, renew, step down after `MaxRenewFails` or
   `STALE_FENCING_TOKEN`, wait `StepDownGrace`, release. All of it is derived
   from `LeaseTTL` and driven by the injected `Clock`. A lease-owning session
@@ -58,6 +62,52 @@ Sources: ADR-0001, ADR-0004, ADR-0009, ADR-0012 to ADR-0015, ADR-0017,
 - A reload that changes a session between exclusive and non-exclusive stops
   the old consumer before starting the new one; overlap runs both on one
   identity.
+
+## In-place reload (ADR-0018)
+
+- `InPlaceReload.Apply` preflights the whole next document and plans every
+  added unit's part before it retires anything. Each root first runs every
+  check its full swap runs — the Supervisor's no-op detection, cluster guard,
+  store-identity, lease `session_id` and durable-backlog preflights; the AWS
+  runtime's fingerprint, deployment-profile admission and cluster seam — so an
+  in-place reload never admits what a full swap refuses.
+- When `RequiresSerializedSwap(retired, added)` holds, every retired unit stops
+  before any part is built; otherwise parts are built first and a failed build
+  changes nothing. A graft always follows the retires, so one runtime never
+  runs two route runners for a route id or two managers for a session id, and
+  an exclusive identity never has two holders.
+- `PlanInPlaceReload` refuses when a bridge-wide section (`bridge`, `stores`,
+  `config_watch`, `http`) differs, or a retired or added unit attaches to a
+  `CapHTTPEndpoint` transport or one with no registered factory. A unit key
+  covers only the unit's members plus those sections, so a value a build
+  derives across units must also make it refuse when it differs, as the outbox
+  stale-claim duration does; otherwise the runtime keeps the value it was built
+  with.
+- A part is built over the host's `Stores()` with `WithSharedStores` (`Graft`
+  refuses any other), and neither a grafted nor a discarded part closes them.
+- `Graft` refuses a part that reuses a route or session id, the runtime's or
+  one of a unit still being retired (a straggler may still run under it), is
+  not closed over its sessions (a route on either side rides on or binds to a
+  session of the other), or fails the route checks `Start` runs over the union.
+- `Retire` settles in-flight deliveries within the stop drain budget before it
+  cancels, keeps the unit reachable by `Fence` and by DLQ fencing on its
+  sessions' leases until its runs finish, and closes its managers only after
+  its runs finish or the store-close grace ends. `Apply` bounds each retire by
+  the drain timeout, detached from the caller's cancel.
+- A credential refresher watches a receiver or sender only when the runtime
+  holds it (`CredentialTargets`). `Retire` hands the unit's targets to every
+  forget and closes a refresher left watching nothing.
+- A build or graft that fails after the retires restores the retired units
+  from the running configuration (`unchanged`), and reports `torn` only when
+  that restore fails. Both roots act on the outcome alike: `unchanged` keeps the runtime;
+  `torn` stops it and rebuilds the running configuration, wedging if the stop
+  or the rebuild fails; `wedged` stops it and wedges without building anything.
+- A serialized reload wedges, rather than restore, when a part built for it
+  does not stop: that part may still hold the exclusive identity a restored
+  unit would claim. It wedges, rather than tear, when a restored part whose
+  graft is refused does not stop, as the torn rebuild would claim its identity.
+  A build-first part claims none, so its stop failure leaves the reload
+  `unchanged`.
 
 ## Timers, waits and locks
 

@@ -14,7 +14,7 @@ record remains available and links to its replacement.
 | [0001](0001-reserved-header-trust-model.md) | Reserved-header trust model and out-of-band signaling | accepted |
 | [0002](0002-credential-rotation-build-first.md) | Credential rotation: build-first, commit-after-success | accepted |
 | [0003](0003-mqtt-persistent-session-hygiene.md) | MQTT persistent-session subscription hygiene | accepted |
-| [0004](0004-single-use-runtime-lifecycle.md) | Single-use runtime lifecycle and terminal wedge | accepted |
+| [0004](0004-single-use-runtime-lifecycle.md) | Single-use runtime lifecycle and terminal wedge | accepted; amended by 0018 |
 | [0005](0005-outbox-partition-claim-design.md) | Outbox partition design: claim selection, fence rows, seq allocation | accepted |
 | [0006](0006-dlq-redrive-at-most-once.md) | DLQ redrive at-most-once | superseded by 0015 |
 | [0007](0007-cluster-worker-seeding-adoptvalid.md) | Cluster worker seeding: AdoptValid default | rollout superseded by 0012; startup replaced by [strict initialization](../aws-deployment/config-initialization.md) |
@@ -28,6 +28,7 @@ record remains available and links to its replacement.
 | [0015](0015-dlq-redrive-inject-then-delete.md) | DLQ redrive inject-then-delete (at-least-once) | accepted |
 | [0016](0016-config-content-normal-form.md) | Configuration content identity: compare the normal form, not the bytes | accepted |
 | [0017](0017-direct-hold-in-process-send-retry.md) | `direct_hold` retries a failed send in process before replay or dead-lettering | accepted |
+| [0018](0018-reload-in-place-by-unit.md) | Reload in place by reload unit | accepted |
 
 ## Numbering
 

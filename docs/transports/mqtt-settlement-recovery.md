@@ -157,8 +157,8 @@ deliberately not dimensions, so cardinality remains bounded.
 
 **Ephemeral sessions have a loss window.** An Ephemeral session keeps no offline
 retention: during any disconnect the broker queues nothing for it, so messages it
-would have delivered are lost with no redelivery on reconnect, and a runtime
-reconfig swap leaves an unavoidable delivery gap. Persistent and Exclusive
+would have delivered are lost with no redelivery on reconnect, and a
+reconfiguration that reconnects the session leaves an unavoidable delivery gap. Persistent and Exclusive
 sessions (`clean_start=false` with a non-zero `session_expiry_interval`) close
 the offline and reconfig gaps — the broker queues inbound deliveries while the
 client is away and redelivers them on resume — but no mode makes OUTBOUND

@@ -98,14 +98,17 @@ func stopRuntime(ctx context.Context, rt *goruntime.Runtime, cfg *ports.BridgeCo
 		return nil
 	}
 
-	drainTimeout := 30 * time.Second
-	if cfg != nil {
-		drainTimeout = cfg.Bridge.DrainTimeoutDuration()
-	}
-
-	stopCtx, cancel := context.WithTimeout(ctx, drainTimeout)
+	stopCtx, cancel := context.WithTimeout(ctx, drainTimeout(cfg))
 	defer cancel()
 	return rt.Stop(stopCtx)
+}
+
+// drainTimeout is the budget stopRuntime gives a runtime running cfg to drain.
+func drainTimeout(cfg *ports.BridgeConfig) time.Duration {
+	if cfg == nil {
+		return 30 * time.Second
+	}
+	return cfg.Bridge.DrainTimeoutDuration()
 }
 
 // waitCtx runs wait on its own goroutine and reports whether it finished before

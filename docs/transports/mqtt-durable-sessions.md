@@ -169,12 +169,24 @@ apply the new identity, then resume traffic and verify consumption. In a cluster
 perform this as a coordinated versioned rollout; independent per-process reloads
 are unsafe.
 
-### Reload semantics: a controlled restart, not a hitless reload
+### Reload semantics: a controlled restart of what changed, not a hitless reload
 
-Every MQTT-containing configuration change takes the serialized
-prepare-commit swap: **all MQTT sessions disconnect** (drain ≤ the configured
-`drain_timeout`, default 30s), the new runtime is built, dialed, and
-reconciled. During that window:
+A change confined to sessions, receivers, senders, bindings and routes reloads
+in place ([ADR 0018](../adr/0018-reload-in-place-by-unit.md)): only the MQTT
+sessions in the reload units the change touches disconnect. A session whose
+unit is unchanged stays connected. The changed units are serialized, because
+MQTT claims an exclusive client ID: the old sessions stop (drain ≤ the
+configured `drain_timeout`, default 30s) before their replacements are built,
+dialed and reconciled. A bridge-wide change (`bridge`, `stores`,
+`config_watch`, `http`) still takes the full prepare-commit swap, and then
+**all MQTT sessions disconnect**. On the AWS runtime, the MQTT memory profile
+divides one reservation equally among every MQTT session that can receive
+(every session a receiver uses, and every persistent or exclusive session in
+use, pinned or not), and a session that leaves `ingress_memory_budget_bytes`
+unset takes its share as its budget. Adding or removing one such MQTT session
+therefore also reconnects every other unpinned MQTT session; see
+[keeping MQTT tenants connected](../aws-deployment/config-reload.md#keeping-mqtt-tenants-connected).
+For every session that disconnects, during the window:
 
 - **QoS 1/2 on `clean_start=false` (persistent/exclusive) sessions**: queued
   broker-side and replayed after reconnect — **no loss**, possible duplicates
@@ -190,8 +202,9 @@ directly, so N rapid writes are N windows), and schedule reloads for
 ephemeral/QoS 0 traffic like any other restart.
 
 **Reload success means "applied", not "converged".** The swap reports success
-once the new runtime is built and started; MQTT dials and reconciles in
-background goroutines, so a syntactically-valid-but-broker-invalid config
+once the new runtime, or the replaced units, are built and started; MQTT
+dials and reconciles in background goroutines, so a
+syntactically-valid-but-broker-invalid config
 (ACL-denied topic, rotated-away credentials) commits as a successful reload
 while the transport is down. The supervisor's post-swap convergence watch
 closes the gap: it observes the new runtime until sessions reach

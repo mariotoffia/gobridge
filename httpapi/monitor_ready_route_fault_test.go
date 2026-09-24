@@ -193,7 +193,7 @@ func TestBlocking_LegacyReadyShedsTrafficOnDegradedSession(t *testing.T) {
 // it below Full and a healthy instance advertises 200.
 //
 // Regression: roleUnlocked previously keyed off len(sessionMgrs). A non-exclusive
-// session still gets a manager (bridge_start.go:223-230) but never holds a lease,
+// session still gets a manager (runtime/bridge_components.go) but never holds a lease,
 // so the instance looked like a "standby" → capped at LevelSubscribed → legacy
 // /ready 503 FOREVER for a perfectly healthy bridge — a regression the
 // LevelFull gate activated.
