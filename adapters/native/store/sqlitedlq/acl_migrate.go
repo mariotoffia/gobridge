@@ -16,12 +16,39 @@ func addedColumns() []struct{ name, ddl string } {
 	}
 }
 
-// migrate wraps driver errors with %w so openSession's wrapErr still
-// classifies them by their SQLite result code.
+// migrate adds every column in addedColumns that the dlq table lacks.
 func migrate(db *sql.DB) error {
+	have, err := columnNames(db)
+	if err != nil {
+		return err
+	}
+	return addMissingColumns(db, have)
+}
+
+// addMissingColumns runs the ALTER for each added column not in have. Another
+// process opening the same file may add the column between the read and the
+// ALTER, so a failed ALTER counts as success when a fresh read finds the
+// column; any other failure is returned.
+func addMissingColumns(db *sql.DB, have map[string]bool) error {
+	for _, c := range addedColumns() {
+		if have[c.name] {
+			continue
+		}
+		if _, err := db.Exec(c.ddl); err != nil {
+			now, rerr := columnNames(db)
+			if rerr != nil || !now[c.name] {
+				return fmt.Errorf("add column %s: %w", c.name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// columnNames returns the names PRAGMA table_info reports for the dlq table.
+func columnNames(db *sql.DB) (map[string]bool, error) {
 	rows, err := db.Query(`PRAGMA table_info(dlq)`)
 	if err != nil {
-		return fmt.Errorf("read dlq columns: %w", err)
+		return nil, fmt.Errorf("read dlq columns: %w", err)
 	}
 	have := make(map[string]bool)
 	for rows.Next() {
@@ -32,23 +59,15 @@ func migrate(db *sql.DB) error {
 		)
 		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
 			_ = rows.Close()
-			return fmt.Errorf("read dlq columns: %w", err)
+			return nil, fmt.Errorf("read dlq columns: %w", err)
 		}
 		have[name] = true
 	}
 	if err := rows.Close(); err != nil {
-		return fmt.Errorf("read dlq columns: %w", err)
+		return nil, fmt.Errorf("read dlq columns: %w", err)
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	for _, c := range addedColumns() {
-		if have[c.name] {
-			continue
-		}
-		if _, err := db.Exec(c.ddl); err != nil {
-			return fmt.Errorf("add column %s: %w", c.name, err)
-		}
-	}
-	return nil
+	return have, nil
 }
