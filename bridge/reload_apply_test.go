@@ -370,26 +370,20 @@ func TestInPlaceReload_TeardownIsDetachedFromTheCallersContext(t *testing.T) {
 
 // A retire and a part stop are bounded by the drain timeout the caller gives,
 // and by the running configuration's drain timeout (1s here) when it gives
-// none. The bounds are read against the moment before the teardown began, so
-// scheduling delays cannot blur them.
+// none. The budget is read as a value, not off the wall clock, so a scheduler
+// pause cannot blur it.
 func TestInPlaceReload_TeardownIsBoundedByTheCallersDrainTimeout(t *testing.T) {
 	tf := newPerSessionTransportFactory(false)
 	running := applyTestConfig("a", "b")
 	plan := planApplyTest(t, tf, running, changeRoute(applyTestConfig("a", "b"), "b"))
-	teardownBudget := func() time.Duration {
-		before := time.Now()
-		ctx, cancel := plan.teardownCtx(context.Background())
-		defer cancel()
-		deadline, ok := ctx.Deadline()
-		require.True(t, ok, "a teardown is always bounded")
-		return deadline.Sub(before)
-	}
 
-	fallback := teardownBudget()
-	assert.GreaterOrEqual(t, fallback, time.Second, "without one, the running configuration's drain timeout")
-	assert.Less(t, fallback, time.Second+500*time.Millisecond, "without one, the running configuration's drain timeout")
+	ctx, cancel := plan.teardownCtx(context.Background())
+	defer cancel()
+	_, ok := ctx.Deadline()
+	assert.True(t, ok, "a teardown is always bounded")
+	assert.Equal(t, time.Second, plan.teardownBudget(), "without one, the running configuration's drain timeout")
 	plan.DrainTimeout = time.Hour
-	assert.GreaterOrEqual(t, teardownBudget(), time.Hour, "the caller's drain timeout")
+	assert.Equal(t, time.Hour, plan.teardownBudget(), "the caller's drain timeout")
 }
 
 // A serialized reload retires its units between preparing the parts and

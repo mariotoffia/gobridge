@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -235,11 +236,16 @@ func (r *InPlaceReload) stopParts(ctx context.Context, parts []*runtime.Runtime)
 // from ctx: a teardown that starts must finish, or a retired unit's in-flight
 // deliveries and a stopped part's sessions are abandoned mid-way.
 func (r *InPlaceReload) teardownCtx(ctx context.Context) (context.Context, context.CancelFunc) {
-	d := r.DrainTimeout
-	if d <= 0 {
-		d = r.running.Bridge.DrainTimeoutDuration()
+	return context.WithTimeout(context.WithoutCancel(ctx), r.teardownBudget())
+}
+
+// teardownBudget is the drain timeout teardownCtx bounds a teardown by:
+// r.DrainTimeout, or the running configuration's when that is not positive.
+func (r *InPlaceReload) teardownBudget() time.Duration {
+	if r.DrainTimeout > 0 {
+		return r.DrainTimeout
 	}
-	return context.WithTimeout(context.WithoutCancel(ctx), d)
+	return r.running.Bridge.DrainTimeoutDuration()
 }
 
 // String names u by its route and session ids, for errors.
