@@ -227,6 +227,7 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 		runtime.WithLeaseStore(stores.lease),
 		runtime.WithOutboxStore(stores.outbox),
 		runtime.WithDLQStore(stores.dlq),
+		runtime.WithAutoRedriveWindow(b.cfg.Stores.DLQ.AutoRedriveWindowDuration()), // nil store: the default
 		runtime.WithManagedSubscriptionStore(stores.managedSubscriptions),
 		// bridge.drain_timeout is the ceiling the supervisor puts on
 		// Runtime.Stop (stopCurrent / stopAbandoned / every swap). Give the

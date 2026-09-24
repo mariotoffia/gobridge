@@ -57,6 +57,7 @@ func validateConfig(cfg *ports.BridgeConfig) *ValidationError {
 	}
 
 	validateStaleClaimDuration(ve, cfg)
+	validateAutoRedriveWindow(ve, cfg)
 	validateSessionRenewTiming(ve, cfg)
 	validateFailoverFields(ve, cfg)
 	validateConnectLeaseBudget(ve, cfg)

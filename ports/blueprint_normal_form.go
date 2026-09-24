@@ -45,7 +45,9 @@ import (
 //     it with the default would let an invalid document pass as a no-op before
 //     validation sees it. Defaults owned by other layers (the outbox drainer,
 //     the session runtime, a transport) are NOT filled in; an unset value stays
-//     unset.
+//     unset. So is stores.dlq.auto_redrive_window, although ports owns its
+//     default: filling it in would change the identity of every document
+//     written before the setting existed.
 //
 // The result is deterministic: the same meaning gives the same value on every
 // run and on every node. cfg is never modified. The copy shares the decoded
@@ -63,6 +65,11 @@ func ContentNormalForm(cfg *BridgeConfig) *BridgeConfig {
 		cw.PollInterval = canonicalDuration(cw.PollInterval, 0)
 		cw.Debounce = canonicalDuration(cw.Debounce, 0)
 		out.ConfigWatch = &cw
+	}
+	if cfg.Stores.DLQ != nil {
+		dlq := *cfg.Stores.DLQ
+		dlq.AutoRedriveWindow = canonicalDuration(dlq.AutoRedriveWindow, 0)
+		out.Stores.DLQ = &dlq
 	}
 	out.Sessions = sortedByID(cfg.Sessions, func(d SessionDef) string { return d.ID })
 	out.Receivers = sortedByID(cfg.Receivers, func(d ReceiverDef) string { return d.ID })

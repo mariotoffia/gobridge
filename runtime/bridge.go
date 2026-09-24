@@ -65,6 +65,7 @@ type Runtime struct {
 	// sharedStores marks the stores as owned by another runtime, so Stop leaves
 	// them open (WithSharedStores).
 	sharedStores bool
+	autoRedrive  autoRedriveState // window and pass lock for automatic DLQ redrive (ADR 0019)
 
 	mu             sync.Mutex
 	entries        []*routeEntry
@@ -281,6 +282,7 @@ func New(opts ...Option) *Runtime {
 		audit:           ports.NoopAuditLogger{},
 		tracer:          &ports.NoopTracer{},
 		hook:            ports.NoopDeliveryHook{},
+		autoRedrive:     autoRedriveState{window: ports.DefaultAutoRedriveWindow},
 	}
 	for _, opt := range opts {
 		opt(rt)
