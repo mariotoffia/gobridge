@@ -209,16 +209,24 @@ func (rt *Runtime) autoRedriveTarget(ctx context.Context, sid string) (routeID s
 	return "", true
 }
 
-// autoRedrivePass lists the route's records inside the window that failed
-// before the pass started, oldest first, and redrives each one ev matches. It
-// pages forward from the last FailedAt it saw, skipping records it has already
-// seen, and stops on a short page, a page with nothing new, a store error, or a
-// failure the route did not settle itself. The Before bound keeps a route that
-// dead-letters during the pass from paging it forever. Caller holds
-// rt.autoRedrive.mu.
+// autoRedrivePass lists the route's records inside the window that failed less
+// than a millisecond after the pass started, oldest first, and redrives each one
+// ev matches. It pages forward from the last FailedAt it saw, skipping records
+// it has already seen, and stops on a short page, a page with nothing new, a
+// store error, or a failure the route did not settle itself. The Before bound
+// keeps a route that dead-letters during the pass from paging it forever.
+// Caller holds rt.autoRedrive.mu.
 func (rt *Runtime) autoRedrivePass(ctx context.Context, routeID string, ev autoRedriveEvent) (redriven, failed int) {
-	before := rt.clk.Now()
-	filter := routing.DLQFilter{RouteID: routeID, Since: before.Add(-rt.autoRedrive.window), Before: before, Limit: autoRedrivePage}
+	start := rt.clk.Now()
+	// Before is exclusive and stores keep FailedAt to the millisecond, so the
+	// bound is one millisecond past the start: a record written in the pass's
+	// own millisecond is still included.
+	filter := routing.DLQFilter{
+		RouteID: routeID,
+		Since:   start.Add(-rt.autoRedrive.window),
+		Before:  start.Add(time.Millisecond),
+		Limit:   autoRedrivePage,
+	}
 	seen := make(map[string]struct{})
 	for {
 		listCtx, cancel := context.WithTimeout(ctx, autoRedriveStoreTimeout)

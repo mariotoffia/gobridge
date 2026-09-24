@@ -102,8 +102,11 @@ first entry of a batch could use all 30 seconds, and every later id came back
 3. **List.** The pass lists that route's records that failed inside the window,
    `stores.dlq.auto_redrive_window`: 24 hours by default, and `0s` turns
    automatic redrive off. It lists only records that failed before the pass
-   started, so a route that keeps dead-lettering during the pass cannot keep it
-   paging; those records wait for the next event. It reads pages of 100,
+   started or in its first millisecond, so a route that keeps dead-lettering
+   during the pass cannot keep it paging; those records wait for the next
+   event. The bound is exclusive and stores keep `failed_at` to the
+   millisecond, so it sits one millisecond past the start: a record written in
+   the pass's own millisecond is still included. It reads pages of 100,
    oldest first, paging forward from the last `failed_at` it saw and skipping
    records it has already seen. It stops on a short page or on a page with
    nothing new. Each list call has its own 30-second bound.

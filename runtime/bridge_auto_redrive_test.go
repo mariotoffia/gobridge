@@ -70,11 +70,10 @@ func TestAutoRedriveRedrivesARecordTheRemovedSubscriptionPathWrote(t *testing.T)
 		t.Fatalf("DLQ records after the dead-letter write = %d, want 1", n)
 	}
 
-	// The filter is added back after it was removed: a pass lists only records
-	// that failed before it started.
-	f.clk.Advance(time.Second)
+	// The fake clock stands still, so the record's FailedAt is the pass's own
+	// start instant: a pass includes a record written in its own millisecond.
 	f.sess.subscriptionAdded(t, autoRedriveFilter)
-	f.eventually(t, "the dead-lettered record redriven and removed", func() bool { return f.store.count() == 0 })
+	wait.Until(t, autoRedriveWait, "the dead-lettered record redriven and removed", func() bool { return f.store.count() == 0 })
 	if got := f.sender.delivered(); !slices.Equal(got, []string{"held"}) {
 		t.Fatalf("delivered %v, want [held]", got)
 	}

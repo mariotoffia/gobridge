@@ -49,8 +49,10 @@ ADR-0019, `docs/internals/architecture-message-flow.md`,
   on `context.WithoutCancel` plus a bound.
 - One pass at a time: `autoRedrive.mu` is held for the pass, not for the
   readiness wait.
-- A pass lists with `Before` set to its start, so records written during the
-  pass wait for the next event.
+- A pass lists with `Before` set to its start plus one millisecond (an
+  exclusive bound over millisecond-precision stores), so records written later
+  in the pass wait for the next event and one written in its own millisecond
+  is still included.
 - The automatic inject recovers a panic into a failure (counted, audited,
   record kept, pass stopped); a synchronous inject has no per-delivery
   recover of its own.

@@ -63,9 +63,13 @@ func TestAutoRedriveLeavesARecordWrittenDuringThePassForTheNextEvent(t *testing.
 	var once sync.Once
 	written := make(chan error, 1)
 	f.sender.setFail(func(context.Context, string) error {
-		// The route dead-letters another message while the pass runs, so this
-		// record failed after the pass started.
-		once.Do(func() { written <- f.store.Write(context.Background(), f.record("late", 0)) })
+		// The route dead-letters another message a millisecond into the pass,
+		// past the pass's own millisecond. Nothing else moves the fake clock
+		// until the record is written.
+		once.Do(func() {
+			f.clk.Advance(time.Millisecond)
+			written <- f.store.Write(context.Background(), f.record("late", 0))
+		})
 		return nil
 	})
 	f.start(t)
@@ -88,7 +92,6 @@ func TestAutoRedriveLeavesARecordWrittenDuringThePassForTheNextEvent(t *testing.
 		t.Fatal("the pass redrove a record that failed after it started")
 	}
 
-	f.clk.Advance(time.Second)
 	f.sess.subscriptionAdded(t, autoRedriveFilter)
 	f.eventually(t, "the late record redriven by the next event", func() bool { return f.store.count() == 0 })
 }
