@@ -151,3 +151,16 @@ func TestSupervisorInPlace_CommitDeadlineIsArmedAfterTheRetire(t *testing.T) {
 	assert.GreaterOrEqual(t, built[1].Sub(retiredAt), swapDeadline,
 		"the successor's swap deadline is armed after the retire, not charged for it")
 }
+
+func TestSwapMode_String(t *testing.T) {
+	for mode, want := range map[SwapMode]string{
+		SwapOverlap:       "overlap",
+		SwapPrepareCommit: "prepare_commit",
+		SwapAuto:          "auto",
+		SwapInPlace:       "in_place",
+		SwapMode(99):      "SwapMode(99)",
+	} {
+		assert.Equal(t, want, mode.String())
+		assert.Equal(t, want, mode.LogValue().String(), "logged by name by every slog handler")
+	}
+}

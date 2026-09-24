@@ -209,8 +209,10 @@ func TestSupervisorInPlace_WedgedWhenRetireFails(t *testing.T) {
 	assert.True(t, s.Terminal(), "a unit that did not stop cleanly wedges the Supervisor")
 	assert.Nil(t, s.Runtime())
 	assert.False(t, rt.IsRunning(), "the runtime is stopped")
-	degraded, _ := s.Degraded()
+	degraded, reason := s.Degraded()
 	assert.True(t, degraded)
+	assert.Contains(t, reason, "a retired reload unit did not stop cleanly")
+	assert.NotContains(t, reason, "old runtime stop failed", "the runtime's own stop did not fail")
 }
 
 // A forced reload that orphans an outbox partition in place keeps the running

@@ -4,11 +4,31 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
 )
+
+// String names the mode for logs: overlap, prepare_commit, auto or in_place.
+func (m SwapMode) String() string {
+	switch m {
+	case SwapOverlap:
+		return "overlap"
+	case SwapPrepareCommit:
+		return "prepare_commit"
+	case SwapAuto:
+		return "auto"
+	case SwapInPlace:
+		return "in_place"
+	}
+	return fmt.Sprintf("SwapMode(%d)", int(m))
+}
+
+// LogValue logs the mode by name. A JSON handler would otherwise log the
+// integer, since it does not consult String.
+func (m SwapMode) LogValue() slog.Value { return slog.StringValue(m.String()) }
 
 // autoSwap reports whether the Supervisor chooses the swap mode of each reload.
 // An explicit SwapInPlace counts: it can only ever be chosen, so taken as a
@@ -67,13 +87,13 @@ func (s *Supervisor) applyInPlace(ctx context.Context, oldRt *runtime.Runtime, o
 		cancel()
 		if stopErr != nil {
 			err = errors.Join(err, fmt.Errorf("stop old runtime: %w", stopErr))
-			s.wedgeAfterFailedStop(stopErr)
+			s.wedgeAfterFailedStop("old runtime stop failed", stopErr)
 			break
 		}
 		s.recoverOldOrWedge(ctx, oldCfg)
 	case InPlaceWedged:
 		s.stopAbandoned(ctx, oldRt, oldCfg)
-		s.wedgeAfterFailedStop(err)
+		s.wedgeAfterFailedStop("a retired reload unit did not stop cleanly", err)
 	}
 	return nil, fmt.Errorf("in-place reload (%s): %w", outcome, err)
 }

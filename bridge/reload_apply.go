@@ -21,8 +21,10 @@ const (
 	// says why the reload failed; the caller keeps the runtime.
 	InPlaceUnchanged
 	// InPlaceTorn: the runtime runs neither configuration, because a failure
-	// after units were retired could not restore them. The caller replaces the
-	// runtime: it stops it and builds the running configuration afresh.
+	// after units were retired could not restore them, or the runtime stopped
+	// running before the rest were retired. No ownership is in doubt. The caller
+	// replaces the runtime: it stops it and builds the running configuration
+	// afresh.
 	InPlaceTorn
 	// InPlaceWedged: a retired unit did not stop cleanly, so whether its
 	// sessions still hold their broker identities is unknown. The caller stops
@@ -64,7 +66,13 @@ func (o InPlaceOutcome) String() string {
 // phase runs every phase under ctx. Each retire, and each stop of a part never
 // grafted, runs under r.DrainTimeout (the running configuration's drain timeout
 // when not positive) detached from ctx, so a cancelled reload still leaves
-// every unit settled. The caller serializes reloads and stops of rt.
+// every unit settled.
+//
+// The caller serializes reloads of rt, but nothing serializes a Stop of rt with
+// one: the watcher Start leaves on its context stops rt at shutdown whatever
+// the caller holds. Stop leaves a unit being retired to its Retire and may
+// close rt's stores before that Retire releases the unit's leases through them,
+// so a reload caught by shutdown fails, and at worst reports wedged.
 //
 // The whole next document is validated and every added unit prepared before
 // anything is retired, so a configuration a full build would refuse changes
@@ -72,7 +80,7 @@ func (o InPlaceOutcome) String() string {
 // parts are built after, so no exclusive broker identity is ever held twice;
 // otherwise the parts are built while the retired units still serve, and a
 // failed build changes nothing. A failure once a unit has retired restores the
-// retired units from the running configuration.
+// retired units from the running configuration, unless rt stopped running.
 func (r *InPlaceReload) Apply(ctx context.Context, rt *runtime.Runtime, newBuilder func(*ports.BridgeConfig) *Builder,
 	phase func(context.Context) (context.Context, context.CancelFunc),
 ) (InPlaceOutcome, error) {
@@ -95,11 +103,15 @@ func (r *InPlaceReload) Apply(ctx context.Context, rt *runtime.Runtime, newBuild
 	}
 	for i, u := range r.retire {
 		if err := r.retireUnit(ctx, rt, u); err != nil {
-			// A first retire refused because rt stopped running took nothing out:
-			// nothing changed and no ownership is in doubt.
+			// A retire refused because rt stopped running took nothing out, so no
+			// ownership is in doubt. Refused first, it changed nothing; refused
+			// later, the units retired before it are gone.
 			outcome := InPlaceWedged
-			if i == 0 && errors.Is(err, runtime.ErrNotRunning) {
-				outcome = InPlaceUnchanged
+			if errors.Is(err, runtime.ErrNotRunning) {
+				outcome = InPlaceTorn
+				if i == 0 {
+					outcome = InPlaceUnchanged
+				}
 			}
 			return outcome, errors.Join(err, r.stopParts(ctx, parts))
 		}

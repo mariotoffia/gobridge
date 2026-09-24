@@ -1011,9 +1011,6 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 	oldCfg := s.cfg
 	s.mu.RUnlock()
 	inPlace := s.planInPlace(oldRt, oldCfg, frozenCfg)
-	if inPlace != nil {
-		mode = SwapInPlace
-	}
 
 	var newRt *runtime.Runtime
 	var err error
@@ -1095,6 +1092,7 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 				"error", err, "attempted_config_version", frozenCfg.Version)
 		}
 	case inPlace != nil:
+		mode = SwapInPlace // only now: a refusal above attempted no in-place reload
 		newRt, err = s.applyInPlace(ctx, oldRt, oldCfg, inPlace)
 	case mode == SwapPrepareCommit:
 		newRt, err = s.applyPrepareCommit(ctx, oldRt, oldCfg, frozenCfg)
@@ -1231,7 +1229,7 @@ func (s *Supervisor) applyOverlap(
 				s.logger.Error("supervisor: old runtime stop failed; wedging rather than serving a torn-down runtime", "error", stopErr)
 			}
 			s.stopAbandoned(ctx, newRt, newCfg)
-			s.wedgeAfterFailedStop(stopErr)
+			s.wedgeAfterFailedStop("old runtime stop failed", stopErr)
 			return nil, fmt.Errorf("stop old runtime: %w", stopErr)
 		}
 	}
@@ -1268,17 +1266,17 @@ func (s *Supervisor) stopAbandoned(ctx context.Context, rt *runtime.Runtime, cfg
 }
 
 // wedgeAfterFailedStop drops the torn-down runtime and enters the terminal
-// wedged state. It is the answer to a Runtime.Stop that reported an error during
-// a swap: that runtime has already released (or hung on) everything it owned and
-// is single-use, so there is nothing left to serve with. Terminal() then trips,
-// /live fails closed, and the composition-root backstop restarts the process —
-// the only thing that can clear hung plugin residue (ADR-0004).
-func (s *Supervisor) wedgeAfterFailedStop(stopErr error) {
+// wedged state; what names the stop that failed during the swap — of the old
+// runtime, or of a unit an in-place reload retired. That runtime has released
+// (or hung on) everything it owned and is single-use, so nothing is left to
+// serve with. Terminal() then trips, /live fails closed, and the backstop
+// restarts the process, the only thing that clears hung residue (ADR-0004).
+func (s *Supervisor) wedgeAfterFailedStop(what string, stopErr error) {
 	s.mu.Lock()
 	s.rt = nil
 	s.wedged = true
 	s.mu.Unlock()
-	s.markDegraded(fmt.Sprintf("old runtime stop failed during reload; no runtime is serving: %v", stopErr))
+	s.markDegraded(fmt.Sprintf("%s during reload; no runtime is serving: %v", what, stopErr))
 }
 
 // recoverOldOrWedge rebuilds and restarts the previous config after a failed
@@ -1366,7 +1364,7 @@ func (s *Supervisor) applyPrepareCommit(
 				s.logger.Error("supervisor: old runtime stop failed; wedging rather than serving a torn-down runtime", "error", stopErr)
 			}
 			builder.closeStoreHandles(prep.stores)
-			s.wedgeAfterFailedStop(stopErr)
+			s.wedgeAfterFailedStop("old runtime stop failed", stopErr)
 			return nil, fmt.Errorf("stop old runtime: %w", stopErr)
 		}
 	}

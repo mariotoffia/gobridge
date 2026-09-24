@@ -574,6 +574,7 @@ func TestSupervisor_SwapUpdatesObservableConfigVersion(t *testing.T) {
 	okRec := lastLogRecord(t, &logBuf, "supervisor: reconfiguration complete")
 	assert.Equal(t, float64(8), okRec["config_version"])
 	assert.Equal(t, float64(7), okRec["old_config_version"])
+	assert.Equal(t, "in_place", okRec["swap_mode"], "the swap mode is logged by name")
 
 	// A failed swap (unresolvable transport, fails at build) must not advance
 	// the observable version — the old config keeps running.
@@ -593,6 +594,7 @@ func TestSupervisor_SwapUpdatesObservableConfigVersion(t *testing.T) {
 	failRec := lastLogRecord(t, &logBuf, "supervisor: reconfiguration failed")
 	assert.Equal(t, float64(8), failRec["config_version"])
 	assert.Equal(t, float64(9), failRec["attempted_config_version"])
+	assert.Equal(t, "overlap", failRec["swap_mode"], "a unit on a transport with no factory takes a full swap")
 }
 
 // lastLogRecord returns the last JSON log line in buf whose "msg" equals want,

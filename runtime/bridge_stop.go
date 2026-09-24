@@ -26,7 +26,11 @@ import (
 //
 // Stores built WithSharedStores are left open for the runtime that owns them.
 // A part consumed by Graft holds nothing, so its Stop is a no-op. A unit a
-// concurrent Retire has taken out is that Retire's to close.
+// Retire in progress has taken out is that Retire's to close. Nothing
+// serializes the two: the watcher Start leaves on its context calls Stop at
+// shutdown whatever reload is running, so Stop may close closable stores while
+// that Retire still releases the unit's leases through them, and the Retire
+// then reports the failure.
 func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 	rt.mu.Lock()
 	if rt.consumed {

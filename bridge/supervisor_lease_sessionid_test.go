@@ -122,6 +122,9 @@ func TestSupervisor_LeaseSessionIDChange_RefusesReload(t *testing.T) {
 	require.Error(t, ev.Error)
 	assert.Contains(t, ev.Error.Error(), "session_id changed")
 	assert.Same(t, oldRt, s.Runtime(), "old runtime must keep serving under the current session_id")
+	// The change is confined to one reload unit, yet the refusal runs before
+	// any in-place reload, so the event must not report one.
+	assert.Equal(t, SwapPrepareCommit, ev.SwapMode, "a refused reload reports the full swap mode it would have used")
 }
 
 // TestSupervisor_LeaseSessionIDChange_AllowedWithDestructiveFlag proves the

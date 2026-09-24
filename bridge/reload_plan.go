@@ -23,9 +23,10 @@ type InPlaceReload struct {
 	running, next *ports.BridgeConfig
 	retire, add   []reloadUnit
 	// serialized: the retired units stop before the added ones are built,
-	// because one of them holds an exclusive broker identity (see
-	// RequiresSerializedSwap). Otherwise the added units are built while the
-	// retired ones still serve.
+	// because RequiresSerializedSwap, asked of the retired units against the
+	// added ones, holds: an added unit claims an exclusive broker identity, or
+	// a retired unit holds one on a transport an added unit still attaches to.
+	// Otherwise the added units are built while the retired ones still serve.
 	serialized bool
 }
 

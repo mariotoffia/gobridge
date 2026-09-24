@@ -276,6 +276,34 @@ func TestApply_FirstRetireRefusedByAStoppedRuntimeIsUnchanged(t *testing.T) {
 	assert.Equal(t, []string{"a", "b"}, runtimeRouteIDs(rt))
 }
 
+// A runtime that stops running between two retires refuses the second. The
+// first unit is gone, but nothing was taken out for the second, so no
+// ownership is in doubt: the runtime runs neither configuration, and its caller
+// rebuilds the running one rather than restarting the process.
+func TestApply_LaterRetireRefusedByAStoppedRuntimeIsTorn(t *testing.T) {
+	tf := newPerSessionTransportFactory(false)
+	newBuilder := applyTestBuilder(tf)
+	running := applyTestConfig("a", "b", "c")
+	rt := startApplyTestRuntime(t, newBuilder, running)
+	plan := planApplyTest(t, tf, running, changeRoute(changeRoute(applyTestConfig("a", "b", "c"), "b"), "c"))
+	require.False(t, plan.Serialized())
+	require.Len(t, plan.retire, 2)
+	first, second := plan.retire[0].sessions[0], plan.retire[1].sessions[0]
+	var once sync.Once
+	tf.onClose = func(name string) {
+		if name == first+"#1" {
+			once.Do(rt.Fence) // the runtime stops running while the first unit retires
+		}
+	}
+
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
+
+	require.ErrorIs(t, err, runtime.ErrNotRunning)
+	assert.Equal(t, InPlaceTorn, outcome)
+	assert.Equal(t, []int{1, 1}, tf.closeCounts(first), "the first unit retired, and its successor is released")
+	assert.Equal(t, []int{0, 1}, tf.closeCounts(second), "the second unit is not retired, and its successor is released")
+}
+
 // One added unit listed twice, a plan no split produces, makes the second
 // graft collide with the first. The unit already grafted is retired again and
 // the running unit restored.
@@ -357,7 +385,9 @@ func TestInPlaceReload_TeardownIsBoundedByTheCallersDrainTimeout(t *testing.T) {
 		return deadline.Sub(before)
 	}
 
-	assert.Less(t, teardownBudget(), time.Hour, "without one, the running configuration's drain timeout")
+	fallback := teardownBudget()
+	assert.GreaterOrEqual(t, fallback, time.Second, "without one, the running configuration's drain timeout")
+	assert.Less(t, fallback, time.Second+500*time.Millisecond, "without one, the running configuration's drain timeout")
 	plan.DrainTimeout = time.Hour
 	assert.GreaterOrEqual(t, teardownBudget(), time.Hour, "the caller's drain timeout")
 }
