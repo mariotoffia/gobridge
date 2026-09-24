@@ -2,7 +2,9 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -234,6 +236,56 @@ func TestForget_NonComparableTargetNeverMatches(t *testing.T) {
 	require.NotPanics(t, func() {
 		require.False(t, r.Forget([]any{valueCredReceiver{tags: []string{"a"}}}))
 	})
+}
+
+// failFirstWatchStore holds its first Watch until release closes and then fails
+// it; every later Watch is served by perURIPushStore at once. It lets a newer
+// registration of a URI complete while an older one is still in flight.
+type failFirstWatchStore struct {
+	*perURIPushStore
+	entered, release chan struct{}
+	firstTaken       atomic.Bool
+}
+
+func (s *failFirstWatchStore) Watch(ctx context.Context, uri string) (<-chan *connectivity.CredentialSet, error) {
+	if s.firstTaken.CompareAndSwap(false, true) {
+		close(s.entered)
+		<-s.release
+		return nil, errors.New("watch failed")
+	}
+	return s.perURIPushStore.Watch(ctx, uri)
+}
+
+// TestStaleWatchFailure_KeepsNewerRegistration pins that a Watch failing after
+// its URI was forgotten and watched again cleans up only what it set up: the
+// newer target keeps receiving rotations, and forgetting it still stops its
+// poller.
+func TestStaleWatchFailure_KeepsNewerRegistration(t *testing.T) {
+	t.Parallel()
+
+	push := &failFirstWatchStore{perURIPushStore: newPerURIPushStore(), entered: make(chan struct{}), release: make(chan struct{})}
+	r := NewCredentialRefresher(push, nil)
+	defer r.Close()
+	const uri = "file://creds"
+	stale, fresh := newCredTarget(), newCredTarget()
+	staleDone := make(chan struct{})
+	go func() {
+		defer close(staleDone)
+		r.Watch(t.Context(), uri, stale)
+	}()
+	wait.RequireClosed(t, push.entered, 2*time.Second)
+
+	require.True(t, r.Forget([]any{stale}), "forgetting the only target empties the URI")
+	r.Watch(t.Context(), uri, fresh)
+	close(push.release)
+	wait.RequireClosed(t, staleDone, 2*time.Second)
+
+	push.rotations(uri) <- connectivity.NewCredentialSet(pwCred("rotated", "p"), nil)
+	require.Equal(t, "rotated", wait.RequireReceive(t, fresh.applied, 2*time.Second).Password().Username())
+
+	require.True(t, r.Forget([]any{fresh}))
+	wait.RequireClosed(t, push.watchCtx(t, uri).Done(), 2*time.Second)
+	require.Empty(t, stale.applied, "a forgotten target must not receive a rotation")
 }
 
 // credSessionFactory hands out a prepared credential-aware session per session

@@ -92,7 +92,14 @@ type CredentialRefresher struct {
 	watchers map[string][]CredentialAware
 	// pollers cancels each URI's poller alone, so Forget can stop polling a
 	// credential no target uses any more while the other URIs keep rotating.
-	pollers map[string]context.CancelFunc
+	pollers map[string]*poller
+}
+
+// poller is the registration one Watch set up for a URI. Its pointer is its
+// identity: a Watch cleaning up after itself removes the URI's entries only
+// while they are still its own, never a newer registration of the same URI.
+type poller struct {
+	stop context.CancelFunc
 }
 
 // RefresherOption configures a CredentialRefresher.
@@ -144,7 +151,7 @@ func NewCredentialRefresher(push ports.PushCredentialStore, logger *slog.Logger,
 		ctx:          ctx,
 		cancel:       cancel,
 		watchers:     make(map[string][]CredentialAware),
-		pollers:      make(map[string]context.CancelFunc),
+		pollers:      make(map[string]*poller),
 	}
 	for _, o := range opts {
 		o(r)
@@ -251,7 +258,8 @@ func (r *CredentialRefresher) watchTarget(uri string, target any, kind string) {
 		return
 	}
 	pollCtx, stopPoll := context.WithCancel(r.ctx)
-	r.pollers[uri] = stopPoll
+	own := &poller{stop: stopPoll}
+	r.pollers[uri] = own
 	// Counted while the refresher is still open: a Close from here on waits
 	// for this poller instead of returning while Watch is still establishing it.
 	r.wg.Add(1)
@@ -269,9 +277,13 @@ func (r *CredentialRefresher) watchTarget(uri string, target any, kind string) {
 		r.metrics.Counter(shared.MetricCredentialRefreshFailures, 1)
 		// Drop the key so a later Watch for the same URI can retry
 		// establishing a poller rather than being suppressed as a duplicate.
+		// Forget may have emptied the URI while Watch ran and a newer Watch set
+		// it up again; those entries serve the newer target and stay.
 		r.mu.Lock()
-		delete(r.watchers, uri)
-		delete(r.pollers, uri)
+		if r.pollers[uri] == own {
+			delete(r.watchers, uri)
+			delete(r.pollers, uri)
+		}
 		r.mu.Unlock()
 		stopPoll()
 		r.wg.Done()
@@ -315,8 +327,8 @@ func (r *CredentialRefresher) Forget(targets []any) (idle bool) {
 			r.watchers[uri] = kept
 			continue
 		}
-		if stopPoll := r.pollers[uri]; stopPoll != nil {
-			stopPoll()
+		if p := r.pollers[uri]; p != nil {
+			p.stop()
 		}
 		delete(r.pollers, uri)
 		delete(r.watchers, uri)
