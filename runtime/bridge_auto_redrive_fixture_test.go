@@ -35,7 +35,8 @@ const (
 // orderedDLQStore is a DLQ store double that honours the ports.DLQReader
 // contract an automatic redrive pages by: List returns entries oldest first by
 // FailedAt with the entry ID as tiebreak, Since inclusive, Before exclusive, and
-// at most Limit entries. Write refuses an ID it already holds.
+// at most Limit entries. Write refuses an ID it already holds. Like a real
+// store, Get, List and Delete fail on a context that has ended.
 type orderedDLQStore struct {
 	mu      sync.Mutex
 	entries map[string]routing.DLQEntry
@@ -57,7 +58,10 @@ func (s *orderedDLQStore) Write(_ context.Context, e routing.DLQEntry) error {
 	return nil
 }
 
-func (s *orderedDLQStore) Get(_ context.Context, id string) (routing.DLQEntry, error) {
+func (s *orderedDLQStore) Get(ctx context.Context, id string) (routing.DLQEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return routing.DLQEntry{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.entries[id]
@@ -67,7 +71,10 @@ func (s *orderedDLQStore) Get(_ context.Context, id string) (routing.DLQEntry, e
 	return e, nil
 }
 
-func (s *orderedDLQStore) List(_ context.Context, f routing.DLQFilter) ([]routing.DLQEntry, error) {
+func (s *orderedDLQStore) List(ctx context.Context, f routing.DLQFilter) ([]routing.DLQEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []routing.DLQEntry
@@ -93,7 +100,10 @@ func (s *orderedDLQStore) List(_ context.Context, f routing.DLQFilter) ([]routin
 	return out, nil
 }
 
-func (s *orderedDLQStore) Delete(_ context.Context, ids []string) (int, error) {
+func (s *orderedDLQStore) Delete(ctx context.Context, ids []string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
@@ -332,11 +342,18 @@ func (f *autoRedriveFixture) start(tb testing.TB) {
 	tb.Cleanup(func() { _ = f.rt.Stop(context.Background()) })
 }
 
-// seed stores the record the removed-subscription path writes for a message
-// whose payload is id, failed age before the fake clock's now. mutate adjusts
-// the record before it is stored.
+// seed stores record(id, age, mutate...).
 func (f *autoRedriveFixture) seed(tb testing.TB, id string, age time.Duration, mutate ...func(*routing.DLQEntrySpec)) {
 	tb.Helper()
+	if err := f.store.Write(context.Background(), f.record(id, age, mutate...)); err != nil {
+		tb.Fatalf("seed %s: %v", id, err)
+	}
+}
+
+// record is the record the removed-subscription path writes for a message
+// whose payload is id, failed age before the fake clock's now. mutate adjusts
+// it before it is built.
+func (f *autoRedriveFixture) record(id string, age time.Duration, mutate ...func(*routing.DLQEntrySpec)) routing.DLQEntry {
 	spec := routing.DLQEntrySpec{
 		ID:          id,
 		Envelope:    *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "msg-" + id, Subject: "sensors/a/temp", Payload: []byte(id)}),
@@ -357,9 +374,7 @@ func (f *autoRedriveFixture) seed(tb testing.TB, id string, age time.Duration, m
 	for _, m := range mutate {
 		m(&spec)
 	}
-	if err := f.store.Write(context.Background(), routing.NewDLQEntry(spec)); err != nil {
-		tb.Fatalf("seed %s: %v", id, err)
-	}
+	return routing.NewDLQEntry(spec)
 }
 
 // eventually waits for cond, moving the fake clock a second per poll so a pass

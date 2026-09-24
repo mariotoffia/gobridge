@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
+	goruntime "runtime/debug"
 	"sync"
 	"time"
 
@@ -207,13 +209,16 @@ func (rt *Runtime) autoRedriveTarget(ctx context.Context, sid string) (routeID s
 	return "", true
 }
 
-// autoRedrivePass lists the route's records inside the window, oldest first,
-// and redrives each one ev matches. It pages forward from the last FailedAt it
-// saw, skipping records it has already seen, and stops on a short page, a page
-// with nothing new, a store error, or a failure the route did not settle
-// itself. Caller holds rt.autoRedrive.mu.
+// autoRedrivePass lists the route's records inside the window that failed
+// before the pass started, oldest first, and redrives each one ev matches. It
+// pages forward from the last FailedAt it saw, skipping records it has already
+// seen, and stops on a short page, a page with nothing new, a store error, or a
+// failure the route did not settle itself. The Before bound keeps a route that
+// dead-letters during the pass from paging it forever. Caller holds
+// rt.autoRedrive.mu.
 func (rt *Runtime) autoRedrivePass(ctx context.Context, routeID string, ev autoRedriveEvent) (redriven, failed int) {
-	filter := routing.DLQFilter{RouteID: routeID, Since: rt.clk.Now().Add(-rt.autoRedrive.window), Limit: autoRedrivePage}
+	before := rt.clk.Now()
+	filter := routing.DLQFilter{RouteID: routeID, Since: before.Add(-rt.autoRedrive.window), Before: before, Limit: autoRedrivePage}
 	seen := make(map[string]struct{})
 	for {
 		listCtx, cancel := context.WithTimeout(ctx, autoRedriveStoreTimeout)
@@ -266,7 +271,7 @@ func (rt *Runtime) autoRedriveOne(ctx context.Context, routeID, sid string, e ro
 		"session_id":   sid,
 		"subscription": e.ExtraInfo()[routing.ExtraInfoSubscription],
 	}
-	if err := rt.injectRedrive(ctx, routeID, e.BindingID(), e.Snapshot(), true); err != nil {
+	if err := rt.autoRedriveInject(ctx, routeID, e); err != nil {
 		rt.countAutoRedrive(shared.MetricDLQRedriveFailures, routeID)
 		detail["error"] = err.Error()
 		rt.auditAutoRedrive(ctx, e.ID(), "failure", detail)
@@ -289,6 +294,23 @@ func (rt *Runtime) autoRedriveOne(ctx context.Context, routeID, sid string, e ro
 	}
 	rt.auditAutoRedrive(ctx, e.ID(), "success", detail)
 	return true, false
+}
+
+// autoRedriveInject injects record e with hold set and turns a panic into an
+// error. A synchronous inject has no per-delivery recover, so a panic in the
+// route (a sender, say) would otherwise reach startBackground's recover and make
+// the whole runtime terminal; as an error it keeps the record and stops the pass.
+func (rt *Runtime) autoRedriveInject(ctx context.Context, routeID string, e routing.DLQEntry) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("runtime: automatic redrive of %q panicked: %v", e.ID(), r)
+			if rt.logger != nil {
+				rt.logger.Error("automatic redrive panicked; the DLQ record is kept",
+					"dlq_id", e.ID(), "route_id", routeID, "panic", r, "stack", string(goruntime.Stack()))
+			}
+		}
+	}()
+	return rt.injectRedrive(ctx, routeID, e.BindingID(), e.Snapshot(), true)
 }
 
 // countAutoRedrive emits a route-tagged redrive counter, as the admin redrive does.

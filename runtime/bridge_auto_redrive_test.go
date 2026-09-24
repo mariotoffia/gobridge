@@ -70,6 +70,9 @@ func TestAutoRedriveRedrivesARecordTheRemovedSubscriptionPathWrote(t *testing.T)
 		t.Fatalf("DLQ records after the dead-letter write = %d, want 1", n)
 	}
 
+	// The filter is added back after it was removed: a pass lists only records
+	// that failed before it started.
+	f.clk.Advance(time.Second)
 	f.sess.subscriptionAdded(t, autoRedriveFilter)
 	f.eventually(t, "the dead-lettered record redriven and removed", func() bool { return f.store.count() == 0 })
 	if got := f.sender.delivered(); !slices.Equal(got, []string{"held"}) {
@@ -330,6 +333,38 @@ func TestAutoRedriveShutdownKeepsTheRecord(t *testing.T) {
 	}
 	if got := f.sender.delivered(); len(got) != 0 {
 		t.Fatalf("delivered %v, want nothing", got)
+	}
+}
+
+// A send the destination confirms while Stop cancels the pass is a delivered
+// message: the record is still removed, so no later event redrives it again.
+func TestAutoRedriveShutdownStillDeletesAConfirmedRedrive(t *testing.T) {
+	f := newAutoRedriveFixture(t, goruntime.WithStopQuiesce(50*time.Millisecond))
+	started := make(chan struct{})
+	var once sync.Once
+	f.sender.setFail(func(ctx context.Context, _ string) error {
+		once.Do(func() { close(started) })
+		// The destination answers only once Stop has cancelled the work
+		// context, and its answer is a success.
+		<-ctx.Done()
+		return nil
+	})
+	f.start(t)
+	f.seed(t, "rec-1", time.Hour)
+
+	f.sess.subscriptionAdded(t, autoRedriveFilter)
+	wait.RequireClosed(t, started, autoRedriveWait)
+	stopped := make(chan error, 1)
+	go func() { stopped <- f.rt.Stop(context.Background()) }()
+	if err := wait.RequireReceive(t, stopped, autoRedriveWait); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if got := f.sender.delivered(); !slices.Equal(got, []string{"rec-1"}) {
+		t.Fatalf("delivered %v, want [rec-1] once", got)
+	}
+	if got := f.store.ids(); len(got) != 0 {
+		t.Fatalf("DLQ records after a confirmed redrive during shutdown %v, want none", got)
 	}
 }
 
