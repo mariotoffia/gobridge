@@ -97,8 +97,8 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 		return nil, err
 	}
 
-	// Start credential refresh watchers for any session, receiver, or
-	// sender that carries a credentials_uri AND whose target implements
+	// Start credential refresh watchers for any session, and any receiver or
+	// sender rt holds, that carries a credentials_uri AND whose target implements
 	// CredentialAware. Gated on the effective push store so builds without
 	// one skip this entirely, preserving legacy behavior. effectivePushStore
 	// resolves an explicitly-registered push store, or lazily wraps a polled
@@ -137,21 +137,7 @@ func (b *Builder) complete(ctx context.Context, prep *preparedBuild) (_ *runtime
 				refresher.Close()
 			}
 		}()
-		for sid, uri := range sessionURIs {
-			if sess, ok := sessions[sid]; ok {
-				refresher.Watch(ctx, uri, sess)
-			}
-		}
-		for rid, uri := range receiverURIs {
-			if recv, ok := receivers[rid]; ok {
-				refresher.WatchReceiver(ctx, uri, recv)
-			}
-		}
-		for sid, uri := range senderURIs {
-			if snd, ok := senders[sid]; ok {
-				refresher.WatchSender(ctx, uri, snd)
-			}
-		}
+		watchCredentials(ctx, refresher, rt, sessions, receivers, senders, sessionURIs, receiverURIs, senderURIs)
 		rt.AttachCredentialCloser(func(_ context.Context) { refresher.Close() })
 		rt.AttachCredentialForget(refresher.Forget)
 	}

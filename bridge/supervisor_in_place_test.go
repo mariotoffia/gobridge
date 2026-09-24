@@ -273,6 +273,22 @@ func (credAwareRecordedSession) ApplyCredentials(context.Context, *connectivity.
 	return nil
 }
 
+func (f credPerSessionTransportFactory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, _ ports.Session) (ports.Receiver, error) {
+	return &namedCredAwareReceiver{id: spec.ID}, nil
+}
+
+// namedCredAwareReceiver takes credential rotations. Its id keeps it from being a
+// zero-size value, whose instances Go may give one address, so that two
+// receivers never match by identity.
+type namedCredAwareReceiver struct {
+	fakeReceiver
+	id string
+}
+
+func (*namedCredAwareReceiver) ApplyCredentials(context.Context, *connectivity.CredentialSet) error {
+	return nil
+}
+
 // liveWatchPushStore counts the credential pollers watching it: the Watch
 // calls whose context has not ended.
 type liveWatchPushStore struct{ live atomic.Int32 }
@@ -323,6 +339,43 @@ func TestSupervisorInPlace_RepeatedReloadsDoNotAccumulateHooks(t *testing.T) {
 	assert.Same(t, rt, s.Runtime())
 	assert.Equal(t, []int{0}, tf.closeCounts("a-s"), "owner a keeps its session through every reload")
 	assert.Len(t, tf.closeCounts("b-s"), 21, "every reload replaces owner b's session")
+}
+
+// A declared receiver no route uses is built but never handed to the runtime,
+// so no retire names it to the credential refresher. Watched, it would keep a
+// poller running after every reload that replaces its unit, until the runtime
+// stops.
+func TestSupervisorInPlace_UnusedCredentialedReceiverLeavesNoPoller(t *testing.T) {
+	credCfg := func(maxInFlight int) *ports.BridgeConfig {
+		cfg := applyTestConfig("a", "b")
+		for i := range cfg.Sessions {
+			cfg.Sessions[i].Config = &testCredConfig{URI: "cred://" + cfg.Sessions[i].ID}
+		}
+		cfg.Receivers = append(cfg.Receivers, ports.ReceiverDef{
+			ID: "b-unused-rx", SessionID: "b-s", Config: &testCredConfig{URI: "cred://b-unused"},
+		})
+		cfg.Routes[1].Policy.MaxInFlight = maxInFlight
+		return cfg
+	}
+	pull := &fakeCredentialStore{creds: map[string]*connectivity.CredentialSet{
+		"cred://a-s":      connectivity.NewCredentialSet(pwCred("a", "p"), nil),
+		"cred://b-s":      connectivity.NewCredentialSet(pwCred("b", "p"), nil),
+		"cred://b-unused": connectivity.NewCredentialSet(pwCred("u", "p"), nil),
+	}}
+	push := &liveWatchPushStore{}
+	tf := newPerSessionTransportFactory(false)
+	_, changes, swaps := runInPlaceSupervisor(t, credPerSessionTransportFactory{tf}, credCfg(0),
+		WithSupervisorCredentialStore(pull), WithSupervisorPushCredentialStore(push))
+	const steady = 2 // one poller per session credentials URI; none for the unused receiver
+	wait.Until(t, 2*time.Second, "the initial runtime watches the sessions' credentials", func() bool { return push.live.Load() == steady })
+
+	for i := range 5 {
+		ev := reloadTo(t, changes, swaps, credCfg(1+i%2), i+2)
+		require.NoError(t, ev.Error)
+		require.Equal(t, SwapInPlace, ev.SwapMode)
+		wait.Until(t, 2*time.Second, "no poller outlives the retired unit", func() bool { return push.live.Load() == steady })
+	}
+	assert.Len(t, tf.closeCounts("b-s"), 6, "every reload replaces owner b's unit")
 }
 
 // An in-place reload keeps the runtime, so the watch started for the running

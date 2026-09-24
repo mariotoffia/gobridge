@@ -244,6 +244,15 @@ func (rt *Runtime) AttachCredentialForget(forget func(targets []any) (idle bool)
 	rt.credHooks = append(rt.credHooks, &credentialHook{forget: forget})
 }
 
+// CredentialTargets lists every session, receiver and sender rt holds. A
+// Retire hands its unit's share of them to each forget, so a credential
+// refresher that watches only these goes idle once its units have retired.
+func (rt *Runtime) CredentialTargets() []any {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return componentSet{entries: rt.entries, sessionSenders: rt.sessionSenders, ingressSessions: rt.ingressSessions}.credentialTargets()
+}
+
 // closeCredentialHooks runs the close of every hook concurrently and waits for
 // them at most timeout, or until ctx ends, so a stuck closer can neither hold
 // its caller past that budget nor keep another refresher open.
