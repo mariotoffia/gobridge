@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
@@ -45,7 +46,8 @@ type retiredUnit struct {
 // The unit leaves rt at once, so nothing new reaches it. Its
 // in-flight deliveries then settle within the budget Stop uses, its route
 // runners, drainers and session managers stop, its managers close (releasing
-// their leases), and so does every session only the unit held. Credential
+// their leases), and so does every session only the unit held: one no manager
+// runs and no route left running was added with. Credential
 // refreshers stop watching its transports, and one left watching nothing is
 // closed. Until Retire has finished with the unit, a Fence still fences its
 // drainers, and a DLQ write for one of its exclusive sessions is still fenced
@@ -156,7 +158,14 @@ func (rt *Runtime) detach(u Unit) (*retiredUnit, error) {
 	}
 	// Resolved while rt still holds the unit, so a session any manager runs —
 	// the unit's or a survivor's — is never taken for one only the unit held.
-	d.unmanaged = rt.unmanagedSessionRefsLocked(d.set)
+	// No manager ties hand-wired routes added with one session object together,
+	// so one of them may stay: it still rides on that session, which is left
+	// open for whatever retires or stops the route that uses it last.
+	d.unmanaged = slices.DeleteFunc(rt.unmanagedSessionRefsLocked(d.set), func(ref sessionRef) bool {
+		return slices.ContainsFunc(kept, func(entry *routeEntry) bool {
+			return ridesOnSessionObject(entry, []ports.Session{ref.sess})
+		})
+	})
 
 	rt.entries = kept
 	if rt.locator != nil {

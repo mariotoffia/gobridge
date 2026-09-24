@@ -219,9 +219,10 @@ func (s componentSet) registeredSessions() []ports.Session {
 // ridesOnSessionObject reports whether entry rides on one of objs by the rule
 // the wiring pass uses: a route with no session block of its own rides on the
 // session it was added with. A route with a session block is managed under its
-// own id, which the id check covers. A session whose dynamic type is not
-// comparable panics on ==; it counts as shared, so the check refuses instead
-// of crashing its caller.
+// own id, which the id check covers and whose manager owns the session. A
+// session whose dynamic type is not comparable panics on ==; it counts as
+// shared, so Graft refuses and Retire leaves the session open instead of
+// crashing.
 func ridesOnSessionObject(entry *routeEntry, objs []ports.Session) (shared bool) {
 	if entry.sessCfg != nil || entry.session == nil {
 		return false

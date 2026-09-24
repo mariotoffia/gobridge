@@ -379,6 +379,34 @@ func TestRetire_ClosesTheSessionsOnlyTheUnitHeld(t *testing.T) {
 	assert.Equal(t, int32(1), s2.closes.Load())
 }
 
+// TestRetire_KeepsASessionASurvivingRouteUsesOpen pins that a session no
+// manager runs closes only with its last user: two hand-wired routes added with
+// one session object and no session block share it, so retiring one leaves it
+// open for the other, which still delivers, and retiring the other closes it
+// once.
+func TestRetire_KeepsASessionASurvivingRouteUsesOpen(t *testing.T) {
+	rt := New(WithInstanceID("retire-shared-unmanaged"))
+	common := newRetireSession()
+	recv2, sender2 := newComponentReceiver(), &componentSender{}
+	require.NoError(t, rt.AddRoute(componentRoute("r1"), newComponentReceiver(), &componentSender{}, common, nil))
+	require.NoError(t, rt.AddRoute(componentRoute("r2"), recv2, sender2, common, nil))
+	startComponentRuntime(t, rt)
+
+	retire(t, rt, Unit{Routes: []string{"r1"}})
+
+	assert.Zero(t, common.closes.Load(), "a session a surviving route still uses stays open")
+	recv2.deliver(t, "after-retire")
+	wait.Until(t, 2*time.Second, "the surviving route still delivers", func() bool {
+		return sender2.sent.Load() == 1
+	})
+
+	retire(t, rt, Unit{Routes: []string{"r2"}})
+
+	assert.Equal(t, int32(1), common.closes.Load(), "retiring the last user closes the session once")
+	stopRuntime(t, rt)
+	assert.Equal(t, int32(1), common.closes.Load(), "Stop does not close a session Retire closed")
+}
+
 // TestRetire_RetiresAnIngressSession pins that an ingress session retires with
 // the route riding on it: its manager closes it once, a credential refresher
 // forgets it, and another ingress session stays.
