@@ -238,10 +238,14 @@ re-stamped on the trusted side; a client cannot inject them via the reserved
   shutdown closes it; both drain every open SSE stream so clients disconnect
   and reconnect to the newly-installed instance, rather than holding a
   live-but-event-less stream on a superseded sender. Expect a brief reconnect
-  on every full replacement -- a change to a bridge-wide section (`bridge`,
-  `stores`, `config_watch`, `http`), a change touching a unit that uses the
-  `http` transport, or a change of the derived outbox stale-claim duration --
-  even when it changed nothing HTTP-related. An in-place reload
+  on every full replacement, even when it changed nothing HTTP-related -- for
+  example a change to a bridge-wide section (`bridge`, `stores`,
+  `config_watch`, `http`), a change touching a unit that uses the `http`
+  transport or a transport with no registered factory, a change of the derived
+  outbox stale-claim duration, any change under an explicit
+  `WithSwapMode(SwapOverlap)` or `WithSwapMode(SwapPrepareCommit)` on the
+  Supervisor, or a failed in-place reload that ends torn (rebuilt) or wedged
+  (process restart). A successful in-place reload
   ([ADR 0018](../adr/0018-reload-in-place-by-unit.md)) never replaces a unit
   that uses the `http` transport and keeps the HTTP transport it has, so open
   SSE streams stay connected through it.

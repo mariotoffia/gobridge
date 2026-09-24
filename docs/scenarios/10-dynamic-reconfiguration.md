@@ -223,13 +223,13 @@ The order inside an in-place reload follows the same rule as a full swap, `Requi
 A failed in-place reload ends in one of three ways:
 
 - **Unchanged.** Nothing was retired, or the retired units were rebuilt from the running configuration and put back. The runtime keeps serving the old configuration, and the failed `SwapEvent` carries the error.
-- **Torn.** Units were retired and could not be restored. The Supervisor stops the runtime and builds the old configuration afresh, as after a failed full swap; if that stop or build fails, it wedges.
+- **Torn.** Units were retired and could not be restored, or the runtime stopped running before the rest were retired. The Supervisor stops the runtime and builds the old configuration afresh, as after a failed full swap; if that stop or build fails, it wedges.
 - **Wedged.** A retired unit did not stop cleanly, so its sessions may still hold their broker identities. The Supervisor stops the runtime and wedges; `/live` fails and the orchestrator restarts the process ([ADR 0004](../adr/0004-single-use-runtime-lifecycle.md)).
 
 An in-place reload reports `SwapEvent.SwapMode == bridge.SwapInPlace`, and its success log line names what it replaced:
 
 ```text
-INFO supervisor: reconfiguration complete ... retired_routes=[process-b] added_routes=[process-b] retired_sessions=[mqtt-b] added_sessions=[mqtt-b]
+INFO supervisor: reconfiguration complete swap_mode=in_place ... retired_routes=[process-b] added_routes=[process-b] retired_sessions=[mqtt-b] added_sessions=[mqtt-b]
 ```
 
 A route or session id that is both retired and added belongs to a unit that changed.

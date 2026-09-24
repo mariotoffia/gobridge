@@ -51,10 +51,13 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   `bridge.PlanInPlaceReload`, `(*bridge.InPlaceReload).Apply` with
   `bridge.InPlaceOutcome`, `(*bridge.CredentialRefresher).Forget`, and on the
   runtime `Retire`, `Graft`, `Stores`, `WithSharedStores`,
-  `AttachCredentialForget`, `runtime.Unit`, `runtime.ErrNotRunning` and
-  `(*cluster.Locator).UnregisterRoute`. A
+  `AttachCredentialForget`, `CredentialTargets`, `runtime.Unit`,
+  `runtime.ErrNotRunning` and `(*cluster.Locator).UnregisterRoute`. A
   successful in-place reload logs `retired_routes`, `added_routes`,
   `retired_sessions` and `added_sessions`.
+- `SwapMode` gains `String` and `LogValue`, so the Supervisor's reload logs
+  carry `swap_mode` by name (`overlap`, `prepare_commit`, `auto`, `in_place`)
+  instead of an integer.
 - **AWS, several MQTT tenants:** the MQTT memory profile shares its
   reservation equally, so adding or removing an MQTT session that takes a
   share reconnects every other MQTT session that leaves

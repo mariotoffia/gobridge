@@ -134,9 +134,9 @@ outcome and the error, and ends one of three ways:
 - **unchanged** — nothing was retired, or the retired units were rebuilt from
   the running configuration and put back. The runtime keeps serving the old
   configuration, and the change is rejected like any failed apply;
-- **torn** — units were retired and could not be restored. The runtime is
-  stopped and the previous configuration rebuilt, as after a failed
-  prepare/commit swap;
+- **torn** — units were retired and could not be restored, or the runtime
+  stopped running before the rest were retired. The runtime is stopped and the
+  previous configuration rebuilt, as after a failed prepare/commit swap;
 - **wedged** — a retired unit (or the torn runtime) did not stop cleanly, so its
   sessions may still hold their broker identities. The process wedges, `/live`
   fails and the orchestrator replaces the task

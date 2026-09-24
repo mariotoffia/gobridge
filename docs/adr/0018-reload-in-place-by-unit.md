@@ -17,10 +17,12 @@ stopped the old one, in one of two orders:
 - **overlap** — build the new runtime while the old one still runs, then hand
   over: the Supervisor stops the old runtime and starts the new one, and the
   AWS runtime starts the new runtime before it stops the old one;
-- **prepare/commit** — stop the old runtime first, then build and start the new
-  one, because a session holds an exclusive broker identity (an MQTT client ID,
-  an exclusive AMQP consumer, a pinned Service Bus session) that two runtimes
-  cannot hold at once.
+- **prepare/commit** — validate the new document and prepare its build while
+  the old runtime still runs, then stop the old runtime, and only then create
+  the new sessions, receivers and senders and start the new runtime, because a
+  session holds an exclusive broker identity (an MQTT client ID, an exclusive
+  AMQP consumer, a pinned Service Bus session) that two runtimes cannot hold at
+  once.
 
 Either way every session disconnected and connected again, and every route
 stopped and started. One configuration often serves several owners — tenants,
@@ -126,7 +128,7 @@ therefore remains only for a full replacement. Unchanged units see no gap.
 |---|---|---|
 | applied | the next configuration | publishes it as the applied configuration |
 | unchanged | still the running configuration: nothing was retired, or the retired units were rebuilt from the running configuration and grafted back | reports the error and keeps the runtime |
-| torn | neither: a failure after retiring could not restore the retired units | stops the runtime and builds the running configuration afresh; if the stop fails, it wedges |
+| torn | neither: a failure after retiring could not restore the retired units, or the runtime stopped running before the rest were retired | stops the runtime and builds the running configuration afresh; if the stop fails, it wedges |
 | wedged | unknown: a retired unit did not stop cleanly, so its sessions may still hold their broker identities | stops the runtime and wedges, so the orchestrator restarts the process (ADR 0004) |
 
 The Supervisor reports an in-place reload as `SwapEvent.SwapMode ==
@@ -167,9 +169,10 @@ the running one — or it fails.
   units is replaced. Pinning `ingress_memory_budget_bytes` per session, at or
   below its share, keeps the other units connected; see
   [keeping MQTT tenants connected](../aws-deployment/config-reload.md#keeping-mqtt-tenants-connected).
-- A reload that fails after retiring units ends torn (a full rebuild of the
-  running configuration) or wedged (a process restart). Every check that can
-  fail before the first retire runs before it.
+- A reload that fails after retiring units ends unchanged when the retired
+  units are restored from the running configuration; otherwise it ends torn (a
+  full rebuild of the running configuration) or wedged (a process restart).
+  Every check that can fail before the first retire runs before it.
 
 ## Rejected alternatives
 
