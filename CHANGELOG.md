@@ -44,7 +44,8 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   unchanged units have none.
 - A failed in-place reload keeps the running configuration (nothing retired,
   or the retired units restored), rebuilds the running configuration as a
-  whole, or wedges when a retired unit does not stop cleanly (ADR 0004, now
+  whole, or wedges when a retired unit, or a part built for a serialized
+  reload, does not stop cleanly (ADR 0004, now
   amended by ADR 0018: a running runtime may retire and graft reload units, and
   is still never restarted).
 - New API: `bridge.SwapInPlace` (reported in `SwapEvent.SwapMode`),

@@ -177,8 +177,9 @@ stopped runtime is single-use. The supervisor (and the file-based bootstrap app)
 therefore **wedges** rather than keeping the torn-down runtime installed:
 `/live` fails closed and the orchestrator restarts the task with freshly-built
 transports, which is also the only thing that clears hung plugin residue. An
-in-place reload whose retired reload unit does not stop cleanly wedges the
-same way, because that unit's sessions may still hold their broker identities
+in-place reload whose retired reload unit, or a part built for a serialized
+reload, does not stop cleanly wedges the same way, because its sessions may
+still hold their broker identities
 ([ADR 0018](adr/0018-reload-in-place-by-unit.md)). See
 [ADR-0004](adr/0004-single-use-runtime-lifecycle.md).
 

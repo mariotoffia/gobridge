@@ -471,7 +471,7 @@ covers creation races, operator creation, artifact visibility, and SQS selection
 | Reload failure | `recoverPrevious` rebuilds last-good logical config; admin/monitor stay up. |
 | Stale runtime on watch shutdown | `Stop` waits for `watchWg` before tearing down dependencies. |
 | Bad new runtime in prepare/commit | Old runtime stopped *before* commit; `recoverPrevious` re-attempts. |
-| Failed in-place reload | Unchanged: the runtime keeps the running config. Torn: runtime stopped, `recoverPrevious` rebuilds. A retired unit or torn runtime that does not stop cleanly wedges (ADR-0004). |
+| Failed in-place reload | Unchanged: the runtime keeps the running config. Torn: runtime stopped, `recoverPrevious` rebuilds. A retired unit, a part built for a serialized reload, or a torn runtime that does not stop cleanly wedges (ADR-0004). |
 | Concurrent EFS RW writers across deploys | Control deploy policy `MinHealthyPercent=0 / MaxHealthyPercent=100`. |
 | Worker config writes | Runtime `ConfigReadOnly` rejects writes for both sources; file mounts are read-only and DynamoDB config-table grants are read-only. ALB admin paths route to control only. |
 | Multiple facades in same stack | `cdk/constructs/internal/singleton` synth-time scope scan. |

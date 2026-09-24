@@ -85,9 +85,10 @@ ADR-0018, `docs/internals/architecture-message-flow.md`,
   with.
 - A part is built over the host's `Stores()` with `WithSharedStores` (`Graft`
   refuses any other), and neither a grafted nor a discarded part closes them.
-- `Graft` refuses a part that reuses a route or session id, is not closed over
-  its sessions (a route on either side rides on or binds to a session of the
-  other), or fails the route checks `Start` runs over the union.
+- `Graft` refuses a part that reuses a route or session id, the runtime's or
+  one of a unit still being retired (a straggler may still run under it), is
+  not closed over its sessions (a route on either side rides on or binds to a
+  session of the other), or fails the route checks `Start` runs over the union.
 - `Retire` settles in-flight deliveries within the stop drain budget before it
   cancels, keeps the unit reachable by `Fence` and by DLQ fencing on its
   sessions' leases until its runs finish, and closes its managers only after
@@ -101,6 +102,10 @@ ADR-0018, `docs/internals/architecture-message-flow.md`,
   that restore fails. Both roots act on the outcome alike: `unchanged` keeps the runtime;
   `torn` stops it and rebuilds the running configuration, wedging if the stop
   or the rebuild fails; `wedged` stops it and wedges without building anything.
+- A serialized reload wedges, rather than restore, when a part built for it
+  does not stop: that part may still hold the exclusive identity a restored
+  unit would claim. A build-first part claims none, so its stop failure leaves
+  the reload `unchanged`.
 
 ## Timers, waits and locks
 

@@ -129,7 +129,7 @@ therefore remains only for a full replacement. Unchanged units see no gap.
 | applied | the next configuration | publishes it as the applied configuration |
 | unchanged | still the running configuration: nothing was retired, or the retired units were rebuilt from the running configuration and grafted back | reports the error and keeps the runtime |
 | torn | neither: a failure after retiring could not restore the retired units, or the runtime stopped running before the rest were retired | stops the runtime and builds the running configuration afresh; if the stop fails, it wedges |
-| wedged | unknown: a retired unit did not stop cleanly, so its sessions may still hold their broker identities | stops the runtime and wedges, so the orchestrator restarts the process (ADR 0004) |
+| wedged | unknown: a retired unit, or a part built for a serialized reload, did not stop cleanly, so its sessions may still hold their broker identities | stops the runtime and wedges, so the orchestrator restarts the process (ADR 0004) |
 
 The Supervisor reports an in-place reload as `SwapEvent.SwapMode ==
 SwapInPlace` and logs `retired_routes`, `added_routes`, `retired_sessions` and

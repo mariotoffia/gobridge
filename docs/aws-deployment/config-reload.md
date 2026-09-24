@@ -137,8 +137,9 @@ outcome and the error, and ends one of three ways:
 - **torn** — units were retired and could not be restored, or the runtime
   stopped running before the rest were retired. The runtime is stopped and the
   previous configuration rebuilt, as after a failed prepare/commit swap;
-- **wedged** — a retired unit (or the torn runtime) did not stop cleanly, so its
-  sessions may still hold their broker identities. The process wedges, `/live`
+- **wedged** — a retired unit, a part built for a serialized reload, or the
+  torn runtime did not stop cleanly, so its sessions may still hold their broker
+  identities. The process wedges, `/live`
   fails and the orchestrator replaces the task
   ([ADR 0004](../adr/0004-single-use-runtime-lifecycle.md)).
 
