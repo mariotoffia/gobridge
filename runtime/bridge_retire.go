@@ -23,7 +23,7 @@ var ErrNotRunning = errors.New("runtime is not running")
 
 // retiredUnit is what Retire took out of the runtime: the unit's registrations,
 // the runs of its route runners, session managers and drainers, its managers by
-// session id, its drainers, and the sessions no manager runs that only the unit
+// session id, its drainers, and the sessions no manager runs that the unit
 // held. It stays in rt.retiring until Retire has finished with it, so Fence
 // still reaches its drainers, dlqToken still sees its managers' leases, and
 // Graft still refuses its ids.
@@ -33,6 +33,10 @@ type retiredUnit struct {
 	managers  map[string]*session.Manager
 	drainers  []*drainerRun
 	unmanaged []sessionRef
+	// stopped is set under rt.mu once Retire is closing the unit's sessions
+	// with every component stopped. Until then its routes may still use the
+	// sessions they hold, so another Retire leaves those open.
+	stopped bool
 }
 
 // Retire drains, stops and removes the routes and sessions u names, while every
@@ -47,7 +51,9 @@ type retiredUnit struct {
 // in-flight deliveries then settle within the budget Stop uses, its route
 // runners, drainers and session managers stop, its managers close (releasing
 // their leases), and so does every session only the unit held: one no manager
-// runs and no route left running was added with. Credential
+// runs and no route left running was added with. Such a session held by a unit
+// another Retire has not yet stopped stays open, and the Retire finishing last
+// closes it. Credential
 // refreshers stop watching its transports no route left running holds, and one
 // left watching nothing is closed. Until Retire has finished with the unit, a Fence still fences its
 // drainers, and a DLQ write for one of its exclusive sessions is still fenced
@@ -111,7 +117,7 @@ func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 			errs = append(errs, fmt.Errorf("runtime: retire: closing session manager: %w", err))
 		}
 	}
-	for _, ref := range d.unmanaged {
+	for _, ref := range rt.releasedUnmanagedSessions(d, finished) {
 		if err := ref.sess.Close(closeCtx); err != nil {
 			errs = append(errs, fmt.Errorf("runtime: retire: closing unmanaged session %q: %w", ref.sid, err))
 		}
@@ -157,15 +163,10 @@ func (rt *Runtime) detach(u Unit) (*retiredUnit, error) {
 		}
 	}
 	// Resolved while rt still holds the unit, so a session any manager runs —
-	// the unit's or a survivor's — is never taken for one only the unit held.
-	// No manager ties hand-wired routes added with one session object together,
-	// so one of them may stay: it still rides on that session, which is left
-	// open for whatever retires or stops the route that uses it last.
-	d.unmanaged = slices.DeleteFunc(rt.unmanagedSessionRefsLocked(d.set), func(ref sessionRef) bool {
-		return slices.ContainsFunc(kept, func(entry *routeEntry) bool {
-			return ridesOnSessionObject(entry, []ports.Session{ref.sess})
-		})
-	})
+	// the unit's or a survivor's — is never taken for one no manager runs.
+	// Whether another route still uses one is decided when Retire closes it
+	// (see releasedUnmanagedSessions).
+	d.unmanaged = rt.unmanagedSessionRefsLocked(d.set)
 
 	rt.entries = kept
 	if rt.locator != nil {
@@ -241,6 +242,29 @@ func (rt *Runtime) finishRetire(d *retiredUnit, finished bool) {
 	}
 }
 
+// releasedUnmanagedSessions returns the sessions no manager runs that d held
+// and nothing may still use: no route left running rides on one, and no other
+// unit still being retired holds one, unless its components stopped. No manager
+// ties hand-wired routes added with one session object together, so such a
+// session closes with the last of them, retiring or not. d is marked stopped
+// under the same lock, so of two Retires sharing a session the one that gets
+// here second closes it, exactly once. A unit whose components did not stop
+// keeps holding its sessions, since its routes may still use them.
+func (rt *Runtime) releasedUnmanagedSessions(d *retiredUnit, finished bool) []sessionRef {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	d.stopped = finished
+	d.unmanaged = slices.DeleteFunc(d.unmanaged, func(ref sessionRef) bool {
+		objs := []ports.Session{ref.sess}
+		return slices.ContainsFunc(rt.entries, func(entry *routeEntry) bool {
+			return ridesOnSessionObject(entry, objs)
+		}) || slices.ContainsFunc(rt.retiring, func(u *retiredUnit) bool {
+			return u != d && !u.stopped && holdsTarget(u.set.heldSessions(), ref.sess)
+		})
+	})
+	return d.unmanaged
+}
+
 // retiringManagerLocked returns the manager of session sid a Retire has taken
 // out and not yet finished with. The caller holds rt.mu.
 func (rt *Runtime) retiringManagerLocked(sid string) (*session.Manager, bool) {
@@ -307,9 +331,9 @@ func (rt *Runtime) releasedCredentialTargets(d *retiredUnit) []any {
 
 // holdsTarget reports whether target is one of held, by identity. A target
 // whose dynamic type is not comparable panics on ==; it counts as held, as a
-// session object does in ridesOnSessionObject, so Retire keeps watching it
-// instead of crashing.
-func holdsTarget(held []any, target any) (holds bool) {
+// session object does in ridesOnSessionObject, so Retire keeps watching it, or
+// leaves it open, instead of crashing.
+func holdsTarget[T comparable](held []T, target T) (holds bool) {
 	defer func() {
 		if recover() != nil {
 			holds = true
