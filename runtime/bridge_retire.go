@@ -55,7 +55,10 @@ type retiredUnit struct {
 // The unit is gone from rt even when Retire returns an error; the error names
 // components that did not stop within ctx and sessions that failed to close.
 // A component that did not stop keeps its drainers reachable by Fence and its
-// exclusive sessions refusing DLQ writes, since nothing holds their lease.
+// exclusive sessions refusing DLQ writes, since nothing holds their lease. A
+// close error is the caller's to act on: once every component has stopped,
+// nothing writes under the unit's sessions, though an in-place reload wedges on
+// any Retire error all the same.
 func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 	d, err := rt.detach(u)
 	if err != nil {
@@ -63,7 +66,10 @@ func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 	}
 	var errs []error
 	// Settle before cancelling, for the same reason Stop does: a cancelled send
-	// fails its source ack and the broker redelivers a message already sent.
+	// fails its source ack and the broker redelivers a message already sent. A
+	// delivery accepted between the in-flight check and the cancel is left
+	// unsettled for the source to redeliver: the same at-least-once boundary
+	// Stop accepts (broker redelivery, never a silent ack).
 	if budget := rt.stopDrainBudget(); budget > 0 && ctx.Err() == nil && anyInFlight(d.set.entries) {
 		qCtx, cancel := context.WithTimeout(ctx, budget)
 		snapshot := func() []*routeEntry { return d.set.entries }
