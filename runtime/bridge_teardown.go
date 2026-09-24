@@ -60,7 +60,9 @@ func effectiveStoreCloseGrace(entries []*routeEntry) time.Duration {
 		if complete > completeBudgetCeiling {
 			complete = completeBudgetCeiling
 		}
-		if worst := st + complete; worst > grace {
+		// Saturate: a wrapped sum is negative and would leave the floor while
+		// the drainer is still inside its send window.
+		if worst, _ := saturatingSum(st, complete); worst > grace {
 			grace = worst
 		}
 	}
@@ -98,12 +100,15 @@ func (rt *Runtime) clampedStoreCloseGrace(ctx context.Context, entries []*routeE
 	// Compute the remaining budget via the injected clock (never time.Until):
 	// rt.clk is clock.System (real wall-clock) in production — matching both the
 	// caller's real-time ctx deadline and the WithTimeout timer below — and is a
-	// fake clock only under test.
-	if remaining := deadline.Sub(rt.clk.Now()) - storeCloseGraceMargin; remaining < grace {
-		grace = remaining
+	// fake clock only under test. Sub saturates at the smallest Duration for a
+	// deadline far in the past, so compare before taking the margin off: the
+	// subtraction would wrap that into a huge positive wait.
+	remaining := deadline.Sub(rt.clk.Now())
+	if remaining < storeCloseGraceMargin {
+		return 0
 	}
-	if grace < 0 {
-		grace = 0
+	if remaining -= storeCloseGraceMargin; remaining < grace {
+		grace = remaining
 	}
 	return grace
 }

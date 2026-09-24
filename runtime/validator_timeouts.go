@@ -121,8 +121,8 @@ const maxDuration = time.Duration(math.MaxInt64)
 // the true total is past maxDuration, so it is past every window a source can
 // have. The runtime has no shared saturating duration helper to reuse (the
 // failover-budget sum lives in the composition root and the MQTT one is
-// adapter-local; neither may be imported here), so these stay unexported beside
-// their only caller.
+// adapter-local; neither may be imported here), so these stay unexported in
+// this package.
 //
 // Non-positive terms are skipped rather than added: every term is a
 // validated-or-defaulted budget, and a negative one must not shrink the worst

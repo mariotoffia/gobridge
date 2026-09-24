@@ -126,6 +126,27 @@ func TestEffectiveStoreCloseGrace_NeverBelowFloor(t *testing.T) {
 	}
 }
 
+// TestEffectiveStoreCloseGrace_SaturatesAHugeSendTimeout: a SendTimeout this
+// close to the largest Duration must saturate the worst case, not wrap it
+// negative — a wrapped sum falls back to the floor, and the teardown would close
+// the manager while that drainer is still inside its send window.
+func TestEffectiveStoreCloseGrace_SaturatesAHugeSendTimeout(t *testing.T) {
+	entries := []*routeEntry{{config: RouteConfig{
+		Policy: routing.RoutePolicy{SendTimeout: maxDuration - time.Second},
+	}}}
+	assert.Equal(t, maxDuration, effectiveStoreCloseGrace(entries))
+}
+
+// TestClampedStoreCloseGrace_DeadlineFarInThePastIsZero: the time left to a
+// deadline far in the past saturates at the smallest Duration, and taking the
+// margin off that must not wrap it into a huge wait past the deadline.
+func TestClampedStoreCloseGrace_DeadlineFarInThePastIsZero(t *testing.T) {
+	rt := &Runtime{clk: clocktest.NewAt(time.Unix(0, 0))}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Time{})
+	defer cancel()
+	assert.Equal(t, time.Duration(0), rt.clampedStoreCloseGrace(ctx, nil))
+}
+
 // TestClampedStoreCloseGrace_BoundedByShutdownDeadline guards the store-close
 // grace clamp. The manager-close grace-wait detaches from the caller ctx via
 // context.WithoutCancel, so an UNCLAMPED policy-derived grace (up to
