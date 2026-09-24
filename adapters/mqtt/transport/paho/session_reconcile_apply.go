@@ -105,6 +105,22 @@ func (s *Session) reconcile(
 			candidates = append(candidates, filter)
 		}
 		sort.Strings(candidates)
+		// A desired filter absent from the managed history is a genuinely added
+		// subscription; one re-established after a reconnect or a restart is
+		// already in it. Mark it before the write-ahead below records it, and keep
+		// the mark until a SUBACK grants it, so a SUBSCRIBE that fails and is
+		// retried still reports it once (ADR 0019).
+		s.mu.Lock()
+		for _, filter := range candidates {
+			if _, known := managedHistory[filter]; known {
+				continue
+			}
+			if s.managedAdded == nil {
+				s.managedAdded = make(map[string]struct{})
+			}
+			s.managedAdded[filter] = struct{}{}
+		}
+		s.mu.Unlock()
 		if len(candidates) > 0 {
 			// Write-ahead is load-bearing: a crash after SUBSCRIBE but before
 			// local state commit must still leave the exact filter removable.
@@ -254,6 +270,8 @@ func (s *Session) reconcile(
 		// active subscription, until fresh SUBACKs confirm it.
 		succeeded, firstErr, errTopic := classifySubackReasons(toSub, reasons)
 		var reports []grantReport
+		var added []string
+		var addedHook func([]string)
 		if len(succeeded) > 0 {
 			s.mu.Lock()
 			if epochErr := reconcileEpochMismatch(operationEpoch, s.connEpoch); epochErr != nil {
@@ -266,6 +284,15 @@ func (s *Session) reconcile(
 					reports = append(reports, grantReport{topic: opt.Topic, requested: req, granted: opt.QoS, verdict: v})
 				}
 			}
+			// A grant below the requested QoS still means the broker holds the
+			// subscription, so it counts as added.
+			for _, opt := range succeeded {
+				if _, marked := s.managedAdded[opt.Topic]; marked {
+					delete(s.managedAdded, opt.Topic)
+					added = append(added, opt.Topic)
+				}
+			}
+			addedHook = s.subscriptionAddedHook
 			// A lower grant schedules its next fresh SUBSCRIBE instead of failing
 			// the reconcile into a session-supervisor retry.
 			s.syncQoSDowngradeGaugeLocked()
@@ -273,6 +300,10 @@ func (s *Session) reconcile(
 			s.mu.Unlock()
 		}
 		s.reportGrants(reports)
+		if addedHook != nil && len(added) > 0 {
+			sort.Strings(added)
+			addedHook(added)
+		}
 		if firstErr != nil {
 			return firstErr.With("topic", errTopic)
 		}
@@ -300,6 +331,11 @@ func (s *Session) reconcile(
 	// A downgrade still confirming counts as converged here; Health reports the
 	// subscriptions unsatisfied until it is accepted or recovers.
 	s.subscriptionsSatisfied = subscriptionStateConverged(desired, s.observedSubs, s.activeSubs, s.qosDowngrades)
+	for filter := range s.managedAdded {
+		if _, wanted := desired[filter]; !wanted {
+			delete(s.managedAdded, filter)
+		}
+	}
 	s.mu.Unlock()
 
 	elapsed := s.clock().Since(reconcileStart)

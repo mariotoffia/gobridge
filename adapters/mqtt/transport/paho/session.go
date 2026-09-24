@@ -190,6 +190,11 @@ type Session struct {
 	// dead-letter store exists. Managed cleanup writes a delivery held for a
 	// removed filter through it before ACKing. Guarded by mu.
 	removedSubscriptionDeadLetter func(context.Context, *messaging.Envelope, string) error
+	// subscriptionAddedHook is installed by the runtime (ADR 0019); managedAdded
+	// holds the desired filters that were absent from the managed history when a
+	// reconcile first saw them and that no SUBACK has granted yet.
+	subscriptionAddedHook func([]string)
+	managedAdded          map[string]struct{}
 
 	// sharedSubWarned latches the one-time advisory that shared
 	// subscriptions ($share) are configured on a stable/shared-ClientID
@@ -305,19 +310,9 @@ type mqttCredentials struct {
 }
 
 var (
-	_ ports.Session                                 = (*Session)(nil)
-	_ ports.IngressQuiescenceConfigurer             = (*Session)(nil)
-	_ ports.RemovedSubscriptionDeadLetterConfigurer = (*Session)(nil)
+	_ ports.Session                     = (*Session)(nil)
+	_ ports.IngressQuiescenceConfigurer = (*Session)(nil)
 )
-
-// SetRemovedSubscriptionDeadLetter installs the runtime-owned dead-letter write
-// for deliveries the broker hands this session for a removed managed filter.
-// Runtime.Start calls this before background work begins; nil removes it.
-func (s *Session) SetRemovedSubscriptionDeadLetter(fn func(context.Context, *messaging.Envelope, string) error) {
-	s.mu.Lock()
-	s.removedSubscriptionDeadLetter = fn
-	s.mu.Unlock()
-}
 
 // SetIngressQuiescenceWaiter installs the runtime-owned source-settlement
 // barrier used before a managed-subscription recycle disconnects the broker
