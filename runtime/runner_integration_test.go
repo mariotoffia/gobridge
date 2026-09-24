@@ -13,7 +13,7 @@ import (
 	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
-// TestIngressOnAttempt_ReflectsSourceReceiveCount proves finding 6: the ingress
+// TestIngressOnAttempt_ReflectsSourceReceiveCount proves that the ingress
 // OnAttempt hook's Attempt reflects the SOURCE transport's redelivery count
 // (e.g. SQS ApproximateReceiveCount) rather than a hardcoded 1, so a transport
 // redelivery is reported as attempt 2+, not a fresh attempt 1. It falls back to
@@ -66,7 +66,7 @@ func TestIngressOnAttempt_ReflectsSourceReceiveCount(t *testing.T) {
 	}
 }
 
-// TestWaitQuiescent_ObservesSynchronousInject proves finding 5: a synchronous
+// TestWaitQuiescent_ObservesSynchronousInject proves that a synchronous
 // admin inject (Runtime.InjectToBinding → runner.HandleDelivery) participates in
 // the SAME in-flight accounting WaitQuiescent reads, so WaitQuiescent cannot
 // declare a route quiescent while an inject is still in flight.

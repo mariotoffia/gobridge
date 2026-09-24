@@ -15,7 +15,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Finding 2 — a built-but-never-started runtime must not leak store handles.
+// A built-but-never-started runtime must not leak store handles.
 // complete() opens the prep stores into a runtime that, on a validation
 // failure, is never returned and therefore never Stop()'d, so complete must
 // release them itself.
@@ -52,7 +52,7 @@ func (f *closableStoreFactory) NewDLQStore(_ context.Context, _ ports.PluginConf
 	return nil, nil
 }
 
-// TestBuilder_CompleteFailure_ClosesPrepStores validates Finding 2: when
+// TestBuilder_CompleteFailure_ClosesPrepStores validates that when
 // complete() fails (here, route validation rejects a dlq-default route without a
 // DLQ store), the lease/outbox handles opened by prepare() are Close()'d instead
 // of leaked, mirroring runtime.Stop's io.Closer teardown for a runtime that is
@@ -93,18 +93,18 @@ func TestBuilder_CompleteFailure_ClosesPrepStores(t *testing.T) {
 	_, err = b.complete(context.Background(), prep)
 	require.Error(t, err, "complete must reject a dlq-default route with no DLQ store")
 
-	require.Equal(t, int32(1), lease.closes.Load(), "abandoned lease store handle must be closed exactly once (Finding 2)")
-	require.Equal(t, int32(1), outbox.closes.Load(), "abandoned outbox store handle must be closed exactly once (Finding 2)")
+	require.Equal(t, int32(1), lease.closes.Load(), "abandoned lease store handle must be closed exactly once")
+	require.Equal(t, int32(1), outbox.closes.Load(), "abandoned outbox store handle must be closed exactly once")
 }
 
 // ---------------------------------------------------------------------------
-// Finding 3 — the supervisor must forward its credential stores to the builders
-// it creates so CredentialRefresher actually binds under hot-reload.
+// The supervisor must forward its credential stores to the builders it
+// creates so CredentialRefresher actually binds under hot-reload.
 // ---------------------------------------------------------------------------
 
 // TestSupervisor_ForwardsPushCredentialStore validates that a push credential
 // store registered on the supervisor reaches the builder it constructs, so a
-// supervisor-built runtime can rotate credentials (Finding 3).
+// supervisor-built runtime can rotate credentials.
 func TestSupervisor_ForwardsPushCredentialStore(t *testing.T) {
 	push := &fakePushStore{}
 	s := NewSupervisor(WithSupervisorPushCredentialStore(push))
@@ -115,7 +115,7 @@ func TestSupervisor_ForwardsPushCredentialStore(t *testing.T) {
 
 // TestSupervisor_ForwardsPolledCredentialStore validates that a polled (pull)
 // credential store registered on the supervisor is forwarded and lifted into a
-// push store at build time (Finding 3).
+// push store at build time.
 func TestSupervisor_ForwardsPolledCredentialStore(t *testing.T) {
 	pull := &fakeCredentialStore{creds: map[string]*connectivity.CredentialSet{}}
 	s := NewSupervisor(WithSupervisorPolledCredentialStore(pull, ports.PollBasedWrapperConfig{PollInterval: time.Second}))
@@ -125,14 +125,14 @@ func TestSupervisor_ForwardsPolledCredentialStore(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Finding 15 — observability must be forwarded from the supervisor to the
+// Observability must be forwarded from the supervisor to the
 // builders/runtimes it creates so config-driven deployments do not run Noop
 // everything.
 // ---------------------------------------------------------------------------
 
 // TestSupervisor_ForwardsObservability validates that the metrics exporter,
 // tracer, and audit logger injected into the supervisor are forwarded to the
-// builder (and thus the runtime) it creates (Finding 15).
+// builder (and thus the runtime) it creates.
 func TestSupervisor_ForwardsObservability(t *testing.T) {
 	m := &ports.NoopExporter{}
 	tr := &ports.NoopTracer{}
@@ -167,9 +167,9 @@ func TestSupervisor_ForwardsObservability_NilIgnored(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Finding 9 — WithDefaultDrainTimeout must actually apply when the blueprint
-// does not set a drain_timeout; a config value still wins; the hard 30s remains
-// the final fallback.
+// WithDefaultDrainTimeout must actually apply when the blueprint does not set
+// a drain_timeout; a config value still wins; the hard 30s remains the final
+// fallback.
 // ---------------------------------------------------------------------------
 
 func TestSupervisor_DrainTimeoutFrom(t *testing.T) {
@@ -191,13 +191,13 @@ func TestSupervisor_DrainTimeoutFrom(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Finding 7 — the supervisor must expose a terminal state that covers the
+// The supervisor must expose a terminal state that covers the
 // nil-runtime wedge (swap AND recovery both failed), so the composition-root
 // backstop restarts the process instead of idling alive routing nothing.
 // ---------------------------------------------------------------------------
 
 // TestSupervisor_Terminal_WedgedNilRuntime validates the Terminal() predicate
-// treats a wedged supervisor (no active runtime) as terminal (Finding 7).
+// treats a wedged supervisor (no active runtime) as terminal.
 func TestSupervisor_Terminal_WedgedNilRuntime(t *testing.T) {
 	s := NewSupervisor()
 	require.False(t, s.Terminal(), "a fresh supervisor with no runtime is not terminal")
@@ -207,7 +207,7 @@ func TestSupervisor_Terminal_WedgedNilRuntime(t *testing.T) {
 	s.rt = nil
 	s.mu.Unlock()
 
-	require.True(t, s.Terminal(), "a wedged supervisor with no active runtime must be terminal (Finding 7)")
+	require.True(t, s.Terminal(), "a wedged supervisor with no active runtime must be terminal")
 }
 
 // wedgeStoreFactory returns a valid lease store for the first two builds and
@@ -233,7 +233,7 @@ func (f *wedgeStoreFactory) NewDLQStore(_ context.Context, _ ports.PluginConfig)
 }
 
 // TestSupervisor_WedgesWhenSwapAndRecoveryFail validates the end-to-end wedge
-// path (Finding 7): a PrepareCommit swap fails at complete (route validation)
+// path: a PrepareCommit swap fails at complete (route validation)
 // AFTER the old runtime is stopped, and the recovery rebuild of the old config
 // also fails (its lease store is now unavailable). The supervisor must end with
 // no active runtime and report Terminal() == true.
@@ -268,6 +268,6 @@ func TestSupervisor_WedgesWhenSwapAndRecoveryFail(t *testing.T) {
 	require.Error(t, ev.Error)
 
 	require.Eventually(t, s.Terminal, 2*time.Second, 10*time.Millisecond,
-		"supervisor must be terminal after both the swap and its recovery fail (Finding 7)")
+		"supervisor must be terminal after both the swap and its recovery fail")
 	require.Nil(t, s.Runtime(), "a wedged supervisor has no active runtime")
 }

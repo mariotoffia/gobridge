@@ -78,11 +78,12 @@ func factoryBuilders(ctx context.Context, cfg *awsstore.DynamoDBConfig) []struct
 	}
 }
 
-// TestFactoryPreflightFailsClosedOnDescribeTableError is the c13-preflight-failopen
-// regression, end-to-end through a real (but offline) *dynamodb.Client whose
-// DescribeTable ALWAYS fails. An inability to VERIFY the schema is NOT proof the
-// table is valid, so by default the factory must FAIL CLOSED — block startup —
-// rather than swallow the error and build the store as if the table were sound.
+// TestFactoryPreflightFailsClosedOnDescribeTableError pins the fail-closed
+// preflight posture end-to-end, through a real (but offline) *dynamodb.Client
+// whose DescribeTable ALWAYS fails. An inability to VERIFY the schema is NOT
+// proof the table is valid, so by default the factory must FAIL CLOSED — block
+// startup — rather than swallow the error and build the store as if the table
+// were sound.
 //
 // Mutation reasoning: before the fix the factory logged a WARN and returned nil
 // on any non-ErrInvalidConfig Preflight error, so a role missing

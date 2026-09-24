@@ -10,7 +10,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 )
 
-// --- Finding: delayed retry resets the broker delivery count ---------------
+// --- Delayed retry resets the broker delivery count ------------------------
 
 // The scheduled retry copy must carry the accumulated receive count in
 // the reserved x-bridge.retry-attempt property: scheduling a fresh
@@ -100,7 +100,7 @@ func TestBridgeAttempts_NumericWidths(t *testing.T) {
 	}
 }
 
-// --- Finding: duplicate detection silently discards the retry copy ---------
+// --- Duplicate detection silently discards the retry copy ------------------
 
 // The copy's wire MessageID must be salted with the attempt number so a
 // dedup-enabled queue never drops the scheduled retry, while the FIRST
@@ -150,7 +150,7 @@ func TestReceivedToEnvelope_RestoresOriginalMessageID(t *testing.T) {
 	require.Equal(t, "m1", env.ID())
 }
 
-// --- Finding: retry copy aliases properties and restarts TTL ---------------
+// --- Retry copy aliases properties and restarts TTL ------------------------
 
 // ApplicationProperties must be deep-copied: mutating the copy must
 // never write through into the received message.

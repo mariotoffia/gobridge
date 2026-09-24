@@ -14,8 +14,8 @@ import (
 )
 
 // TestRouteRunner_ChainTimeout_AbandonedProcessorDoesNotRaceSource is the
-// finding-1 regression guard. On a processor-chain timeout the runner abandons
-// the still-running processor goroutine (route/chain.go returns
+// abandoned-processor race regression guard. On a processor-chain timeout the
+// runner abandons the still-running processor goroutine (route/chain.go returns
 // ErrProcessorTimeout without waiting). Before the fix that goroutine held the
 // SAME *Envelope the runner then reads on the error path (receiveCount, DLQ
 // serialization) — a late SetHeader from the abandoned goroutine raced the

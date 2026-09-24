@@ -23,13 +23,13 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// BUG-6: CORS preflight returns 403 for disallowed origins
+// CORS preflight returns 403 for disallowed origins
 // ---------------------------------------------------------------------------
 
 // Verifies OPTIONS with no Origin header returns 403 when CORS is enabled.
 // Without an origin, the CORS middleware cannot determine if the request is
 // allowed, so it must reject the preflight.
-func TestBug6_CORS_PreflightNoOriginHeader(t *testing.T) {
+func TestCORS_PreflightNoOriginHeader(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
 	cfg.CORSOrigins = "https://example.com"
@@ -49,7 +49,7 @@ func TestBug6_CORS_PreflightNoOriginHeader(t *testing.T) {
 }
 
 // Verifies OPTIONS with an empty string Origin header returns 403.
-func TestBug6_CORS_PreflightEmptyOriginHeader(t *testing.T) {
+func TestCORS_PreflightEmptyOriginHeader(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
 	cfg.CORSOrigins = "https://example.com"
@@ -70,7 +70,7 @@ func TestBug6_CORS_PreflightEmptyOriginHeader(t *testing.T) {
 // Verifies OPTIONS when CORSOrigins is empty (CORS disabled) does not engage
 // the CORS middleware at all. The request should pass through to the underlying
 // handler or default 200, not 403.
-func TestBug6_CORS_PreflightCORSDisabled(t *testing.T) {
+func TestCORS_PreflightCORSDisabled(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
 	// CORSOrigins is empty -- CORS is disabled.
@@ -95,7 +95,7 @@ func TestBug6_CORS_PreflightCORSDisabled(t *testing.T) {
 
 // Verifies a GET request from a disallowed origin still serves the response
 // (CORS is browser-advisory), but without CORS reflection headers.
-func TestBug6_CORS_GetDisallowedOriginStillServed(t *testing.T) {
+func TestCORS_GetDisallowedOriginStillServed(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
 	cfg.CORSOrigins = "https://example.com"
@@ -118,7 +118,7 @@ func TestBug6_CORS_GetDisallowedOriginStillServed(t *testing.T) {
 
 // Verifies that the second origin in a comma-separated CORSOrigins list is
 // accepted for preflight.
-func TestBug6_CORS_MultipleOriginsSecondAllowed(t *testing.T) {
+func TestCORS_MultipleOriginsSecondAllowed(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
 	cfg.CORSOrigins = "https://first.com,https://second.com"
@@ -140,7 +140,7 @@ func TestBug6_CORS_MultipleOriginsSecondAllowed(t *testing.T) {
 }
 
 // Verifies origins with trailing slash do not match (exact match semantics).
-func TestBug6_CORS_TrailingSlashMismatch(t *testing.T) {
+func TestCORS_TrailingSlashMismatch(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
 	cfg.CORSOrigins = "https://example.com"
@@ -162,7 +162,7 @@ func TestBug6_CORS_TrailingSlashMismatch(t *testing.T) {
 
 // Verifies origin matching is case-sensitive ("https://Example.Com" does not
 // match "https://example.com").
-func TestBug6_CORS_CaseSensitiveOrigin(t *testing.T) {
+func TestCORS_CaseSensitiveOrigin(t *testing.T) {
 	rt := testRuntime()
 	cfg := testConfig()
 	cfg.CORSOrigins = "https://example.com"
@@ -183,7 +183,7 @@ func TestBug6_CORS_CaseSensitiveOrigin(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-7: writeJSON logs encoding errors
+// writeJSON logs encoding errors
 // ---------------------------------------------------------------------------
 
 // captureAndRestoreDefaultLogger replaces the default slog logger with one
@@ -199,7 +199,7 @@ func captureAndRestoreDefaultLogger(t *testing.T) *bytes.Buffer {
 }
 
 // Verifies writeJSON with a normal encodable value produces no slog error output.
-func TestBug7_WriteJSON_NormalEncoding_NoLogOutput(t *testing.T) {
+func TestWriteJSON_NormalEncoding_NoLogOutput(t *testing.T) {
 	buf := captureAndRestoreDefaultLogger(t)
 
 	rec := httptest.NewRecorder()
@@ -217,7 +217,7 @@ func TestBug7_WriteJSON_NormalEncoding_NoLogOutput(t *testing.T) {
 }
 
 // Verifies writeJSON with an unencodable value (function) emits slog.Error.
-func TestBug7_WriteJSON_UnencodableValue_LogsSlogError(t *testing.T) {
+func TestWriteJSON_UnencodableValue_LogsSlogError(t *testing.T) {
 	buf := captureAndRestoreDefaultLogger(t)
 
 	rec := httptest.NewRecorder()
@@ -235,7 +235,7 @@ func TestBug7_WriteJSON_UnencodableValue_LogsSlogError(t *testing.T) {
 }
 
 // Verifies writeJSON with nil data does not attempt encoding and emits no log.
-func TestBug7_WriteJSON_NilData_NoEncoding(t *testing.T) {
+func TestWriteJSON_NilData_NoEncoding(t *testing.T) {
 	buf := captureAndRestoreDefaultLogger(t)
 
 	rec := httptest.NewRecorder()
@@ -251,7 +251,7 @@ func TestBug7_WriteJSON_NilData_NoEncoding(t *testing.T) {
 }
 
 // Verifies status code is set correctly even when encoding fails.
-func TestBug7_WriteJSON_StatusCodeSetBeforeEncoding(t *testing.T) {
+func TestWriteJSON_StatusCodeSetBeforeEncoding(t *testing.T) {
 	captureAndRestoreDefaultLogger(t)
 
 	rec := httptest.NewRecorder()
@@ -262,7 +262,7 @@ func TestBug7_WriteJSON_StatusCodeSetBeforeEncoding(t *testing.T) {
 }
 
 // Verifies Content-Type header is set before encoding is attempted.
-func TestBug7_WriteJSON_ContentTypeSetBeforeEncode(t *testing.T) {
+func TestWriteJSON_ContentTypeSetBeforeEncode(t *testing.T) {
 	captureAndRestoreDefaultLogger(t)
 
 	rec := httptest.NewRecorder()
@@ -272,7 +272,7 @@ func TestBug7_WriteJSON_ContentTypeSetBeforeEncode(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-8: UTC consistency in DLQ purge
+// UTC consistency in DLQ purge
 // ---------------------------------------------------------------------------
 
 // captureDLQStore is a mock DLQ store that captures the time argument from
@@ -334,7 +334,7 @@ func (s *captureDLQStore) wasPurgeCalled() bool {
 var _ ports.DLQStore = (*captureDLQStore)(nil)
 
 // Verifies that the DLQ purge handler passes a UTC time to store.Purge().
-func TestBug8_DLQPurge_PassesUTCToStore(t *testing.T) {
+func TestDLQPurge_PassesUTCToStore(t *testing.T) {
 	store := &captureDLQStore{purgeN: 5}
 
 	rt := runtime.New(
@@ -365,7 +365,7 @@ func TestBug8_DLQPurge_PassesUTCToStore(t *testing.T) {
 }
 
 // Verifies that the audit log timestamp for DLQ purge uses the injected UTC clock.
-func TestBug8_DLQPurge_AuditLogUsesInjectedClockUTC(t *testing.T) {
+func TestDLQPurge_AuditLogUsesInjectedClockUTC(t *testing.T) {
 	store := &captureDLQStore{purgeN: 3}
 	fixed := time.Date(2026, 5, 4, 10, 20, 30, 40, time.UTC)
 	clk := clocktest.NewAt(fixed)
@@ -398,7 +398,7 @@ func TestBug8_DLQPurge_AuditLogUsesInjectedClockUTC(t *testing.T) {
 }
 
 // Verifies the Purge time argument uses the injected UTC clock.
-func TestBug8_DLQPurge_TimeUsesInjectedClockUTC(t *testing.T) {
+func TestDLQPurge_TimeUsesInjectedClockUTC(t *testing.T) {
 	store := &captureDLQStore{purgeN: 0}
 	fixed := time.Date(2026, 5, 4, 12, 34, 56, 789, time.UTC)
 	clk := clocktest.NewAt(fixed)

@@ -65,6 +65,16 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   tenants connected; see
   [keeping MQTT tenants connected](docs/aws-deployment/config-reload.md#keeping-mqtt-tenants-connected).
 
+### Changed — test files may not name a planning document either
+
+- `scripts/lint-planning-refs.sh` now scans `_test.go` files as well as
+  production source, so a comment, an assertion message or a test name may not
+  carry a planning-document identifier. It also rejects the prefixed ticket IDs
+  it used to miss — `BUG-3`, `RES-007`, `SEC-1`, `GAP-10`, `REV-2-…`, `TEST-3`,
+  `API-1`, `MQTT-OBS-2`, `CORE-RES-1`, `H-OBS`, `MED-2` — and the bare
+  reviewer tags `(ADV)` and `(QA)`. Every existing hit was rewritten as the rule
+  it stood for; no behaviour changed.
+
 ### Changed — removing an MQTT subscription no longer stops the process when a dead-letter store exists
 
 - **Behaviour change** (#56). A persistent or exclusive MQTT session can still

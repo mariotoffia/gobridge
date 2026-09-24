@@ -33,7 +33,7 @@ const (
 	// uc3FailoverSLO is the asserted failure-detection-to-ServiceLevelFull ceiling
 	// for this test's compressed lease profile (LeaseTTL=5s). Observed ~5.1s warm /
 	// ~5.2s cold; the ~3x headroom keeps the gate non-flaky while still failing hard
-	// on a regression toward the unbounded default profile (~336s). See TEST-4.
+	// on a regression toward the unbounded default profile (~336s).
 	uc3FailoverSLO = 15 * time.Second
 )
 
@@ -221,7 +221,7 @@ func TestUC3ClusterFailover(t *testing.T) {
 	reportUC3FailoverSamples(t, "warm", []time.Duration{warmDuration})
 	reportUC3FailoverSamples(t, "cold", []time.Duration{coldDuration})
 
-	// TEST-4: ASSERT the failover objective, not just report it. Under this test's
+	// ASSERT the failover objective, not just report it. Under this test's
 	// compressed lease profile (LeaseTTL=5s, RenewInterval=400ms) failure-detection
 	// to ServiceLevelFull is observed at ~5.1s (warm) / ~5.2s (cold), bounded by the
 	// TTL. uc3FailoverSLO is a calibrated ceiling (~3x observed headroom) that a

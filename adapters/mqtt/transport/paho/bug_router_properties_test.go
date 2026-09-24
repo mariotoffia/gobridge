@@ -10,16 +10,16 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BUG-1: MQTT Router Properties Pointer Sharing
+// MQTT Router Properties Pointer Sharing
 //
 // Route() shallow-copies the Publish struct (p := *pub) and deep-copies
 // the Payload slice, but Properties is a *PublishProperties pointer that
 // is NOT deep-copied. All handler goroutines share the same Properties.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestBug1_Route_PropertiesPointerIdentity exposes that all handler
+// TestRouter_Route_PropertiesPointerIdentity exposes that all handler
 // goroutines receive the SAME Properties pointer.
-func TestBug1_Route_PropertiesPointerIdentity(t *testing.T) {
+func TestRouter_Route_PropertiesPointerIdentity(t *testing.T) {
 	for _, n := range []int{2, 5} {
 		t.Run(intToStr(n)+"_handlers", func(t *testing.T) {
 			r := newRouter(nil, nil)
@@ -59,14 +59,14 @@ func TestBug1_Route_PropertiesPointerIdentity(t *testing.T) {
 					t.Errorf("handler %d has same Properties pointer as handler 0 (expected different after deep-copy)", i)
 				}
 			}
-			t.Logf("BUG-1 FIXED: all %d handlers have distinct Properties pointers", n)
+			t.Logf("all %d handlers have distinct Properties pointers", n)
 		})
 	}
 }
 
-// TestBug1_Route_PayloadCopied_PropertiesNot verifies the inconsistency:
-// Payload is deep-copied per handler, but Properties is not.
-func TestBug1_Route_PayloadCopied_PropertiesNot(t *testing.T) {
+// TestRouter_Route_PayloadAndPropertiesDeepCopied verifies both Payload and
+// Properties are deep-copied per handler.
+func TestRouter_Route_PayloadAndPropertiesDeepCopied(t *testing.T) {
 	r := newRouter(nil, nil)
 
 	var mu sync.Mutex
@@ -108,7 +108,7 @@ func TestBug1_Route_PayloadCopied_PropertiesNot(t *testing.T) {
 	if caps[0].propAddr == caps[1].propAddr {
 		t.Error("Properties should be deep-copied (different addresses)")
 	} else {
-		t.Log("BUG-1 FIXED: both Payload and Properties are deep-copied")
+		t.Log("both Payload and Properties are deep-copied")
 	}
 }
 

@@ -16,7 +16,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// BUG RES-007: HTTP Forwarder doesn't classify 4xx vs 5xx
+// HTTP Forwarder classifies 4xx vs 5xx
 // ---------------------------------------------------------------------------
 
 func TestBugForwarder_TransientStatusesReturnTransientError(t *testing.T) {

@@ -33,8 +33,8 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// TestStart_SharedSessionDrainer_RejectsConfigBleed covers audit / Chunk 9
-// HIGH: exactly one outbox drainer exists per session partition. When two
+// TestStart_SharedSessionDrainer_RejectsConfigBleed covers the rule that
+// exactly one outbox drainer exists per session partition. When two
 // DIFFERENT shared_outbox routes reference the same session with divergent
 // sender/policy, the second route's records would silently drain under the first
 // route's sender and replay/DLQ policy — a data-integrity hazard. Start must now

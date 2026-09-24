@@ -1,14 +1,15 @@
-// Chunk 12 HIGH findings — regression tests.
+// Durable-receiver contract regression tests.
 //
 //   - durable subscriptions silently lose continuity across a
-//     process restart when the container_id is auto-generated. The factory
-//     now fails closed unless an explicit session.container_id is set.
-//   - malformed-ingress rejection ignored a FAILED settlement,
-//     emitting a false "rejected" metric and leaving the link healthy. The
-//     ACL now surfaces the settlement error so the receive loop rebuilds
-//     the link and never counts the message as an ingress rejection.
+//     process restart when the container_id is auto-generated, so the
+//     factory fails closed unless an explicit session.container_id is set.
+//   - malformed-ingress rejection must not ignore a FAILED settlement
+//     (that would emit a false "rejected" metric and leave the link
+//     healthy); the ACL surfaces the settlement error so the receive loop
+//     rebuilds the link and never counts the message as an ingress
+//     rejection.
 //   - a durable receiver's close forces a full connection teardown
-//     that blips every sibling link. The factory now enforces the
+//     that blips every sibling link, so the factory enforces the
 //     dedicated-session contract at build time.
 //
 // Every "rejected" / "OK" pair is a matched counterfactual so the gate is

@@ -248,7 +248,7 @@ func TestDefaultMerge_ClusteredWithDistributedOverlay(t *testing.T) {
 	assert.Equal(t, "dynamodb", merged.Stores.Outbox.Type)
 }
 
-// TestDefaultMerge_ClusterEndpointsOverlayMerged validates Finding 8: an
+// TestDefaultMerge_ClusterEndpointsOverlayMerged validates that an
 // overlay that adds or changes bridge.cluster endpoints must take effect after
 // a merge (previously the Cluster block was silently dropped), and the merged
 // endpoint map must be cloned so it never aliases the overlay's map.
@@ -290,7 +290,7 @@ func TestDefaultMerge_ClusterNilOverlayPreservesBase(t *testing.T) {
 	assert.Equal(t, "base:8080", merged.Bridge.Cluster.Endpoints["node-a"])
 }
 
-// TestDefaultMerge_Version validates the Finding 8 Version merge rule: a
+// TestDefaultMerge_Version validates the Version merge rule: a
 // non-zero overlay version (the newer committed version) wins; a zero overlay
 // version leaves the base version intact rather than resetting it to 0.
 func TestDefaultMerge_Version(t *testing.T) {

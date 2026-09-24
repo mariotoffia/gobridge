@@ -17,7 +17,7 @@ import (
 )
 
 // TestApproximateReceiveCount parses the SQS ApproximateReceiveCount system
-// attribute used by the Finding 6 poison escalation. Absent or unparseable
+// attribute used by the poison-message escalation. Absent or unparseable
 // values are treated as 0 (no escalation).
 func TestApproximateReceiveCount(t *testing.T) {
 	t.Parallel()
@@ -66,7 +66,7 @@ func newZeroClockReceiver(t *testing.T, msg sqstypes.Message, h slog.Handler) *R
 	return r
 }
 
-// TestPollAndConvert_PoisonMessageEscalation is the regression for Finding 6.
+// TestPollAndConvert_PoisonMessageEscalation pins the poison-message escalation.
 // Malformed messages are dropped WITHOUT a Delete so the queue's own
 // maxReceiveCount redrive policy can DLQ them; with no redrive policy the
 // message redelivers forever. Once ApproximateReceiveCount crosses the sanity
@@ -114,7 +114,7 @@ func TestPollAndConvert_PoisonMessageEscalation(t *testing.T) {
 			}
 		}
 		if !escalated {
-			t.Fatal("Finding 6: a poison message past the receive-count bound must emit an Error-level log")
+			t.Fatal("a poison message past the receive-count bound must emit an Error-level log")
 		}
 	})
 
@@ -133,8 +133,8 @@ func TestPollAndConvert_PoisonMessageEscalation(t *testing.T) {
 	})
 }
 
-// TestBridgeAttrString_PrefersExactCaseDeterministically is the regression for
-// Finding 12. When both an exact-case and a case-variant attribute are
+// TestBridgeAttrString_PrefersExactCaseDeterministically pins a deterministic
+// attribute lift. When both an exact-case and a case-variant attribute are
 // present, the idempotency-key lift iterated the map and let Go's randomised
 // iteration order pick a winner. The fix prefers the exact-case value, then
 // falls back to a deterministic (smallest-key) fold scan.

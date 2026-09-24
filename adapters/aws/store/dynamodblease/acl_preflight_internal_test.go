@@ -71,7 +71,7 @@ func (c *preflightClient) CreateTable(context.Context, *dynamodb.CreateTableInpu
 	panic("preflightClient.CreateTable must not be called by Preflight")
 }
 
-// Finding c13-lease-ttl-warn: an OBSERVED enabled (or enabling) DynamoDB TTL on
+// An OBSERVED enabled (or enabling) DynamoDB TTL on
 // the lease table is a correctness hazard — a reaper deleting a fence row resets
 // its version and opens a split-brain window — so Preflight must FAIL FATALLY
 // with shared.ErrInvalidConfig, not merely WARN.

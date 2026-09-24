@@ -29,11 +29,11 @@ import (
 // Assert: >= 1,000 unique delivered. DLQ empty.
 //
 // PRODUCTION FIX NEEDED:
-//   - RES-004: Lease transfer duplicate window. Old owner's in-flight
+//   - Lease transfer duplicate window. Old owner's in-flight
 //     goroutines run under context.Background() and may Complete records
 //     after the new owner reclaims them. Fencing tokens should prevent
 //     this, but context cancellation cleanup is not guaranteed.
-//   - RES-001: autopaho reconnect (Bridge-B session may not connect if
+//   - autopaho reconnect (Bridge-B session may not connect if
 //     Bridge-A's exclusive client ID lingers on the broker).
 // =========================================================================
 
@@ -167,10 +167,10 @@ func TestUC57_StaleClaimRecovery(t *testing.T) {
 //         Only 1 bridge reports "active" at each health sample.
 //
 // PRODUCTION FIX NEEDED:
-//   - RES-004: Old owner's in-flight goroutines may complete Send after
-//     new owner reclaims. Fencing token validation on Complete should
-//     reject stale tokens, but context.Background() usage may cause
-//     the old goroutine to succeed before the token check runs.
+//   - Lease transfer duplicate window: old owner's in-flight goroutines may
+//     complete Send after the new owner reclaims. Fencing token validation
+//     on Complete should reject stale tokens, but context.Background() usage
+//     may cause the old goroutine to succeed before the token check runs.
 // =========================================================================
 
 func TestUC58_DoubleDrainPrevention(t *testing.T) {

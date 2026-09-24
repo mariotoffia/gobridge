@@ -12,17 +12,17 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BUG RES-008: CB Sender no metrics for circuit-open rejections
+// CB Sender metrics for circuit-open rejections
 //
 // When the circuit breaker is open and BeforeRequest returns an error,
 // the Send method was returning immediately without emitting a publish-
 // failure counter. The fix adds a metrics counter with reason=circuit_open.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestBugRES008_CBSender_CircuitOpen_EmitsMetric verifies that when
+// TestCBSender_CircuitOpen_EmitsMetric verifies that when
 // the circuit breaker rejects a Send because the circuit is open, a
 // MetricMQTTPublishFailures counter with reason=circuit_open is emitted.
-func TestBugRES008_CBSender_CircuitOpen_EmitsMetric(t *testing.T) {
+func TestCBSender_CircuitOpen_EmitsMetric(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 
 	// Create a breaker and force it open by exceeding the failure threshold.
@@ -68,11 +68,11 @@ func TestBugRES008_CBSender_CircuitOpen_EmitsMetric(t *testing.T) {
 	}
 }
 
-// TestBugRES008_CBSender_CircuitClosed_NoExtraMetric verifies that when
+// TestCBSender_CircuitClosed_NoExtraMetric verifies that when
 // the circuit is closed, no circuit_open metric is emitted (the inner
 // sender is called instead). We use a nil session to trigger a known
 // error from the inner Send path.
-func TestBugRES008_CBSender_CircuitClosed_NoExtraMetric(t *testing.T) {
+func TestCBSender_CircuitClosed_NoExtraMetric(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 
 	cfg := circuitbreaker.Config{

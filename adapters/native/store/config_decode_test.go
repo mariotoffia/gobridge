@@ -14,8 +14,8 @@ import (
 // store: Register installs decodeMemoryConfig on a real ports.Registry, and
 // Registry.Decode runs the operator's `options:` block through the production
 // RawConfig decoder (parser.NewRawConfig — TagName "json", ErrorUnused) exactly
-// as the runtime does. The regression guarded here (c10-memlease-factory-wiring)
-// is that decodeMemoryConfig once ignored its RawConfig and dropped the
+// as the runtime does. The regression guarded here is that decodeMemoryConfig
+// once ignored its RawConfig and dropped the
 // acknowledge_single_replica flag, leaving NewLeaseStore's fail-closed gate
 // unsatisfiable from any parsed config — the factory told the operator to set a
 // flag that no config path could deliver. Importing config/parser from an

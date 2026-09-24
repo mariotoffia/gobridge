@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════
 // Production-readiness remediation tests: heartbeat-aware exclusive-consumer
-// failover budget (c5-exclusive-failover).
+// failover budget.
 //
 // A stale exclusive consumer is held by the broker until missed heartbeats
 // (~2x the interval) reap the partitioned peer's connection. The old fixed

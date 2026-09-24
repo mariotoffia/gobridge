@@ -9,8 +9,8 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestWatcher_StopBlocksUntilLoopExits is the Finding 8 regression: Stop must
-// wait for the watch loop to fully exit before returning, so a rapid
+// TestWatcher_StopBlocksUntilLoopExits pins that Stop must wait for the watch
+// loop to fully exit before returning, so a rapid
 // Stop-then-Watch cycle never leaves the old loop alive alongside a new one,
 // both mutating lastHash without a lock. Pre-fix Stop flipped running=false
 // and returned immediately; the next Watch could then start a second loop

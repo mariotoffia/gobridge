@@ -102,7 +102,7 @@ func TestUC59_PartitionHotspot(t *testing.T) {
 // TestUC60_OutboxPlusBrokerDown verifies that a SharedOutbox route with
 // AckAfterOutboxPersist survives a broker crash and re-delivers every message
 // once the broker comes back online. This is the PRODUCTION FIX validation
-// for RES-001 (reconnect after broker restart).
+// for reconnect after broker restart.
 func TestUC60_OutboxPlusBrokerDown(t *testing.T) {
 	_ = withFreshInfra(t)
 	const (

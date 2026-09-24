@@ -27,10 +27,10 @@ func autoExtendTicksHandled(rec *ports.RecordingExporter) int {
 	return len(rec.FindEntries(MetricSQSAutoExtends)) + len(rec.FindEntries(MetricSQSAutoExtendFailures))
 }
 
-// TestAutoExtendRetriesTransientThenSucceedsS15 verifies the auto-extend loop
+// TestAutoExtendRetriesTransientThenSucceeds verifies the auto-extend loop
 // survives one transient ChangeMessageVisibility error and continues after a
 // successful extend (consecutive failure counter resets).
-func TestAutoExtendRetriesTransientThenSucceedsS15(t *testing.T) {
+func TestAutoExtendRetriesTransientThenSucceeds(t *testing.T) {
 	t.Parallel()
 
 	var callCount atomic.Int32
@@ -85,7 +85,7 @@ func TestAutoExtendRetriesTransientThenSucceedsS15(t *testing.T) {
 	}
 }
 
-// TestAutoExtendInterleavedFailSuccessS15 verifies that the consecutive failure
+// TestAutoExtendInterleavedFailSuccess verifies that the consecutive failure
 // counter resets after each success, allowing the loop to survive more total
 // failures than autoExtendMaxFailures as long as they are non-consecutive.
 //
@@ -93,7 +93,7 @@ func TestAutoExtendRetriesTransientThenSucceedsS15(t *testing.T) {
 // subject. A loop that never reset the counter would still handle the first few
 // ticks — its third NON-consecutive failure is where it would give up — so a
 // shorter run cannot tell the two apart.
-func TestAutoExtendInterleavedFailSuccessS15(t *testing.T) {
+func TestAutoExtendInterleavedFailSuccess(t *testing.T) {
 	t.Parallel()
 
 	var callCount atomic.Int32
@@ -140,15 +140,15 @@ func TestAutoExtendInterleavedFailSuccessS15(t *testing.T) {
 	}
 }
 
-// TestAutoExtendStopsAfterMaxFailuresS15 verifies the loop gives up and
+// TestAutoExtendStopsAfterMaxFailures verifies the loop gives up and
 // cancels processing after autoExtendMaxFailures consecutive failures.
 //
 // Uses visibility=30 (interval 10s, then a 5s retry after the second
 // failure) so that three consecutive failures all land strictly before
 // the visibility window lapses at 30s — isolating the consecutive-failure
-// ceiling from the deadline-lapse cancel path (Finding 5). A processing
+// ceiling from the deadline-lapse cancel path. A processing
 // cancel func records that the loop actually gave up.
-func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
+func TestAutoExtendStopsAfterMaxFailures(t *testing.T) {
 	t.Parallel()
 
 	var callCount atomic.Int32
@@ -217,10 +217,10 @@ func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
 	}
 }
 
-// TestAutoExtendCancelsOnDeadlineLapseAtMinVisibilityS15 exercises the
+// TestAutoExtendCancelsOnDeadlineLapseAtMinVisibility exercises the
 // deadline-driven cancel (windowLapsed) branch in isolation — the PRIMARY
-// value of Finding 5 — which only LEADS at the minimum visibility (vis=2,
-// interval floored to 1s). With vis=2 the window lapses at t=2s while the
+// guard against extending a lapsed window — which only LEADS at the minimum
+// visibility (vis=2, interval floored to 1s). With vis=2 the window lapses at t=2s while the
 // consecutive-failure ceiling (autoExtendMaxFailures=3) has not yet been
 // reached, so processing must be cancelled after EXACTLY 2 failed CMV
 // calls with consecutiveFailures (2) strictly below the ceiling — proving
@@ -229,7 +229,7 @@ func TestAutoExtendStopsAfterMaxFailuresS15(t *testing.T) {
 // Fails-without: a loop that only cancelled on the failure ceiling would
 // keep extending a message whose visibility had already lapsed (letting it
 // resurface to another consumer), never firing the cancel here.
-func TestAutoExtendCancelsOnDeadlineLapseAtMinVisibilityS15(t *testing.T) {
+func TestAutoExtendCancelsOnDeadlineLapseAtMinVisibility(t *testing.T) {
 	t.Parallel()
 
 	var callCount atomic.Int32

@@ -1,20 +1,10 @@
 // ═══════════════════════════════════════════════
 // Session Lifecycle & Reconnection Tests
 //
-// Validates session start race conditions, reconnection
-// backoff logic, and connection loss handling.
-//
-// Summary:
-// ┌──────┬──────────────────────────────────────┬──────────┐
-// │ ID   │ Description                          │ Status   │
-// ├──────┼──────────────────────────────────────┼──────────┤
-// │ T001 │ Concurrent Start race (SEC-001)      │ PASS     │
-// │ T002 │ Start dial failure                   │ PASS     │
-// │ T003 │ Connect NewSession failure cleanup   │ PASS     │
-// │ T004 │ NotifyDisconnect conn-nil no-op      │ PASS     │
-// │ T005 │ Reconnect backoff progression        │ PASS     │
-// │ T006 │ Close during connect aborts          │ PASS     │
-// └──────┴──────────────────────────────────────┴──────────┘
+// Validates session start race conditions (concurrent Start, dial
+// failure, NewSession failure cleanup), the NotifyDisconnect no-op on a
+// nil connection, reconnection backoff progression, and Close aborting
+// an in-progress connect.
 // ═══════════════════════════════════════════════
 package amqp10
 
@@ -30,7 +20,7 @@ import (
 )
 
 // TestSession_Start_ConcurrentRace validates that two concurrent Start
-// calls do not both establish connections (SEC-001).
+// calls do not both establish connections.
 //
 // Scenario:
 // ───────────────────────────────────────────────
@@ -73,7 +63,7 @@ func TestSession_Start_ConcurrentRace(t *testing.T) {
 
 	count := dialCount.Load()
 	if count > 1 {
-		t.Fatalf("dial called %d times, want at most 1 — concurrent Start race detected (SEC-001)", count)
+		t.Fatalf("dial called %d times, want at most 1 — concurrent Start race detected", count)
 	}
 	if count == 0 {
 		t.Fatal("dial should have been called at least once")

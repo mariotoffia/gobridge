@@ -293,9 +293,9 @@ func TestWindowedStrategy_QuietWindow(t *testing.T) {
 
 // TestWindowedStrategy_InputChannelClosed_PendingConfig validates that closing
 // the input while a config is batched (before the quiet/max window elapses)
-// flushes the final pending config instead of dropping it (Finding 11). The
-// close happens well inside the quiet window, so the only path that can deliver
-// "last" is the close-time flush.
+// flushes the final pending config instead of dropping it. The close happens
+// well inside the quiet window, so the only path that can deliver "last" is the
+// close-time flush.
 func TestWindowedStrategy_InputChannelClosed_PendingConfig(t *testing.T) {
 	const (
 		quiet    = 500 * time.Millisecond

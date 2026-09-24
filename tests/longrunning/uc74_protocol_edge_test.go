@@ -241,8 +241,8 @@ func TestUC76_QoS0FireAndForget(t *testing.T) {
 
 // TestUC77_QoS2UnderBrokerRestart exercises QoS 2 (exactly-once) delivery
 // while the broker is restarted mid-stream. A per-test broker with
-// persistence is used. The bridge reconnects after restart (RES-001) and
-// resumes delivery.
+// persistence is used. The bridge reconnects after restart and resumes
+// delivery.
 //
 // NOTE: paho v5 may negotiate QoS 2 down to QoS 1 depending on broker
 // configuration. The test documents the actual behavior.
@@ -336,7 +336,7 @@ func TestUC77_QoS2UnderBrokerRestart(t *testing.T) {
 	t.Logf("UC77: total received=%d, unique=%d, dlq=%d", received, unique, dlq.count())
 
 	assert.GreaterOrEqual(t, unique, msgCount,
-		"all messages should eventually be delivered after reconnect (RES-001)")
+		"all messages should eventually be delivered after reconnect")
 
 	// QoS 2 should guarantee exactly-once — no duplicates.
 	// However, if broker downgrades to QoS 1, duplicates are possible.

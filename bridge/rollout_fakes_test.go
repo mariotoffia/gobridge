@@ -241,8 +241,8 @@ var (
 )
 
 // artifactFaultStore wraps a real rollout store and injects the two committed-
-// artifact failure modes HIGH-7 is about: a write that ERRORS, and — worse — a
-// write that reports success while persisting nothing (the silent no-op a
+// artifact failure modes a member must survive: a write that ERRORS, and — worse
+// — a write that reports success while persisting nothing (the silent no-op a
 // conditional write degrades into when the caller's assumptions are wrong). Both
 // must be retried, and neither may latch the member's "artifact recorded" state.
 type artifactFaultStore struct {

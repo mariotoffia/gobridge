@@ -11,11 +11,11 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
-// Finding L9: cancelling the context passed to Start (rather than calling Stop)
-// left a dead runtime that still reported healthy — every background goroutine
-// exited on the derived ctx but running/healthy stayed advertised, so /live and
-// /ready lied. The fix watches the Start ctx and drives Stop on cancellation, so
-// the runtime tears down and reports not-running.
+// Cancelling the context passed to Start (rather than calling Stop) must not
+// leave a dead runtime that still reports healthy — every background goroutine
+// exits on the derived ctx, so if running/healthy stayed advertised /live and
+// /ready would lie. The runtime watches the Start ctx and drives Stop on
+// cancellation, so it tears down and reports not-running.
 //
 // Under the KEYSTONE lifecycle split a ctx-cancel-driven Stop is a CLEAN stop
 // (it routes through rt.Stop, which no longer conflates a deliberate stop with

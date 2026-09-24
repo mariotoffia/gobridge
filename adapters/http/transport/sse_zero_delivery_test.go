@@ -1,7 +1,7 @@
 package transport_test
 
-// Black-box tests for the prod-ready remediation (findings HTTP
-// through HTTP). Deterministic per TESTS.md: fake clock for every
+// Black-box tests for the HTTP transport's delivery and protocol rules.
+// Deterministic per TESTS.md: fake clock for every
 // time-dependent path, testutil/wait for synchronisation, recording
 // metrics exporter for observability assertions, no sleeps.
 
@@ -74,7 +74,7 @@ func (b *stubBreaker) snapshot() (int, []error) {
 }
 
 // ---------------------------------------------------------------------------
-// Finding: SSE Send observability for zero-delivery outcomes
+// SSE Send observability for zero-delivery outcomes
 // ---------------------------------------------------------------------------
 
 func TestSSESender_Send_NoSubscribersEmitsMetric(t *testing.T) {
@@ -104,7 +104,7 @@ func TestSSESender_Send_NoSubscribersEmitsMetric(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Finding: 429/408 are transient; Retry-After honoured
+// 429/408 are transient; Retry-After honoured
 // ---------------------------------------------------------------------------
 
 func TestForwarder_429And408AreTransient(t *testing.T) {
@@ -243,7 +243,7 @@ func TestForwarder_RetryWaitHonoursRetryAfterHint(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Finding: client disconnect must not abort dispatch
+// client disconnect must not abort dispatch
 // ---------------------------------------------------------------------------
 
 func TestReceiver_ClientDisconnectDoesNotAbortDispatch(t *testing.T) {
@@ -304,7 +304,7 @@ func TestReceiver_ClientDisconnectDoesNotAbortDispatch(t *testing.T) {
 }
 
 // TestReceiver_DispatchBoundedByMaxDispatchDuration pins the second half
-// of the HTTP-contract after finding 3: the dispatch context is
+// of the HTTP dispatch contract: the dispatch context is
 // detached from the client's CANCELLATION (context.WithoutCancel) but is
 // UNCONDITIONALLY bounded by MaxDispatchDuration — it does NOT rely on
 // the client/request context carrying a deadline (a bare http.Server
@@ -386,7 +386,7 @@ func TestReceiver_DispatchBoundedByMaxDispatchDuration(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Finding: operator paths fail the build, never panic
+// operator paths fail the build, never panic
 // ---------------------------------------------------------------------------
 
 func TestConfig_Validate_RejectsBadPaths(t *testing.T) {
@@ -468,7 +468,7 @@ func TestFactory_BadPathReturnsErrorNotPanic(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Finding: ingress idempotency window + forwarder Idempotency-Key
+// ingress idempotency window + forwarder Idempotency-Key
 // ---------------------------------------------------------------------------
 
 func TestReceiver_IngressDedup_DuplicateAcknowledgedWithoutReEmit(t *testing.T) {
@@ -611,7 +611,7 @@ func TestForwarder_SetsIdempotencyKeyOnForwards(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Finding: circuit breaker on forwarder; SSE Close/drain
+// circuit breaker on forwarder; SSE Close/drain
 // ---------------------------------------------------------------------------
 
 func TestForwarder_BreakerOpenFailsFast(t *testing.T) {
@@ -801,7 +801,7 @@ func TestFactory_CloseDrainsAllSSESenders(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Finding: SSE redirect is opt-in; internal endpoint never leaks
+// SSE redirect is opt-in; internal endpoint never leaks
 // ---------------------------------------------------------------------------
 
 func TestSSESender_RemoteRoute_RedirectIsOptIn(t *testing.T) {
@@ -859,7 +859,7 @@ func TestSSESender_RemoteRoute_RedirectIsOptIn(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Finding: per-receiver forward auth keys
+// per-receiver forward auth keys
 // ---------------------------------------------------------------------------
 
 func TestForwarder_PerReceiverAPIKeyWithClusterFallback(t *testing.T) {
@@ -901,7 +901,7 @@ func TestForwarder_PerReceiverAPIKeyWithClusterFallback(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Finding: Retry(nil) is a retry, not an Ack
+// Retry(nil) is a retry, not an Ack
 // ---------------------------------------------------------------------------
 
 func TestHTTPDelivery_RetryNilReasonReturns500(t *testing.T) {
@@ -931,7 +931,7 @@ func TestHTTPDelivery_RetryNilReasonReturns500(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Finding: protocol strictness (Content-Type, auth scheme)
+// protocol strictness (Content-Type, auth scheme)
 // ---------------------------------------------------------------------------
 
 func TestReceiver_ContentTypeMatching(t *testing.T) {

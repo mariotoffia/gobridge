@@ -41,8 +41,8 @@ func assertNoEmit(t *testing.T, ch <-chan *ports.BridgeConfig, when string) {
 	}
 }
 
-// TestReloadIfChanged_HashesAndParsesSameRead is the Finding 1 (file-watcher
-// TOCTOU) regression: a reload must read the watched file EXACTLY ONCE per
+// TestReloadIfChanged_HashesAndParsesSameRead is the file-watcher TOCTOU
+// regression: a reload must read the watched file EXACTLY ONCE per
 // attempt and derive both the change hash and the parsed config from those same
 // bytes.
 //

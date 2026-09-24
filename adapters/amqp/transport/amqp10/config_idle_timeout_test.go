@@ -1,4 +1,4 @@
-// Validates c7-idle-timeout: the effective default idle_timeout is
+// Validates that the effective default idle_timeout is
 // HA-oriented (<= 30s) so a silently half-open connection (SIGKILL /
 // blackhole / NAT drop) is detected within the 30-60s failover target
 // instead of lagging behind the previous 2m default. go-amqp uses

@@ -144,7 +144,7 @@ func TestExporter_Timer(t *testing.T) {
 	assert.InDelta(t, 250.0, hist.DataPoints[0].Sum, 1.0)
 }
 
-// Finding 8: Timer instruments carry unit "ms" and explicit sub-5ms
+// Timer instruments carry unit "ms" and explicit sub-5ms
 // latency buckets (not the SDK defaults), so fast in-process hops are
 // distinguishable instead of collapsing into the first default bucket.
 func TestExporter_Timer_UnitAndBuckets(t *testing.T) {

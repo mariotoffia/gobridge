@@ -160,7 +160,7 @@ func senderSpecFrom(def ports.SenderDef) ports.SenderSpec {
 // first-declare-wins). If a later sibling declares a GENUINELY DIFFERENT
 // topology (PublisherTopologyKey mismatch) the divergence is a misconfig that
 // would otherwise vanish silently, so it is logged via logger; an identical
-// re-declaration is legitimate fan-out and stays silent (REV-2-topowarn). logger
+// re-declaration is legitimate fan-out and stays silent. logger
 // may be nil (no warning is emitted then).
 func sessionPlanFor(cfg *ports.BridgeConfig, sessionID string, logger *slog.Logger) connectivity.SessionPlan {
 	if cfg == nil || sessionID == "" {
@@ -212,7 +212,7 @@ func sessionPlanFor(cfg *ports.BridgeConfig, sessionID string, logger *slog.Logg
 			// declare would PRECONDITION_FAIL) and the runtime's first-wins session
 			// dedup. Warn ONLY when the collapsed sibling's declared topology
 			// genuinely differs from the kept first: an identical re-declaration is
-			// a legitimate fan-out and must stay silent (REV-2-topowarn).
+			// a legitimate fan-out and must stay silent.
 			if logger != nil && decl.PublisherTopologyKey() != first.decl.PublisherTopologyKey() {
 				logger.Warn("duplicate publisher exchange declared with divergent topology; keeping the first declaration and ignoring the later one",
 					"session", sessionID,

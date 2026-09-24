@@ -22,13 +22,12 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TEST-3 (shipped composition root): broker-backed convergence
+// Shipped composition root: broker-backed convergence
 //
 // The existing convergence_test.go pins the App's applied-but-not-converged
 // state machine with a SENTINEL runtime (&goruntime.Runtime{}) — it never runs
 // the actual runConvergenceWatch loop against a real MQTT session's readiness.
-// This closes the finding's explicit gap ("the shipped AWS divergence is
-// untested"): it drives the SHIPPED App.runConvergenceWatch against a runtime
+// This file covers the shipped AWS divergence path: it drives the SHIPPED App.runConvergenceWatch against a runtime
 // whose Exclusive MQTT session is broker-backed for real, proving:
 //
 //   - broker-unreachable  → the session never reaches LevelSubscribed → the
@@ -115,10 +114,10 @@ func newConvergenceRuntime(t *testing.T, brokerURL string) *goruntime.Runtime {
 	return rt
 }
 
-// TestReconfig1_ConvergenceWatch_BrokerUnreachable_MarksDegraded proves the
+// TestApp_ConvergenceWatch_BrokerUnreachable_MarksDegraded proves the
 // shipped App marks applied-but-not-converged when a committed config's MQTT
 // session cannot reach broker truth (readiness pinned below LevelSubscribed).
-func TestReconfig1_ConvergenceWatch_BrokerUnreachable_MarksDegraded(t *testing.T) {
+func TestApp_ConvergenceWatch_BrokerUnreachable_MarksDegraded(t *testing.T) {
 	mqttlocal.BrokerURL(t) // skip gate: -short / no Docker
 	rt := newConvergenceRuntime(t, "tcp://127.0.0.1:1")
 
@@ -167,10 +166,10 @@ func TestReconfig1_ConvergenceWatch_BrokerUnreachable_MarksDegraded(t *testing.T
 	<-done
 }
 
-// TestReconfig1_ConvergenceWatch_BrokerReachable_StaysConverged proves the
+// TestApp_ConvergenceWatch_BrokerReachable_StaysConverged proves the
 // watch does NOT cry wolf: a session that reaches LevelSubscribed against a real
 // broker converges on the first poll and the watch returns without marking.
-func TestReconfig1_ConvergenceWatch_BrokerReachable_StaysConverged(t *testing.T) {
+func TestApp_ConvergenceWatch_BrokerReachable_StaysConverged(t *testing.T) {
 	broker := mqttlocal.BrokerURL(t) // skip gate: -short / no Docker
 	rt := newConvergenceRuntime(t, broker)
 

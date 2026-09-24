@@ -14,7 +14,7 @@ import (
 // Validates that credential value objects do not leak sensitive values
 // when formatted with fmt verbs (%v, %+v, %s, %q, %#v).
 //
-// Issue SEC-001: PasswordCredential and TLSMaterial must redact through
+// PasswordCredential and TLSMaterial must redact through
 // String()/GoString(); their secret fields are private and wrapped in
 // shared.Secret so Go's default formatting cannot expose them.
 // ═══════════════════════════════════════════════════════════════════

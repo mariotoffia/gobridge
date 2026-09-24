@@ -9,7 +9,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
-// TestBug_PublishReasonError_ThrottleHintOnly0x97 locks finding 7: the
+// TestBug_PublishReasonError_ThrottleHintOnly0x97 pins that the
 // sender attaches a ThrottleRetryAfter back-off hint ONLY for PUBACK/PUBREC
 // reason code 0x97 (Quota exceeded). The removed 0x93 / 0xA1 checks are not
 // valid PUBACK/PUBREC codes and must classify as plain errors with no

@@ -13,8 +13,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// c4-qos12-overflow (HIGH): a QoS 1/2 publish is NEVER dropped for the pending
-// buffer's BYTE ceiling.
+// A QoS 1/2 publish is NEVER dropped for the pending buffer's BYTE ceiling.
 //
 // The byte ceiling (pendingBytesLimit) governs QoS 0 memory only. A QoS 1/2
 // publish is ALWAYS buffered: dropping it is never safe — ack+drop loses it,
@@ -67,7 +66,7 @@ func TestBug_PendingByteCap_QoS12_NeverDroppedForByteCap_DrainsAndAcksInOrder(t 
 
 	// (a) NOTHING dropped for the byte ceiling: every QoS 1 is buffered.
 	require.Equal(t, n, r.PendingCount(),
-		"c4-qos12-overflow: QoS 1/2 publishes must NEVER be dropped for the byte ceiling")
+		"QoS 1/2 publishes must NEVER be dropped for the byte ceiling")
 	require.Equal(t, int64(0), r.OverflowDroppedCount(),
 		"the byte ceiling must not trigger a QoS 1/2 overflow drop")
 	require.Empty(t, rec.FindEntries(MetricMQTTRouterOverflowDropped),

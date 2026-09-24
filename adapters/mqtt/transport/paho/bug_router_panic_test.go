@@ -12,7 +12,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GAP-11: MQTT Router Panic Recovery
+// MQTT Router Panic Recovery
 //
 // When a handler panics, the router must:
 // 1. Recover without crashing the router

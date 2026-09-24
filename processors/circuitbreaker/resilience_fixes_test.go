@@ -1,28 +1,11 @@
 package circuitbreaker
 
 // ===============================================
-// Resilience Fix Tests
+// Resilience Tests
 //
-// Tests validating circuit breaker resilience improvements:
-// RES-001: Half-open probe limiting
-// RES-002: Permanent error classification
-// RES-004: Elapsed time single-evaluation
-// RES-007: Eviction protects open breakers
-//
-// Summary:
-// +------+--------------------------------------------+----------+
-// | ID   | Description                                | Status   |
-// +------+--------------------------------------------+----------+
-// | | Half-open limits concurrent probes to 1 | PASS |
-// | | Half-open custom max probes | PASS |
-// | | Permanent errors don't trip breaker | PASS |
-// | | Mixed errors: only transient counted | PASS |
-// | | Custom error classifier | PASS |
-// | | Eviction prefers half-open over open | PASS |
-// | | Default config sets HalfOpenMaxProbes | PASS |
-// | | Half-open probe released after afterRequest| PASS |
-// | | Concurrent half-open probes limited | PASS |
-// +------+--------------------------------------------+----------+
+// Tests validating circuit breaker resilience: half-open probe limiting,
+// permanent error classification, single evaluation of elapsed time, and
+// eviction that protects open breakers.
 // ===============================================
 
 import (
@@ -115,7 +98,7 @@ func TestHalfOpen_CustomMaxProbes(t *testing.T) {
 }
 
 // TestPermanentErrors_DontTripBreaker validates that permanent/rejected
-// errors do not count toward the failure threshold (RES-002).
+// errors do not count toward the failure threshold.
 //
 // Scenario:
 // -----------------------------------------------
@@ -187,7 +170,7 @@ func TestCustomErrorClassifier(t *testing.T) {
 	}
 }
 
-// TestEviction_PrefersHalfOpenOverOpen validates eviction order (RES-007).
+// TestEviction_PrefersHalfOpenOverOpen validates eviction order.
 //
 // Scenario:
 // -----------------------------------------------

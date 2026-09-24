@@ -11,7 +11,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// BUG-9: Per-batch timeout
+// Per-batch timeout
 //
 // These tests verify that each batch in SendBatch gets its own
 // context.WithTimeout instead of sharing a single timeout across all

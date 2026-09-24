@@ -19,7 +19,7 @@ Stages execute in order. The first blocking failure stops the build; advisory st
 |---|---|---|---|---|
 | 1 | Architecture | `go-arch-lint check` + `graph` + `scripts/lint-arch-mapping-test.sh` | yes | Outward dependency edges, component vendor-opt-in violations, sentinel-package drift. |
 | 2 | Header namespace | `scripts/lint-xbridge-headers.sh --self-test` | yes | An `x-bridge.*` string literal outside `domain/messaging` that is neither a registered header value nor annotated `// x-bridge-local: <reason>`. |
-| 3 | Planning references | `scripts/lint-planning-refs.sh --self-test` | yes | A planning-document identifier in non-test Go source — `Chunk N`, `RECONFIG-n`, `Phase-n`, `Finding N`, `c13-…`, `the design doc`. Each points at a document that no longer exists. |
+| 3 | Planning references | `scripts/lint-planning-refs.sh --self-test` | yes | A planning-document identifier in any Go file, `_test.go` included — `Chunk N`, `RECONFIG-n`, `Phase-n`, `Finding N`, `c13-…`, `HIGH-3`, `MED-2`, `BUG-3`, `RES-007`, `SEC-1`, `GAP-10`, `REV-2-…`, `TEST-3`, `API-1`, `MQTT-OBS-2`, `CORE-RES-1`, `H-OBS`, `(ADV)`, `(QA)`, `the design doc` — in a comment, an assertion message or a test name. Each points at a document that no longer exists. |
 | 4 | Format | `gofmt -l` | yes | Files not run through `gofmt`. Auto-fix: `make lint-fix`. |
 | 5 | Vet | `go vet` per workspace module | yes | Stdlib correctness issues (printf, shadow, unreachable, …). |
 | 6 | Lint | `golangci-lint run` per workspace module | yes | Full ruleset from `.golangci.yml` (`depguard`, `forbidigo`, `wrapcheck`, `interfacebloat`, `gochecknoglobals`, `gochecknoinits`, …). |
@@ -86,7 +86,7 @@ Locate the offending file:line in the named report. Apply the fix.
 | `go-arch-lint` outward edge | `reports/go-arch-lint.log` | Move the type inward, introduce a port, or wire at the composition root. |
 | `arch-mapping` sentinel drift | `reports/arch-mapping.log` | Restore the mapping. If the rename is deliberate, update `scripts/lint-arch-mapping-test.sh`. |
 | ungoverned `x-bridge.*` literal | `reports/xbridge-headers.log` | Reference a `domain/messaging` constant, or annotate the line `// x-bridge-local: <reason>` when the key is transport-local and stripped at ingress. |
-| planning identifier in source | `reports/planning-refs.log` | Write the rule in plain English — what must hold, and why — or cite a durable reference: an ADR, a canonical root doc plus section, a live page under `docs/`, a `UBIQUITOUS.md` term. |
+| planning identifier in source or tests | `reports/planning-refs.log` | Write the rule in plain English — what must hold, and why — or cite a durable reference: an ADR, a canonical root doc plus section, a live page under `docs/`, a `UBIQUITOUS.md` term. In a test, drop the ID from the assertion message and rename the test or file after the behaviour it pins. |
 | `depguard` | `reports/golangci.log` | Same as `go-arch-lint` — `depguard` is the per-file mirror. |
 | `interfacebloat` | `reports/golangci.log` | Split the port interface; plugins implement the subset they need. |
 | `forbidigo time.Now` | `reports/golangci.log` | Inject `clock.Clock`; call `clk.Now()`. |

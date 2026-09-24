@@ -129,7 +129,7 @@ func TestBrokerTLSConfig_DerivesServerNameFromAddress(t *testing.T) {
 }
 
 // TestDialMQTTTLS_ThroughProxyVerifiesBrokerIdentity is the end-to-end proof for
-// both proxy findings: an UPPERCASE-only ALL_PROXY must route the dial through
+// both proxy rules: an UPPERCASE-only ALL_PROXY must route the dial through
 // the proxy, and the TLS handshake on the proxied socket must validate the
 // broker's certificate against the hostname from the broker URL. It runs
 // entirely on loopback with a generated CA — no container, no external network.

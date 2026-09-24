@@ -159,7 +159,7 @@ func TestHeadersToMessage(t *testing.T) {
 	if msg.Properties.ContentType == nil || *msg.Properties.ContentType != ct {
 		t.Errorf("ContentType = %v, want %q", msg.Properties.ContentType, ct)
 	}
-	// Finding 5 (domain invariant): the amqp10.subject header must NOT
+	// Domain invariant: the amqp10.subject header must NOT
 	// drive the egress Subject. headersToMessage leaves Properties.Subject
 	// unset; Envelope.Subject is the sole source (see envelopeToMessage
 	// and TestEnvelopeToMessage_SubjectOnlyFromEnvelope).
@@ -280,8 +280,8 @@ func TestHeadersToMessage_BridgeToBridgePropagated(t *testing.T) {
 	}
 }
 
-// TestEnvelopeToMessage_SubjectOnlyFromEnvelope is the finding-5
-// regression guard: the egress AMQP Subject comes only from
+// TestEnvelopeToMessage_SubjectOnlyFromEnvelope is the regression
+// guard: the egress AMQP Subject comes only from
 // Envelope.Subject, never from the amqp10.subject header.
 func TestEnvelopeToMessage_SubjectOnlyFromEnvelope(t *testing.T) {
 	// Header carries a subject but Envelope.Subject is empty -> Subject

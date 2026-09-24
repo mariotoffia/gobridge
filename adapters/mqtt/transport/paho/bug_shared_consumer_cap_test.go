@@ -9,7 +9,7 @@ import (
 )
 
 // TestFactory_Capabilities_AdvertisesSharedConsumer verifies the MQTT
-// factory advertises CapSharedConsumer (finding 9). MQTT shared
+// factory advertises CapSharedConsumer. MQTT shared
 // subscriptions ($share/<group>/<filter>) are supported by the router
 // (topic_match.go strips the $share prefix), so the capability must be
 // discoverable by the runtime/operators.

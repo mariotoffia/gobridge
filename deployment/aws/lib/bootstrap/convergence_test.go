@@ -14,12 +14,12 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
-// TestReconfig1_ConvergenceDegradedStateSurfaces pins RECONFIG-1's observability:
+// TestApp_ConvergenceDegradedStateSurfaces pins reconfiguration observability:
 // once the post-swap convergence watch latches applied-but-not-converged, the
 // state is surfaced in the deep-health projection (degradedConfigWatch) AND the
 // ConfigDegraded gauge flips to 1 — the same signal the generic Supervisor emits,
 // which the shipped bootstrap previously lacked. A later convergence clears both.
-func TestReconfig1_ConvergenceDegradedStateSurfaces(t *testing.T) {
+func TestApp_ConvergenceDegradedStateSurfaces(t *testing.T) {
 	app := NewApp(testBootstrapCfg())
 	rec := &ports.RecordingExporter{}
 	app.metricsExporter = rec
@@ -114,10 +114,10 @@ func TestApp_ConvergenceWatch_DiagnosticsNameTheAdoptedDocument(t *testing.T) {
 		"the mark belongs at the original budget expiry, not a budget later")
 }
 
-// TestReconfig1_SupersededWatcherCannotMark proves a watcher for a runtime that is
+// TestApp_ConvergenceWatch_SupersededWatcherCannotMark proves a watcher for a runtime that is
 // no longer installed cannot clobber the current state — a new swap owns the
 // signal.
-func TestReconfig1_SupersededWatcherCannotMark(t *testing.T) {
+func TestApp_ConvergenceWatch_SupersededWatcherCannotMark(t *testing.T) {
 	app := NewApp(testBootstrapCfg())
 	app.metricsExporter = &ports.RecordingExporter{}
 
@@ -132,12 +132,12 @@ func TestReconfig1_SupersededWatcherCannotMark(t *testing.T) {
 	require.False(t, degraded)
 }
 
-// TestReconfig1_CancelledParentSkipsWatch pins the shutdown-race guard: when the
+// TestApp_ConvergenceWatch_CancelledParentSkipsWatch pins the shutdown-race guard: when the
 // App-lifetime context (rootCtx) is already cancelled — as it is once Stop has run
 // while a racing admin commit reaches installPlan — startConvergenceWatch must be
 // a no-op (it must NOT call watchWg.Go, which would Add concurrently with Stop's
 // watchWg.Wait and panic the shutdown goroutine).
-func TestReconfig1_CancelledParentSkipsWatch(t *testing.T) {
+func TestApp_ConvergenceWatch_CancelledParentSkipsWatch(t *testing.T) {
 	app := NewApp(testBootstrapCfg())
 	app.metricsExporter = &ports.RecordingExporter{}
 	rt := &goruntime.Runtime{}
@@ -154,9 +154,9 @@ func TestReconfig1_CancelledParentSkipsWatch(t *testing.T) {
 	app.watchWg.Wait()
 }
 
-// TestReconfig1_ConvergenceBudgetFloor proves the budget defaults to the floor
+// TestApp_ConvergenceBudgetFloor proves the budget defaults to the floor
 // when no session declares transport activation timing.
-func TestReconfig1_ConvergenceBudgetFloor(t *testing.T) {
+func TestApp_ConvergenceBudgetFloor(t *testing.T) {
 	app := NewApp(testBootstrapCfg())
 	require.Equal(t, bootstrapConvergenceBudgetFloor, app.convergenceBudget(&ports.BridgeConfig{}))
 }

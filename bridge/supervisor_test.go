@@ -468,8 +468,8 @@ func TestSupervisor_ContextCancellation(t *testing.T) {
 }
 
 // TestSupervisor_ChannelClosed_GracefulShutdown validates that a closed config
-// change stream does NOT stop a healthy runtime (Finding 1): the supervisor
-// keeps serving, marks itself degraded, and Run returns only when ctx is
+// change stream does NOT stop a healthy runtime: the supervisor keeps
+// serving, marks itself degraded, and Run returns only when ctx is
 // cancelled. A closed channel used to drain+stop the bridge and exit 0, turning
 // a watcher failure (e.g. inotify exhaustion) into a silent total outage.
 func TestSupervisor_ChannelClosed_KeepsServingAndDegrades(t *testing.T) {
@@ -732,7 +732,7 @@ func TestSupervisorClusteredReload(t *testing.T) {
 	})
 
 	t.Run("no-op clustered reload stays accepted without a swap", func(t *testing.T) {
-		// Findings 1 + 6: a byte-identical re-emit is detected BEFORE the guard and
+		// A byte-identical re-emit is detected BEFORE the guard and
 		// acknowledged WITHOUT a swap — the running runtime, applied config, and
 		// version are all preserved (no rebuild/stop/replace).
 		onSwap, swaps := swapChan(1)
@@ -760,7 +760,7 @@ func TestSupervisorClusteredReload(t *testing.T) {
 	})
 
 	t.Run("a genuine route change on a standalone deployment still swaps", func(t *testing.T) {
-		// Guardrail for finding 7: the canonical no-op comparison must NOT classify
+		// Guardrail: the canonical no-op comparison must NOT classify
 		// a real route change as a no-op — single-process live reload is unchanged.
 		onSwap, swaps := swapChan(1)
 		s := newTestSupervisor(WithOnSwap(onSwap))

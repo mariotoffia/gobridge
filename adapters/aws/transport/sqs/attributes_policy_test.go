@@ -12,7 +12,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/messaging"
 )
 
-// Finding 7 — bridge-to-bridge header preservation on egress.
+// Bridge-to-bridge header preservation on egress.
 //
 // SQS previously stripped ALL reserved x-bridge.* headers on send, losing
 // correlation/idempotency across bridge hops. The central policy strips
@@ -152,7 +152,7 @@ func TestBuildAttributes_EgressHeaderPolicy(t *testing.T) {
 	assert.True(t, hasSubject, "Subject attribute must be present")
 }
 
-// Finding 11 — deterministic SQS attribute-limit enforcement.
+// Deterministic SQS attribute-limit enforcement.
 
 func TestHeadersToAttributes_CapsAtMaxDeterministically(t *testing.T) {
 	headers := make(map[string]any, 20)

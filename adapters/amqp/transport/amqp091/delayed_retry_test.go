@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════
 // Production-readiness remediation tests: delayed-retry parity
-// and poison-loop mitigation (c5-poison-loop).
+// and poison-loop mitigation.
 //
 // AMQP 0-9-1 has no native delayed redelivery. Retry(after>0) therefore
 // honors the requested backoff CLIENT-SIDE: it holds the unacked delivery

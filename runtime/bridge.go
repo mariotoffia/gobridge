@@ -545,8 +545,8 @@ var errRouteUnexpectedStop = errors.New("runtime: route runner stopped unexpecte
 //     componentErrors is cleared before each retry so a recovered route leaves no
 //     phantom fault; equal-jitter avoids lockstep reconnection.
 //
-// This REPLACES the previous fail-fast rationale (the old REV-3-routeiso comment
-// at the route start site). That argument held that every non-ctx error a
+// This REPLACES the previous fail-fast rationale (formerly a comment at the
+// route start site). That argument held that every non-ctx error a
 // receiver surfaces is unrecoverable-and-global and SHOULD crash the pod, on the
 // premise that adapters isolate all transient faults internally. Weighed
 // honestly, its fatal flaw is co-tenancy: a runtime hosts MANY routes, and a

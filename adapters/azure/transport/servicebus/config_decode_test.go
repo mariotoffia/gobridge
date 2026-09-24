@@ -18,7 +18,7 @@ import (
 // excludes *_test.go, and there is precedent (amqp10, native/config/file).
 
 // TestPluginOptionsDecode_FullNestedYAML_Succeeds is the regression test
-// for the CONFIG-DECODE finding: every documented connection key
+// for config decoding: every documented connection key
 // (connection_string, use_managed_identity, tenant_id, client_id,
 // client_secret, ca_pem, client_cert_pem, client_key_pem,
 // insecure_skip_verify) must decode into ConnectionConfig. Before the

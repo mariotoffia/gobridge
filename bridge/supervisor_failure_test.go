@@ -332,8 +332,8 @@ func TestSupervisor_BrokerUnreachable_Overlap(t *testing.T) {
 	oldRt := s.Runtime()
 
 	// The broken session MUST be referenced (here, by the receiver) so the
-	// builder actually constructs it — an unreferenced session is skipped
-	// (Finding 6), which would otherwise mask the broker-unreachable failure.
+	// builder actually constructs it — an unreferenced session is skipped,
+	// which would otherwise mask the broker-unreachable failure.
 	bad := quickCfg("r2")
 	bad.Sessions = []ports.SessionDef{{ID: "s1", Transport: "broken"}}
 	bad.Receivers[0] = ports.ReceiverDef{ID: "r2-rx", Transport: "broken", SessionID: "s1"}
@@ -471,7 +471,7 @@ func TestSupervisor_ContextCancel_DuringSwap(t *testing.T) {
 
 // TestSupervisor_ChannelClosed_WhileApplying validates that closing the config
 // channel while a config is in flight keeps the current runtime serving and
-// marks the supervisor degraded rather than tearing the bridge down (Finding 1).
+// marks the supervisor degraded rather than tearing the bridge down.
 // Run returns only on ctx cancellation.
 func TestSupervisor_ChannelClosed_WhileApplying(t *testing.T) {
 	s := newTestSupervisor()

@@ -1,6 +1,6 @@
 package servicebus
 
-// use_sessions_test.go — Finding 9 (audit 501111a): consuming a
+// use_sessions_test.go — consuming a
 // session-enabled entity WITHOUT pinning a session_id. The receiver
 // accepts the next available session (AcceptNextSessionForQueue /
 // ...ForSubscription), drains it, and rotates to the next session once

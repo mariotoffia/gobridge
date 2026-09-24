@@ -9,10 +9,10 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-// TestDefaultMerge_ClonesHTTPWhenOverlayOmitsIt covers the Chunk-1 finding that
-// DefaultMerge cloned Cluster but left HTTP aliasing the base layer when the
-// overlay carried no http block. A consumer mutating merged.HTTP could then
-// reach back into and poison the cached base config.
+// TestDefaultMerge_ClonesHTTPWhenOverlayOmitsIt pins that DefaultMerge clones
+// HTTP (as it does Cluster) even when the overlay carries no http block. If
+// merged.HTTP aliased the base layer, a consumer mutating it could reach back
+// into and poison the cached base config.
 func TestDefaultMerge_ClonesHTTPWhenOverlayOmitsIt(t *testing.T) {
 	base := &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "b1"},

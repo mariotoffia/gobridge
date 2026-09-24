@@ -17,9 +17,9 @@ func defaultBackoffConfig() ReceiverConfig {
 	return cfg
 }
 
-// TestPollBackoffNextInitialS10 verifies the first next() delay is near the
+// TestPollBackoffNextInitial verifies the first next() delay is near the
 // configured initial delay within the jitter window.
-func TestPollBackoffNextInitialS10(t *testing.T) {
+func TestPollBackoffNextInitial(t *testing.T) {
 	t.Parallel()
 
 	cfg := defaultBackoffConfig()
@@ -31,9 +31,9 @@ func TestPollBackoffNextInitialS10(t *testing.T) {
 	}
 }
 
-// TestPollBackoffDoublingAndCapS10 verifies exponential growth of the base
+// TestPollBackoffDoublingAndCap verifies exponential growth of the base
 // delay (1s -> 2s -> 4s -> 8s -> 16s -> 30s cap) via jittered return ranges.
-func TestPollBackoffDoublingAndCapS10(t *testing.T) {
+func TestPollBackoffDoublingAndCap(t *testing.T) {
 	t.Parallel()
 
 	cfg := defaultBackoffConfig()
@@ -57,12 +57,12 @@ func TestPollBackoffDoublingAndCapS10(t *testing.T) {
 	}
 }
 
-// TestPollBackoffJitterNeverExceedsMaxS10 is the regression for Finding 11:
+// TestPollBackoffJitterNeverExceedsMax pins the backoff cap under jitter:
 // jitter was added AFTER the base was capped, so a +25% draw could return up
 // to 1.25*PollBackoffMax — violating the operator contract that a retry never
 // waits longer than PollBackoffMax. Once saturated, every jittered draw must
 // stay at or below the cap. Many draws exercise the random +25% path.
-func TestPollBackoffJitterNeverExceedsMaxS10(t *testing.T) {
+func TestPollBackoffJitterNeverExceedsMax(t *testing.T) {
 	t.Parallel()
 
 	cfg := defaultBackoffConfig()
@@ -75,14 +75,14 @@ func TestPollBackoffJitterNeverExceedsMaxS10(t *testing.T) {
 
 	for i := 0; i < 10000; i++ {
 		if d := b.next(); d > cfg.PollBackoffMax {
-			t.Fatalf("draw %d: delay %v exceeds cap %v (Finding 11: jitter over cap)", i, d, cfg.PollBackoffMax)
+			t.Fatalf("draw %d: delay %v exceeds cap %v (jitter over cap)", i, d, cfg.PollBackoffMax)
 		}
 	}
 }
 
-// TestPollBackoffResetS10 verifies reset restores the backoff to the initial
+// TestPollBackoffReset verifies reset restores the backoff to the initial
 // scale on the following next() call.
-func TestPollBackoffResetS10(t *testing.T) {
+func TestPollBackoffReset(t *testing.T) {
 	t.Parallel()
 
 	cfg := defaultBackoffConfig()

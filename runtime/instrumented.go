@@ -258,7 +258,7 @@ func instrumentedClock(clk clock.Clock) clock.Clock {
 // ports.DLQDepthReporter capability and emits it as the shared.MetricDLQDepth
 // gauge. It is the store-side means of making DLQ depth observable: composition
 // roots call it on a periodic cadence (and MAY call it after DLQ mutations) so a
-// stale backlog is alarmable without a manual storage scan (H-OBS DLQ-1).
+// stale backlog is alarmable without a manual storage scan.
 //
 // Fail-safe by design:
 //   - When store does not implement ports.DLQDepthReporter it emits nothing and

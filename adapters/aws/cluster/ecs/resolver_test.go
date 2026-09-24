@@ -28,7 +28,7 @@ func newFlakyServer(t *testing.T, fn func(count int64, w http.ResponseWriter)) (
 }
 
 // TestResolve_RetriesUntilSuccess verifies transient non-200 responses are
-// retried and Resolve succeeds once the metadata endpoint recovers (finding 10).
+// retried and Resolve succeeds once the metadata endpoint recovers.
 func TestResolve_RetriesUntilSuccess(t *testing.T) {
 	srv, count := newFlakyServer(t, func(c int64, w http.ResponseWriter) {
 		if c < 3 {

@@ -21,7 +21,7 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Finding c8-terminal-recv (HIGH) — receiver.go pollLoop
+// Terminal receive errors — receiver.go pollLoop
 //
 // pollLoop used to treat EVERY ReceiveMessage error as retryable AFTER
 // signalStarted() had already closed readiness: a deleted queue / revoked
@@ -129,7 +129,7 @@ func TestPollLoop_TransientReceiveError_StaysRetryable(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Finding c8-auth-permanent (HIGH) — acl_errors.go / send path
+// Auth-failure grace on send — acl_errors.go / send path
 //
 // Plain auth failures on SEND (AccessDenied / UnauthorizedAccess /
 // InvalidClientTokenId) were classified PERMANENT immediately, so a static-key
@@ -288,7 +288,7 @@ func TestSend_AuthGrace_InterleavedNonAuthError_StillEscalates(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Finding c8-settle-client (HIGH) — receiver.go pollLoop
+// Settlement via the receiving client — receiver.go pollLoop
 //
 // pollLoop used to loadClient() inside the receive AND again for the
 // deliveries: an ApplyCredentials swap in between bound Ack/Retry/auto-extend
@@ -367,7 +367,7 @@ func TestPollLoop_SettlesViaReceivingClient_AfterMidBatchSwap(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Finding c8-autoextend-margin (HIGH) — acl_delivery.go Ack
+// Delete visibility margin — acl_delivery.go Ack
 //
 // Ack stopped auto-extension before DeleteMessage had a guaranteed visibility
 // margin. DeleteMessage is bounded by sqsSettlementTimeout (10s) while a

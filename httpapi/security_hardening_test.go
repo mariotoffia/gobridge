@@ -42,9 +42,9 @@ func TestRequireAdminAuth_FailureEmitsAudit(t *testing.T) {
 }
 
 // After AuthFailureLimit FAILED attempts within the window, further FAILED
-// attempts from that peer are throttled with 429 — but a VALID key still passes
-// (finding 1): the credential is checked before the throttle, so a bad-key
-// spammer behind a shared LB/NAT peer cannot lock out a valid operator.
+// attempts from that peer are throttled with 429 — but a VALID key still
+// passes: the credential is checked before the throttle, so a bad-key spammer
+// behind a shared LB/NAT peer cannot lock out a valid operator.
 func TestRequireAdminAuth_ThrottlesAfterLimit(t *testing.T) {
 	clk := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 	rt := runtime.New(runtime.WithInstanceID("auth-throttle"))
@@ -76,8 +76,8 @@ func TestRequireAdminAuth_ThrottlesAfterLimit(t *testing.T) {
 
 	// The correct key ALWAYS passes, even while the peer's window is throttled:
 	// the throttle only gates FAILED auth, so a valid operator is never locked
-	// out by someone else's bad-key spray from a shared peer (finding 1). A
-	// successful auth also resets the peer's window.
+	// out by someone else's bad-key spray from a shared peer. A successful auth
+	// also resets the peer's window.
 	assert.Equal(t, http.StatusOK, do("test-secret-key-0123456789"))
 
 	// After the window elapses the peer may fail-and-be-scored again.

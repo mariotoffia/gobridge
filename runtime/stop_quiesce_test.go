@@ -9,7 +9,7 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
-// Finding L8: WithStopQuiesce makes Stop DRAIN in-flight deliveries under a
+// WithStopQuiesce makes Stop DRAIN in-flight deliveries under a
 // bounded budget BEFORE cancelling the runtime context, so a graceful/rolling
 // restart settles current work instead of aborting it mid-flight into a
 // duplicate on redelivery. This test holds a delivery in flight and proves Stop

@@ -9,17 +9,17 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BUG RES-002: MQTT Sender no fallback timeout when Timeout=0
+// MQTT Sender fallback timeout when Timeout=0
 //
 // When SenderOptions.Timeout is 0 and the caller's context has no deadline,
 // Send would run with no timeout at all. The fix adds a 60s safety-net
 // fallback when Timeout<=0 and the context has no deadline.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestBugRES002_Sender_FallbackTimeout_Applied verifies that when
+// TestSender_FallbackTimeout_Applied verifies that when
 // SenderOptions.Timeout is 0, the Send method still applies a deadline
 // to the context (the 60s safety-net fallback).
-func TestBugRES002_Sender_FallbackTimeout_Applied(t *testing.T) {
+func TestSender_FallbackTimeout_Applied(t *testing.T) {
 	s := &Sender{
 		opts:    SenderOptions{Timeout: 0},
 		metrics: &noopTestExporter{},
@@ -43,9 +43,9 @@ func TestBugRES002_Sender_FallbackTimeout_Applied(t *testing.T) {
 	}
 }
 
-// TestBugRES002_Sender_ExplicitTimeout_Applied verifies that when
+// TestSender_ExplicitTimeout_Applied verifies that when
 // SenderOptions.Timeout is set, that value is used.
-func TestBugRES002_Sender_ExplicitTimeout_Applied(t *testing.T) {
+func TestSender_ExplicitTimeout_Applied(t *testing.T) {
 	s := &Sender{
 		opts:    SenderOptions{Timeout: 5 * time.Second},
 		metrics: &noopTestExporter{},
@@ -66,9 +66,9 @@ func TestBugRES002_Sender_ExplicitTimeout_Applied(t *testing.T) {
 	}
 }
 
-// TestBugRES002_Sender_ExistingDeadline_NotOverridden verifies that
+// TestSender_ExistingDeadline_NotOverridden verifies that
 // when the context already has a deadline, no additional timeout is applied.
-func TestBugRES002_Sender_ExistingDeadline_NotOverridden(t *testing.T) {
+func TestSender_ExistingDeadline_NotOverridden(t *testing.T) {
 	s := &Sender{
 		opts:    SenderOptions{Timeout: 0},
 		metrics: &noopTestExporter{},

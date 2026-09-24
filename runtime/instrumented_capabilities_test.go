@@ -9,7 +9,7 @@ import (
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
-// Coverage for the finding-14 residual (audit): the instrumentation
+// Coverage for capability forwarding: the instrumentation
 // wrappers for Sender and Receiver must not strip the optional capabilities
 // the runtime probes by type assertion — ports.ContextCloser (route-runner
 // shutdown), ports.RouteIDSetter (route start) and
