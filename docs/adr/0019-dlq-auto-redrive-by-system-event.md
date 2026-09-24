@@ -191,7 +191,13 @@ unchanged.
   at-least-once duplicate ADR 0015 already accepts.
   - Records filed under a route that was since renamed, or with an empty route
     (no single ingress route when they were written), are never listed: the
-    pass lists by the current route.
+    pass lists by the current route. A hand-wired route that leaves
+    `RouteConfig.SourceSessionID` empty produces such records, since that field
+    is the only way the writer finds a session's ingress route. The session a
+    caller passes to `AddRoute` is not used by identity instead: the builder
+    passes an egress binding's session there for a route with no session block,
+    so an SQS-to-MQTT route would be named and a redrive would publish the
+    removed filter's messages to its MQTT destination.
   - A permanent failure during an automatic redrive is dead-lettered by the
     route as usual, as a new manual record under the redriven message's fresh
     envelope ID. The original record stays too, so one message shows two

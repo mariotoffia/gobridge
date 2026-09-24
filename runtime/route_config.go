@@ -104,8 +104,13 @@ type RouteConfig struct {
 	// ingress settlement barrier for this route on that session, so a session
 	// managed only for its receivers (RegisterIngressSession) waits for the
 	// deliveries the route accepted to settle before it recycles a broker
-	// connection. Populated by the builder; optional for programmatic callers,
-	// whose route session argument covers the same need by identity.
+	// connection. It also names this route on a removed-subscription
+	// dead-letter record, which a manual or automatic redrive of that record
+	// needs (ADR 0019). Populated by the builder. A programmatic caller's route
+	// session argument covers the barrier by identity but not the redrive: that
+	// argument can be an egress session, so the runtime never names a route
+	// from it. A hand-wired route that leaves this empty gets such records with
+	// no route, and they stay in the DLQ for manual handling.
 	SourceSessionID string
 }
 

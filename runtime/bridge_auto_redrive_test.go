@@ -253,6 +253,44 @@ func TestAutoRedriveGivesUpWithoutASingleIngressRoute(t *testing.T) {
 	}
 }
 
+// A hand-wired route that passes the managed session to AddRoute but leaves
+// SourceSessionID empty is not named on a removed-subscription record: the
+// session argument can be an egress session, so the runtime never names a route
+// from it. The record carries no route, and the automatic redrive leaves it.
+func TestAutoRedriveLeavesTheRecordOfAHandWiredRouteWithoutSourceSession(t *testing.T) {
+	route := autoRedriveRoute("r1")
+	route.SourceSessionID = ""
+	f := newAutoRedriveRuntime(t, newOrderedDLQStore(), "auto-redrive", "id-1", route)
+	f.start(t)
+	held := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "held-1", Subject: "sensors/a/temp", Payload: []byte("held")})
+	if err := f.sess.deadLetter(t)(context.Background(), held, autoRedriveFilter); err != nil {
+		t.Fatalf("dead-letter write: %v", err)
+	}
+	ids := f.store.ids()
+	if len(ids) != 1 {
+		t.Fatalf("DLQ records after the dead-letter write = %v, want one", ids)
+	}
+	rec, err := f.store.Get(context.Background(), ids[0])
+	if err != nil {
+		t.Fatalf("Get %s: %v", ids[0], err)
+	}
+	if rec.RouteID() != "" || rec.SessionID() != "plant-a" || rec.RedriveMode() != routing.RedriveAuto {
+		t.Fatalf("DLQ record route/session/mode = %q/%q/%q, want \"\"/plant-a/%q",
+			rec.RouteID(), rec.SessionID(), rec.RedriveMode(), routing.RedriveAuto)
+	}
+
+	f.sess.subscriptionAdded(t, autoRedriveFilter)
+	f.eventually(t, "the pass gave up", func() bool {
+		return f.logged("automatic redrive skipped: session has no single ingress route") == 1
+	})
+	if got := f.sender.tried(); len(got) != 0 {
+		t.Fatalf("sent %v, want nothing", got)
+	}
+	if got := f.store.ids(); !slices.Equal(got, ids) {
+		t.Fatalf("DLQ records %v, want %v kept", got, ids)
+	}
+}
+
 func TestAutoRedriveTwoEventsRedriveARecordOnce(t *testing.T) {
 	f := newAutoRedriveFixture(t)
 	f.start(t)

@@ -289,6 +289,13 @@ func newAutoRedriveFixture(tb testing.TB, opts ...goruntime.Option) *autoRedrive
 // shared store: its own instance ID, clock, session identity and sender.
 func newAutoRedriveMember(tb testing.TB, store *orderedDLQStore, instanceID, identity string, opts ...goruntime.Option) *autoRedriveFixture {
 	tb.Helper()
+	return newAutoRedriveRuntime(tb, store, instanceID, identity, autoRedriveRoute("r1"), opts...)
+}
+
+// newAutoRedriveRuntime builds, without starting it, a runtime over store that
+// adds route with the managed session plant-a as its session argument.
+func newAutoRedriveRuntime(tb testing.TB, store *orderedDLQStore, instanceID, identity string, route goruntime.RouteConfig, opts ...goruntime.Option) *autoRedriveFixture {
+	tb.Helper()
 	f := &autoRedriveFixture{
 		clk:     clocktest.New(),
 		store:   store,
@@ -309,7 +316,7 @@ func newAutoRedriveMember(tb testing.TB, store *orderedDLQStore, instanceID, ide
 	}
 	f.rt = goruntime.New(append(base, opts...)...)
 	sessCfg := runsession.Config{SessionID: "plant-a"}
-	if err := f.rt.AddRoute(autoRedriveRoute("r1"), NewFakeReceiver(), f.sender, f.sess, &sessCfg); err != nil {
+	if err := f.rt.AddRoute(route, NewFakeReceiver(), f.sender, f.sess, &sessCfg); err != nil {
 		tb.Fatalf("AddRoute: %v", err)
 	}
 	return f

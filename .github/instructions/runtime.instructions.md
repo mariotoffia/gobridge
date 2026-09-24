@@ -59,6 +59,11 @@ ADR-0019, `docs/internals/architecture-message-flow.md`,
 - An error wrapping `ports.ErrInjectNotDelivered` moves the pass to the next
   record; any other error stops it. A failed record keeps its `RedriveMode`
   and `ExtraInfo`.
+- A removed-subscription record names its route only through
+  `RouteConfig.SourceSessionID`, never through the route's session argument:
+  the builder passes an egress binding's session there, so matching by
+  identity would redrive to that route's destination. A hand-wired route
+  without `SourceSessionID` gets records with no route, which the pass leaves.
 
 ## Lifecycle
 
