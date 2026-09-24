@@ -120,7 +120,7 @@ curl -s -H "X-API-Key: change-me-to-a-real-secret-key" \
 `redrive_mode` is `auto` when the bridge may redrive the entry by itself (see
 [Automatic redrive](#automatic-redrive)), and empty when only an operator
 redrives it. `extra_info` holds the facts such a redrive matches on; it is
-always an object, `{}` when there are none.
+always an object, `{}` when there are none. Every entry carries both fields.
 
 The response no longer carries a `total` field (the old `total` reported
 `min(matched, limit+offset)`, which under-reported once the backlog exceeded the

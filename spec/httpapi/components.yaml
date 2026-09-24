@@ -297,7 +297,7 @@ schemas:
 
   DLQEntryView:
     type: object
-    required: [id, route_id, subject, reason, category, failed_at, attempts]
+    required: [id, route_id, subject, reason, category, failed_at, attempts, redrive_mode, extra_info]
     description: A single dead-letter queue entry.
     properties:
       id:
@@ -358,8 +358,9 @@ schemas:
         type: string
         enum: ["", auto]
         description: >
-          Whether a system event may redrive this entry by itself. Empty: only
-          an operator redrives it. `auto`: a matching event may redrive it; see
+          Whether a system event may redrive this entry by itself. Always
+          present. Empty: only an operator redrives it. `auto`: a matching
+          event may redrive it; see
           docs/adr/0019-dlq-auto-redrive-by-system-event.md.
         example: auto
       extra_info:
