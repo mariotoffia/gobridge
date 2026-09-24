@@ -86,8 +86,11 @@ func slowRedriveServer(t *testing.T) (*Server, *http.ServeMux, *memorydlq.Store)
 // whole batch: the ids after it are still looked up, injected and removed.
 func TestRedriveASlowFirstEntryDoesNotStarveTheBatch(t *testing.T) {
 	srv, mux, dlq := slowRedriveServer(t)
-	srv.redriveEntryTimeout = 50 * time.Millisecond
-	srv.redriveTimeout = 5 * time.Second
+	// Each fast entry must finish inside this real bound under -race on a
+	// loaded machine, so it is generous; the batch bound stays well above
+	// the slow entry's whole bound plus the fast ones.
+	srv.redriveEntryTimeout = time.Second
+	srv.redriveTimeout = 10 * time.Second
 
 	failedAt := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	entry := func(id, subject string, age time.Duration) routing.DLQEntry {

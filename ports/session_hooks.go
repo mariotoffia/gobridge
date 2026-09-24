@@ -14,8 +14,10 @@ type ManagedSubscriptionIdentityReporter interface {
 // runtime installs fn during Runtime.Start or Graft, before session goroutines
 // begin. The session calls fn after the broker grants a SUBSCRIBE for filters
 // that were not in its managed subscription history — a genuinely added
-// subscription, not one re-established after a reconnect or a restart. fn must
-// return promptly and must not wait on the runtime. A nil fn means no hook.
+// subscription, not one re-established after a reconnect or a restart. fn runs
+// inside the session's reconcile, under its reconcile serialization, so it must
+// return promptly, must not call back into the session (Reconcile, Reload,
+// Close) and must not wait on the runtime. A nil fn means no hook.
 type SubscriptionAddedHookConfigurer interface {
 	SetSubscriptionAddedHook(fn func(filters []string))
 }

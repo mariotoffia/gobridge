@@ -42,6 +42,8 @@ func dlqRedriveFieldsRoundTrip(t *testing.T, store ports.DLQStore) {
 			if got.RedriveMode() != routing.RedriveManual || len(got.ExtraInfo()) != 0 {
 				t.Fatalf("%s rd-manual: mode %q info %v, want manual and none", where, got.RedriveMode(), got.ExtraInfo())
 			}
+		default:
+			t.Fatalf("%s returned unexpected entry %q, want rd-auto or rd-manual", where, got.ID())
 		}
 	}
 	for _, id := range []string{"rd-auto", "rd-manual"} {
