@@ -48,8 +48,8 @@ type retiredUnit struct {
 // runners, drainers and session managers stop, its managers close (releasing
 // their leases), and so does every session only the unit held: one no manager
 // runs and no route left running was added with. Credential
-// refreshers stop watching its transports, and one left watching nothing is
-// closed. Until Retire has finished with the unit, a Fence still fences its
+// refreshers stop watching its transports no route left running holds, and one
+// left watching nothing is closed. Until Retire has finished with the unit, a Fence still fences its
 // drainers, and a DLQ write for one of its exclusive sessions is still fenced
 // on that session's lease. Graft refuses the unit's ids until Retire returns:
 // until then the retired ids' health records and exclusive marks are still
@@ -92,7 +92,7 @@ func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 	// rotation that starts from here on reaches them. Forget does not wait for
 	// a rotation already being applied: an MQTT or AMQP session refuses it once
 	// closed, and any other transport at most swaps a client on a closed object.
-	rt.forgetCredentialTargets(ctx, d.set.credentialTargets())
+	rt.forgetCredentialTargets(ctx, rt.releasedCredentialTargets(d))
 	finished := waitRuns(ctx, d.runs)
 	if !finished {
 		errs = append(errs, fmt.Errorf("runtime: retire: routes, drainers and session managers "+
@@ -284,6 +284,29 @@ func (s componentSet) credentialTargets() []any {
 		add(ise.session)
 	}
 	return targets
+}
+
+// releasedCredentialTargets returns the credential targets of d that rt no
+// longer holds. A hand-wired route left running may still ride on a session
+// object d held (see detach), and that route's credentials must keep rotating.
+func (rt *Runtime) releasedCredentialTargets(d *retiredUnit) []any {
+	held := rt.CredentialTargets()
+	return slices.DeleteFunc(d.set.credentialTargets(), func(target any) bool {
+		return holdsTarget(held, target)
+	})
+}
+
+// holdsTarget reports whether target is one of held, by identity. A target
+// whose dynamic type is not comparable panics on ==; it counts as held, as a
+// session object does in ridesOnSessionObject, so Retire keeps watching it
+// instead of crashing.
+func holdsTarget(held []any, target any) (holds bool) {
+	defer func() {
+		if recover() != nil {
+			holds = true
+		}
+	}()
+	return slices.Contains(held, target)
 }
 
 // forgetCredentialTargets asks every credential refresher to stop watching
