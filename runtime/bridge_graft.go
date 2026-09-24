@@ -171,17 +171,18 @@ func (rt *Runtime) graftCollisionLocked(part *Runtime) error {
 }
 
 // graftSessionObjectsLocked is the closure check by object: a hand-wired route
-// with no session block rides on the session registered with the object it was
-// added with, even when its configuration names no session id (see
-// attachIngressSessions), so the id check alone cannot see it. The runtime side
+// with no session block rides on the session object it was added with, whether
+// a manager runs it or only another route holds it, even when its configuration
+// names no session id (see attachIngressSessions), so the id check alone cannot
+// see it. The runtime side
 // counts the units still being retired, as the id check does. The caller holds
 // rt.mu and part.mu.
 func (rt *Runtime) graftSessionObjectsLocked(part *Runtime) error {
-	hostObjects := componentSet{entries: rt.entries, sessionSenders: rt.sessionSenders, ingressSessions: rt.ingressSessions}.registeredSessions()
+	hostObjects := componentSet{entries: rt.entries, sessionSenders: rt.sessionSenders, ingressSessions: rt.ingressSessions}.heldSessions()
 	for _, u := range rt.retiring {
-		hostObjects = append(hostObjects, u.set.registeredSessions()...)
+		hostObjects = append(hostObjects, u.set.heldSessions()...)
 	}
-	partObjects := componentSet{entries: part.entries, sessionSenders: part.sessionSenders, ingressSessions: part.ingressSessions}.registeredSessions()
+	partObjects := componentSet{entries: part.entries, sessionSenders: part.sessionSenders, ingressSessions: part.ingressSessions}.heldSessions()
 	for _, entry := range part.entries {
 		if ridesOnSessionObject(entry, hostObjects) {
 			return fmt.Errorf("runtime: graft: part route %q uses a session object of the runtime; "+
@@ -197,13 +198,14 @@ func (rt *Runtime) graftSessionObjectsLocked(part *Runtime) error {
 	return nil
 }
 
-// registeredSessions returns the session objects s gives a manager: route
-// primary sessions, session senders and ingress sessions. A session a route
-// merely holds is left out, since no manager or barrier comes with it.
-func (s componentSet) registeredSessions() []ports.Session {
+// heldSessions returns every session object s holds: route sessions, session
+// senders and ingress sessions. A session a route alone holds counts as well:
+// no manager runs it, so no manager ties the routes added with it together, and
+// a route on the other side added with it could not be retired apart from them.
+func (s componentSet) heldSessions() []ports.Session {
 	var objs []ports.Session
 	for _, entry := range s.entries {
-		if entry.sessCfg != nil && entry.session != nil {
+		if entry.session != nil {
 			objs = append(objs, entry.session)
 		}
 	}
