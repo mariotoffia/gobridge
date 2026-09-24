@@ -45,3 +45,16 @@ func TestDLQEntryIsManualWithoutExtraInfoByDefault(t *testing.T) {
 		t.Fatalf("ExtraInfo = %v, want nil", entry.ExtraInfo())
 	}
 }
+
+// Verifies an entry built with an empty ExtraInfo map reports none: a store
+// that decodes an empty map must read back the same as one that stored nothing.
+func TestDLQEntryWithEmptyExtraInfoReportsNone(t *testing.T) {
+	entry := routing.NewDLQEntry(routing.DLQEntrySpec{
+		ID:        "e3",
+		Envelope:  *messaging.MustEnvelope(messaging.EnvelopeInput{ID: "env-3", Subject: "s"}),
+		ExtraInfo: map[string]string{},
+	})
+	if entry.ExtraInfo() != nil {
+		t.Fatalf("ExtraInfo = %v, want nil", entry.ExtraInfo())
+	}
+}

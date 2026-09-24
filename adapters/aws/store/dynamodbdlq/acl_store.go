@@ -42,6 +42,8 @@ const (
 	attrEnvelopeJSON  = "envelope_json"
 	attrFailedAt      = "failed_at"
 	attrAttempts      = "attempts"
+	attrRedriveMode   = "redrive_mode"
+	attrExtraInfo     = "extra_info"
 	attrTTL           = "ttl"
 )
 
@@ -258,6 +260,9 @@ func (s *Store) Write(ctx context.Context, entry routing.DLQEntry) error {
 	}
 	if entry.Category() != "" {
 		item[attrCategory] = &ddbtypes.AttributeValueMemberS{Value: entry.Category()}
+	}
+	if err := putRedriveAttrs(item, entry); err != nil {
+		return err
 	}
 	// Only stamp a TTL when a retention window is configured. By default DLQ
 	// entries are retained indefinitely so investigators are not racing an

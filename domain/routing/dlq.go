@@ -103,7 +103,12 @@ func (e DLQEntry) RedriveMode() RedriveMode { return e.redriveMode }
 // ExtraInfo returns a copy of the facts a redrive trigger matches on, or nil
 // when the entry carries none. A copy, so no value copy of the entry can change
 // what another copy or the store holds.
-func (e DLQEntry) ExtraInfo() map[string]string { return maps.Clone(e.extraInfo) }
+func (e DLQEntry) ExtraInfo() map[string]string {
+	if len(e.extraInfo) == 0 {
+		return nil
+	}
+	return maps.Clone(e.extraInfo)
+}
 
 // DLQEntrySpec carries the inputs required to construct a DLQEntry.
 // The supplied Envelope is deep-cloned by NewDLQEntry so callers may

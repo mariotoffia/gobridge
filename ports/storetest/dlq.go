@@ -79,6 +79,7 @@ func RunDLQStoreTests(t *testing.T, store ports.DLQStore) {
 	t.Run("PurgeRemovesOld", func(t *testing.T) { dlqPurgeRemovesOld(t, store) })
 	t.Run("PurgeSkipsRecent", func(t *testing.T) { dlqPurgeSkipsRecent(t, store) })
 	t.Run("FullLifecycle", func(t *testing.T) { dlqFullLifecycle(t, store) })
+	t.Run("RedriveFieldsRoundTrip", func(t *testing.T) { dlqRedriveFieldsRoundTrip(t, store) })
 }
 
 func dlqWriteAndList(t *testing.T, store ports.DLQStore) {
