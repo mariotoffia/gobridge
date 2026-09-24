@@ -354,6 +354,26 @@ schemas:
         type: integer
         description: Number of delivery attempts before failure.
         example: 3
+      redrive_mode:
+        type: string
+        enum: ["", auto]
+        description: >
+          Whether a system event may redrive this entry by itself. Empty: only
+          an operator redrives it. `auto`: a matching event may redrive it; see
+          docs/adr/0019-dlq-auto-redrive-by-system-event.md.
+        example: auto
+      extra_info:
+        type: object
+        additionalProperties:
+          type: string
+        description: >
+          The facts a redrive trigger matches on. Always an object; empty when
+          the entry has none. A removed-subscription entry carries session_id,
+          subscription and managed_identity.
+        example:
+          session_id: plant-a
+          subscription: sensors/+/temp
+          managed_identity: "tcp://broker:1883|plant-a"
 
   DLQMessagesResponse:
     type: object

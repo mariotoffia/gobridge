@@ -29,6 +29,11 @@ type dlqEntryView struct {
 	LastError     string    `json:"last_error"`
 	FailedAt      time.Time `json:"failed_at"`
 	Attempts      int       `json:"attempts"`
+	// RedriveMode is "auto" when a matching system event may redrive the entry
+	// by itself, "" when only an operator redrives it (ADR 0019).
+	RedriveMode string `json:"redrive_mode"`
+	// ExtraInfo holds the facts a redrive trigger matches on. Always an object.
+	ExtraInfo map[string]string `json:"extra_info"`
 }
 
 // dlqEntryDetailView extends dlqEntryView with the envelope payload
@@ -53,7 +58,18 @@ func toDLQEntryView(e routing.DLQEntry) dlqEntryView {
 		LastError:     e.LastError(),
 		FailedAt:      e.FailedAt(),
 		Attempts:      e.Attempts(),
+		RedriveMode:   string(e.RedriveMode()),
+		ExtraInfo:     extraInfoView(e.ExtraInfo()),
 	}
+}
+
+// extraInfoView keeps extra_info a JSON object: an entry without facts
+// renders {} rather than null.
+func extraInfoView(facts map[string]string) map[string]string {
+	if facts == nil {
+		return map[string]string{}
+	}
+	return facts
 }
 
 func toDLQEntryViews(entries []routing.DLQEntry) []dlqEntryView {

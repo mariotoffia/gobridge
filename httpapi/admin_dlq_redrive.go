@@ -18,6 +18,12 @@ import (
 // request context is severed from cancellation.
 const redriveTimeout = 30 * time.Second
 
+// redriveEntryTimeout bounds one entry's lookup and inject inside the batch, so
+// an entry whose destination is down cannot spend the whole batch budget and
+// leave every later id unattempted. The effective bound is the smaller of this
+// and what remains of the batch.
+const redriveEntryTimeout = 10 * time.Second
+
 // redriveInjector is the optional capability a Runtime exposes for
 // DLQ-redrive-safe injection: the message is re-issued under a FRESH envelope
 // ID with the original ID stamped as provenance (x-bridge.causation-id).
@@ -185,9 +191,12 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 	// Detach the inject→delete sequence from the request context so an operator
 	// disconnect mid-batch cannot cancel an in-flight delete that follows a
 	// successful inject — a cancelled delete would leave the (already-delivered)
-	// entry behind and cause a duplicate redrive on the next attempt. A bounded
-	// timeout still caps a stuck inject or store call.
-	opCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), redriveTimeout)
+	// entry behind and cause a duplicate redrive on the next attempt. Two bounds
+	// still cap a stuck inject or store call: s.redriveTimeout caps the whole
+	// batch, and s.redriveEntryTimeout caps each entry's lookup and inject (see
+	// redriveOne), so one entry whose destination is down cannot spend the budget
+	// of the ids after it.
+	opCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s.redriveTimeout)
 	defer cancel()
 
 	// Emit an intent record BEFORE the inject→delete loop so a crash between a
@@ -203,102 +212,10 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 		}
 		seen[id] = struct{}{}
 
-		entry, err := reader.Get(opCtx, id)
-		if err != nil {
-			// A severed/expired opCtx surfaces here as a Get error too; label it
-			// honestly instead of the misleading "entry not found" so a batch
-			// that ran out of budget is not mistaken for missing entries.
-			errMsg := "entry not found"
-			if opCtx.Err() != nil {
-				errMsg = "redrive deadline exceeded before entry lookup"
-			}
-			redriveErrors = append(redriveErrors, redriveError{
-				ID: id, Error: errMsg,
-			})
+		if ok, errMsg := s.redriveOne(opCtx, reader, admin, rt, id); !ok {
+			redriveErrors = append(redriveErrors, redriveError{ID: id, Error: errMsg})
 			continue
 		}
-
-		// Inject BEFORE delete (at-least-once). The previous claim-by-delete
-		// ordering deleted the entry FIRST and injected afterwards, so a crash /
-		// SIGKILL / store outage between Delete and Inject lost BOTH the message
-		// and its DLQ evidence — an irreversible at-most-once window
-		// (dlq.redrive.begin records IDs, not recoverable payloads). Injecting
-		// first and deleting only after a CONFIRMED inject makes a failed inject
-		// leave the entry fully intact: no loss. The cost is a bounded duplicate
-		// window — a crash between a successful Inject and the Delete re-drives
-		// on the next attempt (at-least-once). For a manual recovery action,
-		// never losing the message is the correct bias.
-		//
-		// Binding-scoped dispatch: the entry records the exact BindingID that
-		// failed. When the runtime supports redrive-safe injection, injectRedrive
-		// re-issues under a FRESH envelope ID and carries that binding out-of-band
-		// via Runtime.InjectRedrive (NOT a header — the ingress reserved-header
-		// strip in doHandleDelivery removes any x-bridge.route-override before a
-		// consumption site reads it), confining the replay to that one binding so
-		// the N-1 healthy bindings on a fan-out route do not receive duplicate
-		// deliveries. When the runtime LACKS redrive-safe injection a
-		// binding-scoped entry is REFUSED (errRedriveUnsafeSharedOutbox) and a
-		// dedup-prone direct entry (non-empty ID or an x-bridge.dedup-id header) is
-		// REFUSED (errRedriveUnsafeNoFreshID): the original-ID/dedup-key replay
-		// would be swallowed by outbox or transport dedup and silently lost, so the
-		// entry is left intact rather than deleted after a no-op. Snapshot returns a
-		// fresh deep copy.
-		env := entry.Snapshot()
-		if err := injectRedrive(opCtx, s.logger, rt, entry.RouteID(), entry.BindingID(), env); err != nil {
-			// Carry the cause: a redrive can fail because the route DROPPED or
-			// re-DLQ'd the replay (the runtime reports a terminal settle that
-			// delivered nothing), and "inject failed" alone leaves the operator
-			// with no way to tell that from a missing route.
-			msg := "inject failed: " + err.Error()
-			switch {
-			case errors.Is(err, errRedriveUnsafeSharedOutbox):
-				// The runtime cannot confirm a non-duplicate enqueue for this
-				// shared_outbox/binding entry, so the redrive was refused BEFORE
-				// any inject. The entry is intact; the message and its evidence
-				// are preserved. The operator must upgrade the runtime to one
-				// that implements redrive-safe injection (InjectRedrive).
-				msg = "refused: runtime lacks redrive-safe injection; redriving this shared_outbox/binding entry would reuse the original envelope id and risk silent outbox dedup loss — entry preserved (no delete)"
-			case errors.Is(err, errRedriveUnsafeNoFreshID):
-				// A DIRECT entry that carries a non-empty ID or a dedup-id header
-				// was refused BEFORE any inject: an idempotent/FIFO transport could
-				// silently swallow the original-ID/dedup-key replay, so the entry
-				// is left intact. The operator must upgrade the runtime to one that
-				// implements redrive-safe injection (InjectRedrive).
-				msg = "refused: runtime lacks redrive-safe injection; redriving this entry would reuse its original envelope id or dedup key and risk silent transport dedup loss — entry preserved (no delete)"
-			case errors.Is(err, shared.ErrNotFound):
-				// ErrNotFound from redrive now most often means the recorded
-				// binding no longer exists on a still-present (reconfigured)
-				// route, not that the route itself is gone.
-				msg = "route or binding not found"
-			}
-			// Inject failed or was refused: the entry was NEVER deleted, so both
-			// the failure evidence and the message survive in the DLQ. A
-			// route-tagged failure counter lets an operator alert on
-			// manual-recovery churn the batch-level audit record does not
-			// surface. No-op when no metrics exporter is wired.
-			s.countRedrive(shared.MetricDLQRedriveFailures, entry.RouteID())
-			redriveErrors = append(redriveErrors, redriveError{
-				ID: id, Error: msg,
-			})
-			continue
-		}
-
-		// Inject confirmed: only NOW remove the entry. A failed delete means the
-		// message WAS delivered but the entry lingers, so a later redrive
-		// re-delivers (a bounded at-least-once duplicate, NOT a loss). Surface it
-		// so the operator removes the entry manually rather than believing the
-		// redrive failed. A deleted count of 0 (a concurrent redrive already
-		// removed it) is benign — our inject still happened.
-		if _, err := admin.Delete(opCtx, []string{id}); err != nil {
-			s.countRedrive(shared.MetricDLQRedrives, entry.RouteID())
-			redriveErrors = append(redriveErrors, redriveError{
-				ID:    id,
-				Error: "message re-injected but DLQ entry not removed (delete failed); remove it manually to avoid a duplicate redrive",
-			})
-			continue
-		}
-
-		s.countRedrive(shared.MetricDLQRedrives, entry.RouteID())
 		successIDs = append(successIDs, id)
 	}
 
@@ -340,6 +257,104 @@ func (s *Server) handleDLQRedrive(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusMultiStatus
 	}
 	writeJSON(w, status, resp)
+}
+
+// redriveOne looks up, injects and removes one DLQ entry. It reports ok, or the
+// per-entry error the response carries for id. The lookup and inject run under
+// s.redriveEntryTimeout, derived from the batch context opCtx, so the effective
+// bound is the smaller of the two. The delete runs under opCtx alone: a confirmed
+// inject's delete must not lose a race to the entry bound, or the delivered entry
+// stays behind and the next redrive duplicates it.
+func (s *Server) redriveOne(opCtx context.Context, reader ports.DLQReader, admin ports.DLQAdmin, rt ports.RuntimeCommand, id string) (bool, string) {
+	entryCtx, cancelEntry := context.WithTimeout(opCtx, s.redriveEntryTimeout)
+	defer cancelEntry()
+
+	entry, err := reader.Get(entryCtx, id)
+	if err != nil {
+		// An expired entry or batch bound surfaces here as a Get error too; label
+		// it honestly instead of the misleading "entry not found" so a lookup that
+		// ran out of budget is not mistaken for a missing entry.
+		if entryCtx.Err() != nil {
+			return false, "redrive deadline exceeded before entry lookup"
+		}
+		return false, "entry not found"
+	}
+
+	// Inject BEFORE delete (at-least-once). The previous claim-by-delete
+	// ordering deleted the entry FIRST and injected afterwards, so a crash /
+	// SIGKILL / store outage between Delete and Inject lost BOTH the message
+	// and its DLQ evidence — an irreversible at-most-once window
+	// (dlq.redrive.begin records IDs, not recoverable payloads). Injecting
+	// first and deleting only after a CONFIRMED inject makes a failed inject
+	// leave the entry fully intact: no loss. The cost is a bounded duplicate
+	// window — a crash between a successful Inject and the Delete re-drives
+	// on the next attempt (at-least-once). For a manual recovery action,
+	// never losing the message is the correct bias.
+	//
+	// Binding-scoped dispatch: the entry records the exact BindingID that
+	// failed. When the runtime supports redrive-safe injection, injectRedrive
+	// re-issues under a FRESH envelope ID and carries that binding out-of-band
+	// via Runtime.InjectRedrive (NOT a header — the ingress reserved-header
+	// strip in doHandleDelivery removes any x-bridge.route-override before a
+	// consumption site reads it), confining the replay to that one binding so
+	// the N-1 healthy bindings on a fan-out route do not receive duplicate
+	// deliveries. When the runtime LACKS redrive-safe injection a
+	// binding-scoped entry is REFUSED (errRedriveUnsafeSharedOutbox) and a
+	// dedup-prone direct entry (non-empty ID or an x-bridge.dedup-id header) is
+	// REFUSED (errRedriveUnsafeNoFreshID): the original-ID/dedup-key replay
+	// would be swallowed by outbox or transport dedup and silently lost, so the
+	// entry is left intact rather than deleted after a no-op. Snapshot returns a
+	// fresh deep copy.
+	env := entry.Snapshot()
+	if err := injectRedrive(entryCtx, s.logger, rt, entry.RouteID(), entry.BindingID(), env); err != nil {
+		// Carry the cause: a redrive can fail because the route DROPPED or
+		// re-DLQ'd the replay (the runtime reports a terminal settle that
+		// delivered nothing), and "inject failed" alone leaves the operator
+		// with no way to tell that from a missing route.
+		msg := "inject failed: " + err.Error()
+		switch {
+		case errors.Is(err, errRedriveUnsafeSharedOutbox):
+			// The runtime cannot confirm a non-duplicate enqueue for this
+			// shared_outbox/binding entry, so the redrive was refused BEFORE
+			// any inject. The entry is intact; the message and its evidence
+			// are preserved. The operator must upgrade the runtime to one
+			// that implements redrive-safe injection (InjectRedrive).
+			msg = "refused: runtime lacks redrive-safe injection; redriving this shared_outbox/binding entry would reuse the original envelope id and risk silent outbox dedup loss — entry preserved (no delete)"
+		case errors.Is(err, errRedriveUnsafeNoFreshID):
+			// A DIRECT entry that carries a non-empty ID or a dedup-id header
+			// was refused BEFORE any inject: an idempotent/FIFO transport could
+			// silently swallow the original-ID/dedup-key replay, so the entry
+			// is left intact. The operator must upgrade the runtime to one that
+			// implements redrive-safe injection (InjectRedrive).
+			msg = "refused: runtime lacks redrive-safe injection; redriving this entry would reuse its original envelope id or dedup key and risk silent transport dedup loss — entry preserved (no delete)"
+		case errors.Is(err, shared.ErrNotFound):
+			// ErrNotFound from redrive now most often means the recorded
+			// binding no longer exists on a still-present (reconfigured)
+			// route, not that the route itself is gone.
+			msg = "route or binding not found"
+		}
+		// Inject failed or was refused: the entry was NEVER deleted, so both
+		// the failure evidence and the message survive in the DLQ. A
+		// route-tagged failure counter lets an operator alert on
+		// manual-recovery churn the batch-level audit record does not
+		// surface. No-op when no metrics exporter is wired.
+		s.countRedrive(shared.MetricDLQRedriveFailures, entry.RouteID())
+		return false, msg
+	}
+
+	// Inject confirmed: only NOW remove the entry. A failed delete means the
+	// message WAS delivered but the entry lingers, so a later redrive
+	// re-delivers (a bounded at-least-once duplicate, NOT a loss). Surface it
+	// so the operator removes the entry manually rather than believing the
+	// redrive failed. A deleted count of 0 (a concurrent redrive already
+	// removed it) is benign — our inject still happened.
+	if _, err := admin.Delete(opCtx, []string{id}); err != nil {
+		s.countRedrive(shared.MetricDLQRedrives, entry.RouteID())
+		return false, "message re-injected but DLQ entry not removed (delete failed); remove it manually to avoid a duplicate redrive"
+	}
+
+	s.countRedrive(shared.MetricDLQRedrives, entry.RouteID())
+	return true, ""
 }
 
 // countRedrive emits a route-tagged redrive counter when a metrics exporter is
