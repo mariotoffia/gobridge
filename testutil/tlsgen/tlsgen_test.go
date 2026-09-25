@@ -208,14 +208,36 @@ func TestGenerate_LeafDoesNotChainToAForeignCA(t *testing.T) {
 // allowance must still produce an ordered window that ends ValidFor after the
 // moment the certificate was minted. Both bounds derive from one internal
 // timestamp, and certificate second precision truncates each by the same
-// fraction, so the window is exactly the five-minute backdate plus the
-// one-minute validity — asserted without reading the wall clock.
+// fraction, so the window is exactly the one-day backdate plus the one-minute
+// validity — asserted without reading the wall clock.
 func TestGenerate_ShortValidityStaysOrderedAndExpiresOnTime(t *testing.T) {
 	r, err := tlsgen.Generate(tlsgen.Options{ValidFor: time.Minute})
 	require.NoError(t, err)
 
 	cert := parseCert(t, r.CertPEM)
 	assert.True(t, cert.NotBefore.Before(cert.NotAfter), "the validity window must be ordered")
-	assert.Equal(t, 6*time.Minute, cert.NotAfter.Sub(cert.NotBefore),
-		"the window is the five-minute clock-skew backdate plus the one-minute validity")
+	assert.Equal(t, 24*time.Hour+time.Minute, cert.NotAfter.Sub(cert.NotBefore),
+		"the window is the one-day clock-skew backdate plus the one-minute validity")
+}
+
+// A broker in a Docker Desktop container checks a fixture certificate by the
+// VM's clock, which stops while the Mac sleeps and trails the host by the time
+// slept until Docker resyncs it. A test run that crosses a night's sleep meets
+// a broker clock that far behind the one that minted the certificate, and the
+// whole chain must already be valid there.
+func TestGenerate_ValidByABrokerClockANightBehindTheHost(t *testing.T) {
+	ca := tlsgen.MustGenerate(tlsgen.Options{CommonName: "trailing-clock-ca", IsCA: true})
+	leaf := tlsgen.MustGenerate(tlsgen.Options{
+		CommonName: "client", DNSNames: []string{"client"}, SignedBy: ca,
+	})
+
+	pool := x509.NewCertPool()
+	require.True(t, pool.AppendCertsFromPEM([]byte(ca.CertPEM)))
+
+	_, err := parseCert(t, leaf.CertPEM).Verify(x509.VerifyOptions{
+		Roots:       pool,
+		CurrentTime: time.Now().Add(-12 * time.Hour),
+		KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	})
+	require.NoError(t, err, "a broker clock a night behind must accept a certificate minted now")
 }
