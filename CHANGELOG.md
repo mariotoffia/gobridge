@@ -10,6 +10,45 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Fixed — a permanent receiver error stops only its own route
+
+- A route whose AMQP 1.0, AMQP 0-9-1 or Azure Service Bus receiver returns an
+  error from `Run` no longer takes the whole process down (#55). That covers:
+  - AMQP 1.0: `amqp:not-found`, `amqp:unauthorized-access` or
+    `amqp:resource-deleted`, at attach or while receiving.
+  - AMQP 0-9-1: a permanent consume error, such as a deleted queue or refused
+    access, once its reconnect-race retries are spent.
+  - Service Bus: a client the receiver cannot build, or a pinned session it
+    cannot accept.
+
+  The route now restarts in place with a growing delay, and `RouteRestarts`
+  counts each restart, the same way as for SQS and MQTT. Every other route keeps
+  running, and the route recovers on its own once the broker condition clears.
+  Before, the route runner refused to run a receiver it had closed. The runtime
+  went terminal and the process exited, then restarted and failed the same way
+  for as long as the condition lasted.
+- `route_dead` latches only when the restarts come quickly. An AMQP 0-9-1
+  receiver retries a missing queue itself, for its reconnect-race budget (about
+  26s by default, longer for an exclusive consumer with a raised heartbeat),
+  before the route restarts. Its restarts can then be too far apart to latch
+  `route_dead`, so alert on the `RouteRestarts` rate for such routes.
+- The route runner still closes such a receiver each time its run ends, so the
+  messages it holds are settled or handed back as before. The next run attaches
+  again. `ports.Receiver` now states this: `Close` ends one `Run`, not the
+  receiver, and a receiver must accept `Run` after `Close`. The conformance kit
+  checks it (`RunAfterClose`).
+- The Service Bus receiver closed only once. After a restart, the client it
+  rebuilt was never released. Every `Close` now releases what the preceding
+  `Run` built. A pinned-session (`session_id`) receiver restarted while a
+  credential rotation was still pending rebuilt on the old credentials. It took
+  the session lock that the pending rebuild needed, and never switched to the
+  new credentials. The restarted `Run` now completes the pending rebuild
+  instead.
+- `route.ErrRouteReceiverClosed` is removed. `route.ErrRouteTerminal` now marks
+  only a wedged route: a hung sender, too many abandoned processor goroutines,
+  or a `shared_outbox` route with no outbox store. Those still make the runtime
+  terminal, and a process restart is still the backstop.
+
 ### Fixed — the Admin API config schema lists every key the bridge parses
 
 - `spec/httpapi/config-components.yaml` had drifted from the config parser

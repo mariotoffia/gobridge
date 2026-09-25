@@ -188,15 +188,20 @@ not the YAML shape, but they change *when* and *how* config errors surface:
   Leave the field empty and such records carry no route; they stay in the DLQ
   for you to handle.
 - **Route fault blast radius.** A route whose receiver fails is restarted in
-  isolation — backed off, counted on `RouteRestarts`, marked not-ready, and
-  latched `route_dead` after repeated quick flaps — only when the source can be
-  re-entered. That holds for SQS, MQTT and HTTP, whose broker client belongs to
-  the session. A source the route runner must close on exit (Service Bus, AMQP
-  1.0, AMQP 0-9-1) is single-use: the runtime has no factory to rebuild it from,
-  so the route escalates to a terminal runtime and the backstop is a **process
-  restart** with freshly-built transports (`/live` fails closed). Size the
-  restart budget for those transports accordingly; `route_dead` never latches
-  for them.
+  isolation, whatever its transport: backed off, counted on `RouteRestarts`,
+  marked not-ready, and latched `route_dead` after repeated quick flaps. Every
+  other route keeps running. A receiver with `Close(ctx)` (Service Bus, AMQP
+  1.0, AMQP 0-9-1) is closed when its run ends, which settles what it held, and
+  attaches again on the next run. So a queue that is deleted, or access that is
+  revoked, on one owner's broker stops only that route, and the route recovers
+  on its own once the broker is fixed. A receiver you write yourself must accept
+  `Run` after `Close` (see `ports.Receiver`). A route makes the runtime terminal
+  only when it is **wedged** — a hung sender, too many abandoned processor
+  goroutines, or a `shared_outbox` route with no outbox store — or when its
+  receiver panics, which is a bug and fails fast. A restart in the process
+  cannot clear a wedge: Go cannot stop a leaked goroutine, and a missing store
+  is a wiring fault. The backstop there is a process restart (`/live` fails
+  closed).
 - **Supervisor health.** `Supervisor.Degraded() (bool, string)` reports whether
   the last reconfiguration failed (with a reason) while the previous runtime
   keeps serving; `Supervisor.Terminal() bool` reports an unrecoverable state.
