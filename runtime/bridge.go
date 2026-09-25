@@ -559,17 +559,14 @@ var errRouteUnexpectedStop = errors.New("runtime: route runner stopped unexpecte
 // blast radius at the faulty route while preserving full observability, which is
 // strictly better for a multi-route pod.
 //
-// The honest tradeoff, and the thing an operator must plan for: isolation only
-// reaches the sources the route runner can re-enter. AddRoute stores BUILT
-// receiver instances, not factories, so a receiver the runner had to Close on
-// exit — every ports.ContextCloser source: Service Bus, AMQP 1.0, AMQP 0-9-1 —
-// is single-use, and its second Run returns ErrRouteTerminal, which escalates
-// here to a terminal runtime and a process restart with freshly-built
-// transports. Sources whose broker client belongs to the session rather than
-// the receiver (SQS, MQTT, HTTP) are never closed by the runner, so they get
-// real per-route restarts and can latch route_dead. Neither path is silent:
-// MetricRouteRestarts fires either way, and the terminal escalation flips
-// /live.
+// Every source restarts in isolation. A receiver with Close(ctx) — Service Bus,
+// AMQP 1.0, AMQP 0-9-1 — is closed when its run ends and re-attached by the next
+// Run (the ports.Receiver contract), so SQS, MQTT, HTTP, Service Bus, AMQP 1.0
+// and AMQP 0-9-1 routes all back off, count MetricRouteRestarts and can latch
+// route_dead. The one escalation left is a wedged route (route.ErrRouteTerminal):
+// a restart in the process cannot clear it (a leaked goroutine cannot be
+// stopped; a missing outbox store is a wiring fault), so the runtime goes
+// terminal, /live flips and a process restart is the backstop.
 func (rt *Runtime) superviseRoute(routeID string, run func(context.Context) error) func(context.Context) error {
 	const (
 		minBackoff      = 1 * time.Second
@@ -606,22 +603,14 @@ func (rt *Runtime) superviseRoute(routeID string, run func(context.Context) erro
 			}
 			rt.setComponentError(name, err)
 			if errors.Is(err, route.ErrRouteTerminal) {
-				// the route runner declared itself
-				// UNRESTARTABLE in this process — either its single-use receiver
-				// was already Closed and cannot be re-Run (a fresh Run would flap
-				// the SAME dead instance at the backoff cap forever behind green
-				// liveness, since AddRoute stores built receiver/session/sender
-				// INSTANCES, not factories, so the supervisor has nothing to
-				// rebuild from), or the runner wedged after a hung send / a
-				// timeout-abandoned processor storm and must not keep accepting
-				// work. Silent capped flapping is exactly the "permanently dead
-				// behind green process liveness with no actionable signal" hazard
-				// the finding calls out. Escalate to terminal instead (mirrors
-				// superviseSession's ErrSessionUnrecoverable branch): the error
-				// flips startBackground terminal so the orchestrator restarts this
-				// pod with freshly-built transports (documented process-restart
-				// backstop). The route is already recorded in componentErrors and
-				// MetricRouteRestarts fired, so the escalation stays observable.
+				// The route wedged — a hung sender or a timeout-abandoned processor
+				// leaked a goroutine this process cannot reclaim, or a shared_outbox
+				// route has no OutboxStore — so a restart in place could only flap
+				// behind green liveness. Escalate to terminal instead (mirrors
+				// superviseSession's ErrSessionUnrecoverable branch): the error flips
+				// startBackground terminal so the orchestrator restarts the pod. The
+				// route is already recorded in componentErrors and MetricRouteRestarts
+				// fires here, so the escalation stays observable.
 				metrics.Counter(shared.MetricRouteRestarts, 1,
 					shared.Tag{Key: shared.TagKeyRouteID, Value: routeID})
 				return err

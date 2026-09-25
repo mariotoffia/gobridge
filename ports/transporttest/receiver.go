@@ -37,8 +37,9 @@ type ReceiverFactory func(t *testing.T, n int) SeededReceiver
 // conformance suite against receivers produced by factory. It pins the
 // contract documented on ports.Receiver: serial (non-overlapping) emit, no
 // receiver self-settlement on either emit outcome, tolerance of settlement
-// after Run returns, no emit after Run returns, and Run returning on ctx
-// cancellation. All subtests are race-detector safe.
+// after Run returns, no emit after Run returns, Run returning on ctx
+// cancellation, and — for a receiver with Close — Run working again after
+// Close. All subtests are race-detector safe.
 func RunReceiverConformanceTests(t *testing.T, factory ReceiverFactory, caps Caps) {
 	t.Helper()
 
@@ -62,6 +63,9 @@ func RunReceiverConformanceTests(t *testing.T, factory ReceiverFactory, caps Cap
 	})
 	t.Run("RunReturnsOnCancel", func(t *testing.T) {
 		receiverRunReturnsOnCancel(t, factory)
+	})
+	t.Run("RunAfterClose", func(t *testing.T) {
+		receiverRunAfterClose(t, factory)
 	})
 }
 
@@ -301,5 +305,46 @@ func receiverRunReturnsOnCancel(t *testing.T, factory ReceiverFactory) {
 	err := wait()
 	if err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run returned %v, want nil or context.Canceled", err)
+	}
+}
+
+// receiverRunAfterClose pins the restart contract: the runtime closes a
+// Receiver that implements ports.ContextCloser each time its Run ends, and a
+// route restart calls Run again on the same Receiver. A second Run must behave
+// like the first — block until its ctx is cancelled — not return because Close
+// ran. A Receiver without Close is never closed by the runtime, so the case
+// does not apply to it.
+func receiverRunAfterClose(t *testing.T, factory ReceiverFactory) {
+	sr := factory(t, 0)
+	closer, ok := sr.Receiver.(ports.ContextCloser)
+	if !ok {
+		t.Skip("receiver does not implement ports.ContextCloser; the runtime never closes it")
+	}
+	for run := 1; run <= 2; run++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- sr.Receiver.Run(ctx, (&emitRecorder{}).emit) }()
+		// A Run that ends before its ctx does refused to run; nil counts too,
+		// since the runtime reads a nil return on a live ctx as an unexpected
+		// stop. The grace can only miss a slow refusal, never fail a Receiver
+		// that blocks as it must.
+		select {
+		case err := <-done:
+			cancel()
+			t.Fatalf("Run #%d returned %v before its ctx was cancelled", run, err)
+		case <-time.After(50 * time.Millisecond):
+		}
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Fatalf("Run #%d returned %v, want nil or context.Canceled", run, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("Run #%d did not return within 2s of cancel", run)
+		}
+		if err := closer.Close(context.Background()); err != nil {
+			t.Fatalf("Close after Run #%d: %v", run, err)
+		}
 	}
 }

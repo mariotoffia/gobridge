@@ -25,7 +25,7 @@ func routeHealthByID(dh ports.DeepHealth, id string) ports.RouteHealth {
 }
 
 // TestSuperviseRoute_RepeatedFlapsSurfaceRouteDead is the regression: a
-// single-use receiver that fails instantly on every supervised restart settles
+// receiver that fails instantly on every supervised restart settles
 // at the 30s backoff cap and flaps forever behind a GREEN liveness probe. After
 // routeDeadRestartThreshold consecutive sub-stability-window restarts the
 // route must latch RouteDead=true in DeepHealth so ops can alert on the steady
@@ -38,7 +38,7 @@ func TestSuperviseRoute_RepeatedFlapsSurfaceRouteDead(t *testing.T) {
 	// DeepHealth projects RouteDead off rt.entries keyed by config.ID; the route
 	// must be registered and the runtime running for the snapshot to surface it.
 	rt.running = true
-	const routeID = "single-use-route"
+	const routeID = "flapping-route"
 	rt.entries = []*routeEntry{{config: RouteConfig{ID: routeID}}}
 
 	var calls atomic.Int32
@@ -48,7 +48,7 @@ func TestSuperviseRoute_RepeatedFlapsSurfaceRouteDead(t *testing.T) {
 		callCh <- n
 		// Fails instantly every time: never reaches the stability window, so
 		// every restart is a sub-window flap that advances the route_dead counter.
-		return errors.New("single-use receiver: restart failed instantly")
+		return errors.New("source queue deleted: restart failed instantly")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -91,7 +91,7 @@ func TestSuperviseRoute_RepeatedFlapsSurfaceRouteDead(t *testing.T) {
 	assert.True(t, dh.Healthy, "route_dead must not flip the global healthy flag")
 	assert.True(t, dh.Running, "route_dead must not stop the runtime")
 	assert.True(t, rt.Healthy(), "route_dead must not flip Runtime.Healthy")
-	assert.False(t, rt.Terminal(), "a dead single-use route must not make the runtime terminal")
+	assert.False(t, rt.Terminal(), "a dead route must not make the runtime terminal")
 
 	cancel()
 	select {

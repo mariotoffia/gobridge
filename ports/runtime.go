@@ -40,11 +40,11 @@ type RouteHealth struct {
 	// liveness green by design, so ops must alert on this STATE rather than on
 	// the restart rate alone.
 	//
-	// It latches only for sources the route runner can re-enter — those whose
-	// broker client belongs to the session, not the receiver. A receiver the
-	// runner closes on exit is single-use, so its route escalates to a terminal
-	// runtime (process restart) instead of flapping, and never reaches this
-	// state.
+	// Every source can reach it: a receiver the runner closes on exit is run
+	// again on restart (Receiver: Close ends one Run, not the receiver). It does
+	// not latch when each failed run outlives the stability window — an AMQP
+	// 0-9-1 receiver that retries a missing queue itself before returning can
+	// take that long — so alert on the restart rate for those routes too.
 	RouteDead bool
 }
 

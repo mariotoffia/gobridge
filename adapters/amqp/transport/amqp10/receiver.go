@@ -114,11 +114,14 @@ func (r *Receiver) Started() <-chan struct{} { return r.started }
 //
 // Cold-start resilience: a RECOVERABLE initial link failure (broker
 // briefly unreachable while the session manager is still dialing) does
-// NOT fail Run — by the ports.Receiver contract a non-ctx error from
-// Run is terminal for the whole runtime. Instead the receive loop's
+// NOT fail Run — a non-ctx error from Run makes the supervisor restart
+// the whole route after a backoff. Instead the receive loop's
 // waitAndReconnect path (the same one used for mid-run link loss)
 // establishes the link once the session connects. Only permanent
 // (misconfiguration-class) errors surface immediately.
+//
+// Run may be called again after Close (ports.Receiver: Close ends one
+// Run, not the receiver); the next Run attaches a fresh link.
 //
 // The receiver link is deliberately left OPEN when Run returns: the
 // route runner settles in-flight deliveries AFTER Run exits and then
@@ -553,8 +556,8 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 				// A malformed message was rejected at the broker inside
 				// Receive. The link is healthy and the message settled —
 				// count it and keep receiving; one poison message must
-				// never exit the loop (a non-transient return would take
-				// the whole bridge down).
+				// never exit the loop (a non-transient return would
+				// restart the whole route).
 				r.metrics.Counter(MetricAMQP10IngressRejected, 1,
 					shared.Tag{Key: shared.TagKeyEntity, Value: r.cfg.Address})
 				if r.logger != nil {

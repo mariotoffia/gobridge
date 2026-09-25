@@ -79,10 +79,10 @@ const routeStabilityWindow = 30 * time.Second
 // route restarts (quick flaps with no stable run between them) after which
 // DeepHealth latches RouteHealth.RouteDead=true. A route that flaps this
 // many times has almost certainly wedged at the supervisor backoff cap — e.g. a
-// single-use receiver whose Run cannot be re-entered — so ops can alert on that
-// steady STATE rather than on the restart rate. Kept small: with the
-// 1→2→4→8→16s fast-backoff ramp it is ~31s of continuous flapping before the
-// signal latches.
+// source whose queue was deleted or whose credential was revoked — so ops can
+// alert on that steady STATE rather than on the restart rate. Kept small: with
+// the 1→2→4→8→16s fast-backoff ramp it is ~31s of continuous flapping before
+// the signal latches.
 const routeDeadRestartThreshold = 5
 
 // recordRouteFlap increments a route's consecutive sub-stability-window restart

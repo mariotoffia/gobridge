@@ -107,67 +107,65 @@ func TestCountLessSource_ReplayCapPoisons(t *testing.T) {
 
 // ── ──────────────────────────────────────────────────────────────────
 
-// singleUseReceiver models a single-use transport: Run returns a transient error
-// once, and Close (which RouteRunner.Run always invokes on exit) renders the
-// instance unusable. A supervisor that re-ran the SAME closed instance would flap
-// forever behind green liveness.
-type singleUseReceiver struct {
+// closingReceiver is a source that owns a link RouteRunner.Run closes on exit —
+// the shape of the Service Bus and AMQP receivers. Each Run emits del (when set)
+// and then returns runErr; a Run after Close re-attaches, as the ports.Receiver
+// contract requires.
+type closingReceiver struct {
 	runCalls atomic.Int32
-	closed   atomic.Int32
+	closes   atomic.Int32
+	del      ports.Delivery
 	runErr   error
 }
 
-func (rc *singleUseReceiver) Run(ctx context.Context, _ func(context.Context, ports.Delivery) error) error {
+func (rc *closingReceiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
 	rc.runCalls.Add(1)
+	if rc.del != nil {
+		if err := emit(ctx, rc.del); err != nil {
+			return err
+		}
+	}
 	return rc.runErr
 }
-func (rc *singleUseReceiver) Close(context.Context) error { rc.closed.Add(1); return nil }
+func (rc *closingReceiver) Close(context.Context) error { rc.closes.Add(1); return nil }
 
-// TestSingleUseReceiver_RestartEscalatesTerminal proves route supervision
-// no longer flaps a closed single-use receiver. The FIRST Run surfaces the
-// transient receiver error and closes the (single-use) receiver; a supervised
-// re-entry returns ErrRouteReceiverClosed — which wraps ErrRouteTerminal, the
-// single predicate superviseRoute escalates on — WITHOUT re-running the dead
-// instance. Since AddRoute stores built instances (not factories), escalate is
-// the lazy-correct choice: an orchestrator restarts the pod with fresh
-// transports instead of the runtime silently flapping.
+// TestRouteRunner_RestartReRunsClosedReceiver proves a supervised restart
+// re-attaches a receiver the previous run closed. Run closes its receiver on
+// every exit so held deliveries settle; Close ends one Run, not the receiver
+// (the ports.Receiver contract), so the restart calls Run again on the SAME
+// receiver. Every run surfaces the transient receiver error — never
+// ErrRouteTerminal — so superviseRoute backs the route off and retries it in
+// isolation instead of taking the whole runtime down.
 //
-// Mutation check: delete the `if r.receiverClosed.Load()` re-entry guard at the
-// top of Run and this fails — the second Run re-invokes receiver.Run (runCalls
-// climbs to 2) and returns the bare transient error, not a terminal one.
-func TestSingleUseReceiver_RestartEscalatesTerminal(t *testing.T) {
+// Mutation check: re-add a closed-receiver guard at the top of Run (return an
+// error wrapping ErrRouteTerminal once a prior run closed the receiver) and this
+// fails — the second Run never reaches receiver.Run (runCalls stays 1) and
+// returns the terminal error instead of the transient one.
+func TestRouteRunner_RestartReRunsClosedReceiver(t *testing.T) {
 	transient := shared.NewBridgeError(shared.ErrCodeUnavailable, shared.ErrorTransient, "broker stream dropped")
-	rcv := &singleUseReceiver{runErr: transient}
+	rcv := &closingReceiver{runErr: transient}
 	r := NewRouteRunnerFromConfig(RouteRunnerConfig{
-		RouteID:  "high2",
+		RouteID:  "restart-closed-receiver",
 		Policy:   routing.RoutePolicy{DeliveryMode: routing.DeliveryDirectHold},
 		Receiver: rcv,
 		Sender:   stubSender{},
 	})
 
-	// First supervised run: surfaces the transient error and closes the receiver.
-	err1 := r.Run(context.Background())
-	if !errors.Is(err1, transient) {
-		t.Fatalf("first Run error = %v, want the transient receiver error", err1)
-	}
-	if errors.Is(err1, ErrRouteTerminal) {
-		t.Fatalf("first Run must surface a TRANSIENT error (isolate + backoff), not terminal: %v", err1)
-	}
-	if got := rcv.runCalls.Load(); got != 1 {
-		t.Fatalf("receiver.Run calls after first Run = %d, want 1", got)
-	}
-	if got := rcv.closed.Load(); got < 1 {
-		t.Fatal("RouteRunner.Run must close its single-use receiver on exit")
-	}
-
-	// Second supervised run (the restart): MUST escalate terminal and NOT re-run
-	// the dead receiver.
-	err2 := r.Run(context.Background())
-	if !errors.Is(err2, ErrRouteTerminal) {
-		t.Fatalf("restart error = %v, want it to wrap ErrRouteTerminal (escalate, not flap)", err2)
-	}
-	if got := rcv.runCalls.Load(); got != 1 {
-		t.Fatalf("receiver.Run re-invoked on restart (calls=%d); a closed single-use receiver must NOT be re-run", got)
+	// Run 1 is the failed run; run 2 is the supervised restart on the same runner.
+	for run := int32(1); run <= 2; run++ {
+		err := r.Run(context.Background())
+		if !errors.Is(err, transient) {
+			t.Fatalf("Run %d error = %v, want the transient receiver error", run, err)
+		}
+		if errors.Is(err, ErrRouteTerminal) {
+			t.Fatalf("Run %d must surface a TRANSIENT error (isolate + backoff), not terminal: %v", run, err)
+		}
+		if got := rcv.runCalls.Load(); got != run {
+			t.Fatalf("receiver.Run calls after Run %d = %d, want %d (a restart re-runs the closed receiver)", run, got, run)
+		}
+		if got := rcv.closes.Load(); got != run {
+			t.Fatalf("receiver closes after Run %d = %d, want %d (Run closes its receiver on every exit)", run, got, run)
+		}
 	}
 }
 

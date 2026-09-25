@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,19 +18,19 @@ import (
 	"github.com/mariotoffia/gobridge/runtime/route"
 )
 
-// TestSuperviseRoute_TerminalReceiverEscalates proves
-// supervision: a route runner that declares itself UNRESTARTABLE (Run returns an
-// error wrapping route.ErrRouteTerminal — a closed single-use receiver, or a
-// wedge after a hung sender / abandoned-processor storm) is NOT restarted in
-// place. superviseRoute returns the terminal error immediately — which flips the
-// runtime terminal in startBackground so an orchestrator restarts the pod with
-// freshly-built transports — instead of flapping the same dead instance at the
+// TestSuperviseRoute_TerminalRouteEscalates proves supervision escalates a
+// WEDGED route: a route runner whose Run returns an error wrapping
+// route.ErrRouteTerminal — a hung sender whose bounded goroutine leaked, or the
+// abandoned-processor ceiling — is NOT restarted in place, because a leaked
+// goroutine cannot be reclaimed in-process. superviseRoute returns the terminal
+// error immediately — which flips the runtime terminal in startBackground so an
+// orchestrator restarts the pod — instead of flapping the wedged route at the
 // backoff cap forever behind green liveness.
 //
 // Mutation check: delete the `if errors.Is(err, route.ErrRouteTerminal)` branch
 // in superviseRoute and this fails — the supervisor loops (run is called again
 // after a backoff) instead of escalating on the first terminal return.
-func TestSuperviseRoute_TerminalReceiverEscalates(t *testing.T) {
+func TestSuperviseRoute_TerminalRouteEscalates(t *testing.T) {
 	clk := clocktest.NewAt(time.Unix(0, 0))
 	rec := &ports.RecordingExporter{}
 	rt := newSuperviseTestRuntime(clk, rec)
@@ -37,7 +38,7 @@ func TestSuperviseRoute_TerminalReceiverEscalates(t *testing.T) {
 	var calls atomic.Int32
 	run := func(_ context.Context) error {
 		calls.Add(1)
-		return route.ErrRouteReceiverClosed // wraps route.ErrRouteTerminal
+		return fmt.Errorf("%w: sender wedged", route.ErrRouteTerminal)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

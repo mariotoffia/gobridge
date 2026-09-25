@@ -2,7 +2,6 @@ package bridge
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -170,12 +169,11 @@ func TestSupervisor_PrepareCommitSwap_ConstructionDeadlineStartsAfterOldStop(t *
 			"not the remainder left after the old runtime drained")
 }
 
-// terminalRouteFactory hands out a receiver that fails immediately and owns a
-// Close(ctx), so the route runner closes it on exit and the next supervised run
-// cannot re-enter it — the route escalates and trips the runtime terminal. The
-// trip leaves running=true (only healthy flips), which is the state StartBridge
-// used to walk straight past. Its sessions are tracked so the test can see
-// whether the orphaned runtime was ever torn down.
+// terminalRouteFactory hands out a receiver whose Run panics. A route error only
+// restarts its route, but a panic is not recovered by route supervision, so it
+// trips the runtime terminal. The trip leaves running=true (only healthy flips),
+// which is the state StartBridge used to walk straight past. Its sessions are
+// tracked so the test can see whether the orphaned runtime was ever torn down.
 type terminalRouteFactory struct {
 	trackingTransportFactory
 }
@@ -187,10 +185,8 @@ func (f *terminalRouteFactory) NewReceiver(context.Context, ports.ReceiverSpec, 
 type terminalReceiver struct{}
 
 func (r *terminalReceiver) Run(context.Context, func(context.Context, ports.Delivery) error) error {
-	return errors.New("source permanently gone")
+	panic("receiver bug")
 }
-
-func (r *terminalReceiver) Close(context.Context) error { return nil }
 
 // TestSupervisor_StartBridge_StopsTerminalRuntimeBeforePublishingNewOne:
 // StartBridge gated only on IsRunning() (running && healthy). A component-failure
@@ -213,10 +209,9 @@ func TestSupervisor_StartBridge_StopsTerminalRuntimeBeforePublishingNewOne(t *te
 
 	oldRt := s.Runtime()
 	require.NotNil(t, oldRt)
-	// The route's single-use receiver fails, is closed, and cannot be re-entered:
-	// the second supervised run escalates and trips the runtime terminal.
+	// The route's receiver panics, which trips the runtime terminal.
 	require.Eventually(t, oldRt.Terminal, 10*time.Second, 10*time.Millisecond,
-		"test setup: the failing single-use route must trip the runtime terminal")
+		"test setup: the panicking receiver must trip the runtime terminal")
 	orphanedSessions := tf.sessionCloseCount()
 
 	require.NoError(t, s.StartBridge(context.Background()))

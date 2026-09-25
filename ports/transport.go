@@ -164,6 +164,14 @@ type Delivery interface {
 //     runtime guards this defensively and rejects the delivery, which
 //     then falls back to transport redelivery).
 //
+//   - Restart after Close: a Receiver that implements ContextCloser is
+//     closed each time its Run ends, and a failed route is restarted by
+//     calling Run again on the same Receiver. Close ends one Run, not the
+//     Receiver: it releases what that Run held, settling or handing back
+//     its deliveries, and the next Run attaches again. A Receiver MUST NOT
+//     refuse a Run because an earlier Close ran; one that did would stop
+//     its route for good instead of letting it recover.
+//
 // # Envelope identity (canonical contract)
 //
 // Envelope.ID is the key the runtime deduplicates and replays on: the outbox

@@ -78,7 +78,6 @@ type Receiver struct {
 	metrics     ports.MetricsExporter
 	clk         clock.Clock
 	initMu      sync.Mutex
-	closeOnce   sync.Once
 	started     chan struct{}
 	startedOnce sync.Once
 
@@ -343,16 +342,17 @@ func entityScopeFor(cfg ReceiverConfig) string {
 	return "t:" + cfg.TopicName
 }
 
-// Close releases the AMQP client, receiver, and scheduler resources.
-// It is safe to call multiple times; only the first call performs cleanup.
+// Close releases the AMQP client, receiver, and scheduler that the
+// current Run built. A later Run builds a fresh stack (ports.Receiver:
+// Close ends one Run, not the receiver), so the route runner can close
+// and re-run the receiver on every route restart. A Close with no Run
+// since the previous Close finds an empty stack and does nothing.
 // Callers must call Close after all outstanding deliveries have been
 // settled (Ack/Retry) to avoid tearing down the AMQP link while
 // settlement operations are still in progress.
 func (r *Receiver) Close(ctx context.Context) error {
-	r.closeOnce.Do(func() {
-		old := r.swapStack(receiverStack{})
-		old.close(ctx)
-	})
+	old := r.swapStack(receiverStack{})
+	old.close(ctx)
 	return nil
 }
 
@@ -385,6 +385,14 @@ func (r *Receiver) ensureClient(ctx context.Context) error {
 	}
 	if r.cfg.Client != nil {
 		r.client = r.cfg.Client
+		return nil
+	}
+	// Only a pinned-session rotation sets rebuildPending, and the poll
+	// loop owns completing it: rebuildPendingStack builds from pendingConn
+	// and commits it. Building from cfg.Connection here would re-accept the
+	// session on the old credentials and hold the lock the pending rebuild
+	// needs (a Run restarted after Close while a rotation is pending).
+	if r.rebuildPending {
 		return nil
 	}
 
@@ -442,8 +450,8 @@ func (r *Receiver) buildStack(ctx context.Context, conn ConnectionConfig) (recei
 		// Session accept DIALS the broker and competes for the session
 		// lock. During rolling deploys the outgoing pod still holds it
 		// (com.microsoft:session-cannot-be-locked), which is expected and
-		// transient — retry with backoff instead of crash-looping the
-		// whole bridge on a one-shot accept.
+		// transient — retry with backoff instead of restarting the route
+		// on a one-shot accept.
 		accept := func(ctx context.Context) (asbAPI, error) {
 			if r.cfg.QueueName != "" {
 				return asbClient.AcceptSessionForQueue(ctx, r.cfg.QueueName, r.cfg.SessionID, sessOpts)

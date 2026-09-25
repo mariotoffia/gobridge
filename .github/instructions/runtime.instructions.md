@@ -78,6 +78,14 @@ ADR-0019, `docs/internals/architecture-message-flow.md`,
   `STALE_FENCING_TOKEN`, wait `StepDownGrace`, release. All of it is derived
   from `LeaseTTL` and driven by the injected `Clock`. A lease-owning session
   that cannot renew escalates to `ErrSessionUnrecoverable`.
+- A failed route restarts in place in `superviseRoute`, whatever its source
+  transport: backoff, `RouteRestarts`, not-ready, `route_dead`. `RouteRunner.Run`
+  closes a receiver that has `Close(ctx)` on every exit, then runs it again on
+  restart, so it never keeps a "closed" state that refuses a later run. Of the
+  errors a route returns, only `route.ErrRouteTerminal` makes the runtime
+  terminal, and only `wedge()` raises it (a panic stays terminal too). A new
+  terminal path must name a fault that a restart inside the process cannot
+  clear.
 - `bridge.Builder.Plan` rejects a second receiver on a
   `CapDedicatedIngressSession` session, or a second route on its receiver,
   before opening any resource. The check reads the capability, never the

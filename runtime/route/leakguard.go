@@ -10,26 +10,14 @@ import (
 
 // --- terminal / wedge supervision signals ----------
 
-// ErrRouteTerminal marks a PERMANENT route condition that the supervisor MUST
-// escalate (RouteDead / pod restart) rather than restart in place: there is no
-// in-process recovery reachable from the runner. Both the single-use-receiver
-// re-entry guard and the hung sender/processor wedge
-// wrap it, so superviseRoute needs exactly ONE predicate —
-// errors.Is(err, route.ErrRouteTerminal) — to decide escalation. This is the one
-// coherent "rebuild-or-escalate" supervision decision the findings share; since
-// AddRoute stores built receiver/sender/session INSTANCES (not factories/
-// blueprints — runtime/bridge_routes.go), rebuild is not reachable here, so the
-// lazy-correct choice for all three is escalate-to-terminal.
+// ErrRouteTerminal marks a WEDGED route. wedge() is its only raiser: a hung
+// sender whose bounded goroutine leaked, the abandoned-processor ceiling, or a
+// shared_outbox route with no OutboxStore. A restart in the process cannot
+// clear any of them (a leaked goroutine cannot be stopped; a missing store is a
+// wiring fault), so superviseRoute escalates errors.Is(err,
+// route.ErrRouteTerminal) to a terminal runtime and the process restart is the
+// backstop. A receiver failure is not one of them: it restarts its route.
 var ErrRouteTerminal = errors.New("route: terminal route condition; supervisor must escalate")
-
-// ErrRouteReceiverClosed is returned when RouteRunner.Run is re-entered against a
-// receiver a prior Run already closed. RouteRunner.Run always closes its
-// (single-use) receiver on exit; re-running the now-closed instance would flap at
-// the backoff cap forever behind green liveness. Escalating instead gives an
-// orchestrator an actionable signal.
-var ErrRouteReceiverClosed = fmt.Errorf(
-	"route: receiver already closed on a prior run; single-use transport cannot be rebuilt in-process: %w",
-	ErrRouteTerminal)
 
 // errSenderWedged and errProcessorWedged are the wedge causes wrapped by
 // RouteRunner.wedge so the terminal error carries the reason.

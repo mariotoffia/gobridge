@@ -69,6 +69,13 @@ config and registry symmetry, so those need no review comment.
   after `Close` returns `shared.ErrUnavailable` and never reconnects. The
   runtime relies on this to hand the lease to a standby; a quiet reconnect
   breaks lease fencing (`docs/internals/plugin-transport-adapters.md`).
+- A receiver with `Close(ctx)` accepts `Run` after `Close`. The route runner
+  closes it when each run ends and restarts a failed route by running the same
+  instance again. `Close` releases what that run held, settling or handing back
+  its deliveries, and never latches the receiver shut: a latch turns one broker
+  fault into a route that stays down until the process restarts (`ports.Receiver`,
+  `transporttest` `RunAfterClose`). This is not the exclusive-session rule
+  above: that one is about a `Session`, this one about a `Receiver`.
 - A factory that declares `CapDedicatedIngressSession` keeps its receiver
   reservation on the `Session`, not on the `Factory`, so aliases cannot bypass
   it.
