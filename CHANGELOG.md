@@ -10,6 +10,23 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Fixed — the Admin API config schema lists every key the bridge parses
+
+- `spec/httpapi/config-components.yaml` had drifted from the config parser
+  (#68). It now declares `bridge.per_record_drain_timeout`,
+  `bridge.max_drain_timeout`, `bridge.cluster`, a route's
+  `trust_bridge_headers`, `resolver` and `session`, and
+  `http.tls_cert_file` / `http.tls_key_file`, with new `ClusterConfig`,
+  `ResolverDef`, `RuleDef`, `ConditionDef`, `RouteSessionDef` and
+  `DrainStrategyDef` definitions.
+- `bridge.id` is marked required, as the validator already enforced.
+  `http.admin_api_key` is not: the `gobridge` binary can take the key from
+  `GOBRIDGE_ADMIN_API_KEY`, so a config file may leave it out, and its
+  description now says so.
+- A unit test walks the schema from `BridgeConfig` and pins every mirrored
+  definition to its `ports` struct in both directions, so a key added to one
+  side only fails `make test`.
+
 ### Fixed — test runs no longer leave containers and volumes behind
 
 - Every `testutil/*local` helper removed its containers with `docker rm -f`,

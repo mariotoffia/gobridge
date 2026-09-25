@@ -32,8 +32,8 @@ and `docs/cluster/spec/cluster-config-rollout-protocol.md`.
   freeze paths check. A capability a frozen copy drops is silent: the config
   still validates, and the check the capability exists for is skipped
   (PLUGIN.md).
-- A new blueprint field is added to `spec/httpapi/config-components.yaml` in
-  the same PR, and to the config manager's projection as well as the bridge's.
+- A new blueprint field is added to the config manager's projection as well as
+  the bridge's.
 
 ## Validation fails closed
 
