@@ -17,12 +17,15 @@ import (
 )
 
 // clockSkewAllowance backdates NotBefore. Fixture certificates are minted on
-// the host and validated inside a container whose clock can sit slightly
-// behind it, so a certificate that becomes valid exactly "now" is not yet
-// valid over there and the peer aborts the handshake with a bad-certificate
-// alert. The window is a test fixture's, not a trust decision; backdating it
-// costs nothing and removes the whole class of failure.
-const clockSkewAllowance = 5 * time.Minute
+// the host and validated inside a container, and a container's clock can be
+// far behind the host's: Docker Desktop's VM clock stops while the Mac sleeps
+// — maintenance sleeps between dark wakes included — and trails the host by
+// the time slept until Docker resyncs it. A test run that crosses a sleep
+// hands the peer a certificate that is not yet valid by its clock, and
+// OpenSSL aborts the handshake with a bad-certificate alert. Sleeps of
+// fifteen minutes are routine, so the allowance covers a night. The window is
+// a test fixture's, not a trust decision; backdating it costs nothing.
+const clockSkewAllowance = 24 * time.Hour
 
 // Options configures self-signed certificate generation.
 type Options struct {
