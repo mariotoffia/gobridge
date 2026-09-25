@@ -334,10 +334,10 @@ func (p RoutePolicy) WithDefaults() RoutePolicy {
 // WithDefaults) and is NOT considered invalid here; a NEGATIVE ReplayBudget,
 // SendRetryBudget (other than the SendRetryBudgetDisabled opt-out) or Backoff
 // interval is rejected, and so are a nonzero Backoff.Multiplier below 1
-// (negative or decaying) and a Backoff.JitterFactor outside [0,1] other than
-// the JitterDisabled opt-out. Callers that want strict rejection of typos like
-// RoutePolicy{DeliveryMode: "wat"} should call Validate before (or instead of)
-// WithDefaults.
+// (negative or decaying) and a Backoff.JitterFactor below 0 or above 1 other
+// than the JitterDisabled opt-out. Callers that want strict rejection of
+// typos like RoutePolicy{DeliveryMode: "wat"} should call Validate before (or
+// instead of) WithDefaults.
 //
 // The returned code is shared.ErrCodeInvalidConfig (Permanent), NOT
 // ErrCodeInvalidPayload: an invalid route policy is a configuration defect a
