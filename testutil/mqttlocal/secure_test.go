@@ -1,16 +1,20 @@
 package mqttlocal_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"net"
 	"testing"
 	"time"
 
 	"github.com/eclipse/paho.golang/paho"
 
+	"github.com/mariotoffia/gobridge/testutil/dockerexec"
 	"github.com/mariotoffia/gobridge/testutil/mqttlocal"
 )
 
@@ -112,8 +116,40 @@ func TestSecureBroker_MutualTLSRequiresAClientCertificate(t *testing.T) {
 		RootCAs:      pool,
 		Certificates: []tls.Certificate{clientCert},
 	}, "", ""); err != nil {
-		t.Fatalf("the fixture client certificate was refused: %v", err)
+		t.Fatalf("the fixture client certificate was refused: %v\n%s", err, refusalEvidence(broker))
 	}
+}
+
+// refusalEvidence is what a refused client certificate is diagnosed by. The
+// broker log names no reason — Mosquitto logs "certificate verify failed" for
+// a foreign CA and a not-yet-valid certificate alike — and the alert names only
+// a class: OpenSSL answers a certificate that is not yet valid by the broker's
+// clock with a bad-certificate alert. So it puts the broker's clock beside the
+// host's and lists each certificate's issuer and validity window.
+func refusalEvidence(broker *mqttlocal.BrokerInstance) string {
+	name := broker.ContainerName()
+	clock, _ := dockerexec.Run(dockerexec.ExecTimeout, "exec", name, "date", "-u", "+%Y-%m-%dT%H:%M:%SZ")
+	evidence := fmt.Sprintf("host clock %s, broker clock %s\n",
+		time.Now().UTC().Format(time.RFC3339), bytes.TrimSpace(clock))
+	material := broker.Material()
+	for _, c := range [][2]string{{"CA", material.CAPEM}, {"client", material.ClientCertPEM}} {
+		evidence += c[0] + " " + describeCertificate(c[1]) + "\n"
+	}
+	logs, _ := dockerexec.Run(dockerexec.LogsTimeout, "logs", "--tail", "20", name)
+	return evidence + "broker log:\n" + string(logs)
+}
+
+func describeCertificate(certPEM string) string {
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil {
+		return "is not PEM"
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return err.Error()
+	}
+	return fmt.Sprintf("%s issued by %s, valid %s to %s", cert.Subject, cert.Issuer,
+		cert.NotBefore.Format(time.RFC3339), cert.NotAfter.Format(time.RFC3339))
 }
 
 // ---------------------------------------------------------------------------
