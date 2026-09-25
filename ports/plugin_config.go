@@ -127,7 +127,8 @@ type FreezableConfig interface {
 // silently: it still validates and keeps its kind, while the code reading it
 // sees no capability and skips the check the capability exists for. Both
 // freeze paths, the builder's and configuration initialisation's, check this
-// one list.
+// one list. IngressMemoryProfileConfig is left off on purpose: bootstrap sizes
+// ingress memory on a freshly decoded config, never on a frozen copy.
 func freezeCapabilities() []reflect.Type {
 	return []reflect.Type{
 		reflect.TypeFor[FreezableConfig](),
