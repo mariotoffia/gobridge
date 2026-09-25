@@ -224,20 +224,23 @@ func TestGenerate_ShortValidityStaysOrderedAndExpiresOnTime(t *testing.T) {
 // VM's clock, which stops while the Mac sleeps and trails the host by the time
 // slept until Docker resyncs it. A test run that crosses a night's sleep meets
 // a broker clock that far behind the one that minted the certificate, and the
-// whole chain must already be valid there.
+// whole chain must already be valid there. The leaf's NotAfter is its mint
+// instant plus ValidFor, so the instant is read off the certificate rather
+// than the wall clock; the CA was minted before it and starts no later.
 func TestGenerate_ValidByABrokerClockANightBehindTheHost(t *testing.T) {
 	ca := tlsgen.MustGenerate(tlsgen.Options{CommonName: "trailing-clock-ca", IsCA: true})
-	leaf := tlsgen.MustGenerate(tlsgen.Options{
-		CommonName: "client", DNSNames: []string{"client"}, SignedBy: ca,
-	})
+	leaf := parseCert(t, tlsgen.MustGenerate(tlsgen.Options{
+		CommonName: "client", DNSNames: []string{"client"}, ValidFor: time.Hour, SignedBy: ca,
+	}).CertPEM)
+	minted := leaf.NotAfter.Add(-time.Hour)
 
 	pool := x509.NewCertPool()
 	require.True(t, pool.AppendCertsFromPEM([]byte(ca.CertPEM)))
 
-	_, err := parseCert(t, leaf.CertPEM).Verify(x509.VerifyOptions{
+	_, err := leaf.Verify(x509.VerifyOptions{
 		Roots:       pool,
-		CurrentTime: time.Now().Add(-12 * time.Hour),
+		CurrentTime: minted.Add(-12 * time.Hour),
 		KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	})
-	require.NoError(t, err, "a broker clock a night behind must accept a certificate minted now")
+	require.NoError(t, err, "a broker clock a night behind must accept a certificate minted then")
 }

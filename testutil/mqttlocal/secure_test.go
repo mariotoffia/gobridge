@@ -124,13 +124,13 @@ func TestSecureBroker_MutualTLSRequiresAClientCertificate(t *testing.T) {
 // broker log names no reason — Mosquitto logs "certificate verify failed" for
 // a foreign CA and a not-yet-valid certificate alike — and the alert names only
 // a class: OpenSSL answers a certificate that is not yet valid by the broker's
-// clock with a bad-certificate alert. So it puts the broker's clock beside the
-// host's and lists each certificate's issuer and validity window.
+// clock with a bad-certificate alert. So it puts the broker's clock beside each
+// certificate's issuer and validity window, which the host clock set moments
+// before the refusal.
 func refusalEvidence(broker *mqttlocal.BrokerInstance) string {
 	name := broker.ContainerName()
 	clock, _ := dockerexec.Run(dockerexec.ExecTimeout, "exec", name, "date", "-u", "+%Y-%m-%dT%H:%M:%SZ")
-	evidence := fmt.Sprintf("host clock %s, broker clock %s\n",
-		time.Now().UTC().Format(time.RFC3339), bytes.TrimSpace(clock))
+	evidence := fmt.Sprintf("broker clock %s\n", bytes.TrimSpace(clock))
 	material := broker.Material()
 	for _, c := range [][2]string{{"CA", material.CAPEM}, {"client", material.ClientCertPEM}} {
 		evidence += c[0] + " " + describeCertificate(c[1]) + "\n"
