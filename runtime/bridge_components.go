@@ -184,8 +184,7 @@ func (rt *Runtime) startComponentsLocked(set componentSet) {
 	// backoff, keeps global healthy/terminal untouched, and keeps the fault
 	// observable via MetricRouteRestarts + failed_components + per-route
 	// readiness. See superviseRoute for the full weighing of the replaced
-	// argument and its honest tradeoff (single-use receivers settle at the
-	// backoff cap rather than reconnect).
+	// argument and the one escalation left (a wedged route).
 	for _, entry := range set.entries {
 		entry.run = rt.startComponent(ctx, "route:"+entry.config.ID, rt.superviseRoute(entry.config.ID, entry.runner.Run))
 	}

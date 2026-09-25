@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,87 +48,82 @@ func (r *reentrantReceiver) Run(ctx context.Context, _ func(context.Context, por
 }
 
 // closableReentrantReceiver is the same source with a Close(ctx) — the shape of
-// the Service Bus and AMQP receivers, which own a link that RouteRunner.Run
-// closes on exit. Closing makes the instance single-use, so a supervised restart
-// has nothing left to re-enter.
+// the Service Bus and AMQP receivers, which own a link RouteRunner.Run closes on
+// exit. Close ends one Run, not the receiver (the ports.Receiver contract), so a
+// supervised restart re-enters this same instance. closesAtEntry records how
+// many Closes preceded the latest Run entry.
 type closableReentrantReceiver struct {
 	*reentrantReceiver
+	closes        atomic.Int32
+	closesAtEntry atomic.Int32
 }
 
-func (r *closableReentrantReceiver) Close(context.Context) error { return nil }
-
-// TestSuperviseRoute_ReceiverWithoutClose_RestartsRouteInIsolation pins the
-// per-route isolation contract for the receivers that actually get it: a source
-// the route runner never closes is re-entered after a fault, so one bad route
-// backs off and retries while the runtime stays healthy and the process keeps
-// serving every other route.
-func TestSuperviseRoute_ReceiverWithoutClose_RestartsRouteInIsolation(t *testing.T) {
-	fake := clocktest.New()
-	rt := goruntime.New(
-		goruntime.WithInstanceID("route-isolation-reentry"),
-		goruntime.WithClock(fake),
-	)
-	cfg, _, sender := helperQuiescentRoute("r1", nil)
-	recv := newReentrantReceiver()
-	require.NoError(t, rt.AddRoute(cfg, recv, sender, nil, nil))
-	require.NoError(t, rt.Start(context.Background()))
-	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
-
-	require.Equal(t, 1, waitRunEntry(t, recv.runCh), "the route must run once before failing")
-
-	// The supervisor waits out a jittered backoff on the injected clock; advance
-	// past its ceiling so the retry is due.
-	require.Eventually(t, func() bool {
-		fake.Advance(time.Second)
-		select {
-		case n := <-recv.runCh:
-			return n == 2
-		default:
-			return false
-		}
-	}, 5*time.Second, 5*time.Millisecond,
-		"a receiver the route runner never closes must be re-entered after a fault (per-route isolation)")
-
-	assert.False(t, rt.Terminal(),
-		"one route fault must not make the whole runtime terminal while the route is retryable")
-	assert.True(t, rt.Healthy(),
-		"per-route isolation must leave the global healthy flag untouched")
+func (r *closableReentrantReceiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
+	r.closesAtEntry.Store(r.closes.Load())
+	return r.reentrantReceiver.Run(ctx, emit)
 }
 
-// TestSuperviseRoute_ClosableReceiver_EscalatesToProcessRestart pins the OTHER
-// half of the contract, the one an operator must plan for: when the route runner
-// owns a Close(ctx)-capable source it closes it on exit, so the instance is
-// single-use. There is no factory to rebuild it from, so the route is terminal
-// and the runtime escalates — the documented backstop is a process restart with
-// freshly-built transports, not a per-route retry.
-func TestSuperviseRoute_ClosableReceiver_EscalatesToProcessRestart(t *testing.T) {
-	fake := clocktest.New()
-	rt := goruntime.New(
-		goruntime.WithInstanceID("route-isolation-single-use"),
-		goruntime.WithClock(fake),
-	)
-	cfg, _, sender := helperQuiescentRoute("r1", nil)
-	recv := &closableReentrantReceiver{reentrantReceiver: newReentrantReceiver()}
-	require.NoError(t, rt.AddRoute(cfg, recv, sender, nil, nil))
-	require.NoError(t, rt.Start(context.Background()))
-	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
+func (r *closableReentrantReceiver) Close(context.Context) error { r.closes.Add(1); return nil }
 
-	require.Equal(t, 1, waitRunEntry(t, recv.runCh), "the route must run once before failing")
+// TestSuperviseRoute_FailedReceiverRestartsRouteInIsolation pins the per-route
+// isolation contract for both receiver shapes: after a fault the route backs off
+// and re-enters the SAME receiver, while the runtime stays healthy and the
+// process keeps serving every other route. A receiver with Close(ctx) is closed
+// when its run ends and re-attached by the next Run, so it gets the same
+// restart as one the route runner never closes.
+func TestSuperviseRoute_FailedReceiverRestartsRouteInIsolation(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		withClose bool
+	}{
+		{name: "without_close"},
+		{name: "with_close", withClose: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := clocktest.New()
+			rt := goruntime.New(
+				goruntime.WithInstanceID("route-isolation-"+tc.name),
+				goruntime.WithClock(fake),
+			)
+			cfg, _, sender := helperQuiescentRoute("r1", nil)
+			base := newReentrantReceiver()
+			var (
+				recv     ports.Receiver = base
+				closable *closableReentrantReceiver
+			)
+			if tc.withClose {
+				closable = &closableReentrantReceiver{reentrantReceiver: base}
+				recv = closable
+			}
+			require.NoError(t, rt.AddRoute(cfg, recv, sender, nil, nil))
+			require.NoError(t, rt.Start(context.Background()))
+			t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 
-	require.Eventually(t, func() bool {
-		fake.Advance(time.Second)
-		return rt.Terminal()
-	}, 5*time.Second, 5*time.Millisecond,
-		"a closed single-use receiver cannot be re-entered, so the route must escalate to a terminal runtime")
+			require.Equal(t, 1, waitRunEntry(t, base.runCh), "the route must run once before failing")
 
-	assert.Equal(t, 1, recv.runEntries(),
-		"a closed single-use receiver must never be re-run; the backstop is a process restart")
-}
+			// The supervisor waits out a jittered backoff on the injected clock;
+			// advance past its ceiling so the retry is due.
+			require.Eventually(t, func() bool {
+				fake.Advance(time.Second)
+				select {
+				case n := <-base.runCh:
+					return n == 2
+				default:
+					return false
+				}
+			}, 5*time.Second, 5*time.Millisecond,
+				"a failed receiver must be re-entered after a fault (per-route isolation)")
 
-func (r *reentrantReceiver) runEntries() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.runs
+			if closable != nil {
+				assert.Equal(t, int32(1), closable.closesAtEntry.Load(),
+					"the failed run must close the receiver exactly once before the restart re-enters it")
+			}
+			assert.False(t, rt.Terminal(),
+				"one route fault must not make the whole runtime terminal while the route is retryable")
+			assert.True(t, rt.Healthy(),
+				"per-route isolation must leave the global healthy flag untouched")
+		})
+	}
 }
 
 // waitRunEntry returns the sequence number of the next Run entry.

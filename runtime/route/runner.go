@@ -61,11 +61,6 @@ type RouteRunner struct {
 	// stable attempt count so MaxReplayAttempts actually caps them.
 	replay *replayLedger
 
-	// latched true once Run has closed its single-use receiver, so a
-	// supervisor re-entry returns ErrRouteReceiverClosed (terminal) instead of
-	// re-running the dead receiver.
-	receiverClosed atomic.Bool
-
 	// terminal wedge. Once set, the Run callback refuses new
 	// deliveries and Run returns wedgeErr, which superviseRoute escalates.
 	wedgeOnce sync.Once
@@ -277,18 +272,10 @@ func (h *recoveringHook) recover(method string) {
 func (r *RouteRunner) Run(ctx context.Context) error {
 	r.startedOnce.Do(func() { close(r.started) })
 
-	// RouteRunner.Run ALWAYS closes its (single-use) receiver on exit
-	// (closeReceiver below). A supervisor that restarts this SAME runner would
-	// re-run a dead receiver and flap at the backoff cap forever behind green
-	// liveness. AddRoute stores built receiver/sender/session INSTANCES, not
-	// factories (runtime/bridge_routes.go), so there is no blueprint reachable
-	// here to rebuild the receiver — a restart against a closed receiver is
-	// TERMINAL. Return the sentinel superviseRoute escalates (ErrRouteTerminal)
-	// instead of silently flapping. A route that latched a wedge on a prior run
-	// is likewise terminal on re-entry.
-	if r.receiverClosed.Load() {
-		return ErrRouteReceiverClosed
-	}
+	// A route that wedged on a prior run stays terminal on re-entry. A closed
+	// receiver does not: Run closes its receiver on every exit so held
+	// deliveries settle, and a restart calls Run again on the same receiver
+	// (the ports.Receiver contract).
 	if r.isWedged() {
 		return r.wedgeError()
 	}
@@ -325,10 +312,6 @@ func (r *RouteRunner) Run(ctx context.Context) error {
 			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.receiverCloseTimeout)
 			defer cancel()
 			_ = closer.Close(closeCtx)
-			// latch that this single-use receiver has been closed so a
-			// supervisor re-entry returns ErrRouteReceiverClosed rather than
-			// re-running the dead instance.
-			r.receiverClosed.Store(true)
 		})
 	}
 

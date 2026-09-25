@@ -122,7 +122,14 @@ type refReceiver struct {
 	deliveries []*refDelivery
 }
 
-var _ ports.Receiver = (*refReceiver)(nil)
+var (
+	_ ports.Receiver      = (*refReceiver)(nil)
+	_ ports.ContextCloser = (*refReceiver)(nil)
+)
+
+// Close ends one Run, not the receiver: a later Run starts again. The
+// reference holds nothing between runs, so there is nothing to release.
+func (r *refReceiver) Close(context.Context) error { return nil }
 
 func (r *refReceiver) Run(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
 	for _, d := range r.deliveries {
