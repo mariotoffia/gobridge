@@ -286,7 +286,7 @@ func startContainer() (string, string, func(), error) {
 
 	name := containerPrefix + fmt.Sprintf("%d", port)
 
-	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
+	_, _ = dockerexec.Remove(name)
 
 	args := []string{"run", "-d",
 		"--name", name,
@@ -311,7 +311,7 @@ func startContainer() (string, string, func(), error) {
 
 	ep := fmt.Sprintf("http://127.0.0.1:%d", port)
 	cleanup := func() {
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
+		_, _ = dockerexec.Remove(name)
 	}
 
 	if err := dockerexec.WaitHealthy(name, 15*time.Second); err != nil {

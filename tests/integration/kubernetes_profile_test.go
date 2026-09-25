@@ -154,7 +154,7 @@ func TestKubernetesProfile_ProbesFlowReloadSigtermRestart(t *testing.T) {
 		if t.Failed() {
 			dockerexec.LogFailure(container)
 		}
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", container)
+		_, _ = dockerexec.Remove(container)
 	})
 
 	monitorURL := func(p httpProbe) string {

@@ -82,6 +82,20 @@ func DockerAvailable() bool {
 	return err == nil
 }
 
+// Remove force-removes the named containers together with their anonymous
+// volumes. Every fixture teardown goes through here rather than calling
+// `docker rm` itself.
+//
+// An image that declares a VOLUME (Mosquitto declares /mosquitto/data and
+// /mosquitto/log, Floci /app/data) gets a fresh anonymous volume for each
+// declared path on every `docker run`. A plain `docker rm -f` leaves those
+// volumes behind with nothing using them, so every test run adds more. -v
+// removes only anonymous volumes: bind mounts and named volumes survive, so a
+// fixture's persistence directory on the host is untouched.
+func Remove(names ...string) ([]byte, error) {
+	return Run(RemoveTimeout, append([]string{"rm", "-f", "-v"}, names...)...)
+}
+
 // RemoveOrphans force-removes every container whose name matches prefix.
 // Best-effort sweep for TestMain / ForceStart; errors are ignored.
 func RemoveOrphans(prefix string) {
@@ -91,8 +105,7 @@ func RemoveOrphans(prefix string) {
 	}
 	ids := strings.Fields(strings.TrimSpace(string(out)))
 	if len(ids) > 0 {
-		args := append([]string{"rm", "-f"}, ids...)
-		_, _ = Run(RemoveTimeout, args...)
+		_, _ = Remove(ids...)
 	}
 }
 
@@ -170,7 +183,7 @@ func DrainRemove(name string, timeout time.Duration) error {
 	if err := WaitStopped(name, timeout); err != nil {
 		return err
 	}
-	_, _ = Run(RemoveTimeout, "rm", "-f", name)
+	_, _ = Remove(name)
 	return WaitGone(name, timeout)
 }
 

@@ -17,8 +17,8 @@ broker_name="gobridge-mqtt-memory-${run_id}-${run_attempt}"
 publisher_name="${broker_name}-publisher"
 network_name="${broker_name}-net"
 cleanup() {
-  docker rm -f "$broker_name" >/dev/null 2>&1 || true
-  docker rm -f "$publisher_name" >/dev/null 2>&1 || true
+  docker rm -f -v "$broker_name" >/dev/null 2>&1 || true
+  docker rm -f -v "$publisher_name" >/dev/null 2>&1 || true
   docker network rm "$network_name" >/dev/null 2>&1 || true
   rm -f "$proof_tmp/mqtt-memory.test"
   rmdir "$proof_tmp" >/dev/null 2>&1 || true

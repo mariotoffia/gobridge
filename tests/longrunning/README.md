@@ -31,7 +31,7 @@ full long-running package timeout. Defaults are:
 | Operation | Timeout |
 |-----------|---------|
 | `docker run -d` | 90 s |
-| `docker rm -f` / `docker stop` | 30 s |
+| `docker rm -f -v` / `docker stop` | 30 s |
 | `docker inspect` / `docker ps` | 10 s |
 | `docker logs` | 10 s |
 | Other helper `docker` commands (`start`, `kill`, `network`) | 30 s |

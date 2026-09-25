@@ -364,11 +364,11 @@ Tests running in both builds must account for the compiled family set.
 
 - Containers named `gobridge-<package>-<uuid>`. Never use a fixed
   name; parallel CI jobs collide.
-- `WithCleanOrphans(true)` in `TestMain` removes leftovers. The only
-  cleanup mechanism the suite relies on, so the `gobridge-` prefix
-  is mandatory.
-- Manual nuke: `docker ps -aq --filter name=gobridge-` then
-  `docker rm -f`. No Make target on purpose (helpers self-clean).
+- `WithCleanOrphans(true)` in `TestMain` removes leftovers. The only cleanup
+  mechanism the suite relies on, so the `gobridge-` prefix is mandatory.
+- Teardown uses `dockerexec.Remove`, whose `-v` also removes the anonymous
+  volumes of an image's `VOLUME` paths. No Make target (helpers self-clean);
+  manual nuke: `docker rm -f -v $(docker ps -aq --filter name=gobridge-)`.
 
 ### 5.4 What to assert
 

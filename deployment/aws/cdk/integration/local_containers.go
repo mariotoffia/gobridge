@@ -70,7 +70,7 @@ func removeLaunchedTaskContainers() {
 		return
 	}
 	for _, id := range strings.Fields(string(out)) {
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", id)
+		_, _ = dockerexec.Remove(id)
 	}
 }
 
@@ -81,7 +81,7 @@ func removeNetworkMembers(network string) {
 		return
 	}
 	for _, id := range strings.Fields(string(out)) {
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", id)
+		_, _ = dockerexec.Remove(id)
 	}
 }
 
@@ -102,7 +102,7 @@ func startTaskMetadata(t *testing.T, state *localBackend) string {
 		t.Fatalf("pull metadata and filesystem helper image: %v", err)
 	}
 	name := runScopedName(metadataPrefix, state.network)
-	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
+	_, _ = dockerexec.Remove(name)
 	out, err := dockerexec.Run(dockerexec.RunTimeout,
 		"run", "-d", "--name", name, "--network", state.network,
 		"--network-alias", metadataHost, "--entrypoint", "python3",
@@ -195,7 +195,7 @@ func startCloudFormationResponder(t *testing.T, state *localBackend) string {
 		t.Fatalf("pull responder image: %v", err)
 	}
 	name := runScopedName(responderPrefix, state.network)
-	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
+	_, _ = dockerexec.Remove(name)
 	out, err := dockerexec.Run(dockerexec.RunTimeout,
 		"run", "-d", "--name", name, "--network", "container:"+flociContainer,
 		"-v", certDir+":/certs", responderImage,
@@ -232,7 +232,7 @@ func startProber(t *testing.T, network string) string {
 		t.Fatalf("pull prober image: %v", err)
 	}
 	name := runScopedName(proberPrefix, network)
-	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
+	_, _ = dockerexec.Remove(name)
 	out, err := dockerexec.Run(dockerexec.RunTimeout,
 		"run", "-d", "--name", name, "--network", network,
 		"--entrypoint", "sleep", proberImage, "infinity")

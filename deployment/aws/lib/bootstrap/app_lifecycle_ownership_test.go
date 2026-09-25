@@ -177,6 +177,10 @@ func TestAppStop_SurfacesTheRuntimeDrainError(t *testing.T) {
 	}, WithParameterResolver(staticParameterResolver{"/admin": "admin-secret-key-123456"}))
 
 	require.NoError(t, app.Start(t.Context()))
+	// The first configuration activates in the background. Swapping before it
+	// lands lets that activation replace the failing runtime and stop it as the
+	// old one, which logs the drain error and leaves Stop nothing to report.
+	awaitApplied(t, app)
 
 	// Swap in a runtime whose disconnect fails, standing in for a hung broker
 	// close on the way out.

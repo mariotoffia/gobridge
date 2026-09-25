@@ -29,6 +29,9 @@ import (
 const secureDialTimeout = 10 * time.Second
 
 func TestSecureBroker_AnonymousConnectIsRefused(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Docker-backed broker fixture; skipped in -short")
+	}
 	broker := mqttlocal.NewBrokerInstance(t,
 		mqttlocal.WithAuth("bridge", "s3cret"),
 	)
@@ -44,6 +47,9 @@ func TestSecureBroker_AnonymousConnectIsRefused(t *testing.T) {
 }
 
 func TestSecureBroker_WrongPasswordIsRefused(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Docker-backed broker fixture; skipped in -short")
+	}
 	broker := mqttlocal.NewBrokerInstance(t,
 		mqttlocal.WithAuth("bridge", "s3cret"),
 	)
@@ -54,6 +60,9 @@ func TestSecureBroker_WrongPasswordIsRefused(t *testing.T) {
 }
 
 func TestSecureBroker_TLSListenerServesTheFixtureCA(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Docker-backed broker fixture; skipped in -short")
+	}
 	broker := mqttlocal.NewBrokerInstance(t,
 		mqttlocal.WithAuth("bridge", "s3cret"),
 		mqttlocal.WithTLS(),
@@ -89,6 +98,9 @@ func TestSecureBroker_TLSListenerServesTheFixtureCA(t *testing.T) {
 }
 
 func TestSecureBroker_MutualTLSRequiresAClientCertificate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Docker-backed broker fixture; skipped in -short")
+	}
 	broker := mqttlocal.NewBrokerInstance(t,
 		mqttlocal.WithTLS(),
 		mqttlocal.WithMutualTLS(),
