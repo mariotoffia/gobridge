@@ -67,7 +67,37 @@ session ID, the route ID of the session's single ingress route (empty when no
 single route rides on the session: none or several), and `source_id`, which is
 the session ID; it scopes the record to the session, so two sessions' deliveries
 with the same message ID stay separate records. The dead-letter store also keeps
-the removed filter as the record's address; the Admin API views do not show it.
+the removed filter as the record's address; the Admin API views do not show the
+address, but they show the filter as `extra_info.subscription` on a record with
+`redrive_mode` `auto`.
+
+**Adding the filter back redrives them by itself.** When the removed filter is
+added back on the same persistent or exclusive session (you roll the
+configuration back, or enable the filter again) and the broker grants it,
+GoBridge redrives that filter's records that are younger than
+`stores.dlq.auto_redrive_window` (default `24h`) through the session's route,
+and deletes each one once the route has delivered it
+([automatic redrive](../http-api-admin.md#automatic-redrive)). It does not
+redrive records older than the window, records with an empty `route_id`,
+records filed under a route that was since renamed, or any record while the
+session has no single ingress route: redrive those by hand as below. The
+redrive waits until the runtime is ready, and that wait is runtime-wide: every
+session of the runtime must be connected and subscribed, so an unrelated
+session that is down postpones it.
+
+A record whose automatic redrive failed stays in the store. The bridge logs a
+warning, `automatic redrive failed; the DLQ record is kept`, with the record's
+`dlq_id` and the error. It also writes a `dlq.redrive.auto` audit record with
+outcome `failure`, but only when the runtime has an audit logger: the AWS
+profile gives it one, the reference binary `cmd/gobridge` does not. When a
+failure stops the pass, the records after it are not attempted and get no log
+line or audit record of their own; they wait for the next time the filter is
+added back, or for you. An admin redrive you start while an automatic pass is
+running is not serialized with it, so one record can be redriven twice (a
+duplicate, as [ADR 0015](../adr/0015-dlq-redrive-inject-then-delete.md)
+allows, never a loss). Redrive by hand after the pass has ended: the bridge
+logs `automatic redrive pass finished` at debug level, with the counts of
+records redriven and failed.
 
 1. **Find the records.** The Admin API cannot filter by error code, so list the
    `permanent` entries and select on the response. Page with `offset` while

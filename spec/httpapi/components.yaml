@@ -297,7 +297,7 @@ schemas:
 
   DLQEntryView:
     type: object
-    required: [id, route_id, subject, reason, category, failed_at, attempts]
+    required: [id, route_id, subject, reason, category, failed_at, attempts, redrive_mode, extra_info]
     description: A single dead-letter queue entry.
     properties:
       id:
@@ -354,6 +354,27 @@ schemas:
         type: integer
         description: Number of delivery attempts before failure.
         example: 3
+      redrive_mode:
+        type: string
+        enum: ["", auto]
+        description: >
+          Whether a system event may redrive this entry by itself. Always
+          present. Empty: only an operator redrives it. `auto`: a matching
+          event may redrive it; see
+          docs/adr/0019-dlq-auto-redrive-by-system-event.md.
+        example: auto
+      extra_info:
+        type: object
+        additionalProperties:
+          type: string
+        description: >
+          The facts a redrive trigger matches on. Always an object; empty when
+          the entry has none. A removed-subscription entry carries session_id,
+          subscription and managed_identity.
+        example:
+          session_id: plant-a
+          subscription: sensors/+/temp
+          managed_identity: "3f1c9a7e5b2d8f406a1e9c3b7d5f2a8e0c4b6d9f1a3e5c7b9d2f4a6c8e0b1d3f"
 
   DLQMessagesResponse:
     type: object

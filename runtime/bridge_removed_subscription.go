@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
+	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/dlq"
@@ -16,19 +17,35 @@ import (
 // removed filter. A session with no route riding on it still gets the path: its
 // plan may just have become empty. Without a dead-letter store nothing is
 // installed, and the session keeps such a delivery unacknowledged, because
-// acknowledging it without a durable copy would lose it. Caller holds rt.mu.
+// acknowledging it without a durable copy would lose it. When the session names
+// its managed subscription identity, the record is marked for automatic redrive
+// with the session, the filter and that identity as its facts (ADR 0019), so
+// adding the same subscription back redrives it. Caller holds rt.mu.
 func (rt *Runtime) installRemovedSubscriptionDeadLetter(dlqRouter *dlq.Router, sessionIDs []string) {
 	if !dlqRouter.HasStore() {
 		return
 	}
 	for _, sid := range sessionIDs {
-		configurer, ok := rt.managedSession(sid).(ports.RemovedSubscriptionDeadLetterConfigurer)
+		sess := rt.managedSession(sid)
+		configurer, ok := sess.(ports.RemovedSubscriptionDeadLetterConfigurer)
 		if !ok {
 			continue
+		}
+		identity := ""
+		if r, ok := sess.(ports.ManagedSubscriptionIdentityReporter); ok {
+			identity = r.ManagedSubscriptionIdentity()
 		}
 		sessionID := sid
 		routeID := rt.sourceRouteOn(sid)
 		configurer.SetRemovedSubscriptionDeadLetter(func(ctx context.Context, env *messaging.Envelope, filter string) error {
+			var opts []dlq.EntryOption
+			if identity != "" {
+				opts = append(opts, dlq.AutoRedrive(map[string]string{
+					routing.ExtraInfoSessionID:       sessionID,
+					routing.ExtraInfoSubscription:    filter,
+					routing.ExtraInfoManagedIdentity: identity,
+				}))
+			}
 			// The session is also the source: the entry identity (envelope,
 			// route, binding, source) must be scoped to the session, because a
 			// routeless record otherwise shares one scope across sessions and
@@ -36,7 +53,7 @@ func (rt *Runtime) installRemovedSubscriptionDeadLetter(dlqRouter *dlq.Router, s
 			// collapse into one record, acknowledging the second without its
 			// own copy. Envelope IDs are unique within a source, so the filter
 			// is not needed in the identity.
-			return dlqRouter.Route(ctx, env, routeID, "", filter, sessionID, sessionID, shared.ErrSubscriptionRemoved, 0)
+			return dlqRouter.Route(ctx, env, routeID, "", filter, sessionID, sessionID, shared.ErrSubscriptionRemoved, 0, opts...)
 		})
 	}
 }

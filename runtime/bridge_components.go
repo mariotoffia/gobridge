@@ -50,8 +50,9 @@ type componentSet struct {
 
 // startComponentsLocked wires and starts set: route runners, session managers
 // (only for session ids set introduces), drainers, settlement barriers, the
-// removed-subscription dead-letter path, locator registration and the
-// exclusive-session set. Caller holds rt.mu and rt.workCtx is set.
+// removed-subscription dead-letter path, the automatic-redrive trigger, locator
+// registration and the exclusive-session set. Caller holds rt.mu and rt.workCtx
+// is set.
 //
 // The collections of set must already be registered in rt: the dead-letter
 // path resolves a session and its source route through rt's collections.
@@ -125,6 +126,7 @@ func (rt *Runtime) startComponentsLocked(set componentSet) {
 	}
 
 	rt.installRemovedSubscriptionDeadLetter(rt.dlqRouter, created)
+	rt.installAutoRedriveTrigger(created)
 
 	// Only an exclusive session carries a lease, so only its DLQ writes are
 	// fenced (see dlqToken).

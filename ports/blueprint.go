@@ -236,9 +236,33 @@ type StoresConfig struct {
 // stored in Config and the originating raw payload is retained in the
 // unexported `raw` field for diagnostics and round-trip.
 type StoreConfig struct {
-	Type   string       `yaml:"type" json:"type"`
-	Config PluginConfig `yaml:"-" json:"-"`
-	raw    RawConfig
+	Type string `yaml:"type" json:"type"`
+	// AutoRedriveWindow applies to stores.dlq only. A dead-letter record younger
+	// than this may be redriven by a matching system event by itself (ADR 0019).
+	// Empty means DefaultAutoRedriveWindow; "0s" turns automatic redrive off.
+	// The blueprint validator rejects it on any other store role and rejects a
+	// malformed or negative value.
+	AutoRedriveWindow string       `yaml:"auto_redrive_window,omitempty" json:"auto_redrive_window,omitempty"`
+	Config            PluginConfig `yaml:"-" json:"-"`
+	raw               RawConfig
+}
+
+// DefaultAutoRedriveWindow is the window automatic redrive uses when
+// stores.dlq.auto_redrive_window is left out (ADR 0019).
+const DefaultAutoRedriveWindow = 24 * time.Hour
+
+// AutoRedriveWindowDuration parses AutoRedriveWindow. A nil store, an empty
+// value, or one the validator rejects (malformed or negative) gives
+// DefaultAutoRedriveWindow; "0s" gives 0, which turns automatic redrive off.
+func (s *StoreConfig) AutoRedriveWindowDuration() time.Duration {
+	if s == nil {
+		return DefaultAutoRedriveWindow
+	}
+	d, err := time.ParseDuration(s.AutoRedriveWindow)
+	if err != nil || d < 0 {
+		return DefaultAutoRedriveWindow
+	}
+	return d
 }
 
 // Raw returns the stage-1 raw options payload that produced Config.

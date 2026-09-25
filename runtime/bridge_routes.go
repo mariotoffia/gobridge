@@ -131,7 +131,7 @@ func (rt *Runtime) RouteLocator() ports.RouteLocator {
 // terminally without delivering it — dropped by policy, filtered, expired, or
 // written to the DLQ — the cause is returned as an error.
 func (rt *Runtime) Inject(ctx context.Context, routeID string, env *messaging.Envelope) error {
-	return rt.injectToBinding(ctx, routeID, "", env, "")
+	return rt.injectToBinding(ctx, routeID, "", env, "", false)
 }
 
 // InjectToBinding is Inject with the dispatch confined to a single binding.
@@ -144,7 +144,7 @@ func (rt *Runtime) Inject(ctx context.Context, routeID string, env *messaging.En
 // bindingID is equivalent to Inject. Returns shared.ErrNotFound when the route
 // does not exist.
 func (rt *Runtime) InjectToBinding(ctx context.Context, routeID, bindingID string, env *messaging.Envelope) error {
-	return rt.injectToBinding(ctx, routeID, bindingID, env, "")
+	return rt.injectToBinding(ctx, routeID, bindingID, env, "", false)
 }
 
 // InjectRedrive is the DLQ-redrive-safe variant of InjectToBinding: it
@@ -164,13 +164,21 @@ func (rt *Runtime) InjectToBinding(ctx context.Context, routeID, bindingID strin
 // Subject, payload and timestamps are preserved from the source envelope, as
 // are the propagated bridge headers EXCEPT the transport dedup key: a redrive is
 // a DELIBERATE operator re-issue, so x-bridge.dedup-id must NOT ride along (see
-// below).
+// injectRedrive).
 func (rt *Runtime) InjectRedrive(ctx context.Context, routeID, bindingID string, env *messaging.Envelope) error {
+	return rt.injectRedrive(ctx, routeID, bindingID, env, false)
+}
+
+// injectRedrive is InjectRedrive with the hold option an automatic redrive sets
+// (ADR 0019): with hold, a failure the route would hand back to its source is
+// reported to the caller instead of dead-lettered again, so the original record
+// stays the only one.
+func (rt *Runtime) injectRedrive(ctx context.Context, routeID, bindingID string, env *messaging.Envelope, hold bool) error {
 	originalID := env.ID()
 	if originalID == "" {
 		// Nothing to collide with in the outbox dedup index; a plain
 		// binding-scoped inject (which assigns a fresh ID) is equivalent.
-		return rt.injectToBinding(ctx, routeID, bindingID, env, "")
+		return rt.injectToBinding(ctx, routeID, bindingID, env, "", hold)
 	}
 	src := env.Clone()
 	fresh, err := messaging.NewEnvelope(messaging.EnvelopeInput{
@@ -218,10 +226,10 @@ func (rt *Runtime) InjectRedrive(ctx context.Context, routeID, bindingID string,
 	// is sunk on its first hiccup. A redrive is a fresh delivery attempt and
 	// carries no redelivery history.
 	route.StripInboundReceiveCounts(fresh)
-	return rt.injectToBinding(ctx, routeID, bindingID, fresh, originalID)
+	return rt.injectToBinding(ctx, routeID, bindingID, fresh, originalID, hold)
 }
 
-func (rt *Runtime) injectToBinding(ctx context.Context, routeID, bindingID string, env *messaging.Envelope, redrivenFrom string) error {
+func (rt *Runtime) injectToBinding(ctx context.Context, routeID, bindingID string, env *messaging.Envelope, redrivenFrom string, holdOnRetry bool) error {
 	rt.mu.Lock()
 	// Every injection/redrive path shares this admission boundary with Fence.
 	if !rt.running || rt.fenced {
@@ -248,7 +256,7 @@ func (rt *Runtime) injectToBinding(ctx context.Context, routeID, bindingID strin
 		}
 	}
 
-	del := &syntheticDelivery{env: env, binding: bindingID, redrivenFrom: redrivenFrom}
+	del := &syntheticDelivery{env: env, binding: bindingID, redrivenFrom: redrivenFrom, holdOnRetry: holdOnRetry}
 	if err := entry.runner.HandleDelivery(ctx, del); err != nil {
 		return err
 	}
@@ -285,12 +293,30 @@ type syntheticDelivery struct {
 	// through RecordTerminalFailure; injectToBinding turns it into an error.
 	// Written and read on the single goroutine that runs HandleDelivery.
 	terminal error
+	// holdOnRetry is set by an automatic redrive: a failure the route would
+	// hand back to its source is left unsettled and reported to the caller
+	// instead of dead-lettered again, so the original record stays the only
+	// one (ADR 0019).
+	holdOnRetry bool
 }
+
+// errRedriveHeld is the Retry answer of a held redrive. It is not
+// shared.ErrNotSupported, so the route returns it instead of dead-lettering a
+// retry_unsupported record.
+var errRedriveHeld = errors.New("runtime: automatic redrive left the message unsettled")
 
 func (d *syntheticDelivery) Envelope() *messaging.Envelope { return d.env }
 func (d *syntheticDelivery) Ack(_ context.Context) error   { return nil }
-func (d *syntheticDelivery) Retry(_ context.Context, _ time.Duration, _ error) error {
-	return shared.ErrNotSupported
+func (d *syntheticDelivery) Retry(_ context.Context, _ time.Duration, reason error) error {
+	if !d.holdOnRetry {
+		return shared.ErrNotSupported
+	}
+	if reason == nil {
+		return errRedriveHeld
+	}
+	// %v, not %w: a reason that wraps ErrNotSupported must not turn the hold
+	// back into the dead-letter fallback.
+	return fmt.Errorf("%w: %v", errRedriveHeld, reason)
 }
 func (d *syntheticDelivery) Extend(_ context.Context, _ time.Time) error { return nil }
 

@@ -5,7 +5,7 @@ applyTo: "adapters/native/store/**,adapters/native/memorylease/**,adapters/nativ
 # Stores: outbox, DLQ, lease, rollout, managed subscriptions, config
 
 Adds to `adapters.instructions.md`. Sources: ADR-0005, ADR-0007, ADR-0015,
-`docs/internals/architecture-stores-and-configuration.md`,
+ADR-0019, `docs/internals/architecture-stores-and-configuration.md`,
 `docs/internals/plugin-store-adapters.md` and
 `docs/cluster/spec/cluster-config-rollout-protocol.md`.
 
@@ -43,7 +43,15 @@ Adds to `adapters.instructions.md`. Sources: ADR-0005, ADR-0007, ADR-0015,
 - The entry ID is derived from envelope ID, route, binding and source, never
   generated per write, so a repeated write collapses into one entry.
 - `DLQReader` has no delete or purge; that is `DLQAdmin`. Redrive is not a
-  store method — it is inject-then-delete in `httpapi` (ADR-0015).
+  store method — it is inject-then-delete in `httpapi` and in the runtime's
+  automatic redrive (ADR-0015, ADR-0019).
+- Every DLQ store persists `RedriveMode` and `ExtraInfo`, and reads a record
+  written before them back as manual with no facts; `ports/storetest`
+  round-trips both, a nil map included (ADR-0019).
+- The SQLite DLQ store migrates an existing file only by adding each column
+  `PRAGMA table_info` does not report. It never drops, renames or rewrites a
+  column or a row, and an `ALTER` that loses the race to another process
+  counts as success once the column is there.
 
 ## Rollout and config
 

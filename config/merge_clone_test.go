@@ -56,3 +56,21 @@ func TestDefaultMerge_ClonesStoresWhenOverlayOmitsThem(t *testing.T) {
 	assert.Equal(t, "dynamodb", base.Stores.Outbox.Type, "mutating merged outbox must not affect base")
 	assert.Equal(t, "sqs", base.Stores.DLQ.Type, "mutating merged dlq must not affect base")
 }
+
+// A store role is replaced whole, so the DLQ's auto_redrive_window travels with
+// the layer that supplies the store.
+func TestDefaultMerge_CarriesDLQAutoRedriveWindow(t *testing.T) {
+	base := &ports.BridgeConfig{
+		Bridge: ports.BridgeSettings{ID: "b1"},
+		Stores: ports.StoresConfig{DLQ: &ports.StoreConfig{Type: "memory", AutoRedriveWindow: "2h"}},
+	}
+
+	merged, err := DefaultMerge(base, &ports.BridgeConfig{})
+	require.NoError(t, err)
+	assert.Equal(t, "2h", merged.Stores.DLQ.AutoRedriveWindow, "an overlay without stores keeps the base window")
+
+	overlay := &ports.BridgeConfig{Stores: ports.StoresConfig{DLQ: &ports.StoreConfig{Type: "memory", AutoRedriveWindow: "0s"}}}
+	merged, err = DefaultMerge(base, overlay)
+	require.NoError(t, err)
+	assert.Equal(t, "0s", merged.Stores.DLQ.AutoRedriveWindow, "an overlay that supplies the store supplies its window")
+}

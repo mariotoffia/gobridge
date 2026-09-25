@@ -270,6 +270,16 @@ schemas:
       type:
         type: string
         example: dynamodb
+      auto_redrive_window:
+        type: string
+        description: >
+          stores.dlq only. Go duration string (e.g. "24h"). A dead-letter
+          record younger than this may be redriven by a matching system event
+          by itself; see docs/adr/0019-dlq-auto-redrive-by-system-event.md.
+          Omitting the field takes the 24h default; "0s" turns automatic
+          redrive off. Negative or malformed values, and the field on any other
+          store role, are rejected.
+        example: 24h
       options:
         type: object
         additionalProperties: true

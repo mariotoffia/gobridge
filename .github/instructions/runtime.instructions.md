@@ -4,8 +4,8 @@ applyTo: "runtime/**,bridge/**,adapters/native/cluster/**,adapters/aws/cluster/*
 
 # Runtime, composition root and clustering
 
-Sources: ADR-0001, ADR-0004, ADR-0009, ADR-0012 to ADR-0015, ADR-0017,
-ADR-0018, `docs/internals/architecture-message-flow.md`,
+Sources: ADR-0001, ADR-0004, ADR-0009, ADR-0012 to ADR-0015, ADR-0017 to
+ADR-0019, `docs/internals/architecture-message-flow.md`,
 `docs/internals/architecture-contracts-and-clustering.md` and
 `docs/cluster/spec/cluster-config-rollout-protocol.md`.
 
@@ -35,6 +35,35 @@ ADR-0018, `docs/internals/architecture-message-flow.md`,
   and refuse a missing binding with `ErrNotFound` before the pipeline runs —
   never a fallback to fan-out. A terminal non-delivery returns
   `ports.ErrInjectNotDelivered` (ADR-0015).
+
+## Automatic DLQ redrive (ADR-0019)
+
+- The subscription-added hook never takes `rt.mu`: the session calls it from
+  inside a reconcile. It only starts the pass through `startBackground`, and
+  the pass returns nil, so a failed redrive never makes the runtime terminal.
+- The hook is installed only with a DLQ store, a window above zero, and a
+  session that reports a non-empty managed subscription identity.
+- A pass redrives inject-then-delete through `injectRedrive` with hold set, so
+  a failure the route would hand back to its source is returned instead of
+  dead-lettered as a second record. The delete after a confirmed inject runs
+  on `context.WithoutCancel` plus a bound.
+- One pass at a time: `autoRedrive.mu` is held for the pass, not for the
+  readiness wait.
+- A pass lists with `Before` set to its start plus one millisecond (an
+  exclusive bound over millisecond-precision stores), so records written later
+  in the pass wait for the next event and one written in its own millisecond
+  is still included.
+- The automatic inject recovers a panic into a failure (counted as a redrive
+  failure and a delivery panic, audited, record kept, pass stopped); a
+  synchronous inject has no per-delivery recover of its own.
+- An error wrapping `ports.ErrInjectNotDelivered` moves the pass to the next
+  record; any other error stops it. A failed record keeps its `RedriveMode`
+  and `ExtraInfo`.
+- A removed-subscription record names its route only through
+  `RouteConfig.SourceSessionID`, never through the route's session argument:
+  the builder passes an egress binding's session there, so matching by
+  identity would redrive to that route's destination. A hand-wired route
+  without `SourceSessionID` gets records with no route, which the pass leaves.
 
 ## Lifecycle
 

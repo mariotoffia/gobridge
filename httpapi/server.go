@@ -202,6 +202,9 @@ type Server struct {
 	clk                clock.Clock
 	idGen              idGenFn
 	configTxn          *configTxnManager // nil when config management is disabled
+	// redriveTimeout bounds a whole DLQ redrive batch and redriveEntryTimeout
+	// one entry inside it; New defaults both to the package constants.
+	redriveTimeout, redriveEntryTimeout time.Duration
 	// adminThrottle and monitorThrottle are SEPARATE failed-auth rate limiters
 	// so a monitor-plane brute-forcer cannot fill a shared window and lock out
 	// the admin plane (and vice versa). Both throttle FAILED authentication
@@ -276,6 +279,12 @@ func New(rt ports.Runtime, cfg Config, opts ...Option) *Server {
 	}
 	if s.audit == nil {
 		s.audit = ports.NoopAuditLogger{}
+	}
+	if s.redriveTimeout == 0 {
+		s.redriveTimeout = redriveTimeout
+	}
+	if s.redriveEntryTimeout == 0 {
+		s.redriveEntryTimeout = redriveEntryTimeout
 	}
 	if s.clk == nil {
 		s.clk = clock.System

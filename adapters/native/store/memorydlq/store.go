@@ -65,6 +65,8 @@ func cloneEntry(e routing.DLQEntry) routing.DLQEntry {
 		LastError:     e.LastError(),
 		FailedAt:      e.FailedAt(),
 		Attempts:      e.Attempts(),
+		RedriveMode:   e.RedriveMode(),
+		ExtraInfo:     e.ExtraInfo(),
 	})
 }
 

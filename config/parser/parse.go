@@ -194,8 +194,9 @@ type stage1Stores struct {
 }
 
 type stage1Store struct {
-	Type    string         `yaml:"type" json:"type"`
-	Options map[string]any `yaml:"options,omitempty" json:"options,omitempty"`
+	Type              string         `yaml:"type" json:"type"`
+	AutoRedriveWindow string         `yaml:"auto_redrive_window,omitempty" json:"auto_redrive_window,omitempty"`
+	Options           map[string]any `yaml:"options,omitempty" json:"options,omitempty"`
 }
 
 type stage1Session struct {
@@ -358,7 +359,7 @@ func decodeStore(registry *ports.Registry, role string, s *stage1Store) (*ports.
 	if err != nil {
 		return nil, err
 	}
-	out := &ports.StoreConfig{Type: s.Type}
+	out := &ports.StoreConfig{Type: s.Type, AutoRedriveWindow: s.AutoRedriveWindow}
 	out.SetDecoded(cfg, raw)
 	return out, nil
 }

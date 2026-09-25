@@ -175,8 +175,18 @@ not the YAML shape, but they change *when* and *how* config errors surface:
   the message: the delivery is abandoned. A send already in progress is still
   waited for, up to the send wedge ceiling when the sender ignores its context.
   Give the call a context whose deadline you are willing to wait for, and
-  remember the admin DLQ redrive inherits this: its 30-second budget covers a
-  whole batch of sequential injects.
+  remember the admin DLQ redrive inherits this: its batch of sequential injects
+  has 30 seconds, and each entry's lookup and inject get at most 10 seconds of
+  it.
+- **A hand-wired route names its source session.** When you call
+  `Runtime.AddRoute` yourself, set `RouteConfig.SourceSessionID` to the session
+  the route's receiver subscribes through. The runtime uses it to name the route
+  on a record dead-lettered for a removed subscription, and a manual or automatic
+  redrive of that record needs the route (ADR 0019). The session you pass to
+  `AddRoute` is not used for this, because it can be an egress session: naming
+  the route from it would redrive the messages to that route's destination.
+  Leave the field empty and such records carry no route; they stay in the DLQ
+  for you to handle.
 - **Route fault blast radius.** A route whose receiver fails is restarted in
   isolation — backed off, counted on `RouteRestarts`, marked not-ready, and
   latched `route_dead` after repeated quick flaps — only when the source can be

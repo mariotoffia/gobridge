@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"maps"
 	"sync"
 	"testing"
 
@@ -13,9 +14,11 @@ import (
 )
 
 // deadLetterSession is a FakeSession that also accepts the removed-subscription
-// dead-letter path, recording what the runtime installed.
+// dead-letter path, recording what the runtime installed. It reports identity
+// as its managed subscription identity; "" means it keeps no managed history.
 type deadLetterSession struct {
 	*FakeSession
+	identity  string
 	mu        sync.Mutex
 	installed int
 	fn        func(context.Context, *messaging.Envelope, string) error
@@ -24,6 +27,8 @@ type deadLetterSession struct {
 func newDeadLetterSession() *deadLetterSession {
 	return &deadLetterSession{FakeSession: NewFakeSession()}
 }
+
+func (s *deadLetterSession) ManagedSubscriptionIdentity() string { return s.identity }
 
 func (s *deadLetterSession) SetRemovedSubscriptionDeadLetter(fn func(context.Context, *messaging.Envelope, string) error) {
 	s.mu.Lock()
@@ -98,6 +103,59 @@ func TestRemovedSubscriptionDeadLetterWritesSubscriptionRemovedEntry(t *testing.
 	}
 	if entry.Category() != "permanent" {
 		t.Fatalf("DLQ entry category = %q, want permanent", entry.Category())
+	}
+}
+
+// A session that names its managed identity gets records an automatic redrive
+// may act on: the mode is auto and the facts name the session, the removed
+// filter and the identity the subscription history is stored under.
+func TestRemovedSubscriptionDeadLetterMarksTheRecordForAutomaticRedrive(t *testing.T) {
+	store := NewFakeDLQStore()
+	rt := goruntime.New(goruntime.WithInstanceID("removed-sub-auto"), goruntime.WithDLQStore(store))
+	cfg, recv, sender := helperQuiescentRoute("source-route", nil)
+	cfg.SourceSessionID = "source-session"
+	sess := newDeadLetterSession()
+	sess.identity = "id-1"
+	sessCfg := runsession.Config{SessionID: "source-session"}
+	if err := rt.AddRoute(cfg, recv, sender, sess, &sessCfg); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	startRuntime(t, rt)
+
+	entry := writeHeldDelivery(t, sess, store, "sensors/+/temp")
+	if entry.RedriveMode() != routing.RedriveAuto {
+		t.Fatalf("DLQ redrive mode = %q, want %q", entry.RedriveMode(), routing.RedriveAuto)
+	}
+	want := map[string]string{
+		routing.ExtraInfoSessionID:       "source-session",
+		routing.ExtraInfoSubscription:    "sensors/+/temp",
+		routing.ExtraInfoManagedIdentity: "id-1",
+	}
+	if got := entry.ExtraInfo(); !maps.Equal(got, want) {
+		t.Fatalf("DLQ extra info = %v, want %v", got, want)
+	}
+}
+
+// A session that keeps no managed history reports "" and gets a manual record
+// with no facts, as before automatic redrive existed.
+func TestRemovedSubscriptionDeadLetterWithoutIdentityWritesAManualRecord(t *testing.T) {
+	store := NewFakeDLQStore()
+	rt := goruntime.New(goruntime.WithInstanceID("removed-sub-manual"), goruntime.WithDLQStore(store))
+	cfg, recv, sender := helperQuiescentRoute("source-route", nil)
+	cfg.SourceSessionID = "source-session"
+	sess := newDeadLetterSession()
+	sessCfg := runsession.Config{SessionID: "source-session"}
+	if err := rt.AddRoute(cfg, recv, sender, sess, &sessCfg); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	startRuntime(t, rt)
+
+	entry := writeHeldDelivery(t, sess, store, "sensors/+/temp")
+	if entry.RedriveMode() != routing.RedriveManual {
+		t.Fatalf("DLQ redrive mode = %q, want manual", entry.RedriveMode())
+	}
+	if got := entry.ExtraInfo(); got != nil {
+		t.Fatalf("DLQ extra info = %v, want nil", got)
 	}
 }
 

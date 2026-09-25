@@ -19,20 +19,27 @@ func scanDLQEntries(rows *sql.Rows) ([]routing.DLQEntry, error) {
 	result := make([]routing.DLQEntry, 0)
 	for rows.Next() {
 		var (
-			spec       routing.DLQEntrySpec
-			envJSON    string
-			failedAtMs int64
+			spec                   routing.DLQEntrySpec
+			envJSON                string
+			failedAtMs             int64
+			redriveMode, extraJSON string
 		)
 		err := rows.Scan(
 			&spec.ID, &spec.RouteID, &spec.BindingID, &spec.SessionID, &spec.SourceID,
 			&spec.CorrelationID, &spec.Address, &spec.Reason, &spec.Category, &spec.ErrorCode, &spec.LastError,
-			&envJSON, &failedAtMs, &spec.Attempts,
+			&envJSON, &failedAtMs, &spec.Attempts, &redriveMode, &extraJSON,
 		)
 		if err != nil {
 			return nil, wrapErr(err, "sqlitedlq: scan entry")
 		}
 
 		spec.FailedAt = time.UnixMilli(failedAtMs)
+		spec.RedriveMode = routing.RedriveMode(redriveMode)
+		if extraJSON != "" && extraJSON != "{}" {
+			if err := json.Unmarshal([]byte(extraJSON), &spec.ExtraInfo); err != nil {
+				return nil, fmt.Errorf("sqlitedlq: unmarshal extra_info: %w", err)
+			}
+		}
 
 		// An empty envelope_json marks a metadata-only DLQ entry (no
 		// envelope). Skip rehydration so spec.Envelope stays the zero

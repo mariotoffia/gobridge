@@ -168,19 +168,36 @@ func (r *Router) SetTokenFn(fn func(sessionID string) (persistence.LeaseToken, b
 // AMQP routing key) on egress, or the source address on ingress. It
 // is recorded on the DLQ entry so consumers can route or analyze
 // failures by transport address without inspecting Envelope.Subject.
+//
+// opts mark the entry for automatic redrive (AutoRedrive); without them the
+// entry is manual only.
 func (r *Router) Route(
 	ctx context.Context,
 	env *messaging.Envelope,
 	routeID, bindingID, address, sessionID, sourceID string,
 	err error,
 	attempts int,
+	opts ...EntryOption,
 ) error {
 	if r.store == nil {
 		return nil
 	}
 
-	entry := r.buildEntry(env, routeID, bindingID, address, sessionID, sourceID, err, attempts)
+	entry := r.buildEntry(env, routeID, bindingID, address, sessionID, sourceID, err, attempts, opts)
 	return r.writeConfirmed(ctx, entry)
+}
+
+// EntryOption adjusts the entry Route writes.
+type EntryOption func(*routing.DLQEntrySpec)
+
+// AutoRedrive marks the entry as one a matching system event may redrive by
+// itself, and records the facts that event must match (ADR 0019). The map is
+// copied when the entry is built.
+func AutoRedrive(extraInfo map[string]string) EntryOption {
+	return func(spec *routing.DLQEntrySpec) {
+		spec.RedriveMode = routing.RedriveAuto
+		spec.ExtraInfo = extraInfo
+	}
 }
 
 func (r *Router) buildEntry(
@@ -188,12 +205,13 @@ func (r *Router) buildEntry(
 	routeID, bindingID, address, sessionID, sourceID string,
 	err error,
 	attempts int,
+	opts []EntryOption,
 ) routing.DLQEntry {
 	category, errorCode := classifyError(err)
 	correlationID, _ := messaging.GetHeaderString(env.Headers(), messaging.HeaderCorrelationID)
 	reason := safeErrorReason(err)
 
-	return routing.NewDLQEntry(routing.DLQEntrySpec{
+	spec := routing.DLQEntrySpec{
 		ID:            entryID(env.ID(), routeID, bindingID, sourceID),
 		Envelope:      *env,
 		RouteID:       routeID,
@@ -208,7 +226,11 @@ func (r *Router) buildEntry(
 		LastError:     reason,
 		FailedAt:      r.clk.Now(),
 		Attempts:      attempts,
-	})
+	}
+	for _, opt := range opts {
+		opt(&spec)
+	}
+	return routing.NewDLQEntry(spec)
 }
 
 // writeConfirmed writes entry to the store and returns only once the write

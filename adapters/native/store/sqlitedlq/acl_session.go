@@ -70,6 +70,10 @@ func openSession(path string) (*sqlSession, error) {
 		_ = db.Close()
 		return nil, wrapErr(err, "sqlitedlq: create schema", "path", path)
 	}
+	if err := migrate(db); err != nil {
+		_ = db.Close()
+		return nil, wrapErr(err, "sqlitedlq: migrate schema", "path", path)
+	}
 
 	return &sqlSession{db: db}, nil
 }
@@ -99,10 +103,22 @@ func (s *sqlSession) write(ctx context.Context, entry routing.DLQEntry) error {
 		}
 	}
 
-	_, err := s.db.ExecContext(ctx, insertDLQSQL,
+	// A record with no redrive facts stores "{}" (the column default), never
+	// JSON null, so every row decodes the same way (ADR 0019).
+	info := entry.ExtraInfo()
+	if info == nil {
+		info = map[string]string{}
+	}
+	extraJSON, err := json.Marshal(info)
+	if err != nil {
+		return fmt.Errorf("sqlitedlq: marshal extra_info: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, insertDLQSQL,
 		entry.ID(), entry.RouteID(), entry.BindingID(), entry.SessionID(), entry.SourceID(),
 		entry.CorrelationID(), entry.Address(), entry.Reason(), entry.Category(), entry.ErrorCode(), entry.LastError(),
 		string(envJSON), entry.FailedAt().UnixMilli(), entry.Attempts(),
+		string(entry.RedriveMode()), string(extraJSON),
 	)
 	if err != nil {
 		if isUniqueViolation(err) {

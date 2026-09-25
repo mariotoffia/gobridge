@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS dlq (
     envelope_json   TEXT NOT NULL,
     failed_at       INTEGER NOT NULL,
     attempts        INTEGER NOT NULL DEFAULT 0,
+    redrive_mode    TEXT NOT NULL DEFAULT '',
+    extra_info      TEXT NOT NULL DEFAULT '{}',
     replayed        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_dlq_route_id ON dlq(route_id);
@@ -41,13 +43,14 @@ CREATE INDEX IF NOT EXISTS idx_dlq_failed_at ON dlq(failed_at);
 // dlqColumns is the canonical column list used for SELECTs that
 // hydrate full routing.DLQEntry values via scanEntries.
 const dlqColumns = `id, route_id, binding_id, session_id, source_id, correlation_id,
-		address, reason, category, error_code, last_error, envelope_json, failed_at, attempts`
+		address, reason, category, error_code, last_error, envelope_json, failed_at, attempts,
+		redrive_mode, extra_info`
 
 const (
 	insertDLQSQL = `INSERT INTO dlq (id, route_id, binding_id, session_id, source_id,
 		 correlation_id, address, reason, category, error_code, last_error,
-		 envelope_json, failed_at, attempts)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		 envelope_json, failed_at, attempts, redrive_mode, extra_info)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	selectByIDSQL = `SELECT ` + dlqColumns + ` FROM dlq WHERE id = ?`
 

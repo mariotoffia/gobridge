@@ -38,9 +38,33 @@ func unmarshalEntry(item map[string]ddbtypes.AttributeValue) (routing.DLQEntry, 
 		}
 	}
 
+	spec.RedriveMode = routing.RedriveMode(strAttr(item, attrRedriveMode))
+	if infoJSON := strAttr(item, attrExtraInfo); infoJSON != "" {
+		if err := json.Unmarshal([]byte(infoJSON), &spec.ExtraInfo); err != nil {
+			return routing.DLQEntry{}, fmt.Errorf("dynamodbdlq: unmarshal extra_info: %w", err)
+		}
+	}
+
 	// RehydrateDLQEntry: the envelope was freshly decoded and is already
 	// owned, so the entry takes it without a redundant clone.
 	return routing.RehydrateDLQEntry(spec), nil
+}
+
+// putRedriveAttrs adds the optional redrive fields (ADR 0019) to an item: a
+// manual record with no facts carries neither attribute, exactly like an item a
+// release before them wrote.
+func putRedriveAttrs(item map[string]ddbtypes.AttributeValue, entry routing.DLQEntry) error {
+	if mode := entry.RedriveMode(); mode != routing.RedriveManual {
+		item[attrRedriveMode] = &ddbtypes.AttributeValueMemberS{Value: string(mode)}
+	}
+	if info := entry.ExtraInfo(); len(info) > 0 {
+		b, err := json.Marshal(info)
+		if err != nil {
+			return fmt.Errorf("dynamodbdlq: marshal extra_info: %w", err)
+		}
+		item[attrExtraInfo] = &ddbtypes.AttributeValueMemberS{Value: string(b)}
+	}
+	return nil
 }
 
 func strAttr(item map[string]ddbtypes.AttributeValue, key string) string {
