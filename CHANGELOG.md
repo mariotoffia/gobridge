@@ -30,8 +30,10 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 - `route_dead` latches only when the restarts come quickly. An AMQP 0-9-1
   receiver retries a missing queue itself, for its reconnect-race budget (about
   26s by default, longer for an exclusive consumer with a raised heartbeat),
-  before the route restarts. Its restarts can then be too far apart to latch
-  `route_dead`, so alert on the `RouteRestarts` rate for such routes.
+  before the route restarts. The route reads ready while it retries, and its
+  restarts can be too far apart to latch `route_dead`, so alert on the
+  `RouteRestarts` rate for such routes. A restarted route reads ready again
+  once its receiver has started, as SQS and MQTT routes already do.
 - The route runner still closes such a receiver each time its run ends, so the
   messages it holds are settled or handed back as before. The next run attaches
   again. `ports.Receiver` now states this: `Close` ends one `Run`, not the
