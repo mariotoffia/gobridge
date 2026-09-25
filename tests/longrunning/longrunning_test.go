@@ -82,6 +82,12 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
+	// Nothing but Shutdown removes a shared container. Each one removes only
+	// what this process started, so it is safe in the child processes that
+	// re-run this binary too.
+	flocilocal.Shutdown()
+	mqttlocal.Shutdown()
+	ddblocal.Shutdown()
 	rabbitmqlocal.Shutdown()
 	artemislocal.Shutdown()
 

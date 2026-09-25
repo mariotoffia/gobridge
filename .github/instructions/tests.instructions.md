@@ -40,3 +40,8 @@ comment. The rest below is not machine-checked.
   `exec.Command("docker", …)`. They are removed through `dockerexec.Remove`,
   never a `docker rm -f` of their own: without `-v`, removing a container
   leaves the anonymous volumes of its image's `VOLUME` paths behind.
+- A package that uses a shared fixture (`mqttlocal.BrokerURL`,
+  `ddblocal.Endpoint`, `flocilocal.Endpoint`, …) calls that helper's
+  `Shutdown` in `TestMain` after `m.Run()` (TESTS.md §5.1). Nothing else
+  removes a shared container, so a package without it leaves the container
+  running after every run.

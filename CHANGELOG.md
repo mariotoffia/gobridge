@@ -10,7 +10,7 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
-### Fixed — test helpers remove their containers' anonymous volumes
+### Fixed — test runs no longer leave containers and volumes behind
 
 - Every `testutil/*local` helper removed its containers with `docker rm -f`,
   which keeps the anonymous volumes Docker creates for an image's `VOLUME`
@@ -19,6 +19,10 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   `dockerexec.Remove`, which runs `docker rm -f -v`. Bind mounts and named
   volumes are not affected, so a broker's persistence directory still
   survives a restart.
+- `deployment/aws/lib/bootstrap` and `tests/longrunning` never shut down
+  their shared Mosquitto, DynamoDB Local and Floci containers, so each run
+  without `-short` left them running. Both `TestMain`s now call `Shutdown`,
+  and `bootstrap` also sweeps up containers a killed run left behind.
 - The four `TestSecureBroker_*` tests in `testutil/mqttlocal` now skip under
   `-short`, as TESTS.md requires of Docker-backed tests. `make test` no longer
   starts a broker; `make test-integration` still runs them.
