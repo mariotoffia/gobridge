@@ -3,6 +3,7 @@ package config
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -68,8 +69,8 @@ func TestInitialSnapshotRejectsUnownedPluginAndConditionState(t *testing.T) {
 // whose held retry outlives the MQTT recycle passes the gate that exists to
 // reject it. The session still enforces its own recycle timeout at runtime, so
 // the config admitted here is the one that terminalizes it in production. Every
-// optional capability the runtime reads off a frozen plugin has to be on this
-// list for the same reason.
+// optional capability the runtime reads off a frozen plugin has to be on the
+// shared freeze list in ports for the same reason.
 func TestInitialSnapshotRejectsAFrozenPluginThatLostItsRecoveryTiming(t *testing.T) {
 	cfg := minimalValidConfig("original")
 	cfg.Sessions = []ports.SessionDef{{ID: "sess1", Transport: "mqtt", Config: &recoveryTimedInitialPlugin{}}}
@@ -78,4 +79,18 @@ func TestInitialSnapshotRejectsAFrozenPluginThatLostItsRecoveryTiming(t *testing
 
 	require.ErrorIs(t, err, shared.ErrInvalidConfig)
 	require.ErrorContains(t, err, "lost a capability")
+}
+
+// TestInitialSnapshotRejectsAFrozenPluginThatLostItsReplicaIdentity pins the
+// replica identity strategy on the same path. The validator reads it off the
+// frozen copy: without it, and with no $share/ topic, the clustered-receiver
+// rule is skipped, so a receiver that gets every message once per replica
+// passes validation.
+func TestInitialSnapshotRejectsAFrozenPluginThatLostItsReplicaIdentity(t *testing.T) {
+	cfg := minimalValidConfig("original")
+	cfg.Sessions = []ports.SessionDef{{ID: "sess1", Transport: "mqtt", Config: &replicaIdentityInitialPlugin{}}}
+
+	_, err := initialSnapshot(cfg)
+
+	assert.ErrorIs(t, err, shared.ErrInvalidConfig)
 }

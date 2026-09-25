@@ -10,6 +10,20 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Fixed — a frozen plugin config may not drop a capability on either freeze path
+
+- Before validation, each plugin config is replaced by the frozen copy its
+  adapter returns. Both places that do this now reject a copy that dropped any
+  optional `ports` capability core code reads, and they check the same list
+  (#69).
+  `ReplicaIdentityConfig`, `PublishingConfig`, `VisibilityTimeoutConfig`,
+  `CapabilityConfig`, `SourceRedeliveryConfig` and `BestEffortDirectHoldConfig`
+  were on neither list. A copy that dropped `ReplicaIdentityConfig` let a
+  clustered MQTT receiver that gets every message once per replica pass
+  validation. No bundled adapter drops one; a custom plugin whose freeze
+  returns a narrower type is now rejected at load with `INVALID_CONFIG`, naming
+  the capability.
+
 ### Added — automatic redrive of a removed subscription's dead-letters
 
 - **Behaviour change, on by default** (#57). When a configuration change

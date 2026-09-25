@@ -114,11 +114,49 @@ type TransportFailoverTimingConfig interface {
 // configuration value while intentionally sharing only opaque immutable or
 // runtime dependencies that must retain identity (for example a client handle,
 // clock, mutex-bearing state, or process-stable suffix resolver). The result must
-// be non-nil, retain the source Kind and this freeze capability, and preserve
-// any durable-identity, post-acquire timing, settlement-recovery timing, failover
-// timing, and credential capabilities exposed by the source.
+// be non-nil, retain the source Kind, and keep every optional capability the
+// source implements; both freeze paths reject a copy that drops one of the
+// capabilities LostFreezeCapability checks. Returning a pointer to a copy of
+// the source's own type keeps them all.
 type FreezableConfig interface {
 	FreezePluginConfig() PluginConfig
+}
+
+// freezeCapabilities are the optional capabilities that validation and the
+// runtime read off a FROZEN plugin config. A frozen copy that drops one fails
+// silently: it still validates and keeps its kind, while the code reading it
+// sees no capability and skips the check the capability exists for. Both
+// freeze paths, the builder's and configuration initialisation's, check this
+// one list. IngressMemoryProfileConfig is left off on purpose: bootstrap sizes
+// ingress memory on a freshly decoded config, never on a frozen copy.
+func freezeCapabilities() []reflect.Type {
+	return []reflect.Type{
+		reflect.TypeFor[FreezableConfig](),
+		reflect.TypeFor[CredentialedConfig](),
+		reflect.TypeFor[DurableSessionIdentityConfig](),
+		reflect.TypeFor[PostAcquireActivationTimingConfig](),
+		reflect.TypeFor[SettlementRecoveryTimingConfig](),
+		reflect.TypeFor[TransportFailoverTimingConfig](),
+		reflect.TypeFor[IngressMemoryConfig](),
+		reflect.TypeFor[ReplicaIdentityConfig](),
+		reflect.TypeFor[PublishingConfig](),
+		reflect.TypeFor[VisibilityTimeoutConfig](),
+		reflect.TypeFor[CapabilityConfig](),
+		reflect.TypeFor[SourceRedeliveryConfig](),
+		reflect.TypeFor[BestEffortDirectHoldConfig](),
+	}
+}
+
+// LostFreezeCapability returns the interface name of the first capability on
+// the freeze list that source implements and frozen does not, or "" when
+// frozen keeps them all. Both configs must be non-nil.
+func LostFreezeCapability(source, frozen PluginConfig) string {
+	for _, capability := range freezeCapabilities() {
+		if reflect.TypeOf(source).Implements(capability) && !reflect.TypeOf(frozen).Implements(capability) {
+			return capability.Name()
+		}
+	}
+	return ""
 }
 
 // IsNilPluginConfig detects a nil interface and an interface holding a typed nil

@@ -71,10 +71,19 @@ func (*recoveryTimedInitialPlugin) SettlementRecoveryWait(connectivity.SessionMo
 	return time.Minute
 }
 
+// replicaIdentityInitialPlugin reports a replica identity strategy and freezes
+// to a plain initialPlugin, which does not: the same silent drop as above.
+type replicaIdentityInitialPlugin struct{ initialPlugin }
+
+func (*replicaIdentityInitialPlugin) ReplicaIdentityStrategy() string {
+	return ports.ReplicaIdentityHostname
+}
+
 var (
 	_ ports.ConfigStore                    = (*initialStore)(nil)
 	_ ports.ConfigInitializer              = (*initialStore)(nil)
 	_ ports.FreezableConfig                = (*initialPlugin)(nil)
 	_ ports.FreezableConfig                = (*recoveryTimedInitialPlugin)(nil)
 	_ ports.SettlementRecoveryTimingConfig = (*recoveryTimedInitialPlugin)(nil)
+	_ ports.ReplicaIdentityConfig          = (*replicaIdentityInitialPlugin)(nil)
 )

@@ -62,9 +62,10 @@ These are the findings that past reviews got right and that authors fixed.
    the docs show must be accepted by the parser. A user-visible change has an
    entry under `## [Unreleased]` in `CHANGELOG.md`.
 2. **Lists that must agree, agree.** When one list of kinds, keys or fields
-   changes, find its twins: both freeze guards (PLUGIN.md), the OpenAPI spec in
-   `spec/httpapi/`, the manager projection, the conformance suites, the docs
-   tables.
+   changes, find its twins: the OpenAPI spec in `spec/httpapi/`, the manager
+   projection, the conformance suites, the docs tables. A new optional plugin
+   capability that core code reads goes on the freeze capability list
+   (PLUGIN.md).
 3. **Fail closed.** Invalid, foreign, typed-nil, negative, zero-where-unset or
    trailing input is rejected with a classified error. It is never silently
    defaulted or accepted.
