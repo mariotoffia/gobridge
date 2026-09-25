@@ -274,7 +274,7 @@ Turn it on by adding a duration:
 bridge:
   cluster:
     rollout: coordinated
-    confirm_window: 90s     # unset / "0s" (the default) = no confirm window
+    confirm_window: 90s     # unset (the default) = no confirm window; "0s" is rejected
 ```
 
 Now a commit is **provisional**. Every process swaps to the new config and

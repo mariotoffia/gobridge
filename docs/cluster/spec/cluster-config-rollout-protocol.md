@@ -289,7 +289,7 @@ the NETCONF/NSO "provisional apply with deadman timer" layer on top
 bridge:
   cluster:
     rollout: coordinated
-    confirm_window: 90s     # 0 (default) = base protocol only
+    confirm_window: 90s     # unset (default) = base protocol only; "0s" is rejected
 ```
 
 - On `Committed`, every node performs its swap **provisionally**, arming a

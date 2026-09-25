@@ -169,6 +169,10 @@ schemas:
       receiver/sender/binding session_id, and a receiver's topics list.
 
 
+      An overlay that includes a `bridge` block repeats `bridge.id`, which
+      the block requires.
+
+
       The `version` field is an optimistic-concurrency counter. It is
       incremented on each successful config commit via the transaction API.
       When multiple instances share a config file (e.g. on AWS EFS), the
@@ -219,10 +223,11 @@ schemas:
 
   BridgeSettings:
     type: object
+    required: [id]
     properties:
       id:
         type: string
-        description: Unique bridge identifier (required).
+        description: Unique bridge identifier.
       instance_id:
         type: string
       deployment_mode:
@@ -233,11 +238,72 @@ schemas:
         description: Go duration string (e.g. "30s").
       drain_timeout:
         type: string
+      per_record_drain_timeout:
+        type: string
+        description: >
+          Go duration string (e.g. "3s"). Per-record allowance in the outbox
+          drain batch ceiling min(batchCount × per_record_drain_timeout,
+          max_drain_timeout). Omitting the field takes the 3s default; the
+          value must be positive.
+        example: 3s
+      max_drain_timeout:
+        type: string
+        description: >
+          Go duration string (e.g. "10s"). Upper bound of the outbox drain
+          batch ceiling. Omitting the field takes the 10s default; the value
+          must be positive and at least per_record_drain_timeout.
+        example: 10s
       log_level:
         type: string
         description: >
           Case-insensitive; "warning" is an accepted alias of "warn".
         enum: [debug, info, warn, warning, error]
+      cluster:
+        $ref: "#/schemas/ClusterConfig"
+
+  ClusterConfig:
+    type: object
+    properties:
+      endpoints:
+        type: object
+        additionalProperties:
+          type: string
+        description: >
+          THIS instance's advertised capability endpoints, keyed by capability
+          name — currently `http`, whose value is a full URL
+          (scheme://host:port). An optional static override of auto-discovery,
+          not a peer roster. In a clustered deployment a non-empty map must
+          have an `http` key holding an absolute http or https URL.
+        example: { "http": "http://10.0.1.10:8080" }
+      members:
+        type: array
+        items:
+          type: string
+        description: >
+          Static roster of member ids for a coordinated rollout. Must be
+          identical on every member, with non-empty ids and no duplicates.
+          Required non-empty when rollout is coordinated; ignored otherwise.
+      rollout:
+        type: string
+        enum: [refuse, independent, coordinated]
+        description: >
+          Live config change strategy. Omitted or refuse: a clustered node
+          rejects every live config delta and needs whole-cohort replacement.
+          independent: each member applies a live-safe delta on its own.
+          coordinated: the rollout barrier, which needs a shared rollout store,
+          a lease-elected coordinator and members. independent and coordinated
+          need a clustered deployment. See
+          docs/cluster/spec/cluster-config-rollout-protocol.md.
+      confirm_window:
+        type: string
+        description: >
+          Go duration string (e.g. "90s"). Only valid with rollout coordinated.
+          A positive value makes each commit provisional: if the cohort does
+          not confirm in time, every member reverts to the last confirmed
+          generation. Omit the field for a final commit; "0s" and other
+          non-positive values are rejected. See
+          docs/adr/0014-confirm-window-provisional-commit.md.
+        example: 90s
 
   ConfigWatchDef:
     type: object
@@ -373,6 +439,15 @@ schemas:
       dispatch_mode:
         type: string
         enum: [single, fan_out]
+      trust_bridge_headers:
+        type: boolean
+        description: >
+          Keeps the bridge-to-bridge propagated x-bridge.* headers
+          (correlation-id, causation-id, idempotency-key, dedup-id,
+          ordering-key, tenant-id, forwarded-from/hop) instead of stripping
+          every x-bridge.* header at ingress. Enable only for a receiver fed
+          exclusively by a trusted upstream bridge. Internal-only headers are
+          stripped regardless. Default false.
       policy:
         $ref: "#/schemas/PolicyDef"
       bindings:
@@ -383,6 +458,199 @@ schemas:
         type: array
         items:
           type: string
+      resolver:
+        $ref: "#/schemas/ResolverDef"
+      session:
+        $ref: "#/schemas/RouteSessionDef"
+
+  ResolverDef:
+    type: object
+    required: [type]
+    properties:
+      type:
+        type: string
+        enum: [rules, header_map, all, static]
+      default_binding:
+        type: string
+        description: >
+          Fallback binding when no rule matches. Must be in the route's
+          bindings.
+      header_key:
+        type: string
+        description: Header whose value selects the binding. Required for header_map.
+      header_map:
+        type: object
+        additionalProperties:
+          type: string
+        description: >
+          Header value → binding id. header_map needs at least one entry, and
+          every value must be in the route's bindings.
+      rules:
+        type: array
+        items:
+          $ref: "#/schemas/RuleDef"
+        description: >
+          Used by type rules, which needs at least one rule or a
+          default_binding.
+
+  RuleDef:
+    type: object
+    required: [binding_id]
+    properties:
+      binding_id:
+        type: string
+        description: Binding the rule selects. Must be in the route's bindings.
+      match:
+        type: array
+        items:
+          $ref: "#/schemas/ConditionDef"
+        description: >
+          Conditions that must all match. An empty list is a catch-all.
+
+  ConditionDef:
+    type: object
+    required: [field, operator]
+    properties:
+      field:
+        type: string
+        description: >
+          `subject`, `header.<key>`, `$.<json.path>`, or a bare name read as a
+          header.
+        example: header.region
+      operator:
+        type: string
+        enum: [eq, ne, prefix, contains, regex, gt, lt, gte, lte, exists, in]
+      value:
+        description: >
+          Any JSON value. A scalar for eq, ne, prefix and contains; a string
+          regex pattern of at most 4096 characters for regex; a number for gt,
+          lt, gte and lte; a list for in. For exists it is ignored unless it is
+          an explicit boolean, and false means "must not exist".
+
+  RouteSessionDef:
+    type: object
+    description: >
+      The timing defaults below apply to a standalone deployment. In a
+      clustered deployment that sets neither lease_ttl nor renew_interval, the
+      HA baseline replaces them: lease_ttl 45s, renew_interval 10s,
+      lease_renew_jitter 1s, renew_call_timeout 3s and step_down_grace 5s. A
+      field that is set still overrides its baseline value.
+    required: [session_id, sender_id]
+    properties:
+      session_id:
+        type: string
+        description: Must name a sessions[] entry.
+      sender_id:
+        type: string
+        description: Must name a senders[] entry.
+      lease_ttl:
+        type: string
+        description: >
+          Go duration string (e.g. "360s"). How long the lease is valid.
+          Omitting the field takes the 360s default.
+        example: 360s
+      renew_interval:
+        type: string
+        description: >
+          Go duration string (e.g. "120s"). Omitted, it is derived from
+          lease_ttl and max_renew_fails. When set, (renew_interval +
+          lease_renew_jitter/2 + renew_call_timeout) × max_renew_fails must
+          stay below lease_ttl.
+      lease_renew_jitter:
+        type: string
+        description: >
+          Go duration string (e.g. "2s"). Bounded random jitter on each renewal
+          timer. Omitted, it is renew_interval/4 when renew_interval is also
+          omitted, and zero (no jitter) when renew_interval is set.
+      max_renew_fails:
+        type: integer
+        minimum: 0
+        description: >
+          Consecutive renewal failures before step-down. Default 3.
+      step_down_grace:
+        type: string
+        description: >
+          Go duration string (e.g. "15s"). How long to wait for in-flight work
+          before releasing the lease. Default 15s.
+      acquire_poll_interval:
+        type: string
+        description: >
+          Go duration string (e.g. "5s"). How often a standby retries
+          acquiring the lease. Omitted, it is min(renew_interval, lease_ttl/4,
+          5s); the resolved value must be at least 250ms.
+      renew_call_timeout:
+        type: string
+        description: >
+          Go duration string (e.g. "3s"). Bounds one lease-renew store call.
+          Omitted, it is min(renew_interval/2, 5s), and at least 1s.
+      failover_slo:
+        type: string
+        description: >
+          Go duration string. Optional failure-detection-to-full-service
+          objective the preflight checks. Must be positive, and needs
+          broker_health_step_down declared.
+      startup_allowance:
+        type: string
+        description: >
+          Go duration string. Bounded process-side startup time the failover
+          budget reserves. Default 0; must be non-negative and at most 10m.
+      broker_health_step_down:
+        type: string
+        description: >
+          A positive Go duration string (e.g. "90s") or "off". Omitted means
+          undecided, which is refused when failover_slo is set. A duration
+          makes an active owner whose broker path stays unconverged that long
+          release the lease.
+        example: 90s
+      drain_interval:
+        type: string
+        description: >
+          Go duration string (e.g. "1s"). Fixed-poll outbox drain interval.
+          Default 1s. Mutually exclusive with drain_strategy.
+      drain_batch_size:
+        type: integer
+        description: Default 100.
+      drain_max_batch_size:
+        type: integer
+        description: Default 500.
+      drain_max_concurrency:
+        type: integer
+        description: Default 10.
+      drain_strategy:
+        $ref: "#/schemas/DrainStrategyDef"
+      connect_after_lease:
+        type: boolean
+        description: >
+          Defers the source session's broker connect until this instance holds
+          the lease. Default true; set false only to opt out.
+
+  DrainStrategyDef:
+    type: object
+    required: [type]
+    properties:
+      type:
+        type: string
+        enum: [fixed_poll, adaptive_backoff]
+      interval:
+        type: string
+        description: >
+          Go duration string (e.g. "1s"). fixed_poll only. Default 1s; must be
+          positive.
+      min_interval:
+        type: string
+        description: >
+          Go duration string (e.g. "100ms"). adaptive_backoff only. Default
+          100ms.
+      max_interval:
+        type: string
+        description: >
+          Go duration string (e.g. "30s"). adaptive_backoff only. Default 30s;
+          must be at least min_interval.
+      multiplier:
+        type: number
+        description: >
+          adaptive_backoff only. Omitted or 0 takes the default 2; any other
+          value must be greater than 1.
 
   PolicyDef:
     type: object
@@ -461,11 +729,11 @@ schemas:
         type: string
       multiplier:
         type: number
-        minimum: 1
         description: >
-          Exponential backoff multiplier. Below 1 the delay shrinks on every
-          attempt, so retries accelerate instead of backing off; 1 is a fixed
-          retry interval.
+          Exponential backoff multiplier. Omitted or 0 takes the default 2; any
+          other value must be at least 1. Below 1 the delay would shrink on
+          every attempt, so retries would accelerate instead of backing off; 1
+          is a fixed retry interval.
       jitter:
         type: number
         minimum: 0
@@ -489,9 +757,26 @@ schemas:
         example: ":8081"
       admin_api_key:
         type: string
-        description: Redacted in responses.
+        description: >
+          Redacted in responses. The admin server refuses to start without an
+          admin key of at least 16 characters, but the key need not be in the
+          config: the gobridge binary takes a non-empty GOBRIDGE_ADMIN_API_KEY
+          environment variable over this field, so it is not a required
+          property.
       monitor_api_key:
         type: string
         description: Redacted in responses.
       cors_origins:
         type: string
+      tls_cert_file:
+        type: string
+        description: >
+          Path to the PEM server certificate, with any intermediate chain. Set
+          both tls_cert_file and tls_key_file to serve HTTPS on the admin and
+          monitor listeners, or neither to stay plaintext; one alone is
+          rejected at startup. A change needs a restart to apply.
+      tls_key_file:
+        type: string
+        description: >
+          Path to the private key of tls_cert_file. Set together with
+          tls_cert_file; a change needs a restart to apply.

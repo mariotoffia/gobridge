@@ -50,6 +50,10 @@ Naming, layering (`.go-arch-lint.yml`), plugin-config shape, the ACL boundary,
 identifiers in Go source (tests included), gofmt, go vet and golangci-lint rules. If
 one of these is broken, CI is red; at most name the checker (see `LINT.md`).
 
+`make test` pins the property names of `spec/httpapi/config-components.yaml` to
+the `ports` config structs (`ports/admin_config_schema_test.go`), so a missing or
+extra schema key is CI-red, not a review finding.
+
 Build tags, compile errors and import cycles belong to the compiler and
 `go vet`. Do not claim a file will not build.
 
