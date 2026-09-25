@@ -1,5 +1,3 @@
-//go:build integration
-
 package servicebus_test
 
 import (
@@ -11,6 +9,7 @@ import (
 	"time"
 
 	servicebus "github.com/mariotoffia/gobridge/adapters/azure/transport/servicebus"
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/testutil/asblocal"
@@ -54,7 +53,7 @@ func TestIntegration_ReceiverRunsAgainAfterClose(t *testing.T) {
 	recv := newTestReceiver(t, servicebus.ReceiverConfig{QueueName: queue})
 	defer recv.Close(context.Background()) //nolint:errcheck
 
-	tag := fmt.Sprintf("rerun-%d", time.Now().UnixNano())
+	tag := fmt.Sprintf("rerun-%d", clock.System.Now().UnixNano())
 	m1, m2, m3 := tag+"-m1", tag+"-m2", tag+"-m3"
 
 	sendRerunPayload(t, sender, m1)
@@ -124,7 +123,7 @@ func runOnceUntil(t *testing.T, recv *servicebus.Receiver, want string, settle b
 		res rerunResult
 		got bool
 	)
-	start := time.Now()
+	start := clock.System.Now()
 	// The poll loop emits one delivery at a time on this goroutine, so res
 	// needs no lock.
 	err := recv.Run(runCtx, func(ctx context.Context, del ports.Delivery) error {
@@ -139,7 +138,7 @@ func runOnceUntil(t *testing.T, recv *servicebus.Receiver, want string, settle b
 			return del.Ack(ackCtx)
 		}
 		got = true
-		res.elapsed = time.Since(start)
+		res.elapsed = clock.System.Since(start)
 		if settle {
 			if err := del.Ack(ctx); err != nil {
 				return fmt.Errorf("ack %s: %w", want, err)
@@ -169,7 +168,7 @@ func sendRerunPayload(t *testing.T, sender *servicebus.Sender, payload string) {
 		ID:        payload,
 		Subject:   "rerun-test",
 		Payload:   []byte(payload),
-		CreatedAt: time.Now(),
+		CreatedAt: clock.System.Now(),
 	})
 	if err := sender.Send(context.Background(), ports.OutboundMessage{Envelope: env}); err != nil {
 		t.Fatalf("Send %s: %v", payload, err)
