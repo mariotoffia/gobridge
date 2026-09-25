@@ -11,10 +11,11 @@ import (
 )
 
 // TestMetricConstants_TransportAgnostic enforces the invariant that the
-// shared kernel (domain/shared/metrics.go) must contain ONLY generic,
-// transport-agnostic metric names. A contributor must not be able to add a
-// provider-flavored metric (e.g. MetricSQSPolls = "SQSPolls") to the shared
-// kernel and keep lint+test green.
+// shared kernel must contain ONLY generic, transport-agnostic metric names. A
+// contributor must not be able to add a provider-flavored metric (e.g.
+// MetricSQSPolls = "SQSPolls") to the shared kernel and keep lint+test green.
+// The names are read from every metrics*.go file, so a newly declared name is
+// scanned without editing this test.
 //
 // MetricMQTTReconnects is the sole allow-listed exception: it carries the
 // historical "MQTTReconnects" wire value for observability compatibility, and
@@ -31,52 +32,15 @@ func TestMetricConstants_TransportAgnostic(t *testing.T) {
 		shared.MetricMQTTReconnects: true,
 	}
 
-	values := []string{
-		shared.MetricLeaseAcquireLatency,
-		shared.MetricLeaseRenewLatency,
-		shared.MetricLeaseAcquireFailures,
-		shared.MetricLeaseExpiries,
-		shared.MetricLeaseTransfers,
-		shared.MetricOutboxPersistLatency,
-		shared.MetricOutboxDrainLatency,
-		shared.MetricOutboxDepth,
-		shared.MetricOutboxClaimBatchSize,
-		shared.MetricOutboxDepthFailures,
-		shared.MetricOutboxClaimRecoveries,
-		shared.MetricOutboxCompletions,
-		shared.MetricOutboxExpiredBeforeSend,
-		shared.MetricOutboxReplayCount,
-		shared.MetricOutboxRecordFailures,
-		shared.MetricOutboxDuplicateRisk,
-		shared.MetricOutboxClaimConflicts,
-		shared.MetricAckLatency,
-		shared.MetricVisibilityExtensions,
-		shared.MetricDeliveryE2ELatency,
-		shared.MetricDLQEntries,
-		shared.MetricDLQDepth,
-		shared.MetricDLQWriteFailures,
-		shared.MetricDeliveryPanics,
-		shared.MetricMessagesReceived,
-		shared.MetricMessagesSent,
-		shared.MetricMessagesDropped,
-		shared.MetricRouteErrors,
-		shared.MetricReceiveCountUnparseable,
-		shared.MetricProcessorPanics,
-		shared.MetricProcessorTimeouts,
-		shared.MetricMQTTReconnects,
-		shared.MetricReconcileFailures,
-		shared.MetricSessionRestarts,
-	}
-
-	for _, v := range values {
+	for name, v := range declaredMetricNames(t) {
 		if allowed[v] {
 			continue
 		}
 		lower := strings.ToLower(v)
 		for _, tok := range tokens {
 			if strings.Contains(lower, strings.ToLower(tok)) {
-				t.Errorf("shared metric %q contains transport/provider token %q; "+
-					"the shared kernel must hold only generic, transport-agnostic metrics", v, tok)
+				t.Errorf("shared metric %s = %q contains transport/provider token %q; "+
+					"the shared kernel must hold only generic, transport-agnostic metrics", name, v, tok)
 			}
 		}
 	}

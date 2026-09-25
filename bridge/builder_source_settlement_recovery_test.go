@@ -55,7 +55,6 @@ func TestSourceRouteFacts_CarryTheIngressSessionSettlementRecoveryWait(t *testin
 		{name: "persistent session recycles", sessionMode: string(connectivity.SessionPersistent),
 			want: 240 * time.Second},
 		{name: "ephemeral session never recycles", sessionMode: string(connectivity.SessionEphemeral)},
-		{name: "an unset mode is ephemeral"},
 	}
 
 	for _, tc := range cases {

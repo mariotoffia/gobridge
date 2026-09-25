@@ -235,6 +235,12 @@ func TestValidator_SendRetryBudgetAgainstSettlementRecoveryWait(t *testing.T) {
 	}{
 		{name: "default budget fits the recycle wait", deliveryMode: routing.DeliveryDirectHold,
 			sendTimeout: 30 * time.Second, wait: 240 * time.Second},
+		// An omitted budget is checked at its 60s default: 60s + 30s send + 5s
+		// wedge grace = 95s outlives a 60s recycle wait. The rule must read the
+		// defaulted policy, or it goes inert for the commonest configuration.
+		{name: "an omitted budget is checked at its default", deliveryMode: routing.DeliveryDirectHold,
+			sendTimeout: 30 * time.Second, wait: 60 * time.Second, wantRejected: true,
+			wantMessage: "send_retry_budget 1m0s + send_timeout 30s (+5s wedge grace)"},
 		// 205s + 30s send + 5s wedge grace = 240s.
 		{name: "budget and send wedge ceiling exactly fill the recycle wait", deliveryMode: routing.DeliveryDirectHold,
 			budget: 205 * time.Second, sendTimeout: 30 * time.Second, wait: 240 * time.Second},
