@@ -222,7 +222,9 @@ func TestSendRetry_GeneratedIdentityRecoversWithoutDeadLetter(t *testing.T) {
 // stops and the message takes the poison path it always took.
 //
 // Mutation check: compare the elapsed time alone against the budget and this
-// fails — the loop waits past the budget for a fifth send.
+// fails — the loop waits past the budget for a fifth send. Compute the wait
+// from the previous send's index (try-1) and this fails too — the second wait
+// ends after 1 s instead of 2 s.
 func TestSendRetry_AlwaysFailingSendSpendsBudgetThenPoisons(t *testing.T) {
 	sender := &flakySender{err: shared.ErrUnavailable, failures: -1}
 	f := newSendRetryFixture(10*time.Second, sender)
@@ -231,7 +233,16 @@ func TestSendRetry_AlwaysFailingSendSpendsBudgetThenPoisons(t *testing.T) {
 	done := f.handle(context.Background(), del)
 	for i, d := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second} {
 		f.awaitRetryWait(t, i+1)
-		f.clk.Advance(d)
+		// Advance fires every timer that falls due before it returns, so a
+		// wait shorter than d has already ended here.
+		f.clk.Advance(d - time.Millisecond)
+		if n := f.clk.TimerCount(); n != 1 {
+			t.Fatalf("armed timers %v short of the wait = %d, want 1: the retry wait ended early", time.Millisecond, n)
+		}
+		if got := sender.sends.Load(); got != int32(i+1) {
+			t.Fatalf("sends before wait %d ended = %d, want %d", i+1, got, i+1)
+		}
+		f.clk.Advance(time.Millisecond)
 	}
 	if err := wait.RequireReceive(t, done, 5*time.Second); err != nil {
 		t.Fatalf("HandleDelivery: %v", err)

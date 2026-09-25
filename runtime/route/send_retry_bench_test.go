@@ -51,7 +51,13 @@ func BenchmarkSendDirectHold_FirstSendSucceeds(b *testing.B) {
 	plan := routing.DispatchPlan{BindingID: "b1", Address: "addr"}
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = r.sendDirectHold(context.Background(), &stubDelivery{env: env}, env, plan)
+		del := &stubDelivery{env: env}
+		if err := r.sendDirectHold(context.Background(), del, env, plan); err != nil {
+			b.Fatal(err)
+		}
+		if !del.acked {
+			b.Fatal("the send succeeded but the delivery was not acked")
+		}
 	}
 }
 
