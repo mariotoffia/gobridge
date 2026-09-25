@@ -81,3 +81,21 @@ func TestSessionRecovery_DrainOutlastsTheAdapterReconcileBound(t *testing.T) {
 	health := s.Health(t.Context())
 	require.NoError(t, health.LastError, "cooperative slowness is not a session failure")
 }
+
+// TestSessionRecoveryAttemptTimeoutIsTheConfiguredSettlementRecoveryWait keeps
+// the adapter's own recovery attempt and the route validator on one function: a
+// validator that admitted a longer hold than the session waits for would let the
+// recycle fail on a delivery the operator was told was safe.
+func TestSessionRecoveryAttemptTimeoutIsTheConfiguredSettlementRecoveryWait(t *testing.T) {
+	opts := SessionOptions{
+		BrokerURLs: []string{"tcp://192.0.2.1:1883"}, ClientID: "settlement-recovery-wait",
+		ConnectTimeout: 7 * time.Second, ReconcileTimeout: 8 * time.Second, UnmatchedGrace: 9 * time.Second,
+	}
+	s := NewSession(opts, connectivity.SessionPersistent, nil)
+	t.Cleanup(func() { s.Router().shutdown() })
+
+	want := (Config{Session: opts}).SettlementRecoveryWait(connectivity.SessionPersistent)
+	if got := s.recoveryAttemptTimeout(); got != want {
+		t.Fatalf("session recovery attempt timeout = %s, want the configured wait %s", got, want)
+	}
+}
