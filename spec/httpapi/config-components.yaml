@@ -529,6 +529,12 @@ schemas:
 
   RouteSessionDef:
     type: object
+    description: >
+      The timing defaults below apply to a standalone deployment. In a
+      clustered deployment that sets neither lease_ttl nor renew_interval, the
+      HA baseline replaces them: lease_ttl 45s, renew_interval 10s,
+      lease_renew_jitter 1s, renew_call_timeout 3s and step_down_grace 5s. A
+      field that is set still overrides its baseline value.
     required: [session_id, sender_id]
     properties:
       session_id:
@@ -541,9 +547,7 @@ schemas:
         type: string
         description: >
           Go duration string (e.g. "360s"). How long the lease is valid.
-          Omitting the field takes the 360s default, or a 45s HA baseline when
-          the deployment is clustered and neither lease_ttl nor renew_interval
-          is set.
+          Omitting the field takes the 360s default.
         example: 360s
       renew_interval:
         type: string
@@ -556,7 +560,8 @@ schemas:
         type: string
         description: >
           Go duration string (e.g. "2s"). Bounded random jitter on each renewal
-          timer. Omitted, it is renew_interval/4.
+          timer. Omitted, it is renew_interval/4 when renew_interval is also
+          omitted, and zero (no jitter) when renew_interval is set.
       max_renew_fails:
         type: integer
         minimum: 0
