@@ -172,3 +172,16 @@ func TestRegistry_ConcurrentRegisterAndDecode(t *testing.T) {
 
 	wg.Wait()
 }
+
+// TestLostFreezeCapability_EmptyWhenTheFrozenCopyKeepsEveryCapability pins that
+// only a loss counts: a copy of the same type, or one that gains a capability,
+// passes.
+func TestLostFreezeCapability_EmptyWhenTheFrozenCopyKeepsEveryCapability(t *testing.T) {
+	source := struct {
+		ports.PluginConfig
+		ports.ReplicaIdentityConfig
+	}{}
+
+	assert.Empty(t, ports.LostFreezeCapability(source, source))
+	assert.Empty(t, ports.LostFreezeCapability(struct{ ports.PluginConfig }{}, source))
+}

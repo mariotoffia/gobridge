@@ -110,18 +110,9 @@ func freezeInitialPlugin(cfg ports.PluginConfig) (ports.PluginConfig, error) {
 	if ports.IsNilPluginConfig(frozen) || frozen.Kind() != cfg.Kind() {
 		return nil, shared.ErrInvalidConfig.WithMessage("config initialization: invalid frozen plugin")
 	}
-	for _, capability := range []reflect.Type{
-		reflect.TypeFor[ports.FreezableConfig](),
-		reflect.TypeFor[ports.CredentialedConfig](),
-		reflect.TypeFor[ports.DurableSessionIdentityConfig](),
-		reflect.TypeFor[ports.PostAcquireActivationTimingConfig](),
-		reflect.TypeFor[ports.SettlementRecoveryTimingConfig](),
-		reflect.TypeFor[ports.TransportFailoverTimingConfig](),
-		reflect.TypeFor[ports.IngressMemoryConfig](),
-	} {
-		if reflect.TypeOf(cfg).Implements(capability) && !reflect.TypeOf(frozen).Implements(capability) {
-			return nil, shared.ErrInvalidConfig.WithMessage("config initialization: frozen plugin lost a capability")
-		}
+	if lost := ports.LostFreezeCapability(cfg, frozen); lost != "" {
+		return nil, shared.ErrInvalidConfig.WithMessage(
+			fmt.Sprintf("config initialization: frozen plugin kind %q lost a capability: %s", cfg.Kind(), lost))
 	}
 	return frozen, nil
 }

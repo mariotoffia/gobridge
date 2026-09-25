@@ -142,10 +142,6 @@ func freezePluginConfig(config ports.PluginConfig) (ports.PluginConfig, error) {
 	freezable, canFreeze := config.(ports.FreezableConfig)
 	_, credentialed := config.(ports.CredentialedConfig)
 	_, durable := config.(ports.DurableSessionIdentityConfig)
-	_, activationTimed := config.(ports.PostAcquireActivationTimingConfig)
-	_, recoveryTimed := config.(ports.SettlementRecoveryTimingConfig)
-	_, failoverTimed := config.(ports.TransportFailoverTimingConfig)
-	_, ingressMemoryAware := config.(ports.IngressMemoryConfig)
 	if !canFreeze {
 		if credentialed {
 			return nil, shared.ErrInvalidConfig.WithMessage(
@@ -167,45 +163,9 @@ func freezePluginConfig(config ports.PluginConfig) (ports.PluginConfig, error) {
 		return nil, shared.ErrInvalidConfig.WithMessage(
 			fmt.Sprintf("bridge: plugin config kind %q froze to a different kind", sourceKind))
 	}
-	if durable {
-		if _, ok := frozen.(ports.DurableSessionIdentityConfig); !ok {
-			return nil, shared.ErrInvalidConfig.WithMessage(
-				fmt.Sprintf("bridge: durable plugin config kind %q lost its identity capability when frozen", sourceKind))
-		}
-	}
-	if activationTimed {
-		if _, ok := frozen.(ports.PostAcquireActivationTimingConfig); !ok {
-			return nil, shared.ErrInvalidConfig.WithMessage(
-				fmt.Sprintf("bridge: plugin config kind %q lost its post-acquire activation timing capability when frozen", sourceKind))
-		}
-	}
-	if recoveryTimed {
-		if _, ok := frozen.(ports.SettlementRecoveryTimingConfig); !ok {
-			return nil, shared.ErrInvalidConfig.WithMessage(
-				fmt.Sprintf("bridge: plugin config kind %q lost its settlement-recovery timing capability when frozen", sourceKind))
-		}
-	}
-	if failoverTimed {
-		if _, ok := frozen.(ports.TransportFailoverTimingConfig); !ok {
-			return nil, shared.ErrInvalidConfig.WithMessage(
-				fmt.Sprintf("bridge: plugin config kind %q lost its failover timing capability when frozen", sourceKind))
-		}
-	}
-	if ingressMemoryAware {
-		if _, ok := frozen.(ports.IngressMemoryConfig); !ok {
-			return nil, shared.ErrInvalidConfig.WithMessage(
-				fmt.Sprintf("bridge: plugin config kind %q lost its ingress memory capability when frozen", sourceKind))
-		}
-	}
-	if credentialed {
-		if _, ok := frozen.(ports.CredentialedConfig); !ok {
-			return nil, shared.ErrInvalidConfig.WithMessage(
-				fmt.Sprintf("bridge: credentialed plugin config kind %q lost its credential capability when frozen", sourceKind))
-		}
-	}
-	if _, ok := frozen.(ports.FreezableConfig); !ok {
+	if lost := ports.LostFreezeCapability(config, frozen); lost != "" {
 		return nil, shared.ErrInvalidConfig.WithMessage(
-			fmt.Sprintf("bridge: plugin config kind %q lost its freeze capability when frozen", sourceKind))
+			fmt.Sprintf("bridge: plugin config kind %q lost its %s capability when frozen", sourceKind, lost))
 	}
 	return frozen, nil
 }
