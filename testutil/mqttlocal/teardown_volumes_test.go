@@ -42,9 +42,25 @@ func TestBrokerInstance_TeardownRemovesAnonymousVolumes(t *testing.T) {
 		return
 	}
 
+	// `docker volume inspect` fails for an absent volume, but also when the
+	// daemon or the call itself fails, so its error proves nothing. Listing
+	// succeeds whether or not the volumes exist; repeated name filters match
+	// any of them.
+	args := []string{"volume", "ls", "-q"}
 	for _, volume := range volumes {
-		if out, err := dockerexec.Run(dockerexec.InspectTimeout, "volume", "inspect", volume); err == nil {
-			t.Errorf("volume %s outlived its broker:\n%s", volume, out)
+		args = append(args, "--filter", "name="+volume)
+	}
+	out, err := dockerexec.Run(dockerexec.InspectTimeout, args...)
+	if err != nil {
+		t.Fatalf("list volumes: %v\n%s", err, out)
+	}
+	remaining := make(map[string]bool)
+	for name := range strings.FieldsSeq(string(out)) {
+		remaining[name] = true
+	}
+	for _, volume := range volumes {
+		if remaining[volume] {
+			t.Errorf("volume %s outlived its broker", volume)
 		}
 	}
 }
