@@ -333,7 +333,9 @@ func (p RoutePolicy) WithDefaults() RoutePolicy {
 // zero-valued enum or duration is treated as "use default" (handled by
 // WithDefaults) and is NOT considered invalid here; a NEGATIVE ReplayBudget,
 // SendRetryBudget (other than the SendRetryBudgetDisabled opt-out) or Backoff
-// interval is rejected. Callers that want strict rejection of typos like
+// interval is rejected, and so are a nonzero Backoff.Multiplier below 1
+// (negative or decaying) and a Backoff.JitterFactor outside [0,1] other than
+// the JitterDisabled opt-out. Callers that want strict rejection of typos like
 // RoutePolicy{DeliveryMode: "wat"} should call Validate before (or instead of)
 // WithDefaults.
 //
