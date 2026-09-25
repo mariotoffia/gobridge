@@ -37,6 +37,20 @@ func TestDockerexec_Run_TimesOut(t *testing.T) {
 	}
 }
 
+// Without -v, docker keeps the anonymous volumes an image's VOLUME lines
+// created, and every test run leaves more of them behind.
+func TestDockerexec_Remove_AlsoRemovesAnonymousVolumes(t *testing.T) {
+	withTestDockerPath(t)
+
+	out, err := Remove("first", "second")
+	if err != nil {
+		t.Fatalf("Remove returned error: %v", err)
+	}
+	if want := "fake docker: rm -f -v first second\n"; string(out) != want {
+		t.Fatalf("Remove ran %q, want %q", out, want)
+	}
+}
+
 func withTestDockerPath(t *testing.T) {
 	t.Helper()
 	wd, err := os.Getwd()

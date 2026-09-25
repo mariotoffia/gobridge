@@ -278,7 +278,7 @@ func localShutdown() {
 	flocilocal.Shutdown()
 	for _, container := range []string{state.prober, state.responder, state.metadata} {
 		if container != "" {
-			_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", container)
+			_, _ = dockerexec.Remove(container)
 		}
 	}
 	mqttlocal.Shutdown()
@@ -286,7 +286,7 @@ func localShutdown() {
 	// The emulator also starts a registry container of its own, off the run's
 	// network and on a fixed host port, so neither the network sweep below nor
 	// any prefix the helpers own would ever reclaim it.
-	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", emulatorRegistryContainer)
+	_, _ = dockerexec.Remove(emulatorRegistryContainer)
 	if state.network != "" {
 		// Everything the emulator launched — ECS task containers, the Lambda
 		// containers behind the custom resources — joined this network and is

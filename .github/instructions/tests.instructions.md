@@ -37,4 +37,6 @@ comment. The rest below is not machine-checked.
   binary (TESTS.md §2.7). Do not suggest adding it back.
 - Containers are named `gobridge-<package>-<uuid>` and started only through
   `testutil/*local` or `testutil/dockerexec`, never raw
-  `exec.Command("docker", …)`.
+  `exec.Command("docker", …)`. They are removed through `dockerexec.Remove`,
+  never a `docker rm -f` of their own: without `-v`, removing a container
+  leaves the anonymous volumes of its image's `VOLUME` paths behind.

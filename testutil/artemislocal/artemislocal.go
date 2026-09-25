@@ -240,10 +240,10 @@ func startContainer() (string, string, func(), error) {
 	}
 
 	name := fmt.Sprintf("%s%d", containerPrefix, amqpPort)
-	_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
+	_, _ = dockerexec.Remove(name)
 
 	cleanup := func() {
-		_, _ = dockerexec.Run(dockerexec.RemoveTimeout, "rm", "-f", name)
+		_, _ = dockerexec.Remove(name)
 	}
 
 	if err := dockerexec.EnsureImage(imageName()); err != nil {
