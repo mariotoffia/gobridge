@@ -23,6 +23,10 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   `http.admin_api_key` is not: the `gobridge` binary can take the key from
   `GOBRIDGE_ADMIN_API_KEY`, so a config file may leave it out, and its
   description now says so.
+- A multiplier of 0 is not rejected by the schema any more, for either
+  `backoff` or `drain_strategy`: the bridge reads it as "use the default 2".
+  The docs no longer say `confirm_window: 0s` selects the base protocol;
+  the validator rejects it, so leave the field out instead.
 - A unit test walks the schema from `BridgeConfig` and pins every mirrored
   definition to its `ports` struct in both directions, so a key added to one
   side only fails `make test`.

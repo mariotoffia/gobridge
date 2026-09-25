@@ -157,13 +157,13 @@ type ClusterConfig struct {
 	//     store, a lease-elected coordinator and a non-empty Members roster.
 	Rollout string `yaml:"rollout,omitempty" json:"rollout,omitempty"`
 	// ConfirmWindow opts a coordinated rollout into the NETCONF/NSO confirm window
-	// (ADR 0014): a Go duration string (e.g. "90s"). Empty or "0s" (the default)
-	// is the base protocol — a commit is final. A positive value makes every commit
-	// PROVISIONAL: each member swaps then must reach convergence, the coordinator
-	// confirms when the whole cohort converged, and if confirmation never lands every
-	// member reverts to the last confirmed generation. Only valid when Rollout is
-	// "coordinated". A failed trial costs two disruptions (apply + revert), so it is
-	// opt-in.
+	// (ADR 0014): a Go duration string (e.g. "90s"). Empty (the default) is the
+	// base protocol — a commit is final; the validator rejects "0s" and any other
+	// non-positive value. A positive value makes every commit PROVISIONAL: each
+	// member swaps then must reach convergence, the coordinator confirms when the
+	// whole cohort converged, and if confirmation never lands every member reverts
+	// to the last confirmed generation. Only valid when Rollout is "coordinated". A
+	// failed trial costs two disruptions (apply + revert), so it is opt-in.
 	ConfirmWindow string `yaml:"confirm_window,omitempty" json:"confirm_window,omitempty"`
 }
 

@@ -300,7 +300,8 @@ schemas:
           Go duration string (e.g. "90s"). Only valid with rollout coordinated.
           A positive value makes each commit provisional: if the cohort does
           not confirm in time, every member reverts to the last confirmed
-          generation. Omitted or "0s" means a commit is final. See
+          generation. Omit the field for a final commit; "0s" and other
+          non-positive values are rejected. See
           docs/adr/0014-confirm-window-provisional-commit.md.
         example: 90s
 
@@ -642,8 +643,9 @@ schemas:
           must be at least min_interval.
       multiplier:
         type: number
-        exclusiveMinimum: 1
-        description: adaptive_backoff only. Default 2.
+        description: >
+          adaptive_backoff only. Omitted or 0 takes the default 2; any other
+          value must be greater than 1.
 
   PolicyDef:
     type: object
@@ -722,11 +724,11 @@ schemas:
         type: string
       multiplier:
         type: number
-        minimum: 1
         description: >
-          Exponential backoff multiplier. Below 1 the delay shrinks on every
-          attempt, so retries accelerate instead of backing off; 1 is a fixed
-          retry interval.
+          Exponential backoff multiplier. Omitted or 0 takes the default 2; any
+          other value must be at least 1. Below 1 the delay would shrink on
+          every attempt, so retries would accelerate instead of backing off; 1
+          is a fixed retry interval.
       jitter:
         type: number
         minimum: 0
