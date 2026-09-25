@@ -100,7 +100,7 @@ type linkReceiver interface {
 // construction and was rejected at the broker. The receive LOOP must
 // treat this as a handled, per-message event (count it and continue) —
 // not as a link fault and NEVER as a terminal receiver error: one
-// poison message must not tear down the route or the whole bridge.
+// poison message must not restart the route.
 var errIngressRejected = errors.New("amqp10: inbound message rejected at ingress")
 
 // errUnrepresentableBody marks an inbound message whose body cannot be
