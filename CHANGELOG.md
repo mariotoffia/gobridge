@@ -10,6 +10,15 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-26
+
+A configuration change now reconnects only the reload units it changed, and a
+receiver error on one route restarts that route instead of the process. A
+`direct_hold` route retries a failed send, a removed subscription's
+dead-letters are redriven automatically, and an MQTT subscription granted a
+lower QoS is kept as best effort. This is also the first train to publish the
+test helper modules under `testutil/`, tagged as release layer 1.
+
 ### Fixed — a permanent receiver error stops only its own route
 
 - A route whose AMQP 1.0, AMQP 0-9-1 or Azure Service Bus receiver returns an
@@ -2339,7 +2348,8 @@ consumable.
   integration coverage in CI: their tests depend on LocalStack, which requires a
   licence token that is not configured. Set `LOCALSTACK_AUTH_TOKEN` to run them.
 
-[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.5.0
 [0.4.1]: https://github.com/mariotoffia/gobridge/releases/tag/v0.4.1
 [0.4.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.4.0
 [0.3.3]: https://github.com/mariotoffia/gobridge/releases/tag/v0.3.3
