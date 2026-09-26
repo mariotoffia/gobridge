@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.66.4
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.46.5
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.73.5
-	github.com/mariotoffia/gobridge v0.0.0
+	github.com/mariotoffia/gobridge v0.5.0
 )
 
 require (
@@ -25,5 +25,3 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.45.5 // indirect
 	github.com/aws/smithy-go v1.28.1 // indirect
 )
-
-replace github.com/mariotoffia/gobridge => ../..

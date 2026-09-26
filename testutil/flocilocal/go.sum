@@ -32,3 +32,5 @@ github.com/aws/aws-sdk-go-v2/service/sts v1.45.5 h1:eQ5BtXDrPg2wK0AjtVPzeBhUpYPe
 github.com/aws/aws-sdk-go-v2/service/sts v1.45.5/go.mod h1:f9ImhnOISY7BuTZLM8qHepCYnglHBVLk5wVzatmP++w=
 github.com/aws/smithy-go v1.28.1 h1:R/nXH00c8qcfCzQVELtRw+eLQWtzv+VAIEFJ1/xxXlQ=
 github.com/aws/smithy-go v1.28.1/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
+github.com/mariotoffia/gobridge v0.5.0 h1:FUkaX6KRT/hXC+fa8g7go7GwOgZWzkWUbA+YA5bfuAY=
+github.com/mariotoffia/gobridge v0.5.0/go.mod h1:BFkxnVcsG6MDLao3/meKNfYXDxQLoGObX0ESFDFurZ0=
