@@ -8,8 +8,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.35
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.66.4
 	github.com/aws/smithy-go v1.28.1
-	github.com/mariotoffia/gobridge v0.0.0
-	github.com/mariotoffia/gobridge/testutil/flocilocal v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge v0.5.0
+	github.com/mariotoffia/gobridge/testutil/flocilocal v0.5.0
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -28,9 +28,4 @@ require (
 	github.com/kr/text v0.2.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-)
-
-replace (
-	github.com/mariotoffia/gobridge => ../../../..
-	github.com/mariotoffia/gobridge/testutil/flocilocal => ../../../../testutil/flocilocal
 )
