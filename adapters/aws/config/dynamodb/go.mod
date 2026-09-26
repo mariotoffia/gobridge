@@ -7,8 +7,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.63.2
 	github.com/aws/aws-sdk-go-v2/service/dynamodbstreams v1.36.5
 	github.com/aws/smithy-go v1.28.1
-	github.com/mariotoffia/gobridge v0.0.0
-	github.com/mariotoffia/gobridge/testutil/ddblocal v0.0.0-00010101000000-000000000000
+	github.com/mariotoffia/gobridge v0.5.0
+	github.com/mariotoffia/gobridge/testutil/ddblocal v0.5.0
 )
 
 require (
@@ -31,9 +31,4 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-)
-
-replace (
-	github.com/mariotoffia/gobridge => ../../../..
-	github.com/mariotoffia/gobridge/testutil/ddblocal => ../../../../testutil/ddblocal
 )
