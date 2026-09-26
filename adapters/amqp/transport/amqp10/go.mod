@@ -2,14 +2,10 @@ module github.com/mariotoffia/gobridge/adapters/amqp/transport/amqp10
 
 go 1.25.0
 
-replace github.com/mariotoffia/gobridge => ../../../..
-
-replace github.com/mariotoffia/gobridge/testutil/artemislocal => ../../../../testutil/artemislocal
-
 require (
 	github.com/Azure/go-amqp v1.7.0
-	github.com/mariotoffia/gobridge v0.0.0
-	github.com/mariotoffia/gobridge/testutil/artemislocal v0.0.0
+	github.com/mariotoffia/gobridge v0.5.0
+	github.com/mariotoffia/gobridge/testutil/artemislocal v0.5.0
 	github.com/stretchr/testify v1.11.1
 	gopkg.in/yaml.v3 v3.0.1
 )
