@@ -185,8 +185,15 @@ func TestKubernetesProfile_ProbesFlowReloadSigtermRestart(t *testing.T) {
 		}
 	}
 	archive := newMQTTCollector(t, egress, "k8s-archive")
-	publish(uniqueID("flow"))
-	wait.Until(t, 30*time.Second, "message bridged to "+egress, func() bool { return archive.count() >= 1 })
+	// The managed session connects only once it holds its lease, and readiness
+	// counts a session still waiting for its lease as ready (a ready standby,
+	// ports.ReadinessLevelFromDeepHealth). On this first start the broker keeps
+	// no session for the bridge until it subscribes, so one publish sent the
+	// moment the probe turns green can be dropped: publish on every poll.
+	wait.Until(t, 30*time.Second, "message bridged to "+egress, func() bool {
+		publish(uniqueID("flow"))
+		return archive.count() >= 1
+	})
 
 	// --- reload: the ConfigMap update, seen from inside the pod
 	egressV2 := egress + "/v2"

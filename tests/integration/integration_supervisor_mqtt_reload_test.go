@@ -32,7 +32,8 @@ import (
 //	                   readiness ≥ LevelSubscribed, not degraded, and one
 //	                   injected message reaches a real MQTT collector.
 //	v2  broker-rejected broker_url = tcp://127.0.0.1:1  → the swap COMMITS
-//	                   (apply-then-watch semantics), readiness stays below
+//	                   in place (apply-then-watch semantics; the running
+//	                   runtime is kept, ADR 0018), readiness stays below
 //	                   LevelSubscribed, and after the convergence budget
 //	                   (60s floor — the sessions are ephemeral, so
 //	                   paho.Config.TransportFailoverTiming contributes 0 and
@@ -318,12 +319,18 @@ func TestSupervisorMQTTReload_ConfigDrivenBrokerTruth(t *testing.T) {
 	if cfg := sup.Config(); cfg == nil || cfg.Version != 2 {
 		t.Fatalf("v2: active config version = %+v, want 2", cfg)
 	}
+	// Only the route's reload unit changed, so the Supervisor reloads in place
+	// (ADR 0018): the running runtime stays, and the unit is retired and
+	// rebuilt against the new broker URL.
+	if ev2.SwapMode != bridge.SwapInPlace {
+		t.Fatalf("v2: swap mode = %s, want %s", ev2.SwapMode, bridge.SwapInPlace)
+	}
 	rt2 := sup.Runtime()
 	if rt2 == nil {
 		t.Fatal("v2: no runtime after committed swap")
 	}
-	if rt2 == rt1 {
-		t.Fatal("v2: runtime was not swapped")
+	if rt2 != rt1 {
+		t.Fatal("v2: an in-place reload replaced the running runtime")
 	}
 	// Immediately after the commit the supervisor is NOT degraded — the
 	// convergence budget (60s) has not elapsed. This is the false
@@ -402,7 +409,8 @@ func TestSupervisorMQTTReload_ConfigDrivenBrokerTruth(t *testing.T) {
 	wait.Until(t, 20*time.Second, "v3 message delivered to MQTT collector", collectorHasPayload(v3Payload))
 
 	// The degraded state must not resurface once converged: the v2 watcher is
-	// obsolete (superseded runtime) and the v3 watcher observed convergence.
+	// obsolete (superseded watch generation) and the v3 watcher observed
+	// convergence.
 	if degraded, reason := sup.Degraded(); degraded {
 		t.Fatalf("v3: degraded after full recovery: %s", reason)
 	}
