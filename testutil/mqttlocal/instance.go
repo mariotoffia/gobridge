@@ -119,7 +119,7 @@ func NewBrokerInstance(t testing.TB, opts ...Option) *BrokerInstance {
 	}
 
 	if c.needsSecureMaterial() {
-		secureDir, material, materialErr := writeSecureMaterial(c)
+		secureDir, material, materialErr := writeSecureMaterial(c, b.name)
 		if materialErr != nil {
 			t.Fatalf("mqttlocal.NewBrokerInstance: %v", materialErr)
 		}
@@ -202,6 +202,9 @@ func (b *BrokerInstance) start() {
 	if b.cfg.cpus != "" {
 		args = append(args, "--cpus", b.cfg.cpus)
 	}
+	if b.cfg.network != "" {
+		args = append(args, "--network", b.cfg.network)
+	}
 	args = append(args, b.cfg.image)
 
 	out, err := dockerexec.Run(dockerexec.RunTimeout, args...)
@@ -235,6 +238,27 @@ func (b *BrokerInstance) WebSocketURL() string { return b.wsURL }
 // SecureWebSocketURL returns the TLS WebSocket endpoint (wss://127.0.0.1:<port>),
 // or "" unless the fixture was built with both [WithWebSocket] and [WithTLS].
 func (b *BrokerInstance) SecureWebSocketURL() string { return b.wssURL }
+
+// NetworkURL returns the plaintext address a client on the Docker network uses
+// (tcp://<container name>:1883), or "" when the fixture was not built
+// [WithNetwork].
+func (b *BrokerInstance) NetworkURL() string {
+	if b.cfg.network == "" {
+		return ""
+	}
+	return fmt.Sprintf("tcp://%s:%d", b.name, plainPort)
+}
+
+// NetworkTLSURL returns the TLS address a client on the Docker network uses
+// (ssl://<container name>:8883), or "" unless the fixture was built with both
+// [WithNetwork] and [WithTLS]. The server certificate lists the container name,
+// so the client verifies it against [Material.CAPEM] as usual.
+func (b *BrokerInstance) NetworkTLSURL() string {
+	if b.cfg.network == "" || !b.cfg.tls {
+		return ""
+	}
+	return fmt.Sprintf("ssl://%s:%d", b.name, tlsPort)
+}
 
 // Material returns the TLS material this fixture generated, or nil when it
 // serves no TLS listener. See [Material] for what a client validates with.
@@ -290,9 +314,9 @@ func (b *BrokerInstance) Restart() {
 //
 // Only settings rendered into mosquitto.conf can change (limits, WithMaxQoS,
 // WithExtraConfig), plus the image and the container resources. Listeners,
-// credentials, TLS material, the ACL and persistence are fixed when the
-// instance is created; an option changing one fails the test instead of
-// restarting a broker that quietly kept the old setting.
+// credentials, TLS material, the ACL, persistence and the Docker network are
+// fixed when the instance is created; an option changing one fails the test
+// instead of restarting a broker that quietly kept the old setting.
 func (b *BrokerInstance) RestartWith(opts ...Option) {
 	b.t.Helper()
 	next := b.cfg
@@ -301,7 +325,7 @@ func (b *BrokerInstance) RestartWith(opts ...Option) {
 	}
 	if !sameCreationSettings(b.cfg, next) {
 		b.t.Fatalf("mqttlocal.BrokerInstance.RestartWith: listeners, credentials, TLS, " +
-			"the ACL and persistence are fixed at NewBrokerInstance")
+			"the ACL, persistence and the Docker network are fixed at NewBrokerInstance")
 	}
 	confContent, err := buildConfig(next)
 	if err != nil {
@@ -330,7 +354,8 @@ func (b *BrokerInstance) RestartWith(opts ...Option) {
 func sameCreationSettings(a, b config) bool {
 	return a.persistence == b.persistence && a.webSocket == b.webSocket &&
 		a.username == b.username && a.password == b.password &&
-		a.tls == b.tls && a.mutualTLS == b.mutualTLS && a.acl == b.acl
+		a.tls == b.tls && a.mutualTLS == b.mutualTLS && a.acl == b.acl &&
+		a.network == b.network
 }
 
 // StopGraceful sends SIGTERM via docker stop, giving Mosquitto time to

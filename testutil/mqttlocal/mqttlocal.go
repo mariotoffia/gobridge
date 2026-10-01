@@ -49,6 +49,13 @@
 //
 // [WithACL] makes the broker refuse a SUBSCRIBE to named filters with reason
 // code 0x87 (Not authorized). See acl.go.
+//
+// # Reaching the broker from another container
+//
+// [WithNetwork] attaches the container to a Docker network the caller created,
+// so a client in another container reaches it by container name:
+// [BrokerInstance.NetworkURL] and [BrokerInstance.NetworkTLSURL]. The server
+// certificate lists that name, so the client verifies it against the same CA.
 package mqttlocal
 
 import (
@@ -88,6 +95,7 @@ type config struct {
 	extraConfig      string
 	memory           string // e.g. "256m", "512m" — passed to --memory
 	cpus             string // e.g. "0.5", "1.0" — passed to --cpus
+	network          string // Docker network the container joins — passed to --network
 
 	// Secure-fixture options (see secure.go). username disables anonymous
 	// access; tls adds a certificate-serving listener; mutualTLS additionally
@@ -211,6 +219,18 @@ func WithMemory(limit string) Option {
 // WithCPUs sets the Docker --cpus limit for the container (e.g. "0.5", "1.0").
 func WithCPUs(limit string) Option {
 	return func(c *config) { c.cpus = limit }
+}
+
+// WithNetwork attaches the container to the named Docker network, so a client
+// in another container on that network reaches the broker by its container
+// name. The ports are still published on 127.0.0.1 for the test process. The
+// generated server certificate always lists the container name, so a client on
+// the network can verify the broker over TLS.
+//
+// The caller creates the network before the broker starts and removes it after
+// the broker is gone; this package does neither.
+func WithNetwork(network string) Option {
+	return func(c *config) { c.network = network }
 }
 
 // Configure applies options before the container is started.
