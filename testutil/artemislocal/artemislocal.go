@@ -87,7 +87,11 @@ var (
 	containerName string
 	cleanupFn     func()
 	initErr       error
-	opts          options
+	// configured holds the options Configure set. opts holds the options of
+	// the broker that runs now: configured, plus the options of the ForceStart
+	// that started it.
+	configured options
+	opts       options
 )
 
 // Option configures the Artemis test infrastructure.
@@ -130,8 +134,9 @@ func Configure(fns ...Option) {
 		return
 	}
 	for _, fn := range fns {
-		fn(&opts)
+		fn(&configured)
 	}
+	opts = configured
 }
 
 // Endpoint returns the AMQP 1.0 broker URL.
@@ -226,9 +231,10 @@ func UniqueAddress(prefix string) string {
 
 // ForceStart removes any container this package started, starts a fresh one
 // with the package options plus fns, and returns its AMQP 1.0 URL. fns apply
-// to this start only: the cleanup ForceStart registers removes the container
-// and restores the package options that were in force before the call.
-// ForceStart(t) starts with the package options alone.
+// to this start only: they go on top of the options [Configure] set, never on
+// top of those of the broker running now, so ForceStart(t) starts with the
+// package options alone. The cleanup ForceStart registers removes the container
+// and puts the package options back.
 //
 // Pass options for one test here, not to [Configure]. Options that Configure
 // stores outlive the test, so a test that configured [WithNetwork] and then
@@ -246,7 +252,7 @@ func ForceStart(t testing.TB, fns ...Option) string {
 	containerName = ""
 	cleanupFn = nil
 	initErr = nil
-	saved := opts
+	opts = configured
 	for _, fn := range fns {
 		fn(&opts)
 	}
@@ -262,7 +268,7 @@ func ForceStart(t testing.TB, fns ...Option) string {
 			cleanupFn = nil
 		}
 		resolved = false
-		opts = saved
+		opts = configured
 	})
 	return Endpoint(t)
 }

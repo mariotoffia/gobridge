@@ -101,29 +101,49 @@ mosquitto_sub -h "$HOST" -p 1883 -t "$TOPIC" -q 1 -C 1 -W 20`
 	}
 }
 
-// Options given to ForceStart end with the test that gave them. The network the
-// first start joined is removed when its subtest ends, so a later start that
-// still carried WithNetwork would fail in docker run on the missing network.
+// Options given to ForceStart apply to that start only. The network the first
+// start joined is removed when its subtest ends, so a later start that still
+// carried WithNetwork would fail in docker run on the missing network. Within
+// one test, a ForceStart(t) after a ForceStart(t, WithNetwork(...)) starts
+// with no network either.
 func TestForceStart_OptionsEndWithTheTest(t *testing.T) {
 	requireDocker(t)
+	started := false
 	if !t.Run("start on a network", func(t *testing.T) {
 		network := newNetwork(t)
 		mqttlocal.ForceStart(t, mqttlocal.WithNetwork(network))
+		started = true
 	}) {
 		t.FailNow()
 	}
+	// t.Run reports a skipped subtest as passed.
+	if !started {
+		t.Skip("the subtest could not start a broker on a network")
+	}
 
 	mqttlocal.ForceStart(t)
+	requireOnlyTheDefaultNetwork(t, "a ForceStart(t) after the test that passed WithNetwork ended")
+
+	// Created before the starts, so it is removed after the brokers.
+	network := newNetwork(t)
+	mqttlocal.ForceStart(t, mqttlocal.WithNetwork(network))
+	mqttlocal.ForceStart(t)
+	requireOnlyTheDefaultNetwork(t, "a ForceStart(t) right after a ForceStart(t, WithNetwork(...)) in the same test")
+}
+
+// requireOnlyTheDefaultNetwork fails the test unless the shared broker joined
+// no network but "bridge", Docker's default network, the one a container joins
+// when docker run is given no --network.
+func requireOnlyTheDefaultNetwork(t *testing.T, start string) {
+	t.Helper()
+	name := mqttlocal.ContainerName(t)
 	out, err := dockerexec.Run(dockerexec.ExecTimeout, "inspect", "--format",
-		"{{range $name, $settings := .NetworkSettings.Networks}}{{$name}} {{end}}",
-		mqttlocal.ContainerName(t))
+		"{{range $name, $settings := .NetworkSettings.Networks}}{{$name}} {{end}}", name)
 	if err != nil {
-		t.Fatalf("inspect the networks of %s: %v\n%s", mqttlocal.ContainerName(t), err, out)
+		t.Fatalf("inspect the networks of %s: %v\n%s", name, err, out)
 	}
-	// "bridge" is Docker's default network, the one a container joins when
-	// docker run is given no --network.
 	if got := strings.TrimSpace(string(out)); got != "bridge" {
-		t.Fatalf("a ForceStart(t) without options joined networks %q, want only \"bridge\"", got)
+		t.Fatalf("%s joined networks %q, want only \"bridge\"", start, got)
 	}
 }
 

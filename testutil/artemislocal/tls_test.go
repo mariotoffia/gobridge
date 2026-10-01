@@ -202,9 +202,11 @@ func TestNewEndpoints_AreEmptyForAnExternalBroker(t *testing.T) {
 	}
 }
 
-// Options given to ForceStart end with the test that gave them. The network the
-// first start joined is removed when its subtest ends, so a later start that
-// still carried WithNetwork would fail in docker run on the missing network.
+// Options given to ForceStart apply to that start only. The network the first
+// start joined is removed when its subtest ends, so a later start that still
+// carried WithNetwork would fail in docker run on the missing network. Within
+// one test, a ForceStart(t) after a ForceStart(t, WithNetwork(...)) starts
+// with no network either.
 func TestForceStart_OptionsEndWithTheTest(t *testing.T) {
 	requireStartedBroker(t)
 	if !t.Run("start on a network", func(t *testing.T) {
@@ -220,6 +222,15 @@ func TestForceStart_OptionsEndWithTheTest(t *testing.T) {
 	artemislocal.ForceStart(t)
 	if got := artemislocal.NetworkEndpoint(t); got != "" {
 		t.Fatalf("NetworkEndpoint() = %q after a ForceStart(t) without options, want \"\"", got)
+	}
+
+	// Created before the starts, so it is removed after the brokers.
+	network := newNetwork(t)
+	artemislocal.ForceStart(t, artemislocal.WithNetwork(network))
+	artemislocal.ForceStart(t)
+	if got := artemislocal.NetworkEndpoint(t); got != "" {
+		t.Fatalf("NetworkEndpoint() = %q after a ForceStart(t) right after a ForceStart(t, WithNetwork(%q)), want \"\"",
+			got, network)
 	}
 }
 

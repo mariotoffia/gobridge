@@ -123,7 +123,11 @@ var (
 	containerName string
 	cleanupFn     func()
 	initErr       error
-	cfg           = defaultConfig()
+	// configured holds the options Configure set. cfg holds the options of the
+	// broker that runs now: configured, plus the options of the ForceStart
+	// that started it.
+	configured = defaultConfig()
+	cfg        = configured
 )
 
 // defaultConfig is the configuration every fixture starts from before its
@@ -252,8 +256,9 @@ func Configure(opts ...Option) {
 		return
 	}
 	for _, o := range opts {
-		o(&cfg)
+		o(&configured)
 	}
+	cfg = configured
 }
 
 // ---------------------------------------------------------------------------
@@ -352,13 +357,14 @@ func Shutdown() {
 // the test ends via t.Cleanup. Returns the MQTT broker URL
 // (tcp://127.0.0.1:<port>).
 //
-// opts apply to this start only: the cleanup ForceStart registers also
-// restores the package options that were in force before the call, and
-// ForceStart(t) starts with the package options alone. Pass options for one
-// test here, not to [Configure]. Options that Configure stores outlive the
-// test, so a test that configured [WithNetwork] and then removed its network
-// would make every later start fail on the missing network. Configure is also
-// ignored once anything has started the shared broker.
+// opts apply to this start only: they go on top of the options [Configure]
+// set, never on top of those of the broker running now, so ForceStart(t) starts
+// with the package options alone. The cleanup ForceStart registers also puts
+// the package options back. Pass options for one test here, not to
+// [Configure]. Options that Configure stores outlive the test, so a test that
+// configured [WithNetwork] and then removed its network would make every later
+// start fail on the missing network. Configure is also ignored once anything
+// has started the shared broker.
 //
 // Use this instead of [BrokerURL] when the test needs a guaranteed-fresh
 // container (e.g. resilience or restart tests).
@@ -373,7 +379,7 @@ func ForceStart(t testing.TB, opts ...Option) string {
 	}
 	resolved = false
 
-	saved := cfg
+	cfg = configured
 	for _, o := range opts {
 		o(&cfg)
 	}
@@ -387,7 +393,7 @@ func ForceStart(t testing.TB, opts ...Option) string {
 			cleanupFn = nil
 		}
 		resolved = false
-		cfg = saved
+		cfg = configured
 	})
 
 	dockerexec.RemoveOrphans(containerPrefix)
