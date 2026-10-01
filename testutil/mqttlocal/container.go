@@ -40,11 +40,14 @@ func startContainer(c config) (mqttURL, wsURLOut, cName string, cleanup func(), 
 		return "", "", "", nil, err
 	}
 
+	// Named before the material is written: the server certificate lists it.
+	name := fmt.Sprintf("gobridge-mqtt-%d", mqttPort)
+
 	// An authenticated or certificate-serving shared fixture needs its
 	// material on disk before Mosquitto reads the config that names it.
 	var secureDir string
 	if c.needsSecureMaterial() {
-		dir, _, materialErr := writeSecureMaterial(c)
+		dir, _, materialErr := writeSecureMaterial(c, name)
 		if materialErr != nil {
 			return "", "", "", nil, materialErr
 		}
@@ -80,8 +83,6 @@ func startContainer(c config) (mqttURL, wsURLOut, cName string, cleanup func(), 
 		return discardMaterial(fmt.Errorf("chmod config readable by container uid: %w", err))
 	}
 
-	name := fmt.Sprintf("gobridge-mqtt-%d", mqttPort)
-
 	// Reclaim the name and wait until docker has forgotten it, so the run
 	// below cannot collide with a still-terminating container.
 	_ = dockerexec.DrainRemove(name, dockerexec.RemoveTimeout)
@@ -109,6 +110,9 @@ func startContainer(c config) (mqttURL, wsURLOut, cName string, cleanup func(), 
 	}
 	if c.cpus != "" {
 		args = append(args, "--cpus", c.cpus)
+	}
+	if c.network != "" {
+		args = append(args, "--network", c.network)
 	}
 
 	args = append(args, c.image)

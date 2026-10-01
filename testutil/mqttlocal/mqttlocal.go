@@ -35,7 +35,8 @@
 //	)
 //
 // Call [Configure] before any call to [BrokerURL]. Once the container
-// is started, configuration changes are ignored.
+// is started, configuration changes are ignored. Options for one test go to
+// [ForceStart] instead, and end with that test.
 //
 // # Authenticated and certificate-validating brokers
 //
@@ -49,6 +50,17 @@
 //
 // [WithACL] makes the broker refuse a SUBSCRIBE to named filters with reason
 // code 0x87 (Not authorized). See acl.go.
+//
+// # Reaching the broker from another container
+//
+// [WithNetwork] attaches the container to a Docker network the caller created,
+// so a client in another container reaches it by container name. On a
+// [BrokerInstance] the addresses are [BrokerInstance.NetworkURL] and
+// [BrokerInstance.NetworkTLSURL], and the server certificate lists that name,
+// so the client verifies it against the CA in [BrokerInstance.Material]. The
+// shared broker ([ForceStart] with [WithNetwork], then [ContainerName]) is
+// reachable by name too, but it hands out no CA, so a client there cannot
+// verify its TLS certificate. Use a [BrokerInstance] when TLS must be verified.
 package mqttlocal
 
 import (
@@ -88,6 +100,7 @@ type config struct {
 	extraConfig      string
 	memory           string // e.g. "256m", "512m" — passed to --memory
 	cpus             string // e.g. "0.5", "1.0" — passed to --cpus
+	network          string // Docker network the container joins — passed to --network
 
 	// Secure-fixture options (see secure.go). username disables anonymous
 	// access; tls adds a certificate-serving listener; mutualTLS additionally
@@ -110,7 +123,11 @@ var (
 	containerName string
 	cleanupFn     func()
 	initErr       error
-	cfg           = defaultConfig()
+	// configured holds the options Configure set. cfg holds the options of the
+	// broker that runs now: configured, plus the options of the ForceStart
+	// that started it.
+	configured = defaultConfig()
+	cfg        = configured
 )
 
 // defaultConfig is the configuration every fixture starts from before its
@@ -213,9 +230,25 @@ func WithCPUs(limit string) Option {
 	return func(c *config) { c.cpus = limit }
 }
 
+// WithNetwork attaches the container to the named Docker network, so a client
+// in another container on that network reaches the broker by its container
+// name. The ports are still published on 127.0.0.1 for the test process.
+//
+// Only a [BrokerInstance] can be verified by name over TLS: its server
+// certificate lists the container name, and [BrokerInstance.Material] holds
+// the CA that signed it. The shared broker hands out no CA, so a client on the
+// network reaches it by name but cannot verify its certificate.
+//
+// The caller creates the network before the broker starts and removes it after
+// the broker is gone; this package does neither.
+func WithNetwork(network string) Option {
+	return func(c *config) { c.network = network }
+}
+
 // Configure applies options before the container is started.
-// Must be called before the first [BrokerURL] or [WebSocketURL] call.
-// Calling after the container is running has no effect.
+// Must be called before the first [BrokerURL] or [WebSocketURL] call, so call
+// it in TestMain for options the whole package shares. Calling after the
+// container is running has no effect. Options for one broker go to [ForceStart].
 func Configure(opts ...Option) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -223,8 +256,9 @@ func Configure(opts ...Option) {
 		return
 	}
 	for _, o := range opts {
-		o(&cfg)
+		o(&configured)
 	}
+	cfg = configured
 }
 
 // ---------------------------------------------------------------------------
@@ -319,12 +353,22 @@ func Shutdown() {
 }
 
 // ForceStart kills any existing container and starts a fresh Mosquitto
-// container. The container is removed when the test ends via t.Cleanup.
-// Returns the MQTT broker URL (tcp://127.0.0.1:<port>).
+// container with the package options plus opts. The container is removed when
+// the test ends via t.Cleanup. Returns the MQTT broker URL
+// (tcp://127.0.0.1:<port>).
+//
+// opts apply to this start only: they go on top of the options [Configure]
+// set, never on top of those of the broker running now, so ForceStart(t) starts
+// with the package options alone. The cleanup ForceStart registers also puts
+// the package options back. Pass options for one test here, not to
+// [Configure]. Options that Configure stores outlive the test, so a test that
+// configured [WithNetwork] and then removed its network would make every later
+// start fail on the missing network. Configure is also ignored once anything
+// has started the shared broker.
 //
 // Use this instead of [BrokerURL] when the test needs a guaranteed-fresh
 // container (e.g. resilience or restart tests).
-func ForceStart(t testing.TB) string {
+func ForceStart(t testing.TB, opts ...Option) string {
 	t.Helper()
 	mu.Lock()
 	defer mu.Unlock()
@@ -334,6 +378,23 @@ func ForceStart(t testing.TB) string {
 		cleanupFn = nil
 	}
 	resolved = false
+
+	cfg = configured
+	for _, o := range opts {
+		o(&cfg)
+	}
+	// Registered before the start, so the package options come back even when
+	// the start fails the test.
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if cleanupFn != nil {
+			cleanupFn()
+			cleanupFn = nil
+		}
+		resolved = false
+		cfg = configured
+	})
 
 	dockerexec.RemoveOrphans(containerPrefix)
 
@@ -347,16 +408,6 @@ func ForceStart(t testing.TB) string {
 	containerName = name
 	cleanupFn = cleanup
 	resolved = true
-
-	t.Cleanup(func() {
-		mu.Lock()
-		defer mu.Unlock()
-		if cleanupFn != nil {
-			cleanupFn()
-			cleanupFn = nil
-		}
-		resolved = false
-	})
 
 	return mqttURL
 }

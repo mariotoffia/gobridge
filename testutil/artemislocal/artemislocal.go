@@ -24,10 +24,19 @@
 // The container is started on first call to [Endpoint].
 // If the ARTEMIS_URL environment variable is set, no container is
 // started and that URL is used directly.
+//
+// [WithTLS] adds an AMQP 1.0 TLS listener served by a generated certificate
+// authority ([TLSEndpoint], [CAPEM]). [WithNetwork] attaches the container to a
+// Docker network so a client in another container reaches it by name
+// ([NetworkEndpoint], [NetworkTLSEndpoint]). When [Endpoint] restarts a broker
+// whose container died, the new container has a new name and a new certificate
+// authority, so [NetworkEndpoint], [NetworkTLSEndpoint] and [CAPEM] change and
+// must be read again.
 package artemislocal
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"os"
 	"os/exec"
@@ -45,6 +54,9 @@ const (
 	defaultImage    = "apache/activemq-artemis:2.44.0-alpine@sha256:1bce124d2324faeb1253e2db4bb68d64decf46412ecfd8d9ef46c08b1b4af5b4"
 	defaultUser     = "admin"
 	defaultPassword = "admin"
+
+	// amqpContainerPort is the plaintext AMQP 1.0 acceptor inside the container.
+	amqpContainerPort = 5672
 )
 
 type options struct {
@@ -52,18 +64,34 @@ type options struct {
 	image        string
 	user         string
 	password     string
+	tls          bool
+	network      string
+}
+
+// addresses is every address the running fixture serves. An address whose
+// option was not given stays empty.
+type addresses struct {
+	endpoint           string
+	consoleURL         string
+	tlsEndpoint        string
+	networkEndpoint    string
+	networkTLSEndpoint string
+	caPEM              string
 }
 
 var (
 	mu            sync.Mutex
 	resolved      bool
 	fromEnv       bool
-	endpoint      string
-	consoleURL    string
+	current       addresses
 	containerName string
 	cleanupFn     func()
 	initErr       error
-	opts          options
+	// configured holds the options Configure set. opts holds the options of
+	// the broker that runs now: configured, plus the options of the ForceStart
+	// that started it.
+	configured options
+	opts       options
 )
 
 // Option configures the Artemis test infrastructure.
@@ -85,8 +113,20 @@ func WithCredentials(user, password string) Option {
 	return func(o *options) { o.user = user; o.password = password }
 }
 
+// WithNetwork attaches the container to the named Docker network, so a client
+// in another container on that network reaches the broker by its container
+// name ([NetworkEndpoint], [NetworkTLSEndpoint]). The ports are still
+// published on 127.0.0.1 for the test process.
+//
+// The caller creates the network before the broker starts and removes it after
+// the broker is gone; this package does neither.
+func WithNetwork(network string) Option {
+	return func(o *options) { o.network = network }
+}
+
 // Configure applies options before the container is started.
-// Must be called before the first [Endpoint] call.
+// Must be called before the first [Endpoint] call, so call it in TestMain for
+// options the whole package shares. Options for one broker go to [ForceStart].
 func Configure(fns ...Option) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -94,8 +134,9 @@ func Configure(fns ...Option) {
 		return
 	}
 	for _, fn := range fns {
-		fn(&opts)
+		fn(&configured)
 	}
+	opts = configured
 }
 
 // Endpoint returns the AMQP 1.0 broker URL.
@@ -115,17 +156,17 @@ func Endpoint(t testing.TB) string {
 	if !resolved {
 		resolved = true
 		if url := os.Getenv("ARTEMIS_URL"); url != "" {
-			endpoint = url
+			current = addresses{endpoint: url}
 			fromEnv = true
 		} else {
-			endpoint, consoleURL, cleanupFn, initErr = startContainer()
+			current, cleanupFn, initErr = startContainer()
 		}
 	} else if initErr == nil && !fromEnv && containerName != "" {
 		if !dockerexec.IsRunning(containerName) {
 			if cleanupFn != nil {
 				cleanupFn()
 			}
-			endpoint, consoleURL, cleanupFn, initErr = startContainer()
+			current, cleanupFn, initErr = startContainer()
 		}
 	}
 
@@ -138,16 +179,34 @@ func Endpoint(t testing.TB) string {
 		}
 		t.Skipf("Artemis not available (docker absent): %v", initErr)
 	}
-	return endpoint
+	return current.endpoint
 }
 
 // ConsoleURL returns the Artemis web console URL.
 func ConsoleURL(t testing.TB) string {
 	t.Helper()
+	return address(t, func(a addresses) string { return a.consoleURL })
+}
+
+// NetworkEndpoint returns the plaintext AMQP 1.0 address a client on the Docker
+// network uses (amqp://<container name>:5672). It is empty when the package
+// was not configured [WithNetwork], or when ARTEMIS_URL pointed it at a broker
+// it did not start.
+//
+// Same start/skip semantics as [Endpoint].
+func NetworkEndpoint(t testing.TB) string {
+	t.Helper()
+	return address(t, func(a addresses) string { return a.networkEndpoint })
+}
+
+// address starts the broker like [Endpoint] does, then reads one of the
+// addresses it serves.
+func address(t testing.TB, field func(addresses) string) string {
+	t.Helper()
 	_ = Endpoint(t)
 	mu.Lock()
 	defer mu.Unlock()
-	return consoleURL
+	return field(current)
 }
 
 // Credentials returns the configured username and password.
@@ -170,9 +229,18 @@ func UniqueAddress(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
 }
 
-// ForceStart resets global state and starts a fresh container.
-// Registers t.Cleanup to tear down.
-func ForceStart(t testing.TB) string {
+// ForceStart removes any container this package started, starts a fresh one
+// with the package options plus fns, and returns its AMQP 1.0 URL. fns apply
+// to this start only: they go on top of the options [Configure] set, never on
+// top of those of the broker running now, so ForceStart(t) starts with the
+// package options alone. The cleanup ForceStart registers removes the container
+// and puts the package options back.
+//
+// Pass options for one test here, not to [Configure]. Options that Configure
+// stores outlive the test, so a test that configured [WithNetwork] and then
+// removed its network would make every later start fail on the missing network.
+// Configure is also ignored once anything has started the shared broker.
+func ForceStart(t testing.TB, fns ...Option) string {
 	t.Helper()
 	mu.Lock()
 	if cleanupFn != nil {
@@ -180,24 +248,29 @@ func ForceStart(t testing.TB) string {
 	}
 	resolved = false
 	fromEnv = false
-	endpoint = ""
-	consoleURL = ""
+	current = addresses{}
 	containerName = ""
 	cleanupFn = nil
 	initErr = nil
+	opts = configured
+	for _, fn := range fns {
+		fn(&opts)
+	}
 	mu.Unlock()
 
-	ep := Endpoint(t)
+	// Registered before the start, so the package options come back even when
+	// Endpoint skips or fails the test.
 	t.Cleanup(func() {
 		mu.Lock()
+		defer mu.Unlock()
 		if cleanupFn != nil {
 			cleanupFn()
 			cleanupFn = nil
 		}
 		resolved = false
-		mu.Unlock()
+		opts = configured
 	})
-	return ep
+	return Endpoint(t)
 }
 
 func user() string {
@@ -221,9 +294,9 @@ func imageName() string {
 	return defaultImage
 }
 
-func startContainer() (string, string, func(), error) {
+func startContainer() (addresses, func(), error) {
 	if _, err := exec.LookPath("docker"); err != nil {
-		return "", "", nil, fmt.Errorf("docker not found: %w", err)
+		return addresses{}, nil, fmt.Errorf("docker not found: %w", err)
 	}
 
 	if opts.cleanOrphans {
@@ -232,81 +305,128 @@ func startContainer() (string, string, func(), error) {
 
 	amqpPort, err := dockerexec.FreePort()
 	if err != nil {
-		return "", "", nil, fmt.Errorf("find free AMQP port: %w", err)
+		return addresses{}, nil, fmt.Errorf("find free AMQP port: %w", err)
 	}
 	webPort, err := dockerexec.FreePort()
 	if err != nil {
-		return "", "", nil, fmt.Errorf("find free web port: %w", err)
+		return addresses{}, nil, fmt.Errorf("find free web port: %w", err)
+	}
+	var tlsPort int
+	if opts.tls {
+		if tlsPort, err = dockerexec.FreePort(); err != nil {
+			return addresses{}, nil, fmt.Errorf("find free AMQP TLS port: %w", err)
+		}
 	}
 
 	name := fmt.Sprintf("%s%d", containerPrefix, amqpPort)
 	_, _ = dockerexec.Remove(name)
 
+	// Written before the container starts: the image copies it into the broker
+	// configuration when it creates the broker instance.
+	var started addresses
+	var materialDir string
+	if opts.tls {
+		if materialDir, started.caPEM, err = writeTLSMaterial(name); err != nil {
+			return addresses{}, nil, err
+		}
+	}
+
+	// Every failure below runs this too, so a fixture that could not start
+	// leaves neither a container nor a material directory behind.
 	cleanup := func() {
 		_, _ = dockerexec.Remove(name)
+		if materialDir != "" {
+			_ = os.RemoveAll(materialDir)
+		}
 	}
 
 	if err := dockerexec.EnsureImage(imageName()); err != nil {
-		return "", "", nil, err
+		cleanup()
+		return addresses{}, nil, err
 	}
 
-	out, err := dockerexec.Run(dockerexec.RunTimeout, "run", "-d",
+	args := []string{"run", "-d",
 		"--name", name,
-		"-p", fmt.Sprintf("127.0.0.1:%d:5672", amqpPort),
+		"-p", fmt.Sprintf("127.0.0.1:%d:%d", amqpPort, amqpContainerPort),
 		"-p", fmt.Sprintf("127.0.0.1:%d:8161", webPort),
-		"-e", "ARTEMIS_USER="+user(),
-		"-e", "ARTEMIS_PASSWORD="+password(),
+		"-e", "ARTEMIS_USER=" + user(),
+		"-e", "ARTEMIS_PASSWORD=" + password(),
 		"-e", "EXTRA_ARGS=--relax-jolokia",
-		imageName(),
-	)
+	}
+	if opts.tls {
+		args = append(args,
+			"-p", fmt.Sprintf("127.0.0.1:%d:%d", tlsPort, tlsContainerPort),
+			"-v", materialDir+":"+overrideMountPath+":ro")
+	}
+	if opts.network != "" {
+		args = append(args, "--network", opts.network)
+	}
+	out, err := dockerexec.Run(dockerexec.RunTimeout, append(args, imageName())...)
 	if err != nil {
 		cleanup()
-		return "", "", nil, fmt.Errorf("docker run: %w\n%s", err, out)
+		return addresses{}, nil, fmt.Errorf("docker run: %w\n%s", err, out)
 	}
 
 	if err := dockerexec.WaitHealthy(name, 30*time.Second); err != nil {
 		dockerexec.LogFailure(name)
 		cleanup()
-		return "", "", nil, fmt.Errorf("container: %w", err)
+		return addresses{}, nil, fmt.Errorf("container: %w", err)
 	}
 
 	if err := dockerexec.WaitTCP(amqpPort, 60*time.Second); err != nil {
 		dockerexec.LogFailure(name)
 		cleanup()
-		return "", "", nil, fmt.Errorf("AMQP port: %w", err)
+		return addresses{}, nil, fmt.Errorf("AMQP port: %w", err)
 	}
 
 	if err := dockerexec.StabilizeTCP(amqpPort); err != nil {
 		dockerexec.LogFailure(name)
 		cleanup()
-		return "", "", nil, fmt.Errorf("stabilization: %w", err)
+		return addresses{}, nil, fmt.Errorf("stabilization: %w", err)
 	}
 
 	// Protocol truth: Artemis accepts TCP well before its AMQP acceptor
 	// authenticates — gate on a real SASL dial, not the socket.
 	amqpEP := fmt.Sprintf("amqp://127.0.0.1:%d", amqpPort)
 	if err := dockerexec.WaitProbe("Artemis AMQP on "+amqpEP, 30*time.Second, time.Second,
-		amqpProbe(amqpEP)); err != nil {
+		amqpProbe(amqpEP, nil)); err != nil {
 		dockerexec.LogFailure(name)
 		cleanup()
-		return "", "", nil, err
+		return addresses{}, nil, err
+	}
+
+	if opts.tls {
+		started.tlsEndpoint = fmt.Sprintf("amqps://127.0.0.1:%d", tlsPort)
+		if err := waitTLSReady(started.tlsEndpoint, started.caPEM); err != nil {
+			dockerexec.LogFailure(name)
+			cleanup()
+			return addresses{}, nil, err
+		}
+	}
+	if opts.network != "" {
+		started.networkEndpoint = fmt.Sprintf("amqp://%s:%d", name, amqpContainerPort)
+		if opts.tls {
+			started.networkTLSEndpoint = fmt.Sprintf("amqps://%s:%d", name, tlsContainerPort)
+		}
 	}
 
 	containerName = name
-	console := fmt.Sprintf("http://127.0.0.1:%d", webPort)
-	ep := fmt.Sprintf("amqp://127.0.0.1:%d", amqpPort)
-	return ep, console, cleanup, nil
+	started.endpoint = amqpEP
+	started.consoleURL = fmt.Sprintf("http://127.0.0.1:%d", webPort)
+	return started, cleanup, nil
 }
 
 // amqpProbe gates on a real AMQP 1.0 SASL dial — success proves the broker
 // authenticates and speaks the protocol, not merely that the port is open.
-func amqpProbe(ep string) func() error {
+// A nil tlsConfig dials a plaintext endpoint.
+func amqpProbe(ep string, tlsConfig *tls.Config) func() error {
 	return func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
 		conn, err := amqp.Dial(ctx, ep, &amqp.ConnOptions{
-			SASLType: amqp.SASLTypePlain(user(), password()),
+			SASLType:  amqp.SASLTypePlain(user(), password()),
+			TLSConfig: tlsConfig,
 		})
 		if err != nil {
 			return err

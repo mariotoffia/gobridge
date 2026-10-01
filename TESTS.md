@@ -431,9 +431,9 @@ Docker, a build tag, or an AWS sandbox, so none of them runs in `make test`.
   `WithMutualTLS`, `WithWebSocket`: a Mosquitto that actually refuses, with
   `ws`/`wss` listeners and a `Material()` CA plus client pair to validate and
   present. Required for any claim about an authenticated or
-  certificate-validating path.
-- `domain/clock/clocktest` — fake clock. Only blessed way to drive
-  time forward.
+  certificate-validating path. `WithNetwork`, here and in `artemislocal`
+  (with its own `WithTLS`), lets another container reach the broker by name.
+- `domain/clock/clocktest` — fake clock. Only blessed way to drive time forward.
 - `ports/storetest` — conformance suites for `LeaseStore`,
   `OutboxStore`, `DLQStore`. Mandatory for every new store.
 - `ports.RecordingExporter` — records metric emissions. Use

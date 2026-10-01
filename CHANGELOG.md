@@ -10,6 +10,37 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Added
+
+- The MQTT and AMQP 1.0 test brokers can now be reached over TLS from another
+  Docker container, not only from the test process (#98). Inside a container,
+  `127.0.0.1` is the container itself, so a client there has to dial the broker
+  by its container name on a shared Docker network.
+  - `testutil/mqttlocal`: the new option `WithNetwork(network)` attaches the
+    broker container to a Docker network that the test creates and removes.
+    Ports stay published on `127.0.0.1`. `BrokerInstance.NetworkURL()` returns
+    `tcp://<container name>:1883` and `BrokerInstance.NetworkTLSURL()` returns
+    `ssl://<container name>:8883`; each is empty when its options were not
+    given. The generated server certificate now also lists the container name,
+    so a client on the network can verify it. The network is fixed when the
+    broker is created, so `RestartWith` refuses a different one.
+  - `testutil/artemislocal`: the new option `WithTLS()` adds an AMQP 1.0 TLS
+    listener with a generated certificate authority and a server certificate
+    valid for `localhost`, `127.0.0.1` and the container name. Startup waits
+    until a TLS login that trusts only that authority succeeds. The new option
+    `WithNetwork(network)` works as it does for `mqttlocal`. The new functions
+    `TLSEndpoint(t)`, `CAPEM(t)`, `NetworkEndpoint(t)` and
+    `NetworkTLSEndpoint(t)` return the addresses and the authority a client
+    needs. Each returns an empty string when its option was not given, or when
+    `ARTEMIS_URL` points the tests at a broker the package did not start.
+- `ForceStart` in `testutil/mqttlocal` and `testutil/artemislocal` now takes
+  options, `ForceStart(t, opts...)`, that apply to that one broker. When the
+  test ends, the package options that were in force before the call come back.
+  Options passed to `Configure` stay for the whole test binary, so a test that
+  configured `WithNetwork` and then removed its network made every later broker
+  start in the package fail on the missing network. `ForceStart(t)` with no
+  options behaves as before.
+
 ## [0.5.0] - 2026-09-26
 
 A configuration change now reconnects only the reload units it changed, and a

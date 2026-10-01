@@ -54,7 +54,8 @@ type Material struct {
 	// trusting only this CA validates the broker and nothing else.
 	CAPEM string
 	// ServerCertPEM and ServerKeyPEM are the broker's own identity, valid for
-	// localhost and 127.0.0.1.
+	// localhost, 127.0.0.1 and the broker's container name, which is the host
+	// name a client on the Docker network ([WithNetwork]) dials.
 	ServerCertPEM string
 	ServerKeyPEM  string
 	// ClientCertPEM and ClientKeyPEM are an identity the broker accepts when
@@ -96,8 +97,10 @@ func (c config) needsSecureMaterial() bool {
 
 // writeSecureMaterial renders the password file and TLS material into a fresh
 // temporary directory and returns the directory plus what a client needs. The
-// directory is the caller's to remove.
-func writeSecureMaterial(c config) (string, *Material, error) {
+// server certificate also names containerName, so a client reaching the broker
+// by name on a Docker network can verify it. The directory is the caller's to
+// remove.
+func writeSecureMaterial(c config, containerName string) (string, *Material, error) {
 	dir, err := os.MkdirTemp("", "mqttsecure-*")
 	if err != nil {
 		return "", nil, fmt.Errorf("create material dir: %w", err)
@@ -147,7 +150,7 @@ func writeSecureMaterial(c config) (string, *Material, error) {
 		}
 		server, serverErr := tlsgen.Generate(tlsgen.Options{
 			CommonName:  "localhost",
-			DNSNames:    []string{"localhost"},
+			DNSNames:    []string{"localhost", containerName},
 			IPAddresses: []string{"127.0.0.1"},
 			SignedBy:    ca,
 		})
