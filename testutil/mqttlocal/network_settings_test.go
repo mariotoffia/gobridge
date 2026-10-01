@@ -3,7 +3,6 @@ package mqttlocal
 import (
 	"fmt"
 	"runtime"
-	"strings"
 	"testing"
 )
 
@@ -59,8 +58,10 @@ func TestBrokerInstance_RestartWithRefusesAnotherNetwork(t *testing.T) {
 	}()
 	<-done
 
-	if !strings.Contains(recorder.message, "network") {
-		t.Fatalf("RestartWith(WithNetwork(other)) was not refused for the network; fatal message: %q", recorder.message)
+	const want = "mqttlocal.BrokerInstance.RestartWith: listeners, credentials, TLS, " +
+		"the ACL, persistence and the Docker network are fixed at NewBrokerInstance"
+	if recorder.message != want {
+		t.Fatalf("RestartWith(WithNetwork(other)) fatal message = %q, want %q", recorder.message, want)
 	}
 	if b.cfg.network != "created-on" {
 		t.Fatalf("the refused restart changed the recorded network to %q", b.cfg.network)

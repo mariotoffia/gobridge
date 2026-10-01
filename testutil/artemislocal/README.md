@@ -52,12 +52,15 @@ Tests run with `-short` are skipped. If Docker is missing, the test is skipped t
 | `NetworkTLSEndpoint(t)` | Returns `amqps://<container name>:5671`. Empty unless both `WithTLS()` and `WithNetwork(...)` are set. |
 | `Credentials()` | Returns the configured username and password. |
 | `Shutdown()` | Stops and removes the container. Safe to call multiple times. |
-| `ForceStart(t)` | Resets state and starts a fresh container. Registers `t.Cleanup`. |
+| `ForceStart(t, opts...)` | Removes any running container and starts a fresh one with the package options plus `opts`. Registers `t.Cleanup`, which removes the container and restores the package options, so `opts` apply to this test only. |
 | `UniqueAddress(prefix)` | Returns an address name with a nanosecond timestamp suffix. |
 
 ## Configuration options
 
-Pass options to `Configure()` before the first `Endpoint()` call.
+Options for the whole package go through `Configure()` in `TestMain`, before the
+first `Endpoint()` call. Options for one broker go to `ForceStart(t, opts...)`:
+they end with the test, so a network the test removes cannot break the tests
+after it.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -68,7 +71,10 @@ Pass options to `Configure()` before the first `Endpoint()` call.
 | `WithNetwork(name)` | none | Attach the container to an existing Docker network, so a client in another container reaches the broker by container name. Ports stay published on 127.0.0.1. You create the network before the broker starts and remove it after the broker is gone. |
 
 The four address functions above also return an empty string when `ARTEMIS_URL`
-points the tests at a broker this package did not start.
+points the tests at a broker this package did not start. When `Endpoint()`
+restarts a broker whose container died, the new container has a new name and a
+new certificate authority, so `NetworkEndpoint()`, `NetworkTLSEndpoint()` and
+`CAPEM()` change and must be read again.
 
 ## Reaching the broker from another container
 
@@ -78,14 +84,13 @@ dials the broker by container name on a shared Docker network:
 ```go
 func TestFromAContainer(t *testing.T) {
     // Create the network first, so its removal runs after the broker's.
-    network := fmt.Sprintf("gobridge-test-net-%d", time.Now().UnixNano())
+    network := "gobridge-test-net-" + rand.Text() // crypto/rand
     if out, err := dockerexec.Run(dockerexec.ExecTimeout, "network", "create", network); err != nil {
         t.Fatalf("%v\n%s", err, out)
     }
     t.Cleanup(func() { _, _ = dockerexec.Run(dockerexec.RemoveTimeout, "network", "rm", network) })
 
-    artemislocal.Configure(artemislocal.WithTLS(), artemislocal.WithNetwork(network))
-    artemislocal.ForceStart(t)
+    artemislocal.ForceStart(t, artemislocal.WithTLS(), artemislocal.WithNetwork(network))
 
     inside := artemislocal.NetworkTLSEndpoint(t) // for the client in the other container
     outside := artemislocal.TLSEndpoint(t)       // for the test process

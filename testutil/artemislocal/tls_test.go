@@ -2,6 +2,7 @@ package artemislocal_test
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -30,9 +31,7 @@ const amqpTimeout = 30 * time.Second
 
 func TestTLSEndpoint_ClientTrustingOnlyTheCASendsAndReceives(t *testing.T) {
 	requireStartedBroker(t)
-	artemislocal.ResetOptions(t)
-	artemislocal.Configure(artemislocal.WithTLS())
-	artemislocal.ForceStart(t)
+	artemislocal.ForceStart(t, artemislocal.WithTLS())
 
 	endpoint := artemislocal.TLSEndpoint(t)
 	if !strings.HasPrefix(endpoint, "amqps://127.0.0.1:") {
@@ -95,9 +94,7 @@ func TestTLSEndpoint_ClientTrustingOnlyTheCASendsAndReceives(t *testing.T) {
 func TestNetworkTLSEndpoint_ContainerOnTheNetworkLogsInByName(t *testing.T) {
 	requireStartedBroker(t)
 	network := newNetwork(t)
-	artemislocal.ResetOptions(t)
-	artemislocal.Configure(artemislocal.WithTLS(), artemislocal.WithNetwork(network))
-	artemislocal.ForceStart(t)
+	artemislocal.ForceStart(t, artemislocal.WithTLS(), artemislocal.WithNetwork(network))
 
 	networkTLS, err := url.Parse(artemislocal.NetworkTLSEndpoint(t))
 	if err != nil || networkTLS.Scheme != "amqps" || networkTLS.Port() != "5671" ||
@@ -167,9 +164,7 @@ keytool -importcert -noprompt -alias ca -file /tmp/ca.pem -keystore /tmp/trust.p
 func TestNetworkEndpoint_WithoutTLSServesNoTLSAddress(t *testing.T) {
 	requireStartedBroker(t)
 	network := newNetwork(t)
-	artemislocal.ResetOptions(t)
-	artemislocal.Configure(artemislocal.WithNetwork(network))
-	artemislocal.ForceStart(t)
+	artemislocal.ForceStart(t, artemislocal.WithNetwork(network))
 
 	if got := artemislocal.NetworkEndpoint(t); !strings.HasPrefix(got, "amqp://gobridge-artemis-") ||
 		!strings.HasSuffix(got, ":5672") {
@@ -191,10 +186,8 @@ func TestNetworkEndpoint_WithoutTLSServesNoTLSAddress(t *testing.T) {
 func TestNewEndpoints_AreEmptyForAnExternalBroker(t *testing.T) {
 	const external = "amqp://127.0.0.1:1"
 	t.Setenv("ARTEMIS_URL", external)
-	artemislocal.ResetOptions(t)
-	artemislocal.Configure(artemislocal.WithTLS(), artemislocal.WithNetwork("unused"))
 
-	if got := artemislocal.ForceStart(t); got != external {
+	if got := artemislocal.ForceStart(t, artemislocal.WithTLS(), artemislocal.WithNetwork("unused")); got != external {
 		t.Fatalf("ForceStart() = %q, want the ARTEMIS_URL %q", got, external)
 	}
 	for getter, got := range map[string]string{
@@ -206,6 +199,27 @@ func TestNewEndpoints_AreEmptyForAnExternalBroker(t *testing.T) {
 		if got != "" {
 			t.Errorf("%s() = %q for an external broker, want \"\"", getter, got)
 		}
+	}
+}
+
+// Options given to ForceStart end with the test that gave them. The network the
+// first start joined is removed when its subtest ends, so a later start that
+// still carried WithNetwork would fail in docker run on the missing network.
+func TestForceStart_OptionsEndWithTheTest(t *testing.T) {
+	requireStartedBroker(t)
+	if !t.Run("start on a network", func(t *testing.T) {
+		network := newNetwork(t)
+		artemislocal.ForceStart(t, artemislocal.WithNetwork(network))
+		if got := artemislocal.NetworkEndpoint(t); got == "" {
+			t.Fatalf("NetworkEndpoint() = \"\" after ForceStart(t, WithNetwork(%q))", network)
+		}
+	}) {
+		t.FailNow()
+	}
+
+	artemislocal.ForceStart(t)
+	if got := artemislocal.NetworkEndpoint(t); got != "" {
+		t.Fatalf("NetworkEndpoint() = %q after a ForceStart(t) without options, want \"\"", got)
 	}
 }
 
@@ -256,8 +270,11 @@ func dial(t *testing.T, endpoint string, roots *x509.CertPool) (*amqp.Conn, erro
 // first out, so the broker has left the network by the time it is removed.
 func newNetwork(t *testing.T) string {
 	t.Helper()
-	name := fmt.Sprintf("gobridge-test-net-%d", time.Now().UnixNano())
+	name := "gobridge-test-net-" + rand.Text()
 	if out, err := dockerexec.Run(dockerexec.ExecTimeout, "network", "create", name); err != nil {
+		if !dockerexec.MustSucceed() {
+			t.Skipf("create Docker network %s (docker absent): %v\n%s", name, err, out)
+		}
 		t.Fatalf("create Docker network %s: %v\n%s", name, err, out)
 	}
 	t.Cleanup(func() {
@@ -273,7 +290,7 @@ func newNetwork(t *testing.T) string {
 // volumes are removed when the test ends, also when the script times out.
 func runOnNetwork(t *testing.T, network, image string, env map[string]string, script string) ([]byte, error) {
 	t.Helper()
-	name := fmt.Sprintf("gobridge-artemisclient-%d", time.Now().UnixNano())
+	name := "gobridge-artemisclient-" + rand.Text()
 	t.Cleanup(func() { _, _ = dockerexec.Remove(name) })
 	args := []string{"run", "--name", name, "--network", network, "--entrypoint", "sh"}
 	for key, value := range env {

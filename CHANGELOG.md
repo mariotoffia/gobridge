@@ -33,6 +33,13 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
     `NetworkTLSEndpoint(t)` return the addresses and the authority a client
     needs. Each returns an empty string when its option was not given, or when
     `ARTEMIS_URL` points the tests at a broker the package did not start.
+- `ForceStart` in `testutil/mqttlocal` and `testutil/artemislocal` now takes
+  options, `ForceStart(t, opts...)`, that apply to that one broker. When the
+  test ends, the package options that were in force before the call come back.
+  Options passed to `Configure` stay for the whole test binary, so a test that
+  configured `WithNetwork` and then removed its network made every later broker
+  start in the package fail on the missing network. `ForceStart(t)` with no
+  options behaves as before.
 
 ## [0.5.0] - 2026-09-26
 

@@ -28,7 +28,10 @@
 // [WithTLS] adds an AMQP 1.0 TLS listener served by a generated certificate
 // authority ([TLSEndpoint], [CAPEM]). [WithNetwork] attaches the container to a
 // Docker network so a client in another container reaches it by name
-// ([NetworkEndpoint], [NetworkTLSEndpoint]).
+// ([NetworkEndpoint], [NetworkTLSEndpoint]). When [Endpoint] restarts a broker
+// whose container died, the new container has a new name and a new certificate
+// authority, so [NetworkEndpoint], [NetworkTLSEndpoint] and [CAPEM] change and
+// must be read again.
 package artemislocal
 
 import (
@@ -118,7 +121,8 @@ func WithNetwork(network string) Option {
 }
 
 // Configure applies options before the container is started.
-// Must be called before the first [Endpoint] call.
+// Must be called before the first [Endpoint] call, so call it in TestMain for
+// options the whole package shares. Options for one broker go to [ForceStart].
 func Configure(fns ...Option) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -220,9 +224,17 @@ func UniqueAddress(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
 }
 
-// ForceStart resets global state and starts a fresh container.
-// Registers t.Cleanup to tear down.
-func ForceStart(t testing.TB) string {
+// ForceStart removes any container this package started, starts a fresh one
+// with the package options plus fns, and returns its AMQP 1.0 URL. fns apply
+// to this start only: the cleanup ForceStart registers removes the container
+// and restores the package options that were in force before the call.
+// ForceStart(t) starts with the package options alone.
+//
+// Pass options for one test here, not to [Configure]. Options that Configure
+// stores outlive the test, so a test that configured [WithNetwork] and then
+// removed its network would make every later start fail on the missing network.
+// Configure is also ignored once anything has started the shared broker.
+func ForceStart(t testing.TB, fns ...Option) string {
 	t.Helper()
 	mu.Lock()
 	if cleanupFn != nil {
@@ -234,19 +246,25 @@ func ForceStart(t testing.TB) string {
 	containerName = ""
 	cleanupFn = nil
 	initErr = nil
+	saved := opts
+	for _, fn := range fns {
+		fn(&opts)
+	}
 	mu.Unlock()
 
-	ep := Endpoint(t)
+	// Registered before the start, so the package options come back even when
+	// Endpoint skips or fails the test.
 	t.Cleanup(func() {
 		mu.Lock()
+		defer mu.Unlock()
 		if cleanupFn != nil {
 			cleanupFn()
 			cleanupFn = nil
 		}
 		resolved = false
-		mu.Unlock()
+		opts = saved
 	})
-	return ep
+	return Endpoint(t)
 }
 
 func user() string {
