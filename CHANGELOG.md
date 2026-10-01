@@ -10,6 +10,13 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-01
+
+The MQTT and AMQP 1.0 test helpers can now serve a client that runs in another
+Docker container, over TLS that the client verifies. Only the test helper
+modules under `testutil/` changed; the runtime modules are the same as in
+0.5.0 and carry the new version because every module shares one version.
+
 ### Added
 
 - The MQTT and AMQP 1.0 test brokers can now be reached over TLS from another
@@ -34,8 +41,9 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
     needs. Each returns an empty string when its option was not given, or when
     `ARTEMIS_URL` points the tests at a broker the package did not start.
 - `ForceStart` in `testutil/mqttlocal` and `testutil/artemislocal` now takes
-  options, `ForceStart(t, opts...)`, that apply to that one broker. When the
-  test ends, the package options that were in force before the call come back.
+  options, `ForceStart(t, opts...)`, that apply to that one broker. The broker
+  starts from the options set with `Configure` plus these, and when the test
+  ends the `Configure` options are in force again.
   Options passed to `Configure` stay for the whole test binary, so a test that
   configured `WithNetwork` and then removed its network made every later broker
   start in the package fail on the missing network. `ForceStart(t)` with no
@@ -2379,7 +2387,8 @@ consumable.
   integration coverage in CI: their tests depend on LocalStack, which requires a
   licence token that is not configured. Set `LOCALSTACK_AUTH_TOKEN` to run them.
 
-[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/mariotoffia/gobridge/releases/tag/v0.5.1
 [0.5.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.5.0
 [0.4.1]: https://github.com/mariotoffia/gobridge/releases/tag/v0.4.1
 [0.4.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.4.0
