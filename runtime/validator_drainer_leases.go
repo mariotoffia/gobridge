@@ -6,20 +6,21 @@ import (
 	"github.com/mariotoffia/gobridge/domain/routing"
 )
 
-// validateBindingDrainerLeases refuses a shared_outbox binding whose session
-// gets its own outbox drainer from a manager that is not lease-managed. The
-// drainer is gated on that manager's lease, and only an exclusive manager in a
-// runtime with a lease store ever holds one; for any other the drainer skips
-// every cycle and the records persisted for the binding never drain while their
-// sources are acknowledged.
+// validateDrainerLeases refuses a shared_outbox route whose outbox drainer, on
+// its own session block or on a binding's session, gets a manager that is not
+// lease-managed. A drainer is gated on its manager's lease, and only an
+// exclusive manager in a runtime with a lease store ever holds one; for any
+// other the drainer skips every cycle and the persisted records never drain
+// while their sources are acknowledged.
 //
-// It replays wireRouteEntriesLocked's order, because the manager the drainer
-// gets is not necessarily built from the session sender: a session has one
-// manager, built from the first registration wiring reaches (a route's own
-// session block, else the session sender), and a partition has one drainer,
-// built by the first route that reaches it. A route's drainer on its own
-// session block is checked by validateSharedOutbox.
-func validateBindingDrainerLeases(ve *ValidationError, entries []*routeEntry, senders map[string]*sessionSenderEntry, hasLeaseStore bool) {
+// It replays wireRouteEntriesLocked's order, because the manager a drainer gets
+// is not necessarily built from the registration that asked for the drainer: a
+// session has one manager, built from the first registration wiring reaches (a
+// route's own session block, else the session sender), and a partition has one
+// drainer, built by the first route that reaches it. A route's drainer on a
+// manager its own session block built is checked by validateSharedOutbox, so
+// it is not reported here a second time.
+func validateDrainerLeases(ve *ValidationError, entries []*routeEntry, senders map[string]*sessionSenderEntry, hasLeaseStore bool) {
 	type manager struct {
 		exclusive bool
 		routeID   string // route whose session block built it; "" for the session sender
@@ -33,8 +34,18 @@ func validateBindingDrainerLeases(ve *ValidationError, entries []*routeEntry, se
 			if _, ok := managers[sid]; !ok {
 				managers[sid] = manager{exclusive: entry.sessCfg.Exclusive, routeID: entry.config.ID}
 			}
-			if sharedOutbox {
+			if sharedOutbox && !drained[sid] {
 				drained[sid] = true
+				// validateSharedOutbox already refuses this route's own session
+				// when it is not exclusive or there is no lease store.
+				mgr := managers[sid]
+				if mgr.routeID != entry.config.ID && !mgr.exclusive && entry.sessCfg.Exclusive && hasLeaseStore {
+					ve.add(fmt.Sprintf("route %q: ", entry.config.ID) + fmt.Sprintf(
+						"shared_outbox invalid: session %q is managed under route %q's non-exclusive "+
+							"session config; a non-exclusive session never acquires a lease, so its outbox "+
+							"drainer skips every cycle and persisted records never drain (make the session "+
+							"exclusive)", sid, mgr.routeID))
+				}
 			}
 		}
 		if !sharedOutbox {

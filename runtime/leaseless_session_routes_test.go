@@ -214,3 +214,64 @@ func TestSharedOutbox_BindingSessionManagedByAnEarlierExclusiveRouteIsAccepted(t
 		t.Fatalf("Start refused a binding session that one exclusive, lease-managed manager drains: %v", err)
 	}
 }
+
+// A shared_outbox route's own drainer runs on the session's one manager, too.
+// When an earlier direct_hold route's non-exclusive session block names the same
+// session, that manager is non-exclusive and the drainer never holds a lease,
+// although the shared_outbox route's own session block is exclusive: the runtime
+// refuses the route.
+func TestSharedOutbox_OwnSessionManagedByAnEarlierNonExclusiveRouteIsRefused(t *testing.T) {
+	rt := goruntime.New(goruntime.WithInstanceID("first-wins-own-session"),
+		goruntime.WithOutboxStore(NewFakeOutboxStore()), goruntime.WithLeaseStore(NewFakeLeaseStore()))
+	sess, sender := NewFakeSession(), NewFakeSender()
+	receive, recv, _ := helperQuiescentRoute("receive-route", nil)
+	receiveCfg := runsession.Config{SessionID: "dst-session"}
+	if err := rt.AddRoute(receive, recv, sender, sess, &receiveCfg); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	ownCfg := fastSessionConfig("dst-session")
+	own := outboxRoute("outbox-route", routing.DestinationBinding{ID: "b1", Address: "out/addr"})
+	if err := rt.AddRoute(own, NewFakeReceiver(), sender, sess, &ownCfg); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	requireValidationErrors(t, startForValidation(t, rt), []string{`route "outbox-route": shared_outbox invalid: ` +
+		`session "dst-session" is managed under route "receive-route"'s non-exclusive session config; ` +
+		`a non-exclusive session never acquires a lease, so its outbox drainer skips every cycle and persisted ` +
+		`records never drain (make the session exclusive)`})
+}
+
+// A shared_outbox route's own session block that is not lease-managed is
+// refused once, by the route's own session rule, and not again for its drainer.
+func TestSharedOutbox_OwnSessionNotLeaseManagedIsReportedOnce(t *testing.T) {
+	cases := map[string]struct {
+		lease   bool
+		sessCfg runsession.Config
+		want    string
+	}{
+		"non-exclusive with a lease store": {
+			lease:   true,
+			sessCfg: runsession.Config{SessionID: "dst-session"},
+			want: `route "outbox-route": shared_outbox invalid: session is non-exclusive; a non-exclusive ` +
+				`session never acquires a lease, so its outbox drainer skips every cycle and persisted records ` +
+				`never drain (make the session exclusive)`,
+		},
+		"exclusive without a lease store": {
+			sessCfg: fastSessionConfig("dst-session"),
+			want:    `route "outbox-route": shared_outbox invalid: no LeaseStore configured for exclusive session`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			opts := []goruntime.Option{goruntime.WithInstanceID("own-session-once"), goruntime.WithOutboxStore(NewFakeOutboxStore())}
+			if tc.lease {
+				opts = append(opts, goruntime.WithLeaseStore(NewFakeLeaseStore()))
+			}
+			rt := goruntime.New(opts...)
+			own := outboxRoute("outbox-route", routing.DestinationBinding{ID: "b1", Address: "out/addr"})
+			if err := rt.AddRoute(own, NewFakeReceiver(), NewFakeSender(), NewFakeSession(), &tc.sessCfg); err != nil {
+				t.Fatalf("AddRoute: %v", err)
+			}
+			requireValidationErrors(t, startForValidation(t, rt), []string{tc.want})
+		})
+	}
+}

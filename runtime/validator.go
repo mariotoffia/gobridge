@@ -47,7 +47,7 @@ func validateRoutes(entries []*routeEntry, senders map[string]*sessionSenderEntr
 		validateRoute(ve, entry, hasOutboxStore, hasLeaseStore, hasDLQStore)
 	}
 	if hasOutboxStore {
-		validateBindingDrainerLeases(ve, entries, senders, hasLeaseStore)
+		validateDrainerLeases(ve, entries, senders, hasLeaseStore)
 	}
 
 	validateSharedOutboxPartitions(ve, entries)
