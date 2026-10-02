@@ -10,6 +10,16 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-02
+
+A runtime without a lease store no longer treats any session as lease-managed.
+A session that a binding names can write dead-letter records, the role is
+`standalone`, `/ready` answers 200 once the runtime is healthy, and readiness
+counts the session's real connection state, so the AWS profile's
+`ConfigDegraded` now fires when such a session cannot connect. Route validation
+also refuses a `shared_outbox` drainer that could never get a lease. A runtime
+with a lease store behaves as before.
+
 ### Fixed — a bridge with no lease store no longer waits for a lease it can never get
 
 - In a bridge with no lease store, a session that a route binding names was
@@ -2439,7 +2449,8 @@ consumable.
   integration coverage in CI: their tests depend on LocalStack, which requires a
   licence token that is not configured. Set `LOCALSTACK_AUTH_TOKEN` to run them.
 
-[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/mariotoffia/gobridge/releases/tag/v0.5.2
 [0.5.1]: https://github.com/mariotoffia/gobridge/releases/tag/v0.5.1
 [0.5.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.5.0
 [0.4.1]: https://github.com/mariotoffia/gobridge/releases/tag/v0.4.1
