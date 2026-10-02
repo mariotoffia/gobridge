@@ -2,7 +2,8 @@ package runtime_test
 
 import (
 	"context"
-	"strings"
+	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -128,9 +129,14 @@ func TestLeaselessRuntime_SharedOutboxBindingSessionIsRefused(t *testing.T) {
 		_ = rt.Stop(context.Background())
 		t.Fatal("Start accepted a shared_outbox route whose binding session can never drain")
 	}
-	for _, want := range []string{`route "outbox-route"`, `session "dst-session"`, "LeaseStore"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("Start error %q does not name %s", err, want)
-		}
+	var ve *goruntime.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("Start error = %v, want a *ValidationError", err)
+	}
+	want := []string{`route "outbox-route": shared_outbox invalid: no LeaseStore configured for binding ` +
+		`session "dst-session"; its outbox drainer waits for a lease that nothing grants, so persisted ` +
+		`records never drain (a LeaseStore is required)`}
+	if got := ve.Errors(); !slices.Equal(got, want) {
+		t.Fatalf("validation errors = %q, want %q", got, want)
 	}
 }

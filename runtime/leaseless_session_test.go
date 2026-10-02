@@ -56,3 +56,25 @@ func TestLeaselessRuntime_ExclusiveSessionIsNotLeaseManaged(t *testing.T) {
 	assert.Less(t, rt.ReadinessLevel(ctx), ports.LevelConnected,
 		"a disconnected session must lower readiness: it never defers its connect")
 }
+
+// TestDeepHealth_NonExclusiveSessionNeverDefersItsConnect pins that readiness
+// skips a session as a deferred-connect standby only when its manager really
+// defers: an exclusive session in a runtime with a lease store. A non-exclusive
+// session starts at once even with ConnectAfterLease set and a lease store
+// present, so its connection state counts.
+func TestDeepHealth_NonExclusiveSessionNeverDefersItsConnect(t *testing.T) {
+	rt := New(WithInstanceID("non-exclusive-connect"), WithLeaseStore(&roleGrantingLeaseStore{}))
+	sess := &switchableSession{roleFakeSession: &roleFakeSession{events: make(chan ports.SessionEvent, 1)}}
+	cfg := session.Config{SessionID: "s1", ConnectAfterLease: true}
+	require.NoError(t, rt.RegisterSessionSender(cfg, sess, nopRouteSender{}))
+	startComponentRuntime(t, rt)
+	ctx := context.Background()
+
+	require.Equal(t, ports.LevelFull, rt.ReadinessLevel(ctx), "a connected session reaches full readiness")
+	sess.down.Store(true)
+	dh := rt.DeepHealth(ctx)
+	require.Len(t, dh.Sessions, 1)
+	assert.False(t, dh.Sessions[0].ConnectAfterLease, "a non-exclusive session never defers its connect")
+	assert.Less(t, ports.ReadinessLevelFromDeepHealth(dh), ports.LevelConnected,
+		"a disconnected non-exclusive session must lower readiness")
+}

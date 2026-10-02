@@ -5,6 +5,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/route"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // The DeepHealth read-side projection: the full snapshot driving adapters
@@ -34,9 +35,12 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 	healthy := rt.healthy
 	instanceID := rt.instanceID
 	role := rt.roleUnlocked()
-	// Without a lease store a session never waits for a lease before it
-	// connects, so its real connection state counts toward readiness.
-	deferConnect := rt.leaseStore != nil
+	// A session waits for a lease before it connects only under the condition
+	// session.Manager.Run defers on: exclusive, ConnectAfterLease, and a lease
+	// store. Any other session's real connection state counts toward readiness.
+	defersConnect := func(cfg session.Config) bool {
+		return rt.leaseStore != nil && cfg.Exclusive && cfg.ConnectAfterLease
+	}
 
 	sessSnaps := make([]sessionSnap, 0, len(rt.entries)+len(rt.sessionSenders)+len(rt.ingressSessions))
 	seen := make(map[string]bool)
@@ -52,7 +56,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 			continue
 		}
 		seen[sid] = true
-		snap := sessionSnap{sess: e.session, sid: sid, connectAfterLease: deferConnect && e.sessCfg.ConnectAfterLease}
+		snap := sessionSnap{sess: e.session, sid: sid, connectAfterLease: defersConnect(*e.sessCfg)}
 		if mgr, ok := rt.sessionMgrs[sid]; ok {
 			_, snap.hasLease = mgr.Token()
 		}
@@ -63,7 +67,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 			continue
 		}
 		seen[sid] = true
-		snap := sessionSnap{sess: sse.session, sid: sid, connectAfterLease: deferConnect && sse.config.ConnectAfterLease}
+		snap := sessionSnap{sess: sse.session, sid: sid, connectAfterLease: defersConnect(sse.config)}
 		if mgr, ok := rt.sessionMgrs[sid]; ok {
 			_, snap.hasLease = mgr.Token()
 		}
