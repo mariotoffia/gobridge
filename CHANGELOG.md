@@ -44,7 +44,9 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   counts.
 - A `shared_outbox` route is now refused when one of its bindings names a
   session that gets its own outbox drainer but is not lease-managed: the
-  bridge has no lease store, or the session is not exclusive. That drainer
+  bridge has no lease store, or the session is not exclusive, including when
+  an earlier route's non-exclusive session block for the same session decides
+  how the session is managed. That drainer
   waits for a lease nothing can grant, so records persisted for the binding
   were never sent while their sources were acknowledged.
 

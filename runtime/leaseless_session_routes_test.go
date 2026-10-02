@@ -100,28 +100,38 @@ func TestLeaselessRuntime_RemovedSubscriptionOnBindingSessionIsDeadLettered(t *t
 	}
 }
 
-// startOutboxBindingRoute starts rt with a shared_outbox route whose only
-// binding names "dst-session", registered as a session sender with sessCfg the
-// way the builder registers a binding's session, and returns Start's error.
-func startOutboxBindingRoute(t *testing.T, rt *goruntime.Runtime, sessCfg runsession.Config) error {
-	t.Helper()
-	sess, sender := NewFakeSession(), NewFakeSender()
-	cfg := goruntime.RouteConfig{
-		ID: "outbox-route",
+// outboxRoute is a shared_outbox route with the given bindings and session block.
+func outboxRoute(id string, bindings ...routing.DestinationBinding) goruntime.RouteConfig {
+	return goruntime.RouteConfig{
+		ID: id,
 		Policy: routing.RoutePolicy{
 			DeliveryMode:       routing.DeliverySharedOutbox,
 			OnPermanentFailure: routing.FailureDrop,
 			OnExpired:          routing.ExpiredDrop,
 		},
-		Bindings:           []routing.DestinationBinding{{ID: "b1", Address: "out/addr", SessionID: "dst-session"}},
+		Bindings:           bindings,
 		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
 	}
+}
+
+// addOutboxBindingRoute adds a shared_outbox route whose only binding names
+// "dst-session", and registers that session as a session sender with sessCfg
+// the way the builder registers a binding's session.
+func addOutboxBindingRoute(t *testing.T, rt *goruntime.Runtime, sessCfg runsession.Config, sess ports.Session, sender ports.Sender) {
+	t.Helper()
+	cfg := outboxRoute("outbox-route", routing.DestinationBinding{ID: "b1", Address: "out/addr", SessionID: "dst-session"})
 	if err := rt.AddRoute(cfg, NewFakeReceiver(), sender, sess, nil); err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
 	if err := rt.RegisterSessionSender(sessCfg, sess, sender); err != nil {
 		t.Fatalf("RegisterSessionSender: %v", err)
 	}
+}
+
+// startForValidation starts rt and returns Start's error, stopping it at the
+// end of the test when it started.
+func startForValidation(t *testing.T, rt *goruntime.Runtime) error {
+	t.Helper()
 	err := rt.Start(context.Background())
 	if err == nil {
 		t.Cleanup(func() { _ = rt.Stop(context.Background()) })
@@ -148,10 +158,10 @@ func requireValidationErrors(t *testing.T, err error, want []string) {
 // acknowledged after each persist: the runtime refuses the route instead.
 func TestLeaselessRuntime_SharedOutboxBindingSessionIsRefused(t *testing.T) {
 	rt := goruntime.New(goruntime.WithInstanceID("leaseless-outbox"), goruntime.WithOutboxStore(NewFakeOutboxStore()))
-	err := startOutboxBindingRoute(t, rt, leaselessBindingSession("dst-session"))
-	requireValidationErrors(t, err, []string{`route "outbox-route": shared_outbox invalid: no LeaseStore ` +
-		`configured for binding session "dst-session"; its outbox drainer waits for a lease that nothing ` +
-		`grants, so persisted records never drain (a LeaseStore is required)`})
+	addOutboxBindingRoute(t, rt, leaselessBindingSession("dst-session"), NewFakeSession(), NewFakeSender())
+	requireValidationErrors(t, startForValidation(t, rt), []string{`route "outbox-route": shared_outbox invalid: ` +
+		`no LeaseStore configured for binding session "dst-session"; its outbox drainer waits for a lease ` +
+		`that nothing grants, so persisted records never drain (a LeaseStore is required)`})
 }
 
 // A non-exclusive session never acquires a lease even when the runtime has a
@@ -160,8 +170,47 @@ func TestLeaselessRuntime_SharedOutboxBindingSessionIsRefused(t *testing.T) {
 func TestSharedOutbox_NonExclusiveBindingSessionIsRefused(t *testing.T) {
 	rt := goruntime.New(goruntime.WithInstanceID("non-exclusive-outbox"),
 		goruntime.WithOutboxStore(NewFakeOutboxStore()), goruntime.WithLeaseStore(NewFakeLeaseStore()))
-	err := startOutboxBindingRoute(t, rt, runsession.Config{SessionID: "dst-session"})
-	requireValidationErrors(t, err, []string{`route "outbox-route": shared_outbox invalid: binding session ` +
-		`"dst-session" is non-exclusive; a non-exclusive session never acquires a lease, so its outbox ` +
-		`drainer skips every cycle and persisted records never drain (make the session exclusive)`})
+	addOutboxBindingRoute(t, rt, runsession.Config{SessionID: "dst-session"}, NewFakeSession(), NewFakeSender())
+	requireValidationErrors(t, startForValidation(t, rt), []string{`route "outbox-route": shared_outbox invalid: ` +
+		`binding session "dst-session" is non-exclusive; a non-exclusive session never acquires a lease, so ` +
+		`its outbox drainer skips every cycle and persisted records never drain (make the session exclusive)`})
+}
+
+// A session has one manager, built from the first registration wiring reaches.
+// A direct_hold route added earlier names the session as its own non-exclusive
+// session block, so the drainer a later shared_outbox binding gets on that
+// session runs on that non-exclusive manager and never holds a lease, even
+// though the session sender itself is exclusive: the runtime refuses the route.
+func TestSharedOutbox_BindingSessionManagedByAnEarlierNonExclusiveRouteIsRefused(t *testing.T) {
+	rt := goruntime.New(goruntime.WithInstanceID("first-wins-outbox"),
+		goruntime.WithOutboxStore(NewFakeOutboxStore()), goruntime.WithLeaseStore(NewFakeLeaseStore()))
+	sess, sender := NewFakeSession(), NewFakeSender()
+	receive, recv, _ := helperQuiescentRoute("receive-route", nil)
+	receiveCfg := runsession.Config{SessionID: "dst-session"}
+	if err := rt.AddRoute(receive, recv, sender, sess, &receiveCfg); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	addOutboxBindingRoute(t, rt, fastSessionConfig("dst-session"), sess, sender)
+	requireValidationErrors(t, startForValidation(t, rt), []string{`route "outbox-route": shared_outbox invalid: ` +
+		`binding session "dst-session" is managed under route "receive-route"'s non-exclusive session config; ` +
+		`a non-exclusive session never acquires a lease, so its outbox drainer skips every cycle and persisted ` +
+		`records never drain (make the session exclusive)`})
+}
+
+// The same session as an earlier shared_outbox route's exclusive session block
+// and as a later route's binding is one lease-managed manager with one drainer,
+// and the runtime accepts it.
+func TestSharedOutbox_BindingSessionManagedByAnEarlierExclusiveRouteIsAccepted(t *testing.T) {
+	rt := goruntime.New(goruntime.WithInstanceID("first-wins-exclusive"),
+		goruntime.WithOutboxStore(NewFakeOutboxStore()), goruntime.WithLeaseStore(NewFakeLeaseStore()))
+	sess, sender := NewFakeSession(), NewFakeSender()
+	sessCfg := fastSessionConfig("dst-session")
+	primary := outboxRoute("primary-route", routing.DestinationBinding{ID: "b0", Address: "out/primary"})
+	if err := rt.AddRoute(primary, NewFakeReceiver(), sender, sess, &sessCfg); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	addOutboxBindingRoute(t, rt, sessCfg, sess, sender)
+	if err := startForValidation(t, rt); err != nil {
+		t.Fatalf("Start refused a binding session that one exclusive, lease-managed manager drains: %v", err)
+	}
 }

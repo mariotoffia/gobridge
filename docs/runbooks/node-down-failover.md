@@ -25,7 +25,8 @@ may need a process restart to complete takeover.
 
 2. Confirm who holds the lease. `GET /api/v1/monitor/deephealth` (authenticated)
    reports the instance `role` -- `active` once an exclusive session holds a
-   lease, `standby` while exclusive sessions are configured but none holds one,
+   lease, `standby` while exclusive sessions are configured on a bridge with a
+   lease store but none holds one,
    `standalone` when no exclusive session is configured at all, or when the
    runtime has no lease store -- and a
    per-session `has_lease` flag

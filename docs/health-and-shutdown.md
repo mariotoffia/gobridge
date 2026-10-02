@@ -35,15 +35,17 @@ runtime is started and healthy, every session is connected and has had its
 subscriptions acknowledged, every route can dispatch, and the instance carries
 at least one route or session. An isolated route or session fault caps the
 achieved level below `full`, so the bare probe sheds traffic instead of
-advertising a false green. A `standby` instance (exclusive sessions configured,
-no lease held) is capped at `subscribed` by design and therefore answers 503 on
+advertising a false green. A `standby` instance (exclusive sessions configured
+on a bridge with a lease store, no lease held) is capped at `subscribed` by design and therefore answers 503 on
 the bare probe; use `?level=connected` or `?level=subscribed` where a standby
 must count as healthy. The levels, least to most strict, are `live`, `running`,
 `connected`, `subscribed` and `full`; an unknown level answers 400. Probe
 mapping: Kubernetes liveness on `/live`, Kubernetes readiness on
 `/ready?level=connected` (tolerates a broker hiccup), pre-traffic gate on the
 bare probe or `/ready?level=full`. The `role` in the body is `active`,
-`standby` or `standalone` (lease ownership over exclusive sessions).
+`standby` or `standalone` (lease ownership over lease-managed sessions: exclusive
+sessions on a bridge with a lease store; without a lease store the role is
+`standalone`).
 
 Two states deserve calling out because they look healthy from the outside:
 

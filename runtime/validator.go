@@ -44,7 +44,10 @@ func validateRoutes(entries []*routeEntry, senders map[string]*sessionSenderEntr
 	ve := &ValidationError{}
 
 	for _, entry := range entries {
-		validateRoute(ve, entry, senders, hasOutboxStore, hasLeaseStore, hasDLQStore)
+		validateRoute(ve, entry, hasOutboxStore, hasLeaseStore, hasDLQStore)
+	}
+	if hasOutboxStore {
+		validateBindingDrainerLeases(ve, entries, senders, hasLeaseStore)
 	}
 
 	validateSharedOutboxPartitions(ve, entries)
@@ -161,7 +164,7 @@ func validateSharedOutboxPartitions(ve *ValidationError, entries []*routeEntry) 
 	}
 }
 
-func validateRoute(ve *ValidationError, entry *routeEntry, senders map[string]*sessionSenderEntry, hasOutboxStore, hasLeaseStore, hasDLQStore bool) {
+func validateRoute(ve *ValidationError, entry *routeEntry, hasOutboxStore, hasLeaseStore, hasDLQStore bool) {
 	cfg := entry.config
 	policy := cfg.Policy.WithDefaults()
 	prefix := fmt.Sprintf("route %q: ", cfg.ID)
@@ -170,7 +173,7 @@ func validateRoute(ve *ValidationError, entry *routeEntry, senders map[string]*s
 	case routing.DeliveryDirectHold:
 		validateDirectHold(ve, prefix, entry, policy)
 	case routing.DeliverySharedOutbox:
-		validateSharedOutbox(ve, prefix, entry, policy, senders, hasOutboxStore, hasLeaseStore)
+		validateSharedOutbox(ve, prefix, entry, policy, hasOutboxStore, hasLeaseStore)
 	}
 
 	validateZeroPlanResolver(ve, prefix, entry)
@@ -260,7 +263,7 @@ func validateDirectHold(ve *ValidationError, prefix string, entry *routeEntry, p
 // persisted in a single OutboxStore.Persist call (DynamoDB BatchWriteItem).
 const outboxTransactionLimit = 100
 
-func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry, policy routing.RoutePolicy, senders map[string]*sessionSenderEntry, hasOutboxStore, hasLeaseStore bool) {
+func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry, policy routing.RoutePolicy, hasOutboxStore, hasLeaseStore bool) {
 	if !hasOutboxStore {
 		ve.add(prefix + "shared_outbox invalid: no OutboxStore configured")
 	}
@@ -280,41 +283,6 @@ func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry,
 		ve.add(prefix + "shared_outbox invalid: session is non-exclusive; a non-exclusive " +
 			"session never acquires a lease, so its outbox drainer skips every cycle and " +
 			"persisted records never drain (make the session exclusive)")
-	}
-
-	// A binding whose session is a session sender here gets its own outbox
-	// drainer (wireRouteEntriesLocked), gated on that session's lease. Only a
-	// lease-managed session — exclusive, in a runtime with a lease store — ever
-	// holds one; for any other the drainer skips every cycle and the records
-	// persisted for the binding never drain. A binding on the route's own primary
-	// session is drained by the route's drainer and checked above.
-	if hasOutboxStore {
-		primary := ""
-		if entry.session != nil && entry.sessCfg != nil {
-			primary = entry.sessCfg.SessionID
-		}
-		refused := make(map[string]bool)
-		for _, b := range entry.config.Bindings {
-			if b.SessionID == "" || b.SessionID == primary || refused[b.SessionID] {
-				continue
-			}
-			sse, ok := senders[b.SessionID]
-			if !ok || (sse.config.Exclusive && hasLeaseStore) {
-				continue
-			}
-			refused[b.SessionID] = true
-			if !sse.config.Exclusive {
-				ve.add(prefix + fmt.Sprintf(
-					"shared_outbox invalid: binding session %q is non-exclusive; a non-exclusive "+
-						"session never acquires a lease, so its outbox drainer skips every cycle and "+
-						"persisted records never drain (make the session exclusive)", b.SessionID))
-				continue
-			}
-			ve.add(prefix + fmt.Sprintf(
-				"shared_outbox invalid: no LeaseStore configured for binding session %q; its "+
-					"outbox drainer waits for a lease that nothing grants, so persisted records "+
-					"never drain (a LeaseStore is required)", b.SessionID))
-		}
 	}
 
 	if policy.DispatchMode == routing.DispatchFanOut && len(entry.config.Bindings) > outboxTransactionLimit {

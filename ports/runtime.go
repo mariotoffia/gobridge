@@ -173,8 +173,8 @@ const (
 	// RoleActive: at least one exclusive session holds a lease — this instance
 	// is the primary dispatcher for its exclusive routes.
 	RoleActive = "active"
-	// RoleStandby: exclusive sessions are configured but none currently holds a
-	// lease — ready but not serving as primary. Readiness is capped at
+	// RoleStandby: exclusive sessions are configured with a lease store but none
+	// currently holds a lease — ready but not serving as primary. Readiness is capped at
 	// LevelSubscribed so a failover router never treats it as a dispatch target.
 	RoleStandby = "standby"
 	// RoleStandalone: no exclusive sessions configured, or no lease store to
