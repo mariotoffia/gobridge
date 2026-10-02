@@ -232,7 +232,7 @@ table. See [ADR 0005](../adr/0005-outbox-partition-claim-design.md) and the
 |--------|-----------|------|-------------|
 | `DLQEntries` | `route_id`, `category` | Count | Messages written to the DLQ (an INGRESS COUNTER — only ever increases) |
 | `DLQDepth` | none | Count (gauge) | CURRENT outstanding DLQ entries — the standing backlog "right now", so a stale burst after traffic stops is visible. Sampled via the store's optional `ports.DLQDepthReporter`; emitted as a dimensionless fleet total. |
-| `DLQWriteFailures` | none | Count | DLQ write attempts that failed after retries, or were skipped with no held lease |
+| `DLQWriteFailures` | none | Count | DLQ write attempts that failed after retries, or were skipped because the owning exclusive session held no lease. The lease check applies only when the runtime has a lease store; without one no write is skipped for want of a lease |
 | `DLQDuplicateSuppressed` | none | Count | DLQ writes the store refused as an existing entry — the same terminal event recorded twice, collapsed onto one row and reported as success. A rising value means settlement is failing after DLQ writes land, not that the DLQ store is unhealthy |
 | `DLQRedrives` | `route_id` | Count | DLQ entries an admin or automatic redrive re-injected successfully |
 | `DLQRedriveFailures` | `route_id` | Count | Admin or automatic redrive attempts whose inject failed or was refused; the entry is kept |

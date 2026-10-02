@@ -124,11 +124,13 @@ func (m *Manager) Token() (persistence.LeaseToken, bool) {
 	return m.token, m.hasLease
 }
 
-// Exclusive reports whether this session participates in lease-based failover.
-// A non-exclusive session never acquires a lease, so it must not count toward
-// the runtime's active/standby role classification (see roleUnlocked). The flag
-// is set once at construction and never mutates, so no lock is needed.
-func (m *Manager) Exclusive() bool { return m.exclusive }
+// Exclusive reports whether this session participates in lease-based failover:
+// it is exclusive AND the manager has a lease store. Without a store Run never
+// acquires a lease, so such a session, like a non-exclusive one, must not count
+// toward the runtime's active/standby role classification (see roleUnlocked).
+// Both fields are set once at construction and never mutate, so no lock is
+// needed.
+func (m *Manager) Exclusive() bool { return m.exclusive && m.leaseStore != nil }
 
 // Close quiesces the source session and then releases a still-held lease, in
 // that order — the same close-before-release discipline every other

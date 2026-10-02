@@ -75,8 +75,9 @@ func TestRoleUnlocked_ClassifiesByExclusiveSessionsOnly(t *testing.T) {
 	})
 
 	t.Run("exclusive session without a lease is standby", func(t *testing.T) {
+		// The manager has a lease store but never runs, so it holds no lease.
 		rt := &Runtime{sessionMgrs: map[string]*session.Manager{
-			"s": newRoleTestManager(true, nil),
+			"s": newRoleTestManager(true, &roleGrantingLeaseStore{}),
 		}}
 		require.Equal(t, ports.RoleStandby, rt.Role())
 	})

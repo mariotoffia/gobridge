@@ -177,7 +177,8 @@ const (
 	// lease — ready but not serving as primary. Readiness is capped at
 	// LevelSubscribed so a failover router never treats it as a dispatch target.
 	RoleStandby = "standby"
-	// RoleStandalone: no exclusive sessions configured — no failover role.
+	// RoleStandalone: no exclusive sessions configured, or no lease store to
+	// manage them — no failover role.
 	RoleStandalone = "standalone"
 )
 

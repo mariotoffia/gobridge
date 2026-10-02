@@ -11,9 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
+	"github.com/mariotoffia/gobridge/runtime/session"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
@@ -202,4 +204,77 @@ func TestApp_ConvergenceWatch_CancelledParentSkipsWatch(t *testing.T) {
 func TestApp_ConvergenceBudgetFloor(t *testing.T) {
 	app := NewApp(testBootstrapCfg())
 	require.Equal(t, bootstrapConvergenceBudgetFloor, app.convergenceBudget(&ports.BridgeConfig{}))
+}
+
+// refusedSession never connects, the way a session whose broker refuses its
+// login stays: every health read reports it disconnected.
+type refusedSession struct{ events chan ports.SessionEvent }
+
+func (s *refusedSession) Start(context.Context) error                               { return nil }
+func (s *refusedSession) Reconcile(context.Context, connectivity.SessionPlan) error { return nil }
+func (s *refusedSession) Health(context.Context) ports.SessionHealth {
+	return ports.SessionHealth{ServiceLevel: ports.ServiceLevelNone}
+}
+func (s *refusedSession) Events() <-chan ports.SessionEvent { return s.events }
+func (s *refusedSession) Close(context.Context) error       { return nil }
+
+// A runtime with no lease store whose only session is one a binding names, and
+// which never connects, has not converged. The builder registers that session
+// as exclusive with a deferred connect, but nothing can grant it a lease, so it
+// is no standby waiting for one: readiness counts its real connection state and
+// stays below subscribed, and the watch latches ConfigDegraded once the
+// activation budget passes.
+func TestApp_ConvergenceWatch_LeaselessBindingSessionThatNeverConnectsMarksDegraded(t *testing.T) {
+	rt := goruntime.New(goruntime.WithInstanceID("leaseless-refused"), goruntime.WithLogger(convDiscardLogger()))
+	cfg := session.Config{SessionID: "dst-session", Exclusive: true, ConnectAfterLease: true}
+	require.NoError(t, rt.RegisterSessionSender(cfg, &refusedSession{events: make(chan ports.SessionEvent, 1)}, discardSender{}))
+	require.NoError(t, rt.Start(t.Context()))
+	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
+
+	clk := clocktest.NewAt(time.Unix(1_700_000_000, 0))
+	app := NewApp(testBootstrapCfg(), WithLogger(convDiscardLogger()))
+	app.clk = clk
+	rec := &ports.RecordingExporter{}
+	app.metricsExporter = rec
+	app.runtimeRef.Set(rt)
+	app.convergenceRt = rt
+	app.appliedRef.Set(&ports.BridgeConfig{Version: 3})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	watchDone := make(chan struct{})
+	t.Cleanup(func() { cancel(); <-watchDone })
+	go func() {
+		defer close(watchDone)
+		app.runConvergenceWatch(ctx, rt, app.convergenceGeneration(), 3*bootstrapConvergencePollInterval)
+	}()
+	// An armed poll timer means the watch took its deadline from the start
+	// instant and its first poll did not count the runtime as converged.
+	wait.Until(t, 2*time.Second, "the watch takes its first poll", func() bool {
+		return clk.TimerCount() == 1 || isClosed(watchDone)
+	})
+	if isClosed(watchDone) {
+		t.Fatalf("the watch counted readiness %s as converged for a session that never connected",
+			rt.ReadinessLevel(context.Background()))
+	}
+
+	wait.Until(t, 5*time.Second, "the budget passes and the watch marks the version degraded", func() bool {
+		if degraded, _ := app.degradedConfigWatch(); degraded {
+			return true
+		}
+		clk.Advance(bootstrapConvergencePollInterval)
+		return false
+	})
+	gauges := rec.FindEntries(shared.MetricConfigDegraded)
+	require.NotEmpty(t, gauges)
+	assert.InDelta(t, 1.0, gauges[len(gauges)-1].FValue, 0, "ConfigDegraded must read 1")
+	assert.Less(t, rt.ReadinessLevel(context.Background()), bootstrapConvergenceReadyLevel)
+}
+
+func isClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
 }

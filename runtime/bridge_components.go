@@ -128,16 +128,19 @@ func (rt *Runtime) startComponentsLocked(set componentSet) {
 	rt.installRemovedSubscriptionDeadLetter(rt.dlqRouter, created)
 	rt.installAutoRedriveTrigger(created)
 
-	// Only an exclusive session carries a lease, so only its DLQ writes are
-	// fenced (see dlqToken).
-	for _, entry := range set.entries {
-		if entry.sessCfg != nil && entry.sessCfg.Exclusive {
-			rt.exclusiveSessions[entry.sessCfg.SessionID] = true
+	// Only an exclusive session in a runtime with a lease store carries a lease,
+	// so only its DLQ writes are fenced (see dlqToken). Without a store nothing
+	// grants one, and fencing would refuse every write for good.
+	if rt.leaseStore != nil {
+		for _, entry := range set.entries {
+			if entry.sessCfg != nil && entry.sessCfg.Exclusive {
+				rt.exclusiveSessions[entry.sessCfg.SessionID] = true
+			}
 		}
-	}
-	for sid, sse := range set.sessionSenders {
-		if sse.config.Exclusive {
-			rt.exclusiveSessions[sid] = true
+		for sid, sse := range set.sessionSenders {
+			if sse.config.Exclusive {
+				rt.exclusiveSessions[sid] = true
+			}
 		}
 	}
 
@@ -382,8 +385,9 @@ func (rt *Runtime) addDrainerLocked(
 // OWNING SESSION, not by an instance-global "any lease held" gate:
 //   - empty sessionID (ingress failure with no owning session): allow — no
 //     lease governs it.
-//   - non-exclusive session (not in rt.exclusiveSessions): allow — there is no
-//     lease to fence on, so a standby may DLQ-write its own ingress failures.
+//   - session not in rt.exclusiveSessions (non-exclusive, or any session of a
+//     runtime with no lease store): allow — there is no lease to fence on, so
+//     a standby may DLQ-write its own ingress failures.
 //   - exclusive session managed here: gate on THAT session's live lease, so a
 //     standby that does not own the lease cannot DLQ (and an unrelated lease
 //     cannot authorize a write for a route it does not own). A manager a Retire

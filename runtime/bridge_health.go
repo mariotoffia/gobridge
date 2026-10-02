@@ -213,7 +213,8 @@ func (rt *Runtime) LeaseStatus() map[string]bool {
 // Role returns the operational role of this instance based on lease
 // ownership: "active" if at least one exclusive session holds a lease,
 // "standby" if exclusive sessions exist but none hold a lease,
-// "standalone" if no exclusive sessions are configured.
+// "standalone" if no exclusive sessions are configured or the runtime has no
+// lease store (see session.Manager.Exclusive).
 // The result is a point-in-time snapshot computed under a single lock.
 func (rt *Runtime) Role() string {
 	rt.mu.Lock()

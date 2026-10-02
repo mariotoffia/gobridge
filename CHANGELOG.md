@@ -10,6 +10,32 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Fixed — a bridge with no lease store no longer waits for a lease it can never get
+
+- In a bridge with no lease store, a session that a route binding names was
+  still handled as if it had to win a lease (#93). The builder registers every
+  such session as exclusive, but without a lease store nothing ever grants
+  that lease. The effects were:
+  - every dead-letter write for the session was refused and counted on
+    `DLQWriteFailures`, so a message that failed permanently was never
+    dead-lettered;
+  - a delivery the broker still held for a removed subscription was never
+    dead-lettered, so the session retried the removal forever;
+  - the bridge reported role `standby`, which caps readiness at `subscribed`,
+    so the plain `/ready` probe answered 503 for a healthy bridge;
+  - readiness ignored whether the session was connected at all.
+
+  A session is now lease-managed only when the bridge has a lease store.
+  Without one it is handled like a non-exclusive session: its dead-letter
+  writes go through, the bridge reports `standalone`, and readiness counts its
+  real connection state. A bridge with a lease store, an in-memory one
+  included, behaves as before.
+- The AWS profile's `ConfigDegraded` now fires for a bridge with no lease
+  store whose binding session cannot connect, for example because the broker
+  refuses its login. Such a bridge used to report readiness `subscribed`,
+  which the convergence watch after a reload counted as converged at once, so
+  the reload was never marked degraded.
+
 ## [0.5.1] - 2026-10-01
 
 The MQTT and AMQP 1.0 test helpers can now serve a client that runs in another

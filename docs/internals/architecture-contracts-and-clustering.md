@@ -229,7 +229,7 @@ The HTTP readiness probe (`/api/v1/monitor/ready`) returns a `role` field indica
 
 | Role | Meaning |
 |---|---|
-| `standalone` | No exclusive sessions configured; instance operates independently |
+| `standalone` | No exclusive sessions configured, or no lease store to manage them; instance operates independently |
 | `active` | At least one exclusive session holds the lease; drainers are active |
 | `standby` | Exclusive sessions configured but no lease held; waiting to take over |
 
