@@ -771,8 +771,9 @@ paths:
                     type: string
                     description: >
                       Failover role from lease ownership: `active` (holds a
-                      lease), `standby` (exclusive sessions but no lease held),
-                      or `standalone` (no exclusive sessions configured).
+                      lease), `standby` (exclusive sessions with a lease store
+                      but no lease held), or `standalone` (no exclusive
+                      sessions configured, or no lease store to manage them).
                     enum: [active, standby, standalone]
                     example: standalone
                   level:

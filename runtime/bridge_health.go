@@ -194,10 +194,11 @@ func (rt *Runtime) OutboxPending(ctx context.Context, partitionKey string) (n in
 	return count, true, nil
 }
 
-// LeaseStatus returns the lease ownership status for each exclusive
-// session. The map keys are session IDs; values are true when the
-// session holds the lease (active) and false otherwise (standby).
-// Non-exclusive sessions are not included.
+// LeaseStatus returns the lease ownership status of every session this runtime
+// manages, exclusive or not. The map keys are session IDs; a value is true only
+// while that session holds its lease. A non-exclusive session, and every session
+// of a runtime without a lease store, never holds one and so always reports
+// false.
 func (rt *Runtime) LeaseStatus() map[string]bool {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
@@ -213,7 +214,8 @@ func (rt *Runtime) LeaseStatus() map[string]bool {
 // Role returns the operational role of this instance based on lease
 // ownership: "active" if at least one exclusive session holds a lease,
 // "standby" if exclusive sessions exist but none hold a lease,
-// "standalone" if no exclusive sessions are configured.
+// "standalone" if no exclusive sessions are configured or the runtime has no
+// lease store (see session.Manager.Exclusive).
 // The result is a point-in-time snapshot computed under a single lock.
 func (rt *Runtime) Role() string {
 	rt.mu.Lock()

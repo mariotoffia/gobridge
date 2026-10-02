@@ -88,7 +88,7 @@ func (rt *Runtime) attachIngressSessions(
 	m ports.MetricsExporter,
 	ingress map[string]*ingressSessionEntry,
 	entries []*routeEntry,
-	settlementSessions map[string]ports.Session,
+	settlementSessions map[string]bool,
 	settlementRoutes map[string][]*routeEntry,
 ) (created []string) {
 	for sid, entry := range ingress {
@@ -106,7 +106,7 @@ func (rt *Runtime) attachIngressSessions(
 			if !ridesOn {
 				continue
 			}
-			settlementSessions[sid] = entry.session
+			settlementSessions[sid] = true
 			settlementRoutes[sid] = append(settlementRoutes[sid], route)
 		}
 	}

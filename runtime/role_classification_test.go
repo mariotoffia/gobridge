@@ -54,10 +54,10 @@ func newRoleTestManager(exclusive bool, ls ports.LeaseStore) *session.Manager {
 
 // TestRoleUnlocked_ClassifiesByExclusiveSessionsOnly pins the role contract to
 // its documentation (bridge_health.go:107-110): an instance is "standalone" when
-// NO exclusive session is configured, "standby" when an exclusive session exists
-// but holds no lease, and "active" when an exclusive session holds a lease. A
-// NON-exclusive session takes no part in lease failover and MUST NOT make the
-// instance look like a standby.
+// NO exclusive session is configured, "standby" when an exclusive session with a
+// lease store exists but holds no lease, and "active" when an exclusive session
+// holds a lease. A NON-exclusive session takes no part in lease failover and
+// MUST NOT make the instance look like a standby.
 //
 // Regression + mutation: revert roleUnlocked to the len(rt.sessionMgrs)-based
 // version and the "non-exclusive" case flips to standby — the classification the
@@ -75,8 +75,9 @@ func TestRoleUnlocked_ClassifiesByExclusiveSessionsOnly(t *testing.T) {
 	})
 
 	t.Run("exclusive session without a lease is standby", func(t *testing.T) {
+		// The manager has a lease store but never runs, so it holds no lease.
 		rt := &Runtime{sessionMgrs: map[string]*session.Manager{
-			"s": newRoleTestManager(true, nil),
+			"s": newRoleTestManager(true, &roleGrantingLeaseStore{}),
 		}}
 		require.Equal(t, ports.RoleStandby, rt.Role())
 	})

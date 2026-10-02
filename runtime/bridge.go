@@ -84,7 +84,8 @@ type Runtime struct {
 	// sessionRuns holds, by session id, the run of every session manager a
 	// wiring pass started.
 	sessionRuns map[string]componentRun
-	// exclusiveSessions marks the session ids that carry a lease. The DLQ
+	// exclusiveSessions marks the session ids whose manager is lease-managed
+	// (session.Manager.Exclusive): the only ones that carry a lease. The DLQ
 	// router fences a write only for those (see dlqToken).
 	exclusiveSessions map[string]bool
 	// dlqRouter, built by Start, is the one DLQ router every component writes through.

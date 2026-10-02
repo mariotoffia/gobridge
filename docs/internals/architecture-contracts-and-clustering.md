@@ -229,9 +229,9 @@ The HTTP readiness probe (`/api/v1/monitor/ready`) returns a `role` field indica
 
 | Role | Meaning |
 |---|---|
-| `standalone` | No exclusive sessions configured; instance operates independently |
+| `standalone` | No exclusive sessions configured, or no lease store to manage them; instance operates independently |
 | `active` | At least one exclusive session holds the lease; drainers are active |
-| `standby` | Exclusive sessions configured but no lease held; waiting to take over |
+| `standby` | Exclusive sessions configured with a lease store, but no lease held; waiting to take over |
 
 The bare probe (no `?level=`) requires the `full` readiness level, and a `standby` instance is capped at `subscribed` by design — it holds no lease and dispatches nothing — so the bare probe answers HTTP 503 for a standby. Use `?level=connected` or `?level=subscribed` for a standby-tolerant probe and the bare probe (or `?level=full`) as the pre-traffic gate. `/api/v1/monitor/deephealth` reports the same `role`. The vocabulary is exported as `ports.RoleActive`, `ports.RoleStandby` and `ports.RoleStandalone`.
 

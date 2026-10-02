@@ -10,6 +10,58 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Fixed — a bridge with no lease store no longer waits for a lease it can never get
+
+- In a bridge with no lease store, a session that a route binding names was
+  still handled as if it had to win a lease (#93). The builder registers every
+  such session as exclusive, but without a lease store nothing ever grants
+  that lease. The effects were:
+  - every dead-letter write for the session was refused and counted on
+    `DLQWriteFailures`, so a message that failed permanently was never
+    dead-lettered;
+  - a delivery the broker still held for a removed subscription was never
+    dead-lettered, so the session retried the removal forever;
+  - the bridge reported role `standby`, which caps readiness at `subscribed`,
+    so the plain `/ready` probe answered 503 for a healthy bridge;
+  - readiness ignored whether the session was connected at all.
+
+  A session is now lease-managed only when the bridge has a lease store.
+  Without one it is handled like a non-exclusive session: its dead-letter
+  writes go through, the bridge reports `standalone`, and readiness counts its
+  real connection state. A bridge with a lease store, an in-memory one
+  included, behaves as before.
+- The AWS profile's `ConfigDegraded` now fires for a bridge with no lease
+  store whose binding session cannot connect, for example because the broker
+  refuses its login. Such a bridge used to report readiness `subscribed`,
+  which the convergence watch after a reload counted as converged at once, so
+  the reload was never marked degraded.
+- The exported `session.Manager.Exclusive()` now returns false for a manager
+  that has no lease store, even when its session is configured exclusive.
+- Readiness skips a session as waiting for its lease only when the session
+  really waits: it is exclusive, has `ConnectAfterLease` set, and the bridge
+  has a lease store. A non-exclusive session registered with
+  `ConnectAfterLease` set connects at once, and its connection state now
+  counts.
+- When a route's session block and a session sender register the same
+  session id, the session still has one manager, built from whichever
+  registration wiring reaches first, possibly over a different session
+  object than the other registration carries. DLQ fencing, the deep-health
+  `ConnectAfterLease` flag and the session object deep health probes now
+  follow that manager, as the role already did, instead of the other
+  registration. So do the session objects that get the removed-subscription
+  dead-letter path, the automatic-redrive trigger and the settlement barrier.
+  Before Start, deep health reports what that manager will be. The new
+  `session.Manager.DefersConnect()` reports whether a manager waits for its
+  lease before it connects.
+- A `shared_outbox` route is now refused when an outbox drainer that route
+  validation did not check before runs on a session that is not
+  lease-managed (the bridge has no lease store, or the session is not
+  exclusive). The two such drainers are a binding's drainer and the drainer
+  of a route's own session when an earlier route's non-exclusive session
+  block decides that session's manager. Such a drainer waits for a lease
+  nothing can grant, so the persisted records were never sent while their
+  sources were acknowledged.
+
 ## [0.5.1] - 2026-10-01
 
 The MQTT and AMQP 1.0 test helpers can now serve a client that runs in another

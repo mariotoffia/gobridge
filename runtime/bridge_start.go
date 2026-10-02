@@ -24,7 +24,7 @@ import (
 func (rt *Runtime) ValidateRoutes() error {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	return validateRoutes(rt.entries, rt.outboxStore != nil, rt.leaseStore != nil, rt.dlqStore != nil)
+	return validateRoutes(rt.entries, rt.sessionSenders, rt.outboxStore != nil, rt.leaseStore != nil, rt.dlqStore != nil)
 }
 
 // dlqDepthSampleInterval is the cadence at which the runtime samples the
@@ -71,7 +71,7 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	rt.sessionRuns = make(map[string]componentRun)
 	rt.exclusiveSessions = make(map[string]bool)
 
-	if err := validateRoutes(rt.entries, rt.outboxStore != nil, rt.leaseStore != nil, rt.dlqStore != nil); err != nil {
+	if err := validateRoutes(rt.entries, rt.sessionSenders, rt.outboxStore != nil, rt.leaseStore != nil, rt.dlqStore != nil); err != nil {
 		rt.running = false
 		return err
 	}

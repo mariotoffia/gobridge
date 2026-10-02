@@ -66,9 +66,10 @@ is the sole active owner. There is no fencing between them — they all consume 
 same logical traffic in parallel (N-fold duplication) with no `LeaseTransfers` and
 no `STALE_FENCING_TOKEN` to signal it, because nothing is shared.
 
-**Detection.** `/api/v1/monitor/ready` reports `role: standalone` (not `active`/
-`standby`) on *every* replica, and duplicate downstream deliveries scale with the
-replica count. The builder emits a **`SPLIT-BRAIN RISK`** warning at startup when
+**Detection.** `/api/v1/monitor/ready` reports `role: active` on *every*
+replica at once: each process grants itself its own private lease, so none is a
+`standby`. With a shared lease store at most one replica is `active` per
+exclusive session. Duplicate downstream deliveries scale with the replica count. The builder emits a **`SPLIT-BRAIN RISK`** warning at startup when
 an exclusive/lease-bearing route is configured without a distributed lease
 backend — grep startup logs for it.
 

@@ -37,13 +37,17 @@ func (e *ValidationError) Errors() []string {
 }
 
 // validateRoutes checks all registered route entries for configuration
-// correctness before the runtime starts. It returns a ValidationError
-// containing all detected problems, or nil when all routes are valid.
-func validateRoutes(entries []*routeEntry, hasOutboxStore, hasLeaseStore, hasDLQStore bool) error {
+// correctness before the runtime starts. senders are the registered session
+// senders, keyed by session id. It returns a ValidationError containing all
+// detected problems, or nil when all routes are valid.
+func validateRoutes(entries []*routeEntry, senders map[string]*sessionSenderEntry, hasOutboxStore, hasLeaseStore, hasDLQStore bool) error {
 	ve := &ValidationError{}
 
 	for _, entry := range entries {
 		validateRoute(ve, entry, hasOutboxStore, hasLeaseStore, hasDLQStore)
+	}
+	if hasOutboxStore {
+		validateDrainerLeases(ve, entries, senders, hasLeaseStore)
 	}
 
 	validateSharedOutboxPartitions(ve, entries)

@@ -96,6 +96,8 @@ ADR-0019, `docs/internals/architecture-message-flow.md`,
   the builder does; an unreferenced session is never built. "Which sessions are
   exclusive" has one answer, `exclusiveSessionIDs`, which includes sessions
   named by a route binding.
+- A session is lease-managed only when the runtime has a lease store; without
+  one it is fenced, classified and counted like a non-exclusive session.
 - A reload that changes a session between exclusive and non-exclusive stops
   the old consumer before starting the new one; overlap runs both on one
   identity.

@@ -66,7 +66,7 @@ func (rt *Runtime) startComponentsLocked(set componentSet) {
 
 	// Source route settlement barriers are installed on sessions after every
 	// RouteRunner exists and before any background goroutine starts.
-	settlementSessions := make(map[string]ports.Session)
+	settlementSessions := make(map[string]bool)
 	settlementRoutes := make(map[string][]*routeEntry)
 
 	// created is every session id whose manager this pass builds. Only those
@@ -96,7 +96,7 @@ func (rt *Runtime) startComponentsLocked(set componentSet) {
 			if !ridesOn {
 				continue
 			}
-			settlementSessions[sid] = sse.session
+			settlementSessions[sid] = true
 			settlementRoutes[sid] = append(settlementRoutes[sid], entry)
 		}
 	}
@@ -106,8 +106,11 @@ func (rt *Runtime) startComponentsLocked(set componentSet) {
 	// routes riding on it.
 	created = append(created, rt.attachIngressSessions(m, set.ingressSessions, set.entries, settlementSessions, settlementRoutes)...)
 
-	for sid, sess := range settlementSessions {
-		configurer, ok := sess.(ports.IngressQuiescenceConfigurer)
+	// The barrier goes on the object the session's manager runs: that is the
+	// connection that recycles, whichever registration listed the route.
+	sources := set.managerSources(rt.outboxStore != nil)
+	for sid := range settlementSessions {
+		configurer, ok := sources[sid].session.(ports.IngressQuiescenceConfigurer)
 		if !ok {
 			continue
 		}
@@ -128,15 +131,13 @@ func (rt *Runtime) startComponentsLocked(set componentSet) {
 	rt.installRemovedSubscriptionDeadLetter(rt.dlqRouter, created)
 	rt.installAutoRedriveTrigger(created)
 
-	// Only an exclusive session carries a lease, so only its DLQ writes are
-	// fenced (see dlqToken).
-	for _, entry := range set.entries {
-		if entry.sessCfg != nil && entry.sessCfg.Exclusive {
-			rt.exclusiveSessions[entry.sessCfg.SessionID] = true
-		}
-	}
-	for sid, sse := range set.sessionSenders {
-		if sse.config.Exclusive {
+	// Only a lease-managed manager ever holds a lease, so only DLQ writes for
+	// its session are fenced (see dlqToken). The mark is read from the manager
+	// each session actually got, never from another registration of the same
+	// session id: fencing on a lease the manager can never hold would refuse
+	// every write for good.
+	for _, sid := range created {
+		if rt.sessionMgrs[sid].Exclusive() {
 			rt.exclusiveSessions[sid] = true
 		}
 	}
@@ -200,7 +201,7 @@ func (rt *Runtime) startComponentsLocked(set componentSet) {
 func (rt *Runtime) wireRouteEntriesLocked(
 	m ports.MetricsExporter,
 	set componentSet,
-	settlementSessions map[string]ports.Session,
+	settlementSessions map[string]bool,
 	settlementRoutes map[string][]*routeEntry,
 ) (created []string) {
 	// drainerOwner maps a session ID to the route whose configuration
@@ -272,7 +273,7 @@ func (rt *Runtime) wireRouteEntriesLocked(
 
 		if entry.session != nil && entry.sessCfg != nil {
 			sid := entry.sessCfg.SessionID
-			settlementSessions[sid] = entry.session
+			settlementSessions[sid] = true
 			settlementRoutes[sid] = append(settlementRoutes[sid], entry)
 			if rt.ensureSessionManagerLocked(m, sid, *entry.sessCfg, entry.session) {
 				created = append(created, sid)
@@ -382,8 +383,9 @@ func (rt *Runtime) addDrainerLocked(
 // OWNING SESSION, not by an instance-global "any lease held" gate:
 //   - empty sessionID (ingress failure with no owning session): allow — no
 //     lease governs it.
-//   - non-exclusive session (not in rt.exclusiveSessions): allow — there is no
-//     lease to fence on, so a standby may DLQ-write its own ingress failures.
+//   - session not in rt.exclusiveSessions (its manager is not lease-managed:
+//     non-exclusive, or no lease store): allow — there is no lease to fence on,
+//     so a standby may DLQ-write its own ingress failures.
 //   - exclusive session managed here: gate on THAT session's live lease, so a
 //     standby that does not own the lease cannot DLQ (and an unrelated lease
 //     cannot authorize a write for a route it does not own). A manager a Retire
