@@ -35,6 +35,12 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   refuses its login. Such a bridge used to report readiness `subscribed`,
   which the convergence watch after a reload counted as converged at once, so
   the reload was never marked degraded.
+- The exported `session.Manager.Exclusive()` now returns false for a manager
+  that has no lease store, even when its session is configured exclusive.
+- A `shared_outbox` route is now refused when the bridge has no lease store
+  and one of its bindings names a session that gets its own outbox drainer.
+  That drainer waits for a lease nothing can grant, so records persisted for
+  the binding were never sent while their sources were acknowledged.
 
 ## [0.5.1] - 2026-10-01
 

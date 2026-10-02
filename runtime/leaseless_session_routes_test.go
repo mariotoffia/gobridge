@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,5 +96,41 @@ func TestLeaselessRuntime_RemovedSubscriptionOnBindingSessionIsDeadLettered(t *t
 	if entry.ErrorCode() != string(shared.ErrCodeSubscriptionRemoved) || entry.SessionID() != "dst-session" {
 		t.Fatalf("DLQ entry code/session = %q/%q, want %s/dst-session",
 			entry.ErrorCode(), entry.SessionID(), shared.ErrCodeSubscriptionRemoved)
+	}
+}
+
+// A shared_outbox route whose binding names a session sender gets an outbox
+// drainer that waits for that session's lease. A runtime with no lease store
+// never grants one, so the drainer would skip every cycle while the source is
+// acknowledged after each persist: the runtime refuses the route instead.
+func TestLeaselessRuntime_SharedOutboxBindingSessionIsRefused(t *testing.T) {
+	rt := goruntime.New(goruntime.WithInstanceID("leaseless-outbox"), goruntime.WithOutboxStore(NewFakeOutboxStore()))
+	sess, sender := NewFakeSession(), NewFakeSender()
+	cfg := goruntime.RouteConfig{
+		ID: "outbox-route",
+		Policy: routing.RoutePolicy{
+			DeliveryMode:       routing.DeliverySharedOutbox,
+			OnPermanentFailure: routing.FailureDrop,
+			OnExpired:          routing.ExpiredDrop,
+		},
+		Bindings:           []routing.DestinationBinding{{ID: "b1", Address: "out/addr", SessionID: "dst-session"}},
+		SourceCapabilities: []ports.Capability{ports.CapVisibilityExtension, ports.CapSourceRedelivery},
+	}
+	if err := rt.AddRoute(cfg, NewFakeReceiver(), sender, sess, nil); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	if err := rt.RegisterSessionSender(leaselessBindingSession("dst-session"), sess, sender); err != nil {
+		t.Fatalf("RegisterSessionSender: %v", err)
+	}
+
+	err := rt.Start(context.Background())
+	if err == nil {
+		_ = rt.Stop(context.Background())
+		t.Fatal("Start accepted a shared_outbox route whose binding session can never drain")
+	}
+	for _, want := range []string{`route "outbox-route"`, `session "dst-session"`, "LeaseStore"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Start error %q does not name %s", err, want)
+		}
 	}
 }

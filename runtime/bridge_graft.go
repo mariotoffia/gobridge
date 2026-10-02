@@ -88,11 +88,11 @@ func (rt *Runtime) Graft(part *Runtime) error {
 	// part's: a graft must never admit what a Start of both would refuse, such as
 	// two routes that drain one outbox partition under different policies.
 	entries := append(slices.Clone(rt.entries), part.entries...)
-	if err := validateRoutes(entries, rt.outboxStore != nil, rt.leaseStore != nil, rt.dlqStore != nil); err != nil {
-		return err
-	}
 	senders := maps.Clone(rt.sessionSenders)
 	maps.Copy(senders, part.sessionSenders)
+	if err := validateRoutes(entries, senders, rt.outboxStore != nil, rt.leaseStore != nil, rt.dlqStore != nil); err != nil {
+		return err
+	}
 	if err := rt.sharedOutboxDrainerConflicts(entries, senders); err != nil {
 		return err
 	}

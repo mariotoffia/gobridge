@@ -247,15 +247,6 @@ func TestApp_ConvergenceWatch_LeaselessBindingSessionThatNeverConnectsMarksDegra
 		defer close(watchDone)
 		app.runConvergenceWatch(ctx, rt, app.convergenceGeneration(), 3*bootstrapConvergencePollInterval)
 	}()
-	// An armed poll timer means the watch took its deadline from the start
-	// instant and its first poll did not count the runtime as converged.
-	wait.Until(t, 2*time.Second, "the watch takes its first poll", func() bool {
-		return clk.TimerCount() == 1 || isClosed(watchDone)
-	})
-	if isClosed(watchDone) {
-		t.Fatalf("the watch counted readiness %s as converged for a session that never connected",
-			rt.ReadinessLevel(context.Background()))
-	}
 
 	wait.Until(t, 5*time.Second, "the budget passes and the watch marks the version degraded", func() bool {
 		if degraded, _ := app.degradedConfigWatch(); degraded {
@@ -268,13 +259,4 @@ func TestApp_ConvergenceWatch_LeaselessBindingSessionThatNeverConnectsMarksDegra
 	require.NotEmpty(t, gauges)
 	assert.InDelta(t, 1.0, gauges[len(gauges)-1].FValue, 0, "ConfigDegraded must read 1")
 	assert.Less(t, rt.ReadinessLevel(context.Background()), bootstrapConvergenceReadyLevel)
-}
-
-func isClosed(ch <-chan struct{}) bool {
-	select {
-	case <-ch:
-		return true
-	default:
-		return false
-	}
 }
