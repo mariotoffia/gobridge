@@ -42,8 +42,10 @@ the entry's `LastError` before you act.
 
 4. Separate the counters ([monitoring.md#key-metrics](../aws-deployment/monitoring.md#key-metrics)):
    `DLQEntries` (`route_id`, `category`) is the DLQ write count; `DLQWriteFailures`
-   (no dimension) means the DLQ store itself is rejecting writes or no lease was
-   held; `MessagesDropped` (`route_id`, `reason`) is a terminal drop that wrote
+   (no dimension) means the DLQ store itself is rejecting writes or, on a bridge
+   with a lease store, the exclusive session that owns the write held no lease
+   (a bridge without a lease store never skips a write for want of one);
+   `MessagesDropped` (`route_id`, `reason`) is a terminal drop that wrote
    **no** DLQ record — silent loss, alert on it directly; `DLQWriteHold` (timer,
    no dimension) is how long each DLQ write held its caller.
 
@@ -107,9 +109,11 @@ the entry's `LastError` before you act.
   (an empty filter requires `confirm_delete_all`). Purge the entire DLQ only with
   `confirm_purge_all: true`
   ([http-api.md#admin-api-endpoints](../http-api-admin.md)).
-- **`DLQWriteFailures` rising**: the DLQ store is unhealthy or the instance holds
-  no lease. Check store health (`SQLiteStoreUnhealthy` on SQLite deployments) and
-  lease ownership before assuming the messages are safe.
+- **`DLQWriteFailures` rising**: the DLQ store is unhealthy or, on a bridge with
+  a lease store, the instance holds no lease for the exclusive session that owns
+  the write. Check store health (`SQLiteStoreUnhealthy` on SQLite deployments)
+  and, with a lease store, lease ownership before assuming the messages are
+  safe.
 - **`DLQWriteHold` at the ceiling (intake stalled)**: fix the DLQ store — that is
   the only lever. Do **not** try to restore throughput by removing the DLQ store
   from the route: a route with no DLQ store drops permanently-failed messages
