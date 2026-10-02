@@ -99,3 +99,32 @@ func TestSessionManagerSource_EarlierBindingSenderDecidesDeferredConnect(t *test
 		return rt.ReadinessLevel(ctx) == ports.LevelSubscribed
 	})
 }
+
+// Two registrations of one session id may carry different session objects; the
+// manager runs the one it was built from. Here a shared_outbox binding's session
+// sender builds the manager before a later route's session block of the same id
+// names another object, so deep health must probe the object the manager runs.
+func TestSessionManagerSource_DeepHealthProbesTheObjectTheManagerRuns(t *testing.T) {
+	rt := New(WithInstanceID("manager-source-object"),
+		WithLeaseStore(&roleGrantingLeaseStore{}), WithOutboxStore(&graftOutboxStore{}))
+	managed := &switchableSession{roleFakeSession: &roleFakeSession{events: make(chan ports.SessionEvent, 1)}}
+	other := &switchableSession{roleFakeSession: &roleFakeSession{events: make(chan ports.SessionEvent, 1)}}
+	outbox := componentRoute("outbox-route")
+	outbox.Policy.DeliveryMode = routing.DeliverySharedOutbox
+	outbox.Bindings = []routing.DestinationBinding{{ID: "b1", Address: "out/addr", SessionID: "s1"}}
+	require.NoError(t, rt.AddRoute(outbox, newComponentReceiver(), nopRouteSender{}, managed, nil))
+	require.NoError(t, rt.RegisterSessionSender(session.Config{SessionID: "s1", Exclusive: true}, managed, nopRouteSender{}))
+	require.NoError(t, rt.AddRoute(componentRoute("receive-route"), newComponentReceiver(), &componentSender{}, other,
+		&session.Config{SessionID: "s1"}))
+	managed.down.Store(true)
+	startComponentRuntime(t, rt)
+	ctx := context.Background()
+	wait.Until(t, 2*time.Second, "the binding's manager holds its lease", func() bool {
+		return rt.Role() == ports.RoleActive
+	})
+
+	dh := rt.DeepHealth(ctx)
+	require.Len(t, dh.Sessions, 1, "one session id is one session in deep health")
+	assert.False(t, dh.Sessions[0].Connected, "deep health must probe the object the manager runs")
+	assert.Less(t, ports.ReadinessLevelFromDeepHealth(dh), ports.LevelConnected)
+}

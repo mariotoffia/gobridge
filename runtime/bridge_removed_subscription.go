@@ -78,20 +78,8 @@ func (rt *Runtime) sourceRouteOn(sid string) string {
 	return routeID
 }
 
-// managedSession resolves the session a manager was built for. A route whose
-// session block names sid but carries no session instance is skipped, so the
-// session registered as a sender or ingress session is found instead.
+// managedSession resolves the session object sid's manager runs (see
+// managerSources). Caller holds rt.mu.
 func (rt *Runtime) managedSession(sid string) ports.Session {
-	for _, entry := range rt.entries {
-		if entry.session != nil && entry.sessCfg != nil && entry.sessCfg.SessionID == sid {
-			return entry.session
-		}
-	}
-	if sse, ok := rt.sessionSenders[sid]; ok {
-		return sse.session
-	}
-	if ise, ok := rt.ingressSessions[sid]; ok {
-		return ise.session
-	}
-	return nil
+	return rt.managerSourcesLocked()[sid].session
 }

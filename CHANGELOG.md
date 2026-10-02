@@ -44,10 +44,13 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   counts.
 - When a route's session block and a session sender register the same
   session id, the session still has one manager, built from whichever
-  registration wiring reaches first. DLQ fencing and the deep-health
-  `ConnectAfterLease` flag now follow that manager, as the role already did,
-  instead of the other registration's settings. Before Start, deep health
-  reports what that manager will be. The new
+  registration wiring reaches first, possibly over a different session
+  object than the other registration carries. DLQ fencing, the deep-health
+  `ConnectAfterLease` flag and the session object deep health probes now
+  follow that manager, as the role already did, instead of the other
+  registration. So do the session objects that get the removed-subscription
+  dead-letter path, the automatic-redrive trigger and the settlement barrier.
+  Before Start, deep health reports what that manager will be. The new
   `session.Manager.DefersConnect()` reports whether a manager waits for its
   lease before it connects.
 - A `shared_outbox` route is now refused when an outbox drainer that route

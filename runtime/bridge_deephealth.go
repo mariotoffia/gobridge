@@ -34,21 +34,20 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 	healthy := rt.healthy
 	instanceID := rt.instanceID
 	role := rt.roleUnlocked()
-	// A session waits for a lease before it connects only when its manager
-	// defers (session.Manager.DefersConnect); any other session's real
-	// connection state counts toward readiness. Before Start no manager exists
-	// yet, so the registration wiring will build it from answers instead.
-	var sources map[string]managerSource
-	defersConnect := func(sid string) bool {
+	// Each session id is probed once, through the object its manager runs, and
+	// waits for a lease before it connects only when that manager defers
+	// (session.Manager.DefersConnect); any other session's real connection
+	// state counts toward readiness. Before Start no manager exists yet, so the
+	// registration wiring will build it from answers instead (managerSources).
+	sources := rt.managerSourcesLocked()
+	snapshot := func(sid string) sessionSnap {
+		src := sources[sid]
+		snap := sessionSnap{sess: src.session, sid: sid, connectAfterLease: src.defersConnect(rt.leaseStore != nil)}
 		if mgr, ok := rt.sessionMgrs[sid]; ok {
-			return mgr.DefersConnect()
+			snap.connectAfterLease = mgr.DefersConnect()
+			_, snap.hasLease = mgr.Token()
 		}
-		if sources == nil {
-			sources = componentSet{entries: rt.entries, sessionSenders: rt.sessionSenders,
-				ingressSessions: rt.ingressSessions}.managerSources(rt.outboxStore != nil)
-		}
-		src, ok := sources[sid]
-		return ok && src.defersConnect(rt.leaseStore != nil)
+		return snap
 	}
 
 	sessSnaps := make([]sessionSnap, 0, len(rt.entries)+len(rt.sessionSenders)+len(rt.ingressSessions))
@@ -65,31 +64,23 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 			continue
 		}
 		seen[sid] = true
-		snap := sessionSnap{sess: e.session, sid: sid, connectAfterLease: defersConnect(sid)}
-		if mgr, ok := rt.sessionMgrs[sid]; ok {
-			_, snap.hasLease = mgr.Token()
-		}
-		sessSnaps = append(sessSnaps, snap)
+		sessSnaps = append(sessSnaps, snapshot(sid))
 	}
-	for sid, sse := range rt.sessionSenders {
+	for sid := range rt.sessionSenders {
 		if seen[sid] {
 			continue
 		}
 		seen[sid] = true
-		snap := sessionSnap{sess: sse.session, sid: sid, connectAfterLease: defersConnect(sid)}
-		if mgr, ok := rt.sessionMgrs[sid]; ok {
-			_, snap.hasLease = mgr.Token()
-		}
-		sessSnaps = append(sessSnaps, snap)
+		sessSnaps = append(sessSnaps, snapshot(sid))
 	}
-	// An ingress session never defers its connect and never holds a lease, so
-	// it is counted the way a plain single session is.
-	for sid, ise := range rt.ingressSessions {
+	// An ingress session's plain manager never defers its connect and never
+	// holds a lease, so it is counted the way a plain single session is.
+	for sid := range rt.ingressSessions {
 		if seen[sid] {
 			continue
 		}
 		seen[sid] = true
-		sessSnaps = append(sessSnaps, sessionSnap{sess: ise.session, sid: sid})
+		sessSnaps = append(sessSnaps, snapshot(sid))
 	}
 
 	routeSnaps := make([]routeSnap, 0, len(rt.entries))

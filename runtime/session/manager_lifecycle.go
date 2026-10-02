@@ -14,13 +14,19 @@ import (
 // The Manager's outward lifecycle and control surface: Run's mode dispatch, the
 // pre-Run setters, the lease-transition event channel, and Close.
 
-// Run starts the session and manages its lifecycle. For exclusive sessions,
-// it acquires the lease and runs the renewal loop. It blocks until ctx is
+// Run starts the session and manages its lifecycle. It blocks until ctx is
 // cancelled or an unrecoverable error occurs.
 //
-// When ConnectAfterLease is set, the session is not started until the
-// lease has been acquired, preventing premature broker connections that
-// would displace the current owner.
+// A session that takes part in lease-based failover (Exclusive: configured
+// exclusive AND the manager has a lease store) acquires the lease and runs the
+// renewal loop. Any other session, a non-exclusive one or one whose manager has
+// no lease store, starts, reconciles its plan and follows session events
+// without ever holding a lease.
+//
+// When the session takes part in failover and ConnectAfterLease is set
+// (DefersConnect), the session is not started until the lease has been
+// acquired, preventing premature broker connections that would displace the
+// current owner. ConnectAfterLease has no effect on any other session.
 func (m *Manager) Run(ctx context.Context) (retErr error) {
 	defer func() {
 		if retErr != nil && errors.Is(retErr, shared.ErrTransportClosedPermanently) && !errors.Is(retErr, ErrSessionUnrecoverable) {
