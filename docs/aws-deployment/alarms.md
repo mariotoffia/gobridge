@@ -84,7 +84,7 @@ means silence is health.
 | `HALeaseTransfers` | HA | `LeaseTransfers` (Sum) | `> 1` | not breaching | More than one takeover inside a single evaluation window — the signature of flapping, not of a single clean failover. |
 | `HADLQDepth` | HA | `DLQDepth` (Maximum) | `> 0` | not breaching | The DLQ has outstanding entries right now. Requires the [DLQ depth sampler](#the-dlq-depth-sampler). |
 | `HADLQEntries` | HA | `DLQEntries` (Sum) | `> 0` | not breaching | A message was dead-lettered. |
-| `HADLQWriteFailures` | HA | `DLQWriteFailures` (Sum) | `> 0` | not breaching | A DLQ write failed after retries, or was skipped with no held lease — evidence that should be durable is not. |
+| `HADLQWriteFailures` | HA | `DLQWriteFailures` (Sum) | `> 0` | not breaching | A DLQ write failed after retries, or, on a bridge with a lease store, was skipped because the exclusive session that owns it held no lease — evidence that should be durable is not. A bridge without a lease store never skips a write for want of a lease. |
 | `HAMQTTIngressPoisonDropped` | HA | `MQTTIngressPoisonDropped` (Sum) | `> 0` | not breaching | An inbound publish exceeded a local payload/property cap and was acked and dropped. Every count is acknowledged loss — see the [ingress-poison runbook](../runbooks/mqtt-ingress-poison.md). |
 | `HAReconcileFailures` | HA | `ReconcileFailures` (Sum) | `> 0` | not breaching | Subscription reconcile failed; a permanent SUBACK rejection flaps the whole session. |
 | `HAMQTTSessionTakeover` | HA | `MQTTSessionTakeover` (Sum) | `> 0` | not breaching | Another client connected with the same `client_id` — an identity collision, or a normal exclusive failover. |

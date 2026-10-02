@@ -18,9 +18,6 @@ import (
 // it as lease-managed made the instance a standby whose readiness is capped
 // below what /ready requires, and /ready answered 503 for good.
 func TestBuilder_LeaselessBindingSessionIsStandaloneAndReady(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
 	cfg := &ports.BridgeConfig{
 		Bridge:    ports.BridgeSettings{ID: "leaseless-binding"},
 		Stores:    ports.StoresConfig{DLQ: &ports.StoreConfig{Type: "memory"}},

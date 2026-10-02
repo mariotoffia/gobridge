@@ -42,6 +42,14 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   has a lease store. A non-exclusive session registered with
   `ConnectAfterLease` set connects at once, and its connection state now
   counts.
+- When a route's session block and a session sender register the same
+  session id, the session still has one manager, built from whichever
+  registration wiring reaches first. DLQ fencing and the deep-health
+  `ConnectAfterLease` flag now follow that manager, as the role already did,
+  instead of the other registration's settings. Before Start, deep health
+  reports what that manager will be. The new
+  `session.Manager.DefersConnect()` reports whether a manager waits for its
+  lease before it connects.
 - A `shared_outbox` route is now refused when an outbox drainer that route
   validation did not check before runs on a session that is not
   lease-managed (the bridge has no lease store, or the session is not

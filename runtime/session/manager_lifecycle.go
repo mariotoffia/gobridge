@@ -27,7 +27,7 @@ func (m *Manager) Run(ctx context.Context) (retErr error) {
 			retErr = fmt.Errorf("%w: %w", ErrSessionUnrecoverable, retErr)
 		}
 	}()
-	if m.exclusive && m.leaseStore != nil && m.connectAfterLease {
+	if m.DefersConnect() {
 		return m.runExclusiveDeferred(ctx)
 	}
 
@@ -131,6 +131,11 @@ func (m *Manager) Token() (persistence.LeaseToken, bool) {
 // Both fields are set once at construction and never mutate, so no lock is
 // needed.
 func (m *Manager) Exclusive() bool { return m.exclusive && m.leaseStore != nil }
+
+// DefersConnect reports whether Run starts the session only once the lease is
+// held: the session takes part in lease-based failover (Exclusive) and is
+// configured with ConnectAfterLease.
+func (m *Manager) DefersConnect() bool { return m.Exclusive() && m.connectAfterLease }
 
 // Close quiesces the source session and then releases a still-held lease, in
 // that order — the same close-before-release discipline every other

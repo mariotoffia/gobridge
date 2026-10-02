@@ -5,7 +5,6 @@ import (
 
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/route"
-	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // The DeepHealth read-side projection: the full snapshot driving adapters
@@ -35,11 +34,21 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 	healthy := rt.healthy
 	instanceID := rt.instanceID
 	role := rt.roleUnlocked()
-	// A session waits for a lease before it connects only under the condition
-	// session.Manager.Run defers on: exclusive, ConnectAfterLease, and a lease
-	// store. Any other session's real connection state counts toward readiness.
-	defersConnect := func(cfg session.Config) bool {
-		return rt.leaseStore != nil && cfg.Exclusive && cfg.ConnectAfterLease
+	// A session waits for a lease before it connects only when its manager
+	// defers (session.Manager.DefersConnect); any other session's real
+	// connection state counts toward readiness. Before Start no manager exists
+	// yet, so the registration wiring will build it from answers instead.
+	var sources map[string]managerSource
+	defersConnect := func(sid string) bool {
+		if mgr, ok := rt.sessionMgrs[sid]; ok {
+			return mgr.DefersConnect()
+		}
+		if sources == nil {
+			sources = componentSet{entries: rt.entries, sessionSenders: rt.sessionSenders,
+				ingressSessions: rt.ingressSessions}.managerSources(rt.outboxStore != nil)
+		}
+		src, ok := sources[sid]
+		return ok && src.defersConnect(rt.leaseStore != nil)
 	}
 
 	sessSnaps := make([]sessionSnap, 0, len(rt.entries)+len(rt.sessionSenders)+len(rt.ingressSessions))
@@ -56,7 +65,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 			continue
 		}
 		seen[sid] = true
-		snap := sessionSnap{sess: e.session, sid: sid, connectAfterLease: defersConnect(*e.sessCfg)}
+		snap := sessionSnap{sess: e.session, sid: sid, connectAfterLease: defersConnect(sid)}
 		if mgr, ok := rt.sessionMgrs[sid]; ok {
 			_, snap.hasLease = mgr.Token()
 		}
@@ -67,7 +76,7 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 			continue
 		}
 		seen[sid] = true
-		snap := sessionSnap{sess: sse.session, sid: sid, connectAfterLease: defersConnect(sse.config)}
+		snap := sessionSnap{sess: sse.session, sid: sid, connectAfterLease: defersConnect(sid)}
 		if mgr, ok := rt.sessionMgrs[sid]; ok {
 			_, snap.hasLease = mgr.Token()
 		}
