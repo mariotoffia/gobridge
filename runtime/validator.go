@@ -283,11 +283,12 @@ func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry,
 	}
 
 	// A binding whose session is a session sender here gets its own outbox
-	// drainer (wireRouteEntriesLocked), gated on that session's lease. Without a
-	// lease store nothing grants one, so that drainer skips every cycle and the
-	// records persisted for the binding never drain. A binding on the route's own
-	// primary session is drained by the route's drainer and checked above.
-	if hasOutboxStore && !hasLeaseStore {
+	// drainer (wireRouteEntriesLocked), gated on that session's lease. Only a
+	// lease-managed session — exclusive, in a runtime with a lease store — ever
+	// holds one; for any other the drainer skips every cycle and the records
+	// persisted for the binding never drain. A binding on the route's own primary
+	// session is drained by the route's drainer and checked above.
+	if hasOutboxStore {
 		primary := ""
 		if entry.session != nil && entry.sessCfg != nil {
 			primary = entry.sessCfg.SessionID
@@ -297,10 +298,18 @@ func validateSharedOutbox(ve *ValidationError, prefix string, entry *routeEntry,
 			if b.SessionID == "" || b.SessionID == primary || refused[b.SessionID] {
 				continue
 			}
-			if _, ok := senders[b.SessionID]; !ok {
+			sse, ok := senders[b.SessionID]
+			if !ok || (sse.config.Exclusive && hasLeaseStore) {
 				continue
 			}
 			refused[b.SessionID] = true
+			if !sse.config.Exclusive {
+				ve.add(prefix + fmt.Sprintf(
+					"shared_outbox invalid: binding session %q is non-exclusive; a non-exclusive "+
+						"session never acquires a lease, so its outbox drainer skips every cycle and "+
+						"persisted records never drain (make the session exclusive)", b.SessionID))
+				continue
+			}
 			ve.add(prefix + fmt.Sprintf(
 				"shared_outbox invalid: no LeaseStore configured for binding session %q; its "+
 					"outbox drainer waits for a lease that nothing grants, so persisted records "+

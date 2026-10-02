@@ -100,12 +100,11 @@ func TestLeaselessRuntime_RemovedSubscriptionOnBindingSessionIsDeadLettered(t *t
 	}
 }
 
-// A shared_outbox route whose binding names a session sender gets an outbox
-// drainer that waits for that session's lease. A runtime with no lease store
-// never grants one, so the drainer would skip every cycle while the source is
-// acknowledged after each persist: the runtime refuses the route instead.
-func TestLeaselessRuntime_SharedOutboxBindingSessionIsRefused(t *testing.T) {
-	rt := goruntime.New(goruntime.WithInstanceID("leaseless-outbox"), goruntime.WithOutboxStore(NewFakeOutboxStore()))
+// startOutboxBindingRoute starts rt with a shared_outbox route whose only
+// binding names "dst-session", registered as a session sender with sessCfg the
+// way the builder registers a binding's session, and returns Start's error.
+func startOutboxBindingRoute(t *testing.T, rt *goruntime.Runtime, sessCfg runsession.Config) error {
+	t.Helper()
 	sess, sender := NewFakeSession(), NewFakeSender()
 	cfg := goruntime.RouteConfig{
 		ID: "outbox-route",
@@ -120,23 +119,49 @@ func TestLeaselessRuntime_SharedOutboxBindingSessionIsRefused(t *testing.T) {
 	if err := rt.AddRoute(cfg, NewFakeReceiver(), sender, sess, nil); err != nil {
 		t.Fatalf("AddRoute: %v", err)
 	}
-	if err := rt.RegisterSessionSender(leaselessBindingSession("dst-session"), sess, sender); err != nil {
+	if err := rt.RegisterSessionSender(sessCfg, sess, sender); err != nil {
 		t.Fatalf("RegisterSessionSender: %v", err)
 	}
-
 	err := rt.Start(context.Background())
 	if err == nil {
-		_ = rt.Stop(context.Background())
-		t.Fatal("Start accepted a shared_outbox route whose binding session can never drain")
+		t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 	}
+	return err
+}
+
+// requireValidationErrors fails unless err is a *ValidationError carrying
+// exactly want.
+func requireValidationErrors(t *testing.T, err error, want []string) {
+	t.Helper()
 	var ve *goruntime.ValidationError
 	if !errors.As(err, &ve) {
 		t.Fatalf("Start error = %v, want a *ValidationError", err)
 	}
-	want := []string{`route "outbox-route": shared_outbox invalid: no LeaseStore configured for binding ` +
-		`session "dst-session"; its outbox drainer waits for a lease that nothing grants, so persisted ` +
-		`records never drain (a LeaseStore is required)`}
 	if got := ve.Errors(); !slices.Equal(got, want) {
 		t.Fatalf("validation errors = %q, want %q", got, want)
 	}
+}
+
+// A shared_outbox route whose binding names a session sender gets an outbox
+// drainer that waits for that session's lease. A runtime with no lease store
+// never grants one, so the drainer would skip every cycle while the source is
+// acknowledged after each persist: the runtime refuses the route instead.
+func TestLeaselessRuntime_SharedOutboxBindingSessionIsRefused(t *testing.T) {
+	rt := goruntime.New(goruntime.WithInstanceID("leaseless-outbox"), goruntime.WithOutboxStore(NewFakeOutboxStore()))
+	err := startOutboxBindingRoute(t, rt, leaselessBindingSession("dst-session"))
+	requireValidationErrors(t, err, []string{`route "outbox-route": shared_outbox invalid: no LeaseStore ` +
+		`configured for binding session "dst-session"; its outbox drainer waits for a lease that nothing ` +
+		`grants, so persisted records never drain (a LeaseStore is required)`})
+}
+
+// A non-exclusive session never acquires a lease even when the runtime has a
+// lease store, so the drainer a shared_outbox binding gets on it would skip every
+// cycle: the runtime refuses the route.
+func TestSharedOutbox_NonExclusiveBindingSessionIsRefused(t *testing.T) {
+	rt := goruntime.New(goruntime.WithInstanceID("non-exclusive-outbox"),
+		goruntime.WithOutboxStore(NewFakeOutboxStore()), goruntime.WithLeaseStore(NewFakeLeaseStore()))
+	err := startOutboxBindingRoute(t, rt, runsession.Config{SessionID: "dst-session"})
+	requireValidationErrors(t, err, []string{`route "outbox-route": shared_outbox invalid: binding session ` +
+		`"dst-session" is non-exclusive; a non-exclusive session never acquires a lease, so its outbox ` +
+		`drainer skips every cycle and persisted records never drain (make the session exclusive)`})
 }

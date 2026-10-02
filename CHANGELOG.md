@@ -42,10 +42,11 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   has a lease store. A non-exclusive session registered with
   `ConnectAfterLease` set connects at once, and its connection state now
   counts.
-- A `shared_outbox` route is now refused when the bridge has no lease store
-  and one of its bindings names a session that gets its own outbox drainer.
-  That drainer waits for a lease nothing can grant, so records persisted for
-  the binding were never sent while their sources were acknowledged.
+- A `shared_outbox` route is now refused when one of its bindings names a
+  session that gets its own outbox drainer but is not lease-managed: the
+  bridge has no lease store, or the session is not exclusive. That drainer
+  waits for a lease nothing can grant, so records persisted for the binding
+  were never sent while their sources were acknowledged.
 
 ## [0.5.1] - 2026-10-01
 
