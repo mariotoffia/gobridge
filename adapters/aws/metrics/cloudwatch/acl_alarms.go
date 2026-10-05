@@ -25,14 +25,15 @@ const (
 // (TESTS.md §3.1 / .go-arch-lint.yml).
 const metricSQSVisibilityExtensions = "SQSVisibilityExtensions"
 
-// The MQTT transport's operational counters, mirrored for the same reason: this
+// The MQTT transport's operational metrics, mirrored for the same reason: this
 // module must not import a sibling adapter. The shipped CDK alarm bundle alarms
-// on all three DIMENSIONLESS, and the adapter emits each one tagged with the
+// on all four DIMENSIONLESS, and the adapter emits each one tagged with the
 // session, so without a rollup copy those alarms can never match a series.
 const (
 	metricMQTTIngressPoisonDropped = "MQTTIngressPoisonDropped"
 	metricMQTTSessionTakeover      = "MQTTSessionTakeover"
 	metricMQTTQoSDowngraded        = "MQTTQoSDowngraded"
+	metricMQTTQoSDowngradedActive  = "MQTTQoSDowngradedActive"
 )
 
 // AlarmDefinition describes a CloudWatch alarm that EnsureAlarms will create.
@@ -110,16 +111,17 @@ func DefaultRollupMetrics() []string {
 		shared.MetricClusterRolloutDiverged,
 		shared.MetricClusterRolloutTerminal,
 		shared.MetricClusterRolloutObservationAge,
-		// The MQTT operational counters the CDK bundle alarms on, and the session
+		// The MQTT operational metrics the CDK bundle alarms on, and the session
 		// reconcile failure beside them. Each is emitted per session_id, so the
 		// dimensionless alarms the bundle provisions had nothing to match: they sat
 		// at INSUFFICIENT_DATA rather than reporting an acked-and-dropped poison
-		// packet, a client-id collision, a broker QoS cap, or a subscription
-		// reconcile that never converges.
+		// packet, a client-id collision, a broker QoS cap — new or still standing —
+		// or a subscription reconcile that never converges.
 		metricMQTTIngressPoisonDropped,
 		shared.MetricReconcileFailures,
 		metricMQTTSessionTakeover,
 		metricMQTTQoSDowngraded,
+		metricMQTTQoSDowngradedActive,
 	}
 }
 

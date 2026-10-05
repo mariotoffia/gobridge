@@ -78,6 +78,18 @@ same document passes on AWS and elsewhere.
   one MQTT session changes no other session, so the in-place reload replaces
   only that session's reload unit and the other MQTT sessions stay connected.
 
+### Fixed — the AWS runtime no longer marks a bridge with no links degraded
+
+- The AWS runtime's start-up convergence check required every configuration
+  to reach `subscribed`, but a bridge with no sessions and no routes is capped
+  at `running` (#105). One minute after every start of such a bridge it logged
+  "reload applied but NOT converged", recorded `ConfigDegraded` 1 and showed
+  `config_watch.degraded` in deep health, so a `ConfigDegraded` alarm fired on
+  every new deployment until the first link was added. The check now uses the
+  same rule as the core supervisor, exported as `bridge.RuntimeConverged`: an
+  empty bridge counts as converged once it is running and healthy. Deep health
+  still answers `503` for an empty bridge, as before.
+
 ### Fixed — a removed subscription's dead-letter records are counted in `DLQEntries`
 
 - A delivery that a persistent MQTT session dead-letters for a filter a
@@ -89,6 +101,20 @@ same document passes on AWS and elsewhere.
   receives through the session. A failed or refused write counts none, as
   before. These deliveries never reached a route, so the route conservation
   law leaves the category out.
+
+### Fixed — a standing MQTT QoS downgrade raises an alarm
+
+- The MQTT session wrote `MQTTQoSDowngradedActive` only when the count changed
+  and when something called `Session.Health`. Nothing re-wrote it on a timer,
+  so a standing downgrade could stop producing samples and an alarm on the
+  gauge could not stay raised (#66). The session now re-writes it every 30 s
+  while it is above zero, and stops once it reaches zero.
+- `DefaultRollupMetrics()` includes `MQTTQoSDowngradedActive`, so a
+  dimensionless alarm can match it.
+- The CDK alarm bundle provisions `HAMQTTQoSDowngradedActive` on HA
+  deployments: `Maximum > 0`, with missing data not breaching. It stays raised
+  while a downgrade stands and clears once the gauge stops arriving.
+- The docs no longer say a health sweep writes the gauge.
 
 ## [0.5.2] - 2026-10-02
 

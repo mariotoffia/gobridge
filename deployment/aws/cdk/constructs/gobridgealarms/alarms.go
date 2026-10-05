@@ -357,6 +357,13 @@ func NewGoBridgeAlarms(scope constructs.Construct, id *string, props *AlarmsProp
 			"Sum", jsii.Number(0), period, evals, topicAction,
 			awscloudwatch.TreatMissingData_NOT_BREACHING,
 			"GoBridge MQTT broker granted a lower QoS than requested; delivery guarantees are weaker than configured.")
+		// The counter above fires once per downgrade; this gauge stays above zero
+		// while one stands. The session re-writes it every 30 s while above zero
+		// and stops at zero, so missing data is the healthy state.
+		g.mqttQoSDowngradedActive = newRollupAlarm(c, "HAMQTTQoSDowngradedActive", ns, metricMQTTQoSDowngradedActive,
+			"Maximum", jsii.Number(0), period, evals, topicAction,
+			awscloudwatch.TreatMissingData_NOT_BREACHING,
+			"GoBridge MQTT subscriptions still run below their requested QoS as best effort.")
 
 	}
 

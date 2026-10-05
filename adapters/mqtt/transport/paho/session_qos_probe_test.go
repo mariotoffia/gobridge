@@ -79,8 +79,11 @@ func TestQoSDowngrade_RecheckStillLower_ChangesNothing(t *testing.T) {
 		})
 		d, _ := downgradeState(s, "sensors/x")
 		require.True(t, d.accepted())
-		// Health is never called here, so every sample is an on-change write.
-		require.Len(t, rec.FindEntries(MetricMQTTQoSDowngradedActive), 1, "an unchanged count writes no sample")
+		// The periodic re-write repeats the standing count, so the samples can
+		// only prove the count never moved.
+		for _, sample := range rec.FindEntries(MetricMQTTQoSDowngradedActive) {
+			require.Equal(t, float64(1), sample.FValue, "an unchanged count writes no other value")
+		}
 		requireGauge(t, rec, "downgrade-still", 1)
 		require.Equal(t, 1, logs.messageCountContaining(slog.LevelError, "best effort"))
 		require.Len(t, rec.FindEntries(MetricMQTTQoSDowngraded), 1)

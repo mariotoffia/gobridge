@@ -277,12 +277,15 @@ type Session struct {
 	qosDowngrades map[string]*qosDowngrade
 	// qosDowngradeGauge is the MQTTQoSDowngradedActive value last emitted on a
 	// change, so a state change writes the gauge only when the number of
-	// accepted downgrades moved (Health re-emits it on every sweep regardless).
-	// Guarded by mu.
+	// accepted downgrades moved; the periodic re-write repeats it while it is
+	// above zero, and Health writes its own count on every call. Guarded by mu.
 	qosDowngradeGauge int
 	// qosProbeCancel cancels the scheduled confirmation / re-check probe; each
 	// arming replaces it. Guarded by mu.
 	qosProbeCancel context.CancelFunc
+	// qosGaugeCancel stops the periodic MQTTQoSDowngradedActive re-write; set
+	// exactly while qosDowngradeGauge is above zero. Guarded by mu.
+	qosGaugeCancel context.CancelFunc
 
 	// connectErr latches the mapped cause of the most recent failed CONNECT and
 	// is cleared when a connection comes up. MQTT authenticates only at CONNECT

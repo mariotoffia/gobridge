@@ -118,10 +118,11 @@ type GoBridgeAlarms struct {
 	dlqDepth               awscloudwatch.IAlarm
 	dlqWriteFailures       awscloudwatch.IAlarm
 
-	mqttIngressPoison   awscloudwatch.IAlarm
-	reconcileFailures   awscloudwatch.IAlarm
-	mqttSessionTakeover awscloudwatch.IAlarm
-	mqttQoSDowngraded   awscloudwatch.IAlarm
+	mqttIngressPoison       awscloudwatch.IAlarm
+	reconcileFailures       awscloudwatch.IAlarm
+	mqttSessionTakeover     awscloudwatch.IAlarm
+	mqttQoSDowngraded       awscloudwatch.IAlarm
+	mqttQoSDowngradedActive awscloudwatch.IAlarm
 
 	clusterRolloutDiverged       awscloudwatch.IAlarm
 	clusterRolloutTerminal       awscloudwatch.IAlarm
@@ -150,11 +151,12 @@ const (
 	metricDLQWriteFailures     = "DLQWriteFailures"
 	// MQTT rollup metric names (mirror adapters/mqtt/.../metrics.go). Kept as
 	// literals because the CDK constructs must not depend on an adapter module.
-	// The MQTT docs instruct operators to alert on all four.
+	// The MQTT docs instruct operators to alert on all five.
 	metricMQTTIngressPoisonDropped = "MQTTIngressPoisonDropped"
 	metricReconcileFailures        = "ReconcileFailures"
 	metricMQTTSessionTakeover      = "MQTTSessionTakeover"
 	metricMQTTQoSDowngraded        = "MQTTQoSDowngraded"
+	metricMQTTQoSDowngradedActive  = "MQTTQoSDowngradedActive"
 )
 
 // FailureToFullMetricName is emitted only by the credentialed external failover probe.
