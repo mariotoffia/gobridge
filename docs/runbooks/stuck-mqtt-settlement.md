@@ -91,6 +91,8 @@ the gauges publish, without waiting for a metrics flush.
    replacement reconcile succeeds. A readiness that never returns means recovery
    is failing — check for `MQTTSessionResumeLost` (the broker had no session to
    resume, so recovery cannot complete) and for a terminal session error.
+   `SessionRebuilds` advancing for the session means the bridge is rebuilding it
+   after such an error (see the action for case 5).
 
 6. **`MQTTAckAfterReconnect` non-zero.** Settlements whose protocol ack could not
    reach the broker. Each count is a guaranteed redelivery. It explains
@@ -116,11 +118,25 @@ the gauges publish, without waiting for a metrics flush.
   dedup, that burst reaches the destination. If the route cannot be made
   idempotent, move it to `shared_outbox` so the outbox identity absorbs
   redelivery.
-- **Recovery not completing (case 5).** A session whose recovery fails terminally
-  is not restartable in place: it latches a permanent error and escalates for
-  orchestrator replacement. Replace the task. Verify
-  `session_expiry_interval` exceeds the outage window, or the broker will keep
-  answering `Session Present=false` and recovery will keep failing.
+- **Recovery not completing (case 5).** A session whose recovery fails latches
+  a permanent error, and that session instance never starts again. Under the
+  Supervisor (`cmd/gobridge`) or the AWS runtime the bridge rebuilds the
+  session's reload unit in place after a backoff (1 s, doubling to 30 s): the
+  unit's routes stop, the failed session closes, and a fresh session connects.
+  Every other unit keeps running, so do not replace the task
+  ([ADR 0020](../adr/0020-contain-unrecoverable-session-by-unit-rebuild.md)).
+  Watch:
+  - `SessionRebuilds` (tagged `session_id`): one count per rebuild;
+  - deep health: the session reads `ready: false` with `service_level: none`
+    until the rebuild replaces it, and readiness counts it as not ready.
+
+  The process still restarts — replace the task if nothing restarts it — when
+  the runtime has no rebuild handler, when the failed session's close did not
+  complete, or when the rebuild fails or leaves the session failed. A
+  `SessionRebuilds` rate that keeps climbing means every fresh session fails the
+  same way. Verify `session_expiry_interval` exceeds the outage window, or the
+  broker will keep answering `Session Present=false` and recovery will keep
+  failing.
 
 ### What NOT to do
 

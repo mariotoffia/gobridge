@@ -133,6 +133,60 @@ same document passes on AWS and elsewhere.
   - `GoBridgeSingle.ConfigTable()` returns the DynamoDB config table, or nil
     for file config.
 
+### Changed — one failed session no longer stops the process
+
+- **Behaviour change, on by default** (#96). A session that fails in a way a
+  fresh session clears no longer makes the runtime terminal. The Supervisor
+  (`cmd/gobridge`) and the AWS runtime (`deployment/aws`) rebuild the one
+  reload unit that holds the session inside the running runtime: the unit's
+  routes stop and the failed session closes, then a freshly built copy
+  connects
+  ([ADR 0020](docs/adr/0020-contain-unrecoverable-session-by-unit-rebuild.md)).
+  Every other unit keeps running. Before, the process exited, every route in it
+  stopped, and the orchestrator restarted it.
+- It covers MQTT sessions that fail closed: ingress that does not quiesce
+  within `reconcile_timeout` after managed-subscription cleanup removed a
+  filter, a settlement recovery that fails, and a packet the pre-decode guard
+  rejects (malformed, or above the advertised Maximum Packet Size). It also
+  covers a single-use exclusive session that wins its lease back after an
+  ordinary step-down: it now gets a fresh session in the process instead of a
+  process restart.
+- The rebuild waits a per-session backoff first: 1 s, doubling to 30 s, with
+  jitter, and back to 1 s after a run that stayed up 30 s. It runs under the
+  same lock as a configuration reload, so the two never overlap, and it does
+  nothing when a reload or a stop got there first. It is not a reload: the
+  applied configuration does not change, and it records no reload metrics,
+  emits no `SwapEvent` and starts no convergence watch.
+- While the session is failed, deep health reports it `ready: false` with
+  `service_level: none`, and readiness counts it as not ready, also for an
+  exclusive session that waits for its lease before it connects.
+- The process still restarts (ADR 0004) when work of the old session may still
+  run or its close did not complete, after a step-down because the broker path
+  stayed non-converged, when the unit may attach an HTTP endpoint, when the
+  rebuild leaves the session failed, or when the unit does not stop cleanly. A
+  runtime built without a handler behaves as before. A restart policy is still
+  required.
+- Known risk: a session that keeps failing — for example behind a broker that
+  keeps sending a malformed packet — is rebuilt again and again, at most 30 s
+  apart, and can keep its lease meanwhile. Alert on the `SessionRebuilds` rate.
+- The transport side is unchanged: these sessions still fail closed, and a
+  settlement recovery that fails after a successful drain still closes the
+  session.
+
+### Added — `SessionRebuilds` and the session-unrecoverable handler
+
+- New metric `SessionRebuilds` (`shared.MetricSessionRebuilds`), tagged
+  `session_id`: one count each time a failed session is handed to a rebuild,
+  counted before the rebuild runs. See
+  [Key Metrics](docs/aws-deployment/monitoring.md#key-metrics).
+- New API: `runtime.WithSessionUnrecoverableHandler`,
+  `bridge.WithSessionUnrecoverableHandler`, `bridge.PlanSessionRebuild`,
+  `(*runtime.Runtime).SessionUnrecoverable` and
+  `session.ErrProcessRestartRequired`, which marks an
+  `ErrSessionUnrecoverable` that a rebuild must not answer. The handler runs on
+  the session's supervisor goroutine: it must not block, and it hands the
+  rebuild to a goroutine of its own.
+
 ## [0.5.2] - 2026-10-02
 
 A runtime without a lease store no longer treats any session as lease-managed.

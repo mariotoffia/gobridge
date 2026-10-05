@@ -217,11 +217,15 @@ wedged.
 
 **A restart policy is required — the process is designed to exit and be
 restarted.** GoBridge follows a let-it-exit recovery model: several paths end by
-*exiting non-zero on purpose* rather than wedging in place. The clearest is a
-single-use exclusive session that steps down from its lease and cannot reacquire
-it — it reaches a terminal state and the process exits (recovery leg 5; see
-[ADR 0004](adr/0004-single-use-runtime-lifecycle.md) and the Scenario 8 backstop
-note). This is safe **only** when something restarts the process so it can
+*exiting non-zero on purpose* rather than wedging in place. One is a single-use
+exclusive session that steps down because its broker path stayed non-converged,
+or whose source close did not complete — it reaches a terminal state and the
+process exits (see [ADR 0004](adr/0004-single-use-runtime-lifecycle.md) and the
+Scenario 8 backstop note). A session that fails in a way a fresh session clears
+— for example, one that wins its lease back after an ordinary step-down — no
+longer exits under the Supervisor or the AWS runtime: its reload unit is rebuilt
+in place ([ADR 0020](adr/0020-contain-unrecoverable-session-by-unit-rebuild.md)).
+The exit is safe **only** when something restarts the process so it can
 re-elect or reconnect. Kubernetes Pods (`restartPolicy` defaults to `Always`)
 and ECS services restart automatically, but a **bare `docker run` without
 `--restart` stays down** after such an exit. For any long-lived container
