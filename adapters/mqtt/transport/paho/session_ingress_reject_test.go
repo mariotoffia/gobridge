@@ -2,6 +2,7 @@ package paho
 
 import (
 	"context"
+	"io"
 	"testing"
 	"time"
 
@@ -87,6 +88,29 @@ func TestSessionIngressReject_RejectDoesNotLatchSessionTerminal(t *testing.T) {
 	eventsClosed := s.eventsClosed
 	s.mu.Unlock()
 	assert.False(t, eventsClosed, "the session keeps its lifecycle events open across a reject")
+}
+
+func TestSessionGuardIngress_MalformedPacketSendsDisconnectAndKeepsSessionAlive(t *testing.T) {
+	s, _, rec := newIngressRejectTestSession(t)
+	malformed := testPublishPacketWithPacketID(1, "guard/zero-packet-id", 0, nil, []byte("payload"))
+	underlying := newTestNetConn(malformed, len(malformed))
+
+	guarded, err := s.guardIngress(underlying)
+	require.NoError(t, err)
+	_, readErr := io.ReadAll(guarded)
+
+	var ingressErr *mqttIngressError
+	require.ErrorAs(t, readErr, &ingressErr)
+	assert.Equal(t, mqttIngressMalformed, ingressErr.kind)
+	assert.Equal(t, []byte{0xE0, 0x02, 0x81, 0x00}, underlying.Written(),
+		"the broker is told the packet was malformed before the connection drops")
+	assert.Equal(t, 1, underlying.CloseCount())
+
+	s.mu.Lock()
+	terminalErr := s.terminalErr
+	s.mu.Unlock()
+	assert.NoError(t, terminalErr, "a pre-decode reject must not latch the session terminal")
+	assert.Len(t, rec.FindEntries(MetricMQTTIngressRejected), 1)
 }
 
 func TestSessionIngressReject_HealthNotReadyUntilReplacementConnectionStable(t *testing.T) {

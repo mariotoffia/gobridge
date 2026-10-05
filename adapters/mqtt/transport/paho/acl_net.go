@@ -3,6 +3,7 @@ package paho
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -25,7 +26,9 @@ import (
 // attemptGuardedConnection establishes the decrypted MQTT byte stream and
 // installs the adapter-owned ingress guard before autopaho creates a Paho
 // client. Reconnect attempts use the same boundary because autopaho invokes
-// AttemptConnection for every connection generation.
+// AttemptConnection for every connection generation. The guard is returned
+// unwrapped: it is the sync.Locker Paho serialises its packet writes through,
+// so a reject can write a DISCONNECT without interleaving with a Paho packet.
 func (s *Session) attemptGuardedConnection(
 	ctx context.Context,
 	cfg autopaho.ClientConfig,
@@ -41,7 +44,24 @@ func (s *Session) attemptGuardedConnection(
 		_ = raw.Close()
 		return nil, err
 	}
-	return packets.NewThreadSafeConn(guarded), nil
+	return guarded, nil
+}
+
+// disconnectReasonFor maps a pre-decode reject to the MQTT v5 DISCONNECT
+// reason code (§3.14.2.1) the guard sends before it closes the connection.
+func disconnectReasonFor(err error) byte {
+	var ingressErr *mqttIngressError
+	if errors.As(err, &ingressErr) && ingressErr.kind == mqttIngressPacketTooLarge {
+		return packets.DisconnectPacketTooLarge
+	}
+	return packets.DisconnectMalformedPacket
+}
+
+// writeMQTTDisconnect writes an MQTT v5 DISCONNECT with the reason code and
+// no properties to w. The write is best effort: the connection is closed next
+// either way.
+func writeMQTTDisconnect(w io.Writer, reason byte) {
+	_, _ = (&packets.Disconnect{ReasonCode: reason}).WriteTo(w)
 }
 
 // guardIngress wraps one decrypted broker byte stream in the predecode ingress

@@ -335,6 +335,50 @@ func TestMQTTIngressConn_CompleteMalformedFramesPoisonExactlyOnce(t *testing.T) 
 			assert.Same(t, firstErr, secondErr)
 			assert.Equal(t, 1, poisonCount)
 			assert.Equal(t, 1, underlying.CloseCount())
+			assert.Equal(t, []byte{0xE0, 0x02, 0x81, 0x00}, underlying.Written(),
+				"the DISCONNECT is written once, by the read that rejected the frame")
+		})
+	}
+}
+
+func TestMQTTIngressConn_RejectSendsDisconnectWithReasonBeforeClose(t *testing.T) {
+	tooLarge := testPublishPacket(0, "guard/max-packet", nil, bytes.Repeat([]byte{'p'}, 64))
+	tests := []struct {
+		name              string
+		wire              []byte
+		maximumPacketSize uint32
+		kind              mqttIngressErrorKind
+		disconnect        []byte
+	}{
+		{
+			name:              "packet larger than the advertised maximum",
+			wire:              tooLarge,
+			maximumPacketSize: uint32(len(tooLarge) - 1),
+			kind:              mqttIngressPacketTooLarge,
+			disconnect:        []byte{0xE0, 0x02, 0x95, 0x00},
+		},
+		{
+			name:              "malformed packet",
+			wire:              []byte{0x36, 0x00},
+			maximumPacketSize: 1 << 20,
+			kind:              mqttIngressMalformed,
+			disconnect:        []byte{0xE0, 0x02, 0x81, 0x00},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			underlying := newTestNetConn(test.wire, len(test.wire))
+			guarded := newMQTTIngressConn(underlying, test.maximumPacketSize, nil)
+
+			_, err := io.ReadAll(guarded)
+			var ingressErr *mqttIngressError
+			require.ErrorAs(t, err, &ingressErr)
+			assert.Equal(t, test.kind, ingressErr.kind)
+			assert.Equal(t, test.disconnect, underlying.Written())
+			assert.False(t, underlying.WriteDeadline().IsZero(),
+				"the DISCONNECT write is bounded by a deadline")
+			assert.Equal(t, 1, underlying.CloseCount())
 		})
 	}
 }
@@ -354,6 +398,21 @@ func TestMQTTIngressConn_MaximumPacketSizeRejectsBeforeBodyRead(t *testing.T) {
 	require.ErrorAs(t, err, &ingressErr)
 	assert.Equal(t, mqttIngressPacketTooLarge, ingressErr.kind)
 	assert.Greater(t, underlying.UnreadBytes(), 0, "body must not be read or allocated after oversized Remaining Length")
+}
+
+func TestMQTTIngressConn_RejectClosesWithoutWritingWhileAWriteIsInProgress(t *testing.T) {
+	underlying := newTestNetConn([]byte{0x36, 0x00}, 2)
+	guarded := newMQTTIngressConn(underlying, 1<<20, nil)
+	guarded.Lock()
+
+	_, err := io.ReadAll(guarded)
+	var ingressErr *mqttIngressError
+	require.ErrorAs(t, err, &ingressErr)
+	assert.Empty(t, underlying.Written(), "a DISCONNECT must not interleave with a packet write in progress")
+	assert.True(t, underlying.WriteDeadline().IsZero())
+	assert.Equal(t, 1, underlying.CloseCount())
+
+	guarded.Unlock()
 }
 
 func TestMQTTIngressConn_DelegatesWritesAddressesAndDeadlines(t *testing.T) {
