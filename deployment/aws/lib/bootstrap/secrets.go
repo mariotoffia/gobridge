@@ -187,6 +187,9 @@ type resolvedInputs struct {
 	RuntimeConfig *ports.BridgeConfig
 }
 
+// resolveInputs resolves what applying logical takes from outside the
+// document — the control-plane keys and the secrets it references — into the
+// runtime config.
 func resolveInputs(
 	ctx context.Context,
 	resolver parameterResolver,

@@ -206,10 +206,10 @@ func (r *router) settlePending(countRetained bool) {
 	// Re-lock and remove ONLY the orphan entries still present, keeping every
 	// covered entry IN PLACE (not take-all-then-rebuffer, which would strand a
 	// covered publish behind a concurrent RegisterFiltered whose
-	// takePendingLocked already ran). Subtract only the dropped bytes. Count a
-	// retention only for a covered entry STILL pending after the re-lock, and
-	// only ONCE per entry (retainCounted latches it) so a post-grace
-	// retainCovered dispatch or a second grace window does not double-count.
+	// takePendingLocked already ran). Count a retention only for a covered
+	// entry STILL pending after the re-lock, and only ONCE per entry
+	// (retainCounted latches it) so a post-grace retainCovered dispatch or a
+	// second grace window does not double-count.
 	r.mu.Lock()
 	kept := r.pending[:0]
 	var dropped []pendingPublish
@@ -218,7 +218,6 @@ func (r *router) settlePending(countRetained bool) {
 		p := r.pending[i]
 		if _, isOrphan := orphan[p.pub]; isOrphan {
 			dropped = append(dropped, p)
-			r.pendingBytes -= pubBytes(p.pub)
 			continue
 		}
 		if countRetained && !p.retainCounted {
@@ -374,7 +373,7 @@ func (r *router) retainCovered(pub *pahov5.Publish, ack func() error) {
 	// Covered QoS 0 the buffer cannot hold: best-effort drop (no redelivery
 	// contract). Counted on the covered-drop metric for visibility. The
 	// reservation MUST be returned here: this branch is reachable on every
-	// byte-ceiling refusal, so holding it would retire one unit of the shared
+	// entry-cap refusal, so holding it would retire one unit of the shared
 	// dispatch budget per drop until nothing could be admitted at all.
 	r.releaseQueueReservation(pub)
 	r.coveredDropped.Add(1)

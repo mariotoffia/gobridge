@@ -62,9 +62,9 @@ the gauges publish, without waiting for a metrics flush.
    utilization near `1.0` means `receive_maximum`, not the network, is the
    throughput limit: `max sustained msg/s ≈ receive_maximum / settlement latency`
    ([MQTT behaviour](../transports/mqtt-behavior.md)). Raise `receive_maximum`
-   or route `max_in_flight` within the validated
-   [ingress byte model](../transports/mqtt-options.md#ingress-byte-model), or
-   reduce settlement latency.
+   or route `max_in_flight` (both are counts; see
+   [ingress limits are counts](../transports/mqtt-options.md#ingress-limits-are-counts)),
+   or reduce settlement latency.
 
 3. **`MQTTReceiverEmitRejected` non-zero.** The route pipeline refused a delivery
    at emit — a shutting-down or wedged route runner, not a slow one. Read the
@@ -103,9 +103,9 @@ the gauges publish, without waiting for a metrics flush.
   raise `receive_maximum` to mask it — a wider window over the same slow
   downstream holds more messages un-acked and lengthens every recycle.
 - **Ceiling reached (case 2).** Raise `receive_maximum` and/or route
-  `max_in_flight`, re-validating against `ingress_memory_budget_bytes`. The
-  builder rejects a window the budget cannot hold, so an oversized change fails
-  at load rather than at runtime.
+  `max_in_flight`. GoBridge does not estimate memory, so watch the process
+  memory under load after the change; a wider window holds more messages at
+  once.
 - **Wedged route (case 3).** Restart the process that owns the session. QoS 1/2
   on a Persistent or Exclusive session is redelivered on resume; QoS 0 and
   Ephemeral QoS 1/2 in flight are lost, which is the loss the `outcome=lost`

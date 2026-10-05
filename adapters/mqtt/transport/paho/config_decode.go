@@ -13,7 +13,7 @@ import (
 func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	opts := DefaultSessionOptions()
 	if m == nil {
-		return opts.normalizedIngressMemory(), nil
+		return opts.withIngressDefaults(), nil
 	}
 
 	switch v := m["broker_urls"].(type) {
@@ -110,18 +110,11 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 		return opts, err
 	} else if exists {
 		opts.ReceiveMaximum = uint16(value)
-		opts.receiveMaximumExplicit = value != 0
 	}
 	if value, exists, err := optUint64(m, "max_payload_bytes", math.MaxUint32); err != nil {
 		return opts, err
 	} else if exists {
 		opts.MaxPayloadBytes = uint32(value)
-	}
-	if value, exists, err := optUint64(m, "ingress_memory_budget_bytes", math.MaxUint64); err != nil {
-		return opts, err
-	} else if exists {
-		opts.IngressMemoryBudgetBytes = value
-		opts.ingressMemoryBudgetExplicit = value != 0
 	}
 	if v, ok := m["username"].(string); ok {
 		opts.Username = v
@@ -155,7 +148,7 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 		return opts, err
 	}
 
-	return opts.normalizedIngressMemory(), nil
+	return opts.withIngressDefaults(), nil
 }
 
 // willOptionsFromMap extracts WillOptions from a generic options map.

@@ -646,6 +646,10 @@ func validateBridgeFields(ve *ValidationError, cfg *ports.BridgeConfig) {
 		}
 	}
 
+	if cfg.Bridge.MaxMQTTSessions < 0 {
+		ve.Addf("bridge.max_mqtt_sessions: must not be negative, got %d", cfg.Bridge.MaxMQTTSessions)
+	}
+
 	if cfg.Bridge.ShutdownTimeout != "" {
 		if d, err := time.ParseDuration(cfg.Bridge.ShutdownTimeout); err != nil {
 			ve.Addf("bridge.shutdown_timeout: invalid duration %q: %v", cfg.Bridge.ShutdownTimeout, err)

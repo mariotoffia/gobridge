@@ -112,7 +112,7 @@ long-running test without the tag is a CI accident.
 - Locally: `make test-long-running` (uncached, 10 800 s timeout, requires
   Docker, writes `reports/test-long-running.log`).
 - The release subset: `make test-release-gate` runs only the proofs a release is
-  gated on, selected by exact test name, and then the finite-cgroup proof. The
+  gated on, selected by exact test name. The
   names live in `RELEASE_LONGRUNNING_TESTS` in the Makefile and are pinned
   against the suite by `tests/docsexamples`, because `go test -run` treats a
   pattern that matches nothing as success — a renamed proof would otherwise drop
@@ -132,22 +132,15 @@ long-running test without the tag is a CI accident.
   test job and again in `make lint`), because the module has no default-tag
   packages: every ordinary module walk lists nothing for it and skips it, so a
   refactor could break every production proof in it while the branch stayed
-  green. `tests/docsexamples` pins that the lint target still does this. That includes the two
-  bounded single-test proofs, which are developer-machine runs like the rest:
-  Both bounded proofs are part of that single target, not separate ones:
+  green. `tests/docsexamples` pins that the lint target still does this. That
+  includes the bounded single-test proof, which is a developer-machine run like
+  the rest:
   - `TestUC3SeparateProcessFailover` runs two real bridge processes against a
     real broker and DynamoDB, kills the lease owner, and asserts the standby
     recovers. It is picked up by the suite like any other test.
-  - `TestMQTTIngressMemory` and `TestMQTTIngressMemoryPropertyFlood` are
-    re-run by `make test-long-running` inside a container with an enforced
-    512 MiB cgroup. They cannot assert anything without a real memory bound —
-    run through the ordinary suite they detect no limit and skip themselves —
-    so the harness is the test, not a convenience.
-    `GOBRIDGE_REQUIRE_MEMORY_LIMIT=1` makes an absent limit fail instead of
-    skip; Darwin retains the explicit skip.
 
-  Run both before merging anything that touches clustering, leases, outbox
-  draining or MQTT ingress: CI cannot catch a regression in them.
+  Run it before merging anything that touches clustering, leases or outbox
+  draining: CI cannot catch a regression in it.
 - Never run inside `make test` or `make test-integration` — Makefile
   excludes `tests/longrunning/` explicitly.
 

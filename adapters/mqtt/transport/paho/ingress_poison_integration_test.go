@@ -26,7 +26,7 @@ func TestMQTTIngressPoison_RealBrokerPropertyAmplificationAckDroppedWithoutTermi
 	if testing.Short() {
 		t.Skip("integration test requires a real local MQTT broker")
 	}
-	const topic = "ingress-memory/predecode-property-amplification"
+	const topic = "ingress-poison/predecode-property-amplification"
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	t.Cleanup(cancel)
 
@@ -37,14 +37,13 @@ func TestMQTTIngressPoison_RealBrokerPropertyAmplificationAckDroppedWithoutTermi
 	t.Cleanup(broker.Stop)
 
 	source := NewSession(SessionOptions{
-		BrokerURLs:               []string{broker.URL()},
-		ClientID:                 mqttlocal.UniqueClientID("ingress-predecode-source"),
-		ConnectTimeout:           10 * time.Second,
-		KeepAlive:                30,
-		CleanStart:               true,
-		ReceiveMaximum:           4,
-		MaxPayloadBytes:          16,
-		IngressMemoryBudgetBytes: DefaultIngressMemoryBudgetBytes,
+		BrokerURLs:      []string{broker.URL()},
+		ClientID:        mqttlocal.UniqueClientID("ingress-predecode-source"),
+		ConnectTimeout:  10 * time.Second,
+		KeepAlive:       30,
+		CleanStart:      true,
+		ReceiveMaximum:  4,
+		MaxPayloadBytes: 16,
 	}, connectivity.SessionEphemeral, nil)
 	t.Cleanup(func() { _ = source.Close(context.Background()) })
 	require.NoError(t, source.Start(ctx))
@@ -84,7 +83,7 @@ func TestMQTTIngressPoison_RealBrokerPropertyAmplificationAckDroppedWithoutTermi
 	assert.NoError(t, health.LastError)
 	assert.Zero(t, health.UnsettledCount,
 		"the poison drop settles immediately; it must not linger in the unsettled window")
-	dispatchDepth, _ := source.IngressMemoryStats()
+	dispatchDepth, _ := source.DispatchStats()
 	assert.Zero(t, dispatchDepth)
 	assert.Zero(t, source.router.PendingCount())
 	assert.Zero(t, source.router.routeCount.Load(),
@@ -103,7 +102,7 @@ func TestMQTTIngressPoison_OversizePayloadAckFreesSlotAndLaterTrafficFlows(t *te
 	if testing.Short() {
 		t.Skip("integration test requires a real local MQTT broker")
 	}
-	const topic = "ingress-memory/poison-ack-drop"
+	const topic = "ingress-poison/poison-ack-drop"
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	t.Cleanup(cancel)
 
@@ -113,17 +112,16 @@ func TestMQTTIngressPoison_OversizePayloadAckFreesSlotAndLaterTrafficFlows(t *te
 	)
 	t.Cleanup(broker.Stop)
 
-	clientID := mqttlocal.UniqueClientID("ingress-memory-poison")
+	clientID := mqttlocal.UniqueClientID("ingress-poison-source")
 	source := NewSession(SessionOptions{
-		BrokerURLs:               []string{broker.URL()},
-		ClientID:                 clientID,
-		ConnectTimeout:           10 * time.Second,
-		KeepAlive:                30,
-		CleanStart:               false,
-		SessionExpiryInterval:    60,
-		ReceiveMaximum:           2,
-		MaxPayloadBytes:          4,
-		IngressMemoryBudgetBytes: DefaultIngressMemoryBudgetBytes,
+		BrokerURLs:            []string{broker.URL()},
+		ClientID:              clientID,
+		ConnectTimeout:        10 * time.Second,
+		KeepAlive:             30,
+		CleanStart:            false,
+		SessionExpiryInterval: 60,
+		ReceiveMaximum:        2,
+		MaxPayloadBytes:       4,
 	}, connectivity.SessionPersistent, nil)
 	t.Cleanup(func() { _ = source.Close(context.Background()) })
 	require.NoError(t, source.Start(ctx))
@@ -152,7 +150,7 @@ func TestMQTTIngressPoison_OversizePayloadAckFreesSlotAndLaterTrafficFlows(t *te
 
 	publisher := NewSession(SessionOptions{
 		BrokerURLs:     []string{broker.URL()},
-		ClientID:       mqttlocal.UniqueClientID("ingress-memory-poison-publisher"),
+		ClientID:       mqttlocal.UniqueClientID("ingress-poison-publisher"),
 		ConnectTimeout: 10 * time.Second,
 		KeepAlive:      30,
 		CleanStart:     true,

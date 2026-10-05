@@ -44,12 +44,11 @@ type ConfigDynamoDBSettings struct {
 }
 
 const (
-	DefaultAdminAddr                   = ":8080"
-	DefaultMonitorAddr                 = ":8081"
-	DefaultTransportHTTPAddr           = ":8082"
-	DefaultPollInterval                = time.Second
-	DefaultDynamoDBPollInterval        = 30 * time.Second
-	DefaultContainerMemoryBytes uint64 = 1 << 30
+	DefaultAdminAddr            = ":8080"
+	DefaultMonitorAddr          = ":8081"
+	DefaultTransportHTTPAddr    = ":8082"
+	DefaultPollInterval         = time.Second
+	DefaultDynamoDBPollInterval = 30 * time.Second
 )
 
 // DefaultCredentialPollInterval is the fallback poll cadence for the
@@ -168,15 +167,6 @@ type BootstrapConfig struct {
 	ConfigFilePath string                  `json:"config_file_path"`
 	PollInterval   string                  `json:"poll_interval,omitempty"`
 
-	// ContainerMemoryBytes is the hard memory limit of the runtime container.
-	// CDK always overwrites it from the effective Fargate task memory; the
-	// default mirrors the 1024 MiB task default for non-CDK bootstrap users.
-	ContainerMemoryBytes uint64 `json:"container_memory_bytes,omitempty"`
-	// ReservedMemoryBytes is non-MQTT memory the operator has committed to
-	// other runtime components. MQTT ingress allocation plus this reservation
-	// must leave at least 20 percent of ContainerMemoryBytes as headroom.
-	ReservedMemoryBytes uint64 `json:"reserved_memory_bytes,omitempty"`
-
 	// Credential poll-based wrapper knobs. These control how the
 	// runtime lifts a pull-style credential store (SSM, file) into the
 	// push-style rotation source that reaches long-lived transport sessions.
@@ -276,9 +266,6 @@ func (c BootstrapConfig) Normalized() BootstrapConfig {
 	}
 	if out.TransportHTTPAddr == "" {
 		out.TransportHTTPAddr = DefaultTransportHTTPAddr
-	}
-	if out.ContainerMemoryBytes == 0 {
-		out.ContainerMemoryBytes = DefaultContainerMemoryBytes
 	}
 	if out.HTTPReceiverAPIKeyParams == nil {
 		out.HTTPReceiverAPIKeyParams = map[string]string{}
@@ -431,20 +418,6 @@ func (c BootstrapConfig) Validate() error {
 	if c.SSMEndpoint != "" && !c.DevMode {
 		return fmt.Errorf("infra: ssm_endpoint requires dev_mode to be true; refusing to use a custom SSM endpoint without explicit dev_mode flag")
 	}
-	if c.ContainerMemoryBytes == 0 {
-		return fmt.Errorf("infra: container_memory_bytes must be greater than zero (call Normalized() first)")
-	}
-	minimumHeadroom := c.ContainerMemoryBytes / 5
-	if c.ContainerMemoryBytes%5 != 0 {
-		minimumHeadroom++
-	}
-	if c.ReservedMemoryBytes > c.ContainerMemoryBytes-minimumHeadroom {
-		return fmt.Errorf(
-			"infra: reserved_memory_bytes %d leaves less than 20%% container headroom",
-			c.ReservedMemoryBytes,
-		)
-	}
-
 	switch c.MetricsExporter {
 	case "", MetricsExporterNoop, MetricsExporterCloudWatch:
 	default:

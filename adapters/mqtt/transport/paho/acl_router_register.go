@@ -78,7 +78,6 @@ func newRouter(logger *slog.Logger, metrics ports.MetricsExporter, opts ...route
 		queueChanged:      make(chan struct{}),
 		queueReservations: make(map[*pahov5.Publish]struct{}),
 		pendingLimit:      defaultPendingLimit,
-		pendingBytesLimit: defaultPendingBytesLimit,
 		dispatchSize:      defaultDispatchSize,
 		clk:               clock.System,
 		graceWindow:       DefaultUnmatchedGrace,
@@ -111,7 +110,7 @@ func (r *router) setPendingLimit(n int) {
 	r.mu.Unlock()
 }
 
-func (r *router) ingressMemoryStats() (depth, capacity int) {
+func (r *router) dispatchStats() (depth, capacity int) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.dispatchCh != nil {
@@ -224,7 +223,6 @@ func (r *router) RegisterFiltered(id string, filters []string, h func(*pahov5.Pu
 				for _, pending := range flush {
 					if r.quiesced || matchesAnyFilter(r.managedCleanupFilters, pending.pub.Topic) {
 						blocked = append(blocked, pending)
-						r.pendingBytes += pubBytes(pending.pub)
 					} else {
 						ready = append(ready, pending)
 					}
@@ -288,7 +286,6 @@ func (r *router) takePendingLocked(filters []string) []pendingPublish {
 	for _, p := range r.pending {
 		if matchesAnyFilter(filters, p.pub.Topic) && (len(r.managedCleanupFilters) == 0 || !matchesAnyFilter(r.managedCleanupFilters, p.pub.Topic)) {
 			flush = append(flush, p)
-			r.pendingBytes -= pubBytes(p.pub)
 		} else {
 			keep = append(keep, p)
 		}

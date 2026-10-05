@@ -3,24 +3,15 @@ package paho
 import (
 	"math"
 	"testing"
-	"unsafe"
 
-	"github.com/eclipse/paho.golang/packets"
 	pahov5 "github.com/eclipse/paho.golang/paho"
 	"github.com/stretchr/testify/require"
 )
 
-// ═══════════════════════════════════════════════════════════════════════════
-// c-mempkt (MEDIUM): the documented worst-case pending memory
-// `receive_maximum × max_payload` is only broker-ENFORCEABLE if the CONNECT
-// advertises a Maximum Packet Size. Without it a large-message broker can push
-// receive_maximum × multi-MiB into the grace-window buffer (multiple GiB).
-//
-// Fix: applyConnectLimits advertises MaximumPacketSize derived from the
-// configured max_payload_bytes plus a bounded protocol-overhead allowance, so
-// the broker MUST NOT deliver a packet larger than the adapter's per-message
-// ceiling. Unset (0) leaves it absent (no invented cap; prior behaviour).
-// ═══════════════════════════════════════════════════════════════════════════
+// applyConnectLimits advertises the CONNECT Maximum Packet Size derived from
+// max_payload_bytes plus the metadata allowance, so a broker must not forward a
+// packet larger than the adapter's per-message ceiling. Unset (0) leaves the
+// property absent.
 
 // TestApplyConnectLimits pins the CONNECT properties this adapter advertises.
 // The ConnectPacketBuilder in dial() delegates verbatim to applyConnectLimits,
@@ -95,75 +86,4 @@ func TestApplyConnectLimits(t *testing.T) {
 		require.Nil(t, cp.Properties.MaximumPacketSize,
 			"an explicit unsafe payload ceiling is rejected, never silently clamped")
 	})
-}
-
-// TestMaxPacketSizeFor covers the pure derivation the helper delegates to. The
-// crossing slot holds the guard's raw wire packet plus the one decode in
-// flight: the SDK's wire-sized buffers and copies (sdkDecodeWireMultiple of
-// them) and one User Property above the retained cap, which is all the guard
-// lets the decoder see.
-func TestMaxPacketSizeFor(t *testing.T) {
-	got, err := maxPacketSizeFor(0)
-	require.NoError(t, err)
-	require.Equal(t,
-		uint32((1+sdkDecodeWireMultiple)*mqttPacketOverheadAllowance+
-			maxDecodedUserProperties*retainedUserPropertyBytes+
-			retainedPacketFixedBytes),
-		got,
-		"crossing packet size includes one raw wire buffer, the SDK decode buffers, one truncated decoded representation, and structural heap allowance")
-	got, err = maxPacketSizeFor(256 << 10)
-	require.NoError(t, err)
-	require.Equal(t,
-		uint32(1+sdkDecodeWireMultiple)*uint32(256<<10)+
-			uint32((1+sdkDecodeWireMultiple)*mqttPacketOverheadAllowance+
-				maxDecodedUserProperties*retainedUserPropertyBytes+
-				retainedPacketFixedBytes),
-		got)
-	_, err = maxPacketSizeFor(math.MaxUint32)
-	require.Error(t, err, "overflow past the MQTT ceiling is rejected, never clamped or wrapped")
-}
-
-func TestIngressMemoryPacketBytes_CrossingFactorCoversAcceptedAndRejectedWirePackets(t *testing.T) {
-	const maxPayload = uint32(256 << 10)
-	wire, err := wirePacketSizeFor(maxPayload)
-	require.NoError(t, err)
-	decoded, err := transientDecodedPacketSizeFor(maxPayload)
-	require.NoError(t, err)
-	crossing, err := maxPacketSizeFor(maxPayload)
-	require.NoError(t, err)
-	require.Equal(t, uint64(wire)+uint64(decoded), uint64(crossing))
-
-	crossingWithFactor, err := ingressMemoryCrossingBytes(maxPayload)
-	require.NoError(t, err)
-	acceptedMinimum := uint64(wire) + uint64(decoded)
-	rejectedMinimum := uint64(wire)
-	require.GreaterOrEqual(t, crossingWithFactor, acceptedMinimum)
-	require.GreaterOrEqual(t, crossingWithFactor, rejectedMinimum)
-	require.Equal(t, (uint64(crossing)*5+3)/4, crossingWithFactor,
-		"ceil(crossing * 1.25) must be exact")
-}
-
-func TestIngressMemoryBound_DefaultsRemainWithinDefaultBudget(t *testing.T) {
-	bound, err := IngressMemoryBound(DefaultMaxPayloadBytes, DefaultReceiveMaximum, 100)
-	require.NoError(t, err)
-	require.LessOrEqual(t, bound, DefaultIngressMemoryBudgetBytes)
-}
-
-func TestMaxPacketSizeFor_CoversPahoDecodedPropertyRepresentations(t *testing.T) {
-	perProperty := uint64(unsafe.Sizeof(packets.User{})) +
-		uint64(unsafe.Sizeof(pahov5.UserProperty{}))
-	require.LessOrEqual(t, perProperty, retainedUserPropertyBytes,
-		"allowance must retain both Paho wire and callback User Property structs")
-
-	propertyStructures := uint64(maxIngressUserProperties) * perProperty
-	require.LessOrEqual(t, propertyStructures,
-		uint64(maxIngressUserProperties)*retainedUserPropertyBytes)
-
-	fixedStructures := uint64(unsafe.Sizeof(packets.Publish{})) +
-		uint64(unsafe.Sizeof(pahov5.Publish{})) +
-		uint64(unsafe.Sizeof(pahov5.PublishProperties{})) +
-		uint64(unsafe.Sizeof(dispatchItem{})) +
-		uint64(unsafe.Sizeof(pendingPublish{}))
-	require.LessOrEqual(t, fixedStructures, retainedPacketFixedBytes,
-		"fixed retained packet allowance must cover SDK and adapter queue structs")
 }

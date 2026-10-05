@@ -201,20 +201,3 @@ type BestEffortDirectHoldConfig interface {
 		subscriptions []connectivity.SubscriptionPlan,
 	) (topics []string, refusal string)
 }
-
-// IngressMemoryConfig is an optional typed PluginConfig capability for a
-// stateful ingress transport whose byte bound depends on route concurrency.
-// The bridge invokes it once per ingress session during pure preflight, after
-// topology cardinality validation and before opening stores or transports.
-type IngressMemoryConfig interface {
-	ValidateIngressMemory(routeMaxInFlight uint64) error
-}
-
-// IngressMemoryProfileConfig extends IngressMemoryConfig for deployment
-// profiles that assign a per-session ingress budget and derive transport
-// concurrency from it. Implementations must reject unsafe explicit values
-// rather than silently reducing them.
-type IngressMemoryProfileConfig interface {
-	IngressMemoryConfig
-	ConfigureIngressMemory(budgetBytes, routeMaxInFlight uint64) error
-}

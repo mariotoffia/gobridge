@@ -88,7 +88,7 @@ func (h appRolloutHost) PlanCandidate(ctx context.Context, cfg *ports.BridgeConf
 	if err := h.a.admitDeploymentProfile(ctx, cfg, "vote"); err != nil {
 		return nil, err
 	}
-	inputs, err := h.a.resolveApplyInputs(ctx, cfg)
+	inputs, err := resolveInputs(ctx, h.a.parameterResolver, h.a.cfg, h.a.pluginRegistry, cfg)
 	if err != nil {
 		return nil, err
 	}

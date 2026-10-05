@@ -102,7 +102,7 @@ tagged `session_id`; `MQTTRouterBuffered` is untagged):
 
 | Metric | Kind | Description |
 |---|---|---|
-| `MQTTRouterDropped` | Counter | A publish dropped under backpressure -- the dispatch queue was full under flood (QoS 0), or the pending buffer was full / over its byte ceiling. QoS 1/2 publishes block rather than drop, so a rising count is almost always shed QoS-0 traffic. |
+| `MQTTRouterDropped` | Counter | A publish dropped under backpressure -- the dispatch queue was full under flood (QoS 0), or the pending buffer was full (its entry cap is `receive_maximum`). QoS 1/2 publishes block rather than drop, so a rising count is almost always shed QoS-0 traffic. |
 | `MQTTRouterBuffered` | Counter | A publish held in the bounded pending buffer because it arrived before a matching handler registered (the CONNACK backlog racing receiver registration). |
 
 A rising `MQTTRouterDropped` is the backpressure signal detailed under

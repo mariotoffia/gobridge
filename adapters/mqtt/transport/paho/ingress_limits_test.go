@@ -16,23 +16,21 @@ import (
 	"github.com/mariotoffia/gobridge/ports"
 )
 
-func TestConfigIngressMemory_DefaultsNormalize(t *testing.T) {
+func TestIngressLimits_DefaultsApplyAtSessionConstruction(t *testing.T) {
 	cfg := DefaultConfig()
 
 	assert.Zero(t, cfg.Session.MaxPayloadBytes)
 	assert.Zero(t, cfg.Session.ReceiveMaximum)
-	assert.Zero(t, cfg.Session.IngressMemoryBudgetBytes,
-		"parsed defaults stay unset until deployment preflight/runtime normalization")
 
 	session := NewSession(SessionOptions{}, connectivity.SessionEphemeral, nil)
-	dispatchDepth, dispatchCapacity := session.IngressMemoryStats()
+	dispatchDepth, dispatchCapacity := session.DispatchStats()
 	assert.Zero(t, dispatchDepth)
 	assert.Equal(t, int(DefaultReceiveMaximum), dispatchCapacity)
 	assert.Equal(t, DefaultMaxPayloadBytes, session.opts.MaxPayloadBytes)
-	assert.Equal(t, DefaultIngressMemoryBudgetBytes, session.opts.IngressMemoryBudgetBytes)
+	assert.Equal(t, DefaultReceiveMaximum, session.opts.ReceiveMaximum)
 }
 
-func TestConfigIngressMemory_OmittedReceiveMaximumDefersWindowValidation(t *testing.T) {
+func TestIngressLimits_LargePayloadWithOmittedReceiveMaximumDecodes(t *testing.T) {
 	cfg := decodeRegistry(t, map[string]any{
 		"session": map[string]any{
 			"max_payload_bytes": 1 << 20,
@@ -40,27 +38,28 @@ func TestConfigIngressMemory_OmittedReceiveMaximumDefersWindowValidation(t *test
 	})
 
 	require.Zero(t, cfg.Session.ReceiveMaximum)
-	require.NoError(t, cfg.Validate(),
-		"parse-time validation must leave omitted receive concurrency for deployment preflight")
-	require.Error(t, cfg.ValidateIngressMemory(0),
-		"full generic preflight must apply Receive Maximum 192 and reject the unsafe window")
+	require.Equal(t, uint32(1<<20), cfg.Session.MaxPayloadBytes)
+	require.NoError(t, cfg.Validate())
 }
 
-func TestConfigIngressMemory_ExplicitReceiveMaximumRunsFullParseValidation(t *testing.T) {
+func TestIngressLimits_LargePayloadWithExplicitReceiveMaximumDecodes(t *testing.T) {
 	reg := ports.NewRegistry()
 	require.NoError(t, Register(reg))
 
-	_, err := reg.Decode("mqtt", parser.NewRawConfig(map[string]any{
+	decoded, err := reg.Decode("mqtt", parser.NewRawConfig(map[string]any{
 		"session": map[string]any{
 			"max_payload_bytes": 1 << 20,
 			"receive_maximum":   192,
 		},
 	}))
-	require.Error(t, err)
-	assert.ErrorIs(t, err, shared.ErrInvalidConfig)
+	require.NoError(t, err)
+	cfg, ok := decoded.(*Config)
+	require.True(t, ok)
+	assert.Equal(t, uint32(1<<20), cfg.Session.MaxPayloadBytes)
+	assert.Equal(t, uint16(192), cfg.Session.ReceiveMaximum)
 }
 
-func TestFactoryIngressMemory_OmittedReceiveMaximumRunsFullBuildValidation(t *testing.T) {
+func TestIngressLimits_FactoryBuildsLargePayloadSessionWithOmittedReceiveMaximum(t *testing.T) {
 	cfg := decodeRegistry(t, map[string]any{
 		"session": map[string]any{
 			"broker_url":        "tcp://broker:1883",
@@ -69,89 +68,69 @@ func TestFactoryIngressMemory_OmittedReceiveMaximumRunsFullBuildValidation(t *te
 		},
 	})
 
-	_, err := NewFactory(nil).NewSession(t.Context(), ports.SessionSpec{
+	built, err := NewFactory(nil).NewSession(t.Context(), ports.SessionSpec{
 		ID:     "generic-build",
 		Config: cfg,
 	})
-	require.Error(t, err)
-	assert.ErrorIs(t, err, shared.ErrInvalidConfig)
+	require.NoError(t, err)
+	session, ok := built.(*Session)
+	require.True(t, ok)
+	assert.Equal(t, DefaultReceiveMaximum, session.opts.ReceiveMaximum)
+	assert.Equal(t, uint32(1<<20), session.opts.MaxPayloadBytes)
 }
 
-func TestConfigIngressMemory_ExplicitZeroRemainsUnsetUntilRuntimeNormalization(t *testing.T) {
+func TestIngressLimits_ExplicitZeroTakesTheDefaultAtSessionConstruction(t *testing.T) {
 	cfg := decodeRegistry(t, map[string]any{
 		"session": map[string]any{
-			"receive_maximum":             0,
-			"max_payload_bytes":           0,
-			"ingress_memory_budget_bytes": 0,
+			"receive_maximum":   0,
+			"max_payload_bytes": 0,
 		},
 	})
 
 	assert.Zero(t, cfg.Session.ReceiveMaximum)
 	assert.Zero(t, cfg.Session.MaxPayloadBytes)
-	assert.Zero(t, cfg.Session.IngressMemoryBudgetBytes)
 
 	session := NewSession(cfg.Session, connectivity.SessionEphemeral, nil)
 	assert.Equal(t, DefaultReceiveMaximum, session.opts.ReceiveMaximum)
 	assert.Equal(t, DefaultMaxPayloadBytes, session.opts.MaxPayloadBytes)
-	assert.Equal(t, DefaultIngressMemoryBudgetBytes, session.opts.IngressMemoryBudgetBytes)
 }
 
-func TestConfigIngressMemory_ExactBoundaryAcceptsAndOneByteExcessRejects(t *testing.T) {
-	const routeMaxInFlight uint64 = 100
-	bound, err := IngressMemoryBound(DefaultMaxPayloadBytes, DefaultReceiveMaximum, routeMaxInFlight)
-	require.NoError(t, err)
-
+func TestIngressLimits_PayloadAbovePacketCeilingRejectsWithoutClamp(t *testing.T) {
 	cfg := Config{Session: SessionOptions{
-		MaxPayloadBytes:          DefaultMaxPayloadBytes,
-		ReceiveMaximum:           DefaultReceiveMaximum,
-		IngressMemoryBudgetBytes: bound,
+		MaxPayloadBytes: math.MaxUint32,
+		ReceiveMaximum:  1,
 	}}
-	require.NoError(t, cfg.ValidateIngressMemory(routeMaxInFlight))
 
-	cfg.Session.IngressMemoryBudgetBytes = bound - 1
-	err = cfg.ValidateIngressMemory(routeMaxInFlight)
+	err := cfg.Validate()
 	require.Error(t, err)
 	assert.ErrorIs(t, err, shared.ErrInvalidConfig)
 }
 
-func TestConfigIngressMemory_RouteConcurrencyContributesToBound(t *testing.T) {
-	withoutRoute, err := IngressMemoryBound(DefaultMaxPayloadBytes, DefaultReceiveMaximum, 0)
-	require.NoError(t, err)
-	withRoute, err := IngressMemoryBound(DefaultMaxPayloadBytes, DefaultReceiveMaximum, 37)
-	require.NoError(t, err)
-	packet, err := ingressMemoryPacketBytes(DefaultMaxPayloadBytes)
-	require.NoError(t, err)
+func TestIngressLimits_PayloadAtPacketCeilingValidates(t *testing.T) {
+	cfg := Config{Session: SessionOptions{
+		MaxPayloadBytes: uint32(mqttMaxPacketSize - mqttPacketOverheadAllowance),
+		ReceiveMaximum:  math.MaxUint16,
+	}}
 
-	assert.Equal(t, packet*37, withRoute-withoutRoute)
+	require.NoError(t, cfg.Validate())
 }
 
-func TestConfigIngressMemory_TooSmallForOnePacketRejects(t *testing.T) {
-	packet, err := ingressMemoryPacketBytes(DefaultMaxPayloadBytes)
-	require.NoError(t, err)
+func TestIngressLimits_UserPropertiesOverCapAreRefusedByTheCallback(t *testing.T) {
+	r := newRouter(nil, nil, withMaxPayloadBytes(64))
 
-	_, err = LargestSafeReceiveMaximum(DefaultMaxPayloadBytes, packet-1, 0)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, shared.ErrInvalidConfig)
-}
-
-func TestConfigIngressMemory_MaxIntegerOverflowRejects(t *testing.T) {
-	tests := []struct {
-		name             string
-		routeMaxInFlight uint64
-	}{
-		{name: "window addition", routeMaxInFlight: math.MaxUint64},
-		{name: "bound multiplication", routeMaxInFlight: math.MaxUint64 / 2},
+	user := make([]pahov5.UserProperty, maxIngressUserProperties+1)
+	pub := &pahov5.Publish{
+		Topic:      "t/in",
+		Payload:    []byte("x"),
+		Properties: &pahov5.PublishProperties{User: user},
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			_, err := IngressMemoryBound(DefaultMaxPayloadBytes, math.MaxUint16, test.routeMaxInFlight)
-			require.Error(t, err)
-			assert.ErrorIs(t, err, shared.ErrInvalidConfig)
-		})
-	}
+
+	class, violation := r.ingressCapViolation(pub)
+	require.Error(t, violation)
+	assert.Equal(t, "user_properties", class)
 }
 
-func TestRouterIngressMemory_OversizePayloadAckDroppedWithoutTerminal(t *testing.T) {
+func TestIngressLimits_OversizePayloadAckDroppedWithoutTerminal(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	session := NewSession(SessionOptions{
 		MaxPayloadBytes: 4,
@@ -160,12 +139,12 @@ func TestRouterIngressMemory_OversizePayloadAckDroppedWithoutTerminal(t *testing
 	session.router.beginGrace()
 
 	handled, err := session.router.onPublishReceived(pahov5.PublishReceived{
-		Packet: &pahov5.Publish{Topic: "memory/oversize", QoS: 1, Payload: []byte("12345")},
+		Packet: &pahov5.Publish{Topic: "ingress/oversize", QoS: 1, Payload: []byte("12345")},
 	})
 	require.NoError(t, err)
 	assert.True(t, handled)
 
-	dispatchDepth, dispatchCapacity := session.IngressMemoryStats()
+	dispatchDepth, dispatchCapacity := session.DispatchStats()
 	assert.Zero(t, dispatchDepth)
 	assert.Equal(t, 2, dispatchCapacity)
 	assert.Zero(t, session.router.PendingCount())
@@ -180,7 +159,7 @@ func TestRouterIngressMemory_OversizePayloadAckDroppedWithoutTerminal(t *testing
 		"a broker-forwardable cap violation must be acked-and-dropped, never terminal")
 }
 
-func TestRouterIngressMemory_MetadataCapAckDropsEveryPoisonBeforeEnqueue(t *testing.T) {
+func TestIngressLimits_MetadataCapAckDropsEveryPoisonBeforeEnqueue(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	session := NewSession(SessionOptions{
 		MaxPayloadBytes: 16,
@@ -192,7 +171,7 @@ func TestRouterIngressMemory_MetadataCapAckDropsEveryPoisonBeforeEnqueue(t *test
 		properties[i] = pahov5.UserProperty{Key: "k", Value: "v"}
 	}
 	packet := &pahov5.Publish{
-		Topic:      "memory/metadata-poison",
+		Topic:      "ingress/metadata-poison",
 		QoS:        1,
 		Payload:    []byte("ok"),
 		Properties: &pahov5.PublishProperties{User: properties},
@@ -205,7 +184,7 @@ func TestRouterIngressMemory_MetadataCapAckDropsEveryPoisonBeforeEnqueue(t *test
 	}
 
 	assert.Zero(t, session.router.PendingCount())
-	depth, _ := session.IngressMemoryStats()
+	depth, _ := session.DispatchStats()
 	assert.Zero(t, depth)
 	assert.Zero(t, session.Health(t.Context()).UnsettledCount)
 	assert.Equal(t, int64(2), session.router.IngressPoisonDroppedCount(),
@@ -217,7 +196,7 @@ func TestRouterIngressMemory_MetadataCapAckDropsEveryPoisonBeforeEnqueue(t *test
 	require.NoError(t, terminalErr, "poison must never latch terminal")
 }
 
-func TestRouterIngressMemory_MetadataExactBoundaryAcceptsAndOneByteExcessAckDrops(t *testing.T) {
+func TestIngressLimits_MetadataExactBoundaryAcceptsAndOneByteExcessAckDrops(t *testing.T) {
 	const topicBytes = 65535
 	valueBytes := int(maxIngressMetadataBytes) - (1 + 4 + 2 + topicBytes + 2 + 4) - (5 + 1)
 	require.Positive(t, valueBytes)
@@ -264,13 +243,13 @@ func TestRouterIngressMemory_MetadataExactBoundaryAcceptsAndOneByteExcessAckDrop
 		"one byte over the metadata cap is broker-forwardable and must ack-drop, not terminate")
 }
 
-func TestRouterIngressMemory_AcceptedPacketRetainsImmutableCallbackBacking(t *testing.T) {
+func TestIngressLimits_AcceptedPacketRetainsImmutableCallbackBacking(t *testing.T) {
 	session := NewSession(SessionOptions{
 		MaxPayloadBytes: 16,
 		ReceiveMaximum:  2,
 	}, connectivity.SessionEphemeral, nil)
 	packet := &pahov5.Publish{
-		Topic:   "memory/ownership",
+		Topic:   "ingress/ownership",
 		QoS:     1,
 		Payload: []byte("immutable"),
 		Properties: &pahov5.PublishProperties{User: pahov5.UserProperties{{
@@ -291,7 +270,7 @@ func TestRouterIngressMemory_AcceptedPacketRetainsImmutableCallbackBacking(t *te
 	assert.Same(t, packet.Properties, retained.Properties)
 }
 
-func TestRouterIngressMemory_PendingAndDispatchShareCapacity(t *testing.T) {
+func TestIngressLimits_PendingAndDispatchShareCapacity(t *testing.T) {
 	router := newRouter(nil, nil, withDispatchCapacity(2), withMaxPayloadBytes(16))
 	pendingQoS1 := &pahov5.Publish{Topic: "pending/1", QoS: 1}
 	pendingQoS0 := &pahov5.Publish{Topic: "pending/2", QoS: 0}
@@ -311,7 +290,7 @@ func TestRouterIngressMemory_PendingAndDispatchShareCapacity(t *testing.T) {
 	router.mu.RUnlock()
 }
 
-func TestRouterIngressMemory_ReservationReleaseIsIdempotentAcrossLifecyclePaths(t *testing.T) {
+func TestIngressLimits_ReservationReleaseIsIdempotentAcrossLifecyclePaths(t *testing.T) {
 	t.Run("matching dispatch", func(t *testing.T) {
 		router := newRouter(nil, nil, withDispatchCapacity(1))
 		delivered := make(chan struct{}, 1)
@@ -404,19 +383,7 @@ func assertRouterReservations(t *testing.T, router *router, want int) {
 	assert.Len(t, router.queueReservations, want)
 }
 
-func TestConfigIngressMemory_ExplicitUnsafePacketSizeRejectsWithoutClamp(t *testing.T) {
-	cfg := Config{Session: SessionOptions{
-		MaxPayloadBytes:          math.MaxUint32,
-		ReceiveMaximum:           1,
-		IngressMemoryBudgetBytes: math.MaxUint64,
-	}}
-
-	err := cfg.ValidateIngressMemory(0)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, shared.ErrInvalidConfig)
-}
-
-func TestConfigIngressMemory_DirectMapIntegerBoundaries(t *testing.T) {
+func TestIngressLimits_DirectMapIntegerBoundaries(t *testing.T) {
 	twoTo64 := math.Ldexp(1, 64)
 	nextBelowTwoTo64 := math.Nextafter(twoTo64, 0)
 	tests := []struct {
@@ -447,14 +414,9 @@ func TestConfigIngressMemory_DirectMapIntegerBoundaries(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "ingress budget exact uint64 max",
-			key:  "ingress_memory_budget_bytes", value: uint64(math.MaxUint64),
-			wantValue: math.MaxUint64,
-		},
-		{
-			name: "float nextafter below two to 64 accepted for uint64",
-			key:  "ingress_memory_budget_bytes", value: nextBelowTwoTo64,
-			wantValue: uint64(nextBelowTwoTo64),
+			name: "float integer accepted",
+			key:  "max_payload_bytes", value: float64(1 << 20),
+			wantValue: 1 << 20,
 		},
 		{
 			name: "float nextafter below two to 64 rejected for uint16",
@@ -463,32 +425,32 @@ func TestConfigIngressMemory_DirectMapIntegerBoundaries(t *testing.T) {
 		},
 		{
 			name: "float exactly two to 64 rejected",
-			key:  "ingress_memory_budget_bytes", value: twoTo64,
+			key:  "max_payload_bytes", value: twoTo64,
 			wantErr: true,
 		},
 		{
 			name: "negative int64 rejected",
-			key:  "ingress_memory_budget_bytes", value: int64(-1),
+			key:  "max_payload_bytes", value: int64(-1),
 			wantErr: true,
 		},
 		{
 			name: "nan rejected",
-			key:  "ingress_memory_budget_bytes", value: math.NaN(),
+			key:  "max_payload_bytes", value: math.NaN(),
 			wantErr: true,
 		},
 		{
 			name: "positive infinity rejected",
-			key:  "ingress_memory_budget_bytes", value: math.Inf(1),
+			key:  "max_payload_bytes", value: math.Inf(1),
 			wantErr: true,
 		},
 		{
 			name: "negative infinity rejected",
-			key:  "ingress_memory_budget_bytes", value: math.Inf(-1),
+			key:  "max_payload_bytes", value: math.Inf(-1),
 			wantErr: true,
 		},
 		{
 			name: "fraction rejected",
-			key:  "ingress_memory_budget_bytes", value: 1.5,
+			key:  "max_payload_bytes", value: 1.5,
 			wantErr: true,
 		},
 	}
@@ -508,8 +470,6 @@ func TestConfigIngressMemory_DirectMapIntegerBoundaries(t *testing.T) {
 				value = uint64(options.ReceiveMaximum)
 			case "max_payload_bytes":
 				value = uint64(options.MaxPayloadBytes)
-			case "ingress_memory_budget_bytes":
-				value = options.IngressMemoryBudgetBytes
 			}
 			assert.Equal(t, test.wantValue, value)
 		})

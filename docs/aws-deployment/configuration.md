@@ -115,8 +115,6 @@ document, or use the `file` config source.
 | `dynamodb_ha_baseline_config_digest` | `string` | No | `""` | 64-character SHA-256 hex digest identifying the content this deployment admitted. Both file and DynamoDB sources use `bridge.DeploymentBaselineContentDigest`, taken over the configuration's content normal form (ADR 0016): the top-level `version` is left out, the id-keyed lists are compared by id and durations by value. Initialization assigns target version 1 independently of the embedded version; every editable field remains covered. A coordinated member uses this identity to establish the generation-zero committed artifact before serving. That artifact retains the actual stored version; its `bridge.ConfigArtifactDigest` is the same value as this stamp. Empty disables baseline seeding; malformed values fail startup. |
 | `dynamodb_ha_rollout_table_name` | `string` | No | `""` (adapter default `gobridge-rollouts`) | DynamoDB table backing the coordinated rollout barrier's shared state: the current proposal, the per-member acknowledgements, and the durable last-committed config artifact. Read only when the logical config sets `bridge.cluster.rollout: coordinated`. `GoBridgeDynamoDBHA` provisions the table and stamps its name when `MemberSlots` is set, deriving it as `<bridge.id>-rollouts` from the shared config document. The task role is granted only `dynamodb:GetItem` and `dynamodb:PutItem` on it, so the runtime's best-effort `CreateTable` preflight is denied and logged on every boot -- expected, because the deployment owns the table. |
 | `poll_interval` | `string` | No | `"1s"` (file), `"30s"` (DynamoDB) | Go duration string for how often the poll watcher checks the selected config source for changes. Empty, unparseable, or non-positive values use the source-specific default. |
-| `container_memory_bytes` | `uint64` | No | `1073741824` | Runtime container hard limit used by the MQTT memory profile. CDK overwrites this field from the effective Fargate `MemoryMiB`; do not set it independently in CDK deployments. |
-| `reserved_memory_bytes` | `uint64` | No | `0` | Non-MQTT memory already committed to other runtime components. This reservation plus the profile's 25% MQTT ingress allocation must leave at least 20% of `container_memory_bytes` as headroom. |
 | `admin_addr` | `string` | No | `":8080"` | Listen address for the admin HTTP server. |
 | `monitor_addr` | `string` | No | `":8081"` | Listen address for the monitor HTTP server. |
 | `cors_origins` | `string` | No | `""` | Comma-separated CORS allowed origins. Empty disables CORS. Wildcard `*` is rejected. |
@@ -160,7 +158,10 @@ semantics.
 
 ### Validation Rules
 
-The bootstrap loader calls `Normalized()` to apply defaults and then `Validate()`.
+The bootstrap loader decodes the document strictly: it refuses any key the
+bootstrap does not read, for example the removed `container_memory_bytes` and
+`reserved_memory_bytes`, or a misspelled key, so the task fails at boot. It then
+calls `Normalized()` to apply defaults and `Validate()`.
 Validation fails if:
 
 - `bridge_id` is empty.
@@ -175,15 +176,6 @@ Validation fails if:
 - `topology` is not `"single"`, `"filesystem_replicated"` or `"dynamodb_coordinated_ha"` (after normalization).
 - `metrics_exporter` is set to anything other than `""`, `"noop"`, or `"cloudwatch"`.
 - `ssm_endpoint` is set but `dev_mode` is `false`.
-- `container_memory_bytes` is zero after normalization, or
-  `reserved_memory_bytes` alone leaves less than 20% headroom.
-- An included MQTT session cannot fit its payload, receive/dispatch window, raw
-  predecode crossing packet, and route concurrency in its equal share of the 25%
-  MQTT ingress reservation. Every session referenced by a `ReceiverDef` consumes
-  one share even without a route. Every referenced Persistent/Exclusive session
-  also consumes a deduplicated share with route concurrency zero because durable
-  state may resume stale backlog before cleanup. Ephemeral sender-only sessions
-  with no receiver/subscription do not consume a share.
 
 When `metrics_exporter` is `"cloudwatch"`, the CDK base grants
 `cloudwatch:PutMetricData` scoped by a `cloudwatch:namespace` condition to the

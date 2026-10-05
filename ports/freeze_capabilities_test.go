@@ -39,10 +39,6 @@ func TestLostFreezeCapability_NamesEachCapabilityAFrozenCopyDropped(t *testing.T
 		}{},
 		struct {
 			PluginConfig
-			IngressMemoryConfig
-		}{},
-		struct {
-			PluginConfig
 			ReplicaIdentityConfig
 		}{},
 		struct {
