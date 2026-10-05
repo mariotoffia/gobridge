@@ -285,8 +285,8 @@ configured, or lower the route's `qos` to the granted level.
 Two metrics follow the downgrade. `MQTTQoSDowngraded` counts once when a SUBACK
 first reports a lower grant (a changed grant counts again; confirmations and
 re-checks do not). `MQTTQoSDowngradedActive`, tagged `session_id`, is a gauge of
-the accepted downgrades per session, written when the count changes and again
-on every health sweep. It falls when a grant recovers, when the
+the accepted downgrades per session, written when the count changes and every
+30 s while it is above zero. It falls when a grant recovers, when the
 plan stops wanting the filter, or when the session closes, so alarm on the gauge
 for a standing condition. See [adapter diagnostic
 metrics](../adapter-diagnostic-metrics.md).

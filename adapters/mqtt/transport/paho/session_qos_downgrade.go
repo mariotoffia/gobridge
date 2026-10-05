@@ -1,10 +1,12 @@
 package paho
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -30,6 +32,14 @@ const qosDowngradeConfirmations = 3
 // qosDowngradeConfirmInterval spaces the confirmation SUBSCRIBEs, long enough
 // to ride out a brief broker-side cap.
 const qosDowngradeConfirmInterval = 5 * time.Second
+
+// qosDowngradeGaugeInterval is how often the session re-writes
+// MQTTQoSDowngradedActive while a downgrade stands. An exporter that publishes
+// each gauge call as one datapoint (CloudWatch) would otherwise hold a standing
+// downgrade as a single sample, and an alarm reading it would fall back to OK
+// while the downgrade still stands. Half the shortest standard-resolution alarm
+// period, so every period gets a sample.
+const qosDowngradeGaugeInterval = 30 * time.Second
 
 // qosDowngrade is the record of one filter the broker granted below the
 // requested QoS.
@@ -176,8 +186,9 @@ func (s *Session) reconcileQoSDowngradesLocked(desired map[string]byte, recheck 
 }
 
 // syncQoSDowngradeGaugeLocked emits MQTTQoSDowngradedActive when the number of
-// accepted downgrades changed, so a change is visible at once; Health re-emits
-// the count on every sweep. Callers hold s.mu.
+// accepted downgrades changed, so a change is visible at once, and keeps the
+// periodic re-write running exactly while that number is above zero. Callers
+// hold s.mu.
 func (s *Session) syncQoSDowngradeGaugeLocked() {
 	accepted := 0
 	for _, d := range s.qosDowngrades {
@@ -189,8 +200,47 @@ func (s *Session) syncQoSDowngradeGaugeLocked() {
 		return
 	}
 	s.qosDowngradeGauge = accepted
-	s.metrics.Gauge(MetricMQTTQoSDowngradedActive, float64(accepted),
+	s.emitQoSDowngradeGaugeLocked()
+	if accepted == 0 {
+		if s.qosGaugeCancel != nil {
+			s.qosGaugeCancel()
+			s.qosGaugeCancel = nil
+		}
+		return
+	}
+	if s.qosGaugeCancel == nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		s.qosGaugeCancel = cancel
+		go s.rewriteQoSDowngradeGauge(ctx, s.clock().NewTicker(qosDowngradeGaugeInterval), s.closedCh)
+	}
+}
+
+// emitQoSDowngradeGaugeLocked writes the last synced count. Callers hold s.mu.
+func (s *Session) emitQoSDowngradeGaugeLocked() {
+	s.metrics.Gauge(MetricMQTTQoSDowngradedActive, float64(s.qosDowngradeGauge),
 		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
+}
+
+// rewriteQoSDowngradeGauge re-writes the count every qosDowngradeGaugeInterval
+// until its schedule is cancelled or the session closes. It writes under s.mu
+// and only while the schedule is live, so a tick racing the change that
+// cancelled it can never land a stale count after that change's sample.
+func (s *Session) rewriteQoSDowngradeGauge(ctx context.Context, ticker clock.Ticker, closedCh <-chan struct{}) {
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C():
+		case <-ctx.Done():
+			return
+		case <-closedCh:
+			return
+		}
+		s.mu.Lock()
+		if ctx.Err() == nil {
+			s.emitQoSDowngradeGaugeLocked()
+		}
+		s.mu.Unlock()
+	}
 }
 
 // retireQoSDowngradesLocked drops every downgrade and its probe when the

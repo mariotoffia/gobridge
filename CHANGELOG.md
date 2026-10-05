@@ -22,6 +22,20 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   before. These deliveries never reached a route, so the route conservation
   law leaves the category out.
 
+### Fixed — a standing MQTT QoS downgrade raises an alarm
+
+- The MQTT session wrote `MQTTQoSDowngradedActive` only when the count changed
+  and when something called `Session.Health`. Nothing re-wrote it on a timer,
+  so a standing downgrade could stop producing samples and an alarm on the
+  gauge could not stay raised (#66). The session now re-writes it every 30 s
+  while it is above zero, and stops once it reaches zero.
+- `DefaultRollupMetrics()` includes `MQTTQoSDowngradedActive`, so a
+  dimensionless alarm can match it.
+- The CDK alarm bundle provisions `HAMQTTQoSDowngradedActive` on HA
+  deployments: `Maximum > 0`, with missing data not breaching. It stays raised
+  while a downgrade stands and clears once the gauge stops arriving.
+- The docs no longer say a health sweep writes the gauge.
+
 ## [0.5.2] - 2026-10-02
 
 A runtime without a lease store no longer treats any session as lease-managed.

@@ -183,6 +183,9 @@ func (g *GoBridgeAlarms) MQTTSessionTakeoverAlarm() awscloudwatch.IAlarm {
 	return g.mqttSessionTakeover
 }
 func (g *GoBridgeAlarms) MQTTQoSDowngradedAlarm() awscloudwatch.IAlarm { return g.mqttQoSDowngraded }
+func (g *GoBridgeAlarms) MQTTQoSDowngradedActiveAlarm() awscloudwatch.IAlarm {
+	return g.mqttQoSDowngradedActive
+}
 
 func validateAlarmsProps(p *AlarmsProps) {
 	if p == nil {
