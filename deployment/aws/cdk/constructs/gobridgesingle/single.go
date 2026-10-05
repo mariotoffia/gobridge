@@ -145,6 +145,12 @@ type SingleProps struct {
 	// provider named here. The facade runs exactly one task, so a Spot
 	// interruption stops bridging until ECS has started a replacement.
 	CapacityProviderStrategies []*awsecs.CapacityProviderStrategy
+
+	// CloudMapOptions registers the task in Cloud Map so other services can
+	// find it by DNS name. nil means no service discovery. Set
+	// CloudMapNamespace unless the supplied Cluster has a default namespace;
+	// the construct's own cluster has none.
+	CloudMapOptions *awsecs.CloudMapOptions
 }
 
 // GoBridgeSingle is the L2 facade construct that deploys the
@@ -322,6 +328,7 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 		TaskDefinition:       built.TaskDefinition,
 		VpcSubnets:           subnets,
 		AssignPublicIp:       props.AssignPublicIp,
+		CloudMapOptions:      props.CloudMapOptions,
 		DesiredCount:         jsii.Number(1),
 		MinHealthyPercent:    jsii.Number(0),
 		MaxHealthyPercent:    jsii.Number(100),
@@ -416,5 +423,9 @@ func validateSingleProps(p *SingleProps) {
 	}
 	if p.BridgeConfig == nil {
 		panic("GoBridgeSingle: BridgeConfig is required (use gobridge.ConfigFile / ConfigInline)")
+	}
+	if p.CloudMapOptions != nil && p.CloudMapOptions.CloudMapNamespace == nil && p.Cluster == nil {
+		panic("GoBridgeSingle: CloudMapOptions.CloudMapNamespace is required when Cluster is nil; " +
+			"the construct's own cluster has no default Cloud Map namespace")
 	}
 }

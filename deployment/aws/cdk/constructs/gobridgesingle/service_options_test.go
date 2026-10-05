@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/assertions"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsservicediscovery"
 	"github.com/aws/jsii-runtime-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -131,5 +132,28 @@ func TestSingle_CapacityProviderStrategies(t *testing.T) {
 		assert.Equal(t, "FARGATE", props["LaunchType"])
 		assert.NotContains(t, props, "CapacityProviderStrategy")
 		tpl.ResourceCountIs(jsii.String("AWS::ECS::ClusterCapacityProviderAssociations"), jsii.Number(0))
+	})
+}
+
+// TestSingle_CloudMapOptions verifies service discovery is registered, and that options with no
+// namespace fail with the construct's own message when the construct makes the cluster.
+func TestSingle_CloudMapOptions(t *testing.T) {
+	t.Run("private dns namespace", func(t *testing.T) {
+		_, tpl := optionsStack(t, func(stack awscdk.Stack, vpc awsec2.Vpc, p *gobridgesingle.SingleProps) {
+			ns := awsservicediscovery.NewPrivateDnsNamespace(stack, jsii.String("Ns"), &awsservicediscovery.PrivateDnsNamespaceProps{
+				Name: jsii.String("bridge.local"), Vpc: vpc,
+			})
+			p.CloudMapOptions = &awsecs.CloudMapOptions{CloudMapNamespace: ns, Name: jsii.String("gobridge")}
+		})
+		tpl.ResourceCountIs(jsii.String("AWS::ServiceDiscovery::Service"), jsii.Number(1))
+		assert.Len(t, ecsService(t, tpl)["Properties"].(map[string]any)["ServiceRegistries"], 1)
+	})
+	t.Run("no namespace and no cluster", func(t *testing.T) {
+		require.PanicsWithValue(t, "GoBridgeSingle: CloudMapOptions.CloudMapNamespace is required when Cluster is nil; "+
+			"the construct's own cluster has no default Cloud Map namespace", func() {
+			optionsStack(t, func(_ awscdk.Stack, _ awsec2.Vpc, p *gobridgesingle.SingleProps) {
+				p.CloudMapOptions = &awsecs.CloudMapOptions{}
+			})
+		})
 	})
 }
