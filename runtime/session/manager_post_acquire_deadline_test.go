@@ -189,6 +189,10 @@ func TestSessionManager_PostAcquireActivationOneNanosecondOverConfiguredHardBoun
 	if !errors.Is(err, ErrSessionUnrecoverable) {
 		t.Fatalf("one-nanosecond-over error = %v, want ErrSessionUnrecoverable", err)
 	}
+	if errors.Is(err, ErrProcessRestartRequired) {
+		t.Fatalf("one-nanosecond-over error = %v: activation and close both completed, so the failure "+
+			"must not demand a process restart", err)
+	}
 	if got := sess.closes.Load(); got != 1 {
 		t.Fatalf("one-nanosecond-over source closes = %d, want 1", got)
 	}
@@ -200,6 +204,70 @@ func TestSessionManager_PostAcquireActivationOneNanosecondOverConfiguredHardBoun
 	}
 	if _, held := mgr.Token(); held {
 		t.Fatal("one-nanosecond-over manager retained local authorization")
+	}
+}
+
+// A post-acquire activation that overran its deadline leaves nothing of its
+// term behind only when both the activation callback and the source Close
+// returned; then the lease is released and the failure carries no restart
+// demand. A parked activation or a Close that never returned may still mutate
+// or send, so the lease is kept and the failure demands a process restart: an
+// in-process rebuild would start a replacement beside that work.
+func TestFailPostAcquireActivation_RequiresProcessRestartUnlessActivationAndCloseCompleted(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		activationCompleted bool
+		wedgeClose          bool
+		wantRestart         bool
+	}{
+		{name: "activation and close completed", activationCompleted: true},
+		{name: "activation still parked", activationCompleted: false, wantRestart: true},
+		{name: "source close did not complete", activationCompleted: true, wedgeClose: true, wantRestart: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := clocktest.NewAt(time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC))
+			store := &postAcquireDeadlineStore{clk: fake}
+			sess := newCountingSession()
+			if tc.wedgeClose {
+				gate := sess.gateClose()
+				t.Cleanup(func() { close(gate) })
+			}
+			const stepDownGrace = time.Second
+			mgr := NewWithMetrics(Config{
+				SessionID: "post-acquire-fail-closed", Exclusive: true, ConnectAfterLease: true,
+				LeaseTTL: 45 * time.Second, RenewInterval: 10 * time.Second,
+				RenewCallTimeout: 3 * time.Second, MaxRenewFails: 3, StepDownGrace: stepDownGrace,
+				PostAcquireActivationTimeout: 2 * time.Second,
+			}, sess, store, "owner-1", nil, &ports.NoopExporter{}, clock.Clock(fake))
+
+			cause := errors.New("post-acquire activation overran its deadline")
+			result := make(chan error, 1)
+			go func() {
+				result <- mgr.failPostAcquireActivation(context.Background(),
+					persistence.LeaseToken{Version: 1, Owner: "owner-1"}, cause, tc.activationCompleted)
+			}()
+			if tc.wedgeClose {
+				// Only the bounded-close ceiling can unblock a Close that ignores
+				// ctx; wait for it to be armed before firing it.
+				waitTimerCount(t, fake, 1, 2*time.Second)
+				fake.Advance(stepDownGrace)
+			}
+			err := wait.RequireReceive(t, result, 2*time.Second)
+
+			if !errors.Is(err, ErrSessionUnrecoverable) || !errors.Is(err, cause) {
+				t.Fatalf("failPostAcquireActivation = %v, want ErrSessionUnrecoverable wrapping the cause", err)
+			}
+			if got := errors.Is(err, ErrProcessRestartRequired); got != tc.wantRestart {
+				t.Fatalf("errors.Is(%v, ErrProcessRestartRequired) = %v, want %v", err, got, tc.wantRestart)
+			}
+			wantReleases := int32(1)
+			if tc.wantRestart {
+				wantReleases = 0
+			}
+			if got := store.releases.Load(); got != wantReleases {
+				t.Fatalf("lease releases = %d, want %d", got, wantReleases)
+			}
+		})
 	}
 }
 

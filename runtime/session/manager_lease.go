@@ -54,23 +54,36 @@ func (*activationLeaseLoss) Error() string { return "lease lost during post-acqu
 func (*activationLeaseLoss) Unwrap() error { return errLeaseLostAfterRenewal }
 
 // ErrSessionUnrecoverable marks a lease-owning term that failed because the
-// underlying session cannot be re-established IN THIS PROCESS. A single-use
+// underlying session instance cannot be re-established. A single-use
 // transport session (e.g. Paho MQTT) is closed by step-down; on the next
 // lease re-acquisition ensureConnected cannot Start it again ("Start is not
 // allowed after Close", surfaced as shared.ErrUnavailable wrapping the permanent
-// shared.ErrTransportClosedPermanently marker) and no in-process rebuild path
-// exists (the receiver/sender still reference the dead instance).
+// shared.ErrTransportClosedPermanently marker), and the manager cannot replace
+// it: the receiver/sender still reference the dead instance.
 //
-// superviseSession treats this as NON-recoverable-in-process and ESCALATES to
-// terminal (documented process-restart backstop, scenario-08) instead of
-// retrying the same dead session forever — the pre-fix behaviour that wedged the
-// cluster: each capped-backoff retry re-Acquired via the store's same-owner
-// fast path, bumped the lease version, and perpetually reset every standby's
-// observation window. Ordinary permanently-closed restart
+// superviseSession never retries the same dead session — the pre-fix behaviour
+// that wedged the cluster: each capped-backoff retry re-Acquired via the store's
+// same-owner fast path, bumped the lease version, and perpetually reset every
+// standby's observation window. When a session-unrecoverable handler is
+// installed and the failure is one a fresh session clears (it carries the
+// permanent transport marker and not ErrProcessRestartRequired), the supervisor
+// reports it to that handler; otherwise it ESCALATES to terminal (documented
+// process-restart backstop, scenario-08). Ordinary permanently-closed restart
 // paths release the lease before returning. Fail-closed managed migration is the
 // exception: accepted route work or a broker-pinned delivery may remain, so the
-// lease expires naturally while the orchestrator restarts the pod.
+// lease is kept rather than released under that work.
 var ErrSessionUnrecoverable = errors.New("session cannot be re-established in this process")
+
+// ErrProcessRestartRequired marks an ErrSessionUnrecoverable that a rebuild of
+// the session inside this process must not answer: work of the old session may
+// still be parked or running (a Reconcile or activation that ignored its
+// context, a Close that did not complete), or the process must not compete for
+// the lease again. The runtime stays terminal on it, so the process restart
+// tears the old work down (ADR-0004). Every site that returns
+// ErrSessionUnrecoverable in one of those states MUST wrap this marker too;
+// without it a composition root that rebuilds failed sessions builds a
+// replacement beside the old work.
+var ErrProcessRestartRequired = errors.New("session must be recovered by a process restart")
 
 // releaseAndReturn is the connect-failure recovery path: a term acquired the
 // lease but could not make the session usable
@@ -115,8 +128,8 @@ func (m *Manager) releaseAndReturn(ctx context.Context, token persistence.LeaseT
 		// the ordinary case (a session an earlier term already closed) this is a
 		// no-op that returns at once.
 		if _, closed := m.closeSourceBounded(ctx, m.releaseTimeout(), phase); !closed {
-			return fmt.Errorf("%w: source session close did not complete before handing off after %s: %w",
-				ErrSessionUnrecoverable, phase, err)
+			return fmt.Errorf("%w: %w: source session close did not complete before handing off after %s: %w",
+				ErrSessionUnrecoverable, ErrProcessRestartRequired, phase, err)
 		}
 		m.releaseOwnedLeaseBestEffort(ctx, token, phase)
 		return fmt.Errorf("%w: %w", ErrSessionUnrecoverable, err)

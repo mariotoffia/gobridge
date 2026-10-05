@@ -189,3 +189,38 @@ func TestSessionManager_LeaseLossMidActivationCancelsAndDisconnectsBeforeReturn(
 		t.Fatalf("Run after loss and cancellation = %v, want context.Canceled", err)
 	}
 }
+
+// A lease lost while the activation callback is still parked, or while the
+// source Close has not returned, leaves work of the term that may still mutate
+// or send. The lease stays held, and the failure must demand a process
+// restart: an in-process rebuild would start a replacement beside that work.
+func TestFinishActivationLeaseLoss_UnsettledWorkRequiresProcessRestart(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		activationCompleted bool
+		closeCompleted      bool
+	}{
+		{name: "activation still parked", activationCompleted: false, closeCompleted: true},
+		{name: "source close did not complete", activationCompleted: true, closeCompleted: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := clocktest.NewAt(time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC))
+			store := &activationRenewStore{renewed: make(chan struct{})}
+			mgr := NewWithMetrics(activationRenewConfig("activation-loss-unsettled"), newCountingSession(), store,
+				"owner-1", nil, &ports.NoopExporter{}, clock.Clock(fake))
+
+			loss := &activationLeaseLoss{
+				token:          persistence.LeaseToken{Version: 1, Owner: "owner-1"},
+				closeCompleted: tc.closeCompleted,
+			}
+			err := mgr.finishActivationLeaseLoss(t.Context(), loss, tc.activationCompleted)
+
+			if !errors.Is(err, ErrSessionUnrecoverable) || !errors.Is(err, ErrProcessRestartRequired) {
+				t.Fatalf("finishActivationLeaseLoss = %v, want ErrSessionUnrecoverable carrying ErrProcessRestartRequired", err)
+			}
+			if got := store.releases.Load(); got != 0 {
+				t.Fatalf("lease released %d time(s) under unsettled activation work", got)
+			}
+		})
+	}
+}

@@ -147,7 +147,8 @@ func (m *Manager) finishActivationLeaseLoss(ctx context.Context, renewErr error,
 		return nil
 	}
 	if !activationCompleted || !loss.closeCompleted {
-		return fmt.Errorf("%w: lease lost during post-acquire activation before source work quiesced", ErrSessionUnrecoverable)
+		return fmt.Errorf("%w: %w: lease lost during post-acquire activation before source work quiesced",
+			ErrSessionUnrecoverable, ErrProcessRestartRequired)
 	}
 	stepErr := m.finishStepDown(ctx, loss.token, true)
 	if errors.Is(renewErr, errBrokerPathStepDown) {
@@ -161,7 +162,9 @@ func (m *Manager) finishActivationLeaseLoss(ctx context.Context, renewErr error,
 // failPostAcquireActivation removes local authorization, disconnects and
 // quiesces the source, then releases only when both activation and teardown
 // completed. A still-parked activation or Close retains the lease until natural
-// expiry so no new owner can overlap work that may still mutate/send.
+// expiry so no new owner can overlap work that may still mutate/send, and the
+// failure carries ErrProcessRestartRequired so no in-process rebuild starts
+// beside that work.
 func (m *Manager) failPostAcquireActivation(
 	ctx context.Context,
 	token persistence.LeaseToken,
@@ -171,10 +174,11 @@ func (m *Manager) failPostAcquireActivation(
 	m.mu.Lock()
 	m.hasLease = false
 	m.mu.Unlock()
-	terminal := fmt.Errorf("%w: post-acquire activation failed closed: %w", ErrSessionUnrecoverable, cause)
 	_, closed := m.closeSourceBounded(ctx, m.releaseTimeout(), "post-acquire activation deadline")
-	if activationCompleted && closed {
-		m.releaseOwnedLeaseBestEffort(ctx, token, "post-acquire activation deadline")
+	if !activationCompleted || !closed {
+		return fmt.Errorf("%w: %w: post-acquire activation failed closed: %w",
+			ErrSessionUnrecoverable, ErrProcessRestartRequired, cause)
 	}
-	return terminal
+	m.releaseOwnedLeaseBestEffort(ctx, token, "post-acquire activation deadline")
+	return fmt.Errorf("%w: post-acquire activation failed closed: %w", ErrSessionUnrecoverable, cause)
 }

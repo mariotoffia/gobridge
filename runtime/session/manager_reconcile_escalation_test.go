@@ -202,11 +202,60 @@ func TestSessionManager_TerminalIngressQuiescenceFailureDoesNotReleaseLease(t *t
 	if !errors.Is(err, ErrSessionUnrecoverable) {
 		t.Fatalf("Run error = %v, want ErrSessionUnrecoverable", err)
 	}
+	if errors.Is(err, ErrProcessRestartRequired) {
+		t.Fatalf("Run error = %v: the source close completed, so a fresh session clears this failure "+
+			"and it must not demand a process restart", err)
+	}
 	if sess.closeOrder() == 0 {
 		t.Fatal("terminal quiescence failure did not disconnect the source")
 	}
 	if got := store.releaseOrder(); got != 0 {
 		t.Fatalf("unsafe terminal quiescence failure released lease at sequence %d", got)
+	}
+	if _, held := mgr.Token(); held {
+		t.Fatal("terminal manager still authorizes fenced work after failure")
+	}
+}
+
+// A source that reports permanent closure from the activation Reconcile failed
+// managed migration closed: accepted route work may still unwind, so the lease
+// is kept and ownership cannot move under that work. No call of the session is
+// left parked when Run returns, so a fresh session clears the failure once that
+// route work finished, and it must not demand a process restart.
+func TestSessionManager_ActivationPermanentClosureKeepsLeaseWithoutProcessRestart(t *testing.T) {
+	fake := clocktest.NewAt(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	var seq atomic.Int64
+	store := newSeqLeaseStore(&seq)
+	sess := newFailReconcileSession(&seq)
+	// Spend the fake's successful first reconcile so the activation Reconcile
+	// itself fails.
+	sess.reconcileCalls.Store(1)
+	sess.reconcileErr = shared.ErrUnavailable.
+		WithMessage("managed migration failed closed").
+		Wrap(shared.ErrTransportClosedPermanently)
+
+	mgr := NewWithMetrics(Config{
+		SessionID:        "sess-activation-permanent-closure",
+		Exclusive:        true,
+		LeaseTTL:         5 * time.Second,
+		RenewInterval:    10 * time.Second,
+		RenewCallTimeout: 100 * time.Millisecond,
+		MaxRenewFails:    3,
+		StepDownGrace:    20 * time.Millisecond,
+	}, sess, store, "owner-1", nil, &ports.NoopExporter{}, clock.Clock(fake))
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- mgr.Run(context.Background()) }()
+	err := wait.RequireReceive(t, runErr, 2*time.Second)
+	if !errors.Is(err, ErrSessionUnrecoverable) || !errors.Is(err, shared.ErrTransportClosedPermanently) {
+		t.Fatalf("Run error = %v, want ErrSessionUnrecoverable carrying the permanent-closure marker", err)
+	}
+	if errors.Is(err, ErrProcessRestartRequired) {
+		t.Fatalf("Run error = %v: no session call is left parked, so the failure must not demand a "+
+			"process restart", err)
+	}
+	if got := store.releaseOrder(); got != 0 {
+		t.Fatalf("lease released at sequence %d while route work may still unwind", got)
 	}
 	if _, held := mgr.Token(); held {
 		t.Fatal("terminal manager still authorizes fenced work after failure")
@@ -479,6 +528,10 @@ func TestReconnectReconcile_CtxIgnoring_EscalatesTerminal(t *testing.T) {
 				"ErrSessionUnrecoverable so superviseSession stops restart-and-respawn (bounding parked "+
 				"Reconcile goroutines at one); got %v", err)
 		}
+		if !errors.Is(err, ErrProcessRestartRequired) {
+			t.Fatalf("the parked Reconcile goroutine outlives any in-process rebuild, so the escalation "+
+				"must demand a process restart; got %v", err)
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not return after the reconcile ceiling fired")
 	}
@@ -611,6 +664,10 @@ func TestSessionManager_SessionFailure_WedgedCloseDoesNotReleaseLease(t *testing
 	case err := <-runErr:
 		if !errors.Is(err, ErrSessionUnrecoverable) {
 			t.Fatalf("a wedged (ctx-ignoring) Close must escalate to terminal ErrSessionUnrecoverable, got %v", err)
+		}
+		if !errors.Is(err, ErrProcessRestartRequired) {
+			t.Fatalf("a source whose Close never returned may still be subscribed, so the escalation "+
+				"must demand a process restart; got %v", err)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not return after the bounded-close ceiling fired")
