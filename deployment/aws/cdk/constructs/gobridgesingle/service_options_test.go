@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/assertions"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	"github.com/aws/jsii-runtime-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -102,4 +103,33 @@ func TestSingle_AssignPublicIp_TaskAndEfsShareThePublicSubnets(t *testing.T) {
 		mounts = append(mounts, (*raw)["Properties"].(map[string]any)["SubnetId"])
 	}
 	assert.ElementsMatch(t, public, refs(t, mounts))
+}
+
+// TestSingle_CapacityProviderStrategies verifies a Spot strategy replaces the launch type, the
+// construct's own cluster gets the Fargate providers, and the service waits for their association.
+func TestSingle_CapacityProviderStrategies(t *testing.T) {
+	t.Run("spot", func(t *testing.T) {
+		_, tpl := optionsStack(t, func(_ awscdk.Stack, _ awsec2.Vpc, p *gobridgesingle.SingleProps) {
+			p.CapacityProviderStrategies = []*awsecs.CapacityProviderStrategy{
+				{CapacityProvider: jsii.String("FARGATE_SPOT"), Weight: jsii.Number(1)},
+			}
+		})
+		svc := ecsService(t, tpl)
+		props := svc["Properties"].(map[string]any)
+		assert.NotContains(t, props, "LaunchType")
+		assert.Equal(t, []any{map[string]any{"CapacityProvider": "FARGATE_SPOT", "Weight": 1.0}}, props["CapacityProviderStrategy"])
+		assocs := tpl.FindResources(jsii.String("AWS::ECS::ClusterCapacityProviderAssociations"), nil)
+		require.Len(t, *assocs, 1)
+		for id, raw := range *assocs {
+			assert.ElementsMatch(t, []any{"FARGATE", "FARGATE_SPOT"}, (*raw)["Properties"].(map[string]any)["CapacityProviders"])
+			assert.Contains(t, svc["DependsOn"], id)
+		}
+	})
+	t.Run("default", func(t *testing.T) {
+		_, tpl := optionsStack(t, nil)
+		props := ecsService(t, tpl)["Properties"].(map[string]any)
+		assert.Equal(t, "FARGATE", props["LaunchType"])
+		assert.NotContains(t, props, "CapacityProviderStrategy")
+		tpl.ResourceCountIs(jsii.String("AWS::ECS::ClusterCapacityProviderAssociations"), jsii.Number(0))
+	})
 }

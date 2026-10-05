@@ -137,6 +137,14 @@ type SingleProps struct {
 	// NAT gateway. nil or false means no public IP. With VpcSubnets nil, the
 	// task and an auto-created EfsConfig both use the public subnets.
 	AssignPublicIp *bool
+
+	// CapacityProviderStrategies places the task through capacity providers,
+	// for example FARGATE_SPOT, instead of launch type FARGATE. nil keeps
+	// launch type FARGATE. The construct's own cluster gets the FARGATE and
+	// FARGATE_SPOT providers; a supplied Cluster must already have every
+	// provider named here. The facade runs exactly one task, so a Spot
+	// interruption stops bridging until ECS has started a replacement.
+	CapacityProviderStrategies []*awsecs.CapacityProviderStrategy
 }
 
 // GoBridgeSingle is the L2 facade construct that deploys the
@@ -260,8 +268,9 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 	cluster := props.Cluster
 	if cluster == nil {
 		cluster = awsecs.NewCluster(c, jsii.String("Cluster"), &awsecs.ClusterProps{
-			Vpc:                 props.Vpc,
-			ContainerInsightsV2: awsecs.ContainerInsights_ENABLED,
+			Vpc:                            props.Vpc,
+			ContainerInsightsV2:            awsecs.ContainerInsights_ENABLED,
+			EnableFargateCapacityProviders: jsii.Bool(len(props.CapacityProviderStrategies) > 0),
 		})
 	}
 
@@ -323,7 +332,16 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 	if props.ServiceName != nil {
 		svcProps.ServiceName = props.ServiceName
 	}
+	if len(props.CapacityProviderStrategies) > 0 {
+		svcProps.CapacityProviderStrategies = &props.CapacityProviderStrategies
+	}
 	svc := awsecs.NewFargateService(c, jsii.String("Service"), svcProps)
+	if len(props.CapacityProviderStrategies) > 0 {
+		// CDK orders nothing between a service and its cluster's capacity
+		// provider association, so a first deploy could create the service
+		// before its providers are associated and fail.
+		svc.Node().AddDependency(cluster)
+	}
 
 	// Phase 2 — aggregated validation via CDK Annotations on the
 	// base materialized config. We re-materialize for Phase 2 to
