@@ -153,7 +153,11 @@ backstop, when:
 - the root has no unit to rebuild: the unit may attach an HTTP endpoint, or the
   running configuration changed between the report and the rebuild;
 - the rebuild leaves the fault in place;
-- a retired unit does not stop cleanly (`wedged`).
+- a retired unit does not stop cleanly (`wedged`). The retire lets the unit's
+  in-flight deliveries settle for up to 25 s before it cancels them, all inside
+  the drain timeout. A delivery still held at that point wedges the rebuild when
+  its sender ignores the cancel, or when the drain timeout leaves the route no
+  time to stop after the cancel: a `drain_timeout` of 25 s or less.
 
 A rebuild that tears (`torn`) is handled like a torn reload: the root stops the
 runtime and builds the running configuration afresh, and wedges when that fails.

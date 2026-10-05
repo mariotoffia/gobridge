@@ -132,7 +132,9 @@ the gauges publish, without waiting for a metrics flush.
 
   The process still restarts — replace the task if nothing restarts it — when
   the runtime has no rebuild handler, when the failed session's close did not
-  complete, or when the rebuild fails or leaves the session failed. A
+  complete, or when the rebuild fails or leaves the session failed. A delivery
+  still held when the drain timeout runs out fails the rebuild; keep
+  `drain_timeout` above 25 s so a cancelled send has time to stop. A
   `SessionRebuilds` rate that keeps climbing means every fresh session fails the
   same way. Verify `session_expiry_interval` exceeds the outage window, or the
   broker will keep answering `Session Present=false` and recovery will keep
