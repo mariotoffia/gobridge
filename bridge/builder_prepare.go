@@ -618,13 +618,20 @@ func (b *Builder) validateRouteMaxInFlight() error {
 
 // validateMQTTSessionCount refuses a configuration that uses more MQTT
 // sessions than bridge.max_mqtt_sessions; a session nothing references is
-// never built and is not counted. A zero limit means no limit.
+// never built and is not counted. A zero limit means no limit, and a negative
+// one is refused so a caller without a blueprint validator does not read it as
+// no limit.
 func (b *Builder) validateMQTTSessionCount() error {
 	if b.cfg == nil {
 		return nil
 	}
 	limit := b.cfg.Bridge.MaxMQTTSessions
-	if limit <= 0 {
+	if limit < 0 {
+		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"bridge.max_mqtt_sessions must not be negative, got %d", limit,
+		))
+	}
+	if limit == 0 {
 		return nil
 	}
 	referenced := referencedSessionIDs(b.cfg)

@@ -40,6 +40,15 @@ func TestPreflight_MQTTSessionsUnlimitedWhenLimitAbsent(t *testing.T) {
 	require.NoError(t, bridge.NewBuilder(cfg).Preflight(t.Context()))
 }
 
+func TestPreflight_NegativeMQTTSessionLimitRefused(t *testing.T) {
+	cfg := mqttSessionCountConfig(-1, 1, 0)
+
+	err := bridge.NewBuilder(cfg).Preflight(t.Context())
+	require.ErrorIs(t, err, shared.ErrInvalidConfig,
+		"a builder with no blueprint validator must not read a negative limit as no limit")
+	assert.Contains(t, err.Error(), "bridge.max_mqtt_sessions must not be negative")
+}
+
 func TestPreflight_MQTTSessionLimitIgnoresOtherTransports(t *testing.T) {
 	cfg := mqttSessionCountConfig(1, 1, 2)
 
