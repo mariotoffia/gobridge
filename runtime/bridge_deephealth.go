@@ -148,17 +148,21 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 		// A session that failed unrecoverably serves nothing until a rebuild or
 		// retire clears its fault, whatever its own Health still reports. It
 		// holds no lease, so it would otherwise pass for a deferred-connect
-		// standby below and be excused from the ready aggregate.
+		// standby and be excused here and by the readiness levels. It defers
+		// nothing either: it starts on no lease, so it is not reported as
+		// deferring its connect.
+		connectAfterLease := snap.connectAfterLease
 		if snap.unrecoverable {
 			sh.Ready = false
 			sh.ServiceLevel = ports.ServiceLevelNone
 			allReady = false
+			connectAfterLease = false
 		}
 		dh.Sessions = append(dh.Sessions, ports.SessionHealthDetail{
 			SessionID:                snap.sid,
 			Connected:                sh.Connected,
 			HasLease:                 snap.hasLease,
-			ConnectAfterLease:        snap.connectAfterLease,
+			ConnectAfterLease:        connectAfterLease,
 			SubscriptionsWanted:      sh.SubscriptionsWanted,
 			SubscriptionsActive:      sh.SubscriptionsActive,
 			SubscriptionsSatisfied:   sh.SubscriptionsSatisfied,

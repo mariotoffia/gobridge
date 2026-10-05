@@ -142,6 +142,8 @@ func TestDeepHealth_UnrecoverableDeferredStandbyIsNotExcused(t *testing.T) {
 	require.True(t, before.Sessions[0].ConnectAfterLease, "precondition: the session defers its connect")
 	require.False(t, before.Sessions[0].HasLease, "precondition: the session holds no lease")
 	require.True(t, before.ReadyForTraffic, "precondition: a deferred-connect standby is excused")
+	require.Equal(t, ports.LevelFull, ports.ReadinessLevelFromDeepHealth(before),
+		"precondition: an excused standby does not lower the instance's readiness level")
 
 	rt.componentErrors["session:s1"] = unrecoverableSessionFault()
 	dh := rt.DeepHealth(context.Background())
@@ -150,4 +152,6 @@ func TestDeepHealth_UnrecoverableDeferredStandbyIsNotExcused(t *testing.T) {
 	assert.False(t, dh.Sessions[0].Ready)
 	assert.Equal(t, ports.ServiceLevelNone, dh.Sessions[0].ServiceLevel)
 	assert.False(t, dh.ReadyForTraffic, "a failed session must not be excused as a standby")
+	assert.Less(t, ports.ReadinessLevelFromDeepHealth(dh), ports.LevelConnected,
+		"the readiness levels must not excuse a failed session as a standby either")
 }

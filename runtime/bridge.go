@@ -478,7 +478,7 @@ func (rt *Runtime) superviseSession(sid string, run func(context.Context) error)
 				// Runtime is shutting down: a nil (or any) return is a genuine
 				// clean stop. Drop any prior fault and exit. A run that stayed up
 				// for the stability window also ends the session's rebuild
-				// backoff, so a removed session leaves no entry behind.
+				// backoff.
 				rt.clearComponentError(name)
 				if rt.clk.Since(runStart) >= stabilityWindow {
 					rt.mu.Lock()
@@ -539,6 +539,10 @@ func (rt *Runtime) superviseSession(sid string, run func(context.Context) error)
 					timer.Stop()
 					return nil
 				case <-timer.C():
+				}
+				// Both may be ready at once, and select picks either.
+				if ctx.Err() != nil {
+					return nil
 				}
 				if !rt.sessionUnrecoverable(sid, err) {
 					return err
