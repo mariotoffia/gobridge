@@ -23,8 +23,9 @@ var (
 )
 
 // perSessionTransportFactory builds a new recordedSession for every session it
-// is asked for, and logs in order each session it builds and each close:
-// "new:<id>#<n>" and "close:<id>#<n>", n counting the sessions built for id.
+// is asked for, and logs in order each session it builds, starts and closes:
+// "new:<id>#<n>", "start:<id>#<n>" and "close:<id>#<n>", n counting the
+// sessions built for id.
 // It advertises plan-driven subscriptions, so the builder gives every session
 // a receiver rides on a manager, which closes it when its unit retires or its
 // part stops. Like a transport dialling a broker, it refuses to build a session
@@ -36,6 +37,10 @@ type perSessionTransportFactory struct {
 	// session's "<id>#<n>" name. It is read without the lock, so set it before
 	// the closes it must see can run.
 	onClose func(name string)
+	// onStart, when set, runs at every session's Start with that session's
+	// "<id>#<n>" name, and Start returns what it returns. It is read without
+	// the lock, so set it before the sessions it must see are started.
+	onStart func(name string) error
 
 	mu        sync.Mutex
 	events    []string
@@ -119,6 +124,16 @@ type recordedSession struct {
 	factory *perSessionTransportFactory
 	name    string
 	closes  int
+}
+
+func (s *recordedSession) Start(context.Context) error {
+	s.factory.mu.Lock()
+	s.factory.events = append(s.factory.events, "start:"+s.name)
+	s.factory.mu.Unlock()
+	if s.factory.onStart != nil {
+		return s.factory.onStart(s.name)
+	}
+	return nil
 }
 
 func (s *recordedSession) Close(context.Context) error {

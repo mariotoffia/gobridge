@@ -150,9 +150,10 @@ type Supervisor struct {
 	// alive but routes nothing, so the composition-root backstop must treat
 	// it as terminal and exit non-zero.
 	wedged bool
-	// swapping is true for the whole duration of apply(): a reconfiguration is
-	// in progress. During a swap the old runtime is being stopped and a new one
-	// built, so a momentary read of a stopping/absent runtime is NOT death.
+	// swapping is true for the whole duration of apply() and of a session
+	// rebuild (rebuildSession): a reconfiguration is in progress. During a swap
+	// the old runtime is being stopped and a new one built, so a momentary read
+	// of a stopping/absent runtime is NOT death.
 	// Terminal() returns false while swapping so the liveness backstop never
 	// kills the process mid-swap.
 	swapping bool
@@ -173,13 +174,15 @@ type Supervisor struct {
 	convergenceGen        uint64 // the newest convergence watch; see nextConvergenceGen
 
 	// lifecycleMu serializes control-plane mutations: apply() (config-driven
-	// swaps, run from the Run goroutine) and StartBridge/StopBridge (admin,
-	// called from HTTP handler goroutines). Without it two control ops can each
-	// build+start a runtime and both publish s.rt — the loser is a fully-started
-	// runtime (live consumers, held lease, open store handles) that nothing
-	// references and nothing will ever Stop, causing duplicate delivery, lease
-	// contention, and leaks. It is DISTINCT from mu, which stays free for fast
-	// Terminal()/health reads, so liveness probes never block on a swap/drain.
+	// swaps, run from the Run goroutine), StartBridge/StopBridge (admin,
+	// called from HTTP handler goroutines), a session rebuild (rebuildSession,
+	// on a goroutine of its own) and the final stop at shutdown. Without it two
+	// control ops can each build+start a runtime and both publish s.rt — the
+	// loser is a fully-started runtime (live consumers, held lease, open store
+	// handles) that nothing references and nothing will ever Stop, causing
+	// duplicate delivery, lease contention, and leaks. It is DISTINCT from mu,
+	// which stays free for fast Terminal()/health reads, so liveness probes
+	// never block on a swap/drain.
 	lifecycleMu sync.Mutex
 	// baseCtx is the long-lived Run context. StartBridge starts a resumed runtime
 	// under it, NOT the ephemeral admin-request ctx: Runtime.Start binds the
@@ -554,6 +557,13 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 			context.WithoutCancel(ctx), s.drainTimeoutFrom(s.Config()))
 		stopDrive(driveCtx)
 		driveCancel()
+		// A session rebuild retires and builds units of the running runtime
+		// under the lifecycle lock, on a goroutine of its own. The final stop
+		// waits for it, so it reads the runtime the rebuild leaves and Run never
+		// returns while a rebuild still works on it. The lock is taken only
+		// after the drive stops: a committed rollout applies under it.
+		s.lifecycleMu.Lock()
+		defer s.lifecycleMu.Unlock()
 		return s.stopCurrent(ctx)
 	}
 
@@ -1449,6 +1459,10 @@ func (s *Supervisor) newBuilder(cfg *ports.BridgeConfig) *Builder {
 	if s.validator != nil {
 		opts = append(opts, WithBlueprintValidator(s.validator))
 	}
+	// Every runtime the Supervisor builds reports a session a fresh session
+	// would clear, so the Supervisor rebuilds that session's unit in place
+	// instead of the runtime going terminal.
+	opts = append(opts, WithSessionUnrecoverableHandler(s.onSessionUnrecoverable))
 	b := NewBuilder(cfg, opts...)
 	for name, tf := range transports {
 		b.RegisterTransportFactory(name, tf)
