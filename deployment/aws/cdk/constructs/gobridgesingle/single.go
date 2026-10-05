@@ -51,7 +51,8 @@ type SingleProps struct {
 
 	// VpcSubnets selects the subnets used for both ECS placement
 	// and (when EfsConfig is auto-created) EFS mount targets. nil
-	// means "all private subnets in Vpc".
+	// means the private subnets in Vpc, or the public subnets when
+	// AssignPublicIp is true.
 	VpcSubnets *awsec2.SubnetSelection
 
 	// Cluster is an existing ECS cluster. When nil a fresh cluster

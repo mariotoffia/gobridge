@@ -134,19 +134,19 @@ func singleTaskBootstrap(t *testing.T, task map[string]any) infra.BootstrapConfi
 	return infra.BootstrapConfig{}
 }
 
-// TestSingle_ConfigTable_Accessor verifies the facade exposes the table it owns, and nil for file config.
-func TestSingle_ConfigTable_Accessor(t *testing.T) {
-	t.Run("dynamodb", func(t *testing.T) {
-		stack, g := configSingleStack(t, dynamoBootstrap(), source.NewAsset(writeSingleYAML(t, singleSampleYAML)))
-		require.NotNil(t, g.ConfigTable())
-		tables := assertions.Template_FromStack(stack, nil).FindResources(jsii.String("AWS::DynamoDB::Table"), nil)
-		require.Len(t, *tables, 1)
-		for id := range *tables {
-			assert.Equal(t, map[string]any{"Ref": id}, stack.Resolve(g.ConfigTable().TableName()))
-		}
-	})
-	t.Run("file", func(t *testing.T) {
-		_, g := configSingleStack(t, singleBootstrap(), source.NewAsset(writeSingleYAML(t, singleSampleYAML)))
-		assert.Nil(t, g.ConfigTable())
-	})
+// TestSingle_ConfigTable_DynamoDBSourceReturnsTable verifies the accessor returns the config table the facade owns.
+func TestSingle_ConfigTable_DynamoDBSourceReturnsTable(t *testing.T) {
+	stack, g := configSingleStack(t, dynamoBootstrap(), source.NewAsset(writeSingleYAML(t, singleSampleYAML)))
+	require.NotNil(t, g.ConfigTable())
+	tables := assertions.Template_FromStack(stack, nil).FindResources(jsii.String("AWS::DynamoDB::Table"), nil)
+	require.Len(t, *tables, 1)
+	for id := range *tables {
+		assert.Equal(t, map[string]any{"Ref": id}, stack.Resolve(g.ConfigTable().TableName()))
+	}
+}
+
+// TestSingle_ConfigTable_FileSourceReturnsNil verifies the accessor returns nil for file config.
+func TestSingle_ConfigTable_FileSourceReturnsNil(t *testing.T) {
+	_, g := configSingleStack(t, singleBootstrap(), source.NewAsset(writeSingleYAML(t, singleSampleYAML)))
+	assert.Nil(t, g.ConfigTable())
 }

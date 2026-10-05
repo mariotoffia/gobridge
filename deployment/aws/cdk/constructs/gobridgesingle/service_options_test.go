@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	cdkconstructs "github.com/mariotoffia/gobridge/deployment/aws/cdk/constructs"
 	"github.com/mariotoffia/gobridge/deployment/aws/cdk/constructs/gobridgesingle"
 	"github.com/mariotoffia/gobridge/deployment/aws/cdk/constructs/internal/singleton"
 	"github.com/mariotoffia/gobridge/deployment/aws/cdk/internal/imgsource"
@@ -106,54 +107,74 @@ func TestSingle_AssignPublicIp_TaskAndEfsShareThePublicSubnets(t *testing.T) {
 	assert.ElementsMatch(t, public, refs(t, mounts))
 }
 
-// TestSingle_CapacityProviderStrategies verifies a Spot strategy replaces the launch type, the
-// construct's own cluster gets the Fargate providers, and the service waits for their association.
-func TestSingle_CapacityProviderStrategies(t *testing.T) {
-	t.Run("spot", func(t *testing.T) {
-		_, tpl := optionsStack(t, func(_ awscdk.Stack, _ awsec2.Vpc, p *gobridgesingle.SingleProps) {
-			p.CapacityProviderStrategies = []*awsecs.CapacityProviderStrategy{
-				{CapacityProvider: jsii.String("FARGATE_SPOT"), Weight: jsii.Number(1)},
-			}
+// TestSingle_AssignPublicIp_SuppliedEfsInPublicOnlyVpcPassesParity verifies the parity check uses the public subnets the task runs in.
+func TestSingle_AssignPublicIp_SuppliedEfsInPublicOnlyVpcPassesParity(t *testing.T) {
+	var tpl assertions.Template
+	require.NotPanics(t, func() {
+		_, tpl = optionsStack(t, func(stack awscdk.Stack, _ awsec2.Vpc, p *gobridgesingle.SingleProps) {
+			publicVpc := awsec2.NewVpc(stack, jsii.String("PublicVpc"), &awsec2.VpcProps{
+				NatGateways: jsii.Number(0),
+				SubnetConfiguration: &[]*awsec2.SubnetConfiguration{
+					{Name: jsii.String("Public"), SubnetType: awsec2.SubnetType_PUBLIC},
+				},
+			})
+			p.Vpc = publicVpc
+			p.AssignPublicIp = jsii.Bool(true)
+			p.EfsConfig = cdkconstructs.NewGoBridgeEfsConfig(stack, jsii.String("SuppliedEfs"), &cdkconstructs.GoBridgeEfsConfigProps{
+				Vpc:        publicVpc,
+				VpcSubnets: &awsec2.SubnetSelection{SubnetType: awsec2.SubnetType_PUBLIC},
+			})
 		})
-		svc := ecsService(t, tpl)
-		props := svc["Properties"].(map[string]any)
-		assert.NotContains(t, props, "LaunchType")
-		assert.Equal(t, []any{map[string]any{"CapacityProvider": "FARGATE_SPOT", "Weight": 1.0}}, props["CapacityProviderStrategy"])
-		assocs := tpl.FindResources(jsii.String("AWS::ECS::ClusterCapacityProviderAssociations"), nil)
-		require.Len(t, *assocs, 1)
-		for id, raw := range *assocs {
-			assert.ElementsMatch(t, []any{"FARGATE", "FARGATE_SPOT"}, (*raw)["Properties"].(map[string]any)["CapacityProviders"])
-			assert.Contains(t, svc["DependsOn"], id)
-		}
 	})
-	t.Run("default", func(t *testing.T) {
-		_, tpl := optionsStack(t, nil)
-		props := ecsService(t, tpl)["Properties"].(map[string]any)
-		assert.Equal(t, "FARGATE", props["LaunchType"])
-		assert.NotContains(t, props, "CapacityProviderStrategy")
-		tpl.ResourceCountIs(jsii.String("AWS::ECS::ClusterCapacityProviderAssociations"), jsii.Number(0))
-	})
+	assert.Equal(t, "ENABLED", awsvpcConfig(t, ecsService(t, tpl))["AssignPublicIp"])
 }
 
-// TestSingle_CloudMapOptions verifies service discovery is registered, and that options with no
-// namespace fail with the construct's own message when the construct makes the cluster.
-func TestSingle_CloudMapOptions(t *testing.T) {
-	t.Run("private dns namespace", func(t *testing.T) {
-		_, tpl := optionsStack(t, func(stack awscdk.Stack, vpc awsec2.Vpc, p *gobridgesingle.SingleProps) {
-			ns := awsservicediscovery.NewPrivateDnsNamespace(stack, jsii.String("Ns"), &awsservicediscovery.PrivateDnsNamespaceProps{
-				Name: jsii.String("bridge.local"), Vpc: vpc,
-			})
-			p.CloudMapOptions = &awsecs.CloudMapOptions{CloudMapNamespace: ns, Name: jsii.String("gobridge")}
-		})
-		tpl.ResourceCountIs(jsii.String("AWS::ServiceDiscovery::Service"), jsii.Number(1))
-		assert.Len(t, ecsService(t, tpl)["Properties"].(map[string]any)["ServiceRegistries"], 1)
+// TestSingle_CapacityProviderStrategies_SpotReplacesLaunchTypeAndWaitsForProviders verifies Spot replaces launch type FARGATE and the service waits for the cluster's providers.
+func TestSingle_CapacityProviderStrategies_SpotReplacesLaunchTypeAndWaitsForProviders(t *testing.T) {
+	_, tpl := optionsStack(t, func(_ awscdk.Stack, _ awsec2.Vpc, p *gobridgesingle.SingleProps) {
+		p.CapacityProviderStrategies = []*awsecs.CapacityProviderStrategy{
+			{CapacityProvider: jsii.String("FARGATE_SPOT"), Weight: jsii.Number(1)},
+		}
 	})
-	t.Run("no namespace and no cluster", func(t *testing.T) {
-		require.PanicsWithValue(t, "GoBridgeSingle: CloudMapOptions.CloudMapNamespace is required when Cluster is nil; "+
-			"the construct's own cluster has no default Cloud Map namespace", func() {
-			optionsStack(t, func(_ awscdk.Stack, _ awsec2.Vpc, p *gobridgesingle.SingleProps) {
-				p.CloudMapOptions = &awsecs.CloudMapOptions{}
-			})
+	svc := ecsService(t, tpl)
+	props := svc["Properties"].(map[string]any)
+	assert.NotContains(t, props, "LaunchType")
+	assert.Equal(t, []any{map[string]any{"CapacityProvider": "FARGATE_SPOT", "Weight": 1.0}}, props["CapacityProviderStrategy"])
+	assocs := tpl.FindResources(jsii.String("AWS::ECS::ClusterCapacityProviderAssociations"), nil)
+	require.Len(t, *assocs, 1)
+	for id, raw := range *assocs {
+		assert.ElementsMatch(t, []any{"FARGATE", "FARGATE_SPOT"}, (*raw)["Properties"].(map[string]any)["CapacityProviders"])
+		assert.Contains(t, svc["DependsOn"], id)
+	}
+}
+
+// TestSingle_CapacityProviderStrategies_UnsetKeepsFargateLaunchType verifies no strategy keeps launch type FARGATE and adds no provider association.
+func TestSingle_CapacityProviderStrategies_UnsetKeepsFargateLaunchType(t *testing.T) {
+	_, tpl := optionsStack(t, nil)
+	props := ecsService(t, tpl)["Properties"].(map[string]any)
+	assert.Equal(t, "FARGATE", props["LaunchType"])
+	assert.NotContains(t, props, "CapacityProviderStrategy")
+	tpl.ResourceCountIs(jsii.String("AWS::ECS::ClusterCapacityProviderAssociations"), jsii.Number(0))
+}
+
+// TestSingle_CloudMapOptions_RegistersServiceInNamespace verifies the service registers in the given Cloud Map namespace.
+func TestSingle_CloudMapOptions_RegistersServiceInNamespace(t *testing.T) {
+	_, tpl := optionsStack(t, func(stack awscdk.Stack, vpc awsec2.Vpc, p *gobridgesingle.SingleProps) {
+		ns := awsservicediscovery.NewPrivateDnsNamespace(stack, jsii.String("Ns"), &awsservicediscovery.PrivateDnsNamespaceProps{
+			Name: jsii.String("bridge.local"), Vpc: vpc,
+		})
+		p.CloudMapOptions = &awsecs.CloudMapOptions{CloudMapNamespace: ns, Name: jsii.String("gobridge")}
+	})
+	tpl.ResourceCountIs(jsii.String("AWS::ServiceDiscovery::Service"), jsii.Number(1))
+	assert.Len(t, ecsService(t, tpl)["Properties"].(map[string]any)["ServiceRegistries"], 1)
+}
+
+// TestSingle_CloudMapOptions_WithoutNamespaceOnOwnClusterPanics verifies options with no namespace fail with the construct's own message.
+func TestSingle_CloudMapOptions_WithoutNamespaceOnOwnClusterPanics(t *testing.T) {
+	require.PanicsWithValue(t, "GoBridgeSingle: CloudMapOptions.CloudMapNamespace is required when Cluster is nil; "+
+		"the construct's own cluster has no default Cloud Map namespace", func() {
+		optionsStack(t, func(_ awscdk.Stack, _ awsec2.Vpc, p *gobridgesingle.SingleProps) {
+			p.CloudMapOptions = &awsecs.CloudMapOptions{}
 		})
 	})
 }
