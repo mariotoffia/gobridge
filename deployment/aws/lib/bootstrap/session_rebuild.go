@@ -32,9 +32,10 @@ func (a *App) onSessionUnrecoverable(sessionID string, _ error) bool {
 // and wedges, which restarts the process as the terminal session did before
 // (ADR-0004).
 //
-// A rebuild is not a reload: the applied configuration, the installed registry
-// and the API keys stay as they are, and it seeds no baseline, starts no
-// convergence watch and reports no installed runtime.
+// A rebuild that applies is not a reload: the applied configuration, the
+// installed registry and the API keys stay as they are, and it seeds no
+// baseline, starts no convergence watch and reports no installed runtime. A
+// torn rebuild recovers the old configuration as a torn reload does.
 func (a *App) rebuildSession(sessionID string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -72,7 +73,12 @@ func (a *App) rebuildSession(sessionID string) {
 		outcome = bridge.InPlaceWedged
 	}
 	if outcome == bridge.InPlaceTorn || outcome == bridge.InPlaceWedged {
-		err = a.settleFailedInPlace(ctx, outcome, err, rt, installed, oldApplied)
+		// A torn rebuild rebuilds the old configuration as a whole runtime: bound
+		// it as an apply attempt is bounded, so it cannot hold the apply lock
+		// for as long as a credential or broker call hangs.
+		settleCtx, cancel := context.WithTimeout(ctx, applyAttemptBudget)
+		err = a.settleFailedInPlace(settleCtx, outcome, err, rt, installed, oldApplied)
+		cancel()
 	}
 
 	retiredRoutes, addedRoutes, retiredSessions, addedSessions := reload.Summary()
