@@ -2,6 +2,7 @@ package paho
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -896,9 +897,10 @@ func TestSessionRecovery_RecycleMetricStartsOnlyAfterGate(t *testing.T) {
 }
 
 // TestSessionRecovery_ReconnectFailureAfterDrainAbandonsRecovery pins that a
-// recycle whose replacement dial fails, after the drain finished, leaves the
-// session usable: the events channel closes as the ordinary dead-session
-// signal, with no SessionError, and a later Start reconnects it.
+// recycle whose replacement dial fails, after the drain finished, is not
+// terminal: the events channel closes as the ordinary dead-session signal,
+// with no SessionError, and the runtime manager's re-run of this
+// non-exclusive session starts it again on a fresh, open events channel.
 func TestSessionRecovery_ReconnectFailureAfterDrainAbandonsRecovery(t *testing.T) {
 	disconnected := make(chan struct{})
 	s := NewSession(SessionOptions{
@@ -921,13 +923,7 @@ func TestSessionRecovery_ReconnectFailureAfterDrainAbandonsRecovery(t *testing.T
 
 	require.NoError(t, s.requestRecovery(t.Context()))
 	wait.RequireClosed(t, disconnected, 5*time.Second)
-	terminalEvents := 0
-	for event := range events {
-		if event.Type == ports.SessionError {
-			terminalEvents++
-		}
-	}
-	assert.Zero(t, terminalEvents, "an abandoned recovery must not signal a terminal session")
+	requireEventsClosedWithoutSessionError(t, events, 5*time.Second)
 	require.NoError(t, s.acquireReload(t.Context()))
 	s.releaseReload()
 
@@ -945,6 +941,102 @@ func TestSessionRecovery_ReconnectFailureAfterDrainAbandonsRecovery(t *testing.T
 		return &fakeLiveConn{}, func() {}, nil
 	}
 	require.NoError(t, s.Start(t.Context()), "the runtime manager's re-run starts the session again")
+	requireNoSessionErrorBuffered(t, s.Events())
+}
+
+// requireEventsClosedWithoutSessionError drains events until the channel
+// closes, failing the test on a SessionError or when it is still open after
+// deadline.
+func requireEventsClosedWithoutSessionError(t *testing.T, events <-chan ports.SessionEvent, deadline time.Duration) {
+	t.Helper()
+	wait.Until(t, deadline, "session events channel closed", func() bool {
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					return true
+				}
+				require.NotEqual(t, ports.SessionError, event.Type,
+					"an abandoned recovery must not signal a terminal session: %v", event.Err)
+			default:
+				return false
+			}
+		}
+	})
+}
+
+// TestSessionRecovery_AbandonWhileStartInFlightKeepsEventsOpen pins that a
+// recovery abandoned while a Start is still dialing leaves the events channel
+// open. That Start installs its connection after the abandon, so every later
+// Start returns early without re-creating a closed channel: its
+// SessionConnected is the only signal the runtime manager gets.
+func TestSessionRecovery_AbandonWhileStartInFlightKeepsEventsOpen(t *testing.T) {
+	clk := clocktest.New()
+	metrics := &recoveryCountExporter{
+		RecordingExporter: &ports.RecordingExporter{},
+		recycled:          make(chan struct{}),
+	}
+	s := NewSession(SessionOptions{
+		BrokerURLs:       []string{"tcp://127.0.0.1:1883"},
+		ClientID:         "abandon-during-start",
+		Clock:            clk,
+		ConnectTimeout:   time.Second,
+		ReconcileTimeout: time.Second,
+		UnmatchedGrace:   time.Second,
+	}, connectivity.SessionPersistent, nil, metrics)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	events := s.Events()
+
+	dialEntered := make(chan struct{}, 1)
+	releaseDial := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-releaseDial:
+		default:
+			close(releaseDial)
+		}
+	})
+	s.connectOverrideAwaitConnectionUp = true
+	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		s.mu.Lock()
+		generation := s.connectionGeneration
+		s.mu.Unlock()
+		select {
+		case dialEntered <- struct{}{}:
+		default:
+		}
+		<-releaseDial
+		s.handleConnectionUpGenerationWithSessionPresent(generation, true)
+		return &fakeLiveConn{}, func() {}, nil
+	}
+	startDone := make(chan error, 1)
+	go func() { startDone <- s.Start(t.Context()) }()
+	wait.RequireReceive(t, dialEntered, 5*time.Second)
+
+	require.NoError(t, s.requestRecovery(t.Context()))
+	wait.RequireClosed(t, metrics.recycled, 5*time.Second)
+	// The recovery's reload waits for the in-flight Start; expiring the attempt
+	// budget makes it give up before any teardown, so the attempt is abandoned
+	// with no connection installed.
+	clk.Advance(s.recoveryAttemptTimeout())
+	require.NoError(t, s.acquireReload(t.Context()))
+	s.releaseReload()
+	s.mu.Lock()
+	pending := s.recoveryPending
+	terminalErr := s.terminalErr
+	s.mu.Unlock()
+	require.False(t, pending, "the recovery attempt must have ended")
+	require.NoError(t, terminalErr)
+
+	close(releaseDial)
+	require.NoError(t, wait.RequireReceive(t, startDone, 5*time.Second))
+	select {
+	case event, ok := <-events:
+		require.True(t, ok, "the events channel was closed under an in-flight Start")
+		assert.Equal(t, ports.SessionConnected, event.Type)
+	default:
+		t.Fatal("the in-flight Start's SessionConnected was not delivered")
+	}
 }
 
 func TestSessionRecovery_ConcurrentTerminalFailuresCoalesce(t *testing.T) {
@@ -1029,7 +1121,57 @@ func TestSessionRecovery_FailClosedWinnerStillCompletesUnifiedTerminalTransition
 	assert.ErrorIs(t, latched, shared.ErrTransportClosedPermanently)
 }
 
-func TestSessionRecovery_AbandonIgnoresStaleGenerationAndTerminalSession(t *testing.T) {
+// newAbandonableRecoverySession returns a session with an active recovery
+// attempt of generation 3 on conn, and a flag that reports whether the
+// attempt's cancel func ran.
+func newAbandonableRecoverySession(t *testing.T, conn pahoConnection) (*Session, *atomic.Bool) {
+	t.Helper()
+	s := NewSession(SessionOptions{
+		ClientID: "abandon-guards",
+		Clock:    clocktest.New(),
+	}, connectivity.SessionPersistent, nil)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	cancelled := &atomic.Bool{}
+	s.mu.Lock()
+	s.cm = conn
+	s.recoveryPending = true
+	s.recoveryAttemptActive = true
+	s.recoveryGeneration = 3
+	s.recoveryAttemptCancel = func() { cancelled.Store(true) }
+	s.mu.Unlock()
+	return s, cancelled
+}
+
+func requireRecoveryAttemptUntouched(t *testing.T, s *Session, cancelled *atomic.Bool) {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	require.True(t, s.recoveryPending)
+	require.True(t, s.recoveryAttemptActive)
+	require.False(t, s.eventsClosed)
+	require.False(t, cancelled.Load())
+}
+
+func TestSessionRecovery_AbandonIgnoresStaleGeneration(t *testing.T) {
+	s, cancelled := newAbandonableRecoverySession(t, nil)
+	cause := shared.ErrUnavailable.WithMessage("forced recovery failure after drain")
+
+	assert.False(t, s.abandonRecoveryAttempt(2, cause), "a stale generation must not abandon the attempt")
+	requireRecoveryAttemptUntouched(t, s, cancelled)
+}
+
+func TestSessionRecovery_AbandonIgnoresTerminalSession(t *testing.T) {
+	s, cancelled := newAbandonableRecoverySession(t, nil)
+	cause := shared.ErrUnavailable.WithMessage("forced recovery failure after drain")
+	s.mu.Lock()
+	s.terminalErr = shared.ErrUnavailable.Wrap(shared.ErrTransportClosedPermanently)
+	s.mu.Unlock()
+
+	assert.False(t, s.abandonRecoveryAttempt(3, cause), "a terminal session must not be abandoned back to usable")
+	requireRecoveryAttemptUntouched(t, s, cancelled)
+}
+
+func TestSessionRecovery_AbandonEndsAttemptAndClosesEventsOnlyWithoutConnection(t *testing.T) {
 	cases := []struct {
 		name             string
 		conn             pahoConnection
@@ -1040,42 +1182,9 @@ func TestSessionRecovery_AbandonIgnoresStaleGenerationAndTerminalSession(t *test
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := NewSession(SessionOptions{
-				ClientID: "abandon-guards",
-				Clock:    clocktest.New(),
-			}, connectivity.SessionPersistent, nil)
-			var cancelled atomic.Bool
-			s.mu.Lock()
-			s.cm = tc.conn
-			s.recoveryPending = true
-			s.recoveryAttemptActive = true
-			s.recoveryGeneration = 3
-			s.recoveryAttemptCancel = func() { cancelled.Store(true) }
-			s.mu.Unlock()
+			s, cancelled := newAbandonableRecoverySession(t, tc.conn)
 			cause := shared.ErrUnavailable.WithMessage("forced recovery failure after drain")
-			requireAttemptUntouched := func() {
-				t.Helper()
-				s.mu.Lock()
-				defer s.mu.Unlock()
-				require.True(t, s.recoveryPending)
-				require.True(t, s.recoveryAttemptActive)
-				require.False(t, s.eventsClosed)
-				require.False(t, cancelled.Load())
-			}
 
-			assert.False(t, s.abandonRecoveryAttempt(2, cause), "a stale generation must not abandon the attempt")
-			requireAttemptUntouched()
-
-			latched := shared.ErrUnavailable.Wrap(shared.ErrTransportClosedPermanently)
-			s.mu.Lock()
-			s.terminalErr = latched
-			s.mu.Unlock()
-			assert.False(t, s.abandonRecoveryAttempt(3, cause), "a terminal session must not be abandoned back to usable")
-			requireAttemptUntouched()
-
-			s.mu.Lock()
-			s.terminalErr = nil
-			s.mu.Unlock()
 			assert.True(t, s.abandonRecoveryAttempt(3, cause))
 
 			s.mu.Lock()
@@ -1219,6 +1328,235 @@ func TestSessionRecovery_ExclusiveRecoveryReconcileFailureAbandonsWithoutTeardow
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, shared.ErrTransportClosedPermanently)
 	assert.Equal(t, int32(2), disconnects.Load(), "the ordinary exclusive reconcile failure tears the connection down")
+}
+
+// failOnceSubscribeConn rejects its first SUBSCRIBE and grants every later one
+// at the requested QoS.
+type failOnceSubscribeConn struct {
+	fakeLiveConn
+	subscribes atomic.Int32
+}
+
+func (c *failOnceSubscribeConn) Subscribe(_ context.Context, subs []subscribeSpec) ([]byte, error) {
+	if c.subscribes.Add(1) == 1 {
+		return nil, shared.ErrUnavailable.WithMessage("forced recovery reconcile failure")
+	}
+	reasons := make([]byte, len(subs))
+	for i := range subs {
+		reasons[i] = subs[i].QoS
+	}
+	return reasons, nil
+}
+
+func routerQuiesced(r *router) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.quiesced
+}
+
+// TestSessionRecovery_AbandonedRecoveryResumesRouteWorkOnNextReconcile pins
+// that a recovery abandoned after its drain, with its connection installed,
+// does not leave route work stopped for good: the drain quiesced the router,
+// and the next ordinary Reconcile that converges releases it, dispatching the
+// delivery buffered meanwhile and every later one.
+func TestSessionRecovery_AbandonedRecoveryResumesRouteWorkOnNextReconcile(t *testing.T) {
+	metrics := &recoveryCountExporter{
+		RecordingExporter: &ports.RecordingExporter{},
+		recycled:          make(chan struct{}),
+	}
+	s := NewSession(SessionOptions{
+		BrokerURLs:       []string{"tcp://127.0.0.1:1883"},
+		ClientID:         "abandoned-recovery-resumes-routes",
+		Clock:            clocktest.New(),
+		ConnectTimeout:   time.Second,
+		ReconcileTimeout: time.Second,
+		UnmatchedGrace:   time.Second,
+	}, connectivity.SessionPersistent, nil, metrics)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	plan := connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "orders/#", QoS: 1}},
+	}
+	s.mu.Lock()
+	s.cm = &fakeLiveConn{}
+	s.connected = true
+	s.plan = &plan
+	s.mu.Unlock()
+	replacement := &failOnceSubscribeConn{}
+	s.connectOverrideAwaitConnectionUp = true
+	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		s.mu.Lock()
+		generation := s.connectionGeneration
+		s.mu.Unlock()
+		s.handleConnectionUpGenerationWithSessionPresent(generation, true)
+		return replacement, func() {}, nil
+	}
+	delivered := make(chan string, 2)
+	s.router.RegisterFiltered("orders", []string{"orders/#"}, func(pub *pahov5.Publish, _ func() error) {
+		delivered <- pub.Topic
+	})
+
+	require.NoError(t, s.requestRecovery(t.Context()))
+	wait.RequireClosed(t, metrics.recycled, 5*time.Second)
+	require.NoError(t, s.acquireReload(t.Context()))
+	s.releaseReload()
+
+	s.mu.Lock()
+	terminalErr := s.terminalErr
+	pending := s.recoveryPending
+	current := s.cm
+	s.mu.Unlock()
+	require.NoError(t, terminalErr)
+	require.False(t, pending)
+	require.Equal(t, pahoConnection(replacement), current, "the recovery connection stays installed")
+	require.Equal(t, int32(1), replacement.subscribes.Load(), "the recovery's own reconcile failed")
+	require.True(t, routerQuiesced(s.router), "the abandoned recovery leaves the drain's quiescence in place")
+
+	s.router.dispatch(&pahov5.Publish{Topic: "orders/buffered", QoS: 1}, func() error { return nil })
+	select {
+	case topic := <-delivered:
+		t.Fatalf("delivered %q while the router was quiesced", topic)
+	default:
+	}
+
+	require.NoError(t, s.Reconcile(t.Context(), plan))
+	assert.False(t, routerQuiesced(s.router), "a converged ordinary reconcile releases the quiescence")
+	assert.Equal(t, "orders/buffered", wait.RequireReceive(t, delivered, 5*time.Second))
+	s.router.dispatch(&pahov5.Publish{Topic: "orders/live", QoS: 1}, func() error { return nil })
+	assert.Equal(t, "orders/live", wait.RequireReceive(t, delivered, 5*time.Second))
+}
+
+// TestSessionRecovery_RecoveryConnectionSupersededBeforeCaptureAbandons pins
+// that a recovery whose own connection is no longer the current one when the
+// attempt captures its target epoch is abandoned, not terminal, and does not
+// reconcile on a connection it cannot vouch for.
+func TestSessionRecovery_RecoveryConnectionSupersededBeforeCaptureAbandons(t *testing.T) {
+	logs := &recordingLogHandler{}
+	metrics := &recoveryCountExporter{
+		RecordingExporter: &ports.RecordingExporter{},
+		recycled:          make(chan struct{}),
+	}
+	s := NewSession(SessionOptions{
+		BrokerURLs:       []string{"tcp://127.0.0.1:1883"},
+		ClientID:         "recovery-connection-superseded",
+		Clock:            clocktest.New(),
+		ConnectTimeout:   time.Second,
+		ReconcileTimeout: time.Second,
+		UnmatchedGrace:   time.Second,
+	}, connectivity.SessionPersistent, slog.New(logs), metrics)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	s.mu.Lock()
+	s.cm = &fakeLiveConn{}
+	s.connected = true
+	s.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "superseded/#", QoS: 1}},
+	}
+	s.mu.Unlock()
+	events := s.Events()
+	replacement := &captureSubConn{}
+	s.connectOverrideAwaitConnectionUp = true
+	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		s.mu.Lock()
+		generation := s.connectionGeneration
+		s.mu.Unlock()
+		s.handleConnectionUpGenerationWithSessionPresent(generation, true)
+		// The connection epoch moves past the one the recovery recorded, as
+		// when a concurrent Start's connection-up lands before reloadLocked's
+		// teardown bumps the epoch. Every connection-up during an attempt
+		// records its own epoch, so the move is written directly.
+		s.mu.Lock()
+		s.connEpoch++
+		s.mu.Unlock()
+		return replacement, func() {}, nil
+	}
+
+	require.NoError(t, s.requestRecovery(t.Context()))
+	wait.RequireClosed(t, metrics.recycled, 5*time.Second)
+	require.NoError(t, s.acquireReload(t.Context()))
+	s.releaseReload()
+
+	s.mu.Lock()
+	terminalErr := s.terminalErr
+	pending := s.recoveryPending
+	active := s.recoveryAttemptActive
+	current := s.cm
+	s.mu.Unlock()
+	assert.NoError(t, terminalErr)
+	assert.False(t, pending)
+	assert.False(t, active)
+	assert.Equal(t, pahoConnection(replacement), current)
+	assert.Equal(t, 1, logs.warnCountContaining("settlement recovery abandoned"))
+	_, subscribed := replacement.specFor("superseded/#")
+	assert.False(t, subscribed, "an abandoned attempt must not reconcile on the superseded connection")
+	requireNoSessionErrorBuffered(t, events)
+}
+
+// TestSessionRecovery_ConnectionReplacedDuringRecoveryReconcileAbandons pins
+// that a recovery reconcile which converges on a connection other than the
+// recovery's own is abandoned, not terminal. Managed-subscription cleanup
+// recycles the connection inside that reconcile, so it returns nil on the
+// replacement.
+func TestSessionRecovery_ConnectionReplacedDuringRecoveryReconcileAbandons(t *testing.T) {
+	logs := &recordingLogHandler{}
+	metrics := &recoveryCountExporter{
+		RecordingExporter: &ports.RecordingExporter{},
+		recycled:          make(chan struct{}),
+	}
+	operations := []string{}
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
+		"safe-session-id": {"old/#": {}},
+	}}
+	first := &managedConnFake{operations: &operations}
+	recoveryConn := &managedConnFake{operations: &operations}
+	replacement := &managedConnFake{operations: &operations}
+	s := NewSession(SessionOptions{
+		BrokerURLs:       []string{"tcp://127.0.0.1:1883"},
+		ClientID:         "recovery-reconcile-replaced",
+		Clock:            clocktest.New(),
+		ConnectTimeout:   time.Second,
+		ReconcileTimeout: time.Second,
+		UnmatchedGrace:   time.Second,
+	}, connectivity.SessionPersistent, slog.New(logs), metrics)
+	s.managedStore = store
+	s.managedIdentity = "safe-session-id"
+	s.managedRequired = true
+	conns := []pahoConnection{first, recoveryConn, replacement}
+	var dials atomic.Int32
+	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		dial := int(dials.Add(1))
+		if dial > len(conns) {
+			return nil, nil, shared.ErrUnavailable.WithMessage("unexpected dial")
+		}
+		return conns[dial-1], func() {}, nil
+	}
+	require.NoError(t, s.Start(t.Context()))
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	s.mu.Lock()
+	s.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "new/#", QoS: 1}},
+	}
+	s.mu.Unlock()
+	events := s.Events()
+
+	require.NoError(t, s.requestRecovery(t.Context()))
+	wait.RequireClosed(t, metrics.recycled, 5*time.Second)
+	require.NoError(t, s.acquireReload(t.Context()))
+	s.releaseReload()
+
+	s.mu.Lock()
+	terminalErr := s.terminalErr
+	pending := s.recoveryPending
+	active := s.recoveryAttemptActive
+	current := s.cm
+	s.mu.Unlock()
+	assert.NoError(t, terminalErr)
+	assert.False(t, pending)
+	assert.False(t, active)
+	assert.Equal(t, int32(3), dials.Load(), "the recovery recycle and the managed cleanup recycle each dial once")
+	assert.Equal(t, pahoConnection(replacement), current)
+	assert.Equal(t, []string{"new/#"}, replacement.subscribed, "the reconcile converged on the replacement")
+	assert.Equal(t, []string{"new/#"}, store.snapshot("safe-session-id"))
+	assert.Equal(t, 1, logs.warnCountContaining("settlement recovery abandoned"))
+	requireNoSessionErrorBuffered(t, events)
 }
 
 type blockedStartCleanupConn struct {

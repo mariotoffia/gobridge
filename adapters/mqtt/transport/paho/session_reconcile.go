@@ -70,7 +70,7 @@ func (s *Session) reconcileUnderGate(
 		current := s.recoveryAttemptActive &&
 			s.recoveryGeneration == recoveryGeneration &&
 			s.recoveryTargetEpoch != 0 &&
-			s.recoverySessionPresentEpoch == s.recoveryTargetEpoch &&
+			s.recoveryConnectionEpoch == s.recoveryTargetEpoch &&
 			s.connEpoch == s.recoveryTargetEpoch
 		recoveryErr := s.recoveryErr
 		s.mu.Unlock()

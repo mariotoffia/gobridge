@@ -54,13 +54,13 @@ type Session struct {
 	// cover it without shortening any other's.
 	publishAckBudget time.Duration
 	events           chan ports.SessionEvent
-	// eventsClosed guards the single close of s.events. TWO paths close
-	// it — Close (terminal shutdown) and Reload's Start-failure signal
-	// (closing events routes the dead session into the runtime
-	// manager's events-channel-close restart path). Both honor this flag
-	// under s.mu so a double-close cannot panic, and pushEvent checks it
-	// so no send can race the close. Start clears it (and re-materialises
-	// s.events) when the supervisor re-Starts a Reload-failed session.
+	// eventsClosed guards the single close of s.events. Its closers are
+	// Close, transitionTerminal, a failed Reload and an abandoned recovery
+	// (closing events routes a dead session into the runtime manager's
+	// events-channel-close restart path). All honor this flag under s.mu so
+	// a double-close cannot panic, and pushEvent checks it so no send can
+	// race the close. Start clears it (and re-materialises s.events) when
+	// the supervisor re-Starts a session after a dead-session signal.
 	eventsClosed bool
 	closed       bool
 	// closedCh is closed exactly once by Close, under mu together with the
@@ -260,17 +260,19 @@ type Session struct {
 	// recoveryNeedsSessionPresent is set while a recovery is requested, so the
 	// next dial asks the broker to resume.
 	recoveryNeedsSessionPresent bool
-	// recoverySessionPresentEpoch is the epoch of the recovery's own
-	// connection, compared with the epoch the attempt captured after its
-	// recycle.
-	recoverySessionPresentEpoch uint64
-	recoveryTargetEpoch         uint64
-	recoveryAttemptActive       bool
-	recoveryDrainState          recoveryDrainState
-	recoveryDrainGeneration     uint64
-	recoveryDrainDone           chan struct{}
-	recoveryGeneration          uint64
-	recoveryAttemptCancel       context.CancelFunc
+	// recoveryConnectionEpoch is the epoch of the recovery's own connection,
+	// recorded on every connection-up while a recovery is requested. The
+	// attempt compares it with the epoch it captured after its recycle, and
+	// the recovery reconcile completes only while both still name the current
+	// connection.
+	recoveryConnectionEpoch uint64
+	recoveryTargetEpoch     uint64
+	recoveryAttemptActive   bool
+	recoveryDrainState      recoveryDrainState
+	recoveryDrainGeneration uint64
+	recoveryDrainDone       chan struct{}
+	recoveryGeneration      uint64
+	recoveryAttemptCancel   context.CancelFunc
 	// recoveryErr is set only by the terminal transition.
 	recoveryErr           error
 	lastRecoveryCompleted time.Time

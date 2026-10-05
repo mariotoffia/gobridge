@@ -75,7 +75,7 @@ func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint
 	}
 	nextEpoch := s.connEpoch + 1
 	if s.recoveryNeedsSessionPresent {
-		s.recoverySessionPresentEpoch = nextEpoch
+		s.recoveryConnectionEpoch = nextEpoch
 		s.recoveryErr = nil
 	}
 	// While a recovery is requested every dial asks the broker to resume: the

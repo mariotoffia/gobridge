@@ -136,7 +136,7 @@ func (s *Session) finishRecoveryAttemptLocked(generation uint64) context.CancelF
 	s.recoveryAttemptCancel = nil
 	s.recoveryPending = false
 	s.recoveryNeedsSessionPresent = false
-	s.recoverySessionPresentEpoch = 0
+	s.recoveryConnectionEpoch = 0
 	s.recoveryTargetEpoch = 0
 	s.clearRecoveryDrainLocked(generation)
 	s.recoveryErr = nil
@@ -161,11 +161,16 @@ func (s *Session) completeRecoveryAttempt(generation uint64) bool {
 
 // abandonRecoveryAttempt ends a recovery that failed after its drain finished.
 // The drain already settled or stopped every piece of route work of the old
-// connection, so none of it can still act, and the session stays usable: it
-// reconnects the ordinary way. When no connection is installed it closes the
+// connection, so none of it can still act, and the session is not terminal.
+// When no connection is installed and no Start is in flight it closes the
 // events channel — the ordinary dead-session signal reloadLocked withholds
-// while a recovery is pending — so the runtime manager re-runs the session as
-// it does for any dead session.
+// while a recovery is pending. The runtime manager then re-runs a
+// non-exclusive session; an exclusive session whose events close is closed and
+// its unit rebuilt by the supervisor. A Start in flight owns that signal
+// instead: if it fails, its caller gets the error and the manager re-runs the
+// session; if it succeeds, its SessionConnected reaches the manager. Closing
+// events under it would drop that SessionConnected, and every later Start
+// returns early on the installed connection without re-creating the channel.
 func (s *Session) abandonRecoveryAttempt(generation uint64, cause error) bool {
 	s.mu.Lock()
 	if !s.recoveryAttemptActive || s.recoveryGeneration != generation || s.terminalErr != nil {
@@ -173,7 +178,7 @@ func (s *Session) abandonRecoveryAttempt(generation uint64, cause error) bool {
 		return false
 	}
 	cancel := s.finishRecoveryAttemptLocked(generation)
-	if s.cm == nil && !s.closed {
+	if s.cm == nil && !s.starting && !s.closed {
 		s.closeEventsLocked()
 	}
 	s.mu.Unlock()
@@ -213,11 +218,11 @@ func (s *Session) captureRecoveryTargetEpoch(generation uint64) error {
 	if s.recoveryErr != nil {
 		return s.recoveryErr
 	}
-	if targetEpoch == 0 || s.recoverySessionPresentEpoch != targetEpoch {
+	if targetEpoch == 0 || s.recoveryConnectionEpoch != targetEpoch {
 		return shared.ErrUnavailable.
 			WithMessage("mqtt: settlement recovery connection is no longer the current connection").
 			With("target_epoch", targetEpoch).
-			With("recovery_connection_epoch", s.recoverySessionPresentEpoch)
+			With("recovery_connection_epoch", s.recoveryConnectionEpoch)
 	}
 	return nil
 }
@@ -246,7 +251,7 @@ func (s *Session) requestRecovery(ctx context.Context) error {
 	}
 	s.recoveryPending = true
 	s.recoveryNeedsSessionPresent = true
-	s.recoverySessionPresentEpoch = 0
+	s.recoveryConnectionEpoch = 0
 	s.recoveryDrainState = recoveryDrainNotStarted
 	s.recoveryDrainGeneration = 0
 	s.recoveryDrainDone = nil
@@ -338,7 +343,7 @@ func (s *Session) runRecovery(
 	s.recoveryDrainDone = nil
 	s.recoveryAttemptCancel = cancelAttempt
 	s.recoveryNeedsSessionPresent = true
-	s.recoverySessionPresentEpoch = 0
+	s.recoveryConnectionEpoch = 0
 	s.recoveryTargetEpoch = 0
 	s.mu.Unlock()
 
@@ -364,7 +369,9 @@ func (s *Session) runRecovery(
 
 	// From here on the drain has finished, so no route work of the old
 	// connection can still act: a failure abandons the attempt instead of
-	// terminating the session, and the session reconnects the ordinary way.
+	// terminating the session. The runtime manager re-runs a non-exclusive
+	// session; an exclusive session whose events close is closed and its unit
+	// rebuilt by the supervisor (see abandonRecoveryAttempt).
 	if !s.recordRecoveryRecycleStart(generation) {
 		return
 	}

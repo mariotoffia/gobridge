@@ -181,12 +181,12 @@ func (s *Session) Start(ctx context.Context) error {
 	s.connectionUpErr = nil
 	connectionUpDone := s.connectionUpDone
 	if s.eventsClosed {
-		// a prior Reload-failure closed s.events to signal terminal
-		// death and trigger this supervisor re-Start. Re-materialise a
-		// fresh events channel (same capacity) BEFORE dialing so the
-		// reconnect's SessionConnected/SessionReconnecting events land in
-		// the new buffer, and so the manager's handleEvents — which
-		// re-reads Events() on each Run — does not spin on a closed
+		// a prior dead-session signal (failed Reload or abandoned
+		// recovery) closed s.events and triggered this supervisor re-Start.
+		// Re-materialise a fresh events channel (same capacity) BEFORE
+		// dialing so the reconnect's SessionConnected/SessionReconnecting
+		// events land in the new buffer, and so the manager's handleEvents
+		// — which re-reads Events() on each Run — does not spin on a closed
 		// channel. Done under s.mu; pushEvent observes the cleared flag
 		// and the new channel atomically.
 		s.events = make(chan ports.SessionEvent, sessionEventsBuffer)
@@ -243,7 +243,7 @@ func (s *Session) Start(ctx context.Context) error {
 	if s.connectOverride != nil && !s.connectOverrideAwaitConnectionUp {
 		s.mu.Lock()
 		if s.recoveryNeedsSessionPresent {
-			s.recoverySessionPresentEpoch = s.connEpoch
+			s.recoveryConnectionEpoch = s.connEpoch
 		}
 		s.mu.Unlock()
 		s.completeConnectionUpBarrier(connectionGeneration, nil)

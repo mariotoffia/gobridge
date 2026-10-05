@@ -118,7 +118,7 @@ func (s *Session) transitionTerminal(
 		s.recoveryPending = false
 		s.recoveryAttemptActive = false
 		s.recoveryNeedsSessionPresent = false
-		s.recoverySessionPresentEpoch = 0
+		s.recoveryConnectionEpoch = 0
 		s.recoveryTargetEpoch = 0
 		s.lastRecoveryCompleted = s.clock().Now()
 	}
@@ -327,10 +327,10 @@ func (s *Session) reloadLocked(ctx context.Context) error {
 }
 
 // closeEventsLocked closes the session's lifecycle-event channel exactly
-// once. TWO paths close it — Close (terminal shutdown) and Reload's
-// Start-failure terminal signal — so a guard is required to avoid a
-// double-close panic when both run (e.g. a Close landing after a
-// Reload-failure already closed events). pushEvent also checks
+// once. Several paths close it — Close, transitionTerminal, a failed Reload
+// and an abandoned recovery — and more than one can run against the same
+// channel (e.g. a Close landing after a failed Reload already closed it), so
+// the guard prevents a double-close panic. pushEvent also checks
 // s.eventsClosed under s.mu, so no concurrent send can race this close.
 // Callers MUST hold s.mu.
 func (s *Session) closeEventsLocked() {
