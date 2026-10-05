@@ -12,6 +12,7 @@ import (
 	"fmt"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awskms"
@@ -349,6 +350,11 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 // interface per design contract; consumers needing the concrete
 // type can type-assert.
 func (g *GoBridgeSingle) ControlService() awsecs.IService { return g.service }
+
+// ConfigTable returns the DynamoDB config-source table, or nil for file config.
+//
+//nolint:ireturn // Public CDK data output intentionally returns the L2 table interface.
+func (g *GoBridgeSingle) ConfigTable() awsdynamodb.ITable { return g.base.ConfigTable }
 
 // TaskDefinition returns the Fargate task definition built by the
 // shared base.
