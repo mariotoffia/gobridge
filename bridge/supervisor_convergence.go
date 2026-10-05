@@ -52,7 +52,7 @@ const (
 // and a broker-rejected SUBACK never satisfies subscriptions.
 const convergenceReadyLevel = ports.LevelSubscribed
 
-// runtimeConverged reports whether rt has reached the state a committed config
+// RuntimeConverged reports whether rt has reached the state a committed config
 // is expected to reach, and the readiness level it actually achieved (so a
 // degraded reason can name it). It takes ONE health snapshot and derives both
 // answers from it, keeping the verdict internally consistent.
@@ -63,7 +63,7 @@ const convergenceReadyLevel = ports.LevelSubscribed
 // demanding LevelSubscribed from it would mark every such deployment
 // applied-but-not-converged forever and stall a coordinated rollout's confirm
 // window on a config that has nothing left to do.
-func runtimeConverged(ctx context.Context, rt *runtime.Runtime) (bool, ports.ReadinessLevel) {
+func RuntimeConverged(ctx context.Context, rt *runtime.Runtime) (bool, ports.ReadinessLevel) {
 	dh := rt.DeepHealth(ctx)
 	level := ports.ReadinessLevelFromDeepHealth(dh)
 	if dh.Empty {
@@ -162,7 +162,7 @@ func (s *Supervisor) runConvergenceWatch(ctx context.Context, rt *runtime.Runtim
 			// failed one keeps the operator signal).
 			return
 		}
-		converged, level := runtimeConverged(ctx, rt)
+		converged, level := RuntimeConverged(ctx, rt)
 		if converged {
 			// Deliberately SILENT on the healthy path (no per-reload log):
 			// convergence within budget is the normal case, and a background

@@ -40,12 +40,12 @@ func (r *router) ingressCapViolation(pub *pahov5.Publish) (class string, violati
 		))
 	case userProperties > maxIngressUserProperties:
 		return "user_properties", shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
-			"mqtt: inbound User Properties count %d exceeds retained-memory cap %d",
+			"mqtt: inbound User Properties count %d exceeds cap %d",
 			userProperties, maxIngressUserProperties,
 		))
 	case ingressMetadataBytes(pub) > maxIngressMetadataBytes:
 		return "metadata", shared.ErrInvalidPayload.WithMessage(fmt.Sprintf(
-			"mqtt: inbound metadata exceeds retained-memory cap %d bytes",
+			"mqtt: inbound metadata exceeds cap %d bytes",
 			maxIngressMetadataBytes,
 		))
 	}

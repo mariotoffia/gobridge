@@ -137,9 +137,11 @@ gauge reports a current value and is read with `Maximum`. Reading a gauge with
 
 `MessagesReceived`, `MessagesSent`, `MessagesDropped`, `MessagesFiltered`,
 `MessagesExpired`, `DLQEntries`, and in-flight close the conservation law
-`received = sent + dropped + filtered + expired + dlq + inflight`. A rising
-`MessagesDropped` is the single signal for silent message loss, so keep it split
-from the intentional filter and TTL counters.
+`received = sent + dropped + filtered + expired + dlq + inflight`. Leave
+`DLQEntries` with `category` `subscription_removed` out of `dlq`: those
+deliveries never reached a route, so `MessagesReceived` never counted them. A
+rising `MessagesDropped` is the single signal for silent message loss, so keep
+it split from the intentional filter and TTL counters.
 
 **Outbox**
 
@@ -230,7 +232,7 @@ table. See [ADR 0005](../adr/0005-outbox-partition-claim-design.md) and the
 
 | Metric | Dimensions | Unit | Description |
 |--------|-----------|------|-------------|
-| `DLQEntries` | `route_id`, `category` | Count | Messages written to the DLQ (an INGRESS COUNTER — only ever increases) |
+| `DLQEntries` | `route_id`, `category` | Count | Messages written to the DLQ (an INGRESS COUNTER — only ever increases). `category` `subscription_removed` counts a delivery a persistent MQTT session received for a filter a configuration change removed; it carries `route_id` only when exactly one route receives through that session |
 | `DLQDepth` | none | Count (gauge) | CURRENT outstanding DLQ entries — the standing backlog "right now", so a stale burst after traffic stops is visible. Sampled via the store's optional `ports.DLQDepthReporter`; emitted as a dimensionless fleet total. |
 | `DLQWriteFailures` | none | Count | DLQ write attempts that failed after retries, or were skipped because the owning exclusive session held no lease. The lease check applies only when the runtime has a lease store; without one no write is skipped for want of a lease |
 | `DLQDuplicateSuppressed` | none | Count | DLQ writes the store refused as an existing entry — the same terminal event recorded twice, collapsed onto one row and reported as success. A rising value means settlement is failing after DLQ writes land, not that the DLQ store is unhealthy |
@@ -318,13 +320,13 @@ embedder chooses them; keep them low-cardinality, as the warning below requires.
 The MQTT adapter self-instruments its own counters and gauges, tagged
 `session_id`. They are catalogued with their operator guidance in
 [Troubleshooting — MQTT](../adapter-diagnostic-metrics.md#mqtt-adaptersmqtttransportpaho);
-the three the shipped alarms read are `MQTTIngressPoisonDropped`
+the four the shipped alarms read are `MQTTIngressPoisonDropped`
 (acked-and-dropped ingress that breached a local cap — acknowledged loss),
-`MQTTSessionTakeover` (another client on the same `client_id`) and
+`MQTTSessionTakeover` (another client on the same `client_id`),
 `MQTTQoSDowngraded` (the broker first reported a lower QoS grant than
-configured; the subscription keeps running at the granted QoS as best effort).
-The counter marks only the first report; the gauge `MQTTQoSDowngradedActive`
-shows a downgrade that is still standing.
+configured; the subscription keeps running at the granted QoS as best effort)
+and `MQTTQoSDowngradedActive`. The counter marks only the first report; the
+gauge shows a downgrade that is still standing.
 
 Two more are worth a hand-authored alarm and have none:
 [`MQTTEgressRejected`](alarms.md#alarms-you-must-author-yourself) — a publish

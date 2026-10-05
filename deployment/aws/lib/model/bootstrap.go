@@ -35,7 +35,6 @@ const (
 	DefaultPollInterval         = deployinfra.DefaultPollInterval
 	DefaultDynamoDBPollInterval = deployinfra.DefaultDynamoDBPollInterval
 	DefaultMountPath            = deployinfra.DefaultMountPath
-	DefaultContainerMemoryBytes = deployinfra.DefaultContainerMemoryBytes
 )
 
 type BootstrapConfig = deployinfra.BootstrapConfig

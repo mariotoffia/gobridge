@@ -332,7 +332,6 @@ sessions:
         session_expiry_interval: 86400
         receive_maximum: 192
         max_payload_bytes: 262144
-        ingress_memory_budget_bytes: 268435456
         username: "bridge"
         password: "secret"
         will: { topic: "bridge/status/node-01", payload: "offline", qos: 1, retain: true }

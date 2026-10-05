@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -64,10 +65,18 @@ func readBoundedFile(path string, maxSize int64) ([]byte, error) {
 	return data, nil
 }
 
+// LoadBootstrapConfigJSON decodes, normalizes and validates a bootstrap
+// document. A key the bootstrap does not read is refused, so a removed or
+// misspelled setting fails at task boot instead of being silently ignored.
 func LoadBootstrapConfigJSON(data []byte) (deployinfra.BootstrapConfig, error) {
 	var cfg deployinfra.BootstrapConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
 		return deployinfra.BootstrapConfig{}, fmt.Errorf("bootstrap: decode bootstrap config: %w", err)
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return deployinfra.BootstrapConfig{}, errors.New("bootstrap: decode bootstrap config: unexpected trailing data")
 	}
 	cfg = cfg.Normalized()
 	if err := cfg.Validate(); err != nil {

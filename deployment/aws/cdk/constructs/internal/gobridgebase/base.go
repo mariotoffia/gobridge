@@ -3,7 +3,6 @@ package gobridgebase
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
@@ -236,15 +235,8 @@ func New(scope constructs.Construct, id *string, props *Props) *Built {
 	if props.MemoryMiB != nil {
 		mem = props.MemoryMiB
 	}
-	containerMemoryBytes, err := memoryBytesFromMiB(*mem)
-	if err != nil {
-		panic(fmt.Sprintf("gobridgebase: invalid MemoryMiB: %v", err))
-	}
 	bootstrap := props.Bootstrap.Normalized()
 	stampConfigTable(&bootstrap, props.ConfigTable)
-	// The task definition is authoritative. Never trust a separately supplied
-	// bootstrap byte limit that could drift from the actual Fargate hard limit.
-	bootstrap.ContainerMemoryBytes = containerMemoryBytes
 
 	mountPath := defaultMountPath
 	if props.MountPath != nil && *props.MountPath != "" {
@@ -408,20 +400,6 @@ func logGroupPrefix(stackName, scopeID, container string) string {
 		return "/gobridge/" + scopeID + "/" + container
 	}
 	return "/gobridge/" + stackName + "/" + scopeID + "/" + container
-}
-
-func memoryBytesFromMiB(memoryMiB float64) (uint64, error) {
-	if math.IsNaN(memoryMiB) || math.IsInf(memoryMiB, 0) || memoryMiB <= 0 {
-		return 0, fmt.Errorf("must be a finite positive value, got %v", memoryMiB)
-	}
-	if math.Trunc(memoryMiB) != memoryMiB {
-		return 0, fmt.Errorf("must be a whole MiB value, got %v", memoryMiB)
-	}
-	const bytesPerMiB = uint64(1 << 20)
-	if memoryMiB > float64(math.MaxUint64/bytesPerMiB) {
-		return 0, fmt.Errorf("%v MiB overflows bytes", memoryMiB)
-	}
-	return uint64(memoryMiB) * bytesPerMiB, nil
 }
 
 func jsiiDeref(s *string) string {

@@ -51,7 +51,7 @@ The runtime emits these metrics automatically when a `MetricsExporter` is config
 | `RouteErrors` | Counter | `route_id` | Recoverable route errors |
 | `DeliveryE2ELatency` | Timer | `route_id` | End-to-end delivery time per message |
 | `DeliveryPanics` | Counter | `route_id` | Recovered panics during delivery |
-| `DLQEntries` | Counter | `route_id`, `category` | DLQ ARRIVALS (ingress counter -- only increases) |
+| `DLQEntries` | Counter | `route_id`, `category` | DLQ ARRIVALS (ingress counter -- only increases). Category `subscription_removed` (a delivery for a removed MQTT subscription) carries `route_id` only when exactly one route receives through the session |
 | `DLQDepth` | Gauge | — | Standing DLQ BACKLOG right now (sampled via the store's optional `DLQDepthReporter`) -- alarmed by default (`DLQDepth > 0`) |
 | `DLQWriteFailures` | Counter | — | Failed DLQ writes |
 | `DLQDuplicateSuppressed` | Counter | — | A DLQ write the store refused because the entry already existed — the SAME terminal event recorded twice. Reported as success (the evidence is already durable). A rising value means settlement is failing AFTER DLQ writes land: look at the source acknowledgement path, not the DLQ store |
@@ -102,7 +102,7 @@ tagged `session_id`; `MQTTRouterBuffered` is untagged):
 
 | Metric | Kind | Description |
 |---|---|---|
-| `MQTTRouterDropped` | Counter | A publish dropped under backpressure -- the dispatch queue was full under flood (QoS 0), or the pending buffer was full / over its byte ceiling. QoS 1/2 publishes block rather than drop, so a rising count is almost always shed QoS-0 traffic. |
+| `MQTTRouterDropped` | Counter | A publish dropped under backpressure -- the dispatch queue was full under flood (QoS 0), or the pending buffer was full (its entry cap is `receive_maximum`). QoS 1/2 publishes block rather than drop, so a rising count is almost always shed QoS-0 traffic. |
 | `MQTTRouterBuffered` | Counter | A publish held in the bounded pending buffer because it arrived before a matching handler registered (the CONNACK backlog racing receiver registration). |
 
 A rising `MQTTRouterDropped` is the backpressure signal detailed under

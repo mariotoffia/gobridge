@@ -25,9 +25,6 @@ var (
 	_ ports.SettlementRecoveryTimingConfig    = (*Config)(nil)
 	_ ports.TransportFailoverTimingConfig     = Config{}
 	_ ports.TransportFailoverTimingConfig     = (*Config)(nil)
-	_ ports.IngressMemoryConfig               = Config{}
-	_ ports.IngressMemoryConfig               = (*Config)(nil)
-	_ ports.IngressMemoryProfileConfig        = (*Config)(nil)
 )
 
 // Config is the typed PluginConfig for the MQTT (Eclipse Paho)
@@ -171,14 +168,8 @@ func (c Config) Validate() error {
 	if err := c.Session.validatePlaintextCredentials(); err != nil {
 		return err
 	}
-	if !c.Session.receiveMaximumExplicit && c.Session.ReceiveMaximum == 0 {
-		if err := c.validateIngressMemoryPrerequisites(); err != nil {
-			return err
-		}
-	} else {
-		if err := c.ValidateIngressMemory(0); err != nil {
-			return err
-		}
+	if _, err := wirePacketSizeFor(c.Session.MaxPayloadBytes); err != nil {
+		return err
 	}
 	return nil
 }
@@ -255,102 +246,6 @@ func (c Config) ValidateEffectiveSession(mode connectivity.SessionMode) error {
 		return err
 	}
 	return c.Session.Will.Validate()
-}
-
-// validateIngressMemoryPrerequisites checks the packet ceiling and proves the
-// configured budget can fit one legal receive slot, one dispatch slot, and the
-// raw/decode crossing slot. It deliberately does not choose a Receive Maximum:
-// deployment profiles may derive a safe value after parse, while generic bridge
-// preflight later calls ValidateIngressMemory and applies the default 192.
-func (c Config) validateIngressMemoryPrerequisites() error {
-	session := c.Session.normalizedIngressMemory()
-	minimum, err := IngressMemoryBound(session.MaxPayloadBytes, 1, 0)
-	if err != nil {
-		return err
-	}
-	if minimum > session.IngressMemoryBudgetBytes {
-		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
-			"mqtt: ingress_memory_budget_bytes %d cannot fit one legal receive/dispatch window and the raw predecode crossing (requires at least %d bytes)",
-			session.IngressMemoryBudgetBytes,
-			minimum,
-		))
-	}
-	return nil
-}
-
-// ValidateIngressMemory implements ports.IngressMemoryConfig. It checks the
-// complete effective receive, dispatch, route, and current-packet window against
-// the configured per-session byte budget.
-func (c Config) ValidateIngressMemory(routeMaxInFlight uint64) error {
-	session := c.Session.normalizedIngressMemory()
-	bound, err := IngressMemoryBound(
-		session.MaxPayloadBytes,
-		session.ReceiveMaximum,
-		routeMaxInFlight,
-	)
-	if err != nil {
-		return err
-	}
-	if bound > session.IngressMemoryBudgetBytes {
-		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
-			"mqtt: ingress memory bound %d bytes exceeds ingress_memory_budget_bytes %d "+
-				"(max_payload_bytes=%d receive_maximum=%d dispatch_capacity=%d route_max_in_flight=%d)",
-			bound,
-			session.IngressMemoryBudgetBytes,
-			session.MaxPayloadBytes,
-			session.ReceiveMaximum,
-			session.ReceiveMaximum,
-			routeMaxInFlight,
-		))
-	}
-	return nil
-}
-
-// ConfigureIngressMemory implements ports.IngressMemoryProfileConfig. Defaults
-// are derived to the largest safe Receive Maximum. Explicit receive/budget
-// values are preserved when safe and rejected when they exceed the assigned
-// deployment budget.
-func (c *Config) ConfigureIngressMemory(budgetBytes, routeMaxInFlight uint64) error {
-	if c == nil {
-		return shared.ErrInvalidConfig.WithMessage("mqtt: cannot configure ingress memory on nil config")
-	}
-	session := c.Session.normalizedIngressMemory()
-	effectiveBudget := budgetBytes
-	if session.ingressMemoryBudgetExplicit {
-		if session.IngressMemoryBudgetBytes > budgetBytes {
-			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
-				"mqtt: explicit ingress_memory_budget_bytes %d exceeds deployment allocation %d",
-				session.IngressMemoryBudgetBytes, budgetBytes,
-			))
-		}
-		effectiveBudget = session.IngressMemoryBudgetBytes
-	}
-	if effectiveBudget == 0 {
-		return shared.ErrInvalidConfig.WithMessage("mqtt: deployment ingress memory allocation must be greater than zero")
-	}
-	session.IngressMemoryBudgetBytes = effectiveBudget
-
-	if session.receiveMaximumExplicit {
-		candidate := *c
-		candidate.Session = session
-		if err := candidate.ValidateIngressMemory(routeMaxInFlight); err != nil {
-			return err
-		}
-		c.Session = session
-		return nil
-	}
-
-	receiveMaximum, err := LargestSafeReceiveMaximum(
-		session.MaxPayloadBytes,
-		effectiveBudget,
-		routeMaxInFlight,
-	)
-	if err != nil {
-		return err
-	}
-	session.ReceiveMaximum = receiveMaximum
-	c.Session = session
-	return nil
 }
 
 // CredentialsURI implements ports.CredentialedConfig.

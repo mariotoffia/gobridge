@@ -2,11 +2,7 @@ package paho
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"slices"
-	"sync"
-	"sync/atomic"
 	"testing"
 
 	pahov5 "github.com/eclipse/paho.golang/paho"
@@ -263,79 +259,5 @@ func TestReconnectWindow_EmptyPlanUnsubscribesResumedSub(t *testing.T) {
 	}
 	if got := fake.subscribeCallCount(); got != 0 {
 		t.Fatalf("empty plan must not Subscribe, got %d", got)
-	}
-}
-
-// TestQoS12ByteCap_NeverDropsQoS12 pins the reworked QoS 1/2 overflow rule
-// (acl_router.go bufferLocked): the pending buffer's BYTE ceiling governs QoS 0
-// only — a QoS 1/2 publish is NEVER dropped for it, because dropping a QoS 1/2
-// is unsafe (ack+drop loses it; un-ack+drop head-of-line-blocks paho's
-// contiguous-prefix ack stream and wedges ingress). QoS 1/2 pending memory is
-// bounded instead by the entry-count cap (== receive_maximum). This test drives
-// a QoS 1 backlog past the byte ceiling and asserts every message is buffered
-// (none dropped), then flushed and acked in arrival order once a handler
-// registers (the ack stream drains — ingress is not wedged).
-//
-// Mutation: reintroduce a byte-cap `return false` for QoS 1/2 in bufferLocked
-// (either the un-ack+drop or ack+drop variant) → PendingCount falls below n and
-// the delivered set loses the tail → this test fails.
-func TestQoS12ByteCap_NeverDropsQoS12(t *testing.T) {
-	clk := testClock()
-	rec := &ports.RecordingExporter{}
-	r := newRouter(nil, rec, withRouterClock(clk), withUnmatchedGrace(testGrace))
-	defer r.shutdown()
-
-	// Byte ceiling far below the backlog; the count cap keeps its default so
-	// only the byte ceiling is exercised. Within grace, no handler → buffer path.
-	r.mu.Lock()
-	r.pendingBytesLimit = 16
-	r.mu.Unlock()
-
-	const n = 4
-	payloads := make([]string, n)
-	acked := make([]atomic.Int32, n)
-	for i := 0; i < n; i++ {
-		payloads[i] = fmt.Sprintf("p-%02d", i) // 4B payload + 3B topic = 7B each; n×7 ≫ 16B
-		idx := i
-		r.dispatch(&pahov5.Publish{Topic: "t/1", QoS: 1, Payload: []byte(payloads[idx])},
-			func() error { acked[idx].Add(1); return nil })
-	}
-
-	// No QoS 1/2 dropped for the byte ceiling: all buffered, none acked yet.
-	if got := r.PendingCount(); got != n {
-		t.Fatalf("expected all %d QoS 1 buffered (byte cap must not drop QoS 1/2), got %d", n, got)
-	}
-	if got := r.OverflowDroppedCount(); got != 0 {
-		t.Fatalf("byte ceiling must not trigger a QoS 1/2 overflow drop, OverflowDroppedCount=%d", got)
-	}
-	for i := 0; i < n; i++ {
-		if acked[i].Load() != 0 {
-			t.Fatalf("buffered QoS 1 #%d must stay un-acked until delivered", i)
-		}
-	}
-
-	// Register the handler: the backlog flushes in arrival order and each acks.
-	var mu sync.Mutex
-	var delivered []string
-	r.RegisterFiltered("rx", []string{"t/1"}, func(pub *pahov5.Publish, ack func() error) {
-		mu.Lock()
-		delivered = append(delivered, string(pub.Payload))
-		mu.Unlock()
-		if ack != nil {
-			_ = ack()
-		}
-	})
-	r.Wait() // RegisterFiltered enrolled the flush in r.wg before returning
-
-	mu.Lock()
-	got := append([]string(nil), delivered...)
-	mu.Unlock()
-	if !slices.Equal(got, payloads) {
-		t.Fatalf("delivered order = %v, want %v (every QoS 1 delivered once, in arrival order)", got, payloads)
-	}
-	for i := 0; i < n; i++ {
-		if acked[i].Load() != 1 {
-			t.Fatalf("QoS 1 #%d ack count = %d, want 1 (ack stream drains — ingress not wedged)", i, acked[i].Load())
-		}
 	}
 }

@@ -392,7 +392,7 @@ from `ports/plugin_config.go`:
 | `SettlementRecoveryTimingConfig` | How long a source session's recovery recycle waits for already-accepted deliveries to settle, so the route validator can reject a `direct_hold` hold (`send_retry_budget` + the send wedge ceiling, `send_timeout` + `min(send_timeout, 5s)`) the source would not tolerate. Return the same number the adapter's own recycle uses, so the two cannot disagree; zero when the session mode never recycles for this reason. |
 
 **Every `ports` capability core code reads off a plugin config must survive
-freezing**: the ones above, and `CredentialedConfig`, `IngressMemoryConfig`,
+freezing**: the ones above, and `CredentialedConfig`,
 `PublishingConfig`, `VisibilityTimeoutConfig`, `CapabilityConfig`,
 `SourceRedeliveryConfig` and `BestEffortDirectHoldConfig`. They are listed once,
 in `freezeCapabilities` (`ports/plugin_config.go`), and both freeze paths — the

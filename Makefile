@@ -289,8 +289,6 @@ test-local-deploy: audit-timings audit-test-timings ## Build each embedded-confi
 # separate-process failover, the published lease profile, no-loss under a
 # rolling restart, message conservation at the declared release volume,
 # broker kill/restart, and broker-path isolation under a flapping broker.
-# TestMQTTIngressMemory is deliberately absent: it asserts nothing without a
-# real cgroup bound, so scripts/test-mqtt-ingress-memory.sh runs it instead.
 RELEASE_LONGRUNNING_TESTS := \
 	TestTask14_ProcessKillBoundaries \
 	TestUC3SeparateProcessFailover \
@@ -323,10 +321,6 @@ test-release-gate: audit-timings audit-test-timings ## Run only the long-running
 		if [ $$rc -ne 0 ]; then echo ""; echo "FAILED tests:"; \
 			grep -E "^--- FAIL:" reports/test-release-gate.log || true; fi; \
 		exit $$rc'
-	# The cgroup proof is the release gate's other half: run through the suite
-	# it detects no memory bound and skips itself, so the harness re-runs it
-	# inside a container with an enforced limit.
-	@scripts/test-mqtt-ingress-memory.sh
 
 # The published soak profile. `make test-long-running` runs the same test at its
 # short profile so the suite stays usable; this target runs it for the full
@@ -398,12 +392,6 @@ test-long-running: audit-timings audit-test-timings ## Run long-running stress t
 			grep -E "^FAIL\s" reports/test-long-running.log || true; \
 		fi; \
 		exit $$rc'
-	# The MQTT ingress memory proof needs a REAL memory limit: run through
-	# ./... above it detects no cgroup bound and skips itself, so the whole
-	# point of the test is lost. The harness re-runs that single test inside a
-	# container with an enforced 512 MiB cgroup, which is the only way it
-	# actually asserts anything.
-	@scripts/test-mqtt-ingress-memory.sh
 
 # ============================================================================
 # Lint

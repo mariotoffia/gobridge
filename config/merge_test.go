@@ -49,6 +49,24 @@ func TestDefaultMerge_BridgeSettings_ZeroNotOverridden(t *testing.T) {
 	assert.Equal(t, "warn", merged.Bridge.LogLevel, "zero overlay should not clear base")
 }
 
+func TestDefaultMerge_MaxMQTTSessionsOverlayReplacesBase(t *testing.T) {
+	base := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "b1", MaxMQTTSessions: 10}}
+	overlay := &ports.BridgeConfig{Bridge: ports.BridgeSettings{MaxMQTTSessions: 25}}
+
+	merged, err := DefaultMerge(base, overlay)
+	require.NoError(t, err)
+	assert.Equal(t, 25, merged.Bridge.MaxMQTTSessions)
+}
+
+func TestDefaultMerge_MaxMQTTSessionsZeroOverlayKeepsBase(t *testing.T) {
+	base := &ports.BridgeConfig{Bridge: ports.BridgeSettings{ID: "b1", MaxMQTTSessions: 10}}
+	overlay := &ports.BridgeConfig{Bridge: ports.BridgeSettings{LogLevel: "debug"}}
+
+	merged, err := DefaultMerge(base, overlay)
+	require.NoError(t, err)
+	assert.Equal(t, 10, merged.Bridge.MaxMQTTSessions)
+}
+
 func TestDefaultMerge_Stores_OverlayReplacesPerRole(t *testing.T) {
 	base := &ports.BridgeConfig{
 		Bridge: ports.BridgeSettings{ID: "b1"},

@@ -128,7 +128,7 @@ func (rt *Runtime) startComponentsLocked(set componentSet) {
 		})
 	}
 
-	rt.installRemovedSubscriptionDeadLetter(rt.dlqRouter, created)
+	rt.installRemovedSubscriptionDeadLetter(rt.dlqRouter, m, created)
 	rt.installAutoRedriveTrigger(created)
 
 	// Only a lease-managed manager ever holds a lease, so only DLQ writes for

@@ -148,63 +148,36 @@ func (r *router) unsettledSnapshot(receiveMaximum uint16) unsettledHealth {
 }
 
 // bufferLocked appends the publish to the pre-registration pending buffer,
-// enforcing the buffer's two independent bounds ASYMMETRICALLY by QoS because
-// dropping a QoS 1/2 publish is never safe:
+// which holds at most pendingLimit entries (== receive_maximum). The cap is
+// enforced asymmetrically by QoS because dropping a QoS 1/2 publish is never
+// safe:
 //
-//   - QoS 0 (no delivery contract): admitted only while under BOTH the entry
-//     count cap (pendingLimit, sized to Receive Maximum) AND the payload-byte
-//     ceiling (pendingBytesLimit). Over either cap it is refused (return
-//     false) — a best-effort drop, always safe for QoS 0.
+//   - QoS 0 over the cap is refused (return false) — a best-effort drop, always
+//     safe: there is no delivery contract and no ack to strand.
 //
-//   - QoS 1/2 (at-least-once): ALWAYS buffered. It is NEVER dropped for the
-//     BYTE ceiling — that ceiling governs QoS 0 memory only. A QoS 1/2 drop is
-//     never safe: ack+drop loses the message; un-ack+drop head-of-line-blocks
-//     paho's CONTIGUOUS-PREFIX manual-ack stream (acksTracker.flush sends the
-//     acknowledged prefix and stops at the first un-acked entry), stranding
-//     acks for messages that WERE delivered and, once receive_maximum un-acked
-//     slots accumulate, wedging ingress on a stable connection. QoS 1/2 memory
-//     needs no byte cap: the broker's Receive-Maximum flow control never
-//     delivers message R+1 while R un-acked QoS 1/2 sit un-acked here, so at
-//     most pendingLimit (== receive_maximum) QoS 1/2 entries are ever pending —
-//     worst case receive_maximum × max_payload, exactly the memory model
-//     config.go documents. Over the byte ceiling a QoS 1/2 publish still
-//     buffers, best-effort reclaiming memory by evicting the oldest QoS 0 first.
+//   - QoS 1/2 over the cap evicts the oldest QoS 0 to make room. A QoS 1/2 drop
+//     is never safe: ack+drop loses the message; un-ack+drop
+//     head-of-line-blocks paho's CONTIGUOUS-PREFIX manual-ack stream
+//     (acksTracker.flush sends the acknowledged prefix and stops at the first
+//     un-acked entry), stranding acks for messages that WERE delivered and,
+//     once receive_maximum un-acked slots accumulate, wedging ingress on a
+//     stable connection. The broker's Receive-Maximum flow control never
+//     delivers message R+1 while R QoS 1/2 sit un-acked here, so at most
+//     pendingLimit QoS 1/2 entries are ever pending.
 //
-// The ONLY path that refuses a QoS 1/2 publish (return false) is the COUNT cap
-// being hit with NO evictable QoS 0 — UNREACHABLE under a spec-compliant broker,
-// retained only as a hard safety valve against a broker that exceeds the Receive
+// A QoS 1/2 publish is refused (return false) only when the cap is hit with NO
+// QoS 0 left to evict — reachable only when a broker exceeds the Receive
 // Maximum it was granted. The caller handles that protocol-violation case.
 func (r *router) bufferLocked(pub *pahov5.Publish, ack func() error) bool {
-	size := pubBytes(pub)
-	overCount := len(r.pending) >= r.pendingLimit
-	overBytes := r.pendingBytesLimit > 0 && r.pendingBytes+size > r.pendingBytesLimit
-
-	if pub.QoS == 0 {
-		if overCount || overBytes {
-			// Best-effort drop: refusing a QoS 0 publish is always safe (no
-			// redelivery contract, no ack to strand).
+	if len(r.pending) >= r.pendingLimit {
+		if pub.QoS == 0 {
 			return false
 		}
-		r.pending = append(r.pending, pendingPublish{pub: pub, ack: ack, epoch: r.connEpoch})
-		r.pendingBytes += size
-		r.signalPendingChangedLocked()
-		return true
-	}
-
-	// QoS 1/2: never refuse for the byte ceiling — reclaim memory best-effort
-	// by evicting the oldest QoS 0, then buffer regardless (memory is bounded
-	// by the count cap == receive_maximum).
-	if overBytes {
-		r.evictOldestQoS0Locked(false)
-	}
-	// Enforce the count cap AFTER any byte-driven eviction freed a slot.
-	if len(r.pending) >= r.pendingLimit && !r.evictOldestQoS0Locked(false) {
-		// Count cap hit with no QoS 0 to reclaim: only reachable if the broker
-		// exceeded its granted Receive Maximum (protocol violation).
-		return false
+		if !r.evictOldestQoS0Locked(false) {
+			return false
+		}
 	}
 	r.pending = append(r.pending, pendingPublish{pub: pub, ack: ack, epoch: r.connEpoch})
-	r.pendingBytes += size
 	r.signalPendingChangedLocked()
 	return true
 }
@@ -232,7 +205,6 @@ func (r *router) purgeStalePendingLocked() {
 	var purged int64
 	for i := range r.pending {
 		if r.pending[i].epoch < r.connEpoch {
-			r.pendingBytes -= pubBytes(r.pending[i].pub)
 			r.releaseQueueReservationLocked(r.pending[i].pub)
 			purged++
 			continue
@@ -247,7 +219,7 @@ func (r *router) purgeStalePendingLocked() {
 }
 
 // evictOldestQoS0Locked removes the OLDEST QoS 0 entry from the pending buffer
-// to reclaim a slot and bytes for a QoS 1/2 publish that must be buffered,
+// to reclaim a slot for a QoS 1/2 publish that must be buffered,
 // counting the evicted QoS 0 as a best-effort drop (it carries no delivery
 // contract). Returns true when an entry was evicted. Caller holds r.mu.
 //
@@ -269,7 +241,6 @@ func (r *router) evictOldestQoS0Locked(reserved bool) bool {
 		// signal for slow receiver startup, and folding it into generic
 		// backpressure would silence exactly that alert.
 		covered := r.pending[i].retainCounted
-		r.pendingBytes -= pubBytes(r.pending[i].pub)
 		r.releaseQueueReservationLocked(r.pending[i].pub)
 		r.pending = append(r.pending[:i], r.pending[i+1:]...)
 		if covered {
@@ -282,14 +253,4 @@ func (r *router) evictOldestQoS0Locked(reserved bool) bool {
 		return true
 	}
 	return false
-}
-
-// pubBytes estimates the retained memory of a buffered publish: topic +
-// payload bytes. It is intentionally cheap (ignores property overhead);
-// it only needs to bound the buffer, not account exactly.
-func pubBytes(pub *pahov5.Publish) int64 {
-	if pub == nil {
-		return 0
-	}
-	return int64(len(pub.Topic) + len(pub.Payload))
 }

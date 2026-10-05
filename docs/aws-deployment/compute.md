@@ -26,7 +26,9 @@ throughput-to-resource tiers and `max_in_flight` guidance live in the
 [Deployment Guide — CPU and Memory Sizing](../deployment-scaling.md#cpu-and-memory-sizing);
 the table below maps those tiers to valid Fargate task sizes and Spot
 suitability. Load-test with your actual message shapes and processor chains
-before finalizing.
+before finalizing. GoBridge does not estimate memory: the memory sizes below
+are Fargate starting points, so measure the task under its real load and set
+`MemoryMiB` from that.
 
 | Throughput | CPU (units) | vCPU | Memory (MiB) | Fargate Spot? |
 |------------|-------------|------|--------------|---------------|
@@ -35,7 +37,7 @@ before finalizing.
 | > 1 000 msg/s (per worker) | 1024 | 1.0 | 2048 | No |
 
 For a single non-clustered task above 1 000 msg/s, size vertically to the
-Deployment Guide's `High` tier (2--4 vCPU / 4--8 GiB) instead of adding workers.
+Deployment Guide's `High` tier (2--4 vCPU) instead of adding workers.
 The CDK facades default to **512 CPU / 1024 MiB**. The single-task profile
 (`GoBridgeSingle`) runs exactly one task and has no auto-scaling. The independent
 scale-out profile (`GoBridgeCluster`) runs one control task plus

@@ -73,11 +73,6 @@ sessions:
         clean_start: false
         session_expiry_interval: 3600
         keep_alive: 30
-        # The builder sizes ingress memory from max_payload_bytes,
-        # receive_maximum and the route's max_in_flight before it opens
-        # anything; 500 in flight at the default 256 KiB payload cap needs
-        # ~460 MiB, above the 256 MiB default budget. State the budget.
-        ingress_memory_budget_bytes: 536870912   # 512 MiB
 
 stores:
   # A persistent session keeps an exact record of the filters it installed on

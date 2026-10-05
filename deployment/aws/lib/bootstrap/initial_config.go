@@ -39,14 +39,7 @@ func (a *App) admitInitialConfig(ctx context.Context, cfg *ports.BridgeConfig) e
 	if err := checkIgnoredHTTPBlock(a.logger, cfg); err != nil {
 		return err
 	}
-	copy, err := cloneBridgeConfig(cfg, a.pluginRegistry)
-	if err != nil {
-		return err
-	}
-	if err := applyMQTTMemoryProfile(copy, a.cfg); err != nil {
-		return err
-	}
-	return a.newFactoryRegistry(copy).builder.Preflight(ctx)
+	return a.newFactoryRegistry(cfg).builder.Preflight(ctx)
 }
 
 type repositoryEpochKey struct{}

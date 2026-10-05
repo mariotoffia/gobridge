@@ -59,9 +59,7 @@ type sqsMQTTSQSBridgeResult struct {
 }
 
 type mqttIngressLimits struct {
-	maxPayloadBytes          uint32
-	receiveMaximum           uint16
-	ingressMemoryBudgetBytes uint64
+	maxPayloadBytes uint32
 }
 
 func setupMQTTSessionWithIngressLimits(
@@ -71,14 +69,12 @@ func setupMQTTSessionWithIngressLimits(
 ) *paho.Session {
 	t.Helper()
 	sess := paho.NewSession(paho.SessionOptions{
-		BrokerURLs:               []string{mqttlocal.BrokerURL(t)},
-		ClientID:                 clientID,
-		KeepAlive:                30,
-		ConnectTimeout:           15 * time.Second,
-		CleanStart:               true,
-		ReceiveMaximum:           limits.receiveMaximum,
-		MaxPayloadBytes:          limits.maxPayloadBytes,
-		IngressMemoryBudgetBytes: limits.ingressMemoryBudgetBytes,
+		BrokerURLs:      []string{mqttlocal.BrokerURL(t)},
+		ClientID:        clientID,
+		KeepAlive:       30,
+		ConnectTimeout:  15 * time.Second,
+		CleanStart:      true,
+		MaxPayloadBytes: limits.maxPayloadBytes,
 	}, connectivity.SessionEphemeral, testLogger(t))
 	t.Cleanup(func() { _ = sess.Close(context.Background()) })
 	require.NoError(t, sess.Start(context.Background()), "MQTT session Start %q", clientID)
@@ -151,21 +147,6 @@ func TestUC17_LargePayloads_200KB(t *testing.T) {
 		sendWindow  = 25
 	)
 	mqttPayloadBytes := uint32(base64.StdEncoding.EncodedLen(paySize))
-	const mqttIngressMemoryCeiling = paho.DefaultIngressMemoryBudgetBytes
-	mqttReceiveMaximum, err := paho.LargestSafeReceiveMaximum(
-		mqttPayloadBytes,
-		mqttIngressMemoryCeiling,
-		routing.DefaultMaxInFlight,
-	)
-	require.NoError(t, err)
-	mqttIngressBound, err := paho.IngressMemoryBound(
-		mqttPayloadBytes,
-		mqttReceiveMaximum,
-		routing.DefaultMaxInFlight,
-	)
-	require.NoError(t, err)
-	require.LessOrEqual(t, mqttIngressBound, mqttIngressMemoryCeiling,
-		"explicit MQTT ingress window must fit its memory ceiling")
 
 	inURL, inClient := setupSQSQueue(t, "uc17-in")
 	outURL, outClient := setupSQSQueue(t, "uc17-out")
@@ -174,11 +155,7 @@ func TestUC17_LargePayloads_200KB(t *testing.T) {
 	defer cancel()
 
 	br := sqsMQTTSQSBridge(t, ctx, "uc17", "uc17/data", inURL, outURL, dlq,
-		mqttIngressLimits{
-			maxPayloadBytes:          mqttPayloadBytes,
-			receiveMaximum:           mqttReceiveMaximum,
-			ingressMemoryBudgetBytes: mqttIngressMemoryCeiling,
-		})
+		mqttIngressLimits{maxPayloadBytes: mqttPayloadBytes})
 	defer br.Cleanup()
 	gobridgesync(t, 10*time.Second, br.RT1, br.RT2)
 

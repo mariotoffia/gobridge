@@ -246,27 +246,3 @@ func TestBug_DispatchQueue_QoS0DroppedWhenFull(t *testing.T) {
 
 	close(release)
 }
-
-// TestBug_PendingByteCap_DropsOverByteCeiling verifies the pending buffer is
-// bounded in BYTES (not just entry count) so a flood of large publishes
-// during a grace window cannot buffer gigabytes.
-func TestBug_PendingByteCap_DropsQoS0OverByteCeiling(t *testing.T) {
-	clk := testClock()
-	rec := &ports.RecordingExporter{}
-	r := newRouter(nil, rec, withRouterClock(clk), withUnmatchedGrace(testGrace))
-	defer r.shutdown()
-
-	r.mu.Lock()
-	r.pendingBytesLimit = 10 // tiny byte ceiling
-	r.mu.Unlock()
-
-	// A QoS 0 publish larger than the byte ceiling: entry count has room but
-	// the byte cap is exceeded, so with no QoS 0 already buffered to evict it
-	// is dropped rather than buffered.
-	r.dispatch(&pahov5.Publish{Topic: "t", QoS: 0, Payload: []byte("way-over-ten-bytes")}, nil)
-
-	require.Equal(t, 0, r.PendingCount(),
-		"QoS 0 publish exceeding the pending byte ceiling must be dropped, not buffered")
-	require.GreaterOrEqual(t, r.dropCount.Load(), int64(1))
-	require.NotEmpty(t, rec.FindEntries(MetricMQTTRouterDropped))
-}

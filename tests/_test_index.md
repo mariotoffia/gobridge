@@ -1323,9 +1323,7 @@ AWS config-source construct tests are listed in [their focused index](_test_inde
 | TestTask14_DuplicateClientIDTakeoverStorm | validates bounded duplicate-client takeover recovery | longrunning | task14_chaos | pass |
 | TestTask14_ProcessKillChild | subprocess-only helper providing controlled source-ack, persisted-outbox, and ambiguous-send checkpoints | longrunning | task14_chaos | skip |
 | TestTask14_ProcessKillBoundaries | validates SIGKILL recovery at source-ack, persisted-outbox, and ambiguous-send boundaries | longrunning | task14_chaos | pass |
-| TestMQTTIngressMemory | validates maximum payload retention via the shared mandatory 512 MiB CI/release cgroup target | longrunning | task14_chaos | pass |
 | TestTask14_EqualValuedMQTTIdentityGate | validates 100,000 equal-valued MQTT publishes remain distinct bridge events | longrunning | task14_identity | pass |
 | TestMQTTEqualPublishIdentity | validates explicit producer-ID redelivery deduplication and preserved envelope identity | integration | task14_identity | pass |
 | TestUC46_BrokerMessageSizeLimit | validates exact delivered and DLQ sets at the broker message-size limit | longrunning | task14_accounting | pass |
 | TestReleaseWorkflow_FinalCommandTestsGatePublication | validates final cmd release publication and image paths depend on uncached aggregate gates | unit | task14_release | pass |
-| TestWorkflows_BoundedMQTTIngressMemoryUsesSharedTarget | validates CI and final release invoke one mandatory bounded-memory target | unit | task14_release | pass |

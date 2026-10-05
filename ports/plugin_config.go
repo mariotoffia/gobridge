@@ -127,8 +127,7 @@ type FreezableConfig interface {
 // silently: it still validates and keeps its kind, while the code reading it
 // sees no capability and skips the check the capability exists for. Both
 // freeze paths, the builder's and configuration initialisation's, check this
-// one list. IngressMemoryProfileConfig is left off on purpose: bootstrap sizes
-// ingress memory on a freshly decoded config, never on a frozen copy.
+// one list.
 func freezeCapabilities() []reflect.Type {
 	return []reflect.Type{
 		reflect.TypeFor[FreezableConfig](),
@@ -137,7 +136,6 @@ func freezeCapabilities() []reflect.Type {
 		reflect.TypeFor[PostAcquireActivationTimingConfig](),
 		reflect.TypeFor[SettlementRecoveryTimingConfig](),
 		reflect.TypeFor[TransportFailoverTimingConfig](),
-		reflect.TypeFor[IngressMemoryConfig](),
 		reflect.TypeFor[ReplicaIdentityConfig](),
 		reflect.TypeFor[PublishingConfig](),
 		reflect.TypeFor[VisibilityTimeoutConfig](),

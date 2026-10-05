@@ -2,15 +2,20 @@ package runtime_test
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
 	goruntime "github.com/mariotoffia/gobridge/runtime"
 	runsession "github.com/mariotoffia/gobridge/runtime/session"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // deadLetterSession is a FakeSession that also accepts the removed-subscription
@@ -272,5 +277,134 @@ func TestRemovedSubscriptionDeadLetterNamesNoRouteWhoseReceiverRidesElsewhere(t 
 	entry := writeHeldDelivery(t, sess, store, "stale/#")
 	if entry.RouteID() != "" || entry.SessionID() != "source-session" {
 		t.Fatalf("DLQ entry route/session = %q/%q, want empty/source-session", entry.RouteID(), entry.SessionID())
+	}
+}
+
+// startSessionWithIngressRoute starts a runtime from opts whose route
+// source-route receives through source-session, and returns that session.
+func startSessionWithIngressRoute(t *testing.T, opts ...goruntime.Option) *deadLetterSession {
+	t.Helper()
+	rt := goruntime.New(opts...)
+	cfg, recv, sender := helperQuiescentRoute("source-route", nil)
+	cfg.SourceSessionID = "source-session"
+	sess := newDeadLetterSession()
+	sessCfg := runsession.Config{SessionID: "source-session"}
+	if err := rt.AddRoute(cfg, recv, sender, sess, &sessCfg); err != nil {
+		t.Fatalf("AddRoute: %v", err)
+	}
+	startRuntime(t, rt)
+	return sess
+}
+
+// requireOneDLQEntriesCount fails unless rec holds exactly one DLQEntries
+// increment, tagged exactly want.
+func requireOneDLQEntriesCount(t *testing.T, rec *ports.RecordingExporter, want map[string]string) {
+	t.Helper()
+	got := rec.FindEntries(shared.MetricDLQEntries)
+	if len(got) != 1 {
+		t.Fatalf("DLQEntries emissions = %d, want 1", len(got))
+	}
+	tags := make(map[string]string, len(got[0].Tags))
+	for _, tag := range got[0].Tags {
+		tags[tag.Key] = tag.Value
+	}
+	if got[0].Kind != "counter" || got[0].IValue != 1 || !maps.Equal(tags, want) {
+		t.Fatalf("DLQEntries = %s %d %v, want counter 1 %v", got[0].Kind, got[0].IValue, tags, want)
+	}
+}
+
+func TestRemovedSubscriptionDeadLetterCountsDLQEntriesUnderItsIngressRoute(t *testing.T) {
+	store := NewFakeDLQStore()
+	rec := &ports.RecordingExporter{}
+	sess := startSessionWithIngressRoute(t, goruntime.WithInstanceID("removed-sub-count"),
+		goruntime.WithDLQStore(store), goruntime.WithMetrics(rec))
+
+	writeHeldDelivery(t, sess, store, "stale/#")
+	requireOneDLQEntriesCount(t, rec, map[string]string{
+		shared.TagKeyRouteID:  "source-route",
+		shared.TagKeyCategory: "subscription_removed",
+	})
+}
+
+// The CloudWatch exporter drops an empty dimension value, so a record that
+// names no route is counted without a route_id tag rather than with "".
+func TestRemovedSubscriptionDeadLetterCountsDLQEntriesWithoutRouteTagOnRoutelessSession(t *testing.T) {
+	store := NewFakeDLQStore()
+	rec := &ports.RecordingExporter{}
+	rt := goruntime.New(goruntime.WithInstanceID("removed-sub-count-routeless"),
+		goruntime.WithDLQStore(store), goruntime.WithMetrics(rec))
+	idle := newDeadLetterSession()
+	if err := rt.RegisterIngressSession(runsession.Config{SessionID: "idle-session"}, idle); err != nil {
+		t.Fatalf("RegisterIngressSession: %v", err)
+	}
+	startRuntime(t, rt)
+
+	writeHeldDelivery(t, idle, store, "stale/#")
+	requireOneDLQEntriesCount(t, rec, map[string]string{shared.TagKeyCategory: "subscription_removed"})
+}
+
+func TestRemovedSubscriptionDeadLetterFailedWriteIsNotCountedInDLQEntries(t *testing.T) {
+	store := NewFakeDLQStore()
+	store.WriteErr = errors.New("dead-letter store unavailable")
+	rec := &ports.RecordingExporter{}
+	clk := clocktest.NewAt(time.Unix(1_700_000_000, 0))
+	sess := startSessionWithIngressRoute(t, goruntime.WithInstanceID("removed-sub-count-failed"),
+		goruntime.WithDLQStore(store), goruntime.WithMetrics(rec), goruntime.WithClock(clk))
+
+	deadLetter := sess.deadLetter(t)
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "held-1", Subject: "stale/one"})
+	// Cancelling on cleanup frees the write if a regression leaves it waiting
+	// on a clock this test has stopped advancing.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- deadLetter(ctx, env, "stale/#") }()
+	var err error
+	// Each poll moves the fake clock past the router's backoff between attempts.
+	wait.Until(t, 2*time.Second, "failed dead-letter write returned", func() bool {
+		clk.Advance(time.Second)
+		select {
+		case err = <-done:
+			return true
+		default:
+			return false
+		}
+	})
+	if err == nil {
+		t.Fatal("dead-letter write against a failing store returned nil")
+	}
+	if got := len(rec.FindEntries(shared.MetricDLQEntries)); got != 0 {
+		t.Fatalf("DLQEntries emissions after a failed write = %d, want 0", got)
+	}
+	if got := len(rec.FindEntries(shared.MetricDLQWriteFailures)); got != 1 {
+		t.Fatalf("DLQWriteFailures emissions after a failed write = %d, want 1", got)
+	}
+}
+
+// The route runner and the drainer count a write the store refused as a
+// duplicate, because the record is durable either way; this path must agree.
+func TestRemovedSubscriptionDeadLetterCountsSuppressedDuplicateOncePerCall(t *testing.T) {
+	store := NewFakeDLQStore()
+	rec := &ports.RecordingExporter{}
+	sess := startSessionWithIngressRoute(t, goruntime.WithInstanceID("removed-sub-count-duplicate"),
+		goruntime.WithDLQStore(store), goruntime.WithMetrics(rec))
+
+	deadLetter := sess.deadLetter(t)
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "held-1", Subject: "stale/one"})
+	if err := deadLetter(context.Background(), env, "stale/#"); err != nil {
+		t.Fatalf("first dead-letter write: %v", err)
+	}
+	// The broker hands the session the same delivery again; its record exists.
+	store.mu.Lock()
+	store.WriteErr = shared.ErrDuplicateRecord
+	store.mu.Unlock()
+	if err := deadLetter(context.Background(), env, "stale/#"); err != nil {
+		t.Fatalf("duplicate dead-letter write: %v", err)
+	}
+	if got := len(rec.FindEntries(shared.MetricDLQDuplicateSuppressed)); got != 1 {
+		t.Fatalf("DLQDuplicateSuppressed emissions = %d, want 1", got)
+	}
+	if got := len(rec.FindEntries(shared.MetricDLQEntries)); got != 2 {
+		t.Fatalf("DLQEntries emissions over two calls = %d, want 2", got)
 	}
 }

@@ -49,11 +49,6 @@ sessions:
         broker_url: tcp://mqtt.example.com:1883
         client_id: sensor-fanout-01
         keep_alive: 30
-        # The builder sizes ingress memory from max_payload_bytes,
-        # receive_maximum and the route's max_in_flight before it opens
-        # anything; 200 in flight at the default 256 KiB payload cap needs
-        # ~305 MiB, above the 256 MiB default budget. State the budget.
-        ingress_memory_budget_bytes: 335544320   # 320 MiB
 
 receivers:
   - id: sensor-in
