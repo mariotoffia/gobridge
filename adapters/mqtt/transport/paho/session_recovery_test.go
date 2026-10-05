@@ -251,7 +251,9 @@ func TestSessionRecovery_MissingSessionPresentRecordsLossAndConnects(t *testing.
 		BrokerURLs: []string{"tcp://127.0.0.1:1883"},
 		ClientID:   "recovery-session-present",
 		CleanStart: true,
+		Clock:      clocktest.New(),
 	}, connectivity.SessionPersistent, nil, metrics)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
 	s.mu.Lock()
 	s.recoveryPending = true
 	s.recoveryNeedsSessionPresent = true
@@ -275,6 +277,7 @@ func TestSessionRecovery_MissingSessionPresentRecordsLossAndConnects(t *testing.
 	health := s.Health(t.Context())
 	require.ErrorIs(t, health.LastError, shared.ErrNotFound,
 		"the resume-lost latch explains the gap until a reconcile converges")
+	assert.True(t, health.Connected)
 	assert.Len(t, metrics.FindEntries(MetricMQTTSessionResumeLost), 1)
 	assert.Equal(t, int32(1), dials.Load())
 }
@@ -293,18 +296,23 @@ func TestSessionRecovery_SessionAbsentAfterDrainCompletesRecoveryAndRecordsLoss(
 		ReconcileTimeout: time.Second,
 		UnmatchedGrace:   time.Second,
 	}, connectivity.SessionPersistent, nil, metrics)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
 	s.mu.Lock()
 	s.cm = &fakeLiveConn{}
 	s.connected = true
+	s.plan = &connectivity.SessionPlan{
+		Subscriptions: []connectivity.SubscriptionPlan{{Topic: "recovered/#", QoS: 1}},
+	}
 	s.mu.Unlock()
 	events := s.Events()
+	replacement := &captureSubConn{}
 	s.connectOverrideAwaitConnectionUp = true
 	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
 		s.mu.Lock()
 		generation := s.connectionGeneration
 		s.mu.Unlock()
 		s.handleConnectionUpGenerationWithSessionPresent(generation, false)
-		return &fakeLiveConn{}, func() {}, nil
+		return replacement, func() {}, nil
 	}
 
 	require.NoError(t, s.requestRecovery(t.Context()))
@@ -324,6 +332,8 @@ func TestSessionRecovery_SessionAbsentAfterDrainCompletesRecoveryAndRecordsLoss(
 	assert.Equal(t, uint64(1), health.RecoveryRecycleCount)
 	assert.NoError(t, health.LastError,
 		"the recovery's converged reconcile clears the resume-lost latch")
+	_, resubscribed := replacement.specFor("recovered/#")
+	assert.True(t, resubscribed, "the recovery reconcile re-subscribes the plan on the replacement connection")
 	assert.Len(t, metrics.FindEntries(MetricMQTTSessionResumeLost), 1)
 	requireNoSessionErrorBuffered(t, events)
 }
@@ -799,7 +809,9 @@ func TestSessionRecovery_QueuedSessionAbsentRecordsLossAndRecoveryContinues(t *t
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://127.0.0.1:1883"},
 		ClientID:   "queued-session-absent",
+		Clock:      clocktest.New(),
 	}, connectivity.SessionPersistent, nil, metrics)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
 	s.mu.Lock()
 	s.cm = &fakeLiveConn{}
 	s.connected = true
@@ -820,7 +832,7 @@ func TestSessionRecovery_QueuedSessionAbsentRecordsLossAndRecoveryContinues(t *t
 	require.NoError(t, s.requestRecovery(t.Context()))
 	assert.Equal(t, ports.ServiceLevelDegraded, s.Health(t.Context()).ServiceLevel)
 	s.handleConnectionUpGenerationWithSessionPresent(generation, false)
-	assert.Error(t, s.Health(t.Context()).LastError, "the lost resume is recorded")
+	assert.ErrorIs(t, s.Health(t.Context()).LastError, shared.ErrNotFound, "the lost resume is recorded")
 
 	s.releaseReload()
 	wait.RequireClosed(t, metrics.recycled, 5*time.Second)
@@ -1009,7 +1021,9 @@ func TestSessionRecovery_SessionAbsentDuringDrainIsNotTerminal(t *testing.T) {
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://127.0.0.1:1883"},
 		ClientID:   "absent-during-drain",
+		Clock:      clocktest.New(),
 	}, connectivity.SessionPersistent, nil, metrics)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
 	s.mu.Lock()
 	s.cm = &fakeLiveConn{disconnects: &disconnects}
 	s.connected = true

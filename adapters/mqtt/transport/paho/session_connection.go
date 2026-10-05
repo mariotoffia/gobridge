@@ -78,10 +78,12 @@ func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint
 		s.recoverySessionPresentEpoch = nextEpoch
 		s.recoveryErr = nil
 	}
-	// A recovery dial always asks the broker to resume (recoveryConnect forces
-	// CleanStart=false), so an absent session is a loss even where an ordinary
-	// connect of this configuration would not expect one. The recovery goes on:
-	// its reconcile re-subscribes, exactly as after an ordinary reconnect.
+	// While a recovery is requested every dial asks the broker to resume: the
+	// recovery dial forces CleanStart=false, and autopaho sends CleanStart=false
+	// on every reconnect after the first connect. An absent session is then a
+	// loss even where an ordinary connect of this configuration would not expect
+	// one. The recovery goes on: its reconcile re-subscribes, as after an
+	// ordinary reconnect.
 	resumeLost := !sessionPresent && (s.recoveryNeedsSessionPresent || s.resumeExpectedLocked())
 	if resumeLost {
 		s.resumeLostErr = durableResumeLostError()
