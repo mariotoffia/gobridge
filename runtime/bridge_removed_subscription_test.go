@@ -353,8 +353,12 @@ func TestRemovedSubscriptionDeadLetterFailedWriteIsNotCountedInDLQEntries(t *tes
 
 	deadLetter := sess.deadLetter(t)
 	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "held-1", Subject: "stale/one"})
+	// Cancelling on cleanup frees the write if a regression leaves it waiting
+	// on a clock this test has stopped advancing.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
-	go func() { done <- deadLetter(context.Background(), env, "stale/#") }()
+	go func() { done <- deadLetter(ctx, env, "stale/#") }()
 	var err error
 	// Each poll moves the fake clock past the router's backoff between attempts.
 	wait.Until(t, 2*time.Second, "failed dead-letter write returned", func() bool {

@@ -237,6 +237,9 @@ const (
 	// source). Together with MessagesReceived, MessagesSent, MetricDLQEntries and
 	// in-flight it closes the conservation law received = sent + dropped + dlq +
 	// inflight, so a rising Dropped is the single signal for silent message loss.
+	// The law leaves out DLQEntries of category subscription_removed: a delivery
+	// for a removed MQTT subscription never reaches a route, so it is never
+	// received.
 	MetricMessagesDropped = "MessagesDropped"
 	// MetricAddressTemplateErrors counts messages terminated (dropped or DLQ'd)
 	// because a binding address template could not be rendered — typically a
