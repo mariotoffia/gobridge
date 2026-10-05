@@ -84,8 +84,13 @@
 //     redelivered on every clean_start=false resume and re-latch the
 //     session terminal forever. Only violations a compliant
 //     broker can never forward (malformed packets, total size above the
-//     advertised maximum) fail the session closed, at the raw pre-decode
-//     guard (ingress_conn.go). The same guard bounds the one cap whose
+//     advertised maximum) are rejected at the raw pre-decode guard
+//     (ingress_conn.go): it sends DISCONNECT (best effort) with reason code
+//     0x95 (Packet too large) or 0x81 (Malformed Packet), drops the
+//     connection, and the session reconnects with a backoff that grows
+//     with consecutive rejects. Readiness stays false until a replacement
+//     connection has stayed up for 30 s; each reject is counted on
+//     MetricMQTTIngressRejected. The same guard bounds the one cap whose
 //     decode cost the wire does not: a User Property list longer than one
 //     entry above the cap is cut to that length on the raw bytes
 //     (MetricMQTTIngressUserPropertiesTruncated) before the SDK decodes

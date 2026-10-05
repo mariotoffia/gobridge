@@ -119,7 +119,7 @@ func TestNoteSessionTakeover_StableConnectionResetsStreak(t *testing.T) {
 	sess.mu.Lock()
 	sess.connUpAt = clk.Now().UnixNano()
 	sess.mu.Unlock()
-	clk.Advance(takeoverStabilityWindow + time.Second)
+	clk.Advance(connectionStabilityWindow + time.Second)
 
 	sess.handleServerDisconnect(disconnectSessionTakenOver)
 	require.Equal(t, time.Duration(0), sess.takeoverPenalty(),

@@ -147,8 +147,8 @@ same document passes on AWS and elsewhere.
 - It covers any MQTT session that fails closed, for example: ingress that does
   not quiesce
   within `reconcile_timeout` after managed-subscription cleanup removed a
-  filter, a settlement recovery that fails, and a packet the pre-decode guard
-  rejects (malformed, or above the advertised Maximum Packet Size). It also
+  filter, and a settlement recovery whose drain fails or that fails before its
+  drain. It also
   covers a single-use exclusive session that wins its lease back after an
   ordinary step-down: it now gets a fresh session in the process instead of a
   process restart.
@@ -169,12 +169,52 @@ same document passes on AWS and elsewhere.
   not stop cleanly. A
   runtime built without a handler behaves as before. A restart policy is still
   required.
-- Known risk: a session that keeps failing — for example behind a broker that
-  keeps sending a malformed packet — is rebuilt again and again, at most 30 s
-  apart, and can keep its lease meanwhile. Alert on the `SessionRebuilds` rate.
-- The transport side is unchanged: these sessions still fail closed, and a
-  settlement recovery that fails after a successful drain still closes the
-  session.
+- Known risk: a session that keeps failing — for example after a pinned replay
+  for a removed filter on a runtime with no dead-letter store — is rebuilt
+  again and again, at most 30 s apart, and can keep its lease meanwhile. Alert
+  on the `SessionRebuilds` rate.
+- A settlement recovery that fails after a successful drain, and a packet the
+  pre-decode guard rejects, no longer fail the session closed; see the next
+  entry.
+
+### Changed — an MQTT recovery failure after the drain or a rejected broker packet no longer fails the session closed
+
+- **Behaviour change.** Two MQTT failures no longer fail the session closed
+  ([ADR 0021](docs/adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)).
+  A rejected packet rebuilds the session's reload unit only for a lease-managed
+  session whose broker sends the packet again on every resume, where the reject
+  fails the reconcile after the reconnect. A failed recovery rebuilds the unit
+  only in the cases listed below.
+- A settlement recovery that fails after its drain is abandoned: the reconnect
+  fails, a newer connection replaces the recovery's connection, or the
+  reconcile on the recovery's connection fails or finishes on a replaced
+  connection. The session reconnects normally, the next recovery starts no
+  sooner than 30 s later, and a Warn log says
+  `mqtt: settlement recovery abandoned after its drain; the session reconnects normally`.
+  When the broker answers Session Present = false to a recovery, the loss is
+  recorded as on an ordinary reconnect (`MQTTSessionResumeLost`) and the
+  recovery goes on. A recovery whose drain fails, or that fails before its
+  drain, still stops the session and rebuilds its unit, and so does a step
+  after the drain that fails closed the way it does outside a recovery
+  (managed-subscription cleanup). A lease-managed session (exclusive, with a
+  lease store) that an abandoned recovery leaves with no connection is closed
+  by its session manager and its unit is rebuilt; any other session left with
+  no connection is run again and reconnects.
+- A packet the pre-decode guard rejects — malformed, or larger than the
+  advertised Maximum Packet Size — drops only the connection. The bridge tries
+  to send DISCONNECT with reason code 0x95 (Packet too large) or 0x81
+  (Malformed Packet), reconnects with a backoff that grows with consecutive
+  rejects, and stays not ready until a connection holds for 30 s. The new
+  metric `MQTTIngressRejected` (tagged `session_id`) counts each reject;
+  `MQTTRouterDropped` no longer counts them. Alert on any non-zero
+  `MQTTIngressRejected`; see
+  [the ingress-poison runbook](docs/runbooks/mqtt-ingress-poison.md).
+- On Mosquitto a rejected packet no longer publishes the session's Last Will
+  when the bridge's DISCONNECT reaches the broker: Mosquitto discards the will
+  after any client DISCONNECT except 0x04. When the bridge closes the socket
+  without a DISCONNECT (a write was in progress, or the DISCONNECT did not get
+  through), Mosquitto still publishes the will. A spec-compliant broker
+  publishes it in both cases.
 
 ### Added — `SessionRebuilds` and the session-unrecoverable handler
 

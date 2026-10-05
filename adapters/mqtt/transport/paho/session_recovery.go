@@ -121,42 +121,78 @@ func settlementRecoveryTerminalError(cause error) error {
 		Wrap(errors.Join(cause, shared.ErrTransportClosedPermanently))
 }
 
-func (s *Session) terminateFailedRecovery(generation uint64, cause error, async bool) bool {
+func (s *Session) terminateFailedRecovery(generation uint64, cause error) bool {
 	terminal := settlementRecoveryTerminalError(cause)
-	_, started := s.transitionTerminal(context.Background(), terminal, generation, async, false)
+	_, started := s.transitionTerminal(context.Background(), terminal, generation, false)
 	return started
 }
 
-func (s *Session) failQueuedRecovery(generation uint64, attemptErr error) bool {
-	return s.terminateFailedRecovery(generation, attemptErr, false)
-}
-
-func (s *Session) completeRecoveryAttempt(generation uint64, attemptErr error, success bool) bool {
-	if !success {
-		if attemptErr == nil {
-			attemptErr = shared.ErrUnavailable.WithMessage("mqtt: settlement recovery did not complete")
-		}
-		return s.terminateFailedRecovery(generation, attemptErr, false)
-	}
-
-	s.mu.Lock()
-	if !s.recoveryAttemptActive || s.recoveryGeneration != generation {
-		s.mu.Unlock()
-		return false
-	}
+// finishRecoveryAttemptLocked ends the active attempt without a terminal
+// transition and returns its cancel func. Callers hold s.mu.
+func (s *Session) finishRecoveryAttemptLocked(generation uint64) context.CancelFunc {
 	s.recoveryAttemptActive = false
 	s.lastRecoveryCompleted = s.clock().Now()
 	cancel := s.recoveryAttemptCancel
 	s.recoveryAttemptCancel = nil
 	s.recoveryPending = false
 	s.recoveryNeedsSessionPresent = false
-	s.recoverySessionPresentEpoch = 0
+	s.recoveryConnectionEpoch = 0
 	s.recoveryTargetEpoch = 0
 	s.clearRecoveryDrainLocked(generation)
 	s.recoveryErr = nil
+	return cancel
+}
+
+// completeRecoveryAttempt ends a recovery whose reconcile converged on the
+// recovery's own connection.
+func (s *Session) completeRecoveryAttempt(generation uint64) bool {
+	s.mu.Lock()
+	if !s.recoveryAttemptActive || s.recoveryGeneration != generation {
+		s.mu.Unlock()
+		return false
+	}
+	cancel := s.finishRecoveryAttemptLocked(generation)
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	return true
+}
+
+// abandonRecoveryAttempt ends a recovery that failed after its drain finished.
+// The drain already settled or stopped every piece of route work of the old
+// connection, so none of it can still act, and the session is not terminal.
+// When no connection is installed and no Start is in flight it closes the
+// events channel — the ordinary dead-session signal reloadLocked withholds
+// while a recovery is pending. The supervisor then re-runs a session that is
+// not lease-managed (non-exclusive, or exclusive with no lease store), and its
+// Start re-creates the channel. The manager of a lease-managed session closes
+// the session and releases its lease; its next Start fails on the closed
+// session, and the supervisor reports ErrSessionUnrecoverable for a unit
+// rebuild. A Start in flight owns that signal instead: if it fails, its caller
+// gets the error and the manager re-runs the session; if it succeeds, its
+// SessionConnected reaches the manager. Closing events under it would drop
+// that SessionConnected, and every later Start returns early on the installed
+// connection without re-creating the channel.
+func (s *Session) abandonRecoveryAttempt(generation uint64, cause error) bool {
+	s.mu.Lock()
+	if !s.recoveryAttemptActive || s.recoveryGeneration != generation || s.terminalErr != nil {
+		s.mu.Unlock()
+		return false
+	}
+	cancel := s.finishRecoveryAttemptLocked(generation)
+	if s.cm == nil && !s.starting && !s.closed {
+		s.closeEventsLocked()
+	}
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if s.logger != nil {
+		s.logger.Warn("mqtt: settlement recovery abandoned after its drain; the session reconnects normally",
+			"client_id", s.opts.ClientID,
+			"error", cause,
+		)
 	}
 	return true
 }
@@ -185,11 +221,11 @@ func (s *Session) captureRecoveryTargetEpoch(generation uint64) error {
 	if s.recoveryErr != nil {
 		return s.recoveryErr
 	}
-	if targetEpoch == 0 || s.recoverySessionPresentEpoch != targetEpoch {
+	if targetEpoch == 0 || s.recoveryConnectionEpoch != targetEpoch {
 		return shared.ErrUnavailable.
-			WithMessage("mqtt: Session Present evidence does not match recovery connection epoch").
+			WithMessage("mqtt: settlement recovery connection is no longer the current connection").
 			With("target_epoch", targetEpoch).
-			With("session_present_epoch", s.recoverySessionPresentEpoch)
+			With("recovery_connection_epoch", s.recoveryConnectionEpoch)
 	}
 	return nil
 }
@@ -218,7 +254,7 @@ func (s *Session) requestRecovery(ctx context.Context) error {
 	}
 	s.recoveryPending = true
 	s.recoveryNeedsSessionPresent = true
-	s.recoverySessionPresentEpoch = 0
+	s.recoveryConnectionEpoch = 0
 	s.recoveryDrainState = recoveryDrainNotStarted
 	s.recoveryDrainGeneration = 0
 	s.recoveryDrainDone = nil
@@ -271,13 +307,13 @@ func (s *Session) runRecovery(
 	if err := s.acquireReload(ctx); err != nil {
 		mapped := MapError(err).WithMessage("mqtt: settlement recovery waiting for session serialization")
 		cancelAttempt()
-		s.failQueuedRecovery(generation, mapped)
+		s.terminateFailedRecovery(generation, mapped)
 		return
 	}
 	defer s.releaseReload()
 	if err := ctx.Err(); err != nil {
 		cancelAttempt()
-		s.failQueuedRecovery(generation,
+		s.terminateFailedRecovery(generation,
 			MapError(err).WithMessage("mqtt: settlement recovery cancelled after serialization"))
 		return
 	}
@@ -301,7 +337,7 @@ func (s *Session) runRecovery(
 		}
 		s.mu.Unlock()
 		cancelAttempt()
-		s.failQueuedRecovery(generation, queuedErr)
+		s.terminateFailedRecovery(generation, queuedErr)
 		return
 	}
 	s.recoveryAttemptActive = true
@@ -310,7 +346,7 @@ func (s *Session) runRecovery(
 	s.recoveryDrainDone = nil
 	s.recoveryAttemptCancel = cancelAttempt
 	s.recoveryNeedsSessionPresent = true
-	s.recoverySessionPresentEpoch = 0
+	s.recoveryConnectionEpoch = 0
 	s.recoveryTargetEpoch = 0
 	s.mu.Unlock()
 
@@ -329,20 +365,25 @@ func (s *Session) runRecovery(
 	drainErr := s.quiesceForRecycleAwaitingSettlement(ctx)
 	s.finishRecoveryDrain(generation, drainDone)
 	if drainErr != nil {
-		s.completeRecoveryAttempt(generation,
-			shared.ErrUnavailable.WithMessage("mqtt: settlement recovery drain failed").Wrap(drainErr), false)
+		s.terminateFailedRecovery(generation,
+			shared.ErrUnavailable.WithMessage("mqtt: settlement recovery drain failed").Wrap(drainErr))
 		return
 	}
 
+	// From here on the drain has finished, so no route work of the old
+	// connection can still act: a failure abandons the attempt instead of
+	// terminating the session, unless the failing step already failed closed.
+	// What the runtime does with a session the abandon leaves without a
+	// connection is described on abandonRecoveryAttempt.
 	if !s.recordRecoveryRecycleStart(generation) {
 		return
 	}
 	if err := s.reloadLocked(ctx); err != nil {
-		s.completeRecoveryAttempt(generation, err, false)
+		s.abandonRecoveryAttempt(generation, err)
 		return
 	}
 	if err := s.captureRecoveryTargetEpoch(generation); err != nil {
-		s.completeRecoveryAttempt(generation, err, false)
+		s.abandonRecoveryAttempt(generation, err)
 		return
 	}
 

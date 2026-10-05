@@ -208,11 +208,12 @@ func TestSessionManager_DeferredConnect_SessionFailureRestartReleasesReseizedLea
 // negative control for the hand-off above. Releasing the re-seized lease is
 // justified by "this transport is permanently closed, so nothing of ours can
 // still send" — and a session can latch that permanent marker ASYNCHRONOUSLY
-// while accepted deliveries are still settling (the paho session's
-// ingress-poison rejection returns at once and quiesces on a goroutine). So the
-// marker alone is not evidence: the source is closed (bounded) first, and when
-// that close never returns the lease is KEPT and the term goes terminal. The
-// pod restart then tears the wedged transport down at the OS level and the
+// while accepted deliveries are still settling (a paho settlement recovery
+// whose drain fails, or that fails before its drain, latches the marker on the
+// recovery's own goroutine while accepted deliveries may still be settling). So
+// the marker alone is not evidence: the source is closed (bounded) first, and
+// when that close never returns the lease is KEPT and the term goes terminal.
+// The pod restart then tears the wedged transport down at the OS level and the
 // standby takes over at natural TTL.
 //
 // Mutation: release unconditionally on the escalation path and the lease is

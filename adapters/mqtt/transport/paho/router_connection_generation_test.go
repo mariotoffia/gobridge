@@ -191,10 +191,10 @@ func TestRouterGeneration_IdleConnectionDoesNotStrandItsMarker(t *testing.T) {
 // LATER connection to consume.
 //
 // The callback is skipped whenever the session rejects the connection edge — a
-// latched terminal error, Session Present evidence a recovery demanded, or a
-// generation a reload already discarded. Its client may still have opened the
-// generation. The teardown report voids that marker, so the next connection's
-// callback advances and purges the dead entries instead of inheriting them.
+// latched terminal error or a generation a reload already discarded. Its client
+// may still have opened the generation. The teardown report voids that marker,
+// so the next connection's callback advances and purges the dead entries
+// instead of inheriting them.
 func TestRouterGeneration_TeardownVoidsAnUnconsumedClientMarker(t *testing.T) {
 	clk := testClock()
 	rec := &ports.RecordingExporter{}

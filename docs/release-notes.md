@@ -156,8 +156,11 @@ several are breaking at the wire or observable in operations.
   **acked-and-dropped**: an acknowledged, counted loss
   (`MQTTIngressPoisonDropped`, Error log per violation class). Alert on the
   new metric; see [the runbook](runbooks/mqtt-ingress-poison.md). Malformed
-  packets and totals above the advertised maximum (broker bugs) remain
-  session-terminal.
+  packets and totals above the advertised maximum (broker bugs) are rejected
+  before decoding and drop only the connection: the session reconnects with a
+  growing backoff, reads not ready for at least 30 s and counts
+  `MQTTIngressRejected`
+  ([ADR 0021](adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)).
 - **Pre-first-reconcile backlog is retained, never orphan-dropped.** Before the first `Reconcile` of a process lifetime every topic
   counts as covered, so a CONNACK backlog replayed ahead of the first plan
   can no longer be PUBACK-dropped and its live topic unsubscribed under a

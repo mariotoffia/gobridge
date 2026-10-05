@@ -13,11 +13,6 @@ import (
 // the same ClientID (spec §3.14.2.1; packets.DisconnectSessionTakenOver).
 const disconnectSessionTakenOver byte = 0x8E
 
-// takeoverStabilityWindow is how long a connection must have been up
-// for a subsequent takeover to be considered a NEW incident (legit
-// failover) rather than the continuation of a ClientID-collision storm.
-const takeoverStabilityWindow = 30 * time.Second
-
 // handleServerDisconnect observes server-initiated DISCONNECT packets
 // (autopaho invokes the OnServerDisconnect hook in its own goroutine).
 // Session takeover (0x8E) feeds the collision damping in
@@ -42,7 +37,7 @@ func (s *Session) handleServerDisconnect(code byte) {
 // and dampens the resulting reconnect storm. One takeover is normal
 // (Exclusive failover: the standby legitimately claims the ClientID),
 // so the first occurrence carries no penalty. Repeated takeovers
-// without an intervening stable connection (>= takeoverStabilityWindow
+// without an intervening stable connection (>= connectionStabilityWindow
 // of uptime) mean two live instances share a client_id and are mutually
 // kicking each other; each additional occurrence doubles the reconnect
 // backoff penalty (1s, 2s, ... capped at 64s — see takeoverPenalty) and
@@ -58,7 +53,7 @@ func (s *Session) handleServerDisconnect(code byte) {
 func (s *Session) noteSessionTakeover() {
 	now := s.clock().Now().UnixNano()
 	s.mu.Lock()
-	if s.connUpAt != 0 && now-s.connUpAt >= int64(takeoverStabilityWindow) {
+	if s.connUpAt != 0 && now-s.connUpAt >= int64(connectionStabilityWindow) {
 		// The connection had been stable: treat this as a fresh
 		// incident, not a continuation of a collision storm.
 		s.takeoverStreak = 0
@@ -119,7 +114,7 @@ func (s *Session) noteSessionTakeover() {
 // must not be slowed down), then 1s << (streak-2) capped at 64s.
 //
 // The penalty is gated on recency: it only applies while takeovers are
-// still actively arriving (the last one within takeoverStabilityWindow). Once
+// still actively arriving (the last one within connectionStabilityWindow). Once
 // the collision resolves and no takeover has occurred for that window, the
 // penalty decays to 0 even though takeoverStreak is still high — an ordinary
 // reconnect (a network blip long after the storm) must not be stuck paying a
@@ -132,7 +127,7 @@ func (s *Session) takeoverPenalty() time.Duration {
 	streak := s.takeoverStreak
 	last := s.lastTakeoverAt
 	s.mu.Unlock()
-	if streak <= 1 || last == 0 || now-last >= int64(takeoverStabilityWindow) {
+	if streak <= 1 || last == 0 || now-last >= int64(connectionStabilityWindow) {
 		return 0
 	}
 	shift := streak - 2

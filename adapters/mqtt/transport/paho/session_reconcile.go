@@ -36,12 +36,8 @@ func (s *Session) Reconcile(ctx context.Context, plan connectivity.SessionPlan) 
 		s.mu.Unlock()
 		return terminal
 	}
-	recoveryGeneration := uint64(0)
-	if s.recoveryAttemptActive {
-		recoveryGeneration = s.recoveryGeneration
-	}
 	s.mu.Unlock()
-	return s.reconcileUnderGate(ctx, plan, recoveryGeneration)
+	return s.reconcileUnderGate(ctx, plan, 0)
 }
 
 // reconcileUnderGate converges one plan while its caller owns reloadGate. It
@@ -67,28 +63,28 @@ func (s *Session) reconcileUnderGate(
 			return
 		}
 		if retErr != nil {
-			s.completeRecoveryAttempt(recoveryGeneration, retErr, false)
+			s.abandonRecoveryAttempt(recoveryGeneration, retErr)
 			return
 		}
 		s.mu.Lock()
-		resumed := s.recoveryAttemptActive &&
+		current := s.recoveryAttemptActive &&
 			s.recoveryGeneration == recoveryGeneration &&
 			s.recoveryTargetEpoch != 0 &&
-			s.recoverySessionPresentEpoch == s.recoveryTargetEpoch &&
+			s.recoveryConnectionEpoch == s.recoveryTargetEpoch &&
 			s.connEpoch == s.recoveryTargetEpoch
 		recoveryErr := s.recoveryErr
 		s.mu.Unlock()
-		if !resumed {
+		if !current {
 			if recoveryErr != nil {
 				retErr = recoveryErr
 			} else {
 				retErr = shared.ErrUnavailable.WithMessage(
-					"mqtt: settlement recovery reconciliation completed without resumed broker state")
+					"mqtt: settlement recovery reconciliation finished on a replaced connection")
 			}
-			s.completeRecoveryAttempt(recoveryGeneration, retErr, false)
+			s.abandonRecoveryAttempt(recoveryGeneration, retErr)
 			return
 		}
-		if !s.completeRecoveryAttempt(recoveryGeneration, nil, true) {
+		if !s.completeRecoveryAttempt(recoveryGeneration) {
 			retErr = shared.ErrUnavailable.WithMessage(
 				"mqtt: settlement recovery completion raced its hard deadline")
 		}
@@ -98,6 +94,10 @@ func (s *Session) reconcileUnderGate(
 	// that fencing boundary, including a replacement generation created by the
 	// managed-history cleanup recycle below.
 	defer func() {
+		// A recovery's own reconcile failure is abandoned without this teardown;
+		// the runtime manager's next ordinary Reconcile, triggered by the
+		// recovery connection's SessionConnected event, runs the teardown if it
+		// fails again.
 		if retErr != nil && recoveryGeneration == 0 && s.mode == connectivity.SessionExclusive {
 			if disconnectErr := s.disconnectFailedReconcile(ctx); disconnectErr != nil &&
 				!errors.Is(retErr, shared.ErrTransportClosedPermanently) {

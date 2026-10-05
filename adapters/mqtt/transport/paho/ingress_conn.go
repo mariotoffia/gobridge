@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
@@ -15,6 +16,10 @@ const (
 	// mqttPropertyUserProperty is the MQTT v5 User Property identifier.
 	mqttPropertyUserProperty = 38
 )
+
+// ingressDisconnectWriteTimeout bounds the best-effort DISCONNECT write so a
+// stalled socket cannot hold Paho's read goroutine.
+const ingressDisconnectWriteTimeout = time.Second
 
 var (
 	errMQTTVBINonCanonical = errors.New("non-canonical MQTT variable byte integer")
@@ -68,6 +73,11 @@ func (e *mqttIngressError) Unwrap() error {
 type mqttIngressConn struct {
 	net.Conn
 
+	// writeMu is the lock Paho holds while it writes a packet: Paho
+	// serialises every packet write through a sync.Locker writer
+	// (packets.ControlPacket.WriteTo), which lets reject write a DISCONNECT
+	// without interleaving with a Paho packet.
+	writeMu           sync.Mutex
 	readMu            sync.Mutex
 	buffer            []byte
 	packet            []byte
@@ -92,6 +102,12 @@ func newMQTTIngressConn(
 		onViolation:       onViolation,
 	}
 }
+
+// Lock and Unlock make the guard the sync.Locker Paho serialises its packet
+// writes through.
+func (c *mqttIngressConn) Lock() { c.writeMu.Lock() }
+
+func (c *mqttIngressConn) Unlock() { c.writeMu.Unlock() }
 
 func (c *mqttIngressConn) Read(p []byte) (int, error) {
 	if len(p) == 0 {
@@ -242,13 +258,15 @@ func (c *mqttIngressConn) validatePublish(fixedHeader byte, body []byte) (publis
 	// advertises only the whole-packet Maximum Packet Size (max_payload_bytes
 	// + the metadata allowance), so a COMPLIANT broker forwards packets that
 	// violate any individual local cap while fitting the advertised total.
-	// Rejecting such a packet at this level is terminal (there is no way to
-	// ack below Paho), and a terminal rejection of a broker-forwardable
-	// packet is a publisher-triggerable permanent kill switch: the un-acked
-	// packet is redelivered on every clean_start=false resume and re-latches
-	// the session forever. Those caps are enforced by the router callback
-	// instead (ingressCapViolation), which ACKS-and-DROPS the violation so
-	// the broker frees the in-flight slot and never redelivers it.
+	// Rejecting such a packet at this level drops the connection (there is
+	// no way to ack below Paho): the reject tries to send DISCONNECT, closes
+	// the socket and the session reconnects with backoff. Rejecting a
+	// broker-forwardable packet that way is a publisher-triggerable
+	// reconnect loop: the un-acked packet is redelivered on every
+	// clean_start=false resume and drops every connection. Those caps are
+	// enforced by the router callback instead (ingressCapViolation), which
+	// ACKS-and-DROPS the violation so the broker frees the in-flight slot
+	// and never redelivers it.
 	//
 	// The User Property COUNT is the one cap whose decode cost is not bounded
 	// by the wire: Paho materialises every property twice, so the five-byte
@@ -260,9 +278,9 @@ func (c *mqttIngressConn) validatePublish(fixedHeader byte, body []byte) (publis
 	// property above the cap. Every other cap decodes in proportion to the
 	// bytes already read into this guard's buffer (≤ the advertised Maximum
 	// Packet Size enforced above). This guard's job remains bounding the RAW
-	// read (total packet size) and failing closed on malformed structure —
-	// both producible only by a broken broker, where terminal is the correct
-	// posture.
+	// read (total packet size) and rejecting malformed structure — both
+	// producible only by a broken broker, where dropping the connection with
+	// a reason code is the correct posture.
 	properties := body[offset : offset+propertiesLength]
 	userProperties, err := validateRawPublishProperties(properties)
 	if err != nil {
@@ -287,8 +305,25 @@ func (c *mqttIngressConn) reject(err error) error {
 	if c.onViolation != nil {
 		c.onViolation(err)
 	}
-	_ = c.Close()
+	c.disconnectAndClose(disconnectReasonFor(err))
 	return err
+}
+
+// disconnectAndClose tries to tell the broker why the connection is dropped,
+// then closes it. The DISCONNECT is written to the wrapped connection, not to
+// the guard, so WriteTo does not re-enter writeMu.
+func (c *mqttIngressConn) disconnectAndClose(reason byte) {
+	if c.writeMu.TryLock() {
+		//nolint:forbidigo // OS kernel socket deadline needs the real wall clock, not the injectable clock
+		_ = c.SetWriteDeadline(time.Now().Add(ingressDisconnectWriteTimeout))
+		writeMQTTDisconnect(c.Conn, reason)
+		_ = c.Close()
+		c.writeMu.Unlock()
+		return
+	}
+	// A Paho write holds the lock and may be blocked on the socket; closing
+	// unblocks it. The broker sees the connection drop without a reason code.
+	_ = c.Close()
 }
 
 func newMQTTMalformedError() *mqttIngressError {
@@ -424,4 +459,7 @@ func skipMQTTBytes(src []byte, offset *int, count int) bool {
 	return true
 }
 
-var _ net.Conn = (*mqttIngressConn)(nil)
+var (
+	_ net.Conn    = (*mqttIngressConn)(nil)
+	_ sync.Locker = (*mqttIngressConn)(nil)
+)

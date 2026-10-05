@@ -3,6 +3,8 @@
 Status: accepted
 Date: 2026-10-05
 Deciders: GoBridge core
+Amended by: 0021 (a recovery that fails after its drain and a pre-decode
+reject are contained in the session instead of latching it closed)
 Relates to: [0004](0004-single-use-runtime-lifecycle.md) (the process restart
 stays the backstop for every failure a rebuild must not answer),
 [0018](0018-reload-in-place-by-unit.md) (a rebuild is a serialized in-place
@@ -34,6 +36,10 @@ each one reaches the supervisor as `ErrSessionUnrecoverable` wrapping
 3. **Ingress poison.** A packet the pre-decode guard rejects — malformed MQTT
    structure, or larger than the advertised Maximum Packet Size — latches the
    session closed ([MQTT ingress poison](../runbooks/mqtt-ingress-poison.md)).
+
+Since [ADR 0021](0021-contain-mqtt-recovery-and-ingress-reject-in-session.md),
+fault 3 no longer latches the session closed; fault 2 does only for a failed
+drain, a failure before it, or a step that fails closed outside a recovery too.
 
 Any other path that latches the marker ends the same way, for example the
 pinned replay of a removed filter on a runtime with no dead-letter store.
@@ -203,7 +209,10 @@ runtime and builds the running configuration afresh, and wedges when that fails.
   30 s apart, and can keep its lease through it. A broker that keeps sending a
   malformed packet, or a pinned replay for a removed filter on a runtime with no
   dead-letter store, fails every fresh session the same way. Alert on the
-  `SessionRebuilds` rate and on the session's readiness.
+  `SessionRebuilds` rate and on the session's readiness. Since ADR 0021 a
+  malformed packet drops only the connection, so this risk covers it only for a
+  lease-managed session whose broker sends the packet again on every resume,
+  where the reject fails the reconcile after the reconnect.
 - Every failure a rebuild must not answer still ends in a process restart, so a
   restart policy is still required
   ([exit codes](../health-and-shutdown.md#exit-codes)).
@@ -216,7 +225,8 @@ The transport side of faults 2 and 3 is unchanged. A settlement recovery that
 fails after a successful drain, and an ingress-poison rejection, still latch the
 session closed, and only the rebuild above brings the session back. Letting the
 MQTT transport recover from those without closing the session is a separate
-decision, recorded in its own ADR when it lands.
+decision, recorded in its own ADR when it lands. ADR 0021 has since made that
+decision and amends this paragraph, as the Context note says.
 
 ## Rejected alternatives
 

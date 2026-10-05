@@ -22,8 +22,9 @@ import (
 // the session forever, a publisher-triggerable permanent kill switch
 // The caller acks-and-drops it instead (dropPoisonIngress).
 // Violations only a NON-compliant broker can produce (malformed structure,
-// total packet size above the advertised maximum) are rejected terminally by
-// the raw pre-decode guard (ingress_conn.go) and never reach this callback.
+// total packet size above the advertised maximum) are rejected by the raw
+// pre-decode guard (ingress_conn.go), which drops the connection, and never
+// reach this callback.
 func (r *router) ingressCapViolation(pub *pahov5.Publish) (class string, violation error) {
 	if pub == nil {
 		return "", nil

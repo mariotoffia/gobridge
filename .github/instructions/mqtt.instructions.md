@@ -5,7 +5,7 @@ applyTo: "adapters/mqtt/**"
 # MQTT transport (paho)
 
 Adds to `adapters.instructions.md`. Sources: ADR-0002, ADR-0003, ADR-0009,
-ADR-0010, ADR-0011, ADR-0019, ADR-0020 and `docs/transports/mqtt*.md`.
+ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021 and `docs/transports/mqtt*.md`.
 
 ## Settlement and ingress
 
@@ -14,14 +14,30 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020 and `docs/transports/mqtt*.md`.
   Persistent or Exclusive session (`mqtt-behavior.md` §Settlement Semantics).
 - Only local-cap violations may be acked and dropped: `max_payload_bytes`, the
   128 KiB metadata cap, or more than 128 User Properties, counted on
-  `MQTTIngressPoisonDropped`. A malformed packet, or one larger than the
-  advertised Maximum Packet Size, still fails the session closed.
-- A session that fails closed — this pre-decode rejection, ingress that does
-  not quiesce within `reconcile_timeout` before a recycle, a failed settlement
-  recovery — latches `shared.ErrTransportClosedPermanently` and never starts
-  again (single-use). The Supervisor and the AWS runtime then rebuild its
-  reload unit in place with a fresh session, unless the failure carries
-  `ErrProcessRestartRequired` or no unit can be rebuilt (ADR-0020).
+  `MQTTIngressPoisonDropped`.
+- A malformed packet, or one larger than the advertised Maximum Packet Size, is
+  rejected before Paho decodes it. The reject drops the connection, never the
+  session. It counts `MQTTIngressRejected` and tries to send DISCONNECT 0x95 or
+  0x81; that write has a 1 s deadline, and it is skipped while a Paho write
+  holds the guard's write lock. The guard then closes the socket and lets
+  autopaho reconnect, with a streak-keyed backoff penalty and `Ready` false
+  until a replacement connection holds for `connectionStabilityWindow`. Flag
+  any change that latches a terminal error on a pre-decode reject (ADR-0021).
+- A settlement recovery that fails after its drain finished is abandoned
+  (`abandonRecoveryAttempt`): it starts the rate-limit cooldown and latches no
+  terminal error of its own. Session Present = false on a recovery connect is a
+  resume loss (`MQTTSessionResumeLost`), not a failure. A failed drain, and a
+  failure before the attempt reaches its drain, stay terminal, because old
+  route work may still act. A fail-closed path that is terminal outside a
+  recovery (for example managed-subscription cleanup in the recovery's
+  reconcile) stays terminal inside one; the abandon then does nothing
+  (ADR-0021).
+- A session that fails closed — ingress that does not quiesce within
+  `reconcile_timeout` before a recycle, a failed recovery drain, a recovery
+  that fails before its drain — latches `shared.ErrTransportClosedPermanently`
+  and never starts again (single-use). The Supervisor and the AWS runtime then
+  rebuild its reload unit in place with a fresh session, unless the failure
+  carries `ErrProcessRestartRequired` or no unit can be rebuilt (ADR-0020).
 - MQTT has no NACK, so `Retry` means recycling the connection. A `Retry` that
   won is never followed by a protocol ack. QoS 0 and Ephemeral sessions return
   `ErrNotSupported` for `Retry` (`mqtt-settlement-recovery.md`).
@@ -76,7 +92,7 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020 and `docs/transports/mqtt*.md`.
 - `client_id_suffix` is `hostname` or `nonce`. An unknown token or a failed
   hostname lookup fails the build, the nonce never falls back to a bare
   timestamp, and a suffix is rejected with `session_mode: exclusive`.
-  Takeover damping (`takeoverStabilityWindow`, capped `takeoverPenalty`,
+  Takeover damping (`connectionStabilityWindow`, capped `takeoverPenalty`,
   `MetricMQTTSessionTakeover`) stays (ADR-0011).
 
 ## Egress and rotation

@@ -54,13 +54,13 @@ type Session struct {
 	// cover it without shortening any other's.
 	publishAckBudget time.Duration
 	events           chan ports.SessionEvent
-	// eventsClosed guards the single close of s.events. TWO paths close
-	// it — Close (terminal shutdown) and Reload's Start-failure signal
-	// (closing events routes the dead session into the runtime
-	// manager's events-channel-close restart path). Both honor this flag
-	// under s.mu so a double-close cannot panic, and pushEvent checks it
-	// so no send can race the close. Start clears it (and re-materialises
-	// s.events) when the supervisor re-Starts a Reload-failed session.
+	// eventsClosed guards the single close of s.events. Its closers are
+	// Close, transitionTerminal, a failed Reload and an abandoned recovery
+	// (closing events routes a dead session into the runtime manager's
+	// events-channel-close restart path). All honor this flag under s.mu so
+	// a double-close cannot panic, and pushEvent checks it so no send can
+	// race the close. Start clears it (and re-materialises s.events) when
+	// the supervisor re-Starts a session after a dead-session signal.
 	eventsClosed bool
 	closed       bool
 	// closedCh is closed exactly once by Close, under mu together with the
@@ -105,16 +105,37 @@ type Session struct {
 	// lastTakeoverAt is the unix-nanos time of the most recent session-takeover
 	// (0x8E) disconnect, or 0 if none. takeoverPenalty gates on it: the penalty
 	// only spaces out reconnects DURING an active storm, so once no takeover has
-	// occurred for takeoverStabilityWindow the penalty decays to 0 even though
+	// occurred for connectionStabilityWindow the penalty decays to 0 even though
 	// takeoverStreak is still high. Without this, a RESOLVED storm's streak
 	// (only reset when a NEW takeover arrives post-stability) would make every
 	// later ordinary reconnect pay the stale penalty forever, busting the
 	// failover window. Guarded by mu.
 	lastTakeoverAt int64
+	// ingressRejectErr is the cause of the most recent pre-decode ingress
+	// reject, or nil if none. It is cleared, with the streak and
+	// lastIngressRejectAt, when the connection that came up after the reject
+	// ends — on connection-down or a planned teardown (Reload, a failed
+	// reconcile or terminal transition, Close) — having stayed up for
+	// connectionStabilityWindow. Health reports the session not ready only
+	// while the reject is active: set and not yet settled by such a connection
+	// that is still up. Guarded by mu.
+	ingressRejectErr error
+	// ingressRejectStreak counts pre-decode rejects since the last settled
+	// one; it scales the reconnect penalty. A reject starts a new streak only
+	// when it arrives on a connection that came up after the previous reject
+	// and has stayed up for connectionStabilityWindow. Guarded by mu.
+	ingressRejectStreak int
+	// lastIngressRejectAt is the unix-nanos session-clock time of the most
+	// recent pre-decode reject, or 0 if none. Only a connection that came up
+	// after it can settle the reject, and the reconnect penalty decays once it
+	// is connectionStabilityWindow old. Guarded by mu.
+	lastIngressRejectAt int64
 	// connUpAt is the unix-nanos timestamp of the LAST OnConnectionUp. It
-	// is set on every connect edge and never reset to 0 on disconnect: the
-	// takeover-damping math only asks "was the connection stable for
-	// takeoverStabilityWindow before this takeover?", which needs the last
+	// is set on every connect edge and never reset to 0 on disconnect. The
+	// takeover-damping math asks "was the connection stable for
+	// connectionStabilityWindow before this takeover?", and the ingress-reject
+	// damping asks whether the current connection came up after the last
+	// reject and has stayed up for that window; both need the last
 	// up-transition, not a live up/down flag (connected covers that).
 	// Zeroing it on down would also make the reset race the 0x8E callback.
 	connUpAt int64
@@ -254,21 +275,29 @@ type Session struct {
 	authFailureCB atomic.Pointer[func(error)]
 
 	// recoveryPending is set synchronously by a durable QoS 1/2 Retry and
-	// keeps readiness below Full until a replacement connection resumes the
-	// broker session. Concurrent Retry requests coalesce on this state.
-	recoveryPending             bool
+	// keeps readiness below Full until the recovery attempt completes or is
+	// abandoned. Concurrent Retry requests coalesce on this state.
+	recoveryPending bool
+	// recoveryNeedsSessionPresent is set while a recovery is requested, so the
+	// next dial asks the broker to resume.
 	recoveryNeedsSessionPresent bool
-	recoverySessionPresentEpoch uint64
-	recoveryTargetEpoch         uint64
-	recoveryAttemptActive       bool
-	recoveryDrainState          recoveryDrainState
-	recoveryDrainGeneration     uint64
-	recoveryDrainDone           chan struct{}
-	recoveryGeneration          uint64
-	recoveryAttemptCancel       context.CancelFunc
-	recoveryErr                 error
-	lastRecoveryCompleted       time.Time
-	recoveryRecycleCount        uint64
+	// recoveryConnectionEpoch is the epoch of the recovery's own connection,
+	// recorded on every connection-up while a recovery is requested. The
+	// attempt compares it with the epoch it captured after its recycle, and
+	// the recovery reconcile completes only while both still name the current
+	// connection.
+	recoveryConnectionEpoch uint64
+	recoveryTargetEpoch     uint64
+	recoveryAttemptActive   bool
+	recoveryDrainState      recoveryDrainState
+	recoveryDrainGeneration uint64
+	recoveryDrainDone       chan struct{}
+	recoveryGeneration      uint64
+	recoveryAttemptCancel   context.CancelFunc
+	// recoveryErr is set only by the terminal transition.
+	recoveryErr           error
+	lastRecoveryCompleted time.Time
+	recoveryRecycleCount  uint64
 
 	// qosDowngrades records every filter the broker granted below the
 	// requested QoS, keyed by filter: confirming until qosDowngradeConfirmations

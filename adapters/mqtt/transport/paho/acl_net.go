@@ -3,6 +3,7 @@ package paho
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -25,7 +26,9 @@ import (
 // attemptGuardedConnection establishes the decrypted MQTT byte stream and
 // installs the adapter-owned ingress guard before autopaho creates a Paho
 // client. Reconnect attempts use the same boundary because autopaho invokes
-// AttemptConnection for every connection generation.
+// AttemptConnection for every connection generation. The guard is returned
+// unwrapped: it is the sync.Locker Paho serialises its packet writes through,
+// so a reject can write a DISCONNECT without interleaving with a Paho packet.
 func (s *Session) attemptGuardedConnection(
 	ctx context.Context,
 	cfg autopaho.ClientConfig,
@@ -41,7 +44,29 @@ func (s *Session) attemptGuardedConnection(
 		_ = raw.Close()
 		return nil, err
 	}
-	return packets.NewThreadSafeConn(guarded), nil
+	return guarded, nil
+}
+
+// disconnectReasonFor maps a pre-decode reject to the MQTT v5 DISCONNECT
+// reason code (§3.14.2.1) the guard tries to send before it closes the
+// connection. The spec says the client should send 0x95 for a packet above the
+// Maximum Packet Size and 0x81 for a malformed one (§3.1.2.11.4 and §4.13.1).
+// A spec-compliant broker still publishes the Last Will for both codes: only
+// 0x00 discards it (MQTT-3.1.2-8). Mosquitto discards the will on every client
+// DISCONNECT except 0x04 (Disconnect with Will Message).
+func disconnectReasonFor(err error) byte {
+	var ingressErr *mqttIngressError
+	if errors.As(err, &ingressErr) && ingressErr.kind == mqttIngressPacketTooLarge {
+		return packets.DisconnectPacketTooLarge
+	}
+	return packets.DisconnectMalformedPacket
+}
+
+// writeMQTTDisconnect writes an MQTT v5 DISCONNECT with the reason code and
+// no properties to w. The write is best effort: the connection is closed next
+// either way.
+func writeMQTTDisconnect(w io.Writer, reason byte) {
+	_, _ = (&packets.Disconnect{ReasonCode: reason}).WriteTo(w)
 }
 
 // guardIngress wraps one decrypted broker byte stream in the predecode ingress

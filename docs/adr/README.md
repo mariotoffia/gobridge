@@ -30,7 +30,8 @@ record remains available and links to its replacement.
 | [0017](0017-direct-hold-in-process-send-retry.md) | `direct_hold` retries a failed send in process before replay or dead-lettering | accepted; amended by 0019 |
 | [0018](0018-reload-in-place-by-unit.md) | Reload in place by reload unit | accepted |
 | [0019](0019-dlq-auto-redrive-by-system-event.md) | DLQ automatic redrive triggered by system events | accepted |
-| [0020](0020-contain-unrecoverable-session-by-unit-rebuild.md) | Contain an unrecoverable session by rebuilding its reload unit | accepted |
+| [0020](0020-contain-unrecoverable-session-by-unit-rebuild.md) | Contain an unrecoverable session by rebuilding its reload unit | accepted; amended by 0021 |
+| [0021](0021-contain-mqtt-recovery-and-ingress-reject-in-session.md) | Contain an MQTT recovery failure and a pre-decode ingress reject in the session | accepted |
 
 ## Numbering
 

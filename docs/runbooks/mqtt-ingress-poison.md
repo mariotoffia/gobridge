@@ -1,10 +1,14 @@
-# Runbook: MQTT Ingress Poison (Cap-Violating Publishes)
+# Runbook: MQTT Ingress Poison / Malformed or Oversized Broker Packet
 
 **Applies to:** MQTT (paho) transport sessions.
 **Audience:** on-call operators.
-**Risk:** each poison drop is an **acknowledged, deliberate message loss** —
-the bridge acks a publish it refuses to process. The session itself stays
-healthy; the urgency is finding the publisher, not saving the bridge.
+**Risk:** for a cap-violating publish, each poison drop is an **acknowledged,
+deliberate message loss** — the bridge acks a publish it refuses to process.
+The session itself stays healthy; the urgency is finding the publisher, not
+saving the bridge. A malformed or oversized packet from the broker is
+different: nothing is acked, but the session drops its connection and reads
+not ready for at least 30 s after each reject; see
+[Broker sends a malformed or oversized packet](#broker-sends-a-malformed-or-oversized-packet).
 
 ## Background
 
@@ -23,13 +27,10 @@ anything else: an un-acked rejection is redelivered by the broker on every
 restart → redeliver → terminal forever — a permanent, publisher-triggerable
 kill switch for every route on the session.
 
-Two violation classes remain session-terminal because only a **broken broker**
-can produce them: malformed MQTT structure and totals above the advertised
-Maximum Packet Size. Those reject at the raw pre-decode guard and fail the
-session closed; if a session restart-loops with
-`mqtt: inbound packet size ... exceeds Maximum Packet Size` or
-`malformed inbound packet rejected before decoding`, the broker is
-non-compliant — fix or replace the broker; no bridge-side setting clears it.
+Two violation classes are handled earlier, at the raw pre-decode guard,
+because only a **broken broker** can produce them: malformed MQTT structure and
+a packet larger than the advertised Maximum Packet Size. See
+[Broker sends a malformed or oversized packet](#broker-sends-a-malformed-or-oversized-packet).
 
 ## Symptom
 
@@ -77,3 +78,72 @@ non-compliant — fix or replace the broker; no bridge-side setting clears it.
 Alert on ANY non-zero `MQTTIngressPoisonDropped` rate: it is always either a
 misconfigured cap, a broken producer, or hostile traffic — never steady-state
 normal.
+
+## Broker sends a malformed or oversized packet
+
+The raw pre-decode guard rejects a packet with a malformed MQTT structure, or
+one larger than the Maximum Packet Size the bridge advertised in CONNECT
+(`max_payload_bytes` + 128 KiB), before Paho decodes it. The packet never
+reaches a route, and nothing is acked. The guard drops the connection, not the
+session: the session reconnects and is never terminal
+([ADR 0021](../adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)).
+
+### Symptom
+
+- `MQTTIngressRejected` advances, tagged `session_id`. `MQTTRouterDropped` does
+  not count these rejects.
+- An Error log per reject:
+  `mqtt: rejected inbound packet before Paho decoding; dropping the connection`,
+  with `client_id`, `error` and `streak` (the number of consecutive rejects).
+  The `error` is `mqtt: inbound packet size N exceeds Maximum Packet Size M before decoding`
+  or `mqtt: malformed inbound packet rejected before decoding`.
+- The session reconnects, and each reconnect waits longer while rejects keep
+  arriving: an extra delay that starts at `reconnect_delay` and doubles with
+  each consecutive reject, up to `reconnect_max_delay`, with jitter. The extra
+  delay stops once no reject has arrived for 30 s.
+- Deep health reports the session `ready: false` with `service_level: none`,
+  even while `connected` is true. It stays that way until a connection that
+  came up after the last reject has stayed up for 30 s, so expect at least 30 s
+  of not-ready after every reject.
+- A broker that logs DISCONNECT reason codes shows the client disconnecting
+  with 0x95 (Packet too large) or 0x81 (Malformed Packet). Mosquitto does not
+  log the code: it logs `Received DISCONNECT from <client id>` at debug level
+  and `Client <client id> disconnected.` The DISCONNECT is best effort: when
+  the bridge was writing a packet at that moment, it closes the socket without
+  one, and the broker logs a plain connection drop.
+- **Last Will.** A spec-compliant broker publishes the session's Last Will
+  after 0x95 or 0x81, and after a drop with no DISCONNECT. Mosquitto does not
+  publish it when the DISCONNECT reaches it: it discards the will after any
+  client DISCONNECT except 0x04. It does publish the will when the bridge
+  closes the socket without a DISCONNECT. Mosquitto enforces the client's
+  Maximum Packet Size itself, so a reject practically never happens there.
+
+### Diagnosis
+
+1. Read the Error log. The packet size and the limit tell an oversized packet
+   from a malformed one.
+2. Find what sent the packet. A compliant broker never forwards a packet above
+   the client's Maximum Packet Size and never sends malformed MQTT, so the
+   cause is the broker or something between the broker and the bridge: a
+   proxy, a load balancer, a WebSocket gateway.
+
+### Remediation
+
+- Fix or replace that component. No bridge-side setting is the fix.
+- The session recovers on its own once the packets stop. When the broker sends
+  the same packet again on every resume, the reject arrives while the session
+  re-subscribes after the reconnect, so that reconcile fails too
+  (`ReconcileFailures`). A session that is not lease-managed keeps restarting
+  (`SessionRestarts`), each time after a longer reject backoff. A lease-managed
+  session (exclusive, with a lease store) releases its lease and its unit is
+  rebuilt (`SessionRebuilds`), after a backoff of 1 s doubling to 30 s; a
+  standby may take the lease and hit the same packet. Either way the session
+  stays not ready, but the other sessions and routes in the process keep
+  running.
+- Do not restart the bridge for it: a restart does not stop the broker from
+  sending the packet.
+
+### Alerting
+
+Alert on ANY non-zero `MQTTIngressRejected`: a compliant broker never sends the
+packets it counts.

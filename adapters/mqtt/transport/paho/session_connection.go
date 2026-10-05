@@ -73,26 +73,18 @@ func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint
 		s.completeConnectionUpBarrier(generation, err)
 		return
 	}
-	if s.recoveryNeedsSessionPresent && !sessionPresent {
-		err := shared.ErrUnavailable.WithMessage(
-			"mqtt: settlement recovery did not resume the broker session (Session Present=false)")
-		recoveryGeneration := s.recoveryGeneration
-		s.connected = false
-		s.subscriptionsSatisfied = false
-		s.mu.Unlock()
-		s.terminateFailedRecovery(recoveryGeneration, err, true)
-		s.mu.Lock()
-		terminal := s.terminalErr
-		s.mu.Unlock()
-		s.completeConnectionUpBarrier(generation, terminal)
-		return
-	}
 	nextEpoch := s.connEpoch + 1
 	if s.recoveryNeedsSessionPresent {
-		s.recoverySessionPresentEpoch = nextEpoch
+		s.recoveryConnectionEpoch = nextEpoch
 		s.recoveryErr = nil
 	}
-	resumeLost := !sessionPresent && s.resumeExpectedLocked()
+	// While a recovery is requested every dial asks the broker to resume: the
+	// recovery dial forces CleanStart=false, and autopaho sends CleanStart=false
+	// on every reconnect after the first connect. An absent session is then a
+	// loss even where an ordinary connect of this configuration would not expect
+	// one. The recovery goes on: its reconcile re-subscribes, as after an
+	// ordinary reconnect.
+	resumeLost := !sessionPresent && (s.recoveryNeedsSessionPresent || s.resumeExpectedLocked())
 	if resumeLost {
 		s.resumeLostErr = durableResumeLostError()
 	}
@@ -182,11 +174,13 @@ func (s *Session) invalidateConnectionGeneration(generation uint64, err error) {
 }
 
 func (s *Session) handleConnectionDownGeneration(generation uint64) bool {
+	now := s.clock().Now().UnixNano()
 	s.mu.Lock()
 	if generation != s.connectionGeneration || s.closed {
 		s.mu.Unlock()
 		return false
 	}
+	s.clearSettledIngressRejectLocked(now)
 	s.connected = false
 	s.subscriptionsSatisfied = false
 	if !s.connectionUpCompleted {
@@ -295,7 +289,7 @@ func (s *Session) failClosedForManagedMigration(ctx context.Context) error {
 }
 
 func (s *Session) failClosed(ctx context.Context, cause error) error {
-	terminal, _ := s.transitionTerminal(ctx, cause, 0, false, true)
+	terminal, _ := s.transitionTerminal(ctx, cause, 0, true)
 	return terminal
 }
 
@@ -324,6 +318,9 @@ func (s *Session) disconnectGeneration(ctx context.Context) {
 	s.cm = nil
 	cmCancel := s.cmCancel
 	s.cmCancel = nil
+	// autopaho raises no OnConnectionDown for a Disconnect, so this teardown
+	// settles a pre-decode reject the way connection-down does.
+	s.clearSettledIngressRejectLocked(s.clock().Now().UnixNano())
 	s.connected = false
 	s.subscriptionsSatisfied = false
 	s.observedSubs = make(map[string]subscriptionGrant)
