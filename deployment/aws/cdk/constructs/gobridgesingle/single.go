@@ -12,6 +12,7 @@ import (
 	"fmt"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsec2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awskms"
@@ -50,7 +51,8 @@ type SingleProps struct {
 
 	// VpcSubnets selects the subnets used for both ECS placement
 	// and (when EfsConfig is auto-created) EFS mount targets. nil
-	// means "all private subnets in Vpc".
+	// means the private subnets in Vpc, or the public subnets when
+	// AssignPublicIp is true.
 	VpcSubnets *awsec2.SubnetSelection
 
 	// Cluster is an existing ECS cluster. When nil a fresh cluster
@@ -131,6 +133,26 @@ type SingleProps struct {
 
 	// ServiceName overrides the auto-generated ECS service name.
 	ServiceName *string
+
+	// AssignPublicIp gives the task a public IP, for a public subnet with no
+	// NAT gateway. nil or false means no public IP. With VpcSubnets nil, the
+	// task and an auto-created EfsConfig both use the public subnets.
+	AssignPublicIp *bool
+
+	// CapacityProviderStrategies places the task through capacity providers,
+	// for example FARGATE_SPOT, instead of launch type FARGATE. nil keeps
+	// launch type FARGATE. The construct's own cluster gets the FARGATE and
+	// FARGATE_SPOT providers and refuses any other; a supplied Cluster must
+	// already have every provider named here. The facade runs exactly one
+	// task, so a Spot interruption stops bridging until ECS has started a
+	// replacement.
+	CapacityProviderStrategies []*awsecs.CapacityProviderStrategy
+
+	// CloudMapOptions registers the task in Cloud Map so other services can
+	// find it by DNS name. nil means no service discovery. Set
+	// CloudMapNamespace unless the supplied Cluster has a default namespace;
+	// the construct's own cluster has none.
+	CloudMapOptions *awsecs.CloudMapOptions
 }
 
 // GoBridgeSingle is the L2 facade construct that deploys the
@@ -224,8 +246,15 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 	// the same source for image construction.
 	_ = mat.Close()
 
+	// With a public IP and no subnets given, CDK places the task in the
+	// public subnets; the EFS mount targets and the parity check must follow.
+	subnets := props.VpcSubnets
+	if subnets == nil && props.AssignPublicIp != nil && *props.AssignPublicIp {
+		subnets = &awsec2.SubnetSelection{SubnetType: awsec2.SubnetType_PUBLIC}
+	}
+
 	// EFS config — auto-create when not supplied. An auto-created config
-	// gets props.VpcSubnets verbatim, so its mount targets always cover the
+	// gets the service's subnets verbatim, so its mount targets always cover the
 	// ECS placement; a SUPPLIED one may not, and a task in an AZ without a
 	// mount target fails at container start (matrix row 14).
 	var efsConfig *cdkconstructs.GoBridgeEfsConfig
@@ -234,11 +263,11 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 		if efsConfig == nil {
 			efsConfig = cdkconstructs.NewGoBridgeEfsConfig(c, jsii.String("Efs"), &cdkconstructs.GoBridgeEfsConfigProps{
 				Vpc:        props.Vpc,
-				VpcSubnets: props.VpcSubnets,
+				VpcSubnets: subnets,
 				EfsKmsKey:  props.EfsKmsKey,
 			})
 		} else {
-			cdkconstructs.AssertEfsSubnetParity("GoBridgeSingle", props.Vpc, props.VpcSubnets, efsConfig)
+			cdkconstructs.AssertEfsSubnetParity("GoBridgeSingle", props.Vpc, subnets, efsConfig)
 		}
 	}
 	configTable := gobridgebase.NewConfigTable(c, bootstrap)
@@ -247,8 +276,9 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 	cluster := props.Cluster
 	if cluster == nil {
 		cluster = awsecs.NewCluster(c, jsii.String("Cluster"), &awsecs.ClusterProps{
-			Vpc:                 props.Vpc,
-			ContainerInsightsV2: awsecs.ContainerInsights_ENABLED,
+			Vpc:                            props.Vpc,
+			ContainerInsightsV2:            awsecs.ContainerInsights_ENABLED,
+			EnableFargateCapacityProviders: jsii.Bool(len(props.CapacityProviderStrategies) > 0),
 		})
 	}
 
@@ -298,6 +328,9 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 	svcProps := &awsecs.FargateServiceProps{
 		Cluster:              cluster,
 		TaskDefinition:       built.TaskDefinition,
+		VpcSubnets:           subnets,
+		AssignPublicIp:       props.AssignPublicIp,
+		CloudMapOptions:      props.CloudMapOptions,
 		DesiredCount:         jsii.Number(1),
 		MinHealthyPercent:    jsii.Number(0),
 		MaxHealthyPercent:    jsii.Number(100),
@@ -305,13 +338,19 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 		EnableExecuteCommand: jsii.Bool(false),
 		CircuitBreaker:       &awsecs.DeploymentCircuitBreaker{Rollback: jsii.Bool(true)},
 	}
-	if props.VpcSubnets != nil {
-		svcProps.VpcSubnets = props.VpcSubnets
-	}
 	if props.ServiceName != nil {
 		svcProps.ServiceName = props.ServiceName
 	}
+	if len(props.CapacityProviderStrategies) > 0 {
+		svcProps.CapacityProviderStrategies = &props.CapacityProviderStrategies
+	}
 	svc := awsecs.NewFargateService(c, jsii.String("Service"), svcProps)
+	if len(props.CapacityProviderStrategies) > 0 {
+		// CDK orders nothing between a service and its cluster's capacity
+		// provider association, so a first deploy could create the service
+		// before its providers are associated and fail.
+		svc.Node().AddDependency(cluster)
+	}
 
 	// Phase 2 — aggregated validation via CDK Annotations on the
 	// base materialized config. We re-materialize for Phase 2 to
@@ -350,6 +389,11 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 // type can type-assert.
 func (g *GoBridgeSingle) ControlService() awsecs.IService { return g.service }
 
+// ConfigTable returns the DynamoDB config-source table, or nil for file config.
+//
+//nolint:ireturn // Public CDK data output intentionally returns the L2 table interface.
+func (g *GoBridgeSingle) ConfigTable() awsdynamodb.ITable { return g.base.ConfigTable }
+
 // TaskDefinition returns the Fargate task definition built by the
 // shared base.
 func (g *GoBridgeSingle) TaskDefinition() awsecs.FargateTaskDefinition {
@@ -381,5 +425,20 @@ func validateSingleProps(p *SingleProps) {
 	}
 	if p.BridgeConfig == nil {
 		panic("GoBridgeSingle: BridgeConfig is required (use gobridge.ConfigFile / ConfigInline)")
+	}
+	if p.CloudMapOptions != nil && p.CloudMapOptions.CloudMapNamespace == nil && p.Cluster == nil {
+		panic("GoBridgeSingle: CloudMapOptions.CloudMapNamespace is required when Cluster is nil; " +
+			"the construct's own cluster has no default Cloud Map namespace")
+	}
+	if p.Cluster == nil {
+		for _, s := range p.CapacityProviderStrategies {
+			if s == nil || s.CapacityProvider == nil || *awscdk.Token_IsUnresolved(s.CapacityProvider) {
+				continue
+			}
+			if name := *s.CapacityProvider; name != "FARGATE" && name != "FARGATE_SPOT" {
+				panic(fmt.Sprintf("GoBridgeSingle: capacity provider %q is not on the construct's own cluster, "+
+					"which has only FARGATE and FARGATE_SPOT; pass a Cluster that has it", name))
+			}
+		}
 	}
 }

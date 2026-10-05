@@ -48,6 +48,26 @@ worker count of at least two. Unresolved CDK numeric tokens are rejected because
 they cannot prove warm capacity. Size every
 warm task for the full takeover load. Override sizing with `CPU` and `MemoryMiB`.
 
+### Public subnet and Fargate Spot
+
+`GoBridgeSingle` takes both without a CloudFormation override:
+
+```go
+bridge := gobridge.NewSingle(stack, "Bridge", &gobridge.SingleProps{
+	// Vpc, Bootstrap, BridgeConfig, ...
+	AssignPublicIp: jsii.Bool(true), // public subnet, no NAT gateway
+	CapacityProviderStrategies: []*awsecs.CapacityProviderStrategy{
+		{CapacityProvider: jsii.String("FARGATE_SPOT"), Weight: jsii.Number(1)},
+	},
+})
+```
+
+With `VpcSubnets` unset, a public IP places the task, and an auto-created EFS,
+in the public subnets. The construct's own cluster gets the Fargate capacity
+providers; a cluster you pass in must already have them. The single profile
+runs one task, so a Spot interruption stops bridging until ECS has started a
+replacement.
+
 ---
 
 ---

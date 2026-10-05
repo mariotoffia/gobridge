@@ -22,8 +22,8 @@ import (
 // and demanding identical subnet IDs would reject them.
 //
 // It is only meaningful when the caller SUPPLIES an EfsConfig. When
-// GoBridgeSingle/Cluster auto-creates one it passes its own props.VpcSubnets
-// straight through, so parity is structural.
+// GoBridgeSingle/Cluster auto-creates one it passes the subnets its tasks
+// use straight through, so parity is structural.
 //
 // parent names the calling construct for the panic message
 // ("GoBridgeSingle" / "GoBridgeCluster"). ecsSubnets is the parent's

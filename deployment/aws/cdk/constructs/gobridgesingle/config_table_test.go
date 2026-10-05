@@ -133,3 +133,20 @@ func singleTaskBootstrap(t *testing.T, task map[string]any) infra.BootstrapConfi
 	t.Fatal("bootstrap environment is missing")
 	return infra.BootstrapConfig{}
 }
+
+// TestSingle_ConfigTable_DynamoDBSourceReturnsTable verifies the accessor returns the config table the facade owns.
+func TestSingle_ConfigTable_DynamoDBSourceReturnsTable(t *testing.T) {
+	stack, g := configSingleStack(t, dynamoBootstrap(), source.NewAsset(writeSingleYAML(t, singleSampleYAML)))
+	require.NotNil(t, g.ConfigTable())
+	tables := assertions.Template_FromStack(stack, nil).FindResources(jsii.String("AWS::DynamoDB::Table"), nil)
+	require.Len(t, *tables, 1)
+	for id := range *tables {
+		assert.Equal(t, map[string]any{"Ref": id}, stack.Resolve(g.ConfigTable().TableName()))
+	}
+}
+
+// TestSingle_ConfigTable_FileSourceReturnsNil verifies the accessor returns nil for file config.
+func TestSingle_ConfigTable_FileSourceReturnsNil(t *testing.T) {
+	_, g := configSingleStack(t, singleBootstrap(), source.NewAsset(writeSingleYAML(t, singleSampleYAML)))
+	assert.Nil(t, g.ConfigTable())
+}

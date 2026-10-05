@@ -255,7 +255,7 @@ endpoints save money.
 For development and testing, deploy Fargate tasks in a public subnet with
 `assignPublicIp: ENABLED`. This eliminates NAT and VPC endpoint costs
 entirely. Do not use this in production -- tasks are directly addressable from
-the internet.
+the internet. On `GoBridgeSingle`, set `AssignPublicIp`.
 
 ### Data Transfer
 

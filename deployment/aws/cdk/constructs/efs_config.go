@@ -30,7 +30,8 @@ type GoBridgeEfsConfigProps struct {
 	// passed to GoBridgeSingle/Cluster as a pre-built EfsConfig, that
 	// parent enforces the match via [AssertEfsSubnetParity] and fails
 	// synthesis on a mismatch; when the parent auto-creates the config it
-	// passes its own VpcSubnets through, so parity is structural.
+	// passes the subnets its tasks use straight through, so parity is
+	// structural.
 	VpcSubnets *awsec2.SubnetSelection
 
 	// FileSystem is an existing EFS filesystem to reuse. If nil a new
