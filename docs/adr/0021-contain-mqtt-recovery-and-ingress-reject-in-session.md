@@ -180,7 +180,7 @@ is replaced. ADR 0020 relies on two guarantees for that. Both still hold.
    every delivery the runtime accepted from the old connection is settled or
    stopped, so no route work of the old connection exists. A pre-decode reject
    adds no route work: the rejected packet never reached Paho's decoder, so it
-   never reached a route. No session replaces the one that rejected it. The
+   never reached a route. The reject itself replaces no session. The
    connection the reject drops is the ordinary one autopaho reconnects, like a
    connection a network fault drops, which never made a session terminal; the
    deliveries still held from it settle as they do after any reconnect.
@@ -190,7 +190,9 @@ is replaced. ADR 0020 relies on two guarantees for that. Both still hold.
    releases its lease only after the completed drain, when the old work has
    already stopped. A pre-decode reject does not end the session: the session
    manager sees an ordinary disconnect and reconnect, and the lease follows the
-   rules for any broker outage.
+   rules for any broker outage. When the reject fails the reconcile after a
+   reconnect, the lease follows the existing rule for a failed reconcile: the
+   source session closes and the settlement grace passes before the release.
 
 ## Consequences
 
@@ -207,7 +209,7 @@ is replaced. ADR 0020 relies on two guarantees for that. Both still hold.
   keeps failing recoveries gets at most one recovery attempt per session every
   30 s.
 - A broker that sends a malformed or oversized packet now cycles the connection,
-  not the unit, with a reconnect backoff that grows with the streak. A compliant
+  with a reconnect backoff that grows with the streak. A compliant
   broker never sends such a packet, so alert on any non-zero
   `MQTTIngressRejected`
   ([MQTT ingress poison](../runbooks/mqtt-ingress-poison.md)).
@@ -216,8 +218,18 @@ is replaced. ADR 0020 relies on two guarantees for that. Both still hold.
 - A deployment that relies on the Last Will to announce that the bridge went
   offline may get no announcement for a guard reject on Mosquitto, which
   discards the will after the guard's DISCONNECT.
-- The known risk ADR 0020 names for a broker that keeps sending a malformed
-  packet — a unit rebuilt again and again — no longer applies to that fault.
+- A broker or intermediary may send the rejected packet again right after
+  CONNACK on every resume (MQTT v5 resends unacknowledged QoS 1 and 2 PUBLISH
+  packets on a resumed session). The reject then drops the connection while the
+  session manager re-subscribes, so that `Reconcile` fails, and the manager
+  treats it like any failed reconcile on reconnect. A session without a lease
+  is run again (`SessionRestarts`) and keeps its reject streak, so its reject
+  backoff keeps growing. A lease-managed session is closed, releases its lease
+  after the settlement grace and gets the ADR 0020 unit rebuild
+  (`SessionRebuilds`); a standby may take the lease and hit the same packet.
+  The rebuilt session starts with no reject streak, so the ADR 0020 rebuild
+  backoff paces these rebuilds, and the ADR 0020 known risk — a unit rebuilt
+  again and again — still applies to it.
 
 ## Rejected alternatives
 

@@ -130,10 +130,16 @@ session: the session reconnects and is never terminal
 ### Remediation
 
 - Fix or replace that component. No bridge-side setting is the fix.
-- The session recovers on its own once the packets stop. A broker that sends
-  the same packet again on every resume keeps the session cycling —
-  reconnecting, rejecting, waiting out the backoff — and not ready, but the
-  other sessions and routes in the process keep running.
+- The session recovers on its own once the packets stop. When the broker sends
+  the same packet again on every resume, the reject arrives while the session
+  re-subscribes after the reconnect, so that reconcile fails too
+  (`ReconcileFailures`). A session that is not lease-managed keeps restarting
+  (`SessionRestarts`), each time after a longer reject backoff. A lease-managed
+  session (exclusive, with a lease store) releases its lease and its unit is
+  rebuilt (`SessionRebuilds`), after a backoff of 1 s doubling to 30 s; a
+  standby may take the lease and hit the same packet. Either way the session
+  stays not ready, but the other sessions and routes in the process keep
+  running.
 - Do not restart the bridge for it: a restart does not stop the broker from
   sending the packet.
 

@@ -210,7 +210,9 @@ runtime and builds the running configuration afresh, and wedges when that fails.
   malformed packet, or a pinned replay for a removed filter on a runtime with no
   dead-letter store, fails every fresh session the same way. Alert on the
   `SessionRebuilds` rate and on the session's readiness. Since ADR 0021 a
-  malformed packet drops only the connection, so this risk no longer covers it.
+  malformed packet drops only the connection, so this risk covers it only for a
+  lease-managed session whose broker sends the packet again on every resume,
+  where the reject fails the reconcile after the reconnect.
 - Every failure a rebuild must not answer still ends in a process restart, so a
   restart policy is still required
   ([exit codes](../health-and-shutdown.md#exit-codes)).

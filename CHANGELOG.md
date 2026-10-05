@@ -181,8 +181,10 @@ same document passes on AWS and elsewhere.
 
 - **Behaviour change.** Two MQTT failures no longer fail the session closed
   ([ADR 0021](docs/adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)).
-  A rejected packet no longer rebuilds the session's reload unit, and a failed
-  recovery rebuilds it only in the cases listed below.
+  A rejected packet rebuilds the session's reload unit only for a lease-managed
+  session whose broker sends the packet again on every resume, where the reject
+  fails the reconcile after the reconnect. A failed recovery rebuilds the unit
+  only in the cases listed below.
 - A settlement recovery that fails after its drain is abandoned: the reconnect
   fails, a newer connection replaces the recovery's connection, or the
   reconcile on the recovery's connection fails or finishes on a replaced
