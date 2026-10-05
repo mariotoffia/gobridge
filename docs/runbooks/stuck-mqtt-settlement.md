@@ -134,10 +134,11 @@ the gauges publish, without waiting for a metrics flush.
   The process still restarts — replace the task if nothing restarts it — when
   the runtime has no rebuild handler, when the failed session's close did not
   complete, or when the rebuild leaves the session failed or its unit does not
-  stop. A rebuild that cannot start the fresh unit rebuilds the whole
-  configuration in the process, and the process restarts only when that fails
-  too. A delivery still held when the drain timeout runs out wedges the
-  rebuild; keep `drain_timeout` above 25 s so a cancelled send has time to
+  stop. A rebuild that cannot start the fresh unit builds that unit once more;
+  when that fails too, it rebuilds the whole configuration in the process, and
+  the process restarts only when that fails as well. A delivery still held
+  when the drain timeout runs out wedges the rebuild; keep `drain_timeout`
+  above 25 s so a cancelled send has time to
   stop. A
   `SessionRebuilds` rate that keeps climbing means every fresh session fails the
   same way. Verify `session_expiry_interval` exceeds the outage window, or the

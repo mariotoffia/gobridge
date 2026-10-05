@@ -161,11 +161,12 @@ same document passes on AWS and elsewhere.
 - While the session is failed, deep health reports it `ready: false` with
   `service_level: none`, and readiness counts it as not ready, also for an
   exclusive session that waits for its lease before it connects.
-- The process still restarts (ADR 0004) when work of the old session may still
-  run or its close did not complete, after a step-down because the broker path
-  stayed non-converged, after an exclusive activation that overran its
-  deadline, when the unit may attach an HTTP endpoint, when the
-  rebuild leaves the session failed, or when the unit does not stop cleanly. A
+- The process still restarts (ADR 0004) when a call into the old session is
+  still parked after its cancel or its close did not complete, after a
+  step-down because the broker path stayed non-converged, after an exclusive
+  activation that overran its deadline, when the unit may attach an HTTP
+  endpoint, when the rebuild leaves the session failed, or when the unit does
+  not stop cleanly. A
   runtime built without a handler behaves as before. A restart policy is still
   required.
 - Known risk: a session that keeps failing — for example behind a broker that

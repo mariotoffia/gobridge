@@ -173,9 +173,10 @@ reconnecting. The runtime depends on this -- when a lease-owning session cannot
 renew, it ends with `ErrSessionUnrecoverable` and releases the lease so a
 standby takes over. A composition root that installs a session-unrecoverable
 handler (the Supervisor and the AWS runtime do) then rebuilds the session's
-reload unit with a fresh session; without one, the runtime goes terminal and the
-orchestrator restarts the process
-([ADR 0020](../adr/0020-contain-unrecoverable-session-by-unit-rebuild.md)).
+reload unit with a fresh session, unless the failure still requires a process
+restart; without one, the runtime goes terminal and the orchestrator restarts
+the process ([ADR 0020](../adr/0020-contain-unrecoverable-session-by-unit-rebuild.md)
+lists when a restart is still required).
 Either way the closed instance is never started again. A transport that silently
 reconnected a closed exclusive session would break lease fencing.
 `CapExclusiveIdentity` is declared by paho MQTT

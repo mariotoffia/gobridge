@@ -20,7 +20,8 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020 and `docs/transports/mqtt*.md`.
   not quiesce within `reconcile_timeout` before a recycle, a failed settlement
   recovery — latches `shared.ErrTransportClosedPermanently` and never starts
   again (single-use). The Supervisor and the AWS runtime then rebuild its
-  reload unit in place with a fresh session (ADR-0020).
+  reload unit in place with a fresh session, unless the failure carries
+  `ErrProcessRestartRequired` or no unit can be rebuilt (ADR-0020).
 - MQTT has no NACK, so `Retry` means recycling the connection. A `Retry` that
   won is never followed by a protocol ack. QoS 0 and Ephemeral sessions return
   `ErrNotSupported` for `Retry` (`mqtt-settlement-recovery.md`).
