@@ -10,6 +10,22 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Added
+
+- `GoBridgeSingle` takes a public IP, a capacity provider strategy and Cloud Map
+  options, and exposes its config table, so a task in a public subnet, on
+  Fargate Spot or behind service discovery needs no CloudFormation override
+  (#97).
+  - `SingleProps.AssignPublicIp`: with `VpcSubnets` unset, the task and an
+    auto-created EFS both use the public subnets.
+  - `SingleProps.CapacityProviderStrategies`: the construct's own cluster gets
+    the `FARGATE` and `FARGATE_SPOT` providers, and the service waits for them.
+    A supplied cluster must already have the named providers.
+  - `SingleProps.CloudMapOptions`: with no `Cluster`, the options must name a
+    namespace; the construct's own cluster has no default one.
+  - `GoBridgeSingle.ConfigTable()` returns the DynamoDB config table, or nil
+    for file config.
+
 ## [0.5.2] - 2026-10-02
 
 A runtime without a lease store no longer treats any session as lease-managed.
