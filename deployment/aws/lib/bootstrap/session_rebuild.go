@@ -31,12 +31,12 @@ func (a *App) onSessionUnrecoverable(sessionID string, _ error) bool {
 
 // rebuildSession rebuilds the unit that holds sessionID in place, serialized
 // with every config reload by the App's apply lock. It does nothing when the
-// installed runtime no longer runs or no longer records the fault: a reload or
-// a stop got there first. It does nothing either once the App shuts down, its
-// configuration is withdrawn, or it is wedged. When the rebuild leaves the
-// fault in place, or a unit does not stop cleanly, the App stops the runtime
-// and wedges, which restarts the process as the terminal session did before
-// (ADR-0004).
+// installed runtime no longer runs or no longer has the session's report
+// pending: a reload or a stop got there first. It does nothing either once the
+// App shuts down, its configuration is withdrawn, or it is wedged. When the
+// rebuild leaves the report pending, or a unit does not stop cleanly, the App
+// stops the runtime and wedges, which restarts the process as the terminal
+// session did before (ADR-0004).
 //
 // A rebuild that applies is not a reload: the applied configuration, the
 // installed registry and the API keys stay as they are, and it seeds no
@@ -48,7 +48,7 @@ func (a *App) rebuildSession(sessionID string) {
 	// rootCtx, or Background for an App driven without Start.
 	ctx := a.runtimeStartCtx(context.Background())
 	rt, installed := a.runtimeRef.Get(), a.registryRef.Load()
-	if rt == nil || installed == nil || !rt.IsRunning() || !rt.SessionUnrecoverable(sessionID) {
+	if rt == nil || installed == nil || !rt.IsRunning() || !rt.SessionRebuildPending(sessionID) {
 		return
 	}
 	if a.authorize(a.observationEpoch.Load()) != nil {
@@ -75,7 +75,7 @@ func (a *App) rebuildSession(sessionID string) {
 	// A rebuild refused before it retired anything leaves the session failed and
 	// unserved, which only a process restart clears now. Not so at shutdown: the
 	// runtime is being stopped anyway.
-	if outcome == bridge.InPlaceUnchanged && ctx.Err() == nil && rt.IsRunning() && rt.SessionUnrecoverable(sessionID) {
+	if outcome == bridge.InPlaceUnchanged && ctx.Err() == nil && rt.IsRunning() && rt.SessionRebuildPending(sessionID) {
 		outcome = bridge.InPlaceWedged
 	}
 	if outcome == bridge.InPlaceTorn || outcome == bridge.InPlaceWedged {

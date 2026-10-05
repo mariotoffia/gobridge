@@ -238,6 +238,25 @@ func TestRetire_ClearsTheRetiredRoutesFaults(t *testing.T) {
 	assert.NotContains(t, rt.routeFlaps, "route:r1")
 }
 
+// TestFinishRetireClearsAPendingRebuildReport pins that a retire of a session
+// clears its pending rebuild report with its fault, whether or not its
+// components stopped, so a report that waited for the composition root's lock
+// never rebuilds the session's successor. Another session's report stays.
+func TestFinishRetireClearsAPendingRebuildReport(t *testing.T) {
+	for _, finished := range []bool{true, false} {
+		rt := &Runtime{
+			componentErrors: map[string]error{"session:s1": session.ErrSessionUnrecoverable},
+			rebuildReports:  map[string]bool{"s1": true, "s2": true},
+		}
+
+		rt.finishRetire(&retiredUnit{managers: map[string]*session.Manager{"s1": nil}}, finished)
+
+		assert.False(t, rt.SessionRebuildPending("s1"), "finished=%v: the retired session's report is cleared", finished)
+		assert.True(t, rt.SessionRebuildPending("s2"), "finished=%v: another session's report stays pending", finished)
+		assert.NotContains(t, rt.ComponentErrors(), "session:s1", "finished=%v: the retired session's fault is cleared", finished)
+	}
+}
+
 // failingReceiver fails every run, so its route's supervisor records the fault
 // and backs off.
 type failingReceiver struct{}

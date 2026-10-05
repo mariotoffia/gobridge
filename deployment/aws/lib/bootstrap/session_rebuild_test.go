@@ -69,7 +69,8 @@ func TestAppRebuildsAFailedSessionInsteadOfEndingTerminal(t *testing.T) {
 	assert.True(t, rt.IsRunning())
 	assert.False(t, app.runtimeTerminal())
 	assert.False(t, app.wedged.Load())
-	assert.False(t, rt.SessionUnrecoverable("a-s"), "the fault leaves with the failed session")
+	assert.False(t, rt.SessionRebuildPending("a-s"), "the report leaves with the failed session")
+	assert.NotContains(t, rt.ComponentErrors(), "session:a-s", "the fault leaves with the failed session")
 	assert.True(t, closedBeforeCopy.Load(), "the failed session closes before its copy is built")
 	assert.Equal(t, []int{1, 0}, tf.closeCounts("a-s"), "owner a's failed session is closed once and replaced")
 	assert.Equal(t, []int{0}, tf.closeCounts("b-s"), "owner b keeps its one session")
@@ -157,9 +158,9 @@ func TestAppTakesASessionReportMadeDuringAnApply(t *testing.T) {
 	assert.False(t, app.wedged.Load())
 }
 
-// A report that arrives when the runtime no longer records the fault, because
-// a reload or an earlier rebuild already replaced the session, rebuilds
-// nothing.
+// A report that arrives when the runtime no longer has the session's report
+// pending, because a reload or an earlier rebuild already replaced the
+// session, rebuilds nothing.
 func TestAppSessionRebuildIgnoresAStaleReport(t *testing.T) {
 	tf := newTrackedTransportFactory(false)
 	app := newInPlaceTestApp(t, tf, adminKeyResolver())

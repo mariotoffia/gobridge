@@ -57,7 +57,7 @@ func TestRuntime_RebuildableUnrecoverableSessionKeepsRuntimeRunningWithHandler(t
 
 	assert.False(t, rt.Terminal(), "a session the handler rebuilds must not make the runtime terminal")
 	assert.True(t, rt.IsRunning())
-	assert.True(t, rt.SessionUnrecoverable("s1"))
+	assert.True(t, rt.SessionRebuildPending("s1"))
 
 	dh := rt.DeepHealth(context.Background())
 	require.Len(t, dh.Sessions, 1)

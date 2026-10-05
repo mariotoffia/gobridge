@@ -67,6 +67,12 @@ type Runtime struct {
 	// sessionUnrecoverable, by session id. Guarded by mu; it outlives the session's
 	// supervisor so a session that keeps failing after each rebuild backs off.
 	rebuildBackoff map[string]time.Duration
+	// rebuildReports marks, by session id, a session whose supervisor handed it
+	// to sessionUnrecoverable after the rebuild backoff and that no retire has
+	// replaced since. Guarded by mu. A composition root rebuilds a session only
+	// while it is marked (SessionRebuildPending), so never over a fault recorded
+	// during the backoff, nor over one that needs a process restart.
+	rebuildReports map[string]bool
 
 	// credHooks holds the credential refreshers attached to this runtime and to
 	// every part grafted onto it; Stop closes each of them.
@@ -474,17 +480,18 @@ func (rt *Runtime) superviseSession(sid string, run func(context.Context) error)
 		for {
 			runStart := rt.clk.Now()
 			err := run(ctx)
+			stable := rt.clk.Since(runStart) >= stabilityWindow
+			if stable {
+				// A run that stayed up for the stability window ends the session's
+				// rebuild backoff, however it ended.
+				rt.mu.Lock()
+				delete(rt.rebuildBackoff, sid)
+				rt.mu.Unlock()
+			}
 			if ctx.Err() != nil {
 				// Runtime is shutting down: a nil (or any) return is a genuine
-				// clean stop. Drop any prior fault and exit. A run that stayed up
-				// for the stability window also ends the session's rebuild
-				// backoff.
+				// clean stop. Drop any prior fault and exit.
 				rt.clearComponentError(name)
-				if rt.clk.Since(runStart) >= stabilityWindow {
-					rt.mu.Lock()
-					delete(rt.rebuildBackoff, sid)
-					rt.mu.Unlock()
-				}
 				return nil
 			}
 			if err == nil {
@@ -519,17 +526,19 @@ func (rt *Runtime) superviseSession(sid string, run func(context.Context) error)
 				// The manager has RELEASED the lease, unless a reconcile failed
 				// closed while route work may still hold deliveries, so a healthy
 				// standby takes over. A fault a fresh session clears goes to
-				// the session-unrecoverable handler after the rebuild backoff;
-				// when it takes the rebuild the supervisor ends quietly and the
-				// recorded fault keeps the session not ready until the rebuild
-				// retires it. Anything else, a refused rebuild, or no handler,
-				// returns the error, which flips startBackground terminal so the
-				// orchestrator restarts this pod with a fresh session instance
-				// (documented process-restart backstop, scenario-08).
+				// the session-unrecoverable handler after the rebuild backoff,
+				// marked pending until the handler refuses it or a retire clears
+				// it; when the handler takes the rebuild the supervisor ends
+				// quietly and the recorded fault keeps the session not ready
+				// until the rebuild retires it. Anything else, a refused
+				// rebuild, or no handler, returns the error, which flips
+				// startBackground terminal so the orchestrator restarts this
+				// pod with a fresh session instance (documented
+				// process-restart backstop, scenario-08).
 				if rt.sessionUnrecoverable == nil || !rebuildable(err) {
 					return err
 				}
-				wait := equalJitter(rt.nextRebuildBackoff(sid, rt.clk.Since(runStart) >= stabilityWindow, minBackoff, maxBackoff), randFloat)
+				wait := equalJitter(rt.nextRebuildBackoff(sid, minBackoff, maxBackoff), randFloat)
 				if rt.logger != nil {
 					rt.logger.Warn("session failed unrecoverably; reporting it for an in-place rebuild",
 						"component", name, "error", err, "backoff", wait)
@@ -545,7 +554,11 @@ func (rt *Runtime) superviseSession(sid string, run func(context.Context) error)
 				if ctx.Err() != nil {
 					return nil
 				}
+				// Marked before the call: the root may check it as soon as the
+				// handler returns.
+				rt.setRebuildReported(sid, true)
 				if !rt.sessionUnrecoverable(sid, err) {
+					rt.setRebuildReported(sid, false)
 					return err
 				}
 				metrics.Counter(shared.MetricSessionRebuilds, 1, shared.Tag{Key: shared.TagKeySessionID, Value: sid})
@@ -556,7 +569,7 @@ func (rt *Runtime) superviseSession(sid string, run func(context.Context) error)
 			// A run that stayed healthy for a sustained window before failing
 			// has recovered; forget the climbed ladder so this fresh blip
 			// retries promptly instead of at the 30s cap.
-			if rt.clk.Since(runStart) >= stabilityWindow {
+			if stable {
 				backoff = minBackoff
 			}
 			wait := equalJitter(backoff, randFloat)
@@ -724,13 +737,13 @@ func rebuildable(err error) bool {
 }
 
 // nextRebuildBackoff returns the wait before reporting session sid again and
-// doubles the stored one up to maxBackoff. A failed run that stayed up for the
-// stability window starts again at minBackoff.
-func (rt *Runtime) nextRebuildBackoff(sid string, stable bool, minBackoff, maxBackoff time.Duration) time.Duration {
+// doubles the stored one up to maxBackoff. A session with no stored backoff
+// starts at minBackoff.
+func (rt *Runtime) nextRebuildBackoff(sid string, minBackoff, maxBackoff time.Duration) time.Duration {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	backoff, ok := rt.rebuildBackoff[sid]
-	if !ok || stable {
+	if !ok {
 		backoff = minBackoff
 	}
 	if rt.rebuildBackoff == nil {
@@ -738,6 +751,20 @@ func (rt *Runtime) nextRebuildBackoff(sid string, stable bool, minBackoff, maxBa
 	}
 	rt.rebuildBackoff[sid] = min(backoff*2, maxBackoff)
 	return backoff
+}
+
+// setRebuildReported marks or clears the pending rebuild report of session sid.
+func (rt *Runtime) setRebuildReported(sid string, reported bool) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if !reported {
+		delete(rt.rebuildReports, sid)
+		return
+	}
+	if rt.rebuildReports == nil {
+		rt.rebuildReports = make(map[string]bool)
+	}
+	rt.rebuildReports[sid] = true
 }
 
 // equalJitter applies equal-jitter to a restart backoff: the wait is half the

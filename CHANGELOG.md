@@ -184,7 +184,7 @@ same document passes on AWS and elsewhere.
   [Key Metrics](docs/aws-deployment/monitoring.md#key-metrics).
 - New API: `runtime.WithSessionUnrecoverableHandler`,
   `bridge.WithSessionUnrecoverableHandler`, `bridge.PlanSessionRebuild`,
-  `(*runtime.Runtime).SessionUnrecoverable` and
+  `(*runtime.Runtime).SessionRebuildPending` and
   `session.ErrProcessRestartRequired`, which marks an
   `ErrSessionUnrecoverable` that a rebuild must not answer. The handler runs on
   the session's supervisor goroutine: it must not block, and it hands the

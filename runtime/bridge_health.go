@@ -67,12 +67,16 @@ func (rt *Runtime) clearComponentError(name string) {
 	rt.mu.Unlock()
 }
 
-// SessionUnrecoverable reports whether the supervisor of session sid recorded
-// an ErrSessionUnrecoverable that no rebuild or retire has cleared yet.
-func (rt *Runtime) SessionUnrecoverable(sid string) bool {
+// SessionRebuildPending reports whether the supervisor of session sid handed it
+// to the session-unrecoverable handler after its rebuild backoff and no retire
+// has replaced the session since. A composition root rebuilds the session only
+// while this holds, so a report that waited for the root's lock rebuilds
+// neither a session a reload put in its place before that session's own
+// backoff ends, nor one whose fault needs a process restart.
+func (rt *Runtime) SessionRebuildPending(sid string) bool {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	return rt.sessionUnrecoverableLocked(sid)
+	return rt.rebuildReports[sid]
 }
 
 func (rt *Runtime) sessionUnrecoverableLocked(sid string) bool {

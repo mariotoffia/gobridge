@@ -47,7 +47,7 @@ func TestSupervisorRebuildsOnlyTheFailedSessionsUnit(t *testing.T) {
 	rt := s.Runtime()
 
 	wait.Until(t, rebuildWait, "owner a's unit runs on a fresh session", func() bool {
-		return tf.eventIndex("start:a-s#2") != -1 && !rt.SessionUnrecoverable("a-s")
+		return tf.eventIndex("start:a-s#2") != -1 && !rt.SessionRebuildPending("a-s")
 	})
 	// The rebuild holds the lifecycle lock until it settles, and Terminal is
 	// false while it runs.
@@ -90,9 +90,9 @@ func TestSupervisorSessionRebuildWedgesWhenTheUnitDoesNotStop(t *testing.T) {
 	assert.Contains(t, reason, "a session rebuild could not clear the failed session or stop its unit cleanly")
 }
 
-// A report that arrives when the runtime no longer records the fault, because
-// a reload or an earlier rebuild already replaced the session, rebuilds
-// nothing.
+// A report that arrives when the runtime no longer has the session's report
+// pending, because a reload or an earlier rebuild already replaced the
+// session, rebuilds nothing.
 func TestSupervisorSessionRebuildIgnoresAStaleReport(t *testing.T) {
 	tf := newPerSessionTransportFactory(false)
 	s, _, _ := runInPlaceSupervisor(t, tf, applyTestConfig("a", "b"))

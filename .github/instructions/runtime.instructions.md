@@ -89,15 +89,20 @@ ADR-0020, `docs/internals/architecture-message-flow.md`,
   because a retire waits for that goroutine; it hands the rebuild to its own
   goroutine. Both roots run the rebuild (`PlanSessionRebuild`, always
   serialized) under the lock every reload takes — `Supervisor.lifecycleMu`,
-  `App.mu` — and re-check under it that the runtime still runs and still
-  records the fault (`SessionUnrecoverable`). The handler plans only when it
-  gets the lock with `TryLock`: a reload that holds it may run a session the
-  configuration it publishes last does not hold yet, so the handler takes that
-  report and the rebuild plans under the lock. No unit, a rebuild that leaves
-  the fault, or a unit that does not stop wedges; a torn rebuild takes the torn
-  path. A rebuild is not a reload: no reload metrics, `SwapEvent` or
-  convergence watch. The Supervisor's shutdown waits for the lifecycle lock
-  only within the drain timeout, as for the rollout drive.
+  `App.mu` — and re-check under it that the runtime still runs and still has
+  the session's report pending (`SessionRebuildPending`). The handler plans
+  only when it gets the lock with `TryLock`: a reload that holds it may run a
+  session the configuration it publishes last does not hold yet, so the
+  handler takes that report and the rebuild plans under the lock. No unit, a
+  rebuild that leaves the fault, or a unit that does not stop wedges; a torn
+  rebuild takes the torn path. A rebuild is not a reload: no reload metrics,
+  `SwapEvent` or convergence watch. The Supervisor's shutdown waits for the
+  lifecycle lock only within the drain timeout, as for the rollout drive.
+- The runtime marks a report pending before it calls the handler and clears it
+  on refusal or retire. A root checks `SessionRebuildPending`, never the
+  recorded fault, before it rebuilds: a fault recorded during the backoff, or
+  one that needs a process restart, is never pending. The rebuild backoff
+  starts again at 1 s after any run that stayed up 30 s, however it ended.
 - A site that returns `ErrSessionUnrecoverable` while old work may be parked
   or running, while a close did not complete, or when the process must not
   compete for the lease again MUST also wrap `ErrProcessRestartRequired`.

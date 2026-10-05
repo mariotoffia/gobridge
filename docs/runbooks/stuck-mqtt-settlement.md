@@ -129,7 +129,7 @@ the gauges publish, without waiting for a metrics flush.
   - `SessionRebuilds` (tagged `session_id`): one count each time the bridge
     starts a rebuild;
   - deep health: the session reads `ready: false` with `service_level: none`
-    until the rebuild replaces it, and readiness counts it as not ready.
+    until the rebuild retires it, and readiness counts it as not ready.
 
   The process still restarts — replace the task if nothing restarts it — when
   the runtime has no rebuild handler, when the failed session's close did not

@@ -64,20 +64,29 @@ rest of the runtime keeps running.**
 - With a handler installed and a rebuildable failure, the session supervisor
   records the fault, waits a backoff, then calls the handler:
   - the backoff is per session: 1 s, doubling to 30 s, with equal jitter (each
-    wait lies between half and all of its step). It starts again at 1 s when
-    the failed run had stayed up for 30 s. The runtime keeps it across
-    rebuilds, so a session that fails again after a rebuild waits longer;
+    wait lies between half and all of its step). It starts again at 1 s after
+    any run of the session that stayed up for 30 s, however that run ended.
+    The runtime keeps it across rebuilds, so a session that fails again after
+    a rebuild waits longer;
   - `true` means the root took the rebuild. The supervisor counts
     `SessionRebuilds` (tagged `session_id`) and ends without making the runtime
     terminal;
   - `false` makes the runtime terminal, as before;
   - a shutdown during the backoff ends the supervisor without calling the
     handler and without making the runtime terminal.
+- The runtime marks the report pending before it calls the handler, and clears
+  the mark when the handler refuses or a retire of the session clears its
+  fault; `(*runtime.Runtime).SessionRebuildPending` reads it. A fault recorded
+  during the backoff, and one that needs a process restart, is never pending.
 - Until a rebuild or retire clears it, the recorded fault (`session:<id>` in
   `ComponentErrors`) keeps the session not ready. Deep health reports it
   `ready: false` with `service_level: none`, and readiness does not excuse it
   as a deferred-connect standby, even when the session waits for its lease
-  before it connects.
+  before it connects. Once a rebuild retires the unit, deep health lists
+  neither the session nor the unit's routes until the fresh copy is added, as
+  for any unit an in-place reload replaces; the unit attaches no HTTP
+  endpoint, so no request the instance takes reaches it. The fresh session
+  reads not ready until it connects.
 - The handler runs on the session's supervisor goroutine. It must not block,
   and it must not retire the unit or reload synchronously, because a retire
   waits for that goroutine. It hands the rebuild to a goroutine of its own.
@@ -97,12 +106,15 @@ install a handler on every runtime they build. The handler:
 2. runs the rebuild on its own goroutine under the root's apply lock — the
    Supervisor's lifecycle lock, the App's apply lock — so a rebuild and a
    configuration reload never run at the same time;
-3. re-checks under the lock that the runtime still runs and still records the
-   fault, and plans the rebuild again against the configuration the lock now
-   guards. When the runtime or the fault has changed, a reload or a stop got
-   there first, and it does nothing. The Supervisor also does nothing once it
-   shuts down; the App does nothing once its configuration is withdrawn, it is
-   wedged, or it shuts down;
+3. re-checks under the lock that the runtime still runs and that the session's
+   report is still pending (`SessionRebuildPending`), and plans the rebuild
+   again against the configuration the lock now guards. When the runtime has
+   changed or the report is no longer pending, a reload or a stop got there
+   first, and it does nothing. So a report that waited for the lock rebuilds
+   neither a session a reload put in its place, before that session's own
+   backoff ends, nor a session whose fault needs a process restart. The
+   Supervisor also does nothing once it shuts down; the App does nothing once
+   its configuration is withdrawn, it is wedged, or it shuts down;
 4. applies the plan with `(*bridge.InPlaceReload).Apply`. The plan is always
    serialized: the old unit is fully retired — its route work stopped, its
    sessions closed — before the copy is built and connects, so the old and the
