@@ -651,6 +651,10 @@ func TestSessionManager_TerminalSignalRestartsThenEscalatesSingleUseSession(t *t
 	if !errors.Is(secondErr, ErrSessionUnrecoverable) || !errors.Is(secondErr, shared.ErrTransportClosedPermanently) {
 		t.Fatalf("second Run error = %v, want single-use terminal escalation", secondErr)
 	}
+	if errors.Is(secondErr, ErrProcessRestartRequired) {
+		t.Fatalf("second Run error = %v: a refused Start leaves no session work behind, so a fresh "+
+			"session clears it and it must not demand a process restart", secondErr)
+	}
 	if got := sess.starts.Load(); got != 2 {
 		t.Fatalf("Start calls = %d, want 2", got)
 	}

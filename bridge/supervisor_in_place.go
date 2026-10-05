@@ -72,31 +72,45 @@ func (s *Supervisor) planInPlace(oldRt *runtime.Runtime, oldCfg, newCfg *ports.B
 func (s *Supervisor) applyInPlace(ctx context.Context, oldRt *runtime.Runtime, oldCfg *ports.BridgeConfig, plan *InPlaceReload) (*runtime.Runtime, error) {
 	plan.DrainTimeout = s.drainTimeoutFrom(oldCfg)
 	outcome, err := plan.Apply(ctx, oldRt, s.newBuilder, s.swapPhaseCtx)
-	switch outcome {
-	case InPlaceApplied:
+	if outcome == InPlaceApplied {
 		// oldRt now runs the next configuration, so the watch started for the
 		// running one must stop judging it before applyConfig publishes the
 		// configuration and starts the watch of the next.
 		s.nextConvergenceGen()
 		return oldRt, nil
+	}
+	err = s.settleFailedInPlace(ctx, oldRt, oldCfg, outcome, err,
+		"an in-place reload could not stop a retired unit or a built part cleanly")
+	return nil, fmt.Errorf("in-place reload (%s): %w", outcome, err)
+}
+
+// settleFailedInPlace acts on outcome, the outcome of an in-place reload of rt,
+// which ran cfg, that did not apply, and returns err joined with any stop
+// failure it met. Unchanged leaves rt serving cfg. Torn stops rt and builds cfg
+// afresh, or wedges when either step fails. Wedged stops rt and wedges, naming
+// wedgeReason (ADR-0004).
+func (s *Supervisor) settleFailedInPlace(ctx context.Context, rt *runtime.Runtime, cfg *ports.BridgeConfig,
+	outcome InPlaceOutcome, err error, wedgeReason string,
+) error {
+	switch outcome {
 	case InPlaceTorn:
 		// A runtime that does not stop cleanly may still hold the broker
 		// identities the rebuild would claim a second time, exactly as an old
 		// runtime whose Stop fails during a full swap.
-		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.drainTimeoutFrom(oldCfg))
-		stopErr := oldRt.Stop(stopCtx)
+		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.drainTimeoutFrom(cfg))
+		stopErr := rt.Stop(stopCtx)
 		cancel()
 		if stopErr != nil {
 			err = errors.Join(err, fmt.Errorf("stop old runtime: %w", stopErr))
 			s.wedgeAfterFailedStop("old runtime stop failed", stopErr)
 			break
 		}
-		s.recoverOldOrWedge(ctx, oldCfg)
+		s.recoverOldOrWedge(ctx, cfg)
 	case InPlaceWedged:
-		s.stopAbandoned(ctx, oldRt, oldCfg)
-		s.wedgeAfterFailedStop("an in-place reload could not stop a retired unit or a built part cleanly", err)
+		s.stopAbandoned(ctx, rt, cfg)
+		s.wedgeAfterFailedStop(wedgeReason, err)
 	}
-	return nil, fmt.Errorf("in-place reload (%s): %w", outcome, err)
+	return err
 }
 
 // inPlaceLogFields are the log fields naming what plan retired and added, or

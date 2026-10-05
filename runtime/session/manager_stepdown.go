@@ -72,7 +72,7 @@ func (m *Manager) beginStepDown(ctx context.Context) (persistence.LeaseToken, bo
 // until natural expiry.
 func (m *Manager) finishStepDown(ctx context.Context, token persistence.LeaseToken, closeCompleted bool) error {
 	if !closeCompleted {
-		return fmt.Errorf("%w: %w", ErrSessionUnrecoverable, errStepDownCloseFailed)
+		return fmt.Errorf("%w: %w: %w", ErrSessionUnrecoverable, ErrProcessRestartRequired, errStepDownCloseFailed)
 	}
 	m.awaitSettlementGrace(ctx)
 	m.releaseOwnedLeaseBestEffort(ctx, token, "step-down")
@@ -174,15 +174,18 @@ func (m *Manager) afterRenewLoopExit(ctx context.Context, token persistence.Leas
 			// pod restart forcibly tears down the wedged transport. The lease
 			// stays held and expires only by natural TTL, preserving single-owner
 			// until the standby takes over.
-			return fmt.Errorf("%w: source session close ignored ctx and did not complete on session-failure recovery: %w",
-				ErrSessionUnrecoverable, err)
+			return fmt.Errorf("%w: %w: source session close ignored ctx and did not complete on session-failure recovery: %w",
+				ErrSessionUnrecoverable, ErrProcessRestartRequired, err)
 		}
 		if errors.Is(err, ErrSessionUnrecoverable) {
 			// A managed-cleanup quiescence timeout means previously accepted
 			// route work may still mutate/send even though the broker socket is
-			// disconnected. Do not transfer ownership underneath that work. The
-			// supervisor marks the runtime terminal and cancellation stops
-			// cooperative work; this lease expires naturally after process exit.
+			// disconnected. Do not transfer ownership underneath that work: the
+			// lease is kept. A composition root rebuilds the session's unit only
+			// after that unit's route work finished; with no such handler, or
+			// when err carries ErrProcessRestartRequired (a Reconcile still
+			// parked), the runtime goes terminal and the lease expires after
+			// process exit.
 			return err
 		}
 		// Same hand-off hazard as a step-down, so the same bounded grace: the
@@ -204,7 +207,7 @@ func (m *Manager) afterRenewLoopExit(ctx context.Context, token persistence.Leas
 		m.log(ctx, slog.LevelWarn,
 			"lease released on broker-path step-down; escalating so this process restarts and rejoins as a standby",
 			"error", err)
-		return fmt.Errorf("%w: %w", ErrSessionUnrecoverable, err)
+		return fmt.Errorf("%w: %w: %w", ErrSessionUnrecoverable, ErrProcessRestartRequired, err)
 	}
 	m.log(ctx, slog.LevelWarn, "lease lost, will re-acquire", "error", err)
 	return nil

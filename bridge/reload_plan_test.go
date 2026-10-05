@@ -191,6 +191,58 @@ func TestPlanInPlaceReload_SummaryListsRetiredAndAddedIDs(t *testing.T) {
 	require.Equal(t, []string{"a-s", "d-s"}, addedSessions)
 }
 
+// A session rebuild replaces the one unit holding the session with a copy of
+// itself, and serializes even on a transport that claims no exclusive identity:
+// the old unit's route work must be over before the copy connects.
+func TestPlanSessionRebuild_RetiresAndAddsOnlyTheUnitHoldingTheSession(t *testing.T) {
+	running := reloadTestConfig("a", "b")
+
+	plan, ok := PlanSessionRebuild(running, "a-s", reloadTestTransports())
+
+	require.True(t, ok)
+	require.NotNil(t, plan)
+	require.True(t, plan.Serialized(), "the unit stops before its copy is built")
+	retiredRoutes, addedRoutes, retiredSessions, addedSessions := plan.Summary()
+	require.Equal(t, []string{"a"}, retiredRoutes)
+	require.Equal(t, []string{"a"}, addedRoutes)
+	require.Equal(t, []string{"a-s"}, retiredSessions)
+	require.Equal(t, []string{"a-s"}, addedSessions)
+	require.Same(t, running, plan.running)
+	require.Same(t, running, plan.next, "the unit is rebuilt from the running configuration")
+}
+
+func TestPlanSessionRebuild_SessionNoUnitCanRebuildIsNotPlanned(t *testing.T) {
+	withHTTPOwner := reloadTestConfig("a")
+	addReloadTestOwner(withHTTPOwner, "h", "http")
+	withUnknownOwner := reloadTestConfig("a")
+	addReloadTestOwner(withUnknownOwner, "u", "unregistered")
+
+	cases := map[string]struct {
+		running *ports.BridgeConfig
+		session string
+	}{
+		"no running configuration":                 {nil, "a-s"},
+		"a session no unit holds":                  {reloadTestConfig("a", "b"), "c-s"},
+		"a session on an HTTP endpoint transport":  {withHTTPOwner, "h-s"},
+		"a session on a transport with no factory": {withUnknownOwner, "u-s"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			plan, ok := PlanSessionRebuild(tc.running, tc.session, reloadTestTransports())
+
+			require.False(t, ok)
+			require.Nil(t, plan)
+		})
+	}
+
+	// The refusal is the unit's own: another unit of the same configuration on
+	// an ordinary transport is still rebuilt in place.
+	plan, ok := PlanSessionRebuild(withHTTPOwner, "a-s", reloadTestTransports())
+	require.True(t, ok)
+	retiredRoutes, _, _, _ := plan.Summary()
+	require.Equal(t, []string{"a"}, retiredRoutes)
+}
+
 // The in-place eligibility check and the store the builder opens must read one
 // stale-claim duration, or a reload could keep a store tuned for a config that
 // is no longer running.

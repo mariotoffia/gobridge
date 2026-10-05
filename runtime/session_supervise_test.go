@@ -16,6 +16,7 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/session"
+	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
 // newSuperviseTestRuntime builds the smallest Runtime that superviseSession
@@ -405,5 +406,297 @@ func TestSuperviseSession_ComponentErrorClearedAfterRecovery(t *testing.T) {
 		assert.NoError(t, err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("supervisor did not return after ctx cancel")
+	}
+}
+
+// unrecoverableReport is one call of a session-unrecoverable handler.
+type unrecoverableReport struct {
+	sessionID string
+	cause     error
+}
+
+// recordingUnrecoverableHandler returns a session-unrecoverable handler that
+// records every call on the returned channel and answers take.
+func recordingUnrecoverableHandler(take bool) (func(string, error) bool, chan unrecoverableReport) {
+	reports := make(chan unrecoverableReport, 8)
+	return func(sid string, cause error) bool {
+		reports <- unrecoverableReport{sessionID: sid, cause: cause}
+		return take
+	}, reports
+}
+
+// A session whose transport is permanently closed, with nothing of the old
+// session that needs a process restart, is cleared by a fresh session. With a
+// handler installed the supervisor reports it there after the rebuild backoff
+// and ends quietly instead of returning the error that makes the runtime
+// terminal. The fault stays recorded, so the session reports not ready until a
+// rebuild clears it, and the report is pending only once the backoff ends.
+func TestSuperviseSession_RebuildableUnrecoverableReportsToHandlerInsteadOfTerminal(t *testing.T) {
+	clk := clocktest.NewAt(time.Unix(0, 0))
+	rec := &ports.RecordingExporter{}
+	rt := newSuperviseTestRuntime(clk, rec)
+	handler, reports := recordingUnrecoverableHandler(true)
+	WithSessionUnrecoverableHandler(handler)(rt)
+
+	failure := fmt.Errorf("%w: %w", session.ErrSessionUnrecoverable, shared.ErrTransportClosedPermanently)
+	var calls atomic.Int32
+	run := func(context.Context) error {
+		calls.Add(1)
+		return failure
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- rt.superviseSession("s1", run)(ctx) }()
+
+	// The report waits out the first rebuild backoff: 1s, jittered to 500ms here.
+	waitForBackoffTimer(t, clk)
+	assert.Empty(t, reports, "the handler must not be told before the rebuild backoff ends")
+	assert.ErrorIs(t, rt.ComponentErrors()["session:s1"], session.ErrSessionUnrecoverable,
+		"the fault is recorded while the backoff runs")
+	assert.False(t, rt.SessionRebuildPending("s1"), "a fault is not pending before its backoff ends")
+	clk.Advance(time.Second)
+
+	assert.NoError(t, wait.RequireReceive(t, done, 2*time.Second),
+		"a session the handler takes must end its supervisor quietly, not make the runtime terminal")
+	got := wait.RequireReceive(t, reports, 2*time.Second)
+	assert.Equal(t, unrecoverableReport{sessionID: "s1", cause: failure}, got)
+	assert.Empty(t, reports, "the handler is told exactly once")
+	assert.Equal(t, int32(1), calls.Load(), "the supervisor must not run the dead session again")
+
+	rebuilds := rec.FindEntries(shared.MetricSessionRebuilds)
+	require.Len(t, rebuilds, 1)
+	assert.Equal(t, int64(1), rebuilds[0].IValue)
+	assert.Equal(t, []shared.Tag{{Key: shared.TagKeySessionID, Value: "s1"}}, rebuilds[0].Tags)
+	assert.Empty(t, rec.FindEntries(shared.MetricSessionRestarts), "a reported session is not an ordinary restart")
+
+	assert.True(t, rt.SessionRebuildPending("s1"), "the report stays pending until a retire clears it")
+	assert.False(t, rt.SessionRebuildPending("s2"))
+	assert.ErrorIs(t, rt.ComponentErrors()["session:s1"], session.ErrSessionUnrecoverable,
+		"the fault stays recorded until a rebuild clears it")
+	assert.False(t, rt.Terminal())
+	assert.True(t, rt.Healthy())
+}
+
+// A handler that refuses the rebuild leaves the escalation as it was: the
+// supervisor returns the error, so the runtime goes terminal.
+func TestSuperviseSession_HandlerRefusalKeepsTerminalEscalation(t *testing.T) {
+	clk := clocktest.NewAt(time.Unix(0, 0))
+	rec := &ports.RecordingExporter{}
+	rt := newSuperviseTestRuntime(clk, rec)
+	handler, reports := recordingUnrecoverableHandler(false)
+	WithSessionUnrecoverableHandler(handler)(rt)
+
+	failure := fmt.Errorf("%w: %w", session.ErrSessionUnrecoverable, shared.ErrTransportClosedPermanently)
+	run := func(context.Context) error { return failure }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- rt.superviseSession("s1", run)(ctx) }()
+
+	waitForBackoffTimer(t, clk)
+	clk.Advance(time.Second)
+
+	err := wait.RequireReceive(t, done, 2*time.Second)
+	assert.ErrorIs(t, err, session.ErrSessionUnrecoverable)
+	assert.ErrorIs(t, err, shared.ErrTransportClosedPermanently)
+	assert.Equal(t, unrecoverableReport{sessionID: "s1", cause: failure}, wait.RequireReceive(t, reports, 2*time.Second))
+	assert.Empty(t, rec.FindEntries(shared.MetricSessionRebuilds), "a refused rebuild is not counted")
+	assert.False(t, rt.SessionRebuildPending("s1"), "a refused report is not pending")
+}
+
+// requireTerminalWithoutReport runs a supervisor, with a handler that would take
+// any rebuild, over a session that fails with failure, and requires that the
+// supervisor returns the error at once: no backoff timer, no report, no rebuild.
+func requireTerminalWithoutReport(t *testing.T, failure error) {
+	t.Helper()
+	clk := clocktest.NewAt(time.Unix(0, 0))
+	rec := &ports.RecordingExporter{}
+	rt := newSuperviseTestRuntime(clk, rec)
+	handler, reports := recordingUnrecoverableHandler(true)
+	WithSessionUnrecoverableHandler(handler)(rt)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- rt.superviseSession("s1", func(context.Context) error { return failure })(ctx) }()
+
+	err := wait.RequireReceive(t, done, 2*time.Second)
+	assert.ErrorIs(t, err, session.ErrSessionUnrecoverable)
+	assert.Empty(t, reports, "the handler must not be told about a failure a rebuild cannot clear")
+	assert.Zero(t, clk.TimerCount(), "the escalation must not wait out a rebuild backoff")
+	assert.Empty(t, rec.FindEntries(shared.MetricSessionRebuilds))
+	assert.ErrorIs(t, rt.ComponentErrors()["session:s1"], session.ErrSessionUnrecoverable)
+	assert.False(t, rt.SessionRebuildPending("s1"), "a fault a rebuild cannot clear is never pending")
+}
+
+// A failure that leaves work of the old session behind needs a process restart:
+// a rebuild beside that work would run two sessions on one identity. It stays
+// terminal even though it also carries the permanent transport marker.
+func TestSuperviseSession_ProcessRestartRequiredStaysTerminalWithHandler(t *testing.T) {
+	requireTerminalWithoutReport(t, fmt.Errorf("%w: %w: %w",
+		session.ErrSessionUnrecoverable, session.ErrProcessRestartRequired, shared.ErrTransportClosedPermanently))
+}
+
+// An unrecoverable failure without the permanent transport marker is not one a
+// fresh session is known to clear, so it stays terminal.
+func TestSuperviseSession_NonPermanentUnrecoverableStaysTerminalWithHandler(t *testing.T) {
+	requireTerminalWithoutReport(t, fmt.Errorf("%w: %w", session.ErrSessionUnrecoverable, shared.ErrUnavailable))
+}
+
+// A shutdown while the supervisor waits out the rebuild backoff is a clean
+// stop: the supervisor returns nil and the handler is never told.
+func TestSuperviseSession_StopDuringRebuildBackoffIsCleanStop(t *testing.T) {
+	clk := clocktest.NewAt(time.Unix(0, 0))
+	rec := &ports.RecordingExporter{}
+	rt := newSuperviseTestRuntime(clk, rec)
+	handler, reports := recordingUnrecoverableHandler(true)
+	WithSessionUnrecoverableHandler(handler)(rt)
+
+	failure := fmt.Errorf("%w: %w", session.ErrSessionUnrecoverable, shared.ErrTransportClosedPermanently)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- rt.superviseSession("s1", func(context.Context) error { return failure })(ctx) }()
+
+	waitForBackoffTimer(t, clk)
+	cancel()
+
+	assert.NoError(t, wait.RequireReceive(t, done, 2*time.Second))
+	assert.Empty(t, reports, "a stopped supervisor must not report the session")
+	assert.Empty(t, rec.FindEntries(shared.MetricSessionRebuilds))
+	assert.False(t, rt.Terminal())
+}
+
+// The wait before each report doubles per session up to the cap, independently
+// for each session, and a session whose backoff was forgotten starts again at
+// the minimum.
+func TestSuperviseSession_RebuildBackoffDoublesPerSession(t *testing.T) {
+	rt := newSuperviseTestRuntime(clocktest.NewAt(time.Unix(0, 0)), &ports.RecordingExporter{})
+	const minBackoff, maxBackoff = time.Second, 30 * time.Second
+
+	var got []time.Duration
+	for range 7 {
+		got = append(got, rt.nextRebuildBackoff("s1", minBackoff, maxBackoff))
+	}
+	assert.Equal(t, []time.Duration{
+		time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second,
+		16 * time.Second, 30 * time.Second, 30 * time.Second,
+	}, got)
+
+	assert.Equal(t, time.Second, rt.nextRebuildBackoff("s2", minBackoff, maxBackoff),
+		"each session keeps its own backoff")
+	delete(rt.rebuildBackoff, "s1")
+	assert.Equal(t, time.Second, rt.nextRebuildBackoff("s1", minBackoff, maxBackoff),
+		"a forgotten backoff starts at the minimum")
+	assert.Equal(t, 2*time.Second, rt.nextRebuildBackoff("s1", minBackoff, maxBackoff))
+}
+
+// The rebuild backoff outlives the supervisor: the supervisor of a rebuilt
+// session that fails again at once waits the doubled backoff before it reports
+// it, so a session that keeps failing after each rebuild is not rebuilt in a
+// tight loop.
+func TestSuperviseSession_RebuildBackoffCarriesAcrossSupervisors(t *testing.T) {
+	clk := clocktest.NewAt(time.Unix(0, 0))
+	rec := &ports.RecordingExporter{}
+	rt := newSuperviseTestRuntime(clk, rec)
+	handler, reports := recordingUnrecoverableHandler(true)
+	WithSessionUnrecoverableHandler(handler)(rt)
+
+	failure := fmt.Errorf("%w: %w", session.ErrSessionUnrecoverable, shared.ErrTransportClosedPermanently)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	supervise := func() chan error {
+		done := make(chan error, 1)
+		go func() { done <- rt.superviseSession("s1", func(context.Context) error { return failure })(ctx) }()
+		return done
+	}
+
+	// First supervisor: 1s backoff, jittered to 500ms.
+	done := supervise()
+	waitForBackoffTimer(t, clk)
+	clk.Advance(500 * time.Millisecond)
+	require.NoError(t, wait.RequireReceive(t, done, 2*time.Second))
+	wait.RequireReceive(t, reports, 2*time.Second)
+
+	// The rebuilt session's supervisor: 2s backoff, jittered to 1s, so 500ms
+	// does not fire it.
+	done = supervise()
+	waitForBackoffTimer(t, clk)
+	clk.Advance(500 * time.Millisecond)
+	assert.Empty(t, reports, "the second report must wait the doubled backoff")
+	assert.Equal(t, 1, clk.TimerCount(), "the doubled backoff timer must still be pending")
+	clk.Advance(500 * time.Millisecond)
+	require.NoError(t, wait.RequireReceive(t, done, 2*time.Second))
+	wait.RequireReceive(t, reports, 2*time.Second)
+	assert.Len(t, rec.FindEntries(shared.MetricSessionRebuilds), 2)
+}
+
+// A run of the session that stayed up for the stability window ends its
+// rebuild backoff, however it ended: by a stop (its unit retired, or the
+// runtime stopped) or by an ordinary transient failure. A run that ended sooner
+// keeps it.
+func TestSuperviseSession_StableRunForgetsRebuildBackoff(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		uptime  time.Duration
+		failure error // nil: the run ends when the supervisor stops
+		forgets bool
+	}{
+		{name: "stop after stable run", uptime: 30 * time.Second, forgets: true},
+		{name: "stop after short run", uptime: 29 * time.Second, forgets: false},
+		{name: "transient failure after stable run", uptime: 30 * time.Second, failure: errors.New("broker gone"), forgets: true},
+		{name: "transient failure after short run", uptime: 29 * time.Second, failure: errors.New("broker gone"), forgets: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clk := clocktest.NewAt(time.Unix(0, 0))
+			rt := newSuperviseTestRuntime(clk, &ports.RecordingExporter{})
+			rt.rebuildBackoff = map[string]time.Duration{"s1": 8 * time.Second}
+
+			started, fail := make(chan struct{}), make(chan struct{})
+			var calls atomic.Int32
+			run := func(ctx context.Context) error {
+				if calls.Add(1) == 1 {
+					close(started)
+					if tc.failure != nil {
+						select {
+						case <-fail:
+							return tc.failure
+						case <-ctx.Done():
+							return ctx.Err()
+						}
+					}
+				}
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			done := make(chan error, 1)
+			go func() { done <- rt.superviseSession("s1", run)(ctx) }()
+
+			wait.RequireClosed(t, started, 2*time.Second)
+			clk.Advance(tc.uptime)
+			if tc.failure != nil {
+				close(fail)
+				// The run has ended once the supervisor waits out its restart backoff.
+				waitForBackoffTimer(t, clk)
+			} else {
+				cancel()
+				require.NoError(t, wait.RequireReceive(t, done, 2*time.Second))
+			}
+
+			rt.mu.Lock()
+			_, kept := rt.rebuildBackoff["s1"]
+			rt.mu.Unlock()
+			assert.Equal(t, !tc.forgets, kept)
+
+			cancel()
+			if tc.failure != nil {
+				require.NoError(t, wait.RequireReceive(t, done, 2*time.Second))
+			}
+		})
 	}
 }

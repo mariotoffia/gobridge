@@ -112,20 +112,22 @@ func (m *Manager) boundedCallResult(ctx context.Context, ceiling time.Duration, 
 // per flap, unbounded. So a ceiling-fire (completed == false: the adapter ignored
 // ctx and Reconcile is STILL parked) is treated as unrecoverable in-process — the
 // SAME class as the wedged Close — and escalated to a terminal
-// ErrSessionUnrecoverable. superviseSession flips the runtime terminal and the
-// pod restart forcibly tears the wedged transport down at the OS level (socket
-// close on process exit), capping parked Reconcile goroutines at ONE across the
-// process lifetime. A COOPERATIVE Reconcile that merely FAILED (completed == true:
-// it returned an error within the ceiling) is a genuine transient and keeps its
-// isolated-restart semantics — its error is returned unchanged so the
-// session-failure path restarts the one session, not the whole pod.
+// ErrSessionUnrecoverable carrying ErrProcessRestartRequired, so no in-process
+// rebuild of the session answers it. superviseSession flips the runtime
+// terminal and the pod restart forcibly tears the wedged transport down at the
+// OS level (socket close on process exit), capping parked Reconcile goroutines
+// at ONE across the process lifetime. A COOPERATIVE Reconcile that merely
+// FAILED (completed == true: it returned an error within the ceiling) is a
+// genuine transient and keeps its isolated-restart semantics — its error is
+// returned unchanged so the session-failure path restarts the one session, not
+// the whole pod.
 func (m *Manager) boundedReconcile(ctx context.Context, plan connectivity.SessionPlan) error {
 	err, completed := m.boundedCallResult(ctx, m.eventReconcileTimeout(), "reconnect reconcile", func(c context.Context) error {
 		return m.session.Reconcile(c, plan)
 	})
 	if err != nil && !completed {
-		return fmt.Errorf("%w: reconnect reconcile ignored ctx and did not complete within the ceiling: %w",
-			ErrSessionUnrecoverable, err)
+		return fmt.Errorf("%w: %w: reconnect reconcile ignored ctx and did not complete within the ceiling: %w",
+			ErrSessionUnrecoverable, ErrProcessRestartRequired, err)
 	}
 	if errors.Is(err, shared.ErrTransportClosedPermanently) {
 		return fmt.Errorf("%w: source ingress could not be quiesced safely: %w", ErrSessionUnrecoverable, err)

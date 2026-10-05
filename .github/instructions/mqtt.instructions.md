@@ -5,7 +5,7 @@ applyTo: "adapters/mqtt/**"
 # MQTT transport (paho)
 
 Adds to `adapters.instructions.md`. Sources: ADR-0002, ADR-0003, ADR-0009,
-ADR-0010, ADR-0011, ADR-0019 and `docs/transports/mqtt*.md`.
+ADR-0010, ADR-0011, ADR-0019, ADR-0020 and `docs/transports/mqtt*.md`.
 
 ## Settlement and ingress
 
@@ -16,6 +16,12 @@ ADR-0010, ADR-0011, ADR-0019 and `docs/transports/mqtt*.md`.
   128 KiB metadata cap, or more than 128 User Properties, counted on
   `MQTTIngressPoisonDropped`. A malformed packet, or one larger than the
   advertised Maximum Packet Size, still fails the session closed.
+- A session that fails closed — this pre-decode rejection, ingress that does
+  not quiesce within `reconcile_timeout` before a recycle, a failed settlement
+  recovery — latches `shared.ErrTransportClosedPermanently` and never starts
+  again (single-use). The Supervisor and the AWS runtime then rebuild its
+  reload unit in place with a fresh session, unless the failure carries
+  `ErrProcessRestartRequired` or no unit can be rebuilt (ADR-0020).
 - MQTT has no NACK, so `Retry` means recycling the connection. A `Retry` that
   won is never followed by a protocol ack. QoS 0 and Ephemeral sessions return
   `ErrNotSupported` for `Retry` (`mqtt-settlement-recovery.md`).

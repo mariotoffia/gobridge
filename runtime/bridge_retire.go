@@ -210,9 +210,10 @@ func (rt *Runtime) detach(u Unit) (*retiredUnit, error) {
 // and its exclusive marks are cleared. When one did not, both stay: the
 // straggler is still fenced by Fence, and a DLQ write for its session is still
 // refused, now that its manager has closed and released the lease. The route
-// and session health records are cleared either way, since a supervisor still
-// winding down may otherwise leave a fault for a successor under the same id;
-// a terminal runtime keeps the faults that ended it.
+// and session health records, and a session's pending rebuild report, are
+// cleared either way, since a supervisor still winding down may otherwise
+// leave a fault for a successor under the same id; a terminal runtime keeps
+// the faults that ended it.
 //
 // Only what d took out is cleared, never every id the caller named: a second
 // Retire naming a unit still draining takes nothing out, and clearing the
@@ -238,6 +239,7 @@ func (rt *Runtime) finishRetire(d *retiredUnit, finished bool) {
 	// Session health records are written by the supervisors of managers only.
 	for sid := range d.managers {
 		delete(rt.componentErrors, "session:"+sid)
+		delete(rt.rebuildReports, sid)
 	}
 	for _, entry := range d.set.entries {
 		name := "route:" + entry.config.ID

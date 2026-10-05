@@ -262,6 +262,7 @@ table. See [ADR 0005](../adr/0005-outbox-partition-claim-design.md) and the
 | `MQTTReconnects` | `session_id` | Count | Session reconnects (historical wire name; emitted transport-agnostically by the session manager) |
 | `ReconcileFailures` | `session_id` | Count | Reconcile-on-reconnect failures |
 | `SessionRestarts` | `session_id` | Count | Per-session supervised restarts (isolated, capped backoff) |
+| `SessionRebuilds` | `session_id` | Count | A session that failed unrecoverably was handed to an in-place rebuild of its reload unit instead of making the runtime terminal; counted when the rebuild is taken, before it runs ([ADR 0020](../adr/0020-contain-unrecoverable-session-by-unit-rebuild.md)). A steady rate means each fresh session fails the same way |
 | `RouteRestarts` | `route_id` | Count | Per-route supervised restarts (isolated, jittered capped backoff) |
 | `DeliveryPanics` | `route_id` | Count | Delivery-goroutine panics recovered in the route runner, and panics recovered in an automatic DLQ redrive |
 

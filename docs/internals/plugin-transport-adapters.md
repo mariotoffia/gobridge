@@ -170,10 +170,16 @@ reservation.
 `CapExclusiveIdentity` must treat `Start`-after-`Close` as a permanent error:
 once `Close` runs, a later `Start` returns `shared.ErrUnavailable` rather than
 reconnecting. The runtime depends on this -- when a lease-owning session cannot
-renew, it escalates to a terminal state (`ErrSessionUnrecoverable`), releases the
-lease so a standby takes over, and lets the orchestrator restart the process with
-a fresh session. A transport that silently reconnected a closed exclusive session
-would break lease fencing. `CapExclusiveIdentity` is declared by paho MQTT
+renew, it ends with `ErrSessionUnrecoverable` and releases the lease so a
+standby takes over. A composition root that installs a session-unrecoverable
+handler (the Supervisor and the AWS runtime do) then rebuilds the session's
+reload unit with a fresh session, unless the failure still requires a process
+restart; without one, the runtime goes terminal and the orchestrator restarts
+the process ([ADR 0020](../adr/0020-contain-unrecoverable-session-by-unit-rebuild.md)
+lists when a restart is still required).
+Either way the closed instance is never started again. A transport that silently
+reconnected a closed exclusive session would break lease fencing.
+`CapExclusiveIdentity` is declared by paho MQTT
 (always) and amqp091 (latched on first exclusive use); amqp10 does not advertise
 the capability but is subject to the same single-use rule when run as an
 exclusive session.

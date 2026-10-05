@@ -523,6 +523,10 @@ func TestSessionManager_SingleUseSession_ReacquireSurfacesError(t *testing.T) {
 				if !errors.Is(err, ErrSessionUnrecoverable) {
 					t.Fatalf("expected re-acquire connect failure to be classified ErrSessionUnrecoverable, got %v", err)
 				}
+				if errors.Is(err, ErrProcessRestartRequired) {
+					t.Fatalf("the source close completed and the lease was released, so a fresh session "+
+						"clears this failure and it must not demand a process restart, got %v", err)
+				}
 				// The just-acquired lease MUST be released on the connect-failure
 				// path so a healthy standby takes over immediately instead of the
 				// zombie re-seizing it via the store's same-owner fast path. Assert

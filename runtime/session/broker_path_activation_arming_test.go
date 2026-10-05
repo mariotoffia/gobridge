@@ -224,6 +224,8 @@ func TestSessionManager_BrokerPathStepDown_DoesNotReSeizeTheLease(t *testing.T) 
 	err := wait.RequireReceive(t, runErr, 5*time.Second)
 	require.ErrorIs(t, err, ErrSessionUnrecoverable,
 		"a broker-path step-down must escalate so the orchestrator restarts this process, not re-acquire in place")
+	require.ErrorIs(t, err, ErrProcessRestartRequired,
+		"this process must not compete for the lease again, so no in-process rebuild may answer the step-down")
 	require.GreaterOrEqual(t, store.releaseCount(), int32(1), "the lease must be released before escalating")
 	acquires := store.acquireCount()
 	require.Equal(t, int32(1), acquires,
@@ -382,6 +384,8 @@ func TestSessionManager_BrokerPathStepDown_CountsNothingWhenTheCloseWedges(t *te
 
 	err := wait.RequireReceive(t, runErr, 10*time.Second)
 	require.ErrorIs(t, err, ErrSessionUnrecoverable, "a wedged close is terminal")
+	require.ErrorIs(t, err, ErrProcessRestartRequired,
+		"a source whose Close never returned may still be subscribed, so only a process restart may answer it")
 	require.Zero(t, store.releaseCount(),
 		"a wedged close must keep the lease until natural expiry, not hand it over")
 	require.Empty(t, rec.FindEntries(shared.MetricBrokerHealthStepDown),

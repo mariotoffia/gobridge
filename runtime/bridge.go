@@ -59,6 +59,21 @@ type Runtime struct {
 	// so the jittered wait is reproducible under the fake clock.
 	randFloat func() float64
 
+	// sessionUnrecoverable, when set, is told about a session whose manager ended
+	// unrecoverably with a fault a rebuild can clear; true means the caller rebuilds
+	// the session and the runtime does not go terminal (WithSessionUnrecoverableHandler).
+	sessionUnrecoverable func(sessionID string, cause error) bool
+	// rebuildBackoff is the next wait before reporting a session to
+	// sessionUnrecoverable, by session id. Guarded by mu; it outlives the session's
+	// supervisor so a session that keeps failing after each rebuild backs off.
+	rebuildBackoff map[string]time.Duration
+	// rebuildReports marks, by session id, a session whose supervisor handed it
+	// to sessionUnrecoverable after the rebuild backoff and that no retire has
+	// replaced since. Guarded by mu. A composition root rebuilds a session only
+	// while it is marked (SessionRebuildPending), so never over a fault recorded
+	// during the backoff, nor over one that needs a process restart.
+	rebuildReports map[string]bool
+
 	// credHooks holds the credential refreshers attached to this runtime and to
 	// every part grafted onto it; Stop closes each of them.
 	credHooks []*credentialHook
@@ -272,6 +287,19 @@ func WithGlobalMaxInFlight(n int) Option {
 	}
 }
 
+// WithSessionUnrecoverableHandler installs h, which the runtime calls when a
+// session manager ends with session.ErrSessionUnrecoverable over the permanent
+// shared.ErrTransportClosedPermanently marker and without
+// session.ErrProcessRestartRequired: a fault a fresh session clears. The
+// session's fault stays recorded (failed_components, not ready). When h returns
+// true the caller has taken the rebuild and the runtime stays running; false,
+// or no handler, makes the runtime terminal as before. h must not block: it runs
+// on the session's supervisor goroutine. Calls for one session are paced by a
+// capped backoff (1s doubling to 30s, reset after a run that stayed up 30s).
+func WithSessionUnrecoverableHandler(h func(sessionID string, cause error) bool) Option {
+	return func(rt *Runtime) { rt.sessionUnrecoverable = h }
+}
+
 // New creates a new Runtime with the given options.
 func New(opts ...Option) *Runtime {
 	rt := &Runtime{
@@ -409,11 +437,18 @@ var errSessionUnexpectedStop = errors.New("runtime: session manager stopped unex
 // as RESTARTABLE, not a clean stop: the manager is re-run so a standby keeps
 // supervising and can re-acquire on the next transfer, instead of silently
 // abandoning failover duty. A ErrSessionUnrecoverable (a single-use
-// session that can no longer Start after a step-down Close) is ESCALATED to
-// terminal — the manager has already released the lease, so a standby takes over
-// while the orchestrator restarts this pod with a fresh session instance; looping
-// on the dead instance would re-seize the lease via the store's same-owner fast
-// path and wedge the cluster. A PANIC is intentionally NOT
+// session that can no longer Start after a step-down Close) is never retried:
+// the manager has already released the lease, so a standby takes over, and
+// looping on the dead instance would re-seize the lease via the store's
+// same-owner fast path and wedge the cluster. When a session-unrecoverable
+// handler is installed (WithSessionUnrecoverableHandler) and the failure is one
+// a fresh session clears (the permanent shared.ErrTransportClosedPermanently
+// marker without session.ErrProcessRestartRequired), the supervisor waits out a
+// per-session rebuild backoff and reports it there; when the handler takes it,
+// the supervisor ends quietly, the fault stays recorded until the rebuild
+// retires the session, and MetricSessionRebuilds counts it. Otherwise it is
+// ESCALATED to terminal and the orchestrator restarts this pod with a fresh
+// session instance. A PANIC is intentionally NOT
 // recovered here so it still propagates to startBackground's recover and remains
 // terminal — a panic is a bug, fail-fast; only transient errors are isolated and
 // retried.
@@ -445,6 +480,14 @@ func (rt *Runtime) superviseSession(sid string, run func(context.Context) error)
 		for {
 			runStart := rt.clk.Now()
 			err := run(ctx)
+			stable := rt.clk.Since(runStart) >= stabilityWindow
+			if stable {
+				// A run that stayed up for the stability window ends the session's
+				// rebuild backoff, however it ended.
+				rt.mu.Lock()
+				delete(rt.rebuildBackoff, sid)
+				rt.mu.Unlock()
+			}
 			if ctx.Err() != nil {
 				// Runtime is shutting down: a nil (or any) return is a genuine
 				// clean stop. Drop any prior fault and exit.
@@ -480,19 +523,53 @@ func (rt *Runtime) superviseSession(sid string, run func(context.Context) error)
 				// re-Acquired the lease via the store's same-owner fast path,
 				// bumped the version and reset every standby's observation
 				// window, wedging the whole cluster while liveness stayed green.
-				// Escalate to terminal instead: the manager already RELEASED the
-				// lease (a healthy standby takes over immediately) and returning
-				// the error flips startBackground terminal so the orchestrator
-				// restarts this pod with a fresh session instance (documented
+				// The manager has RELEASED the lease, unless a reconcile failed
+				// closed while route work may still hold deliveries, so a healthy
+				// standby takes over. A fault a fresh session clears goes to
+				// the session-unrecoverable handler after the rebuild backoff,
+				// marked pending until the handler refuses it or a retire clears
+				// it; when the handler takes the rebuild the supervisor ends
+				// quietly and the recorded fault keeps the session not ready
+				// until the rebuild retires it. Anything else, a refused
+				// rebuild, or no handler, returns the error, which flips
+				// startBackground terminal so the orchestrator restarts this
+				// pod with a fresh session instance (documented
 				// process-restart backstop, scenario-08).
-				return err
+				if rt.sessionUnrecoverable == nil || !rebuildable(err) {
+					return err
+				}
+				wait := equalJitter(rt.nextRebuildBackoff(sid, minBackoff, maxBackoff), randFloat)
+				if rt.logger != nil {
+					rt.logger.Warn("session failed unrecoverably; reporting it for an in-place rebuild",
+						"component", name, "error", err, "backoff", wait)
+				}
+				timer := rt.clk.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return nil
+				case <-timer.C():
+				}
+				// Both may be ready at once, and select picks either.
+				if ctx.Err() != nil {
+					return nil
+				}
+				// Marked before the call: the root may check it as soon as the
+				// handler returns.
+				rt.setRebuildReported(sid, true)
+				if !rt.sessionUnrecoverable(sid, err) {
+					rt.setRebuildReported(sid, false)
+					return err
+				}
+				metrics.Counter(shared.MetricSessionRebuilds, 1, shared.Tag{Key: shared.TagKeySessionID, Value: sid})
+				return nil
 			}
 			metrics.Counter(shared.MetricSessionRestarts, 1,
 				shared.Tag{Key: shared.TagKeySessionID, Value: sid})
 			// A run that stayed healthy for a sustained window before failing
 			// has recovered; forget the climbed ladder so this fresh blip
 			// retries promptly instead of at the 30s cap.
-			if rt.clk.Since(runStart) >= stabilityWindow {
+			if stable {
 				backoff = minBackoff
 			}
 			wait := equalJitter(backoff, randFloat)
@@ -608,10 +685,11 @@ func (rt *Runtime) superviseRoute(routeID string, run func(context.Context) erro
 				// leaked a goroutine this process cannot reclaim, or a shared_outbox
 				// route has no OutboxStore — so a restart in place could only flap
 				// behind green liveness. Escalate to terminal instead (mirrors
-				// superviseSession's ErrSessionUnrecoverable branch): the error flips
-				// startBackground terminal so the orchestrator restarts the pod. The
-				// route is already recorded in componentErrors and MetricRouteRestarts
-				// fires here, so the escalation stays observable.
+				// superviseSession's terminal escalation of an ErrSessionUnrecoverable
+				// no rebuild can clear): the error flips startBackground terminal so
+				// the orchestrator restarts the pod. The route is already recorded in
+				// componentErrors and MetricRouteRestarts fires here, so the
+				// escalation stays observable.
 				metrics.Counter(shared.MetricRouteRestarts, 1,
 					shared.Tag{Key: shared.TagKeyRouteID, Value: routeID})
 				return err
@@ -650,6 +728,43 @@ func (rt *Runtime) superviseRoute(routeID string, run func(context.Context) erro
 			}
 		}
 	}
+}
+
+// rebuildable reports whether a fresh session clears err: the transport is
+// permanently closed and nothing of the old session needs a process restart.
+func rebuildable(err error) bool {
+	return errors.Is(err, shared.ErrTransportClosedPermanently) && !errors.Is(err, session.ErrProcessRestartRequired)
+}
+
+// nextRebuildBackoff returns the wait before reporting session sid again and
+// doubles the stored one up to maxBackoff. A session with no stored backoff
+// starts at minBackoff.
+func (rt *Runtime) nextRebuildBackoff(sid string, minBackoff, maxBackoff time.Duration) time.Duration {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	backoff, ok := rt.rebuildBackoff[sid]
+	if !ok {
+		backoff = minBackoff
+	}
+	if rt.rebuildBackoff == nil {
+		rt.rebuildBackoff = make(map[string]time.Duration)
+	}
+	rt.rebuildBackoff[sid] = min(backoff*2, maxBackoff)
+	return backoff
+}
+
+// setRebuildReported marks or clears the pending rebuild report of session sid.
+func (rt *Runtime) setRebuildReported(sid string, reported bool) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if !reported {
+		delete(rt.rebuildReports, sid)
+		return
+	}
+	if rt.rebuildReports == nil {
+		rt.rebuildReports = make(map[string]bool)
+	}
+	rt.rebuildReports[sid] = true
 }
 
 // equalJitter applies equal-jitter to a restart backoff: the wait is half the

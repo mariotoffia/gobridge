@@ -126,11 +126,13 @@ The shutdown sequence proceeds as follows:
 7. **Exit** -- The process exits with code 0 on a clean shutdown.
 
 In the file-based deployment the same budget also covers the stages *before* the
-runtime drain: the config-watcher join and the coordinated-rollout drive stop are
-waited on **selectably** against it. A reload stuck in its own teardown, or a
-barrier lease store that will not release, is abandoned when the budget runs out
-(logged) rather than holding `SIGTERM` ahead of the drain, the HTTP shutdown and
-the metrics flush until the platform's SIGKILL.
+runtime drain: the config-watcher join, the coordinated-rollout drive stop and
+the wait for a reload or session rebuild still in flight are waited on
+**selectably** against it. A reload stuck in its own teardown, a session rebuild
+that does not finish, or a barrier lease store that will not release, is
+abandoned when the budget runs out (logged) rather than holding `SIGTERM` ahead
+of the drain, the HTTP shutdown and the metrics flush until the platform's
+SIGKILL.
 
 `Runtime.Stop` is idempotent and single-teardown: exactly one caller performs
 the teardown and every other caller blocks on it and then receives **that
@@ -217,11 +219,15 @@ wedged.
 
 **A restart policy is required — the process is designed to exit and be
 restarted.** GoBridge follows a let-it-exit recovery model: several paths end by
-*exiting non-zero on purpose* rather than wedging in place. The clearest is a
-single-use exclusive session that steps down from its lease and cannot reacquire
-it — it reaches a terminal state and the process exits (recovery leg 5; see
-[ADR 0004](adr/0004-single-use-runtime-lifecycle.md) and the Scenario 8 backstop
-note). This is safe **only** when something restarts the process so it can
+*exiting non-zero on purpose* rather than wedging in place. One is a single-use
+exclusive session that steps down because its broker path stayed non-converged,
+or whose source close did not complete — it reaches a terminal state and the
+process exits (see [ADR 0004](adr/0004-single-use-runtime-lifecycle.md) and the
+Scenario 8 backstop note). A session that fails in a way a fresh session clears
+— for example, one that wins its lease back after an ordinary step-down — no
+longer exits under the Supervisor or the AWS runtime: its reload unit is rebuilt
+in place ([ADR 0020](adr/0020-contain-unrecoverable-session-by-unit-rebuild.md)).
+The exit is safe **only** when something restarts the process so it can
 re-elect or reconnect. Kubernetes Pods (`restartPolicy` defaults to `Always`)
 and ECS services restart automatically, but a **bare `docker run` without
 `--restart` stays down** after such an exit. For any long-lived container

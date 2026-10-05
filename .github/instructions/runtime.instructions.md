@@ -5,7 +5,7 @@ applyTo: "runtime/**,bridge/**,adapters/native/cluster/**,adapters/aws/cluster/*
 # Runtime, composition root and clustering
 
 Sources: ADR-0001, ADR-0004, ADR-0009, ADR-0012 to ADR-0015, ADR-0017 to
-ADR-0019, `docs/internals/architecture-message-flow.md`,
+ADR-0020, `docs/internals/architecture-message-flow.md`,
 `docs/internals/architecture-contracts-and-clustering.md` and
 `docs/cluster/spec/cluster-config-rollout-protocol.md`.
 
@@ -77,7 +77,37 @@ ADR-0019, `docs/internals/architecture-message-flow.md`,
 - Lease lifecycle: acquire, renew, step down after `MaxRenewFails` or
   `STALE_FENCING_TOKEN`, wait `StepDownGrace`, release. All of it is derived
   from `LeaseTTL` and driven by the injected `Clock`. A lease-owning session
-  that cannot renew escalates to `ErrSessionUnrecoverable`.
+  that cannot renew escalates to `ErrSessionUnrecoverable`. A session manager
+  whose reconcile returns the permanent marker keeps its lease, since route
+  work may still hold deliveries; any other failure releases it once the
+  source closed, a failure of the running session after `StepDownGrace`.
+- An `ErrSessionUnrecoverable` over `shared.ErrTransportClosedPermanently`
+  without `session.ErrProcessRestartRequired` goes, after the per-session
+  rebuild backoff, to the session-unrecoverable handler instead of making the
+  runtime terminal (ADR-0020). The handler runs on the session's supervisor
+  goroutine: it must not block and must not retire or reload synchronously,
+  because a retire waits for that goroutine; it hands the rebuild to its own
+  goroutine. Both roots run the rebuild (`PlanSessionRebuild`, always
+  serialized) under the lock every reload takes — `Supervisor.lifecycleMu`,
+  `App.mu` — and re-check under it that the runtime still runs and still has
+  the session's report pending (`SessionRebuildPending`). The handler plans
+  only when it gets the lock with `TryLock`: a reload that holds it may run a
+  session the configuration it publishes last does not hold yet, so the
+  handler takes that report and the rebuild plans under the lock. No unit, a
+  rebuild that leaves the fault, or a unit that does not stop wedges; a torn
+  rebuild takes the torn path. A rebuild is not a reload: no reload metrics,
+  `SwapEvent` or convergence watch. The Supervisor's shutdown waits for the
+  lifecycle lock only within the drain timeout, as for the rollout drive.
+- The runtime marks a report pending before it calls the handler and clears it
+  on refusal or retire. A root checks `SessionRebuildPending`, never the
+  recorded fault, before it rebuilds: a fault recorded during the backoff, or
+  one that needs a process restart, is never pending. The rebuild backoff
+  starts again at 1 s after any run that stayed up 30 s, however it ended.
+- A site that returns `ErrSessionUnrecoverable` while old work may be parked
+  or running, while a close did not complete, or when the process must not
+  compete for the lease again MUST also wrap `ErrProcessRestartRequired`.
+  Without it a root rebuilds the session beside the old work. The marker is
+  negative on purpose; do not add a positive "rebuildable" one.
 - A failed route restarts in place in `superviseRoute`, whatever its source
   transport: backoff, `RouteRestarts`, not-ready, `route_dead`. `RouteRunner.Run`
   closes a receiver that has `Close(ctx)` on every exit, then runs it again on

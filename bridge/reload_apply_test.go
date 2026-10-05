@@ -436,6 +436,78 @@ func TestApply_CommitGetsAFreshPhaseAfterASlowRetire(t *testing.T) {
 	assert.Equal(t, 7, runtimeRoutePolicy(t, rt, "b").MaxInFlight)
 }
 
+func planSessionRebuildTest(t *testing.T, tf ports.TransportFactory, running *ports.BridgeConfig, sessionID string) *InPlaceReload {
+	t.Helper()
+	plan, ok := PlanSessionRebuild(running, sessionID, map[string]ports.TransportFactory{"tracked": tf})
+	require.True(t, ok, "expected the session's unit to be rebuildable in place")
+	return plan
+}
+
+// A session rebuild closes the session's unit and then builds a copy of it on
+// a fresh session, while every other unit keeps running untouched. The close
+// comes first even on a transport that claims no exclusive identity.
+func TestApply_SessionRebuildReplacesOnlyTheSessionsUnit(t *testing.T) {
+	tf := newPerSessionTransportFactory(false)
+	newBuilder := applyTestBuilder(tf)
+	running := applyTestConfig("a", "b")
+	rt := startApplyTestRuntime(t, newBuilder, running)
+	oldPolicy := runtimeRoutePolicy(t, rt, "a")
+	plan := planSessionRebuildTest(t, tf, running, "a-s")
+
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, InPlaceApplied, outcome)
+	closeOld, newSession := tf.eventIndex("close:a-s#1"), tf.eventIndex("new:a-s#2")
+	require.NotEqual(t, -1, closeOld)
+	require.NotEqual(t, -1, newSession)
+	assert.Less(t, closeOld, newSession, "the old session closes before its copy is built")
+	assert.Equal(t, []int{1, 0}, tf.closeCounts("a-s"), "owner a's session is closed once and replaced")
+	assert.Equal(t, []int{0}, tf.closeCounts("b-s"), "owner b keeps its one session")
+	assert.Equal(t, []string{"a", "b"}, runtimeRouteIDs(rt))
+	assert.Equal(t, oldPolicy, runtimeRoutePolicy(t, rt, "a"), "the copy runs the running route")
+	assert.True(t, rt.IsRunning())
+}
+
+// A copy that cannot be built leaves the unit restored from the running
+// configuration, on a fresh session.
+func TestApply_SessionRebuildWhoseCopyFailsRestoresTheUnit(t *testing.T) {
+	tf := newPerSessionTransportFactory(false)
+	newBuilder := applyTestBuilder(tf)
+	running := applyTestConfig("a", "b")
+	rt := startApplyTestRuntime(t, newBuilder, running)
+	plan := planSessionRebuildTest(t, tf, running, "a-s")
+	tf.refuseSessions("a-s", 1)
+
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
+
+	require.ErrorIs(t, err, errSessionRefused)
+	assert.Equal(t, InPlaceUnchanged, outcome)
+	assert.Equal(t, []int{1, 0}, tf.closeCounts("a-s"), "the retired unit is restored on a new session")
+	assert.Equal(t, []int{0}, tf.closeCounts("b-s"))
+	assert.Equal(t, []string{"a", "b"}, runtimeRouteIDs(rt))
+	assert.True(t, rt.IsRunning())
+}
+
+// A session that does not close may still hold its broker connection, so no
+// copy is built beside it.
+func TestApply_SessionRebuildWhoseSessionDoesNotCloseIsWedged(t *testing.T) {
+	tf := newPerSessionTransportFactory(false)
+	newBuilder := applyTestBuilder(tf)
+	running := applyTestConfig("a", "b")
+	rt := startApplyTestRuntime(t, newBuilder, running)
+	plan := planSessionRebuildTest(t, tf, running, "a-s")
+	tf.refuseClose("a-s", 1, errCloseRefused)
+
+	outcome, err := plan.Apply(context.Background(), rt, newBuilder, nil)
+
+	require.ErrorIs(t, err, errCloseRefused)
+	assert.Equal(t, InPlaceWedged, outcome)
+	assert.Equal(t, []int{1}, tf.closeCounts("a-s"), "no copy is built")
+	assert.Equal(t, []int{0}, tf.closeCounts("b-s"))
+	assert.Equal(t, []string{"b"}, runtimeRouteIDs(rt))
+}
+
 func TestInPlaceOutcome_String(t *testing.T) {
 	for outcome, want := range map[InPlaceOutcome]string{
 		InPlaceApplied:     "applied",

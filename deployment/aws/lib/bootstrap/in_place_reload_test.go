@@ -40,6 +40,11 @@ type trackedTransportFactory struct {
 	// onClose, when set, runs first in every session Close. It is read without
 	// the lock, so set it before the calls it must see.
 	onClose func(id string)
+	// onStart, when set, runs at every session Start with the session's id and
+	// n, the count of sessions built for that id, and Start returns what it
+	// returns. It is read without the lock, so set it before the calls it must
+	// see.
+	onStart func(id string, n int) error
 
 	mu        sync.Mutex
 	closes    map[string][]int // session id → close count of each session built for it, oldest first
@@ -113,7 +118,13 @@ type trackedSession struct {
 	n       int
 }
 
-func (s *trackedSession) Start(context.Context) error                               { return nil }
+func (s *trackedSession) Start(context.Context) error {
+	if s.factory.onStart != nil {
+		return s.factory.onStart(s.id, s.n)
+	}
+	return nil
+}
+
 func (s *trackedSession) Reconcile(context.Context, connectivity.SessionPlan) error { return nil }
 func (s *trackedSession) Health(context.Context) ports.SessionHealth                { return ports.SessionHealth{} }
 func (s *trackedSession) Events() <-chan ports.SessionEvent                         { return nil }

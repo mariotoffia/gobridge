@@ -80,6 +80,32 @@ func PlanInPlaceReload(running, next *ports.BridgeConfig, transports map[string]
 	return plan, true
 }
 
+// PlanSessionRebuild plans rebuilding, inside the running runtime, the reload
+// unit that holds session sessionID: an in-place reload of running onto itself
+// that retires that one unit and adds a freshly built copy. It is always
+// serialized, so the unit's route work has finished and its sessions are closed
+// before the copy connects. ok is false when running is nil, no unit holds the
+// session, or the unit may attach an HTTP endpoint (see PlanInPlaceReload).
+func PlanSessionRebuild(running *ports.BridgeConfig, sessionID string, transports map[string]ports.TransportFactory) (*InPlaceReload, bool) {
+	if running == nil {
+		return nil, false
+	}
+	units, err := splitUnits(running)
+	if err != nil {
+		return nil, false
+	}
+	for _, u := range units {
+		if !slices.Contains(u.sessions, sessionID) {
+			continue
+		}
+		if mayAttachHTTPEndpoint(u.sub, transports) {
+			return nil, false
+		}
+		return &InPlaceReload{running: running, next: running, retire: []reloadUnit{u}, add: []reloadUnit{u}, serialized: true}, true
+	}
+	return nil, false
+}
+
 // Serialized reports whether the retired units must stop before the added
 // units are built, rather than the added units being built first.
 func (r *InPlaceReload) Serialized() bool { return r.serialized }

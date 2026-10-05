@@ -54,23 +54,36 @@ func (*activationLeaseLoss) Error() string { return "lease lost during post-acqu
 func (*activationLeaseLoss) Unwrap() error { return errLeaseLostAfterRenewal }
 
 // ErrSessionUnrecoverable marks a lease-owning term that failed because the
-// underlying session cannot be re-established IN THIS PROCESS. A single-use
+// underlying session instance cannot be re-established. A single-use
 // transport session (e.g. Paho MQTT) is closed by step-down; on the next
 // lease re-acquisition ensureConnected cannot Start it again ("Start is not
 // allowed after Close", surfaced as shared.ErrUnavailable wrapping the permanent
-// shared.ErrTransportClosedPermanently marker) and no in-process rebuild path
-// exists (the receiver/sender still reference the dead instance).
+// shared.ErrTransportClosedPermanently marker), and the manager cannot replace
+// it: the receiver/sender still reference the dead instance.
 //
-// superviseSession treats this as NON-recoverable-in-process and ESCALATES to
-// terminal (documented process-restart backstop, scenario-08) instead of
-// retrying the same dead session forever — the pre-fix behaviour that wedged the
-// cluster: each capped-backoff retry re-Acquired via the store's same-owner
-// fast path, bumped the lease version, and perpetually reset every standby's
-// observation window. Ordinary permanently-closed restart
+// superviseSession never retries the same dead session — the pre-fix behaviour
+// that wedged the cluster: each capped-backoff retry re-Acquired via the store's
+// same-owner fast path, bumped the lease version, and perpetually reset every
+// standby's observation window. When a session-unrecoverable handler is
+// installed and the failure is one a fresh session clears (it carries the
+// permanent transport marker and not ErrProcessRestartRequired), the supervisor
+// reports it to that handler; otherwise it ESCALATES to terminal (documented
+// process-restart backstop, scenario-08). Ordinary permanently-closed restart
 // paths release the lease before returning. Fail-closed managed migration is the
 // exception: accepted route work or a broker-pinned delivery may remain, so the
-// lease expires naturally while the orchestrator restarts the pod.
+// lease is kept rather than released under that work.
 var ErrSessionUnrecoverable = errors.New("session cannot be re-established in this process")
+
+// ErrProcessRestartRequired marks an ErrSessionUnrecoverable that a rebuild of
+// the session inside this process must not answer: work of the old session may
+// still be parked or running (a Reconcile or activation that ignored its
+// context, a Close that did not complete), or the process must not compete for
+// the lease again. The runtime stays terminal on it, so the process restart
+// tears the old work down (ADR-0004). Every site that returns
+// ErrSessionUnrecoverable in one of those states MUST wrap this marker too;
+// without it a composition root that rebuilds failed sessions builds a
+// replacement beside the old work.
+var ErrProcessRestartRequired = errors.New("session must be recovered by a process restart")
 
 // releaseAndReturn is the connect-failure recovery path: a term acquired the
 // lease but could not make the session usable
@@ -85,14 +98,16 @@ var ErrSessionUnrecoverable = errors.New("session cannot be re-established in th
 // unconditionally safe. When it is set and the failure carries the permanent
 // shared.ErrTransportClosedPermanently marker (a single-use session refusing
 // Start-after-Close), the lease is released AND the returned error is tagged
-// ErrSessionUnrecoverable, so superviseSession escalates to terminal rather than
-// looping on the dead instance while a standby waits out the TTL. All other
+// ErrSessionUnrecoverable, so superviseSession never loops on the dead instance
+// while a standby waits out the TTL: it reports the session to the
+// session-unrecoverable handler when one is installed (a composition root
+// rebuilds the session's unit), else it escalates to terminal. All other
 // failures (a broker blip, a transient reconcile rejection, a plain transient
 // ErrUnavailable) are returned as-is for isolated capped-backoff retry. A
 // non-escalatable permanent marker is the reconcile / managed-migration phase:
 // migration already failed closed and durable route work may still unwind, so it
-// is made terminal WITHOUT releasing the lease and ownership cannot transfer
-// under unsettled work.
+// is made unrecoverable WITHOUT releasing the lease and ownership cannot transfer
+// under unsettled work; superviseSession treats it the same way.
 func (m *Manager) releaseAndReturn(ctx context.Context, token persistence.LeaseToken, err error, phase string, escalatable bool) error {
 	m.mu.Lock()
 	m.hasLease = false
@@ -100,7 +115,10 @@ func (m *Manager) releaseAndReturn(ctx context.Context, token persistence.LeaseT
 	if errors.Is(err, shared.ErrTransportClosedPermanently) && !escalatable {
 		// Managed migration failed closed after a broker-pinned delivery. The
 		// transport already disconnected, but durable route work may still unwind;
-		// preserve single ownership until natural TTL and force a fresh process.
+		// preserve single ownership until natural TTL. superviseSession reports it
+		// to the session-unrecoverable handler when one is installed (a composition
+		// root rebuilds the session's unit), else it goes terminal and forces a
+		// fresh process.
 		return fmt.Errorf("%w: %w", ErrSessionUnrecoverable, err)
 	}
 	if escalatesToUnrecoverable(err, escalatable) {
@@ -115,10 +133,13 @@ func (m *Manager) releaseAndReturn(ctx context.Context, token persistence.LeaseT
 		// the ordinary case (a session an earlier term already closed) this is a
 		// no-op that returns at once.
 		if _, closed := m.closeSourceBounded(ctx, m.releaseTimeout(), phase); !closed {
-			return fmt.Errorf("%w: source session close did not complete before handing off after %s: %w",
-				ErrSessionUnrecoverable, phase, err)
+			return fmt.Errorf("%w: %w: source session close did not complete before handing off after %s: %w",
+				ErrSessionUnrecoverable, ErrProcessRestartRequired, phase, err)
 		}
 		m.releaseOwnedLeaseBestEffort(ctx, token, phase)
+		// Released: superviseSession reports the session to the
+		// session-unrecoverable handler when one is installed (a composition root
+		// rebuilds the session's unit), else it escalates to terminal.
 		return fmt.Errorf("%w: %w", ErrSessionUnrecoverable, err)
 	}
 	m.releaseOwnedLeaseBestEffort(ctx, token, phase)

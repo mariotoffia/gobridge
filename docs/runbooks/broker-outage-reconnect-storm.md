@@ -45,7 +45,10 @@ mistaking a broker outage for a bridge fault and restarting healthy tasks.
 3. Watch the reconnect metrics under `GoBridge/Runtime`
    ([monitoring.md#key-metrics](../aws-deployment/monitoring.md#key-metrics)):
    `MQTTReconnects` (session reconnects), `ReconcileFailures` (reconcile after
-   reconnect failed), `SessionRestarts` (supervised per-session restart). In a
+   reconnect failed), `SessionRestarts` (supervised per-session restart),
+   `SessionRebuilds` (a session that failed for good was rebuilt in place with
+   a fresh session; see
+   [ADR 0020](../adr/0020-contain-unrecoverable-session-by-unit-rebuild.md)). In a
    clustered deployment a broker outage that outlasts the lease TTL also raises
    `LeaseExpiries`.
 
@@ -101,8 +104,11 @@ mistaking a broker outage for a bridge fault and restarting healthy tasks.
   the requested QoS and the granted QoS. The session re-checks the grant every
   `qos_recheck_interval` and on every reconnect.
 - **Outage exceeds your SLO budget** — escalate to the broker/dependency owner.
-  A clustered instance whose lease store also went unreachable steps down and
-  eventually goes terminal; the process then exits non-zero so the orchestrator
+  A clustered instance whose lease store also went unreachable steps down. When
+  it wins the lease back, its single-use session cannot start again: under the
+  Supervisor or the AWS runtime the session's reload unit is rebuilt in place
+  (`SessionRebuilds`); otherwise, or when the session's close did not complete,
+  the runtime goes terminal and the process exits non-zero so the orchestrator
   restarts it ([health-and-shutdown.md#exit-codes](../health-and-shutdown.md#exit-codes)).
 
 ## Related runbooks

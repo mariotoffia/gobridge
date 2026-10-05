@@ -181,6 +181,10 @@ func TestSessionManager_DeferredConnect_SessionFailureRestartReleasesReseizedLea
 	if !errors.Is(secondErr, shared.ErrTransportClosedPermanently) {
 		t.Fatalf("the permanent-closure marker must propagate, got %v", secondErr)
 	}
+	if errors.Is(secondErr, ErrProcessRestartRequired) {
+		t.Fatalf("the source close completed and the lease was released, so a fresh session clears "+
+			"this failure and it must not demand a process restart, got %v", secondErr)
+	}
 
 	reseized := store.currentVersion()
 	if reseized == firstVersion {
@@ -254,6 +258,8 @@ func TestSessionManager_DeferredConnect_WedgedCloseKeepsReseizedLease(t *testing
 
 	err := wait.RequireReceive(t, second, 3*time.Second)
 	require.ErrorIs(t, err, ErrSessionUnrecoverable)
+	require.ErrorIs(t, err, ErrProcessRestartRequired,
+		"a source whose Close never returned may still be sending, so only a process restart may answer it")
 
 	reseized := store.currentVersion()
 	require.NotEqual(t, firstVersion, reseized, "precondition: the restarted term must re-acquire")

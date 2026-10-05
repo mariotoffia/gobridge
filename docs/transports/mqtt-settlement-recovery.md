@@ -134,7 +134,16 @@ config knob:
   before or during the drain can neither start a second drain nor signal the
   manager ahead of the shared barrier. The manager tears down before releasing an
   exclusive lease; its supervisor retries once, and the single-use contract then
-  escalates `ErrSessionUnrecoverable` for orchestrator replacement. Future Retry,
+  escalates `ErrSessionUnrecoverable`. Under the Supervisor (`cmd/gobridge`) or
+  the AWS runtime, the composition root then rebuilds the session's reload unit
+  in place with a fresh session, after a per-session backoff, and counts
+  `SessionRebuilds`; every other unit keeps running
+  ([ADR 0020](../adr/0020-contain-unrecoverable-session-by-unit-rebuild.md)).
+  The runtime still goes terminal for orchestrator replacement when no rebuild
+  handler is installed, when the failure carries
+  `session.ErrProcessRestartRequired` (for example, the source close did not
+  complete), or when the rebuild cannot recover the session in the process.
+  Future Retry,
   Reconcile, credential and Start calls return the terminal error rather than
   reactivating the dead Session instance.
 

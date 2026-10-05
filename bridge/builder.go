@@ -26,6 +26,9 @@ type Builder struct {
 	endpointResolver ports.EndpointResolver
 	hook             ports.DeliveryHook
 	validator        ports.BlueprintValidator
+	// sessionUnrecoverable is forwarded to a full build's runtime
+	// (WithSessionUnrecoverableHandler).
+	sessionUnrecoverable func(sessionID string, cause error) bool
 	// regErrs accumulates deferred registration errors (e.g. a duplicate
 	// processor name) so a chaining Register* call can still return *Builder.
 	// prepare() surfaces them before doing any work, failing the Build.
@@ -127,6 +130,13 @@ func WithAuditLogger(a ports.AuditLogger) BuilderOption {
 			b.auditLogger = a
 		}
 	}
+}
+
+// WithSessionUnrecoverableHandler forwards h to the runtime a full build makes
+// (runtime.WithSessionUnrecoverableHandler). A part built for an in-place
+// reload runs its sessions on the host runtime, whose handler covers them.
+func WithSessionUnrecoverableHandler(h func(sessionID string, cause error) bool) BuilderOption {
+	return func(b *Builder) { b.sessionUnrecoverable = h }
 }
 
 // Compile-time guarantee that the poll wrapper this builder constructs
