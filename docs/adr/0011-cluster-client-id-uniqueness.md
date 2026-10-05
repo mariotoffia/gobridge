@@ -61,7 +61,7 @@ do not hard-mandate a suffix at build.**
   Session-Taken-Over disconnect feeds `noteSessionTakeover`
   (`session_takeover.go`): the first takeover is treated as a legitimate
   Exclusive failover and carries no penalty, but repeated takeovers without an
-  intervening stable connection (`connectionStabilityWindow`, 30s) mean two live
+  intervening stable connection (`connectionStabilityWindow`, 30 s) mean two live
   instances share an id — each occurrence doubles the reconnect backoff penalty
   (`takeoverPenalty`, capped at 64s) so the mutual-eviction loop cannot spin hot,
   and an Error log names the misconfiguration. When `$share` is active on a

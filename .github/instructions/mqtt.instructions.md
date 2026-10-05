@@ -17,12 +17,12 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021 and `docs/transports/mqtt*.md`.
   `MQTTIngressPoisonDropped`.
 - A malformed packet, or one larger than the advertised Maximum Packet Size, is
   rejected before Paho decodes it. The reject drops the connection, never the
-  session: it counts `MQTTIngressRejected`, tries to send DISCONNECT 0x95 or
-  0x81 (skipped while a Paho write holds the guard's write lock, bounded by a
-  1 s deadline), closes the socket and lets autopaho reconnect, with a
-  streak-keyed backoff penalty and `Ready` false until a replacement connection
-  holds for `connectionStabilityWindow`. Flag any change that latches a
-  terminal error on a pre-decode reject (ADR-0021).
+  session. It counts `MQTTIngressRejected` and tries to send DISCONNECT 0x95 or
+  0x81; that write has a 1 s deadline, and it is skipped while a Paho write
+  holds the guard's write lock. The guard then closes the socket and lets
+  autopaho reconnect, with a streak-keyed backoff penalty and `Ready` false
+  until a replacement connection holds for `connectionStabilityWindow`. Flag
+  any change that latches a terminal error on a pre-decode reject (ADR-0021).
 - A settlement recovery that fails after its drain finished is abandoned
   (`abandonRecoveryAttempt`): it starts the rate-limit cooldown and latches no
   terminal error of its own. Session Present = false on a recovery connect is a

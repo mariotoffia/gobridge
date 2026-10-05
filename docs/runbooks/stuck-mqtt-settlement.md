@@ -87,37 +87,19 @@ the gauges publish, without waiting for a metrics flush.
    [MQTT settlement recovery](../transports/mqtt-settlement-recovery.md).
 
 5. **Readiness below Full while recycling.** Expected: readiness drops
-   synchronously when recovery is queued. A recovery that succeeds returns it
-   once the exact-epoch replacement reconcile succeeds. An abandoned recovery
-   clears the recovery state, so readiness returns once the session manager's
-   ordinary Reconcile converges on the session's connection, after an ordinary
-   reconnect when no connection was left. Then check what the recovery
-   reported:
-   - `MQTTSessionResumeLost` advanced: the broker had no session to resume
-     (Session Present=false). The recovery still finishes and re-subscribes, so
-     readiness returns, but the broker's queued backlog for the `client_id` —
-     including the deliveries the recovery was meant to bring back — is gone.
-     The Warn log and the `LastError` latch are the same as after an ordinary
-     reconnect that lost the session.
-   - Warn log
-     `mqtt: settlement recovery abandoned after its drain; the session reconnects normally`:
-     a step after the drain failed — the reconnect, or the reconcile on the new
-     connection. The session is not terminal. It reconnects as after any broker
-     fault, and the next recovery waits for the 30-second cooldown.
-   - A terminal session error, with `SessionRebuilds` advancing for the session:
-     the drain itself failed, the recovery failed before it reached its drain,
-     or a step after the drain failed closed the way it does outside a
-     recovery (managed-subscription cleanup). The bridge is rebuilding the
-     session (see the action for case 5).
-   - `SessionRebuilds` advancing after the abandon Warn log, with no terminal
-     session error: a lease-managed session (exclusive, in a runtime with a
-     lease store) that the abandoned recovery left with no connection. Its
-     session manager closed the session and released the lease, the next
-     start of the closed session failed, and the bridge rebuilds its unit.
-     With `connect_after_lease` (the default for a route source) that start,
-     and so the rebuild, waits until this node holds the lease again. Any
-     other session left with no connection is restarted and reconnects
-     without a rebuild.
+   synchronously when recovery is queued and returns once the exact-epoch
+   replacement reconcile succeeds, or, after an abandoned recovery, once the
+   session manager's ordinary `Reconcile` converges. Tell the outcomes apart
+   by their signals
+   ([ADR 0021](../adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)):
+   - `MQTTSessionResumeLost` advanced: the broker had no session to resume.
+     The recovery still finishes, but its backlog is lost (see the action).
+   - Warn `mqtt: settlement recovery abandoned after its drain; the session reconnects normally`
+     and no `session error` log: abandoned, not terminal. A session left with
+     no connection is run again (`SessionRestarts`); a lease-managed one
+     (exclusive, with a lease store) is then rebuilt (`SessionRebuilds`).
+   - Error log `session error` for the session, then `SessionRebuilds`: the
+     session went terminal (see the action for case 5).
 
 6. **`MQTTAckAfterReconnect` non-zero.** Settlements whose protocol ack could not
    reach the broker. Each count is a guaranteed redelivery. It explains
@@ -145,14 +127,19 @@ the gauges publish, without waiting for a metrics flush.
   redelivery.
 - **Recovery not completing (case 5).** A recovery abandoned after its drain
   needs no action of its own: the session reconnects normally, and a later
-  failed delivery requests a new recovery, which waits out the 30-second
-  cooldown first
+  failed delivery requests a new recovery, which waits out the 30 s cooldown
+  first
   ([ADR 0021](../adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)).
-  A steady run of abandon logs means the broker keeps failing the reconnect;
-  treat it as a broker outage
+  A steady run of abandon logs means recoveries keep failing after their drain:
+  the reconnect fails, a newer connection replaces the recovery's connection,
+  or the reconcile on the recovery's connection fails or finishes on a
+  replaced connection. The log's `error` field names the cause. A reconnect
+  that keeps failing is a broker outage
   ([broker outage / reconnect storm](broker-outage-reconnect-storm.md)).
-  A session whose recovery fails in its drain, or before its drain, latches
-  a permanent error, and that session instance never starts again. Under the
+  A recovery goes terminal on a failed drain, on a failure before the drain, or
+  on a step after the drain that fails closed as it would outside a recovery,
+  for example managed-subscription cleanup. The session then latches a
+  permanent error, and that session instance never starts again. Under the
   Supervisor (`cmd/gobridge`) or the AWS runtime the bridge rebuilds the
   session's reload unit in place after a backoff (1 s, doubling to 30 s): the
   unit's routes stop, the failed session closes, and a fresh session connects.
@@ -174,17 +161,19 @@ the gauges publish, without waiting for a metrics flush.
   above 25 s so a cancelled send has time to
   stop. A
   `SessionRebuilds` rate that keeps climbing means every fresh session fails the
-  same way. For this transport that is a drain that keeps failing, a recovery
-  that keeps failing before its drain, a fail-closed path such as
-  managed-subscription cleanup, or a lease-managed session that every
-  abandoned recovery leaves with no connection because the reconnect keeps
-  failing. A broker that forgot the session no longer causes a rebuild: it
-  answers `Session Present=false`, and the session counts
-  `MQTTSessionResumeLost`, logs a Warn that starts
-  `mqtt: broker did not resume the durable session`, and keeps the
-  resume-lost error on its health `LastError` until the next successful
-  reconcile. Every such recovery loses the backlog it was meant to bring back,
-  so verify `session_expiry_interval` exceeds the outage window.
+  same way. For this transport that is one of the terminal cases above,
+  recurring, or a lease-managed session that every abandoned recovery leaves
+  with no connection because the reconnect keeps failing.
+
+  A broker that forgot the session no longer causes a rebuild. It answers
+  Session Present = false, and the session handles it as after an ordinary
+  reconnect that lost the session: it counts `MQTTSessionResumeLost`, logs a
+  Warn that starts `mqtt: broker did not resume the durable session`, and
+  keeps the resume-lost error on its health `LastError` until the next
+  successful reconcile. The recovery still finishes and re-subscribes, so
+  readiness returns, but the broker's queued backlog for the `client_id`,
+  including the deliveries the recovery was meant to bring back, is gone.
+  Verify `session_expiry_interval` exceeds the outage window.
 
 ### What NOT to do
 

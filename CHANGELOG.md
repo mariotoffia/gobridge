@@ -177,15 +177,17 @@ same document passes on AWS and elsewhere.
   pre-decode guard rejects, no longer fail the session closed; see the next
   entry.
 
-### Changed — an MQTT recovery failure or a rejected broker packet no longer stops the session
+### Changed — an MQTT recovery failure after the drain or a rejected broker packet no longer fails the session closed
 
-- **Behaviour change.** Two MQTT failures no longer stop the session, so they
-  no longer rebuild its reload unit
+- **Behaviour change.** Two MQTT failures no longer fail the session closed
   ([ADR 0021](docs/adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)).
-- A settlement recovery that fails after its drain — the reconnect fails, or
-  the reconcile on the new connection fails — is abandoned. The session
-  reconnects normally, the next recovery starts no sooner than 30 s later, and
-  a Warn log says
+  A rejected packet no longer rebuilds the session's reload unit, and a failed
+  recovery rebuilds it only in the cases listed below.
+- A settlement recovery that fails after its drain is abandoned: the reconnect
+  fails, a newer connection replaces the recovery's connection, or the
+  reconcile on the recovery's connection fails or finishes on a replaced
+  connection. The session reconnects normally, the next recovery starts no
+  sooner than 30 s later, and a Warn log says
   `mqtt: settlement recovery abandoned after its drain; the session reconnects normally`.
   When the broker answers Session Present = false to a recovery, the loss is
   recorded as on an ordinary reconnect (`MQTTSessionResumeLost`) and the

@@ -161,8 +161,9 @@ const (
 	// Packet Size the client advertised in CONNECT. The guard tries to send
 	// DISCONNECT and drops the connection; the session reconnects with
 	// backoff and is not terminal. Tagged session_id. A non-zero value means
-	// the broker sent a packet a compliant broker never forwards (a broker bug
-	// or a hostile intermediary); see docs/runbooks/mqtt-ingress-poison.md.
+	// the broker sent a packet a compliant broker never forwards (a broker or
+	// intermediary fault, for example a proxy, load balancer or WebSocket
+	// gateway); see docs/runbooks/mqtt-ingress-poison.md.
 	MetricMQTTIngressRejected = "MQTTIngressRejected"
 
 	// MetricMQTTIngressPoisonDropped counts inbound publishes ACKED-AND-DROPPED

@@ -71,15 +71,12 @@ Recovery applies these safety bounds without introducing a recovery-specific
 config knob:
 
 - readiness drops below Full synchronously when Retry queues recovery. From
-  then on every connect asks the broker to resume (`clean_start=false`), and a
-  connect whose CONNACK answers `Session Present=false` is recorded as a resume
-  loss, exactly as after an ordinary reconnect: `MQTTSessionResumeLost`, a Warn
-  log, and a `LastError` latch that the next converged reconcile clears. It
-  counts as a loss even where this configuration would not otherwise expect a
-  resume, and it does not fail the recovery. The request carries no
-  active-attempt or target-epoch evidence; the worker publishes those only
-  after acquiring the session gate, so an ordinary reconcile that wins first
-  cannot validate or abort it;
+  then on every connect asks the broker to resume (`clean_start=false`); a
+  connect that does not resume is a resume loss, not a recovery failure (see
+  Session Present = false below). The request carries no active-attempt or
+  target-epoch evidence; the worker publishes those only after acquiring the
+  session gate, so an ordinary reconcile that wins first cannot validate or
+  abort it;
 - concurrent requests coalesce into one recycle;
 - the router stops accepting new callbacks (bounded by `reconcile_timeout`), then
   waits for already-accepted settlements under **no adapter-local bound** — each
@@ -93,8 +90,7 @@ config knob:
   cleanup, failed-reconcile teardown) keeps `reconcile_timeout` on both phases,
   because those callers can run on a context with no deadline of their own;
 - recovery attempts that complete or are abandoned are spaced by at least
-  **30 seconds**, using the session clock, to prevent a DLQ-outage reconnect
-  storm;
+  **30 s**, using the session clock, to prevent a DLQ-outage reconnect storm;
 - ordinary reconciliation, credential/TLS reload, managed cleanup, orphan
   cleanup and settlement recovery share one context-aware session serialization
   gate. Every public entry acquires it with its own context; private helpers
@@ -122,53 +118,43 @@ config knob:
   recycle keeps failing on a route the validator accepted, lower that route's
   `send_retry_budget`, or raise the session's `connect_timeout` /
   `reconcile_timeout`, which is what the 300 s is made of;
-- the rebuild preserves `client_id` and session expiry, forcing `clean_start=false`;
-- a CONNACK with **Session Present=false** means the broker no longer holds the
+- the recycle preserves `client_id` and session expiry, forcing `clean_start=false`;
+- a CONNACK with Session Present = false means the broker no longer holds the
   session, so the unsettled packets the recovery was for are gone with it. The
-  recovery records the loss as above and goes on; its reconcile re-subscribes,
-  as after an ordinary reconnect. The recovery's connection is stamped with its
-  exact connection epoch; recovery captures its target epoch after reconnect and
-  completes only when its reconcile converges on that same connection.
-  Readiness stays degraded until that exact-epoch replacement reconciliation
-  succeeds in the same deadline. That rule holds for a recovery that
-  succeeds. An abandoned attempt clears the recovery state, so the session no
-  longer reads degraded for the recovery: readiness returns once the runtime
-  session manager's ordinary Reconcile converges on the session's connection,
-  after an ordinary reconnect when no connection was left (a lease-managed
-  session left with no connection is rebuilt instead, as below);
+  session records it as a resume loss, exactly as after an ordinary reconnect:
+  `MQTTSessionResumeLost`, a Warn log, and a `LastError` latch that the next
+  successful reconcile clears. It counts as a loss even where this
+  configuration would not otherwise expect a resume. The recovery goes on, and
+  its reconcile re-subscribes, as after an ordinary reconnect;
+- the recovery's connection is stamped with its exact connection epoch;
+  recovery captures its target epoch after reconnect and completes only when
+  its reconcile converges on that same connection. Readiness stays degraded
+  until that exact-epoch replacement reconciliation succeeds in the same
+  deadline. That rule holds for a recovery that succeeds. An abandoned attempt
+  clears the recovery state, so the session no longer reads degraded for the
+  recovery. Readiness then returns once the runtime session manager's ordinary
+  `Reconcile` converges on the session's connection. When no connection was
+  left, that follows an ordinary reconnect, except for a lease-managed session,
+  whose unit is rebuilt instead (see below);
 - a failure after the drain finished **abandons** the attempt instead of
-  failing the session
-  ([ADR 0021](../adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)):
-  the reconnect fails, a newer connection replaces the recovery's connection
-  before the recovery captures its epoch, or the recovery's reconcile fails or
-  finishes on a replaced connection. The drain has already settled or stopped
-  every accepted delivery of the old connection, so no old route work can act.
-  Abandoning clears the attempt state, starts the 30-second rate-limit cooldown
-  and logs Warn
-  `mqtt: settlement recovery abandoned after its drain; the session reconnects normally`.
-  It latches no terminal error and emits no SessionError. When a connection is
-  installed, the session stays connected and the runtime session manager runs
-  an ordinary Reconcile on it. When none is installed, no Start is in flight
-  and the session is not closed, the session closes its lifecycle channel, the
-  ordinary signal of a dead session. The supervisor then runs any session that
-  is not lease-managed (non-exclusive, or exclusive in a runtime with no lease
-  store) again, and its Start re-creates the channel and connects. The manager
-  of a lease-managed session closes the session and releases its lease; when
-  the supervisor runs it again, Start on the closed session fails with
-  `shared.ErrTransportClosedPermanently`, the manager ends with
-  `ErrSessionUnrecoverable`, and the session's reload unit is rebuilt
-  ([ADR 0020](../adr/0020-contain-unrecoverable-session-by-unit-rebuild.md)).
-  With `connect_after_lease` (the default for a route source) that Start runs
-  only after this node holds the lease again;
+  failing the session: the reconnect fails, a newer connection replaces the
+  recovery's connection before the recovery captures its epoch, or the
+  recovery's reconcile fails or finishes on a replaced connection. The abandon
+  starts the 30 s cooldown, logs Warn
+  `mqtt: settlement recovery abandoned after its drain; the session reconnects normally`,
+  and emits no `SessionError`. The session then reconnects normally, except
+  that a lease-managed session (exclusive, with a lease store) left with no
+  connection is closed by its manager and its unit is rebuilt
+  ([ADR 0021](../adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md));
 - a failed drain, and every failure before the attempt reaches its drain (gate
   timeout/cancellation, a cancelled attempt, a session closed or terminal
   before the attempt began), stay terminal. So does a step after the drain
-  that fails closed the way it does outside a recovery: the managed-subscription
-  cleanup the recovery's reconcile can run fails closed when ingress does not
-  quiesce before its recycle, or when the broker pins a delivery for a removed
-  filter and no dead-letter store takes it; the abandon then finds the session
-  terminal and does nothing. A failed drain or a failure before the drain
-  enters one idempotent
+  that fails closed the way it does outside a recovery. The recovery's
+  reconcile can run the managed-subscription cleanup, which fails closed when
+  ingress does not quiesce before its recycle, or when the broker pins a
+  delivery for a removed filter and no dead-letter store takes it. The abandon
+  then finds the session terminal and does nothing. A failed drain or a
+  failure before the drain enters one idempotent
   terminal transition. It clears pending attempt state, latches a permanent
   error, quiesces ingress, disconnects the generation within the activation
   bound, emits one terminal SessionError, then closes the lifecycle channel. One generation-scoped drain state (`not-started`, `in-progress`,

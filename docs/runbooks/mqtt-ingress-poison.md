@@ -1,10 +1,14 @@
-# Runbook: MQTT Ingress Poison (Cap-Violating Publishes)
+# Runbook: MQTT Ingress Poison / Malformed or Oversized Broker Packet
 
 **Applies to:** MQTT (paho) transport sessions.
 **Audience:** on-call operators.
-**Risk:** each poison drop is an **acknowledged, deliberate message loss** —
-the bridge acks a publish it refuses to process. The session itself stays
-healthy; the urgency is finding the publisher, not saving the bridge.
+**Risk:** for a cap-violating publish, each poison drop is an **acknowledged,
+deliberate message loss** — the bridge acks a publish it refuses to process.
+The session itself stays healthy; the urgency is finding the publisher, not
+saving the bridge. A malformed or oversized packet from the broker is
+different: nothing is acked, but the session drops its connection and reads
+not ready for at least 30 s after each reject; see
+[Broker sends a malformed or oversized packet](#broker-sends-a-malformed-or-oversized-packet).
 
 ## Background
 
@@ -23,13 +27,10 @@ anything else: an un-acked rejection is redelivered by the broker on every
 restart → redeliver → terminal forever — a permanent, publisher-triggerable
 kill switch for every route on the session.
 
-Two violation classes are handled earlier, because only a **broken broker** can
-produce them: malformed MQTT structure and a packet larger than the advertised
-Maximum Packet Size. The raw pre-decode guard rejects those before Paho decodes
-them. A rejected packet never reaches a route. The guard drops the connection,
-not the session: the session reconnects and is never terminal
-([ADR 0021](../adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)).
-See [Broker sends a malformed or oversized packet](#broker-sends-a-malformed-or-oversized-packet).
+Two violation classes are handled earlier, at the raw pre-decode guard,
+because only a **broken broker** can produce them: malformed MQTT structure and
+a packet larger than the advertised Maximum Packet Size. See
+[Broker sends a malformed or oversized packet](#broker-sends-a-malformed-or-oversized-packet).
 
 ## Symptom
 
@@ -78,17 +79,16 @@ Alert on ANY non-zero `MQTTIngressPoisonDropped` rate: it is always either a
 misconfigured cap, a broken producer, or hostile traffic — never steady-state
 normal.
 
-Alert on ANY non-zero `MQTTIngressRejected` too: a compliant broker never sends
-the packets it counts.
-
 ## Broker sends a malformed or oversized packet
 
-The pre-decode guard rejects a packet with a malformed MQTT structure, or one
-larger than the Maximum Packet Size the bridge advertised in CONNECT
-(`max_payload_bytes` + 128 KiB). The packet never reaches a route, and nothing
-is acked. The session drops the connection and reconnects; it does not stop.
+The raw pre-decode guard rejects a packet with a malformed MQTT structure, or
+one larger than the Maximum Packet Size the bridge advertised in CONNECT
+(`max_payload_bytes` + 128 KiB), before Paho decodes it. The packet never
+reaches a route, and nothing is acked. The guard drops the connection, not the
+session: the session reconnects and is never terminal
+([ADR 0021](../adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)).
 
-### What you see
+### Symptom
 
 - `MQTTIngressRejected` advances, tagged `session_id`. `MQTTRouterDropped` does
   not count these rejects.
@@ -118,7 +118,7 @@ is acked. The session drops the connection and reconnects; it does not stop.
   closes the socket without a DISCONNECT. Mosquitto enforces the client's
   Maximum Packet Size itself, so a reject practically never happens there.
 
-### Diagnosis and remediation
+### Diagnosis
 
 1. Read the Error log. The packet size and the limit tell an oversized packet
    from a malformed one.
@@ -126,12 +126,18 @@ is acked. The session drops the connection and reconnects; it does not stop.
    the client's Maximum Packet Size and never sends malformed MQTT, so the
    cause is the broker or something between the broker and the bridge: a
    proxy, a load balancer, a WebSocket gateway.
-3. Fix or replace that component. No bridge-side setting is the fix.
 
-The session recovers on its own once the packets stop. A broker that sends the
-same packet again on every resume keeps the session cycling — reconnecting,
-rejecting, waiting out the backoff — and not ready, but the other sessions and
-routes in the process keep running
-([ADR 0021](../adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)).
-Do not restart the bridge for it: a restart does not stop the broker from
-sending the packet.
+### Remediation
+
+- Fix or replace that component. No bridge-side setting is the fix.
+- The session recovers on its own once the packets stop. A broker that sends
+  the same packet again on every resume keeps the session cycling —
+  reconnecting, rejecting, waiting out the backoff — and not ready, but the
+  other sessions and routes in the process keep running.
+- Do not restart the bridge for it: a restart does not stop the broker from
+  sending the packet.
+
+### Alerting
+
+Alert on ANY non-zero `MQTTIngressRejected`: a compliant broker never sends the
+packets it counts.
