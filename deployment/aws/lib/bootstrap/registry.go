@@ -62,6 +62,9 @@ func (a *App) newBuilder(cfg *ports.BridgeConfig) *bridge.Builder {
 	// dangling reference in a candidate must Nack at the vote; discovering it after
 	// the cohort commits fails every member at once.
 	opts := []bridge.BuilderOption{bridge.WithBlueprintValidator(config.Validate)}
+	// A session that fails in a way a fresh session clears gets its unit rebuilt
+	// in place instead of ending the runtime (see onSessionUnrecoverable).
+	opts = append(opts, bridge.WithSessionUnrecoverableHandler(a.onSessionUnrecoverable))
 	if a.logger != nil {
 		opts = append(opts, bridge.WithLogger(a.logger))
 	}

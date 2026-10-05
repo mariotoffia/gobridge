@@ -7,6 +7,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/ports"
+	goruntime "github.com/mariotoffia/gobridge/runtime"
 )
 
 // applyInPlace reloads the installed runtime to logical in place when the
@@ -64,8 +65,7 @@ func (a *App) applyInPlace(ctx context.Context, logical *ports.BridgeConfig, inp
 	outcome, err := reload.Apply(ctx, rt, partBuilder, phase)
 	a.logInPlaceReload(reload, outcome, err)
 
-	switch outcome {
-	case bridge.InPlaceApplied:
+	if outcome == bridge.InPlaceApplied {
 		if err := a.authorize(epoch); err != nil {
 			// rt already runs the withdrawn configuration: fence it, as installPlan
 			// fences a runtime it installed.
@@ -88,6 +88,20 @@ func (a *App) applyInPlace(ctx context.Context, logical *ports.BridgeConfig, inp
 			a.onRuntimeInstalled()
 		}
 		return true, nil
+	}
+	err = a.settleFailedInPlace(ctx, outcome, err, rt, installed, oldApplied)
+	return true, fmt.Errorf("bootstrap: in-place reload (%s): %w", outcome, err)
+}
+
+// settleFailedInPlace acts on outcome, the outcome of an in-place reload of rt,
+// which ran oldApplied over installed, that did not apply, and returns err
+// joined with any stop failure it met. Unchanged leaves rt serving oldApplied.
+// Torn stops rt and rebuilds oldApplied, or wedges when the stop fails. Wedged
+// stops rt and wedges (ADR-0004).
+func (a *App) settleFailedInPlace(ctx context.Context, outcome bridge.InPlaceOutcome, err error,
+	rt *goruntime.Runtime, installed *factoryRegistry, oldApplied *ports.BridgeConfig,
+) error {
+	switch outcome {
 	case bridge.InPlaceTorn:
 		if stopErr := stopRuntime(context.Background(), rt, oldApplied); stopErr != nil {
 			err = errors.Join(err, fmt.Errorf("stop runtime: %w", stopErr))
@@ -105,7 +119,7 @@ func (a *App) applyInPlace(ctx context.Context, logical *ports.BridgeConfig, inp
 		a.enterWedgedState()
 		a.closeSupersededHTTP(ctx, installed)
 	}
-	return true, fmt.Errorf("bootstrap: in-place reload (%s): %w", outcome, err)
+	return err
 }
 
 // logInPlaceReload logs what an in-place reload retired and added, and how it
