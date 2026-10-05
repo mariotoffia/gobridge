@@ -132,6 +132,11 @@ type SingleProps struct {
 
 	// ServiceName overrides the auto-generated ECS service name.
 	ServiceName *string
+
+	// AssignPublicIp gives the task a public IP, for a public subnet with no
+	// NAT gateway. nil or false means no public IP. With VpcSubnets nil, the
+	// task and an auto-created EfsConfig both use the public subnets.
+	AssignPublicIp *bool
 }
 
 // GoBridgeSingle is the L2 facade construct that deploys the
@@ -225,8 +230,15 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 	// the same source for image construction.
 	_ = mat.Close()
 
+	// With a public IP and no subnets given, CDK places the task in the
+	// public subnets; the EFS mount targets and the parity check must follow.
+	subnets := props.VpcSubnets
+	if subnets == nil && props.AssignPublicIp != nil && *props.AssignPublicIp {
+		subnets = &awsec2.SubnetSelection{SubnetType: awsec2.SubnetType_PUBLIC}
+	}
+
 	// EFS config — auto-create when not supplied. An auto-created config
-	// gets props.VpcSubnets verbatim, so its mount targets always cover the
+	// gets the service's subnets verbatim, so its mount targets always cover the
 	// ECS placement; a SUPPLIED one may not, and a task in an AZ without a
 	// mount target fails at container start (matrix row 14).
 	var efsConfig *cdkconstructs.GoBridgeEfsConfig
@@ -235,11 +247,11 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 		if efsConfig == nil {
 			efsConfig = cdkconstructs.NewGoBridgeEfsConfig(c, jsii.String("Efs"), &cdkconstructs.GoBridgeEfsConfigProps{
 				Vpc:        props.Vpc,
-				VpcSubnets: props.VpcSubnets,
+				VpcSubnets: subnets,
 				EfsKmsKey:  props.EfsKmsKey,
 			})
 		} else {
-			cdkconstructs.AssertEfsSubnetParity("GoBridgeSingle", props.Vpc, props.VpcSubnets, efsConfig)
+			cdkconstructs.AssertEfsSubnetParity("GoBridgeSingle", props.Vpc, subnets, efsConfig)
 		}
 	}
 	configTable := gobridgebase.NewConfigTable(c, bootstrap)
@@ -299,15 +311,14 @@ func NewGoBridgeSingle(scope constructs.Construct, id *string, props *SingleProp
 	svcProps := &awsecs.FargateServiceProps{
 		Cluster:              cluster,
 		TaskDefinition:       built.TaskDefinition,
+		VpcSubnets:           subnets,
+		AssignPublicIp:       props.AssignPublicIp,
 		DesiredCount:         jsii.Number(1),
 		MinHealthyPercent:    jsii.Number(0),
 		MaxHealthyPercent:    jsii.Number(100),
 		SecurityGroups:       &[]awsec2.ISecurityGroup{sg},
 		EnableExecuteCommand: jsii.Bool(false),
 		CircuitBreaker:       &awsecs.DeploymentCircuitBreaker{Rollback: jsii.Bool(true)},
-	}
-	if props.VpcSubnets != nil {
-		svcProps.VpcSubnets = props.VpcSubnets
 	}
 	if props.ServiceName != nil {
 		svcProps.ServiceName = props.ServiceName
