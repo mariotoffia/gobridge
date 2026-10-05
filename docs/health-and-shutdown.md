@@ -126,11 +126,13 @@ The shutdown sequence proceeds as follows:
 7. **Exit** -- The process exits with code 0 on a clean shutdown.
 
 In the file-based deployment the same budget also covers the stages *before* the
-runtime drain: the config-watcher join and the coordinated-rollout drive stop are
-waited on **selectably** against it. A reload stuck in its own teardown, or a
-barrier lease store that will not release, is abandoned when the budget runs out
-(logged) rather than holding `SIGTERM` ahead of the drain, the HTTP shutdown and
-the metrics flush until the platform's SIGKILL.
+runtime drain: the config-watcher join, the coordinated-rollout drive stop and
+the wait for a reload or session rebuild still in flight are waited on
+**selectably** against it. A reload stuck in its own teardown, a session rebuild
+that does not finish, or a barrier lease store that will not release, is
+abandoned when the budget runs out (logged) rather than holding `SIGTERM` ahead
+of the drain, the HTTP shutdown and the metrics flush until the platform's
+SIGKILL.
 
 `Runtime.Stop` is idempotent and single-teardown: exactly one caller performs
 the teardown and every other caller blocks on it and then receives **that

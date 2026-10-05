@@ -11,13 +11,19 @@ import (
 // takes the rebuild when the installed configuration has a unit for the
 // session that can be rebuilt in place, and runs it on its own goroutine: the
 // runtime calls this on the session's supervisor, which a reload waits for.
+// While an apply holds the apply lock it may run sessions the registry it
+// installs last does not hold yet, so the handler takes the report and the
+// rebuild decides under the lock.
 func (a *App) onSessionUnrecoverable(sessionID string, _ error) bool {
-	installed := a.registryRef.Load()
-	if installed == nil {
-		return false
-	}
-	if _, ok := bridge.PlanSessionRebuild(installed.cfg, sessionID, installed.transports); !ok {
-		return false
+	if a.mu.TryLock() {
+		installed := a.registryRef.Load()
+		a.mu.Unlock()
+		if installed == nil {
+			return false
+		}
+		if _, ok := bridge.PlanSessionRebuild(installed.cfg, sessionID, installed.transports); !ok {
+			return false
+		}
 	}
 	go a.rebuildSession(sessionID)
 	return true

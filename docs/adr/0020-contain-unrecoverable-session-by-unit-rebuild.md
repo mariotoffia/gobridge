@@ -90,15 +90,19 @@ install a handler on every runtime they build. The handler:
 1. plans the rebuild with `bridge.PlanSessionRebuild`: an in-place reload of the
    running configuration onto itself that retires the reload unit holding the
    session and adds a freshly built copy. It returns `false` when no unit holds
-   the session or the unit may attach an HTTP endpoint (see ADR 0018);
+   the session or the unit may attach an HTTP endpoint (see ADR 0018). While a
+   reload holds the root's apply lock, the handler takes the report without
+   planning and step 3 decides: that reload may run a session the configuration
+   it publishes last does not hold yet;
 2. runs the rebuild on its own goroutine under the root's apply lock — the
    Supervisor's lifecycle lock, the App's apply lock — so a rebuild and a
    configuration reload never run at the same time;
 3. re-checks under the lock that the runtime still runs and still records the
-   fault. When either has changed, a reload or a stop got there first, and it
-   does nothing. The Supervisor also does nothing once it shuts down; the App
-   does nothing once its configuration is withdrawn, it is wedged, or it shuts
-   down;
+   fault, and plans the rebuild again against the configuration the lock now
+   guards. When the runtime or the fault has changed, a reload or a stop got
+   there first, and it does nothing. The Supervisor also does nothing once it
+   shuts down; the App does nothing once its configuration is withdrawn, it is
+   wedged, or it shuts down;
 4. applies the plan with `(*bridge.InPlaceReload).Apply`. The plan is always
    serialized: the old unit is fully retired — its route work stopped, its
    sessions closed — before the copy is built and connects, so the old and the

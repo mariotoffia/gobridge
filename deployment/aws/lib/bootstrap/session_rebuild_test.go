@@ -112,14 +112,16 @@ func TestAppSessionRebuildWedgesWhenNoUnitHoldsTheSession(t *testing.T) {
 	app.metricsExporter = rec
 	require.NoError(t, applyTo(t, app, inPlaceTestConfig("a", "b")))
 	rt := app.CurrentRuntime()
-	app.mu.Lock() // hold the rebuild back once the report is taken
-	wait.Until(t, rebuildWait, "the report of owner a's session is taken", func() bool {
-		return len(rec.FindEntries(shared.MetricSessionRebuilds)) == 1
-	})
-	reg := *app.registryRef.Load()
-	reg.cfg = inPlaceTestConfig("b")
-	app.registryRef.Store(&reg)
-	app.mu.Unlock()
+	func() {
+		app.mu.Lock() // hold the rebuild back once the report is taken
+		defer app.mu.Unlock()
+		wait.Until(t, rebuildWait, "the report of owner a's session is taken", func() bool {
+			return len(rec.FindEntries(shared.MetricSessionRebuilds)) == 1
+		})
+		reg := *app.registryRef.Load()
+		reg.cfg = inPlaceTestConfig("b")
+		app.registryRef.Store(&reg)
+	}()
 
 	wait.Until(t, rebuildWait, "the App wedges", app.wedged.Load)
 	settleRebuild(app)
@@ -129,6 +131,30 @@ func TestAppSessionRebuildWedgesWhenNoUnitHoldsTheSession(t *testing.T) {
 	assert.False(t, rt.IsRunning(), "the runtime is stopped")
 	assert.Len(t, tf.closeCounts("a-s"), 1, "no copy of the failed session is built")
 	assert.Zero(t, copies.Load())
+}
+
+// An apply holds the apply lock and may run a session the registry it installs
+// last does not hold yet. The handler takes a report made meanwhile, and the
+// rebuild decides under the lock. Outside an apply, a report for a session the
+// installed configuration lacks is refused.
+func TestAppTakesASessionReportMadeDuringAnApply(t *testing.T) {
+	tf := newTrackedTransportFactory(false)
+	app := newInPlaceTestApp(t, tf, adminKeyResolver())
+	require.NoError(t, applyTo(t, app, inPlaceTestConfig("a")))
+	rt := app.CurrentRuntime()
+
+	assert.False(t, app.onSessionUnrecoverable("c-s", errTransportGone), "a session the configuration lacks is refused")
+	func() {
+		app.mu.Lock()
+		defer app.mu.Unlock()
+		assert.True(t, app.onSessionUnrecoverable("c-s", errTransportGone), "a report made during an apply is taken")
+	}()
+	settleRebuild(app)
+
+	assert.Same(t, rt, app.CurrentRuntime())
+	assert.True(t, rt.IsRunning())
+	assert.False(t, app.runtimeTerminal())
+	assert.False(t, app.wedged.Load())
 }
 
 // A report that arrives when the runtime no longer records the fault, because

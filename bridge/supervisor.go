@@ -555,17 +555,20 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 		// cancelled and unwinds on its own afterwards.
 		driveCtx, driveCancel := context.WithTimeout(
 			context.WithoutCancel(ctx), s.drainTimeoutFrom(s.Config()))
+		defer driveCancel()
 		stopDrive(driveCtx)
-		driveCancel()
 		// A session rebuild retires and builds units of the running runtime
 		// under the lifecycle lock, on a goroutine of its own. The final stop
-		// waits for it, so it reads the runtime the rebuild leaves and Run never
-		// returns while a rebuild still works on it. The lock is taken after
-		// the drive stopped or its wait ran out: a committed rollout applies
-		// under it, so shutdown may also wait for an apply still in flight.
-		// Every holder of the lock is bounded.
-		s.lifecycleMu.Lock()
-		defer s.lifecycleMu.Unlock()
+		// waits for it within the same budget, so it reads the runtime the
+		// rebuild leaves. A committed rollout applies under the lock too, so
+		// the wait also covers an apply still in flight. When the budget runs
+		// out the stop goes ahead: ctx is cancelled, so a late rebuild restores
+		// no old configuration, and the stopped runtime refuses its graft.
+		if s.lockLifecycleWithin(driveCtx) {
+			defer s.lifecycleMu.Unlock()
+		} else if s.logger != nil {
+			s.logger.Warn("supervisor: shutdown budget expired waiting for a reload or session rebuild; stopping the runtime")
+		}
 		return s.stopCurrent(ctx)
 	}
 
@@ -2037,6 +2040,26 @@ func (s *Supervisor) stopCurrent(ctx context.Context) error {
 	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainTimeout)
 	defer cancel()
 	return rt.Stop(stopCtx)
+}
+
+// lockLifecycleWithin takes the lifecycle lock unless ctx ends first, and
+// reports whether it did. A lock taken after ctx ended is released at once.
+func (s *Supervisor) lockLifecycleWithin(ctx context.Context) bool {
+	taken := make(chan struct{})
+	go func() {
+		s.lifecycleMu.Lock()
+		select {
+		case taken <- struct{}{}:
+		case <-ctx.Done():
+			s.lifecycleMu.Unlock()
+		}
+	}()
+	select {
+	case <-taken:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (s *Supervisor) drainTimeoutFrom(cfg *ports.BridgeConfig) time.Duration {

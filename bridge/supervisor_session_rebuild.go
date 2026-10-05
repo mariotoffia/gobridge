@@ -8,14 +8,20 @@ import (
 // onSessionUnrecoverable is the runtime's session-unrecoverable handler. It
 // takes the rebuild when the running configuration has a unit for the session
 // that can be rebuilt in place, and runs it on its own goroutine: the runtime
-// calls this on the session's supervisor, which a reload waits for.
+// calls this on the session's supervisor, which a reload waits for. While a
+// reload holds the lifecycle lock it may run sessions the configuration it
+// publishes last does not hold yet, so the handler takes the report and the
+// rebuild decides under the lock.
 func (s *Supervisor) onSessionUnrecoverable(sessionID string, _ error) bool {
-	s.mu.RLock()
-	cfg := s.cfg
-	transports := maps.Clone(s.transports)
-	s.mu.RUnlock()
-	if _, ok := PlanSessionRebuild(cfg, sessionID, transports); !ok {
-		return false
+	if s.lifecycleMu.TryLock() {
+		s.mu.RLock()
+		cfg := s.cfg
+		transports := maps.Clone(s.transports)
+		s.mu.RUnlock()
+		s.lifecycleMu.Unlock()
+		if _, ok := PlanSessionRebuild(cfg, sessionID, transports); !ok {
+			return false
+		}
 	}
 	go s.rebuildSession(sessionID)
 	return true

@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -115,14 +116,16 @@ func TestSupervisorSessionRebuildWedgesWhenNoUnitHoldsTheSession(t *testing.T) {
 	rec := &ports.RecordingExporter{}
 	s, _, _ := runInPlaceSupervisor(t, tf, applyTestConfig("a", "b"), WithSupervisorMetrics(rec))
 	rt := s.Runtime()
-	s.lifecycleMu.Lock() // hold the rebuild back once the report is taken
-	wait.Until(t, rebuildWait, "the report of owner a's session is taken", func() bool {
-		return len(rec.FindEntries(shared.MetricSessionRebuilds)) == 1
-	})
-	s.mu.Lock()
-	s.cfg = applyTestConfig("b")
-	s.mu.Unlock()
-	s.lifecycleMu.Unlock()
+	func() {
+		s.lifecycleMu.Lock() // hold the rebuild back once the report is taken
+		defer s.lifecycleMu.Unlock()
+		wait.Until(t, rebuildWait, "the report of owner a's session is taken", func() bool {
+			return len(rec.FindEntries(shared.MetricSessionRebuilds)) == 1
+		})
+		s.mu.Lock()
+		s.cfg = applyTestConfig("b")
+		s.mu.Unlock()
+	}()
 
 	wait.Until(t, rebuildWait, "the Supervisor wedges", s.Terminal)
 
@@ -132,6 +135,48 @@ func TestSupervisorSessionRebuildWedgesWhenNoUnitHoldsTheSession(t *testing.T) {
 	degraded, reason := s.Degraded()
 	assert.True(t, degraded)
 	assert.Contains(t, reason, "a session rebuild found no unit for the failed session")
+}
+
+// A reload holds the lifecycle lock and may run a session the configuration it
+// publishes last does not hold yet. The handler takes a report made meanwhile,
+// and the rebuild decides under the lock. Outside a reload, a report for a
+// session the running configuration lacks is refused.
+func TestSupervisorTakesASessionReportMadeDuringAReload(t *testing.T) {
+	tf := newPerSessionTransportFactory(false)
+	s, _, _ := runInPlaceSupervisor(t, tf, applyTestConfig("a"))
+	rt := s.Runtime()
+
+	assert.False(t, s.onSessionUnrecoverable("c-s", errTransportGone), "a session the configuration lacks is refused")
+	func() {
+		s.lifecycleMu.Lock()
+		defer s.lifecycleMu.Unlock()
+		assert.True(t, s.onSessionUnrecoverable("c-s", errTransportGone), "a report made during a reload is taken")
+	}()
+
+	assert.Same(t, rt, s.Runtime())
+	assert.True(t, rt.IsRunning())
+	assert.False(t, s.Terminal())
+}
+
+// Shutdown waits for a reload or a session rebuild only within the drain
+// budget: once it runs out, the runtime is stopped and Run returns.
+func TestSupervisorShutdownStopsWithinTheDrainBudgetWhileARebuildHoldsTheLock(t *testing.T) {
+	tf := newPerSessionTransportFactory(false)
+	s := NewSupervisor(WithSupervisorBlueprintValidator(config.Validate))
+	s.RegisterTransport("tracked", tf)
+	s.RegisterStoreFactory("memory", &fakeStoreFactory{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := runSupervisorAsync(ctx, s, applyTestConfig("a"), make(chan *ports.BridgeConfig))
+	wait.Until(t, 5*time.Second, "the initial runtime starts", func() bool { return s.Runtime() != nil })
+	rt := s.Runtime()
+
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	cancel()
+
+	assert.NoError(t, wait.RequireReceive(t, errCh, 5*time.Second), "Run returns once the 1s drain budget runs out")
+	assert.False(t, rt.IsRunning(), "the runtime is stopped")
 }
 
 // A rebuild refused before it retires anything leaves the failed session
