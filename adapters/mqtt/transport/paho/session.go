@@ -342,9 +342,8 @@ const sessionEventsBuffer = 16
 // to provide.
 //
 // A zero ReceiveMaximum is coerced to DefaultReceiveMaximum. 0 is not a
-// legal MQTT v5 Receive Maximum (protocol error), so it can only mean
-// "unset"; the effective default bounds worst-case buffered memory (see
-// DefaultReceiveMaximum and the ReceiveMaximum doc comment).
+// legal MQTT v5 Receive Maximum (protocol error), so it means "unset" and
+// takes the default.
 func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog.Logger, metrics ...ports.MetricsExporter) *Session {
 	var m ports.MetricsExporter = &ports.NoopExporter{}
 	if len(metrics) > 0 && metrics[0] != nil {
@@ -354,13 +353,9 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		opts.Clock = clock.System
 	}
 	receiveMaximumUnset := opts.ReceiveMaximum == 0
-	opts = opts.normalizedIngressMemory()
+	opts = opts.withIngressDefaults()
 	if receiveMaximumUnset && logger != nil {
-		logger.Warn("mqtt: receive_maximum unset; applying byte-bounded ingress default",
-			"receive_maximum", opts.ReceiveMaximum,
-			"max_payload_bytes", opts.MaxPayloadBytes,
-			"ingress_memory_budget_bytes", opts.IngressMemoryBudgetBytes,
-		)
+		logger.Warn("mqtt: receive_maximum unset; applying default", "receive_maximum", opts.ReceiveMaximum)
 	}
 	if mode != connectivity.SessionEphemeral && opts.SessionExpiryInterval == 0 {
 		opts.SessionExpiryInterval = DefaultPersistentSessionExpiry
@@ -449,14 +444,12 @@ func (s *Session) Router() *router {
 	return s.router
 }
 
-// IngressMemoryStats returns the current serialized dispatch depth and its
-// validated capacity. It is an observable barrier for memory/load proofs and
-// does not expose queued messages.
-func (s *Session) IngressMemoryStats() (dispatchDepth, dispatchCapacity int) {
+// DispatchStats returns the dispatch queue depth and capacity, both counts.
+func (s *Session) DispatchStats() (dispatchDepth, dispatchCapacity int) {
 	if s == nil || s.router == nil {
 		return 0, 0
 	}
-	return s.router.ingressMemoryStats()
+	return s.router.dispatchStats()
 }
 
 // reserveDedicatedIngressReceiver atomically assigns the session's sole

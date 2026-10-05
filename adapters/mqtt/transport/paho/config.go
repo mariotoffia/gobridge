@@ -114,37 +114,23 @@ type SessionOptions struct {
 	// broker when this session's connection terminates ungracefully,
 	// letting peers detect ungraceful death. Optional; nil means no will.
 	Will *WillOptions `mapstructure:"will" yaml:"will,omitempty" json:"will,omitempty"`
-	// ReceiveMaximum sets the MQTT v5 Receive Maximum property in the
-	// CONNECT packet. This limits the number of QoS 1/2 messages the
-	// broker may have in flight (sent but not yet PUBACK/PUBCOMP-settled)
-	// at once. Zero means "unset" and is coerced by NewSession to
-	// DefaultReceiveMaximum (192) — 0 is not a legal MQTT v5 Receive Maximum.
-	//
-	// Receive Maximum also sizes the serialized dispatch queue and startup
-	// pending-entry cap. The full byte equation, including route concurrency,
-	// is enforced by ValidateIngressMemory.
+	// ReceiveMaximum is the MQTT v5 Receive Maximum sent in the CONNECT
+	// packet: a plain count of the QoS 1/2 messages the broker may have in
+	// flight (sent but not yet PUBACK/PUBCOMP-settled) at once. Zero means
+	// "unset" and takes DefaultReceiveMaximum (192); 0 is not a legal MQTT v5
+	// Receive Maximum. It also sizes the dispatch queue and caps the messages
+	// waiting for a receiver. Nothing derives it from anything else.
 	ReceiveMaximum uint16 `mapstructure:"receive_maximum" yaml:"receive_maximum" json:"receive_maximum"`
 	// MaxPayloadBytes is the maximum application PAYLOAD size (message body, in
 	// bytes) this session will admit from the broker. Zero selects
 	// DefaultMaxPayloadBytes (256 KiB). The adapter
 	// advertises an MQTT v5 Maximum Packet Size in the CONNECT derived from this
 	// value plus the bounded worst-case protocol metadata allowance. A raw
-	// connection guard enforces body/metadata structure before Paho decoding;
-	// the callback repeats retained-representation checks as defense in depth.
-	// This is an inbound limit only.
+	// connection guard rejects a malformed packet or one above that size
+	// before Paho decodes it; the callback acks and drops a packet that breaks
+	// the payload, metadata or User Property cap. This is an inbound limit
+	// only.
 	MaxPayloadBytes uint32 `mapstructure:"max_payload_bytes" yaml:"max_payload_bytes" json:"max_payload_bytes"`
-	// IngressMemoryBudgetBytes is the maximum conservative byte bound for this
-	// session's inbound MQTT packet window. Zero selects
-	// DefaultIngressMemoryBudgetBytes. The bridge validates the effective route
-	// concurrency against this budget before opening stores or transports.
-	IngressMemoryBudgetBytes uint64 `mapstructure:"ingress_memory_budget_bytes" yaml:"ingress_memory_budget_bytes" json:"ingress_memory_budget_bytes"`
-	// ingressDefaultsApplied distinguishes decoder-prefilled defaults from
-	// non-zero values supplied by a programmatic caller. The AWS deployment
-	// profile uses the explicit markers to reject an unsafe operator value
-	// instead of silently reducing it.
-	ingressDefaultsApplied      bool `mapstructure:"-" yaml:"-" json:"-"`
-	receiveMaximumExplicit      bool `mapstructure:"-" yaml:"-" json:"-"`
-	ingressMemoryBudgetExplicit bool `mapstructure:"-" yaml:"-" json:"-"`
 	// ReconnectDelay is the BASE delay for the jittered exponential
 	// reconnect backoff: the delay before the first reconnect
 	// attempt after a failure, grown by reconnectBackoffFactor per
@@ -472,10 +458,10 @@ func DefaultSenderOptions() SenderOptions {
 	}
 }
 
-// DefaultConfig returns a Config pre-filled with documented defaults except the
-// three ingress-memory safety fields. Those remain zero ("unset") through
-// parse/clone/bootstrap so an omitted value cannot become indistinguishable from
-// an explicit operator value before the AWS profile derives its allocation.
+// DefaultConfig returns a Config pre-filled with documented defaults except
+// receive_maximum and max_payload_bytes. Those stay zero ("unset") until
+// NewSession applies DefaultReceiveMaximum and DefaultMaxPayloadBytes, so the
+// session can warn when receive_maximum was left unset.
 // The registry decoder (register.go) decodes INTO this value:
 // mapstructure only assigns fields present in the input map, so an
 // omitted key keeps its default while an explicit value — including an

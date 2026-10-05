@@ -78,7 +78,7 @@ const (
 	// startup grace window on a topic STILL covered by a subscription the
 	// session wants (an active broker subscription or a desired plan filter)
 	// whose receiver handler had not registered in time AND which the bounded
-	// pending buffer could not hold (its QoS 0 count/byte ceiling was full).
+	// pending buffer could not hold (its entry count cap was full).
 	// QoS 0 carries no redelivery contract, so a covered QoS 0 the buffer
 	// cannot retain is a best-effort loss. Covered QoS 1/2 is NEVER counted
 	// here: it is RETAINED un-acked instead (MetricMQTTRouterCoveredRetained)
@@ -109,8 +109,7 @@ const (
 	// hit with NO evictable QoS 0 to reclaim. This is UNREACHABLE under a
 	// spec-compliant broker: Receive-Maximum flow control caps in-flight
 	// (un-acked) QoS 1/2 at the count cap, so the buffer can never overflow with
-	// QoS 1/2 alone. The independent 64 MiB byte ceiling NEVER drops QoS 1/2 (it
-	// governs QoS 0 memory only). Therefore ANY non-zero value means a broker
+	// QoS 1/2 alone. Therefore ANY non-zero value means a broker
 	// delivered more un-acked QoS 1/2 than the Receive Maximum it was granted —
 	// a protocol violation. The victim is acked-and-dropped (NOT left un-acked:
 	// an un-acked drop would head-of-line-block paho's contiguous-prefix ack

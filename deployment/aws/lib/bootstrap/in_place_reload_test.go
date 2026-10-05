@@ -33,6 +33,10 @@ type trackedTransportFactory struct {
 	// onNewSession, when set, runs first in every NewSession call. It is read
 	// without the lock, so set it before the calls it must see.
 	onNewSession func(id string)
+	// onSessionSpec, when set, runs in every NewSession call with the spec the
+	// builder passed. It is read without the lock, so set it before the calls
+	// it must see.
+	onSessionSpec func(spec ports.SessionSpec)
 	// onClose, when set, runs first in every session Close. It is read without
 	// the lock, so set it before the calls it must see.
 	onClose func(id string)
@@ -54,6 +58,9 @@ func newTrackedTransportFactory(exclusive bool) *trackedTransportFactory {
 func (f *trackedTransportFactory) NewSession(ctx context.Context, spec ports.SessionSpec) (ports.Session, error) {
 	if f.onNewSession != nil {
 		f.onNewSession(spec.ID)
+	}
+	if f.onSessionSpec != nil {
+		f.onSessionSpec(spec)
 	}
 	// A real transport cannot dial a broker on a context that has ended.
 	if err := ctx.Err(); err != nil {

@@ -4,11 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"sync"
 
-	"github.com/mariotoffia/gobridge/domain/connectivity"
-	"github.com/mariotoffia/gobridge/domain/routing"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime"
@@ -207,7 +204,10 @@ func (b *Builder) Preflight(ctx context.Context) error {
 	if err := b.validateDedicatedIngressSessions(); err != nil {
 		return err
 	}
-	if err := b.validateIngressMemory(); err != nil {
+	if err := b.validateRouteMaxInFlight(); err != nil {
+		return err
+	}
+	if err := b.validateMQTTSessionCount(); err != nil {
 		return err
 	}
 	return validateManagedSubscriptionStore(b.cfg)
@@ -599,78 +599,54 @@ func hasTransportCapability(factory ports.TransportFactory, want ports.Capabilit
 	return false
 }
 
-// validateIngressMemory invokes the optional config capability once for every
-// started session that can own inbound state. A ReceiverDef creates possible
-// ingress even when no route currently consumes it. Referenced Persistent and
-// Exclusive sessions are also included because resumed stale broker backlog can
-// arrive before durable subscription cleanup. Ephemeral sender-only and wholly
-// unreferenced sessions are excluded.
-func (b *Builder) validateIngressMemory() error {
+// validateRouteMaxInFlight refuses a negative policy.max_in_flight, which
+// routing.WithDefaults would otherwise silently replace with the default.
+func (b *Builder) validateRouteMaxInFlight() error {
 	if b.cfg == nil {
 		return nil
 	}
-
-	receiverSession := make(map[string]string, len(b.cfg.Receivers))
-	includedSessions := make(map[string]struct{}, len(b.cfg.Sessions))
-	for i := range b.cfg.Receivers {
-		receiver := &b.cfg.Receivers[i]
-		if receiver.SessionID != "" {
-			receiverSession[receiver.ID] = receiver.SessionID
-			includedSessions[receiver.SessionID] = struct{}{}
-		}
-	}
-	routeConcurrency := make(map[string]uint64, len(b.cfg.Sessions))
 	for i := range b.cfg.Routes {
 		route := &b.cfg.Routes[i]
-		sessionID := receiverSession[route.ReceiverID]
-		if sessionID == "" {
-			continue
-		}
 		if route.Policy.MaxInFlight < 0 {
 			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
 				"bridge: route %q: policy.max_in_flight must not be negative", route.ID,
 			))
 		}
-		maxInFlight := route.Policy.MaxInFlight
-		if maxInFlight == 0 {
-			maxInFlight = routing.DefaultMaxInFlight
-		}
-		current := routeConcurrency[sessionID]
-		add := uint64(maxInFlight)
-		if add > math.MaxUint64-current {
-			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
-				"bridge: session %q route concurrency overflows ingress memory calculation", sessionID,
-			))
-		}
-		routeConcurrency[sessionID] = current + add
 	}
+	return nil
+}
 
+// validateMQTTSessionCount refuses a configuration that uses more MQTT
+// sessions than bridge.max_mqtt_sessions; a session nothing references is
+// never built and is not counted. A zero limit means no limit, and a negative
+// one is refused so a caller without a blueprint validator does not read it as
+// no limit.
+func (b *Builder) validateMQTTSessionCount() error {
+	if b.cfg == nil {
+		return nil
+	}
+	limit := b.cfg.Bridge.MaxMQTTSessions
+	if limit < 0 {
+		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"bridge.max_mqtt_sessions must not be negative, got %d", limit,
+		))
+	}
+	if limit == 0 {
+		return nil
+	}
 	referenced := referencedSessionIDs(b.cfg)
+	count := 0
 	for i := range b.cfg.Sessions {
-		sessionDef := &b.cfg.Sessions[i]
-		mode := normalizedSessionMode(sessionDef.SessionMode)
-		if !referenced[sessionDef.ID] ||
-			(mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive) {
-			continue
+		session := &b.cfg.Sessions[i]
+		if referenced[session.ID] && isMQTTPahoTransport(session.Transport) {
+			count++
 		}
-		includedSessions[sessionDef.ID] = struct{}{}
 	}
-
-	for i := range b.cfg.Sessions {
-		sessionDef := &b.cfg.Sessions[i]
-		if _, included := includedSessions[sessionDef.ID]; !included {
-			continue
-		}
-		maxInFlight := routeConcurrency[sessionDef.ID]
-		memoryConfig, ok := sessionDef.Config.(ports.IngressMemoryConfig)
-		if !ok {
-			continue
-		}
-		if err := memoryConfig.ValidateIngressMemory(maxInFlight); err != nil {
-			return shared.ErrInvalidConfig.Wrap(err).WithMessage(fmt.Sprintf(
-				"bridge: session %q ingress memory validation failed", sessionDef.ID,
-			))
-		}
+	if count > limit {
+		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"bridge.max_mqtt_sessions: the configuration uses %d MQTT sessions, more than the limit of %d",
+			count, limit,
+		))
 	}
 	return nil
 }

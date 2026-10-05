@@ -167,6 +167,9 @@ func mergeBridgeSettings(base, overlay *ports.BridgeSettings) {
 	if overlay.LogLevel != "" {
 		base.LogLevel = overlay.LogLevel
 	}
+	if overlay.MaxMQTTSessions != 0 {
+		base.MaxMQTTSessions = overlay.MaxMQTTSessions
+	}
 	// Cluster was silently dropped: an overlay that added or changed cluster
 	// endpoints never took effect after a merge. Overlay replaces
 	// base when set; the endpoint map is cloned so the merged config never

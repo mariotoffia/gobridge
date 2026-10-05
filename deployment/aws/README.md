@@ -419,25 +419,22 @@ with DynamoDB config and DynamoDB data stores has no EFS resources.
 - **Topology = `filesystem_replicated` (SCALE-OUT, not HA failover)** rejects routes that need cross-instance write coordination (`shared_outbox`, `route.session` lease). Those routes require a distributed lease/outbox store (e.g. DynamoDB) that the file-based EFS profile does not provision — remove them from `bridge.yaml`, or provision your own DynamoDB-backed lease/outbox store. `GoBridgeCluster` **forces** `filesystem_replicated` on both task definitions regardless of the caller's `Bootstrap.Topology`, so these guards always fire for a multi-instance cluster. Consequence: replicas are independent readers of the same config — there is **no single-active lease owner, no coordinated active/standby failover, and no 30–60s failover SLO**. Use the separate `GoBridgeDynamoDBHA` facade for coordinated active/warm-standby failover.
 - **`SSMEndpoint`** set without `DevMode = true` fails Bootstrap validation (production-bypass guard).
 - Bootstrap env payload capped at 1 MiB.
-- **MQTT ingress memory:** the CDK base stamps the actual Fargate task memory
-  into bootstrap. Runtime reserves 25% for consumed MQTT ingress sessions,
-  divides it equally by session, and derives each default Receive Maximum with
-  the adapter's byte model. `reserved_memory_bytes` plus this reservation must
-  leave at least 20% task headroom. Every Persistent/Exclusive session referenced
-  by a declared sender consumes a share even when no route references that
-  sender, with route concurrency zero, because the session is still built and
-  resumed durable state can deliver stale backlog. Ephemeral sender-only sessions
-  consume no share. Impossible or explicitly unsafe profiles fail startup/reload.
-  Adding or removing a session that takes a share changes every unpinned
-  session's share and reconnects it; in a multi-tenant deployment pin
-  `ingress_memory_budget_bytes` per MQTT session (see
+- **MQTT limits are counts, not memory:** `MemoryMiB` is the Fargate task
+  size you pick; nothing is computed from it. Choose it by measuring the
+  deployment under its real load. Each MQTT session caps its in-flight and
+  waiting messages with `receive_maximum` (default 192), and the optional
+  `bridge.max_mqtt_sessions` caps the number of MQTT sessions the
+  configuration uses (see the
+  [configuration reference](../../docs/configuration-reference.md#bridge----bridge-settings)).
+  Adding or removing one MQTT session replaces only that session's
+  reload unit; the other MQTT sessions stay connected (see
   [keeping MQTT tenants connected](../../docs/aws-deployment/config-reload.md#keeping-mqtt-tenants-connected)).
 - `GoBridgeALBAttachment` reserves listener-rule priorities `[BasePriority, BasePriority+99]`. Add the attachment last on a listener, or pick a `BasePriority` outside any consumer-managed range.
 - `ControlAbsence` / `WorkerDegraded` alarms read Container Insights metrics: when passing your own `Cluster`, enable Container Insights yourself.
 
 ## Runtime Library
 
-`lib/bootstrap.NewApp(cfg, opts...)` loads `BootstrapConfig` from env (`GOBRIDGE_AWS_BOOTSTRAP_JSON` or `…_FILE`, max 1 MiB), watches the selected config source (`file` on EFS or `dynamodb`), reloads bridge config without restart, resolves `pms://` SSM secrets, applies the MQTT ingress memory profile on every initial load/reload, and starts the admin / monitor / transport HTTP servers plus a `bridge.Runtime` with the base `mqtt`, `sqs` and `http` transports — and `amqp091`, `amqp10` and `servicebus` in an image built with their `gobridge_<family>` tags — and the `memory`, `sqlite`, `dynamodb` stores. Clustered configs also register the existing ECS task-metadata endpoint resolver. Reload first tries in place (`bridge.PlanInPlaceReload`): when only sessions, receivers, senders, bindings or routes changed, only the changed reload units reconnect ([ADR 0018](../../docs/adr/0018-reload-in-place-by-unit.md)). Otherwise it uses `swapModeOverlap` by default; `swapModePrepareCommit` when `bridge.RequiresSerializedSwap` finds an exclusive broker identity in the new config, or held by the running config on a transport the new config still uses.
+`lib/bootstrap.NewApp(cfg, opts...)` loads `BootstrapConfig` from env (`GOBRIDGE_AWS_BOOTSTRAP_JSON` or `…_FILE`, max 1 MiB), watches the selected config source (`file` on EFS or `dynamodb`), reloads bridge config without restart, resolves `pms://` SSM secrets, and starts the admin / monitor / transport HTTP servers plus a `bridge.Runtime` with the base `mqtt`, `sqs` and `http` transports — and `amqp091`, `amqp10` and `servicebus` in an image built with their `gobridge_<family>` tags — and the `memory`, `sqlite`, `dynamodb` stores. Clustered configs also register the existing ECS task-metadata endpoint resolver. Reload first tries in place (`bridge.PlanInPlaceReload`): when only sessions, receivers, senders, bindings or routes changed, only the changed reload units reconnect ([ADR 0018](../../docs/adr/0018-reload-in-place-by-unit.md)). Otherwise it uses `swapModeOverlap` by default; `swapModePrepareCommit` when `bridge.RequiresSerializedSwap` finds an exclusive broker identity in the new config, or held by the running config on a transport the new config still uses.
 
 The file source keeps polling and the control-only single-writer guard. The
 DynamoDB source uses one loader for loading, watching and CAS-safe control

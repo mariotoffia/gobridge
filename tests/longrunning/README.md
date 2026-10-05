@@ -105,7 +105,7 @@ tests/longrunning/
 ### The release gate
 
 `make test-release-gate` runs only the proofs a release is gated on, named test
-by test in `RELEASE_LONGRUNNING_TESTS`, plus the finite-cgroup memory proof.
+by test in `RELEASE_LONGRUNNING_TESTS`.
 Two of them exist for that gate specifically:
 
 | Test | What it gates | Exercised |

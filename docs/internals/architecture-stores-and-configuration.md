@@ -259,7 +259,7 @@ flowchart TD
     Plan --> Prepare["builder_prepare.go: prepare()"]
     Prepare --> CheckRand["runtime.CheckRandSource()"]
     Prepare --> Validate["validator(cfg)<br/>config.Validate / blueprint validator"]
-    Validate --> Ingress["capability preflight<br/>dedicated ingress + full ingress-memory validation"]
+    Validate --> Ingress["capability preflight<br/>dedicated ingress + max_mqtt_sessions count"]
     Ingress --> Stores["builder_prepare.go: buildStores()<br/>resolveClusterEndpoints()<br/>outboxRuntimeOptions()"]
     Stores --> StoreFact["StoreFactory(.NewLeaseStore /<br/>NewOutboxStore / NewDLQStore)"]
     StoreFact --> Prep[(preparedBuild<br/>cfg + stores + rtOpts)]
@@ -284,16 +284,12 @@ the supervisor's hot-reload state machine cannot accidentally
 double-commit. `Build` is the same `prepare → complete` collapsed
 into a single call.
 
-Plugin `Config.Validate` runs while parsing. For MQTT, an omitted Receive
-Maximum defers only the receive-dependent window decision so a deployment
-profile can derive safe concurrency; explicit values still receive full
-validation. Before any store or transport resource is opened, the Builder
-always invokes `IngressMemoryConfig.ValidateIngressMemory` for every
-ReceiverDef-backed session and every referenced Persistent/Exclusive session.
-This second stage applies generic defaults or verifies the deployment-derived
-profile with effective route concurrency. An unconsumed receiver is still
-possible ingress because `sessionPlanFor` includes every ReceiverDef
-subscription, while a durable session can resume stale broker backlog before
-managed cleanup.
+Plugin `Config.Validate` runs while parsing. Before any store or transport
+resource is opened, the Builder's Preflight also refuses a configuration that
+uses more MQTT sessions than `bridge.max_mqtt_sessions`; because the Builder
+makes the check, every composition root refuses the same document (see the
+[configuration reference](../configuration-reference.md#bridge----bridge-settings)).
+An MQTT session's own options are filled in from its configuration only: an
+unset `receive_maximum` becomes the default 192.
 
 ---

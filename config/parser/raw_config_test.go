@@ -26,10 +26,10 @@ type sqsLikeConfig struct {
 func TestRawConfig_Decode_MQTTIntegerRanges(t *testing.T) {
 	type mqttNumericConfig struct {
 		Session struct {
-			MaxPayloadBytes          uint32 `json:"max_payload_bytes"`
-			ReceiveMaximum           uint16 `json:"receive_maximum"`
-			IngressMemoryBudgetBytes uint64 `json:"ingress_memory_budget_bytes"`
-			RouteMaxInFlight         int    `json:"route_max_in_flight"`
+			MaxPayloadBytes  uint32 `json:"max_payload_bytes"`
+			ReceiveMaximum   uint16 `json:"receive_maximum"`
+			Limit            uint64 `json:"limit"`
+			RouteMaxInFlight int    `json:"route_max_in_flight"`
 		} `json:"session"`
 	}
 	type testCase struct {
@@ -50,10 +50,10 @@ func TestRawConfig_Decode_MQTTIntegerRanges(t *testing.T) {
 		{name: "receive negative", field: "receive_maximum", value: int64(-1), wantErr: true},
 		{name: "receive huge uint64", field: "receive_maximum", value: uint64(math.MaxUint64), wantErr: true},
 		{name: "receive huge int64", field: "receive_maximum", value: int64(math.MaxInt64), wantErr: true},
-		{name: "budget exact max", field: "ingress_memory_budget_bytes", value: uint64(math.MaxUint64), wantValue: math.MaxUint64},
-		{name: "budget negative", field: "ingress_memory_budget_bytes", value: int64(-1), wantErr: true},
-		{name: "budget float beyond max", field: "ingress_memory_budget_bytes", value: float64(math.MaxUint64), wantErr: true},
-		{name: "budget huge int64 accepted", field: "ingress_memory_budget_bytes", value: int64(math.MaxInt64), wantValue: math.MaxInt64},
+		{name: "limit exact max", field: "limit", value: uint64(math.MaxUint64), wantValue: math.MaxUint64},
+		{name: "limit negative", field: "limit", value: int64(-1), wantErr: true},
+		{name: "limit float beyond max", field: "limit", value: float64(math.MaxUint64), wantErr: true},
+		{name: "limit huge int64 accepted", field: "limit", value: int64(math.MaxInt64), wantValue: math.MaxInt64},
 		{name: "concurrency exact platform max", field: "route_max_in_flight", value: uint64(math.MaxInt), wantValue: uint64(math.MaxInt)},
 		{name: "concurrency platform overflow", field: "route_max_in_flight", value: uint64(math.MaxInt) + 1, wantErr: true},
 	}
@@ -79,8 +79,8 @@ func TestRawConfig_Decode_MQTTIntegerRanges(t *testing.T) {
 				value = uint64(got.Session.MaxPayloadBytes)
 			case "receive_maximum":
 				value = uint64(got.Session.ReceiveMaximum)
-			case "ingress_memory_budget_bytes":
-				value = got.Session.IngressMemoryBudgetBytes
+			case "limit":
+				value = got.Session.Limit
 			case "route_max_in_flight":
 				value = uint64(got.Session.RouteMaxInFlight)
 			}

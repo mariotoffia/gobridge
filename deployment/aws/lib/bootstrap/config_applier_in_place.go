@@ -33,14 +33,6 @@ func (a *App) applyInPlace(ctx context.Context, logical *ports.BridgeConfig, inp
 	if rt == nil || installed == nil || !rt.IsRunning() {
 		return false, nil
 	}
-	// ponytail: the MQTT memory profile shares one allocation equally among the
-	// MQTT ingress or durable sessions and writes each share into the session's
-	// ingress_memory_budget_bytes and the receive_maximum derived from it, both
-	// part of the session's unit. Adding or removing one such MQTT session
-	// therefore changes every other MQTT unit, and this reload retires and
-	// rebuilds them all. A session that sets ingress_memory_budget_bytes itself,
-	// at most its share, keeps that budget and stays untouched. Upgrade path: an
-	// allocation that does not depend on how many sessions the config holds.
 	reload, ok := bridge.PlanInPlaceReload(installed.cfg, inputs.RuntimeConfig, installed.transports)
 	if !ok {
 		return false, nil

@@ -51,8 +51,8 @@ a broken broker — still fail the session closed at the raw pre-decode guard.
 The same guard bounds the one cap whose decode cost the wire does not bound. A
 PUBLISH carrying more than 129 User Properties has its list cut to 129 on the
 raw bytes before the SDK decodes it: the callback still sees a violation and
-acks-and-drops the packet, but the decode never costs more than the retained
-slot budgets, instead of the roughly 1.3 KiB per property the SDK would spend
+acks-and-drops the packet, but the SDK never decodes more than 129 User
+Properties, instead of spending roughly 1.3 KiB per property
 on tens of thousands of five-byte properties. Every such packet is counted on
 `MQTTIngressUserPropertiesTruncated`, and the count the publisher actually sent
 is logged at Debug — the callback's Error log can only ever show 129.
@@ -316,17 +316,14 @@ returns:
   stall the callback goroutine that also reads PINGRESP, and the broker's window
   excludes QoS 0, so nothing would relieve it.
 - The **pre-registration pending buffer** absorbs the CONNACK backlog that
-  arrives before receivers register (see [Session Modes](mqtt.md#session-modes)). It has
-  two independent bounds applied asymmetrically by QoS: an entry-count cap sized
-  to `receive_maximum` (default **192**) and a **64 MiB** payload ceiling
-  (`defaultPendingBytesLimit`). The byte ceiling governs **QoS 0 only**. A QoS 0
-  publish over either cap is dropped (`MQTTRouterDropped`) — it carries no
-  delivery contract. A **QoS 1/2** publish is never dropped for the byte ceiling:
-  it evicts the oldest QoS 0 entry to reclaim memory and buffers regardless,
-  bounded by the count cap. QoS 1/2 memory needs no byte cap because the broker's
-  Receive-Maximum flow control never delivers more than `receive_maximum` un-acked
-  QoS 1/2 at once; the complete packet/window allocation is covered by the
-  validated ingress byte model above. The single path that drops a QoS 1/2
+  arrives before receivers register (see [Session Modes](mqtt.md#session-modes)). Its
+  only bound is a count: an entry cap sized to `receive_maximum` (default
+  **192**). It is applied by QoS. A **QoS 0** publish over the cap is dropped
+  (`MQTTRouterDropped`) — it carries no delivery contract. A **QoS 1/2**
+  publish over the cap evicts the oldest QoS 0 entry and is buffered in its
+  place. QoS 1/2 needs no other bound because the broker's Receive-Maximum
+  flow control never delivers more than `receive_maximum` un-acked QoS 1/2 at
+  once. The single path that drops a QoS 1/2
   publish is the count cap hit with no QoS 0 left to evict — reachable only when
   a broker exceeds the Receive Maximum it was granted (a protocol violation).
   That publish is acked-and-dropped (which keeps paho's in-order ack stream
@@ -349,16 +346,19 @@ persist for `shared_outbox`, target accept for `direct_hold`. With the default
 session; a 200 ms downstream caps the same session at ~960 msg/s. Levers, in
 order:
 
-1. **`receive_maximum`** — widens the in-flight window; memory cost is
-   `receive_maximum × max_payload_bytes`-shaped and validated against
-   `ingress_memory_budget_bytes` (see the [ingress byte
-   model](mqtt-options.md#ingress-byte-model)); the broker must also allow the window.
+1. **`receive_maximum`** — widens the in-flight window. It is a count you set
+   (default 192); the broker must also allow the window. The same count sizes
+   the dispatch queue and caps the messages waiting for a receiver (see
+   [ingress limits are counts](mqtt-options.md#ingress-limits-are-counts)).
 2. **Route `max_in_flight`** — concurrency downstream of dispatch; raising it
-   reduces settlement latency until the target saturates. It participates in
-   the same validated memory budget.
-3. **`max_payload_bytes`** — smaller payloads let the same memory budget hold
-   a larger window (`ConfigureIngressMemory` derives the largest safe
-   `receive_maximum` automatically when it is left unset).
+   reduces settlement latency until the target saturates.
+3. **`max_payload_bytes`** — the message-size limit the session announces to
+   the broker. It does not change the window; it caps how large each message
+   in the window may be.
+
+GoBridge does not estimate memory. A larger window or larger messages use more
+memory, so measure the process under its real load after changing any of
+these.
 
 QoS 0 is not flow-controlled by `receive_maximum`: a QoS 0 flood sheds at the
 dispatch queue (`MQTTRouterDropped`) rather than backpressuring the broker.
@@ -366,9 +366,8 @@ Watch `MQTTReceiveWindowUtilization` (sustained → 1.0 means the window, not th
 network, is the ceiling) and `MQTTOldestUnsettledAge` (rising means the
 downstream, not MQTT, is the bottleneck).
 
-The dispatch queue, broker receive window, route concurrency, current packet,
-whole-packet ceiling, and runtime bookkeeping are all included in the validated
-byte bound. A non-compliant broker can still put one decoded packet in the SDK
+The dispatch queue and the pending buffer are bounded by counts, never by
+bytes. A non-compliant broker can still put one decoded packet in the SDK
 before the callback sees it, but an oversize body is rejected before the adapter
 copies or enqueues it; QoS 1/2 remains unacknowledged, preserving
 at-least-once semantics.

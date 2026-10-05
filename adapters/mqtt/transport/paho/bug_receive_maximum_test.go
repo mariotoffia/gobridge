@@ -10,28 +10,23 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// (MEDIUM): default receive_maximum 65535 = unbounded memory.
-//
-// paho buffers up to Receive Maximum full publishes under manual
+// paho holds up to Receive Maximum un-acked publishes under manual
 // acknowledgement, and this adapter's startup pending buffer is sized to the
-// same value. A slow pipeline with large payloads at the 65535 protocol
-// maximum could buffer multiple GiB → OOM.
-//
-// Fix: NewSession coerces an unset (0) receive_maximum to the byte-budgeted
-// DefaultReceiveMaximum (192). 0 is not a legal MQTT v5 Receive Maximum, so
-// coercing it is correct.
+// same count. NewSession coerces an unset (0) receive_maximum to
+// DefaultReceiveMaximum (192) rather than the 65535 protocol maximum. 0 is not
+// a legal MQTT v5 Receive Maximum, so coercing it is correct.
 // ═══════════════════════════════════════════════════════════════════════════
 
 // TestBug_ReceiveMaximumDefault_CoercedAndBoundsPendingBuffer asserts an unset
-// receive_maximum is coerced to the lowered default AND that the pending buffer
-// is sized to it (bounding worst-case buffered memory).
+// receive_maximum is coerced to the default AND that the pending buffer's
+// entry cap is sized to it.
 //
-// Counterfactual (proven by disabling the NewSession coercion): pre-fix an
-// unset receive_maximum stays 0 and the pending buffer keeps the 65535-entry
-// default — the multi-GiB memory ceiling removes.
+// Counterfactual (proven by disabling the NewSession coercion): an unset
+// receive_maximum stays 0 and the pending buffer keeps the 65535-entry
+// default.
 func TestBug_ReceiveMaximumDefault_CoercedAndBoundsPendingBuffer(t *testing.T) {
 	require.Equal(t, uint16(192), DefaultReceiveMaximum,
-		"the default is the byte-budgeted 192 ceiling, not the 65535 protocol maximum")
+		"the default is 192, not the 65535 protocol maximum")
 
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://192.0.2.1:1883"},
@@ -46,7 +41,7 @@ func TestBug_ReceiveMaximumDefault_CoercedAndBoundsPendingBuffer(t *testing.T) {
 	limit := r.pendingLimit
 	r.mu.RUnlock()
 	require.Equal(t, int(DefaultReceiveMaximum), limit,
-		"the pending buffer is sized to the (coerced) Receive Maximum, bounding memory")
+		"the pending buffer entry cap is sized to the (coerced) Receive Maximum")
 }
 
 // TestBug_ReceiveMaximumExplicit_NotCoerced asserts an explicitly configured

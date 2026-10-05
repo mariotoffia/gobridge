@@ -1,7 +1,6 @@
 package paho
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,115 +12,31 @@ import (
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
-// A QoS 1/2 publish is NEVER dropped for the pending buffer's BYTE ceiling.
-//
-// The byte ceiling (pendingBytesLimit) governs QoS 0 memory only. A QoS 1/2
-// publish is ALWAYS buffered: dropping it is never safe — ack+drop loses it,
+// The pre-registration pending buffer holds at most pendingLimit entries
+// (== receive_maximum). Over that count cap a QoS 0 publish is dropped
+// without an ack (best effort, no delivery contract). A QoS 1/2 publish evicts
+// the oldest QoS 0 instead; it is refused only when no QoS 0 is left to evict,
+// which a broker can reach only by exceeding the Receive Maximum it was
+// granted. Dropping a QoS 1/2 is never safe otherwise — ack+drop loses it,
 // and un-ack+drop head-of-line-blocks paho's CONTIGUOUS-PREFIX manual-ack
 // stream (acksTracker.flush sends the acknowledged prefix and stops at the
 // first un-acked entry), stranding acks for messages that WERE delivered and,
 // once receive_maximum un-acked slots accumulate, wedging ingress on a stable
-// connection. QoS 1/2 pending memory is bounded WITHOUT a byte cap by the
-// entry-count cap (== receive_maximum), which Receive-Maximum flow control
-// enforces. QoS 0 stays best-effort drop-without-ack.
+// connection.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TestBug_PendingByteCap_QoS12_NeverDroppedForByteCap_DrainsAndAcksInOrder
-// publishes a QoS 1 backlog whose aggregate size blows PAST the pending byte
-// ceiling while the count cap has ample room, then asserts (a) NO QoS 1/2 is
-// dropped or lost for the byte ceiling, and (b) once a handler registers the
-// whole backlog flushes — every message delivered exactly once in ARRIVAL
-// ORDER and every one acked, i.e. the ack stream drains and ingress is NOT
-// wedged.
-//
-// Mutation killed (the reviewer's Critical): restore the pre-fix bufferLocked
-// that refuses a QoS 1/2 over the BYTE cap — either the un-ack+drop variant
-// (my previous, wedging) or the ack+drop variant (the original) — and
-// PendingCount drops below n and `delivered` loses the tail messages, failing
-// (a); an un-ack+drop victim would also strand later acks, but (a) already
-// catches the regression before any wedge can manifest.
-func TestBug_PendingByteCap_QoS12_NeverDroppedForByteCap_DrainsAndAcksInOrder(t *testing.T) {
+// TestBug_PendingCountCap_QoS0Overflow_NoAck asserts the QoS 0 count-cap
+// overflow path: a QoS 0 publish carries no delivery contract (ack is nil), so
+// when the pending buffer is at its entry cap it is dropped WITHOUT any ack and
+// counted only on the generic best-effort drop metric — never on the QoS 1/2
+// protocol-violation overflow metric.
+func TestBug_PendingCountCap_QoS0Overflow_NoAck(t *testing.T) {
 	clk := testClock()
 	rec := &ports.RecordingExporter{}
 	r := newRouter(nil, rec, withRouterClock(clk), withUnmatchedGrace(testGrace))
 	defer r.shutdown()
 
-	// Byte ceiling far smaller than the backlog; the COUNT cap stays at the
-	// default (65535), so ONLY the byte ceiling is exercised — and it must
-	// never drop a QoS 1/2. No handler is registered and the clock is within
-	// grace, so each unmatched publish takes the buffer path.
-	r.mu.Lock()
-	r.pendingBytesLimit = 20
-	r.mu.Unlock()
-
-	const n = 5
-	payloads := make([]string, n)
-	acked := make([]atomic.Int32, n)
-	for i := 0; i < n; i++ {
-		payloads[i] = fmt.Sprintf("msg-%02d", i) // 6B payload + 3B topic = 9B each; n×9 ≫ 20B
-		idx := i
-		r.dispatch(&pahov5.Publish{Topic: "q/1", QoS: 1, Payload: []byte(payloads[idx])},
-			func() error { acked[idx].Add(1); return nil })
-	}
-
-	// (a) NOTHING dropped for the byte ceiling: every QoS 1 is buffered.
-	require.Equal(t, n, r.PendingCount(),
-		"QoS 1/2 publishes must NEVER be dropped for the byte ceiling")
-	require.Equal(t, int64(0), r.OverflowDroppedCount(),
-		"the byte ceiling must not trigger a QoS 1/2 overflow drop")
-	require.Empty(t, rec.FindEntries(MetricMQTTRouterOverflowDropped),
-		"no protocol-violation overflow drop occurred")
-	if _, dropped := r.Stats(); dropped != 0 {
-		t.Fatalf("no drops expected (no QoS 0 to evict, nothing refused), got dropped=%d", dropped)
-	}
-	for i := 0; i < n; i++ {
-		require.Equal(t, int32(0), acked[i].Load(),
-			"a buffered QoS 1 stays un-acked until it is actually delivered")
-	}
-
-	// (b) Register the matching handler: the flush delivers the whole backlog
-	// in ARRIVAL ORDER and acks each — the ack stream drains, ingress is not
-	// wedged. RegisterFiltered adds the flush to r.wg before returning, so
-	// r.Wait() is a deterministic barrier (no sleep).
-	var mu sync.Mutex
-	var delivered []string
-	r.RegisterFiltered("rx", []string{"q/1"}, func(pub *pahov5.Publish, ack func() error) {
-		mu.Lock()
-		delivered = append(delivered, string(pub.Payload))
-		mu.Unlock()
-		if ack != nil {
-			_ = ack()
-		}
-	})
-	r.Wait()
-
-	mu.Lock()
-	got := append([]string(nil), delivered...)
-	mu.Unlock()
-	require.Equal(t, payloads, got,
-		"every buffered QoS 1 must be delivered exactly once, in arrival order")
-	for i := 0; i < n; i++ {
-		require.Equal(t, int32(1), acked[i].Load(),
-			"every delivered QoS 1 must be acked — the ack stream drains, ingress is not wedged")
-	}
-	require.Equal(t, 0, r.PendingCount(), "the pending buffer is fully drained after flush")
-	require.Equal(t, int64(0), r.OverflowDroppedCount(), "still no overflow drop after drain")
-}
-
-// TestBug_PendingByteCap_QoS0Overflow_NoAck asserts the QoS 0 byte-ceiling
-// overflow path is correct and unchanged: a QoS 0 publish carries no delivery
-// contract (ack is nil), so when it exceeds the byte ceiling it is dropped
-// WITHOUT any ack and counted only on the generic best-effort drop metric —
-// never on the QoS 1/2 protocol-violation overflow metric.
-func TestBug_PendingByteCap_QoS0Overflow_NoAck(t *testing.T) {
-	clk := testClock()
-	rec := &ports.RecordingExporter{}
-	r := newRouter(nil, rec, withRouterClock(clk), withUnmatchedGrace(testGrace))
-	defer r.shutdown()
-
-	r.mu.Lock()
-	r.pendingBytesLimit = 20
-	r.mu.Unlock()
+	r.setPendingLimit(1)
 
 	// Buffer one QoS 1 entry (un-evictable) to fill the cap.
 	r.dispatch(&pahov5.Publish{Topic: "q", QoS: 1, Payload: []byte("0123456789")},
@@ -167,8 +82,7 @@ func TestBug_CountCapValve_ProtocolViolation_AcksVictimAndDrainsPrefix(t *testin
 	r := newRouter(nil, rec, withRouterClock(clk), withUnmatchedGrace(testGrace))
 	defer r.shutdown()
 
-	// Minimal reachable count cap: receive_maximum == 2. The byte ceiling stays
-	// at its 64 MiB default so ONLY the count cap is exercised. No handler is
+	// Minimal reachable count cap: receive_maximum == 2. No handler is
 	// registered and the clock is within grace, so each unmatched publish takes
 	// the buffer path.
 	r.setPendingLimit(2)

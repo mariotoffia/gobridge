@@ -242,10 +242,9 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		if ephemeralCleanStart {
 			cp.CleanStart = true
 		}
-		// Advertise the self-imposed resource limits the broker MUST honour:
-		// Receive Maximum (in-flight QoS 1/2 count) and — when MaxPayloadBytes
-		// is set — Maximum Packet Size, which makes the pending-memory bound
-		// receive_maximum × max_payload_bytes broker-ENFORCED (c-mempkt).
+		// Advertise the self-imposed limits the broker MUST honour: Receive
+		// Maximum (in-flight QoS 1/2 count) and — when MaxPayloadBytes is set —
+		// Maximum Packet Size (max_payload_bytes + the metadata allowance).
 		if err := applyConnectLimits(cp, rm, maxPayload); err != nil {
 			return nil, err
 		}
@@ -330,8 +329,7 @@ func applyConnectCredentials(cp *pahov5.Connect, user, pass string) {
 // applyConnectLimits populates the MQTT v5 CONNECT properties advertising the
 // self-imposed limits the broker must honour: Receive Maximum (in-flight QoS 1/2
 // count) and, when a per-message payload ceiling is configured, Maximum Packet
-// Size (derived via wirePacketSizeFor). Together they make the validated ingress
-// byte model broker-enforced.
+// Size (derived via wirePacketSizeFor), so the broker enforces both.
 //
 // A zero receiveMaximum or a zero maxPayloadBytes leaves its respective property
 // UNSET (0 is not a legal MQTT v5 value for either, and an unset Maximum Packet

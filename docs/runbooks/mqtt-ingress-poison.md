@@ -63,8 +63,8 @@ non-compliant — fix or replace the broker; no bridge-side setting clears it.
 ## Remediation
 
 - **Raise the cap** when the traffic is wanted: `options.session.max_payload_bytes`
-  (payload class). The metadata and User Property caps are fixed adapter
-  constants sized to the ingress memory model; traffic that exceeds them needs
+  (payload class). The metadata (128 KiB) and User Property (128) caps are
+  fixed adapter constants; traffic that exceeds them needs
   a producer-side fix, not a bridge knob.
 - **Fix or block the publisher** otherwise (broker ACL / credential
   revocation).

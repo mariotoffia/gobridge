@@ -48,10 +48,11 @@ func TestRouterQueueBudget_CoveredQoS0DropReturnsCapacity(t *testing.T) {
 	)
 	t.Cleanup(r.shutdown)
 
-	// A byte ceiling below any real payload makes every covered QoS 0 publish
-	// hit the buffer refusal that retainCovered has to release.
+	// A zero pending entry cap makes every covered QoS 0 publish hit the
+	// buffer refusal that retainCovered has to release. setPendingLimit ignores
+	// values below 1, so the cap is set directly.
 	r.mu.Lock()
-	r.pendingBytesLimit = 1
+	r.pendingLimit = 0
 	r.mu.Unlock()
 
 	clk.Advance(testGrace + time.Second) // past grace: unmatched publishes are settled, not buffered

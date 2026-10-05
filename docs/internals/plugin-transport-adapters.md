@@ -81,14 +81,11 @@ Optional companion interfaces (also in `ports`):
 
 - `ports.VisibilityTimeoutProvider` — declares the source visibility
   timeout used by the runtime validator (e.g. SQS).
-- `ports.IngressMemoryConfig` — lets a typed session config validate a
-  transport-owned ingress byte bound against the route's effective concurrency.
-  The bridge calls it after dedicated-session cardinality checks and before
-  opening stores or transports.
-- `ports.IngressMemoryProfileConfig` — extends that contract for deployment
-  profiles that assign a per-session byte budget and derive safe transport
-  concurrency. Implementations must preserve safe explicit values and reject
-  unsafe explicit values rather than silently clamping them.
+
+Do not add a capability that estimates memory or byte use. GoBridge limits
+transports by counts (for MQTT, `receive_maximum` per session and
+`bridge.max_mqtt_sessions` per configuration) and by protocol message-size
+limits such as `max_payload_bytes`.
 
 Transports that expose HTTP endpoints (e.g. the HTTP source / SSE
 sink) deliberately do not have a port-level abstraction: HTTP handlers

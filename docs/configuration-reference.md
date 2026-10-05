@@ -30,6 +30,7 @@ classDiagram
         drain_timeout: string
         per_record_drain_timeout: string
         max_drain_timeout: string
+        max_mqtt_sessions: int
         log_level: string
         cluster: ClusterConfig
     }
@@ -99,6 +100,7 @@ classDiagram
 | `drain_timeout` | duration | no | `30s` | How long the supervisor lets a runtime drain when it STOPS one (shutdown, or a reconfiguration swap), and how long an in-place reload lets each retired reload unit drain and stop. It is the ceiling on `Runtime.Stop`, not a per-batch outbox budget. |
 | `per_record_drain_timeout` | duration | no | `3s` | Per-record budget in the outbox drain batch ceiling `min(batchCount * per_record_drain_timeout, max_drain_timeout)`. The ceiling may only RAISE a batch budget already floored at one full send, so it can never cut a send short. |
 | `max_drain_timeout` | duration | no | `10s` | Upper bound of that batch ceiling. Must be >= `per_record_drain_timeout`. |
+| `max_mqtt_sessions` | int | no | `0` (no limit) | The most MQTT sessions the configuration may use. The builder's Preflight counts the sessions with transport `mqtt` or `mqtt.paho` that the configuration uses — a session referenced by a receiver, a sender, a route session or a route binding — and refuses the configuration when there are more than this. A defined session that nothing references is never built and is not counted. The error reads `bridge.max_mqtt_sessions: the configuration uses N MQTT sessions, more than the limit of M`. Because the builder checks it, every runtime (AWS, the plain binary, Kubernetes) refuses the same document. A reload over the limit is refused and the running configuration keeps serving. A negative value is invalid. GoBridge limits MQTT by counts only: this, and `receive_maximum` per session. |
 | `log_level` | string | no | `info` | Log level: `debug`, `info`, `warn` (alias `warning`), `error`. Case-insensitive. Validated as a closed enum -- an unknown value is rejected at load instead of being silently ignored. Applied when the reload that carries it is **installed**, never before: a candidate that fails validation or fails to build leaves process verbosity unchanged, so the running system always matches a config an operator can read back |
 
 ### `bridge.cluster` -- Cluster Config
@@ -122,6 +124,10 @@ bridge:
   # is set and is retained only for backward compatibility.
   per_record_drain_timeout: 3s
   max_drain_timeout: 30s
+  # The most MQTT sessions this configuration may use (sessions a receiver,
+  # sender, route session or route binding references). 0 (the default)
+  # means no limit; the builder refuses a configuration that uses more.
+  max_mqtt_sessions: 16
   log_level: info
   cluster:
     # THIS instance's advertised capability endpoints, keyed by capability with

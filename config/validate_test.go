@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -47,6 +48,26 @@ func validConfig() *ports.BridgeConfig {
 func TestValidate_ValidConfig(t *testing.T) {
 	err := Validate(validConfig())
 	assert.NoError(t, err)
+}
+
+func TestValidate_NegativeMaxMQTTSessionsRejected(t *testing.T) {
+	cfg := validConfig()
+	cfg.Bridge.MaxMQTTSessions = -1
+
+	err := Validate(cfg)
+	var ve *ValidationError
+	require.ErrorAs(t, err, &ve)
+	assert.Equal(t, []string{"bridge.max_mqtt_sessions: must not be negative, got -1"}, ve.Errors)
+}
+
+func TestValidate_MaxMQTTSessionsZeroOrPositiveAccepted(t *testing.T) {
+	for _, limit := range []int{0, 1, 500} {
+		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Bridge.MaxMQTTSessions = limit
+			require.NoError(t, Validate(cfg))
+		})
+	}
 }
 
 // Verifies Validate rejects a configuration with an empty bridge ID.

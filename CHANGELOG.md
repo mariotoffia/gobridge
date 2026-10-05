@@ -10,6 +10,74 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+GoBridge now limits MQTT by counts only and never by a memory or byte
+estimate. The per-session ingress memory budget, the AWS MQTT memory profile
+and the pending buffer's byte cap are gone. `receive_maximum` is a plain count
+you set, or 192, and the new optional `bridge.max_mqtt_sessions` caps how many
+MQTT sessions a configuration may use. Adding or removing one MQTT session
+no longer reconnects the other MQTT sessions on an in-place reload, and the
+same document passes on AWS and elsewhere.
+
+### Removed — MQTT memory estimates and the settings that fed them
+
+- **Behaviour change.** These settings are removed, so delete them from your
+  configuration before you upgrade:
+  - `ingress_memory_budget_bytes` on an MQTT session; the strict decoder
+    refuses a document that still sets it;
+  - `container_memory_bytes` and `reserved_memory_bytes` in the AWS bootstrap
+    configuration.
+- **Behaviour change.** The AWS bootstrap decoder now refuses any key it does
+  not read; before, unknown keys were silently ignored. A bootstrap that still
+  sets `container_memory_bytes` or `reserved_memory_bytes`, or any misspelled
+  key, fails at task boot.
+- **Behaviour change.** The builder now refuses a route whose
+  `policy.max_in_flight` is negative, on every route. Before, only routes whose
+  receiver was bound to a session were checked, and other routes silently took
+  the default.
+- The AWS MQTT memory profile is gone. It took 25% of the container memory,
+  split it between the MQTT sessions, and derived each session's budget and
+  `receive_maximum` from its share. `receive_maximum` is now the configured
+  value or 192 on every runtime. The 20% headroom check went with it, and the
+  CDK no longer copies `MemoryMiB` into the bootstrap. `MemoryMiB` stays as the
+  Fargate task size you pick; nothing is computed from it. Choose it by
+  measuring the deployment under its real load.
+- The 64 MiB QoS 0 byte cap on the MQTT pending buffer (the buffer that holds
+  publishes that arrive before a receiver registers) is gone. The buffer keeps
+  its entry cap, `receive_maximum`: a QoS 0 publish over the cap is dropped,
+  and a QoS 1/2 publish over the cap evicts the oldest QoS 0 entry.
+- `max_payload_bytes` (default 256 KiB) is unchanged. It is a protocol
+  message-size limit: the session announces it to the broker in CONNECT as
+  the Maximum Packet Size (plus a 128 KiB metadata allowance) and enforces it.
+  The User Property caps (128 kept, 129 decoded) and the 128 KiB metadata cap
+  are unchanged too.
+- Removed Go API: `paho.IngressMemoryBound`, `paho.LargestSafeReceiveMaximum`,
+  `paho.DefaultIngressMemoryBudgetBytes`,
+  `paho.SessionOptions.IngressMemoryBudgetBytes`,
+  `paho.Config.ValidateIngressMemory`, `(*paho.Config).ConfigureIngressMemory`,
+  `ports.IngressMemoryConfig`, `ports.IngressMemoryProfileConfig`,
+  `infra.DefaultContainerMemoryBytes`, `model.DefaultContainerMemoryBytes`, and
+  the fields `infra.BootstrapConfig.ContainerMemoryBytes` and
+  `infra.BootstrapConfig.ReservedMemoryBytes`. `paho.Session.IngressMemoryStats` is
+  renamed `DispatchStats`; it reports the dispatch queue's depth and capacity,
+  both counts.
+- The finite-cgroup MQTT ingress memory proof
+  (`scripts/test-mqtt-ingress-memory.sh` and its long-running tests) is
+  removed with the estimate it checked.
+
+### Added — `bridge.max_mqtt_sessions`
+
+- Optional cap on the MQTT sessions a configuration uses; default `0` (no
+  limit), and a negative value is invalid. The builder refuses a configuration
+  over the limit, so every runtime refuses the same document; see the
+  [configuration reference](docs/configuration-reference.md#bridge----bridge-settings).
+- A reload over the limit is refused, and the running configuration keeps
+  serving.
+- The setting is in the `bridge` section, so changing the limit itself is a
+  bridge-wide change and replaces the whole runtime
+  ([ADR 0018](docs/adr/0018-reload-in-place-by-unit.md)). Adding or removing
+  one MQTT session changes no other session, so the in-place reload replaces
+  only that session's reload unit and the other MQTT sessions stay connected.
+
 ### Fixed — the AWS runtime no longer marks a bridge with no links degraded
 
 - The AWS runtime's start-up convergence check required every configuration

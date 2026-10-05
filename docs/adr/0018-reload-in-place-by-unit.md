@@ -160,15 +160,17 @@ the running one — or it fails.
   session) now has a short gap — its drain plus its start — that the AWS
   runtime's overlap swap used to avoid by starting the new runtime first.
   Messages wait at the source meanwhile. Only that unit sees the gap.
-- The AWS runtime's MQTT memory profile divides one reservation equally among
-  every MQTT session that can receive — every session a receiver uses, and
-  every persistent or exclusive session in use, pinned or not. A session that
-  leaves `ingress_memory_budget_bytes` unset takes its share as its budget,
-  written into its configuration. So adding or removing one such MQTT session
-  changes the share of every other unpinned MQTT session, and each of their
-  units is replaced. Pinning `ingress_memory_budget_bytes` per session, at or
-  below its share, keeps the other units connected; see
+- An MQTT session's options depend only on its own configuration:
+  `receive_maximum` is the count it sets, or the default 192, and nothing is
+  derived from the task memory or from the number of other sessions. So adding
+  or removing one MQTT session replaces only that session's unit, and every
+  other MQTT session stays connected; see
   [keeping MQTT tenants connected](../aws-deployment/config-reload.md#keeping-mqtt-tenants-connected).
+  The optional `bridge.max_mqtt_sessions` caps how many MQTT sessions a
+  configuration may use (see the
+  [configuration reference](../configuration-reference.md#bridge----bridge-settings)).
+  Changing the limit itself is a change to the `bridge` section, so it
+  replaces the whole runtime.
 - A reload that fails after retiring units ends unchanged when the retired
   units are restored from the running configuration; otherwise it ends torn (a
   full rebuild of the running configuration) or wedged (a process restart).
@@ -194,6 +196,9 @@ the running one — or it fails.
 - **Unmount and remount HTTP endpoints.** Rejected: the standard-library
   `ServeMux` offers neither. Units with an HTTP endpoint keep the full
   replacement.
-- **A new AWS setting that sizes MQTT memory shares independently of the
-  session count.** Rejected: the existing per-session
-  `ingress_memory_budget_bytes` already decouples a session.
+- **Size MQTT ingress from a share of the task's memory.** Rejected: a share
+  couples every MQTT session to the session count. One owner's change
+  reconnects every other owner's MQTT sessions, and once the share is too small
+  the whole configuration is refused. An estimate also cannot know the real
+  memory use. GoBridge limits counts only: `receive_maximum` per session and
+  `bridge.max_mqtt_sessions` for the MQTT sessions a configuration uses.

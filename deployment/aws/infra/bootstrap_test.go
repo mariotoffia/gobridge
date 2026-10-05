@@ -19,33 +19,12 @@ func TestBootstrapConfig_Normalized_AppliesDefaults(t *testing.T) {
 	assertEqual(t, DefaultAdminAddr, c.AdminAddr)
 	assertEqual(t, DefaultMonitorAddr, c.MonitorAddr)
 	assertEqual(t, DefaultTransportHTTPAddr, c.TransportHTTPAddr)
-	assertEqual(t, DefaultContainerMemoryBytes, c.ContainerMemoryBytes)
 	if c.HTTPReceiverAPIKeyParams == nil {
 		t.Error("HTTPReceiverAPIKeyParams should not be nil after Normalized()")
 	}
 
 	if c.HTTPSenderAPIKeyParams == nil {
 		t.Error("HTTPSenderAPIKeyParams should not be nil after Normalized()")
-	}
-}
-
-func TestBootstrapConfig_MemoryHeadroomBoundary(t *testing.T) {
-	const container = uint64(1000)
-	base := BootstrapConfig{
-		BridgeID:             "b",
-		ConfigFilePath:       "/f",
-		AdminAPIKeyParam:     "/a",
-		NodeRole:             NodeRoleControl,
-		Topology:             TopologySingle,
-		ContainerMemoryBytes: container,
-		ReservedMemoryBytes:  800,
-	}
-	if err := base.Validate(); err != nil {
-		t.Fatalf("exact 20%% headroom must be valid: %v", err)
-	}
-	base.ReservedMemoryBytes++
-	if err := base.Validate(); err == nil {
-		t.Fatal("less than 20% headroom must be rejected")
 	}
 }
 
@@ -94,7 +73,6 @@ func TestBootstrapConfig_Validate_DynamoDBCoordinatedHA(t *testing.T) {
 	c := BootstrapConfig{
 		BridgeID: "b", ConfigFilePath: "/f", AdminAPIKeyParam: "/a",
 		NodeRole: NodeRoleWorker, Topology: TopologyDynamoDBCoordinatedHA,
-		ContainerMemoryBytes:     DefaultContainerMemoryBytes,
 		DynamoDBHALeaseTableName: "leases", DynamoDBHAOutboxTableName: "outbox",
 		DynamoDBHAManagedSubscriptionsTableName: "history",
 		DynamoDBHAConfigFingerprint:             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -108,7 +86,6 @@ func TestBootstrapConfig_Validate_DynamoDBCoordinatedHARequiresExpectations(t *t
 	c := BootstrapConfig{
 		BridgeID: "b", ConfigFilePath: "/f", AdminAPIKeyParam: "/a",
 		NodeRole: NodeRoleWorker, Topology: TopologyDynamoDBCoordinatedHA,
-		ContainerMemoryBytes: DefaultContainerMemoryBytes,
 	}
 	if err := c.Validate(); err == nil {
 		t.Fatal("DynamoDB coordinated HA without deployment-owned expectations must be rejected")

@@ -179,13 +179,11 @@ MQTT claims an exclusive client ID: the old sessions stop (drain ≤ the
 configured `drain_timeout`, default 30s) before their replacements are built,
 dialed and reconciled. A bridge-wide change (`bridge`, `stores`,
 `config_watch`, `http`) still takes the full prepare-commit swap, and then
-**all MQTT sessions disconnect**. On the AWS runtime, the MQTT memory profile
-divides one reservation equally among every MQTT session that can receive
-(every session a receiver uses, and every persistent or exclusive session in
-use, pinned or not), and a session that leaves `ingress_memory_budget_bytes`
-unset takes its share as its budget. Adding or removing one such MQTT session
-therefore also reconnects every other unpinned MQTT session; see
-[keeping MQTT tenants connected](../aws-deployment/config-reload.md#keeping-mqtt-tenants-connected).
+**all MQTT sessions disconnect**. An MQTT session's options depend only on its
+own configuration (`receive_maximum` is the count it sets, or 192), so adding
+or removing one MQTT session replaces only that session's reload unit; every
+other MQTT session stays connected (see
+[keeping MQTT tenants connected](../aws-deployment/config-reload.md#keeping-mqtt-tenants-connected)).
 For every session that disconnects, during the window:
 
 - **QoS 1/2 on `clean_start=false` (persistent/exclusive) sessions**: queued

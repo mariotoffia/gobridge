@@ -77,7 +77,7 @@ func TestGAP_ReleaseVolumeConservation(t *testing.T) {
 	// The exercised volume, and its derivation, are part of the evidence: a
 	// reviewer must be able to see what the number came from.
 	// The collector leaves receive_maximum unset, so it runs on the adapter's
-	// byte-bounded default — the same window a deployment gets.
+	// default receive_maximum (192) — the same window a deployment gets.
 	receiveWindow := int(paho.DefaultReceiveMaximum)
 	volume := receiveWindow * releaseWindowRefills
 	restartAt := volume / 3

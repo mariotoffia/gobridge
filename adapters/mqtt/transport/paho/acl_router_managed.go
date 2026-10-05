@@ -157,7 +157,6 @@ func (r *router) resumeManagedDispatch(ctx context.Context) error {
 		pending := r.pending[idx]
 		copy(r.pending[idx:], r.pending[idx+1:])
 		r.pending = r.pending[:len(r.pending)-1]
-		r.pendingBytes -= pubBytes(pending.pub)
 		epoch := r.connEpoch
 		r.mu.Unlock()
 		r.dispatchCore(pending.pub, pending.ack, epoch, false, true)
@@ -213,7 +212,6 @@ func (r *router) deadLetterPending(
 		for i := range r.pending {
 			if r.pending[i].pub == entry.pub {
 				r.pending = append(r.pending[:i], r.pending[i+1:]...)
-				r.pendingBytes -= pubBytes(entry.pub)
 				r.releaseQueueReservationLocked(entry.pub)
 				break
 			}

@@ -22,18 +22,33 @@ values reduce resource usage but may cause backpressure on the source.
 This is the authoritative throughput-to-resource tier table. AWS-specific docs
 reference it rather than restating it.
 
-| Workload | vCPU | Memory | `max_in_flight` |
-|----------|------|--------|-----------------|
-| Low (< 100 msg/s) | 0.25 | 512 MiB | 50-100 |
-| Medium (100-1000 msg/s) | 0.5-1.0 | 1-2 GiB | 100-500 |
-| High (> 1000 msg/s) | 2.0-4.0 | 4-8 GiB | 500-2000 |
+| Workload | vCPU | `max_in_flight` |
+|----------|------|-----------------|
+| Low (< 100 msg/s) | 0.25 | 50-100 |
+| Medium (100-1000 msg/s) | 0.5-1.0 | 100-500 |
+| High (> 1000 msg/s) | 2.0-4.0 | 500-2000 |
 
 These are starting points. Profile your workload with realistic message sizes
 and processor chains to find the right balance.
 
-On ECS Fargate these map to task sizes where **1024 CPU units = 1 vCPU** (so
-0.25 vCPU = 256 units / 512 MiB, 0.5 vCPU = 512 units / 1024 MiB, 1 vCPU = 1024
-units / 2048 MiB). The `High` row is a single-instance vertical ceiling; the
+**Memory.** GoBridge does not estimate memory, so the table has no memory
+column. Choose the memory size (on AWS, the task's `MemoryMiB`) by measuring
+the deployment under its real load: real message sizes, real processor chains,
+and the real number of sessions and routes. GoBridge limits MQTT by counts
+instead:
+
+- `receive_maximum` (per MQTT session, default 192) caps the messages the
+  broker may have in flight to the session and the messages waiting for a
+  receiver;
+- `bridge.max_mqtt_sessions` (optional, default `0` = no limit) caps the number
+  of MQTT sessions one configuration uses; see the
+  [configuration reference](configuration-reference.md#bridge----bridge-settings).
+
+See [ingress limits are counts](transports/mqtt-options.md#ingress-limits-are-counts).
+
+On ECS Fargate, **1024 CPU units = 1 vCPU** (0.25 vCPU = 256 units, 0.5 vCPU =
+512 units, 1 vCPU = 1024 units), and each CPU size allows a fixed range of
+memory sizes. The `High` row is a single-instance vertical ceiling; the
 clustered profile instead scales horizontally, sizing each worker task lower and
 multiplying capacity by worker count. For Fargate task-size defaults and the
 horizontal-vs-vertical trade-off, see

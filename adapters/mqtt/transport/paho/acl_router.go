@@ -90,8 +90,7 @@ type router struct {
 	callbacksIdle     chan struct{}
 
 	// pending buffers publishes that matched no registered handler,
-	// bounded by pendingLimit (entries) AND pendingBytesLimit (payload
-	// bytes). Guarded by mu.
+	// bounded by pendingLimit (entries). Guarded by mu.
 	pending      []pendingPublish
 	pendingLimit int
 	// pendingChanged is rotated whenever a publish is buffered so managed
@@ -129,11 +128,6 @@ type router struct {
 	// old packet handles die with their connection and the broker redelivers them.
 	unsettledSeq uint64
 	unsettled    map[uint64]time.Time
-	// pendingBytes is the running sum of buffered payload sizes; capped
-	// by pendingBytesLimit so a flood of large publishes cannot buffer
-	// multiple gigabytes during a grace window. Guarded by mu.
-	pendingBytes      int64
-	pendingBytesLimit int64
 
 	// dispatchCh decouples the paho publish-callback goroutine from the
 	// (synchronous, possibly slow) dispatch path: onPublishReceived
@@ -306,15 +300,6 @@ type pendingPublish struct {
 // acknowledgement.
 const defaultPendingLimit = 65535
 
-// defaultPendingBytesLimit caps the pre-registration pending buffer in
-// payload bytes for QoS 0 ONLY (QoS 1/2 are never dropped for this ceiling —
-// see bufferLocked). Without it a QoS 0 flood during a grace window could
-// buffer gigabytes; 64 MiB is a generous ceiling that still bounds QoS 0
-// memory. QoS 1/2 pending memory is bounded instead by the entry count cap
-// (== receive_maximum), since dropping a QoS 1/2 is incompatible with
-// at-least-once.
-const defaultPendingBytesLimit int64 = 64 << 20
-
 // defaultDispatchSize is used only by routers constructed without a Session.
 // Session construction overrides it with the effective Receive Maximum.
 const defaultDispatchSize = int(DefaultReceiveMaximum)
@@ -383,9 +368,8 @@ func (r *router) CoveredRetainedCount() int64 {
 // with no evictable QoS 0 to reclaim — UNREACHABLE under a spec-compliant broker
 // (Receive-Maximum flow control bounds in-flight QoS 1/2 at the count cap), so a
 // non-zero value means a broker delivered more un-acked QoS 1/2 than the Receive
-// Maximum it was granted. The byte ceiling NEVER drops QoS 1/2 (it governs QoS 0
-// only), so this is distinct from best-effort QoS 0 overflow drops (folded into
-// Stats' `dropped` aggregate) and from the covered/orphan past-grace drops
+// Maximum it was granted. It is distinct from best-effort QoS 0 overflow drops
+// (folded into Stats' `dropped` aggregate) and from the covered/orphan past-grace drops
 // (CoveredDroppedCount / UnmatchedDroppedCount).
 func (r *router) OverflowDroppedCount() int64 {
 	return r.overflowDropped.Load()

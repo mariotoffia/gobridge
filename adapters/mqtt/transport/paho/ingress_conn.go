@@ -256,8 +256,8 @@ func (c *mqttIngressConn) validatePublish(fixedHeader byte, body []byte) (publis
 	// structs before the callback can refuse the packet. The caller therefore
 	// cuts the list on the raw bytes to one entry above the cap
 	// (truncatePublishUserProperties) — the callback still sees a violation
-	// and still acks-and-drops it, but the decode never costs more than the
-	// retained-slot budget. Every other cap decodes in proportion to the
+	// and still acks-and-drops it, but the SDK never decodes more than one
+	// property above the cap. Every other cap decodes in proportion to the
 	// bytes already read into this guard's buffer (≤ the advertised Maximum
 	// Packet Size enforced above). This guard's job remains bounding the RAW
 	// read (total packet size) and failing closed on malformed structure —

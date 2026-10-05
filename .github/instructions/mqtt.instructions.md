@@ -23,6 +23,13 @@ ADR-0010, ADR-0011, ADR-0019 and `docs/transports/mqtt*.md`.
   recycle; on Ephemeral QoS 1/2 it is ack, drop and record. Both go through
   `MQTTReceiverEmitRejected`. A stranded delivery pins a Receive-Maximum slot
   and wedges ingress.
+- MQTT ingress is limited by counts only: `receive_maximum` per session (the
+  configured value or 192; it sizes the dispatch queue and caps the messages
+  waiting for a receiver) and `bridge.max_mqtt_sessions` per configuration
+  ([configuration reference](../../docs/configuration-reference.md#bridge----bridge-settings)).
+  Flag any new memory or byte-size estimate, budget or profile.
+  `max_payload_bytes` is a protocol message-size limit announced as Maximum
+  Packet Size, not an estimate (`mqtt-options.md` §Ingress limits are counts).
 
 ## Identity
 

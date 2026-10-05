@@ -73,7 +73,7 @@ func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfi
 	// One resolution serves the whole apply: the in-place attempt and, when the
 	// change is not confined to reload units, the full swap after it.
 	epoch := a.applyEpoch(ctx)
-	inputs, err := a.resolveApplyInputs(ctx, logical)
+	inputs, err := resolveInputs(ctx, a.parameterResolver, a.cfg, a.pluginRegistry, logical)
 	if err != nil {
 		return err
 	}
@@ -121,20 +121,6 @@ func (a *App) applyEpoch(ctx context.Context) uint64 {
 		return observed
 	}
 	return a.observationEpoch.Load()
-}
-
-// resolveApplyInputs resolves what applying logical takes from outside the
-// document — the control-plane keys and the secrets it references — into the
-// runtime config, sized by the MQTT memory profile.
-func (a *App) resolveApplyInputs(ctx context.Context, logical *ports.BridgeConfig) (*resolvedInputs, error) {
-	inputs, err := resolveInputs(ctx, a.parameterResolver, a.cfg, a.pluginRegistry, logical)
-	if err != nil {
-		return nil, err
-	}
-	if err := applyMQTTMemoryProfile(inputs.RuntimeConfig, a.cfg); err != nil {
-		return nil, err
-	}
-	return inputs, nil
 }
 
 func (a *App) prepareRuntimePlan(ctx context.Context, epoch uint64, logical *ports.BridgeConfig, inputs *resolvedInputs,
@@ -318,7 +304,7 @@ func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) 
 	ctx, finish := a.recoveryContext(ctx)
 	defer finish()
 	epoch := a.applyEpoch(ctx)
-	inputs, err := a.resolveApplyInputs(ctx, logical)
+	inputs, err := resolveInputs(ctx, a.parameterResolver, a.cfg, a.pluginRegistry, logical)
 	var plan *runtimePlan
 	if err == nil {
 		plan, err = a.prepareRuntimePlan(ctx, epoch, logical, inputs, skipBaselineSeed)

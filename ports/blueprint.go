@@ -89,8 +89,11 @@ type BridgeSettings struct {
 	// Default: 3s.
 	PerRecordDrainTimeout string `yaml:"per_record_drain_timeout,omitempty" json:"per_record_drain_timeout,omitempty"`
 	// MaxDrainTimeout is the upper bound of that batch ceiling. Default: 10s.
-	MaxDrainTimeout string         `yaml:"max_drain_timeout,omitempty" json:"max_drain_timeout,omitempty"`
-	LogLevel        string         `yaml:"log_level,omitempty" json:"log_level,omitempty"`
+	MaxDrainTimeout string `yaml:"max_drain_timeout,omitempty" json:"max_drain_timeout,omitempty"`
+	LogLevel        string `yaml:"log_level,omitempty" json:"log_level,omitempty"`
+	// MaxMQTTSessions caps how many MQTT sessions a configuration may use; a
+	// session nothing references is not counted. 0 (the default) means no limit.
+	MaxMQTTSessions int            `yaml:"max_mqtt_sessions,omitempty" json:"max_mqtt_sessions,omitempty"`
 	Cluster         *ClusterConfig `yaml:"cluster,omitempty" json:"cluster,omitempty"`
 }
 

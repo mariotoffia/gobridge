@@ -99,8 +99,8 @@ each tenant its own sessions when tenants must not disturb each other. See
 [ADR 0018](../adr/0018-reload-in-place-by-unit.md).
 
 The in-place attempt runs after the same deployment-profile admission and
-cluster checks as every apply, with the secrets and the MQTT memory profile
-resolved once for it and for the full swap that may follow. The bootstrap
+cluster checks as every apply, with the secrets resolved once for it and for
+the full swap that may follow. The bootstrap
 library falls back to the [full swap](#swap-modes) when:
 
 - the change touches a bridge-wide section: `bridge`, `stores`, `config_watch`
@@ -147,23 +147,26 @@ outcome and the error, and ends one of three ways:
 
 ### Keeping MQTT tenants connected
 
-The MQTT memory profile reserves 25% of task memory for MQTT ingress and gives
-each MQTT session that can receive an equal share: every session a receiver
-uses, and every persistent or exclusive session in use. For a session that
-leaves `ingress_memory_budget_bytes` unset, the share becomes its
-`ingress_memory_budget_bytes`, and its `receive_maximum` is derived from it.
-Both are part of the session's reload unit. So adding or removing one such
-MQTT session changes the share of every other unpinned MQTT session, and every
-one of those units is replaced: each tenant's MQTT session disconnects and
-connects again.
+An MQTT session's options depend only on its own configuration. Its
+`receive_maximum` is the count you set, or the default 192; nothing is derived
+from the task memory or from the number of other sessions. So adding or
+removing one tenant's MQTT session replaces only that session's reload unit.
+Every other tenant's MQTT session stays connected. No per-session setting is
+needed to keep them apart.
 
-In a multi-tenant deployment, set `ingress_memory_budget_bytes` on every MQTT
-session. A pinned budget is kept as it is, and `receive_maximum` is then
-derived from the budget, the payload size and the session's own routes, so a
-tenant added or removed elsewhere leaves the session connected. Pick a budget
-no larger than the share at the largest number of such sessions you plan for
-(25% of task memory divided by that number): a pinned budget above the current
-share is rejected, and the share shrinks as sessions are added.
+GoBridge does not estimate memory. It limits MQTT by counts:
+
+- `receive_maximum` (per session) caps the messages the broker may have in
+  flight to the session and the messages waiting for a receiver;
+- `bridge.max_mqtt_sessions` (optional, default `0` = no limit) caps the number
+  of MQTT sessions the configuration uses; see the
+  [configuration reference](../configuration-reference.md#bridge----bridge-settings).
+
+A reload that would go over `bridge.max_mqtt_sessions` is refused, and the
+running configuration keeps serving. Changing the limit itself is a change to
+the `bridge` section, so it uses the [full swap](#swap-modes). Choose the task
+size (`MemoryMiB`) by measuring the deployment under its real load; see
+[deployment scaling](../deployment-scaling.md).
 
 ```yaml
 sessions:
@@ -174,11 +177,8 @@ sessions:
       session:
         broker_url: tls://broker.example.com:8883
         client_id: bridge-tenant-a
-        ingress_memory_budget_bytes: 67108864   # 64 MiB: the share of a 1 GiB task at 4 MQTT sessions
+        receive_maximum: 192   # a count; 192 is also the default
 ```
-
-See the [ingress byte model](../transports/mqtt-options.md#ingress-byte-model)
-for what the budget must hold.
 
 ### Swap Modes
 
