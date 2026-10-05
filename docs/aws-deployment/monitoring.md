@@ -320,13 +320,13 @@ embedder chooses them; keep them low-cardinality, as the warning below requires.
 The MQTT adapter self-instruments its own counters and gauges, tagged
 `session_id`. They are catalogued with their operator guidance in
 [Troubleshooting — MQTT](../adapter-diagnostic-metrics.md#mqtt-adaptersmqtttransportpaho);
-the three the shipped alarms read are `MQTTIngressPoisonDropped`
+the four the shipped alarms read are `MQTTIngressPoisonDropped`
 (acked-and-dropped ingress that breached a local cap — acknowledged loss),
-`MQTTSessionTakeover` (another client on the same `client_id`) and
+`MQTTSessionTakeover` (another client on the same `client_id`),
 `MQTTQoSDowngraded` (the broker first reported a lower QoS grant than
-configured; the subscription keeps running at the granted QoS as best effort).
-The counter marks only the first report; the gauge `MQTTQoSDowngradedActive`
-shows a downgrade that is still standing.
+configured; the subscription keeps running at the granted QoS as best effort)
+and `MQTTQoSDowngradedActive`. The counter marks only the first report; the
+gauge shows a downgrade that is still standing.
 
 Two more are worth a hand-authored alarm and have none:
 [`MQTTEgressRejected`](alarms.md#alarms-you-must-author-yourself) — a publish

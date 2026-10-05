@@ -211,3 +211,28 @@ func TestGoBridgeDynamoDBHA_AlarmsCoverHAAndExternalDuration(t *testing.T) {
 		}
 	}
 }
+
+// TestGoBridgeDynamoDBHA_AlarmsOnAStandingQoSDowngrade pins the alarm on the
+// MQTTQoSDowngradedActive gauge: the fleet Maximum of the dimensionless rollup
+// stays raised while any subscription runs below its requested QoS, and missing
+// data is not breaching because the gauge stops arriving once the count is zero.
+func TestGoBridgeDynamoDBHA_AlarmsOnAStandingQoSDowngrade(t *testing.T) {
+	h := newHAHarness(t, nil)
+	topic := awssns.NewTopic(h.stack, jsii.String("AlarmTopic"), nil)
+	alarms := gobridgealarms.NewGoBridgeAlarms(h.stack, jsii.String("Alarms"), &gobridgealarms.AlarmsProps{
+		DynamoDBHA: h.bridge,
+		Efs:        h.bridge.EfsConfig(),
+		AlarmTopic: topic,
+	})
+	if alarms.MQTTQoSDowngradedActiveAlarm() == nil {
+		t.Fatal("MQTTQoSDowngradedActive alarm is nil")
+	}
+	assertions.Template_FromStack(h.stack, nil).HasResourceProperties(jsii.String("AWS::CloudWatch::Alarm"), &map[string]any{
+		"MetricName":         "MQTTQoSDowngradedActive",
+		"Statistic":          "Maximum",
+		"Threshold":          0,
+		"ComparisonOperator": "GreaterThanThreshold",
+		"TreatMissingData":   "notBreaching",
+		"Dimensions":         assertions.Match_Absent(),
+	})
+}
