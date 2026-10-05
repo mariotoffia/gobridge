@@ -241,11 +241,17 @@ func TestSessionRecovery_DrainTimeoutTerminatesAndDisconnects(t *testing.T) {
 	assert.ErrorIs(t, s.Reconcile(t.Context(), connectivity.SessionPlan{}), shared.ErrTransportClosedPermanently)
 }
 
-func TestSessionRecovery_MissingSessionPresentFailsAndStaysDegraded(t *testing.T) {
+// TestSessionRecovery_MissingSessionPresentRecordsLossAndConnects configures
+// clean_start=true, so an ordinary connect of this session would not expect a
+// resume. A recovery dial always asks the broker to resume, so a missing
+// Session Present is still counted as a loss — and the connection comes up.
+func TestSessionRecovery_MissingSessionPresentRecordsLossAndConnects(t *testing.T) {
+	metrics := &ports.RecordingExporter{}
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://127.0.0.1:1883"},
 		ClientID:   "recovery-session-present",
-	}, connectivity.SessionPersistent, nil)
+		CleanStart: true,
+	}, connectivity.SessionPersistent, nil, metrics)
 	s.mu.Lock()
 	s.recoveryPending = true
 	s.recoveryNeedsSessionPresent = true
@@ -261,16 +267,82 @@ func TestSessionRecovery_MissingSessionPresentFailsAndStaysDegraded(t *testing.T
 		return &fakeLiveConn{}, func() {}, nil
 	}
 
-	err := s.Start(t.Context())
-	require.Error(t, err)
-	assert.ErrorIs(t, err, shared.ErrUnavailable)
+	require.NoError(t, s.Start(t.Context()))
+	s.mu.Lock()
+	terminalErr := s.terminalErr
+	s.mu.Unlock()
+	assert.NoError(t, terminalErr)
 	health := s.Health(t.Context())
-	assert.NotEqual(t, ports.ServiceLevelFull, health.ServiceLevel)
-	assert.Error(t, health.LastError)
+	require.ErrorIs(t, health.LastError, shared.ErrNotFound,
+		"the resume-lost latch explains the gap until a reconcile converges")
+	assert.Len(t, metrics.FindEntries(MetricMQTTSessionResumeLost), 1)
+	assert.Equal(t, int32(1), dials.Load())
+}
 
-	secondErr := s.Start(t.Context())
-	require.Error(t, secondErr)
-	assert.Equal(t, int32(1), dials.Load(), "lost broker state must remain failed until this Session instance is rebuilt")
+func TestSessionRecovery_SessionAbsentAfterDrainCompletesRecoveryAndRecordsLoss(t *testing.T) {
+	clk := clocktest.New()
+	metrics := &recoveryCountExporter{
+		RecordingExporter: &ports.RecordingExporter{},
+		recycled:          make(chan struct{}),
+	}
+	s := NewSession(SessionOptions{
+		BrokerURLs:       []string{"tcp://127.0.0.1:1883"},
+		ClientID:         "recovery-absent-after-drain",
+		Clock:            clk,
+		ConnectTimeout:   time.Second,
+		ReconcileTimeout: time.Second,
+		UnmatchedGrace:   time.Second,
+	}, connectivity.SessionPersistent, nil, metrics)
+	s.mu.Lock()
+	s.cm = &fakeLiveConn{}
+	s.connected = true
+	s.mu.Unlock()
+	events := s.Events()
+	s.connectOverrideAwaitConnectionUp = true
+	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		s.mu.Lock()
+		generation := s.connectionGeneration
+		s.mu.Unlock()
+		s.handleConnectionUpGenerationWithSessionPresent(generation, false)
+		return &fakeLiveConn{}, func() {}, nil
+	}
+
+	require.NoError(t, s.requestRecovery(t.Context()))
+	wait.RequireClosed(t, metrics.recycled, 5*time.Second)
+	require.NoError(t, s.acquireReload(t.Context()))
+	s.releaseReload()
+
+	s.mu.Lock()
+	terminalErr := s.terminalErr
+	pending := s.recoveryPending
+	active := s.recoveryAttemptActive
+	s.mu.Unlock()
+	assert.NoError(t, terminalErr)
+	assert.False(t, pending)
+	assert.False(t, active)
+	health := s.Health(t.Context())
+	assert.Equal(t, uint64(1), health.RecoveryRecycleCount)
+	assert.NoError(t, health.LastError,
+		"the recovery's converged reconcile clears the resume-lost latch")
+	assert.Len(t, metrics.FindEntries(MetricMQTTSessionResumeLost), 1)
+	requireNoSessionErrorBuffered(t, events)
+}
+
+// requireNoSessionErrorBuffered drains what is already buffered on events
+// without blocking, and fails on a terminal signal: a SessionError or a closed
+// channel.
+func requireNoSessionErrorBuffered(t *testing.T, events <-chan ports.SessionEvent) {
+	t.Helper()
+	for {
+		select {
+		case event, ok := <-events:
+			require.True(t, ok, "session events closed: the session went terminal")
+			require.NotEqual(t, ports.SessionError, event.Type,
+				"unexpected SessionError: %v", event.Err)
+		default:
+			return
+		}
+	}
 }
 
 type serializedReloadConn struct {
@@ -517,7 +589,6 @@ func TestSessionRecovery_SessionPresentEvidenceRejectsStaleConnectionEpoch(t *te
 	s.mu.Lock()
 	s.connEpoch++
 	s.mu.Unlock()
-	s.handleConnectionUpGenerationWithSessionPresent(generation, false)
 
 	err := s.captureRecoveryTargetEpoch(1)
 	require.Error(t, err)
@@ -720,11 +791,15 @@ func TestSessionRecovery_QueuedRequestPublishesAttemptOnlyAfterGate(t *testing.T
 	assert.NoError(t, health.LastError)
 }
 
-func TestSessionRecovery_QueuedSessionAbsentIrreversiblyFailsBeforeGate(t *testing.T) {
+func TestSessionRecovery_QueuedSessionAbsentRecordsLossAndRecoveryContinues(t *testing.T) {
+	metrics := &recoveryCountExporter{
+		RecordingExporter: &ports.RecordingExporter{},
+		recycled:          make(chan struct{}),
+	}
 	s := NewSession(SessionOptions{
 		BrokerURLs: []string{"tcp://127.0.0.1:1883"},
 		ClientID:   "queued-session-absent",
-	}, connectivity.SessionPersistent, nil)
+	}, connectivity.SessionPersistent, nil, metrics)
 	s.mu.Lock()
 	s.cm = &fakeLiveConn{}
 	s.connected = true
@@ -740,23 +815,27 @@ func TestSessionRecovery_QueuedSessionAbsentIrreversiblyFailsBeforeGate(t *testi
 		s.handleConnectionUpGenerationWithSessionPresent(currentGeneration, true)
 		return &fakeLiveConn{}, func() {}, nil
 	}
-	queuedFailed := make(chan struct{})
-	s.recoveryQueuedFailureHook = func() { close(queuedFailed) }
 
 	require.NoError(t, s.acquireReload(t.Context()))
 	require.NoError(t, s.requestRecovery(t.Context()))
 	assert.Equal(t, ports.ServiceLevelDegraded, s.Health(t.Context()).ServiceLevel)
 	s.handleConnectionUpGenerationWithSessionPresent(generation, false)
-	assert.Error(t, s.Health(t.Context()).LastError)
+	assert.Error(t, s.Health(t.Context()).LastError, "the lost resume is recorded")
 
 	s.releaseReload()
-	<-queuedFailed
-	s.handleConnectionUpGenerationWithSessionPresent(generation, true)
+	wait.RequireClosed(t, metrics.recycled, 5*time.Second)
+	require.NoError(t, s.acquireReload(t.Context()))
+	s.releaseReload()
+
+	s.mu.Lock()
+	terminalErr := s.terminalErr
+	s.mu.Unlock()
 	health := s.Health(t.Context())
-	assert.NotEqual(t, ports.ServiceLevelFull, health.ServiceLevel)
-	assert.Error(t, health.LastError)
-	assert.Zero(t, health.RecoveryRecycleCount)
-	assert.Zero(t, dials.Load())
+	assert.Equal(t, int32(1), dials.Load())
+	assert.Equal(t, uint64(1), health.RecoveryRecycleCount)
+	assert.NoError(t, health.LastError)
+	assert.Len(t, metrics.FindEntries(MetricMQTTSessionResumeLost), 1)
+	assert.NoError(t, terminalErr)
 }
 
 func TestSessionRecovery_RecycleMetricStartsOnlyAfterGate(t *testing.T) {
@@ -846,7 +925,6 @@ func TestSessionRecovery_ConcurrentTerminalFailuresCoalesce(t *testing.T) {
 	s.mu.Lock()
 	s.cm = &fakeLiveConn{disconnects: &disconnects}
 	s.connected = true
-	generation := s.connectionGeneration
 	s.mu.Unlock()
 	events := s.Events()
 	var quiesceCalls atomic.Int32
@@ -857,6 +935,9 @@ func TestSessionRecovery_ConcurrentTerminalFailuresCoalesce(t *testing.T) {
 
 	require.NoError(t, s.acquireReload(t.Context()))
 	require.NoError(t, s.requestRecovery(t.Context()))
+	s.mu.Lock()
+	recoveryGeneration := s.recoveryGeneration
+	s.mu.Unlock()
 	const failures = 8
 	var wg sync.WaitGroup
 	start := make(chan struct{})
@@ -865,7 +946,8 @@ func TestSessionRecovery_ConcurrentTerminalFailuresCoalesce(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			s.handleConnectionUpGenerationWithSessionPresent(generation, false)
+			s.terminateFailedRecovery(recoveryGeneration,
+				shared.ErrUnavailable.WithMessage("forced recovery failure"), false)
 		}()
 	}
 	close(start)
@@ -918,14 +1000,24 @@ func TestSessionRecovery_FailClosedWinnerStillCompletesUnifiedTerminalTransition
 	assert.ErrorIs(t, latched, shared.ErrTransportClosedPermanently)
 }
 
-func TestSessionRecovery_SessionAbsentDuringDrainWaitsForSettlementBarrier(t *testing.T) {
+func TestSessionRecovery_SessionAbsentDuringDrainIsNotTerminal(t *testing.T) {
 	var disconnects atomic.Int32
-	s := NewSession(SessionOptions{ClientID: "absent-during-drain"}, connectivity.SessionPersistent, nil)
+	metrics := &recoveryCountExporter{
+		RecordingExporter: &ports.RecordingExporter{},
+		recycled:          make(chan struct{}),
+	}
+	s := NewSession(SessionOptions{
+		BrokerURLs: []string{"tcp://127.0.0.1:1883"},
+		ClientID:   "absent-during-drain",
+	}, connectivity.SessionPersistent, nil, metrics)
 	s.mu.Lock()
 	s.cm = &fakeLiveConn{disconnects: &disconnects}
 	s.connected = true
 	generation := s.connectionGeneration
 	s.mu.Unlock()
+	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+		return &fakeLiveConn{}, func() {}, nil
+	}
 	events := s.Events()
 	barrierEntered := make(chan struct{}, 2)
 	var quiesceCalls atomic.Int32
@@ -947,23 +1039,22 @@ func TestSessionRecovery_SessionAbsentDuringDrainWaitsForSettlementBarrier(t *te
 	require.NoError(t, s.requestRecovery(t.Context()))
 	wait.RequireReceive(t, barrierEntered, time.Second)
 	s.handleConnectionUpGenerationWithSessionPresent(generation, false)
-	select {
-	case <-events:
-		t.Fatal("terminal signal became observable before settlement barrier released")
-	default:
-	}
+	requireNoSessionErrorBuffered(t, events)
 	assert.Zero(t, disconnects.Load())
 
 	close(releaseBarrier)
-	terminalEvents := 0
-	for event := range events {
-		if event.Type == ports.SessionError {
-			terminalEvents++
-		}
-	}
-	assert.Equal(t, 1, terminalEvents)
+	wait.RequireClosed(t, metrics.recycled, 5*time.Second)
+	require.NoError(t, s.acquireReload(t.Context()))
+	s.releaseReload()
+
+	s.mu.Lock()
+	terminalErr := s.terminalErr
+	s.mu.Unlock()
+	requireNoSessionErrorBuffered(t, events)
 	assert.Equal(t, int32(1), disconnects.Load())
 	assert.Equal(t, int32(1), quiesceCalls.Load())
+	assert.NoError(t, terminalErr)
+	assert.Len(t, metrics.FindEntries(MetricMQTTSessionResumeLost), 1)
 }
 
 type terminalReconcileConn struct {
@@ -1031,17 +1122,20 @@ func TestSessionRecovery_TerminalSignalWaitsForStartLocalCleanup(t *testing.T) {
 	s.recoveryNeedsSessionPresent = true
 	s.recoveryGeneration = 1
 	s.mu.Unlock()
+	terminalWaitingStart := make(chan struct{})
+	s.terminalAwaitStartHook = func() { close(terminalWaitingStart) }
 	s.connectOverrideAwaitConnectionUp = true
 	s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
 		s.mu.Lock()
 		generation := s.connectionGeneration
 		s.mu.Unlock()
-		s.handleConnectionUpGenerationWithSessionPresent(generation, false)
+		go s.terminateFailedRecovery(1, shared.ErrUnavailable.WithMessage("forced recovery failure"), false)
+		<-terminalWaitingStart
+		// The connection-up barrier completes with the latched terminal error.
+		s.handleConnectionUpGenerationWithSessionPresent(generation, true)
 		return conn, func() {}, nil
 	}
 	events := s.Events()
-	terminalWaitingStart := make(chan struct{})
-	s.terminalAwaitStartHook = func() { close(terminalWaitingStart) }
 	startDone := make(chan error, 1)
 	go func() { startDone <- s.Start(t.Context()) }()
 	<-conn.entered

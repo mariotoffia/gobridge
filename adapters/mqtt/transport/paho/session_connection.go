@@ -73,26 +73,16 @@ func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint
 		s.completeConnectionUpBarrier(generation, err)
 		return
 	}
-	if s.recoveryNeedsSessionPresent && !sessionPresent {
-		err := shared.ErrUnavailable.WithMessage(
-			"mqtt: settlement recovery did not resume the broker session (Session Present=false)")
-		recoveryGeneration := s.recoveryGeneration
-		s.connected = false
-		s.subscriptionsSatisfied = false
-		s.mu.Unlock()
-		s.terminateFailedRecovery(recoveryGeneration, err, true)
-		s.mu.Lock()
-		terminal := s.terminalErr
-		s.mu.Unlock()
-		s.completeConnectionUpBarrier(generation, terminal)
-		return
-	}
 	nextEpoch := s.connEpoch + 1
 	if s.recoveryNeedsSessionPresent {
 		s.recoverySessionPresentEpoch = nextEpoch
 		s.recoveryErr = nil
 	}
-	resumeLost := !sessionPresent && s.resumeExpectedLocked()
+	// A recovery dial always asks the broker to resume (recoveryConnect forces
+	// CleanStart=false), so an absent session is a loss even where an ordinary
+	// connect of this configuration would not expect one. The recovery goes on:
+	// its reconcile re-subscribes, exactly as after an ordinary reconnect.
+	resumeLost := !sessionPresent && (s.recoveryNeedsSessionPresent || s.resumeExpectedLocked())
 	if resumeLost {
 		s.resumeLostErr = durableResumeLostError()
 	}
