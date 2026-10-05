@@ -190,8 +190,12 @@ same document passes on AWS and elsewhere.
   When the broker answers Session Present = false to a recovery, the loss is
   recorded as on an ordinary reconnect (`MQTTSessionResumeLost`) and the
   recovery goes on. A recovery whose drain fails, or that fails before its
-  drain, still stops the session and rebuilds its unit, and so does an
-  exclusive session that an abandoned recovery leaves with no connection.
+  drain, still stops the session and rebuilds its unit, and so does a step
+  after the drain that fails closed the way it does outside a recovery
+  (managed-subscription cleanup). A lease-managed session (exclusive, with a
+  lease store) that an abandoned recovery leaves with no connection is closed
+  by its session manager and its unit is rebuilt; any other session left with
+  no connection is run again and reconnects.
 - A packet the pre-decode guard rejects — malformed, or larger than the
   advertised Maximum Packet Size — drops only the connection. The bridge tries
   to send DISCONNECT with reason code 0x95 (Packet too large) or 0x81
@@ -201,9 +205,12 @@ same document passes on AWS and elsewhere.
   `MQTTRouterDropped` no longer counts them. Alert on any non-zero
   `MQTTIngressRejected`; see
   [the ingress-poison runbook](docs/runbooks/mqtt-ingress-poison.md).
-- On Mosquitto a rejected packet no longer publishes the session's Last Will:
-  Mosquitto discards the will after any client DISCONNECT except 0x04. A
-  spec-compliant broker still publishes it.
+- On Mosquitto a rejected packet no longer publishes the session's Last Will
+  when the bridge's DISCONNECT reaches the broker: Mosquitto discards the will
+  after any client DISCONNECT except 0x04. When the bridge closes the socket
+  without a DISCONNECT (a write was in progress, or the DISCONNECT did not get
+  through), Mosquitto still publishes the will. A spec-compliant broker
+  publishes it in both cases.
 
 ### Added — `SessionRebuilds` and the session-unrecoverable handler
 

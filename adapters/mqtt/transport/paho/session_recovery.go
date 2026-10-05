@@ -164,13 +164,16 @@ func (s *Session) completeRecoveryAttempt(generation uint64) bool {
 // connection, so none of it can still act, and the session is not terminal.
 // When no connection is installed and no Start is in flight it closes the
 // events channel — the ordinary dead-session signal reloadLocked withholds
-// while a recovery is pending. The runtime manager then re-runs a
-// non-exclusive session; an exclusive session whose events close is closed and
-// its unit rebuilt by the supervisor. A Start in flight owns that signal
-// instead: if it fails, its caller gets the error and the manager re-runs the
-// session; if it succeeds, its SessionConnected reaches the manager. Closing
-// events under it would drop that SessionConnected, and every later Start
-// returns early on the installed connection without re-creating the channel.
+// while a recovery is pending. The supervisor then re-runs a session that is
+// not lease-managed (non-exclusive, or exclusive with no lease store), and its
+// Start re-creates the channel. The manager of a lease-managed session closes
+// the session and releases its lease; its next Start fails on the closed
+// session, and the supervisor reports ErrSessionUnrecoverable for a unit
+// rebuild. A Start in flight owns that signal instead: if it fails, its caller
+// gets the error and the manager re-runs the session; if it succeeds, its
+// SessionConnected reaches the manager. Closing events under it would drop
+// that SessionConnected, and every later Start returns early on the installed
+// connection without re-creating the channel.
 func (s *Session) abandonRecoveryAttempt(generation uint64, cause error) bool {
 	s.mu.Lock()
 	if !s.recoveryAttemptActive || s.recoveryGeneration != generation || s.terminalErr != nil {
@@ -369,9 +372,9 @@ func (s *Session) runRecovery(
 
 	// From here on the drain has finished, so no route work of the old
 	// connection can still act: a failure abandons the attempt instead of
-	// terminating the session. The runtime manager re-runs a non-exclusive
-	// session; an exclusive session whose events close is closed and its unit
-	// rebuilt by the supervisor (see abandonRecoveryAttempt).
+	// terminating the session, unless the failing step already failed closed.
+	// What the runtime does with a session the abandon leaves without a
+	// connection is described on abandonRecoveryAttempt.
 	if !s.recordRecoveryRecycleStart(generation) {
 		return
 	}

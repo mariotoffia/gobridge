@@ -105,14 +105,18 @@ is acked. The session drops the connection and reconnects; it does not stop.
   even while `connected` is true. It stays that way until a connection that
   came up after the last reject has stayed up for 30 s, so expect at least 30 s
   of not-ready after every reject.
-- The broker log shows the client disconnecting with reason code 0x95
-  (Packet too large) or 0x81 (Malformed Packet). The DISCONNECT is best effort:
-  when the bridge was writing a packet at that moment, it closes the socket
-  without one, and the broker logs a plain connection drop.
+- A broker that logs DISCONNECT reason codes shows the client disconnecting
+  with 0x95 (Packet too large) or 0x81 (Malformed Packet). Mosquitto does not
+  log the code: it logs `Received DISCONNECT from <client id>` at debug level
+  and `Client <client id> disconnected.` The DISCONNECT is best effort: when
+  the bridge was writing a packet at that moment, it closes the socket without
+  one, and the broker logs a plain connection drop.
 - **Last Will.** A spec-compliant broker publishes the session's Last Will
-  after 0x95 or 0x81. Mosquitto does not: it discards the will after any client
-  DISCONNECT except 0x04. Mosquitto enforces the client's Maximum Packet Size
-  itself, so this practically never happens there.
+  after 0x95 or 0x81, and after a drop with no DISCONNECT. Mosquitto does not
+  publish it when the DISCONNECT reaches it: it discards the will after any
+  client DISCONNECT except 0x04. It does publish the will when the bridge
+  closes the socket without a DISCONNECT. Mosquitto enforces the client's
+  Maximum Packet Size itself, so a reject practically never happens there.
 
 ### Diagnosis and remediation
 

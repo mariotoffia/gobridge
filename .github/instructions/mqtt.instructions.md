@@ -24,11 +24,14 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021 and `docs/transports/mqtt*.md`.
   holds for `connectionStabilityWindow`. Flag any change that latches a
   terminal error on a pre-decode reject (ADR-0021).
 - A settlement recovery that fails after its drain finished is abandoned
-  (`abandonRecoveryAttempt`): it starts the rate-limit cooldown and never
-  latches a terminal error. Session Present = false on a recovery connect is a
+  (`abandonRecoveryAttempt`): it starts the rate-limit cooldown and latches no
+  terminal error of its own. Session Present = false on a recovery connect is a
   resume loss (`MQTTSessionResumeLost`), not a failure. A failed drain, and a
   failure before the attempt reaches its drain, stay terminal, because old
-  route work may still act (ADR-0021).
+  route work may still act. A fail-closed path that is terminal outside a
+  recovery (for example managed-subscription cleanup in the recovery's
+  reconcile) stays terminal inside one; the abandon then does nothing
+  (ADR-0021).
 - A session that fails closed — ingress that does not quiesce within
   `reconcile_timeout` before a recycle, a failed recovery drain, a recovery
   that fails before its drain — latches `shared.ErrTransportClosedPermanently`

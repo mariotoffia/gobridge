@@ -33,8 +33,9 @@ each one reaches the supervisor as `ErrSessionUnrecoverable` wrapping
    ([MQTT settlement recovery](../transports/mqtt-settlement-recovery.md)).
    [ADR 0021](0021-contain-mqtt-recovery-and-ingress-reject-in-session.md) now
    decides the transport side: a failure after a successful drain no longer
-   latches the session closed, and only a failed drain, or a failure before
-   the drain, still ends this way.
+   latches the session closed, unless the failing step fails closed the way it
+   does outside a recovery (managed-subscription cleanup). A failed drain, or a
+   failure before the drain, still ends this way.
 3. **Ingress poison.** A packet the pre-decode guard rejects — malformed MQTT
    structure, or larger than the advertised Maximum Packet Size — latches the
    session closed ([MQTT ingress poison](../runbooks/mqtt-ingress-poison.md)).
@@ -230,10 +231,13 @@ decision, recorded in its own ADR when it lands.
 
 That decision is now
 [ADR 0021](0021-contain-mqtt-recovery-and-ingress-reject-in-session.md). A
-settlement recovery that fails after a successful drain is abandoned and the
-session reconnects, and a pre-decode reject drops only the connection. Neither
-latches the session closed any more; a failed drain, and a recovery that fails
-before its drain, still do.
+settlement recovery that fails after a successful drain is abandoned, and a
+pre-decode reject drops only the connection. Neither latches the session
+closed any more; a failed drain, a recovery that fails before its drain, and a
+step after the drain that fails closed the way it does outside a recovery
+(managed-subscription cleanup) still do. A lease-managed session that an
+abandoned recovery leaves with no connection is closed by its session manager
+and still gets the rebuild above.
 
 ## Rejected alternatives
 

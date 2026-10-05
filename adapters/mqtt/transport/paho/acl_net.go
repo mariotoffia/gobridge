@@ -49,11 +49,11 @@ func (s *Session) attemptGuardedConnection(
 
 // disconnectReasonFor maps a pre-decode reject to the MQTT v5 DISCONNECT
 // reason code (§3.14.2.1) the guard tries to send before it closes the
-// connection. MQTT v5 §3.1.2.11.4 requires 0x95 when a received packet exceeds
-// the Maximum Packet Size, and §4.13 allows a DISCONNECT before closing on a
-// malformed packet. A spec-compliant broker still publishes the Last Will for
-// both codes: only 0x00 discards it (MQTT-3.1.2-8). Mosquitto discards the
-// will on every client DISCONNECT except 0x04 (Disconnect with Will Message).
+// connection. The spec says the client should send 0x95 for a packet above the
+// Maximum Packet Size and 0x81 for a malformed one (§3.1.2.11.4 and §4.13.1).
+// A spec-compliant broker still publishes the Last Will for both codes: only
+// 0x00 discards it (MQTT-3.1.2-8). Mosquitto discards the will on every client
+// DISCONNECT except 0x04 (Disconnect with Will Message).
 func disconnectReasonFor(err error) byte {
 	var ingressErr *mqttIngressError
 	if errors.As(err, &ingressErr) && ingressErr.kind == mqttIngressPacketTooLarge {

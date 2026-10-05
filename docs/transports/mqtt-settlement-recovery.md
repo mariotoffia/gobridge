@@ -130,7 +130,12 @@ config knob:
   exact connection epoch; recovery captures its target epoch after reconnect and
   completes only when its reconcile converges on that same connection.
   Readiness stays degraded until that exact-epoch replacement reconciliation
-  succeeds in the same deadline;
+  succeeds in the same deadline. That rule holds for a recovery that
+  succeeds. An abandoned attempt clears the recovery state, so the session no
+  longer reads degraded for the recovery: readiness returns once the runtime
+  session manager's ordinary Reconcile converges on the session's connection,
+  after an ordinary reconnect when no connection was left (a lease-managed
+  session left with no connection is rebuilt instead, as below);
 - a failure after the drain finished **abandons** the attempt instead of
   failing the session
   ([ADR 0021](../adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)):
@@ -145,12 +150,25 @@ config knob:
   installed, the session stays connected and the runtime session manager runs
   an ordinary Reconcile on it. When none is installed, no Start is in flight
   and the session is not closed, the session closes its lifecycle channel, the
-  ordinary signal of a dead session: the manager runs a non-exclusive session
-  again, and closes an exclusive session, whose reload unit is then rebuilt
-  ([ADR 0020](../adr/0020-contain-unrecoverable-session-by-unit-rebuild.md));
+  ordinary signal of a dead session. The supervisor then runs any session that
+  is not lease-managed (non-exclusive, or exclusive in a runtime with no lease
+  store) again, and its Start re-creates the channel and connects. The manager
+  of a lease-managed session closes the session and releases its lease; when
+  the supervisor runs it again, Start on the closed session fails with
+  `shared.ErrTransportClosedPermanently`, the manager ends with
+  `ErrSessionUnrecoverable`, and the session's reload unit is rebuilt
+  ([ADR 0020](../adr/0020-contain-unrecoverable-session-by-unit-rebuild.md)).
+  With `connect_after_lease` (the default for a route source) that Start runs
+  only after this node holds the lease again;
 - a failed drain, and every failure before the attempt reaches its drain (gate
   timeout/cancellation, a cancelled attempt, a session closed or terminal
-  before the attempt began), enters one idempotent
+  before the attempt began), stay terminal. So does a step after the drain
+  that fails closed the way it does outside a recovery: the managed-subscription
+  cleanup the recovery's reconcile can run fails closed when ingress does not
+  quiesce before its recycle, or when the broker pins a delivery for a removed
+  filter and no dead-letter store takes it; the abandon then finds the session
+  terminal and does nothing. A failed drain or a failure before the drain
+  enters one idempotent
   terminal transition. It clears pending attempt state, latches a permanent
   error, quiesces ingress, disconnects the generation within the activation
   bound, emits one terminal SessionError, then closes the lifecycle channel. One generation-scoped drain state (`not-started`, `in-progress`,

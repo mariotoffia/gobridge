@@ -88,11 +88,18 @@ list beyond one entry above the retained cap on the raw bytes, so a legal packet
 cannot make the SDK decode tens of thousands of properties before the publish
 callback refuses it. Writes, deadlines, close operations, addresses, partial
 reads, and non-PUBLISH bytes retain `net.Conn` behavior. A typed secret-safe
-violation — malformed structure, or a packet above the advertised maximum — is
-latched by the existing terminal session transition before the connection
-fails, so autopaho's `OnConnectionDown` observes terminal state and does not
-start a reconnect storm. The local caps a compliant broker cannot enforce are
-left to the publish callback, which acks-and-drops the packet.
+violation — malformed structure, or a packet above the advertised maximum —
+drops the connection, not the session. The session counts
+`MQTTIngressRejected`; the guard tries to send a DISCONNECT with reason code
+0x95 (Packet too large) or 0x81 (Malformed Packet), best effort, and closes the
+socket; autopaho reconnects. While rejects keep arriving each reconnect waits
+an extra delay that grows with the number of consecutive rejects, so a broker
+that sends the packet again on every resume does not cause a tight reconnect
+loop. The session reads not ready until a connection that came up after the
+last reject has stayed up for 30 s
+([ADR 0021](../adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)).
+The local caps a compliant broker cannot enforce are left to the publish
+callback, which acks-and-drops the packet.
 
 ### Route
 
