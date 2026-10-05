@@ -5,8 +5,9 @@ Persistent or Exclusive session.
 
 **Start here when:**
 
-- dead-letter records with error code `SUBSCRIPTION_REMOVED` appear after a
-  filter was removed (the runtime has a dead-letter store, `stores.dlq`); or
+- dead-letter records with error code `SUBSCRIPTION_REMOVED` appear, or
+  `DLQEntries` with `category` `subscription_removed` rises, after a filter was
+  removed (the runtime has a dead-letter store, `stores.dlq`); or
 - the runtime has no dead-letter store, and a cutover stays below Full and
   reports that managed subscription migration requires restoring the old
   configuration.
@@ -70,6 +71,14 @@ with the same message ID stay separate records. The dead-letter store also keeps
 the removed filter as the record's address; the Admin API views do not show the
 address, but they show the filter as `extra_info.subscription` on a record with
 `redrive_mode` `auto`.
+
+Each record written, or found already written, counts one `DLQEntries` with
+`category` `subscription_removed`, tagged `route_id` with the record's route
+when it names one and with no `route_id` otherwise. So the `DLQEntries` alarms
+fire for these records. The delivery never reached a route, so the route
+conservation law in
+[Monitoring](../aws-deployment/monitoring.md#key-metrics) leaves this
+category out.
 
 **Adding the filter back redrives them by itself.** When the removed filter is
 added back on the same persistent or exclusive session (you roll the
