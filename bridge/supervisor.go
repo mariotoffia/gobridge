@@ -560,8 +560,10 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 		// A session rebuild retires and builds units of the running runtime
 		// under the lifecycle lock, on a goroutine of its own. The final stop
 		// waits for it, so it reads the runtime the rebuild leaves and Run never
-		// returns while a rebuild still works on it. The lock is taken only
-		// after the drive stops: a committed rollout applies under it.
+		// returns while a rebuild still works on it. The lock is taken after
+		// the drive stopped or its wait ran out: a committed rollout applies
+		// under it, so shutdown may also wait for an apply still in flight.
+		// Every holder of the lock is bounded.
 		s.lifecycleMu.Lock()
 		defer s.lifecycleMu.Unlock()
 		return s.stopCurrent(ctx)

@@ -97,6 +97,34 @@ func TestSupervisorSessionRebuildIgnoresAStaleReport(t *testing.T) {
 	assert.Equal(t, []int{0}, tf.closeCounts("b-s"))
 }
 
+// A rebuild that finds no unit holding the failed session in the running
+// configuration cannot serve it again in this runtime. The Supervisor does not
+// keep the session silently unserved: it stops the runtime and wedges.
+func TestSupervisorSessionRebuildWedgesWhenNoUnitHoldsTheSession(t *testing.T) {
+	tf := newPerSessionTransportFactory(false)
+	tf.onStart = failStartOf("a-s#1")
+	rec := &ports.RecordingExporter{}
+	s, _, _ := runInPlaceSupervisor(t, tf, applyTestConfig("a", "b"), WithSupervisorMetrics(rec))
+	rt := s.Runtime()
+	s.lifecycleMu.Lock() // hold the rebuild back once the report is taken
+	wait.Until(t, rebuildWait, "the report of owner a's session is taken", func() bool {
+		return len(rec.FindEntries(shared.MetricSessionRebuilds)) == 1
+	})
+	s.mu.Lock()
+	s.cfg = applyTestConfig("b")
+	s.mu.Unlock()
+	s.lifecycleMu.Unlock()
+
+	wait.Until(t, rebuildWait, "the Supervisor wedges", s.Terminal)
+
+	assert.Nil(t, s.Runtime())
+	assert.False(t, rt.IsRunning(), "the runtime is stopped")
+	assert.Equal(t, -1, tf.eventIndex("new:a-s#2"), "no copy of the failed session is built")
+	degraded, reason := s.Degraded()
+	assert.True(t, degraded)
+	assert.Contains(t, reason, "a session rebuild found no unit for the failed session")
+}
+
 // A rebuild refused before it retires anything leaves the failed session
 // unserved. The Supervisor does not keep a runtime in that state: it stops it
 // and wedges, so the process restarts.

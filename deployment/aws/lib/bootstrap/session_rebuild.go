@@ -85,7 +85,7 @@ func (a *App) rebuildSession(sessionID string) {
 	case bridge.InPlaceApplied:
 		a.logger.Info("bootstrap: rebuilt failed session in place", fields...)
 	case bridge.InPlaceUnchanged:
-		a.logger.Warn("bootstrap: session rebuild left the runtime unchanged", append(fields, "error", err)...)
+		a.logger.Warn("bootstrap: session rebuild did not apply", append(fields, "error", err)...)
 	default:
 		a.logger.Error("bootstrap: session rebuild failed", append(fields, "error", err)...)
 	}
