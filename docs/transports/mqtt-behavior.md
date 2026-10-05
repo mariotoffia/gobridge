@@ -46,7 +46,13 @@ acknowledged, counted loss of a message the bridge was configured to refuse;
 alert on any non-zero value and follow
 [the ingress-poison runbook](../runbooks/mqtt-ingress-poison.md). Malformed
 packets and totals above the advertised Maximum Packet Size — producible only by
-a broken broker — still fail the session closed at the raw pre-decode guard.
+a broken broker — are rejected at the raw pre-decode guard instead. The guard
+tries to send DISCONNECT with reason code 0x81 (Malformed Packet) or 0x95
+(Packet too large), closes the connection, and counts `MQTTIngressRejected`.
+The session is not terminal: it reconnects with an extra backoff that grows
+with consecutive rejects, and it reads not ready until a connection that came
+up after the last reject has stayed up for 30 s
+([ADR 0021](../adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)).
 
 The same guard bounds the one cap whose decode cost the wire does not bound. A
 PUBLISH carrying more than 129 User Properties has its list cut to 129 on the

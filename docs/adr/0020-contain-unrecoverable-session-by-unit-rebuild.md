@@ -31,9 +31,16 @@ each one reaches the supervisor as `ErrSessionUnrecoverable` wrapping
    the drain succeeds and a later step — the reconnect, the Session Present
    check, the reconcile — fails
    ([MQTT settlement recovery](../transports/mqtt-settlement-recovery.md)).
+   [ADR 0021](0021-contain-mqtt-recovery-and-ingress-reject-in-session.md) now
+   decides the transport side: a failure after a successful drain no longer
+   latches the session closed, and only a failed drain, or a failure before
+   the drain, still ends this way.
 3. **Ingress poison.** A packet the pre-decode guard rejects — malformed MQTT
    structure, or larger than the advertised Maximum Packet Size — latches the
    session closed ([MQTT ingress poison](../runbooks/mqtt-ingress-poison.md)).
+   [ADR 0021](0021-contain-mqtt-recovery-and-ingress-reject-in-session.md) now
+   decides the transport side: the reject drops only the connection, and the
+   session reconnects without going terminal.
 
 Any other path that latches the marker ends the same way, for example the
 pinned replay of a removed filter on a runtime with no dead-letter store.
@@ -203,7 +210,10 @@ runtime and builds the running configuration afresh, and wedges when that fails.
   30 s apart, and can keep its lease through it. A broker that keeps sending a
   malformed packet, or a pinned replay for a removed filter on a runtime with no
   dead-letter store, fails every fresh session the same way. Alert on the
-  `SessionRebuilds` rate and on the session's readiness.
+  `SessionRebuilds` rate and on the session's readiness. (Since
+  [ADR 0021](0021-contain-mqtt-recovery-and-ingress-reject-in-session.md) a
+  malformed packet no longer fails the session; the guard drops only the
+  connection.)
 - Every failure a rebuild must not answer still ends in a process restart, so a
   restart policy is still required
   ([exit codes](../health-and-shutdown.md#exit-codes)).
@@ -217,6 +227,13 @@ fails after a successful drain, and an ingress-poison rejection, still latch the
 session closed, and only the rebuild above brings the session back. Letting the
 MQTT transport recover from those without closing the session is a separate
 decision, recorded in its own ADR when it lands.
+
+That decision is now
+[ADR 0021](0021-contain-mqtt-recovery-and-ingress-reject-in-session.md). A
+settlement recovery that fails after a successful drain is abandoned and the
+session reconnects, and a pre-decode reject drops only the connection. Neither
+latches the session closed any more; a failed drain, and a recovery that fails
+before its drain, still do.
 
 ## Rejected alternatives
 

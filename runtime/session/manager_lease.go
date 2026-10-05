@@ -125,8 +125,9 @@ func (m *Manager) releaseAndReturn(ctx context.Context, token persistence.LeaseT
 		// About to hand ownership to a standby on the strength of "this transport
 		// is permanently closed, so nothing of ours can still send". Prove it
 		// rather than infer it: a session may latch its permanent marker
-		// ASYNCHRONOUSLY — the paho session's ingress-poison rejection returns
-		// immediately and quiesces on a goroutine — so a Start that reports the
+		// ASYNCHRONOUSLY — a paho settlement recovery whose drain fails, or that
+		// fails before its drain, latches it on the recovery's own goroutine —
+		// so a Start that reports the
 		// marker does NOT by itself mean accepted deliveries have stopped
 		// settling. Close the source (bounded) first and keep the lease when that
 		// close did not complete, exactly as the session-failure path does. In

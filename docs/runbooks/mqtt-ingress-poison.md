@@ -23,13 +23,13 @@ anything else: an un-acked rejection is redelivered by the broker on every
 restart → redeliver → terminal forever — a permanent, publisher-triggerable
 kill switch for every route on the session.
 
-Two violation classes remain session-terminal because only a **broken broker**
-can produce them: malformed MQTT structure and totals above the advertised
-Maximum Packet Size. Those reject at the raw pre-decode guard and fail the
-session closed; if a session restart-loops with
-`mqtt: inbound packet size ... exceeds Maximum Packet Size` or
-`malformed inbound packet rejected before decoding`, the broker is
-non-compliant — fix or replace the broker; no bridge-side setting clears it.
+Two violation classes are handled earlier, because only a **broken broker** can
+produce them: malformed MQTT structure and a packet larger than the advertised
+Maximum Packet Size. The raw pre-decode guard rejects those before Paho decodes
+them. A rejected packet never reaches a route. The guard drops the connection,
+not the session: the session reconnects and is never terminal
+([ADR 0021](../adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)).
+See [Broker sends a malformed or oversized packet](#broker-sends-a-malformed-or-oversized-packet).
 
 ## Symptom
 
@@ -77,3 +77,57 @@ non-compliant — fix or replace the broker; no bridge-side setting clears it.
 Alert on ANY non-zero `MQTTIngressPoisonDropped` rate: it is always either a
 misconfigured cap, a broken producer, or hostile traffic — never steady-state
 normal.
+
+Alert on ANY non-zero `MQTTIngressRejected` too: a compliant broker never sends
+the packets it counts.
+
+## Broker sends a malformed or oversized packet
+
+The pre-decode guard rejects a packet with a malformed MQTT structure, or one
+larger than the Maximum Packet Size the bridge advertised in CONNECT
+(`max_payload_bytes` + 128 KiB). The packet never reaches a route, and nothing
+is acked. The session drops the connection and reconnects; it does not stop.
+
+### What you see
+
+- `MQTTIngressRejected` advances, tagged `session_id`. `MQTTRouterDropped` does
+  not count these rejects.
+- An Error log per reject:
+  `mqtt: rejected inbound packet before Paho decoding; dropping the connection`,
+  with `client_id`, `error` and `streak` (the number of consecutive rejects).
+  The `error` is `mqtt: inbound packet size N exceeds Maximum Packet Size M before decoding`
+  or `mqtt: malformed inbound packet rejected before decoding`.
+- The session reconnects, and each reconnect waits longer while rejects keep
+  arriving: an extra delay that starts at `reconnect_delay` and doubles with
+  each consecutive reject, up to `reconnect_max_delay`, with jitter. The extra
+  delay stops once no reject has arrived for 30 s.
+- Deep health reports the session `ready: false` with `service_level: none`,
+  even while `connected` is true. It stays that way until a connection that
+  came up after the last reject has stayed up for 30 s, so expect at least 30 s
+  of not-ready after every reject.
+- The broker log shows the client disconnecting with reason code 0x95
+  (Packet too large) or 0x81 (Malformed Packet). The DISCONNECT is best effort:
+  when the bridge was writing a packet at that moment, it closes the socket
+  without one, and the broker logs a plain connection drop.
+- **Last Will.** A spec-compliant broker publishes the session's Last Will
+  after 0x95 or 0x81. Mosquitto does not: it discards the will after any client
+  DISCONNECT except 0x04. Mosquitto enforces the client's Maximum Packet Size
+  itself, so this practically never happens there.
+
+### Diagnosis and remediation
+
+1. Read the Error log. The packet size and the limit tell an oversized packet
+   from a malformed one.
+2. Find what sent the packet. A compliant broker never forwards a packet above
+   the client's Maximum Packet Size and never sends malformed MQTT, so the
+   cause is the broker or something between the broker and the bridge: a
+   proxy, a load balancer, a WebSocket gateway.
+3. Fix or replace that component. No bridge-side setting is the fix.
+
+The session recovers on its own once the packets stop. A broker that sends the
+same packet again on every resume keeps the session cycling — reconnecting,
+rejecting, waiting out the backoff — and not ready, but the other sessions and
+routes in the process keep running
+([ADR 0021](../adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)).
+Do not restart the bridge for it: a restart does not stop the broker from
+sending the packet.
