@@ -20,8 +20,11 @@ import (
 // acknowledging it without a durable copy would lose it. When the session names
 // its managed subscription identity, the record is marked for automatic redrive
 // with the session, the filter and that identity as its facts (ADR 0019), so
-// adding the same subscription back redrives it. Caller holds rt.mu.
-func (rt *Runtime) installRemovedSubscriptionDeadLetter(dlqRouter *dlq.Router, sessionIDs []string) {
+// adding the same subscription back redrives it. Each confirmed write, a
+// suppressed duplicate included, counts one DLQEntries in category
+// subscription_removed, tagged with the record's route when it names one. Caller
+// holds rt.mu.
+func (rt *Runtime) installRemovedSubscriptionDeadLetter(dlqRouter *dlq.Router, metrics ports.MetricsExporter, sessionIDs []string) {
 	if !dlqRouter.HasStore() {
 		return
 	}
@@ -53,7 +56,18 @@ func (rt *Runtime) installRemovedSubscriptionDeadLetter(dlqRouter *dlq.Router, s
 			// collapse into one record, acknowledging the second without its
 			// own copy. Envelope IDs are unique within a source, so the filter
 			// is not needed in the identity.
-			return dlqRouter.Route(ctx, env, routeID, "", filter, sessionID, sessionID, shared.ErrSubscriptionRemoved, 0, opts...)
+			if err := dlqRouter.Route(ctx, env, routeID, "", filter, sessionID, sessionID, shared.ErrSubscriptionRemoved, 0, opts...); err != nil {
+				return err
+			}
+			// The delivery never reached a route, so it has a category of its
+			// own: the conservation law leaves it out, and it is not a send
+			// failure. An empty route_id is left out, not sent as "".
+			tags := []shared.Tag{{Key: shared.TagKeyCategory, Value: "subscription_removed"}}
+			if routeID != "" {
+				tags = append(tags, shared.Tag{Key: shared.TagKeyRouteID, Value: routeID})
+			}
+			metrics.Counter(shared.MetricDLQEntries, 1, tags...)
+			return nil
 		})
 	}
 }

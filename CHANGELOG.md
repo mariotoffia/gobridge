@@ -10,6 +10,18 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Fixed — a removed subscription's dead-letter records are counted in `DLQEntries`
+
+- A delivery that a persistent MQTT session dead-letters for a filter a
+  configuration change removed was written to the DLQ without a `DLQEntries`
+  datapoint (#94), so every `DLQEntries` alarm stayed quiet and a single-task
+  deployment raised nothing at all. Each such write, a duplicate the store
+  suppresses included, now counts one `DLQEntries` with `category`
+  `subscription_removed`. It is tagged `route_id` only when exactly one route
+  receives through the session. A failed or refused write counts none, as
+  before. These deliveries never reached a route, so the route conservation
+  law leaves the category out.
+
 ## [0.5.2] - 2026-10-02
 
 A runtime without a lease store no longer treats any session as lease-managed.
