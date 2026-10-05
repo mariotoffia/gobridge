@@ -516,8 +516,9 @@ func (rt *Runtime) superviseSession(sid string, run func(context.Context) error)
 				// re-Acquired the lease via the store's same-owner fast path,
 				// bumped the version and reset every standby's observation
 				// window, wedging the whole cluster while liveness stayed green.
-				// The manager already RELEASED the lease, so a healthy standby
-				// takes over immediately. A fault a fresh session clears goes to
+				// The manager has RELEASED the lease, unless a reconcile failed
+				// closed while route work may still hold deliveries, so a healthy
+				// standby takes over. A fault a fresh session clears goes to
 				// the session-unrecoverable handler after the rebuild backoff;
 				// when it takes the rebuild the supervisor ends quietly and the
 				// recorded fault keeps the session not ready until the rebuild

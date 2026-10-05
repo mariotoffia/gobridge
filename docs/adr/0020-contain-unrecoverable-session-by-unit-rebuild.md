@@ -139,12 +139,13 @@ not compete for the lease again MUST wrap `ErrProcessRestartRequired`.
 
 ### Leases
 
-A session that fails closed because ingress did not quiesce (fault 1) keeps its
+The rebuild changes no lease rule. A session manager whose reconcile returns
+the permanent marker, as when ingress did not quiesce (fault 1), keeps its
 lease, since route work may still hold deliveries, and the retire leaves it
-held. Any other session failure releases the lease as it did before this
-decision: the source closes first, then the settlement grace a step-down waits
-(`StepDownGrace`) runs out, and a send that completes after it is the duplicate
-a step-down accepts. The rebuilt session competes for the lease only after the
+held. Any other failure releases the lease once the source closed. A failure of
+the running session first waits the settlement grace a step-down waits
+(`StepDownGrace`), and a send that completes after it is the duplicate a
+step-down accepts. The rebuilt session competes for the lease only after the
 old unit is retired, so its route work has stopped. A failure whose source
 close did not complete keeps the lease and carries `ErrProcessRestartRequired`.
 

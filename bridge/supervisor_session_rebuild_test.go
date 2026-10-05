@@ -48,6 +48,15 @@ func TestSupervisorRebuildsOnlyTheFailedSessionsUnit(t *testing.T) {
 	wait.Until(t, rebuildWait, "owner a's unit runs on a fresh session", func() bool {
 		return tf.eventIndex("start:a-s#2") != -1 && !rt.SessionUnrecoverable("a-s")
 	})
+	// The rebuild holds the lifecycle lock until it settles, and Terminal is
+	// false while it runs.
+	wait.Until(t, rebuildWait, "the rebuild settles", func() bool {
+		if !s.lifecycleMu.TryLock() {
+			return false
+		}
+		s.lifecycleMu.Unlock()
+		return true
+	})
 
 	assert.Same(t, rt, s.Runtime(), "the running runtime is kept")
 	assert.True(t, rt.IsRunning())
