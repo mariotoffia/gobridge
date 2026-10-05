@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // InstanceID returns the bridge instance identifier.
@@ -64,6 +65,18 @@ func (rt *Runtime) clearComponentError(name string) {
 	rt.mu.Lock()
 	delete(rt.componentErrors, name)
 	rt.mu.Unlock()
+}
+
+// SessionUnrecoverable reports whether the supervisor of session sid recorded
+// an ErrSessionUnrecoverable that no rebuild or retire has cleared yet.
+func (rt *Runtime) SessionUnrecoverable(sid string) bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.sessionUnrecoverableLocked(sid)
+}
+
+func (rt *Runtime) sessionUnrecoverableLocked(sid string) bool {
+	return errors.Is(rt.componentErrors["session:"+sid], session.ErrSessionUnrecoverable)
 }
 
 // routeStabilityWindow is how long a supervised route's CURRENT run must stay up

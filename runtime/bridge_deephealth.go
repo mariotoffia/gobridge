@@ -22,6 +22,9 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 		sid               string
 		hasLease          bool
 		connectAfterLease bool
+		// unrecoverable marks a session whose supervisor recorded an
+		// ErrSessionUnrecoverable that no rebuild or retire has cleared yet.
+		unrecoverable bool
 	}
 	type routeSnap struct {
 		id           string
@@ -42,7 +45,8 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 	sources := rt.managerSourcesLocked()
 	snapshot := func(sid string) sessionSnap {
 		src := sources[sid]
-		snap := sessionSnap{sess: src.session, sid: sid, connectAfterLease: src.defersConnect(rt.leaseStore != nil)}
+		snap := sessionSnap{sess: src.session, sid: sid, connectAfterLease: src.defersConnect(rt.leaseStore != nil),
+			unrecoverable: rt.sessionUnrecoverableLocked(sid)}
 		if mgr, ok := rt.sessionMgrs[sid]; ok {
 			snap.connectAfterLease = mgr.DefersConnect()
 			_, snap.hasLease = mgr.Token()
@@ -141,6 +145,15 @@ func (rt *Runtime) DeepHealth(ctx context.Context) ports.DeepHealth {
 
 	for i, snap := range sessSnaps {
 		sh := sessHealth[i]
+		// A session that failed unrecoverably serves nothing until a rebuild or
+		// retire clears its fault, whatever its own Health still reports. It
+		// holds no lease, so it would otherwise pass for a deferred-connect
+		// standby below and be excused from the ready aggregate.
+		if snap.unrecoverable {
+			sh.Ready = false
+			sh.ServiceLevel = ports.ServiceLevelNone
+			allReady = false
+		}
 		dh.Sessions = append(dh.Sessions, ports.SessionHealthDetail{
 			SessionID:                snap.sid,
 			Connected:                sh.Connected,

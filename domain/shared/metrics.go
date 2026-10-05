@@ -301,6 +301,10 @@ const (
 	// A rising value flags a session that keeps failing to reconnect/re-acquire
 	// its lease while the rest of the bridge stays up — alert on it.
 	MetricSessionRestarts = "SessionRestarts"
+	// MetricSessionRebuilds counts the in-place rebuilds of a session that failed
+	// unrecoverably: the runtime reported it to its session-unrecoverable handler,
+	// which took it, instead of going terminal. Tagged session_id.
+	MetricSessionRebuilds = "SessionRebuilds"
 	// MetricRouteRestarts counts per-route supervised restarts: a route runner
 	// returned an error and was restarted in ISOLATION (jittered capped backoff)
 	// instead of tearing down the whole runtime (per-route supervision). It

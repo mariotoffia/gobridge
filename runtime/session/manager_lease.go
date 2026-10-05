@@ -98,14 +98,16 @@ var ErrProcessRestartRequired = errors.New("session must be recovered by a proce
 // unconditionally safe. When it is set and the failure carries the permanent
 // shared.ErrTransportClosedPermanently marker (a single-use session refusing
 // Start-after-Close), the lease is released AND the returned error is tagged
-// ErrSessionUnrecoverable, so superviseSession escalates to terminal rather than
-// looping on the dead instance while a standby waits out the TTL. All other
+// ErrSessionUnrecoverable, so superviseSession never loops on the dead instance
+// while a standby waits out the TTL: it reports the session to the
+// session-unrecoverable handler when one is installed (a composition root
+// rebuilds the session's unit), else it escalates to terminal. All other
 // failures (a broker blip, a transient reconcile rejection, a plain transient
 // ErrUnavailable) are returned as-is for isolated capped-backoff retry. A
 // non-escalatable permanent marker is the reconcile / managed-migration phase:
 // migration already failed closed and durable route work may still unwind, so it
-// is made terminal WITHOUT releasing the lease and ownership cannot transfer
-// under unsettled work.
+// is made unrecoverable WITHOUT releasing the lease and ownership cannot transfer
+// under unsettled work; superviseSession treats it the same way.
 func (m *Manager) releaseAndReturn(ctx context.Context, token persistence.LeaseToken, err error, phase string, escalatable bool) error {
 	m.mu.Lock()
 	m.hasLease = false
@@ -113,7 +115,10 @@ func (m *Manager) releaseAndReturn(ctx context.Context, token persistence.LeaseT
 	if errors.Is(err, shared.ErrTransportClosedPermanently) && !escalatable {
 		// Managed migration failed closed after a broker-pinned delivery. The
 		// transport already disconnected, but durable route work may still unwind;
-		// preserve single ownership until natural TTL and force a fresh process.
+		// preserve single ownership until natural TTL. superviseSession reports it
+		// to the session-unrecoverable handler when one is installed (a composition
+		// root rebuilds the session's unit), else it goes terminal and forces a
+		// fresh process.
 		return fmt.Errorf("%w: %w", ErrSessionUnrecoverable, err)
 	}
 	if escalatesToUnrecoverable(err, escalatable) {
@@ -132,6 +137,9 @@ func (m *Manager) releaseAndReturn(ctx context.Context, token persistence.LeaseT
 				ErrSessionUnrecoverable, ErrProcessRestartRequired, phase, err)
 		}
 		m.releaseOwnedLeaseBestEffort(ctx, token, phase)
+		// Released: superviseSession reports the session to the
+		// session-unrecoverable handler when one is installed (a composition root
+		// rebuilds the session's unit), else it escalates to terminal.
 		return fmt.Errorf("%w: %w", ErrSessionUnrecoverable, err)
 	}
 	m.releaseOwnedLeaseBestEffort(ctx, token, phase)

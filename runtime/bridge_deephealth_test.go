@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/mariotoffia/gobridge/domain/clock/clocktest"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
@@ -78,4 +80,74 @@ func TestDeepHealth_SessionDetailCarriesReportedHealth(t *testing.T) {
 		ReceiveWindowUtilization: 0.75,
 		RecoveryRecycleCount:     5,
 	}, dh.Sessions[0])
+}
+
+// newSessionSenderHealthRuntime is a running runtime with one session, s1,
+// registered as an egress target with cfg, whose Health reports health. Its
+// lease store never grants a lease, so an exclusive deferred-connect s1 is a
+// standby.
+func newSessionSenderHealthRuntime(cfg session.Config, health ports.SessionHealth) *Runtime {
+	return &Runtime{
+		// Never advanced, so the shared probe deadline cannot fire.
+		clk:             clocktest.NewAt(time.Unix(0, 0)),
+		componentErrors: make(map[string]error),
+		running:         true,
+		healthy:         true,
+		leaseStore:      heldElsewhereLeaseStore{},
+		sessionSenders: map[string]*sessionSenderEntry{
+			"s1": {config: cfg, session: &fixedHealthSession{health: health}},
+		},
+		sessionMgrs: map[string]*session.Manager{},
+	}
+}
+
+func unrecoverableSessionFault() error {
+	return fmt.Errorf("%w: %w", session.ErrSessionUnrecoverable, shared.ErrTransportClosedPermanently)
+}
+
+// A session whose supervisor recorded an unrecoverable failure is not ready and
+// serves nothing, whatever its own Health still reports, and the instance does
+// not advertise itself ready for traffic until a rebuild clears the fault.
+func TestDeepHealth_UnrecoverableSessionIsNotReady(t *testing.T) {
+	healthy := ports.SessionHealth{Connected: true, Ready: true, ServiceLevel: ports.ServiceLevelFull}
+
+	rt := newSessionSenderHealthRuntime(session.Config{SessionID: "s1"}, healthy)
+	before := rt.DeepHealth(context.Background())
+	require.Len(t, before.Sessions, 1)
+	require.True(t, before.Sessions[0].Ready, "precondition: the session reports itself ready")
+	require.True(t, before.ReadyForTraffic, "precondition: a ready session leaves the instance ready")
+
+	rt.componentErrors["session:s1"] = unrecoverableSessionFault()
+	dh := rt.DeepHealth(context.Background())
+
+	require.Len(t, dh.Sessions, 1)
+	assert.False(t, dh.Sessions[0].Ready)
+	assert.Equal(t, ports.ServiceLevelNone, dh.Sessions[0].ServiceLevel)
+	assert.True(t, dh.Sessions[0].Connected, "the rest of the session's own report is kept")
+	assert.False(t, dh.ReadyForTraffic)
+	assert.Equal(t, ports.ServiceLevelNone, dh.ServiceLevel)
+}
+
+// A deferred-connect standby is excused from the ready aggregate because it
+// stays disconnected until it wins the lease. A failed exclusive session holds
+// no lease either, so it looks like such a standby; the recorded unrecoverable
+// fault must still keep the instance from advertising itself ready.
+func TestDeepHealth_UnrecoverableDeferredStandbyIsNotExcused(t *testing.T) {
+	standby := ports.SessionHealth{Ready: false, ServiceLevel: ports.ServiceLevelNone}
+	cfg := session.Config{SessionID: "s1", Exclusive: true, ConnectAfterLease: true}
+
+	rt := newSessionSenderHealthRuntime(cfg, standby)
+	before := rt.DeepHealth(context.Background())
+	require.Len(t, before.Sessions, 1)
+	require.True(t, before.Sessions[0].ConnectAfterLease, "precondition: the session defers its connect")
+	require.False(t, before.Sessions[0].HasLease, "precondition: the session holds no lease")
+	require.True(t, before.ReadyForTraffic, "precondition: a deferred-connect standby is excused")
+
+	rt.componentErrors["session:s1"] = unrecoverableSessionFault()
+	dh := rt.DeepHealth(context.Background())
+
+	require.Len(t, dh.Sessions, 1)
+	assert.False(t, dh.Sessions[0].Ready)
+	assert.Equal(t, ports.ServiceLevelNone, dh.Sessions[0].ServiceLevel)
+	assert.False(t, dh.ReadyForTraffic, "a failed session must not be excused as a standby")
 }

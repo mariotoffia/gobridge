@@ -262,6 +262,7 @@ table. See [ADR 0005](../adr/0005-outbox-partition-claim-design.md) and the
 | `MQTTReconnects` | `session_id` | Count | Session reconnects (historical wire name; emitted transport-agnostically by the session manager) |
 | `ReconcileFailures` | `session_id` | Count | Reconcile-on-reconnect failures |
 | `SessionRestarts` | `session_id` | Count | Per-session supervised restarts (isolated, capped backoff) |
+| `SessionRebuilds` | `session_id` | Count | In-place rebuilds of a session that failed unrecoverably, taken by the session-unrecoverable handler instead of a terminal runtime |
 | `RouteRestarts` | `route_id` | Count | Per-route supervised restarts (isolated, jittered capped backoff) |
 | `DeliveryPanics` | `route_id` | Count | Delivery-goroutine panics recovered in the route runner, and panics recovered in an automatic DLQ redrive |
 
