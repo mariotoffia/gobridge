@@ -156,6 +156,15 @@ const (
 	// Invalid — a different condition — and is NOT counted here.)
 	MetricMQTTSessionTakeover = "MQTTSessionTakeover"
 
+	// MetricMQTTIngressRejected counts inbound packets the pre-decode guard
+	// rejected: a malformed MQTT structure, or a packet larger than the Maximum
+	// Packet Size the client advertised in CONNECT. The guard sends DISCONNECT
+	// and drops the connection; the session reconnects with backoff and is not
+	// terminal. Tagged session_id. A non-zero value means the broker sent a
+	// packet a compliant broker never forwards (a broker bug or a hostile
+	// intermediary); see docs/runbooks/mqtt-ingress-poison.md.
+	MetricMQTTIngressRejected = "MQTTIngressRejected"
+
 	// MetricMQTTIngressPoisonDropped counts inbound publishes ACKED-AND-DROPPED
 	// because they violate a LOCAL representational cap the broker cannot
 	// enforce — max_payload_bytes, the ingress metadata byte cap, or the
@@ -169,9 +178,10 @@ const (
 	// slot and stopping redelivery) and dropped, and this counter is the
 	// deliberate-loss record. ANY non-zero value means a publisher is sending
 	// packets this bridge is configured to refuse — alert on it and find the
-	// publisher (see docs/runbooks/mqtt-ingress-poison.md). Only violations a
+	// publisher (see docs/runbooks/mqtt-ingress-poison.md). Violations a
 	// broker could never forward (malformed packets, total size above the
-	// advertised Maximum Packet Size) still fail the session closed.
+	// advertised Maximum Packet Size) are refused before decoding instead and
+	// drop the connection (MetricMQTTIngressRejected).
 	MetricMQTTIngressPoisonDropped = "MQTTIngressPoisonDropped"
 
 	// MetricMQTTIngressUserPropertiesTruncated counts inbound PUBLISH packets

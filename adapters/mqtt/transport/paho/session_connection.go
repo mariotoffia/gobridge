@@ -174,11 +174,13 @@ func (s *Session) invalidateConnectionGeneration(generation uint64, err error) {
 }
 
 func (s *Session) handleConnectionDownGeneration(generation uint64) bool {
+	now := s.clock().Now().UnixNano()
 	s.mu.Lock()
 	if generation != s.connectionGeneration || s.closed {
 		s.mu.Unlock()
 		return false
 	}
+	s.clearSettledIngressRejectLocked(now)
 	s.connected = false
 	s.subscriptionsSatisfied = false
 	if !s.connectionUpCompleted {
@@ -287,7 +289,7 @@ func (s *Session) failClosedForManagedMigration(ctx context.Context) error {
 }
 
 func (s *Session) failClosed(ctx context.Context, cause error) error {
-	terminal, _ := s.transitionTerminal(ctx, cause, 0, false, true)
+	terminal, _ := s.transitionTerminal(ctx, cause, 0, true)
 	return terminal
 }
 

@@ -121,9 +121,9 @@ func settlementRecoveryTerminalError(cause error) error {
 		Wrap(errors.Join(cause, shared.ErrTransportClosedPermanently))
 }
 
-func (s *Session) terminateFailedRecovery(generation uint64, cause error, async bool) bool {
+func (s *Session) terminateFailedRecovery(generation uint64, cause error) bool {
 	terminal := settlementRecoveryTerminalError(cause)
-	_, started := s.transitionTerminal(context.Background(), terminal, generation, async, false)
+	_, started := s.transitionTerminal(context.Background(), terminal, generation, false)
 	return started
 }
 
@@ -304,14 +304,14 @@ func (s *Session) runRecovery(
 	if err := s.acquireReload(ctx); err != nil {
 		mapped := MapError(err).WithMessage("mqtt: settlement recovery waiting for session serialization")
 		cancelAttempt()
-		s.terminateFailedRecovery(generation, mapped, false)
+		s.terminateFailedRecovery(generation, mapped)
 		return
 	}
 	defer s.releaseReload()
 	if err := ctx.Err(); err != nil {
 		cancelAttempt()
 		s.terminateFailedRecovery(generation,
-			MapError(err).WithMessage("mqtt: settlement recovery cancelled after serialization"), false)
+			MapError(err).WithMessage("mqtt: settlement recovery cancelled after serialization"))
 		return
 	}
 
@@ -334,7 +334,7 @@ func (s *Session) runRecovery(
 		}
 		s.mu.Unlock()
 		cancelAttempt()
-		s.terminateFailedRecovery(generation, queuedErr, false)
+		s.terminateFailedRecovery(generation, queuedErr)
 		return
 	}
 	s.recoveryAttemptActive = true
@@ -363,7 +363,7 @@ func (s *Session) runRecovery(
 	s.finishRecoveryDrain(generation, drainDone)
 	if drainErr != nil {
 		s.terminateFailedRecovery(generation,
-			shared.ErrUnavailable.WithMessage("mqtt: settlement recovery drain failed").Wrap(drainErr), false)
+			shared.ErrUnavailable.WithMessage("mqtt: settlement recovery drain failed").Wrap(drainErr))
 		return
 	}
 

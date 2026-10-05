@@ -20,7 +20,7 @@ import (
 // takeovers), nothing resets the streak — so before the recency gate, every
 // later reconnect (a network blip, unrelated to any collision) kept paying the
 // accumulated penalty (up to 64s) forever. takeoverPenalty now gates on the
-// time since the LAST takeover: once takeoverStabilityWindow passes with none,
+// time since the LAST takeover: once connectionStabilityWindow passes with none,
 // the penalty is 0.
 //
 // Mutation killed: drop the `last == 0 || now-last >= window` recency clause in
@@ -52,7 +52,7 @@ func TestNoteSessionTakeover_ResolvedStorm_PenaltyDecaysWithoutNewTakeover(t *te
 	// takeover the storm is over — the penalty must decay to 0. No takeover
 	// occurs between the assertion above and this one, so the ONLY thing that
 	// changed is elapsed time: this isolates the recency gate.
-	clk.Advance(takeoverStabilityWindow)
+	clk.Advance(connectionStabilityWindow)
 	require.Equal(t, time.Duration(0), sess.takeoverPenalty(),
 		"a resolved storm's penalty decays once no takeover has occurred for the stability window")
 }

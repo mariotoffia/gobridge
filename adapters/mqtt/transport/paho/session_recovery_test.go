@@ -1067,7 +1067,7 @@ func TestSessionRecovery_ConcurrentTerminalFailuresCoalesce(t *testing.T) {
 			defer wg.Done()
 			<-start
 			s.terminateFailedRecovery(recoveryGeneration,
-				shared.ErrUnavailable.WithMessage("forced recovery failure"), false)
+				shared.ErrUnavailable.WithMessage("forced recovery failure"))
 		}()
 	}
 	close(start)
@@ -1100,7 +1100,7 @@ func TestSessionRecovery_FailClosedWinnerStillCompletesUnifiedTerminalTransition
 
 	terminal := s.failClosed(t.Context(), firstCause)
 	require.ErrorIs(t, terminal, shared.ErrTransportClosedPermanently)
-	assert.False(t, s.terminateFailedRecovery(11, secondCause, false))
+	assert.False(t, s.terminateFailedRecovery(11, secondCause))
 	assert.False(t, s.abandonRecoveryAttempt(11, secondCause))
 
 	terminalEvents := 0
@@ -1593,7 +1593,7 @@ func TestSessionRecovery_TerminalSignalWaitsForStartLocalCleanup(t *testing.T) {
 		s.mu.Lock()
 		generation := s.connectionGeneration
 		s.mu.Unlock()
-		go s.terminateFailedRecovery(1, shared.ErrUnavailable.WithMessage("forced recovery failure"), false)
+		go s.terminateFailedRecovery(1, shared.ErrUnavailable.WithMessage("forced recovery failure"))
 		<-terminalWaitingStart
 		// The connection-up barrier completes with the latched terminal error.
 		s.handleConnectionUpGenerationWithSessionPresent(generation, true)

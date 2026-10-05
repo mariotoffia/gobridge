@@ -2,6 +2,12 @@ package paho
 
 import "time"
 
+// connectionStabilityWindow is how long a connection must stay up before a
+// fault on it counts as a new incident rather than the continuation of a
+// storm. Session-takeover damping and pre-decode ingress-reject damping both
+// use it.
+const connectionStabilityWindow = 30 * time.Second
+
 // reconnectBackoff computes the delay before autopaho's Nth (re)connect
 // attempt. autopaho calls this with attempt 0 (the delay BEFORE the first
 // attempt — always 0), then 1, 2, ... after each failure. The base delay
@@ -65,12 +71,16 @@ func (s *Session) reconnectBackoffConfig() (base, maxDelay time.Duration) {
 
 // newReconnectBackoff builds the autopaho ReconnectBackoff function: a
 // jittered exponential base delay (reconnectBackoff) PLUS the escalating
-// session-takeover penalty (noteSessionTakeover), so a ClientID collision
-// backs off on top of the normal envelope. randFloat is injectable for
-// tests; production passes math/rand/v2.Float64.
+// session-takeover penalty (noteSessionTakeover) PLUS the pre-decode
+// ingress-reject penalty (ingressRejectPenalty), so a ClientID collision or a
+// broker that keeps sending a packet the guard refuses backs off on top of the
+// normal envelope. randFloat is injectable for tests; production passes
+// math/rand/v2.Float64.
 func (s *Session) newReconnectBackoff(randFloat func() float64) func(int) time.Duration {
 	base, maxDelay := s.reconnectBackoffConfig()
 	return func(attempt int) time.Duration {
-		return reconnectBackoff(attempt, base, maxDelay, reconnectBackoffFactor, randFloat) + s.takeoverPenalty()
+		return reconnectBackoff(attempt, base, maxDelay, reconnectBackoffFactor, randFloat) +
+			s.takeoverPenalty() +
+			s.ingressRejectPenalty(base, maxDelay, randFloat)
 	}
 }

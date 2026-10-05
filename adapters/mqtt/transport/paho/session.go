@@ -105,16 +105,27 @@ type Session struct {
 	// lastTakeoverAt is the unix-nanos time of the most recent session-takeover
 	// (0x8E) disconnect, or 0 if none. takeoverPenalty gates on it: the penalty
 	// only spaces out reconnects DURING an active storm, so once no takeover has
-	// occurred for takeoverStabilityWindow the penalty decays to 0 even though
+	// occurred for connectionStabilityWindow the penalty decays to 0 even though
 	// takeoverStreak is still high. Without this, a RESOLVED storm's streak
 	// (only reset when a NEW takeover arrives post-stability) would make every
 	// later ordinary reconnect pay the stale penalty forever, busting the
 	// failover window. Guarded by mu.
 	lastTakeoverAt int64
+	// ingressRejectErr is the cause of the most recent pre-decode ingress
+	// reject, or nil once a replacement connection has stayed up for
+	// connectionStabilityWindow. While set, Health reports the session not
+	// ready. Guarded by mu.
+	ingressRejectErr error
+	// ingressRejectStreak counts pre-decode rejects without an intervening
+	// stable connection; it scales the reconnect penalty. Guarded by mu.
+	ingressRejectStreak int
+	// lastIngressRejectAt is the unix-nanos session-clock time of the most
+	// recent pre-decode reject, or 0 if none. Guarded by mu.
+	lastIngressRejectAt int64
 	// connUpAt is the unix-nanos timestamp of the LAST OnConnectionUp. It
 	// is set on every connect edge and never reset to 0 on disconnect: the
 	// takeover-damping math only asks "was the connection stable for
-	// takeoverStabilityWindow before this takeover?", which needs the last
+	// connectionStabilityWindow before this takeover?", which needs the last
 	// up-transition, not a live up/down flag (connected covers that).
 	// Zeroing it on down would also make the reset race the 0x8E callback.
 	connUpAt int64

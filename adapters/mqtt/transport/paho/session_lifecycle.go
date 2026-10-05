@@ -53,14 +53,14 @@ func (s *Session) awaitStartCleanup(ctx context.Context) {
 }
 
 // transitionTerminal is the only terminal state writer. The first caller
-// latches the cause and owns one bounded teardown; later causes coalesce. When a
-// recovery is queued/active, every recovery field is cleared coherently even if
-// a Task-5 failClosed path wins the race with the recovery finalizer.
+// latches the cause and owns one bounded teardown, which runs before it
+// returns; later causes coalesce onto the latched one. When a settlement
+// recovery is queued or active, every recovery field is cleared coherently
+// even if a fail-closed path wins the race with the recovery finalizer.
 func (s *Session) transitionTerminal(
 	parent context.Context,
 	cause error,
 	recoveryGeneration uint64,
-	async bool,
 	callerQuiesced bool,
 ) (error, bool) {
 	terminal := cause
@@ -133,58 +133,28 @@ func (s *Session) transitionTerminal(
 		hook()
 	}
 
-	finish := func() {
-		terminalCtx, cancel := s.contextWithClockTimeout(context.WithoutCancel(parent), s.recoveryAttemptTimeout())
-		switch {
-		case recoveryInFlight && drainOwner:
-			_ = s.quiesceForRecycle(terminalCtx)
-			s.finishRecoveryDrain(drainGeneration, drainDone)
-		case recoveryInFlight && !drainFinished && drainDone != nil:
-			select {
-			case <-drainDone:
-			case <-terminalCtx.Done():
-			}
-		case !recoveryInFlight && !callerQuiesced:
-			_ = s.quiesceForRecycle(terminalCtx)
+	terminalCtx, cancel := s.contextWithClockTimeout(context.WithoutCancel(parent), s.recoveryAttemptTimeout())
+	switch {
+	case recoveryInFlight && drainOwner:
+		_ = s.quiesceForRecycle(terminalCtx)
+		s.finishRecoveryDrain(drainGeneration, drainDone)
+	case recoveryInFlight && !drainFinished && drainDone != nil:
+		select {
+		case <-drainDone:
+		case <-terminalCtx.Done():
 		}
-		s.awaitStartCleanup(terminalCtx)
-		s.disconnectGeneration(terminalCtx)
-		cancel()
-		s.pushEvent(ports.SessionError, terminal)
-		s.mu.Lock()
-		s.clearRecoveryDrainLocked(drainGeneration)
-		s.closeEventsLocked()
-		s.mu.Unlock()
+	case !recoveryInFlight && !callerQuiesced:
+		_ = s.quiesceForRecycle(terminalCtx)
 	}
-	if async {
-		go finish()
-	} else {
-		finish()
-	}
+	s.awaitStartCleanup(terminalCtx)
+	s.disconnectGeneration(terminalCtx)
+	cancel()
+	s.pushEvent(ports.SessionError, terminal)
+	s.mu.Lock()
+	s.clearRecoveryDrainLocked(drainGeneration)
+	s.closeEventsLocked()
+	s.mu.Unlock()
 	return terminal, true
-}
-
-// rejectIngressPoison synchronously latches terminal readiness and delegates
-// bounded disconnect/cleanup to the existing Task 6 terminal lifecycle. It must
-// return promptly because it runs on Paho's publish callback goroutine.
-func (s *Session) rejectIngressPoison(cause error) {
-	_, _ = s.transitionTerminal(context.Background(), cause, 0, true, false)
-}
-
-// rejectPredecodeIngress preserves the exact secret-safe guard cause in the
-// terminal lifecycle before the guarded connection returns it to Paho. The
-// connection closes synchronously after this callback, so OnConnectionDown
-// observes terminalErr and existing reconnect policy stops the generation.
-func (s *Session) rejectPredecodeIngress(cause error) {
-	s.metrics.Counter(MetricMQTTRouterDropped, 1,
-		shared.Tag{Key: shared.TagKeySessionID, Value: s.opts.ClientID})
-	if s.logger != nil {
-		s.logger.Error("mqtt: rejected inbound packet before Paho decoding; terminating session",
-			"client_id", s.opts.ClientID,
-			"error", cause,
-		)
-	}
-	s.rejectIngressPoison(cause)
 }
 
 // Reload tears down the current ConnectionManager and re-runs Start

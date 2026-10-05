@@ -13,19 +13,22 @@ import (
 // subscription and handler readiness.
 //
 // LastError joins every latched fault that explains the current state: a
-// pending/failed settlement recovery, a terminal fail-closed generation, the
-// mapped cause of the most recent failed CONNECT (cleared when a connection
-// comes up), and a lost durable resume (cleared by the next converged
-// reconcile). It is DIAGNOSTIC — readiness is decided by Connected/Ready and
-// ServiceLevel, so a latched cause never on its own pulls a session out of
-// rotation.
+// pending/failed settlement recovery, a terminal fail-closed generation, a
+// pre-decode ingress reject until a replacement connection has stayed up for
+// connectionStabilityWindow, the mapped cause of the most recent failed
+// CONNECT (cleared when a connection comes up), and a lost durable resume
+// (cleared by the next converged reconcile). It is DIAGNOSTIC — readiness is
+// decided by Connected/Ready and ServiceLevel. A cause listed here takes a
+// session out of rotation only through those fields (a terminal latch or an
+// active ingress reject does), never by appearing in LastError.
 //
-// Ready reports CONNECTIVITY ONLY: it is true when the session is
-// connected to the broker. This is intentional and matches the
-// ports.SessionHealth contract — Ready does NOT imply that subscriptions
-// are active or that receiver handlers are registered. A sender-only
-// session is fully serviceable as soon as it is connected, so a liveness
-// probe keyed on Ready is correct for it.
+// Ready reports CONNECTIVITY: it is true when the session is connected to
+// the broker, except that after a pre-decode ingress reject it stays false
+// until a replacement connection has stayed up for connectionStabilityWindow.
+// This is intentional and matches the ports.SessionHealth contract — Ready
+// does NOT imply that subscriptions are active or that receiver handlers are
+// registered. A sender-only session is fully serviceable as soon as it is
+// connected, so a liveness probe keyed on Ready is correct for it.
 //
 // For a RECEIVER session, connectivity alone is not operational
 // readiness: messages are dropped until subscriptions are reconciled and
@@ -44,10 +47,12 @@ import (
 //     pending buffer, so a non-empty buffer degrades readiness even while a
 //     surviving receiver keeps the session-total handler count above zero)
 //   - Degraded: connected but not all desired subscriptions are active
-//   - None: not connected, or no subscriptions/handlers registered
+//   - None: not connected, terminal, a pre-decode ingress reject still
+//     active, or no subscriptions/handlers registered
 //
 // For sender-only sessions (no subscriptions), ServiceLevel is Full when connected.
 func (s *Session) Health(_ context.Context) ports.SessionHealth {
+	now := s.clock().Now().UnixNano()
 	s.mu.Lock()
 	cm := s.cm
 	desired := planDesiredQoS(s.plan)
@@ -75,6 +80,11 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		topics = append(topics, topic)
 	}
 	connected := cm != nil && s.connected
+	ingressRejectActive := s.ingressRejectErr != nil && (!connected || !s.ingressRejectSettledLocked(now))
+	var ingressRejectErr error
+	if ingressRejectActive {
+		ingressRejectErr = s.ingressRejectErr
+	}
 	latchedSubscriptionsSatisfied := s.subscriptionsSatisfied
 	recoveryPending := s.recoveryPending
 	recoveryErr := s.recoveryErr
@@ -105,7 +115,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 
 	var sl ports.ServiceLevel
 	switch {
-	case !connected || terminalErr != nil:
+	case !connected || terminalErr != nil || ingressRejectActive:
 		sl = ports.ServiceLevelNone
 	case recoveryPending:
 		sl = ports.ServiceLevelDegraded
@@ -139,7 +149,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 
 	return ports.SessionHealth{
 		Connected:                connected,
-		LastError:                errors.Join(recoveryErr, terminalErr, connectErr, resumeLostErr),
+		LastError:                errors.Join(recoveryErr, terminalErr, ingressRejectErr, connectErr, resumeLostErr),
 		SubscriptionsWanted:      wantedCount,
 		SubscriptionsActive:      activeCount,
 		SubscriptionsSatisfied:   &subscriptionsSatisfied,
@@ -149,7 +159,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		OldestUnsettledAge:       unsettled.OldestAge,
 		ReceiveWindowUtilization: unsettled.ReceiveWindowUtilization,
 		RecoveryRecycleCount:     recoveryRecycleCount,
-		Ready:                    connected && terminalErr == nil,
+		Ready:                    connected && terminalErr == nil && !ingressRejectActive,
 		ServiceLevel:             sl,
 		ActiveTopics:             topics,
 		BestEffortTopics:         bestEffort,
