@@ -158,11 +158,11 @@ const (
 
 	// MetricMQTTIngressRejected counts inbound packets the pre-decode guard
 	// rejected: a malformed MQTT structure, or a packet larger than the Maximum
-	// Packet Size the client advertised in CONNECT. The guard sends DISCONNECT
-	// and drops the connection; the session reconnects with backoff and is not
-	// terminal. Tagged session_id. A non-zero value means the broker sent a
-	// packet a compliant broker never forwards (a broker bug or a hostile
-	// intermediary); see docs/runbooks/mqtt-ingress-poison.md.
+	// Packet Size the client advertised in CONNECT. The guard tries to send
+	// DISCONNECT and drops the connection; the session reconnects with
+	// backoff and is not terminal. Tagged session_id. A non-zero value means
+	// the broker sent a packet a compliant broker never forwards (a broker bug
+	// or a hostile intermediary); see docs/runbooks/mqtt-ingress-poison.md.
 	MetricMQTTIngressRejected = "MQTTIngressRejected"
 
 	// MetricMQTTIngressPoisonDropped counts inbound publishes ACKED-AND-DROPPED

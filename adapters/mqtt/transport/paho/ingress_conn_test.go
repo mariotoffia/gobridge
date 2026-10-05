@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eclipse/paho.golang/packets"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -370,6 +371,17 @@ func TestMQTTIngressConn_RejectSendsDisconnectWithReasonBeforeClose(t *testing.T
 		t.Run(test.name, func(t *testing.T) {
 			underlying := newTestNetConn(test.wire, len(test.wire))
 			guarded := newMQTTIngressConn(underlying, test.maximumPacketSize, nil)
+			var steps []guardedNetOp
+			underlying.onOp = func(op testNetOp) {
+				held := guardWriteLockHeld(guarded)
+				// Paho writes the DISCONNECT one buffer at a time, so
+				// consecutive writes are one write step.
+				if last := len(steps) - 1; last >= 0 && op == testNetOpWrite && steps[last].op == testNetOpWrite {
+					steps[last].writeLockHeld = steps[last].writeLockHeld && held
+					return
+				}
+				steps = append(steps, guardedNetOp{op: op, writeLockHeld: held})
+			}
 
 			_, err := io.ReadAll(guarded)
 			var ingressErr *mqttIngressError
@@ -379,8 +391,30 @@ func TestMQTTIngressConn_RejectSendsDisconnectWithReasonBeforeClose(t *testing.T
 			assert.False(t, underlying.WriteDeadline().IsZero(),
 				"the DISCONNECT write is bounded by a deadline")
 			assert.Equal(t, 1, underlying.CloseCount())
+			assert.Equal(t, []guardedNetOp{
+				{op: testNetOpSetWriteDeadline, writeLockHeld: true},
+				{op: testNetOpWrite, writeLockHeld: true},
+				{op: testNetOpClose, writeLockHeld: true},
+			}, steps, "the deadline is set before the DISCONNECT write, the close follows the write, and all three run under the guard's write lock")
 		})
 	}
+}
+
+// guardedNetOp is one operation the guard ran on the wrapped connection, and
+// whether the guard's write lock was held when it ran.
+type guardedNetOp struct {
+	op            testNetOp
+	writeLockHeld bool
+}
+
+// guardWriteLockHeld reports whether the guard's write lock is held, and leaves
+// it as it found it.
+func guardWriteLockHeld(c *mqttIngressConn) bool {
+	if c.writeMu.TryLock() {
+		c.writeMu.Unlock()
+		return false
+	}
+	return true
 }
 
 func TestMQTTIngressConn_MaximumPacketSizeRejectsBeforeBodyRead(t *testing.T) {
@@ -413,6 +447,34 @@ func TestMQTTIngressConn_RejectClosesWithoutWritingWhileAWriteIsInProgress(t *te
 	assert.Equal(t, 1, underlying.CloseCount())
 
 	guarded.Unlock()
+}
+
+// TestMQTTIngressConn_PahoPacketWritesHoldTheGuardWriteLock pins that Paho
+// writes a packet through the guard while holding the guard's write lock:
+// packets.ControlPacket.WriteTo locks a writer that is a sync.Locker. That
+// lock is what keeps a reject's DISCONNECT from interleaving with a Paho
+// packet.
+func TestMQTTIngressConn_PahoPacketWritesHoldTheGuardWriteLock(t *testing.T) {
+	underlying := newTestNetConn(nil, 0)
+	guarded := newMQTTIngressConn(underlying, 1024, nil)
+	var writes, unlockedWrites int
+	underlying.onOp = func(op testNetOp) {
+		if op != testNetOpWrite {
+			return
+		}
+		writes++
+		if !guardWriteLockHeld(guarded) {
+			unlockedWrites++
+		}
+	}
+
+	_, err := packets.NewControlPacket(packets.PINGREQ).WriteTo(guarded)
+	require.NoError(t, err)
+
+	assert.Equal(t, []byte{0xC0, 0x00}, underlying.Written())
+	require.Positive(t, writes)
+	assert.Zero(t, unlockedWrites, "every write of a Paho packet runs under the guard's write lock")
+	assert.False(t, guardWriteLockHeld(guarded), "Paho releases the guard's write lock after the packet")
 }
 
 func TestMQTTIngressConn_DelegatesWritesAddressesAndDeadlines(t *testing.T) {
@@ -536,6 +598,24 @@ type testNetConn struct {
 	readDeadline  time.Time
 	writeDeadline time.Time
 	closeCount    int
+	// onOp, when set, is called at the start of SetWriteDeadline, Write and
+	// Close, before the fake does anything. Nil for every test that does not
+	// observe the order of those operations.
+	onOp func(testNetOp)
+}
+
+type testNetOp string
+
+const (
+	testNetOpSetWriteDeadline testNetOp = "set-write-deadline"
+	testNetOpWrite            testNetOp = "write"
+	testNetOpClose            testNetOp = "close"
+)
+
+func (c *testNetConn) observe(op testNetOp) {
+	if c.onOp != nil {
+		c.onOp(op)
+	}
 }
 
 func newTestNetConn(data []byte, readLimit int) *testNetConn {
@@ -557,12 +637,14 @@ func (c *testNetConn) Read(p []byte) (int, error) {
 }
 
 func (c *testNetConn) Write(p []byte) (int, error) {
+	c.observe(testNetOpWrite)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.written.Write(p)
 }
 
 func (c *testNetConn) Close() error {
+	c.observe(testNetOpClose)
 	c.mu.Lock()
 	c.closeCount++
 	c.mu.Unlock()
@@ -587,6 +669,7 @@ func (c *testNetConn) SetReadDeadline(t time.Time) error {
 }
 
 func (c *testNetConn) SetWriteDeadline(t time.Time) error {
+	c.observe(testNetOpSetWriteDeadline)
 	c.mu.Lock()
 	c.writeDeadline = t
 	c.mu.Unlock()

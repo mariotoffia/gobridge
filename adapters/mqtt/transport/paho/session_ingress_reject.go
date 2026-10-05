@@ -7,9 +7,9 @@ import (
 )
 
 // rejectPredecodeIngress records a packet the pre-decode guard refused. The
-// guard sends DISCONNECT and closes the socket after this returns, so Paho's
-// reader fails, OnConnectionDown fires and autopaho reconnects. The packet
-// never reached a route, so nothing of the old connection can act on it.
+// guard tries to send DISCONNECT and closes the socket after this returns, so
+// Paho's reader fails, OnConnectionDown fires and autopaho reconnects. The
+// packet never reached a route, so nothing of the old connection can act on it.
 // It runs on Paho's read goroutine and must return promptly.
 func (s *Session) rejectPredecodeIngress(cause error) {
 	now := s.clock().Now().UnixNano()

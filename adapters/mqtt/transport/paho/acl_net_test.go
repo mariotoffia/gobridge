@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eclipse/paho.golang/autopaho"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/testutil/wait"
 )
 
@@ -116,4 +119,38 @@ func readClientFrame(r io.Reader) (websocketFrame, error) {
 		payload[i] ^= header[2+i%4]
 	}
 	return websocketFrame{fin: header[0]&0x80 != 0, opcode: int(header[0] & 0x0F), payload: string(payload)}, nil
+}
+
+// TestAttemptGuardedConnection_ReturnsTheGuardUnwrapped pins that autopaho
+// gets the ingress guard itself as its connection. Paho locks a writer that is
+// a sync.Locker for every packet it writes, so the guard's write lock covers
+// Paho's writes only when nothing wraps the guard: a wrapper such as
+// packets.NewThreadSafeConn brings its own lock, and a reject's DISCONNECT
+// could then interleave with a Paho packet.
+func TestAttemptGuardedConnection_ReturnsTheGuardUnwrapped(t *testing.T) {
+	isolateProxyEnv(t, nil) // the shell's ALL_PROXY must not route this loopback dial
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		accepted <- conn
+	}()
+
+	session := NewSession(SessionOptions{ClientID: "guarded-dial"}, connectivity.SessionEphemeral, nil)
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+
+	conn, err := session.attemptGuardedConnection(boundedDialContext(t), autopaho.ClientConfig{},
+		&url.URL{Scheme: "mqtt", Host: listener.Addr().String()})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	server := wait.RequireReceive(t, accepted, 5*time.Second)
+	t.Cleanup(func() { _ = server.Close() })
+
+	require.IsType(t, &mqttIngressConn{}, conn,
+		"the guard must be the connection Paho writes through, not wrapped in another lock")
 }

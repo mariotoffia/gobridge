@@ -259,8 +259,8 @@ func (c *mqttIngressConn) validatePublish(fixedHeader byte, body []byte) (publis
 	// + the metadata allowance), so a COMPLIANT broker forwards packets that
 	// violate any individual local cap while fitting the advertised total.
 	// Rejecting such a packet at this level drops the connection (there is
-	// no way to ack below Paho): the reject sends DISCONNECT, closes the
-	// socket and the session reconnects with backoff. Rejecting a
+	// no way to ack below Paho): the reject tries to send DISCONNECT, closes
+	// the socket and the session reconnects with backoff. Rejecting a
 	// broker-forwardable packet that way is a publisher-triggerable
 	// reconnect loop: the un-acked packet is redelivered on every
 	// clean_start=false resume and drops every connection. Those caps are
@@ -309,9 +309,9 @@ func (c *mqttIngressConn) reject(err error) error {
 	return err
 }
 
-// disconnectAndClose tells the broker why the connection is dropped, then
-// closes it. The DISCONNECT is written to the wrapped connection, not to the
-// guard, so WriteTo does not re-enter writeMu.
+// disconnectAndClose tries to tell the broker why the connection is dropped,
+// then closes it. The DISCONNECT is written to the wrapped connection, not to
+// the guard, so WriteTo does not re-enter writeMu.
 func (c *mqttIngressConn) disconnectAndClose(reason byte) {
 	if c.writeMu.TryLock() {
 		//nolint:forbidigo // OS kernel socket deadline needs the real wall clock, not the injectable clock
