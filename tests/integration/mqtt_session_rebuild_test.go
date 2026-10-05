@@ -209,7 +209,8 @@ func TestSupervisor_ManagedCleanupQuiescenceFailureRebuildsOnlyThatSession(t *te
 	go func() { runErr <- sup.Run(runCtx, cfg, nil) }()
 	t.Cleanup(func() {
 		stopRun()
-		wait.RequireReceive(t, runErr, 60*time.Second)
+		// Only that Run returns matters here, not its shutdown error.
+		_ = wait.RequireReceive(t, runErr, 60*time.Second)
 	})
 	rt := waitForSupervisorRuntime(t, sup, runErr, 30*time.Second)
 
