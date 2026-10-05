@@ -35,6 +35,9 @@ each one reaches the supervisor as `ErrSessionUnrecoverable` wrapping
    structure, or larger than the advertised Maximum Packet Size — latches the
    session closed ([MQTT ingress poison](../runbooks/mqtt-ingress-poison.md)).
 
+Any other path that latches the marker ends the same way, for example the
+pinned replay of a removed filter on a runtime with no dead-letter store.
+
 A single-use exclusive session that wins its lease back after an ordinary
 step-down ends the same way: `Start` after `Close` returns the permanent marker
 ([Scenario 8](../scenarios/08-clustered-exclusive-sessions.md#connect_after_lease-true)).
@@ -136,10 +139,13 @@ not compete for the lease again MUST wrap `ErrProcessRestartRequired`.
 
 ### Leases
 
-No lease is released while old work can still act. A session that fails closed
-because ingress did not quiesce (fault 1) keeps its lease, since route work may
-still hold deliveries. The rebuilt session competes for the lease only after
-the old unit is retired, so its route work has stopped. A failure whose source
+A session that fails closed because ingress did not quiesce (fault 1) keeps its
+lease, since route work may still hold deliveries, and the retire leaves it
+held. Any other session failure releases the lease as it did before this
+decision: the source closes first, then the settlement grace a step-down waits
+(`StepDownGrace`) runs out, and a send that completes after it is the duplicate
+a step-down accepts. The rebuilt session competes for the lease only after the
+old unit is retired, so its route work has stopped. A failure whose source
 close did not complete keeps the lease and carries `ErrProcessRestartRequired`.
 
 ### When the process still stops
@@ -150,6 +156,9 @@ backstop, when:
 - no handler is installed: a `runtime.Runtime` an embedder builds without
   `WithSessionUnrecoverableHandler`;
 - the failure carries `ErrProcessRestartRequired`;
+- the failure does not carry `shared.ErrTransportClosedPermanently`, for
+  example an exclusive activation that overran its deadline after its source
+  closed;
 - the root has no unit to rebuild: the unit may attach an HTTP endpoint, or the
   running configuration changed between the report and the rebuild;
 - the rebuild leaves the fault in place;

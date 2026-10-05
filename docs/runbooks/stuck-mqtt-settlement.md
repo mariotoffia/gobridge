@@ -126,15 +126,19 @@ the gauges publish, without waiting for a metrics flush.
   Every other unit keeps running, so do not replace the task
   ([ADR 0020](../adr/0020-contain-unrecoverable-session-by-unit-rebuild.md)).
   Watch:
-  - `SessionRebuilds` (tagged `session_id`): one count per rebuild;
+  - `SessionRebuilds` (tagged `session_id`): one count each time the bridge
+    starts a rebuild;
   - deep health: the session reads `ready: false` with `service_level: none`
     until the rebuild replaces it, and readiness counts it as not ready.
 
   The process still restarts — replace the task if nothing restarts it — when
   the runtime has no rebuild handler, when the failed session's close did not
-  complete, or when the rebuild fails or leaves the session failed. A delivery
-  still held when the drain timeout runs out fails the rebuild; keep
-  `drain_timeout` above 25 s so a cancelled send has time to stop. A
+  complete, or when the rebuild leaves the session failed or its unit does not
+  stop. A rebuild that cannot start the fresh unit rebuilds the whole
+  configuration in the process, and the process restarts only when that fails
+  too. A delivery still held when the drain timeout runs out wedges the
+  rebuild; keep `drain_timeout` above 25 s so a cancelled send has time to
+  stop. A
   `SessionRebuilds` rate that keeps climbing means every fresh session fails the
   same way. Verify `session_expiry_interval` exceeds the outage window, or the
   broker will keep answering `Session Present=false` and recovery will keep

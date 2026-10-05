@@ -77,8 +77,9 @@ ADR-0020, `docs/internals/architecture-message-flow.md`,
 - Lease lifecycle: acquire, renew, step down after `MaxRenewFails` or
   `STALE_FENCING_TOKEN`, wait `StepDownGrace`, release. All of it is derived
   from `LeaseTTL` and driven by the injected `Clock`. A lease-owning session
-  that cannot renew escalates to `ErrSessionUnrecoverable`. No lease is
-  released while old work of the session can still act.
+  that cannot renew escalates to `ErrSessionUnrecoverable`. A session that
+  failed closed while route work may still hold deliveries keeps its lease;
+  any other session failure closes the source and waits `StepDownGrace` first.
 - An `ErrSessionUnrecoverable` over `shared.ErrTransportClosedPermanently`
   without `session.ErrProcessRestartRequired` goes, after the per-session
   rebuild backoff, to the session-unrecoverable handler instead of making the

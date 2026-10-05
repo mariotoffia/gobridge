@@ -142,7 +142,8 @@ config knob:
   The runtime still goes terminal for orchestrator replacement when no rebuild
   handler is installed, when the failure carries
   `session.ErrProcessRestartRequired` (for example, the source close did not
-  complete), or when the rebuild fails. Future Retry,
+  complete), or when the rebuild cannot recover the session in the process.
+  Future Retry,
   Reconcile, credential and Start calls return the terminal error rather than
   reactivating the dead Session instance.
 

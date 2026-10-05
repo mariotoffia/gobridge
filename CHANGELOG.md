@@ -144,7 +144,8 @@ same document passes on AWS and elsewhere.
   ([ADR 0020](docs/adr/0020-contain-unrecoverable-session-by-unit-rebuild.md)).
   Every other unit keeps running. Before, the process exited, every route in it
   stopped, and the orchestrator restarted it.
-- It covers MQTT sessions that fail closed: ingress that does not quiesce
+- It covers any MQTT session that fails closed, for example: ingress that does
+  not quiesce
   within `reconcile_timeout` after managed-subscription cleanup removed a
   filter, a settlement recovery that fails, and a packet the pre-decode guard
   rejects (malformed, or above the advertised Maximum Packet Size). It also
@@ -162,7 +163,8 @@ same document passes on AWS and elsewhere.
   exclusive session that waits for its lease before it connects.
 - The process still restarts (ADR 0004) when work of the old session may still
   run or its close did not complete, after a step-down because the broker path
-  stayed non-converged, when the unit may attach an HTTP endpoint, when the
+  stayed non-converged, after an exclusive activation that overran its
+  deadline, when the unit may attach an HTTP endpoint, when the
   rebuild leaves the session failed, or when the unit does not stop cleanly. A
   runtime built without a handler behaves as before. A restart policy is still
   required.
