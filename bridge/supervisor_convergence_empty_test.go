@@ -22,7 +22,7 @@ func TestRuntimeConverged_EmptyRunningRuntimeHasNothingToConverge(t *testing.T) 
 	require.NoError(t, rt.Start(t.Context()))
 	t.Cleanup(func() { _ = rt.Stop(t.Context()) })
 
-	converged, level := runtimeConverged(t.Context(), rt)
+	converged, level := RuntimeConverged(t.Context(), rt)
 
 	assert.True(t, converged, "a running runtime that carries nothing has nothing left to converge")
 	assert.Equal(t, ports.LevelRunning, level,
@@ -35,7 +35,7 @@ func TestRuntimeConverged_EmptyRunningRuntimeHasNothingToConverge(t *testing.T) 
 func TestRuntimeConverged_EmptyUnstartedRuntimeIsNotConverged(t *testing.T) {
 	rt := runtime.New(runtime.WithInstanceID("unconverged-empty"))
 
-	converged, level := runtimeConverged(t.Context(), rt)
+	converged, level := RuntimeConverged(t.Context(), rt)
 
 	assert.False(t, converged, "an unstarted runtime has not converged, empty or not")
 	assert.Equal(t, ports.LevelLive, level)

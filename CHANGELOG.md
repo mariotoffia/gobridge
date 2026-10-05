@@ -10,6 +10,18 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Fixed — the AWS runtime no longer marks a bridge with no links degraded
+
+- The AWS runtime's start-up convergence check required every configuration
+  to reach `subscribed`, but a bridge with no sessions and no routes is capped
+  at `running` (#105). One minute after every start of such a bridge it logged
+  "reload applied but NOT converged", recorded `ConfigDegraded` 1 and showed
+  `config_watch.degraded` in deep health, so a `ConfigDegraded` alarm fired on
+  every new deployment until the first link was added. The check now uses the
+  same rule as the core supervisor, exported as `bridge.RuntimeConverged`: an
+  empty bridge counts as converged once it is running and healthy. Deep health
+  still answers `503` for an empty bridge, as before.
+
 ### Fixed — a removed subscription's dead-letter records are counted in `DLQEntries`
 
 - A delivery that a persistent MQTT session dead-letters for a filter a

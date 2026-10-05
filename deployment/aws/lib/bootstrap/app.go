@@ -217,9 +217,10 @@ type App struct {
 	// new runtime BUILT and Start returned; MQTT dials/reconciles in the
 	// background, so a valid-but-broker-rejected config can be acknowledged as
 	// applied while the transport never reaches broker truth. The convergence watch
-	// polls the installed runtime's readiness and, if it does not reach
-	// LevelSubscribed within the activation budget, latches an applied-but-not-
-	// converged degraded state (surfaced in deep health + MetricConfigDegraded).
+	// polls the installed runtime's readiness and, if it does not converge
+	// (bridge.RuntimeConverged) within the activation budget, latches an
+	// applied-but-not-converged degraded state (surfaced in deep health +
+	// MetricConfigDegraded).
 	convergenceMu          sync.Mutex
 	convergenceDegraded    bool
 	convergenceReason      string

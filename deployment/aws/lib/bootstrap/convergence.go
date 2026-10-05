@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/mariotoffia/gobridge/bridge"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -17,9 +18,11 @@ import (
 // MQTT dials and reconciles in background goroutines, so a syntactically-valid
 // but broker-rejected config (denied credentials, an ACL-rejected topic) is
 // acknowledged as applied while the transport never reaches broker truth. This
-// watch mirrors the generic bridge.Supervisor's convergence watch: after each
-// install it observes the new runtime's readiness and, if it does not reach
-// LevelSubscribed within the transport's declared activation budget, latches an
+// watch mirrors the generic bridge.Supervisor's convergence watch and shares its
+// verdict (bridge.RuntimeConverged): after each install it observes the new
+// runtime's readiness and, if it does not reach LevelSubscribed — or, for an
+// empty bridge with no sessions and no routes, LevelRunning — within the
+// transport's declared activation budget, latches an
 // applied-but-not-converged degraded state (deep health reason + the same
 // MetricConfigDegraded signal the Supervisor emits). It never reverts —
 // per-session supervision keeps retrying and an operator revert is the
@@ -30,10 +33,13 @@ const (
 	// bootstrapConvergenceBudgetFloor covers one default connect (30s) plus one
 	// default reconcile (30s) for transports that declare no activation timing.
 	bootstrapConvergenceBudgetFloor = 60 * time.Second
-	// bootstrapConvergenceReadyLevel is the readiness level that counts as
-	// converged. LevelSubscribed (not LevelFull) because a healthy standby is
-	// capped at LevelSubscribed by design; both failure classes still trip
-	// it (rotated credentials never connect; a rejected SUBACK never subscribes).
+	// bootstrapConvergenceReadyLevel is the readiness level a bridge with
+	// sessions or routes must reach to count as converged (bridge.RuntimeConverged
+	// decides; the degraded reason names this level). LevelSubscribed (not
+	// LevelFull) because a healthy standby is capped at LevelSubscribed by
+	// design; both failure classes still trip it (rotated credentials never
+	// connect; a rejected SUBACK never subscribes). An empty bridge is capped at
+	// LevelRunning and converges once it runs.
 	bootstrapConvergenceReadyLevel = ports.LevelSubscribed
 )
 
@@ -128,7 +134,7 @@ func (a *App) runConvergenceWatch(ctx context.Context, rt *goruntime.Runtime, ge
 		if !a.convergenceWatcherCurrent(rt, gen) {
 			return
 		}
-		if rt.ReadinessLevel(ctx) >= bootstrapConvergenceReadyLevel {
+		if converged, _ := bridge.RuntimeConverged(ctx, rt); converged {
 			a.clearConvergenceDegraded(rt, gen)
 			return
 		}

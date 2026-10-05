@@ -199,6 +199,39 @@ func TestApp_ConvergenceWatch_CancelledParentSkipsWatch(t *testing.T) {
 	app.watchWg.Wait()
 }
 
+// A configuration with no sessions and no routes bridges nothing, so its runtime
+// is capped at LevelRunning and can never reach LevelSubscribed. Once it runs it
+// has nothing left to converge: the watch ends without latching
+// applied-but-not-converged, and ConfigDegraded is never written for it.
+func TestApp_ConvergenceWatch_EmptyRunningBridgeConvergesWithoutMarkingDegraded(t *testing.T) {
+	app, clk := newConvergenceTestApp(t)
+	rec := &ports.RecordingExporter{}
+	app.metricsExporter = rec
+	empty := &ports.BridgeConfig{
+		Version: 1,
+		Bridge:  ports.BridgeSettings{ID: "bridge-x", DeploymentMode: "standalone", DrainTimeout: "1s"},
+	}
+	require.NoError(t, applyTo(t, app, empty))
+	require.True(t, app.CurrentRuntime().DeepHealth(t.Context()).Empty, "the applied configuration carries nothing")
+
+	watchEnded := make(chan struct{})
+	go func() { app.watchWg.Wait(); close(watchEnded) }()
+	wait.Until(t, 5*time.Second, "the convergence watch ends", func() bool {
+		select {
+		case <-watchEnded:
+			return true
+		default:
+		}
+		clk.Advance(bootstrapConvergencePollInterval)
+		return false
+	})
+
+	degraded, reason := app.convergenceDegradedState()
+	assert.False(t, degraded, "an empty running bridge is converged, not degraded: %s", reason)
+	assert.Empty(t, rec.FindEntries(shared.MetricConfigDegraded),
+		"ConfigDegraded is never written for an empty running bridge")
+}
+
 // TestApp_ConvergenceBudgetFloor proves the budget defaults to the floor
 // when no session declares transport activation timing.
 func TestApp_ConvergenceBudgetFloor(t *testing.T) {
