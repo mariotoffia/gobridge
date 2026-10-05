@@ -266,6 +266,9 @@ func (b *Builder) prepare(ctx context.Context) (*preparedBuild, error) {
 	if b.auditLogger != nil {
 		rtOpts = append(rtOpts, runtime.WithAuditLogger(b.auditLogger))
 	}
+	if b.sessionUnrecoverable != nil {
+		rtOpts = append(rtOpts, runtime.WithSessionUnrecoverableHandler(b.sessionUnrecoverable))
+	}
 
 	endpoints, err := b.resolveClusterEndpoints(ctx)
 	if err != nil {
