@@ -254,10 +254,15 @@ type Session struct {
 	authFailureCB atomic.Pointer[func(error)]
 
 	// recoveryPending is set synchronously by a durable QoS 1/2 Retry and
-	// keeps readiness below Full until a replacement connection resumes the
-	// broker session. Concurrent Retry requests coalesce on this state.
-	recoveryPending             bool
+	// keeps readiness below Full until the recovery attempt completes or is
+	// abandoned. Concurrent Retry requests coalesce on this state.
+	recoveryPending bool
+	// recoveryNeedsSessionPresent is set while a recovery is requested, so the
+	// next dial asks the broker to resume.
 	recoveryNeedsSessionPresent bool
+	// recoverySessionPresentEpoch is the epoch of the recovery's own
+	// connection, compared with the epoch the attempt captured after its
+	// recycle.
 	recoverySessionPresentEpoch uint64
 	recoveryTargetEpoch         uint64
 	recoveryAttemptActive       bool
@@ -266,9 +271,10 @@ type Session struct {
 	recoveryDrainDone           chan struct{}
 	recoveryGeneration          uint64
 	recoveryAttemptCancel       context.CancelFunc
-	recoveryErr                 error
-	lastRecoveryCompleted       time.Time
-	recoveryRecycleCount        uint64
+	// recoveryErr is set only by the terminal transition.
+	recoveryErr           error
+	lastRecoveryCompleted time.Time
+	recoveryRecycleCount  uint64
 
 	// qosDowngrades records every filter the broker granted below the
 	// requested QoS, keyed by filter: confirming until qosDowngradeConfirmations
