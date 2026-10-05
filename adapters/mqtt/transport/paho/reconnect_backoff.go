@@ -74,8 +74,10 @@ func (s *Session) reconnectBackoffConfig() (base, maxDelay time.Duration) {
 // session-takeover penalty (noteSessionTakeover) PLUS the pre-decode
 // ingress-reject penalty (ingressRejectPenalty), so a ClientID collision or a
 // broker that keeps sending a packet the guard refuses backs off on top of the
-// normal envelope. randFloat is injectable for tests; production passes
-// math/rand/v2.Float64.
+// normal envelope. Both penalties apply at every attempt, including attempt 0
+// — the first redial after a connection that came up and the first dial of a
+// fresh connection manager — where the base delay is 0. randFloat is
+// injectable for tests; production passes math/rand/v2.Float64.
 func (s *Session) newReconnectBackoff(randFloat func() float64) func(int) time.Duration {
 	base, maxDelay := s.reconnectBackoffConfig()
 	return func(attempt int) time.Duration {

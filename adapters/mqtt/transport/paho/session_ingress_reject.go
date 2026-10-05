@@ -14,7 +14,7 @@ import (
 func (s *Session) rejectPredecodeIngress(cause error) {
 	now := s.clock().Now().UnixNano()
 	s.mu.Lock()
-	if s.connUpAt != 0 && now-s.connUpAt >= int64(connectionStabilityWindow) {
+	if s.ingressRejectSettledLocked(now) {
 		s.ingressRejectStreak = 0
 	}
 	s.ingressRejectStreak++
@@ -30,15 +30,18 @@ func (s *Session) rejectPredecodeIngress(cause error) {
 	}
 }
 
-// ingressRejectSettledLocked reports whether a connection that came up after
-// the last pre-decode reject has stayed up for connectionStabilityWindow.
-// Callers hold s.mu.
+// ingressRejectSettledLocked reports whether the current connection came up
+// after the last pre-decode reject and has stayed up for
+// connectionStabilityWindow. A connection that is down, or one that came up
+// before the reject, settles nothing. Callers hold s.mu.
 func (s *Session) ingressRejectSettledLocked(now int64) bool {
-	return s.connUpAt > s.lastIngressRejectAt && now-s.connUpAt >= int64(connectionStabilityWindow)
+	return s.connected && s.connUpAt > s.lastIngressRejectAt && now-s.connUpAt >= int64(connectionStabilityWindow)
 }
 
 // clearSettledIngressRejectLocked forgets a pre-decode reject once a
-// replacement connection has proven stable. Callers hold s.mu.
+// replacement connection has proven stable. Every path that ends an
+// established connection calls it before clearing s.connected. Callers hold
+// s.mu.
 func (s *Session) clearSettledIngressRejectLocked(now int64) {
 	if s.ingressRejectErr != nil && s.ingressRejectSettledLocked(now) {
 		s.ingressRejectErr = nil

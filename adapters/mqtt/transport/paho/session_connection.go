@@ -318,6 +318,9 @@ func (s *Session) disconnectGeneration(ctx context.Context) {
 	s.cm = nil
 	cmCancel := s.cmCancel
 	s.cmCancel = nil
+	// autopaho raises no OnConnectionDown for a Disconnect, so this teardown
+	// settles a pre-decode reject the way connection-down does.
+	s.clearSettledIngressRejectLocked(s.clock().Now().UnixNano())
 	s.connected = false
 	s.subscriptionsSatisfied = false
 	s.observedSubs = make(map[string]subscriptionGrant)

@@ -112,20 +112,30 @@ type Session struct {
 	// failover window. Guarded by mu.
 	lastTakeoverAt int64
 	// ingressRejectErr is the cause of the most recent pre-decode ingress
-	// reject, or nil once a replacement connection has stayed up for
-	// connectionStabilityWindow. While set, Health reports the session not
-	// ready. Guarded by mu.
+	// reject, or nil if none. It is cleared, with the streak and
+	// lastIngressRejectAt, when the connection that came up after the reject
+	// ends — on connection-down or a planned teardown (Reload, a failed
+	// reconcile or terminal transition, Close) — having stayed up for
+	// connectionStabilityWindow. Health reports the session not ready only
+	// while the reject is active: set and not yet settled by such a connection
+	// that is still up. Guarded by mu.
 	ingressRejectErr error
-	// ingressRejectStreak counts pre-decode rejects without an intervening
-	// stable connection; it scales the reconnect penalty. Guarded by mu.
+	// ingressRejectStreak counts pre-decode rejects since the last settled
+	// one; it scales the reconnect penalty. A reject starts a new streak only
+	// when it arrives on a connection that came up after the previous reject
+	// and has stayed up for connectionStabilityWindow. Guarded by mu.
 	ingressRejectStreak int
 	// lastIngressRejectAt is the unix-nanos session-clock time of the most
-	// recent pre-decode reject, or 0 if none. Guarded by mu.
+	// recent pre-decode reject, or 0 if none. Only a connection that came up
+	// after it can settle the reject, and the reconnect penalty decays once it
+	// is connectionStabilityWindow old. Guarded by mu.
 	lastIngressRejectAt int64
 	// connUpAt is the unix-nanos timestamp of the LAST OnConnectionUp. It
-	// is set on every connect edge and never reset to 0 on disconnect: the
-	// takeover-damping math only asks "was the connection stable for
-	// connectionStabilityWindow before this takeover?", which needs the last
+	// is set on every connect edge and never reset to 0 on disconnect. The
+	// takeover-damping math asks "was the connection stable for
+	// connectionStabilityWindow before this takeover?", and the ingress-reject
+	// damping asks whether the current connection came up after the last
+	// reject and has stayed up for that window; both need the last
 	// up-transition, not a live up/down flag (connected covers that).
 	// Zeroing it on down would also make the reset race the 0x8E callback.
 	connUpAt int64

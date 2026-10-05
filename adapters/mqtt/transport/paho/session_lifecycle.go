@@ -237,6 +237,9 @@ func (s *Session) reloadLocked(ctx context.Context) error {
 	s.cm = nil
 	cmCancel := s.cmCancel
 	s.cmCancel = nil
+	// autopaho raises no OnConnectionDown for a Disconnect, so this teardown
+	// settles a pre-decode reject the way connection-down does.
+	s.clearSettledIngressRejectLocked(s.clock().Now().UnixNano())
 	s.connected = false
 	// Invalidate readiness and the old connection generation before Start can
 	// return with a replacement CM whose OnConnectionUp callback is still queued.
@@ -357,6 +360,7 @@ func (s *Session) Close(ctx context.Context) error {
 	}
 	s.closed = true
 	s.retireQoSDowngradesLocked()
+	s.clearSettledIngressRejectLocked(s.clock().Now().UnixNano())
 	s.connected = false
 	// Wake every detached session-lifetime wait (the settlement-recovery
 	// cooldown runs on a context deliberately immune to route cancellation, so

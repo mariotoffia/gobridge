@@ -180,10 +180,12 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 	// Reconnect pacing: a JITTERED EXPONENTIAL base delay derived
 	// from reconnect_delay (floor) and reconnect_max_delay (ceiling), plus
 	// an escalating session-takeover penalty so a ClientID collision (two
-	// instances mutually kicking each other) backs off instead of storming;
-	// see newReconnectBackoff and noteSessionTakeover. Equal-jitter
-	// desynchronises a fleet that all lost the same broker, avoiding a
-	// thundering-herd reconnect the moment the broker returns.
+	// instances mutually kicking each other) backs off instead of storming,
+	// plus an escalating pre-decode ingress-reject penalty so a broker that
+	// re-sends a packet the guard refuses is not redialled in a tight loop;
+	// see newReconnectBackoff, noteSessionTakeover and ingressRejectPenalty.
+	// Equal-jitter desynchronises a fleet that all lost the same broker,
+	// avoiding a thundering-herd reconnect the moment the broker returns.
 	cfg.ReconnectBackoff = s.newReconnectBackoff(rand.Float64)
 
 	// reconnect_timeout bounds each individual (re)connect attempt —

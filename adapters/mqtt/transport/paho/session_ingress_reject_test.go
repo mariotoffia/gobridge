@@ -63,7 +63,7 @@ func ingressRejectState(s *Session) (streak int, lastAt int64, rejectErr error) 
 	return s.ingressRejectStreak, s.lastIngressRejectAt, s.ingressRejectErr
 }
 
-func TestSessionIngressReject_RejectDropsConnectionWithoutTerminalLatch(t *testing.T) {
+func TestSessionIngressReject_RejectDoesNotLatchSessionTerminal(t *testing.T) {
 	s, _, rec := newIngressRejectTestSession(t)
 
 	s.rejectPredecodeIngress(newMQTTMalformedError())
@@ -177,4 +177,123 @@ func TestSessionIngressReject_ReconnectBackoffPenalisesRepeatedRejects(t *testin
 
 	clk.Advance(connectionStabilityWindow)
 	assert.Equal(t, time.Duration(0), backoff(0), "no reject for the stability window: the penalty decays")
+}
+
+func TestSessionIngressReject_PlannedTeardownForgetsSettledReject(t *testing.T) {
+	teardowns := []struct {
+		name string
+		// teardown ends the established connection the way the session does on
+		// its own, without autopaho raising OnConnectionDown.
+		teardown func(t *testing.T, s *Session)
+		// reconnects reports whether the session can bring a new connection up
+		// after the teardown.
+		reconnects bool
+	}{
+		{
+			name:       "disconnect generation",
+			teardown:   func(_ *testing.T, s *Session) { s.disconnectGeneration(context.Background()) },
+			reconnects: true,
+		},
+		{
+			name:       "reload",
+			teardown:   func(t *testing.T, s *Session) { require.NoError(t, s.Reload(context.Background())) },
+			reconnects: true,
+		},
+		{
+			name:     "close",
+			teardown: func(t *testing.T, s *Session) { require.NoError(t, s.Close(context.Background())) },
+		},
+	}
+	for _, tc := range teardowns {
+		t.Run(tc.name, func(t *testing.T) {
+			s, clk, _ := newIngressRejectTestSession(t)
+			s.connectOverride = func(context.Context) (pahoConnection, context.CancelFunc, error) {
+				return &fakeLiveConn{}, func() {}, nil
+			}
+			s.rejectPredecodeIngress(newMQTTMalformedError())
+			replaceConnection(t, s, clk, time.Second)
+			clk.Advance(connectionStabilityWindow)
+			require.True(t, s.Health(context.Background()).Ready)
+
+			tc.teardown(t, s)
+
+			streak, lastAt, rejectErr := ingressRejectState(s)
+			assert.NoError(t, rejectErr, "a planned teardown of a connection that settled the reject forgets it")
+			assert.Zero(t, streak)
+			assert.Zero(t, lastAt)
+
+			if !tc.reconnects {
+				assert.NoError(t, s.Health(context.Background()).LastError,
+					"a settled reject no longer explains the session state")
+				return
+			}
+			require.NoError(t, s.Start(context.Background()))
+			s.handleConnectionUp()
+			health := s.Health(context.Background())
+			assert.True(t, health.Ready, "the next connection is ready as soon as it is up")
+			assert.NoError(t, health.LastError, "a settled reject no longer explains the session state")
+		})
+	}
+}
+
+func TestSessionIngressReject_RejectBeforeReplacementConnectionUpKeepsStreak(t *testing.T) {
+	s, clk, _ := newIngressRejectTestSession(t)
+	s.rejectPredecodeIngress(newMQTTMalformedError())
+	require.True(t, s.handleConnectionDownGeneration(connectionGenerationOf(s)))
+	clk.Advance(connectionStabilityWindow)
+
+	// Paho reads the replacement's first packet before autopaho raises its
+	// connection-up edge, so connUpAt still names the dropped connection.
+	s.rejectPredecodeIngress(newMQTTMalformedError())
+
+	streak, _, _ := ingressRejectState(s)
+	assert.Equal(t, 2, streak, "a reject before the replacement is up continues the storm, however long the reconnect delay")
+}
+
+func TestSessionIngressReject_ShortLivedConnectionDoesNotResetStreak(t *testing.T) {
+	s, clk, _ := newIngressRejectTestSession(t)
+	cause := newMQTTMalformedError()
+	s.rejectPredecodeIngress(cause)
+	replaceConnection(t, s, clk, time.Second)
+	clk.Advance(5 * time.Second)
+	require.True(t, s.handleConnectionDownGeneration(connectionGenerationOf(s)))
+	clk.Advance(connectionStabilityWindow)
+
+	health := s.Health(context.Background())
+	assert.False(t, health.Ready)
+	assert.ErrorIs(t, health.LastError, cause, "a reject no connection has settled still explains the session state")
+
+	s.rejectPredecodeIngress(newMQTTMalformedError())
+
+	streak, _, _ := ingressRejectState(s)
+	assert.Equal(t, 2, streak, "a connection that dropped before the stability window does not end the storm")
+}
+
+func TestSessionIngressReject_RejectOnLongLivedConnectionIsActiveUntilReplacementStable(t *testing.T) {
+	s, clk, _ := newIngressRejectTestSession(t)
+	clk.Advance(connectionStabilityWindow)
+	cause := newMQTTMalformedError()
+
+	s.rejectPredecodeIngress(cause)
+
+	health := s.Health(context.Background())
+	assert.False(t, health.Ready, "a reject on a long-lived connection is active at once")
+	assert.ErrorIs(t, health.LastError, cause)
+
+	require.True(t, s.handleConnectionDownGeneration(connectionGenerationOf(s)))
+	streak, lastAt, rejectErr := ingressRejectState(s)
+	assert.Same(t, cause, rejectErr, "the connection that carried the reject does not settle it")
+	assert.Equal(t, 1, streak)
+	assert.NotZero(t, lastAt)
+
+	clk.Advance(time.Second)
+	s.handleConnectionUpGeneration(connectionGenerationOf(s))
+	health = s.Health(context.Background())
+	assert.False(t, health.Ready, "a replacement is not ready until it has stayed up for the stability window")
+	assert.ErrorIs(t, health.LastError, cause)
+
+	clk.Advance(connectionStabilityWindow)
+	health = s.Health(context.Background())
+	assert.True(t, health.Ready, "a replacement that stayed up for the stability window settles the reject")
+	assert.NoError(t, health.LastError)
 }
