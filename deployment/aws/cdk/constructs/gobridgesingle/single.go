@@ -142,9 +142,10 @@ type SingleProps struct {
 	// CapacityProviderStrategies places the task through capacity providers,
 	// for example FARGATE_SPOT, instead of launch type FARGATE. nil keeps
 	// launch type FARGATE. The construct's own cluster gets the FARGATE and
-	// FARGATE_SPOT providers; a supplied Cluster must already have every
-	// provider named here. The facade runs exactly one task, so a Spot
-	// interruption stops bridging until ECS has started a replacement.
+	// FARGATE_SPOT providers and refuses any other; a supplied Cluster must
+	// already have every provider named here. The facade runs exactly one
+	// task, so a Spot interruption stops bridging until ECS has started a
+	// replacement.
 	CapacityProviderStrategies []*awsecs.CapacityProviderStrategy
 
 	// CloudMapOptions registers the task in Cloud Map so other services can
@@ -428,5 +429,16 @@ func validateSingleProps(p *SingleProps) {
 	if p.CloudMapOptions != nil && p.CloudMapOptions.CloudMapNamespace == nil && p.Cluster == nil {
 		panic("GoBridgeSingle: CloudMapOptions.CloudMapNamespace is required when Cluster is nil; " +
 			"the construct's own cluster has no default Cloud Map namespace")
+	}
+	if p.Cluster == nil {
+		for _, s := range p.CapacityProviderStrategies {
+			if s == nil || s.CapacityProvider == nil || *awscdk.Token_IsUnresolved(s.CapacityProvider) {
+				continue
+			}
+			if name := *s.CapacityProvider; name != "FARGATE" && name != "FARGATE_SPOT" {
+				panic(fmt.Sprintf("GoBridgeSingle: capacity provider %q is not on the construct's own cluster, "+
+					"which has only FARGATE and FARGATE_SPOT; pass a Cluster that has it", name))
+			}
+		}
 	}
 }

@@ -148,25 +148,65 @@ func TestSingle_CapacityProviderStrategies_SpotReplacesLaunchTypeAndWaitsForProv
 	}
 }
 
-// TestSingle_CapacityProviderStrategies_UnsetKeepsFargateLaunchType verifies no strategy keeps launch type FARGATE and adds no provider association.
-func TestSingle_CapacityProviderStrategies_UnsetKeepsFargateLaunchType(t *testing.T) {
-	_, tpl := optionsStack(t, nil)
-	props := ecsService(t, tpl)["Properties"].(map[string]any)
-	assert.Equal(t, "FARGATE", props["LaunchType"])
-	assert.NotContains(t, props, "CapacityProviderStrategy")
-	tpl.ResourceCountIs(jsii.String("AWS::ECS::ClusterCapacityProviderAssociations"), jsii.Number(0))
+// TestSingle_CapacityProviderStrategies_NoneKeepsFargateLaunchType verifies a nil or empty strategy keeps launch type FARGATE and adds no provider association.
+func TestSingle_CapacityProviderStrategies_NoneKeepsFargateLaunchType(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		strategies []*awsecs.CapacityProviderStrategy
+	}{
+		{name: "nil"},
+		{name: "empty", strategies: []*awsecs.CapacityProviderStrategy{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, tpl := optionsStack(t, func(_ awscdk.Stack, _ awsec2.Vpc, p *gobridgesingle.SingleProps) {
+				p.CapacityProviderStrategies = tc.strategies
+			})
+			props := ecsService(t, tpl)["Properties"].(map[string]any)
+			assert.Equal(t, "FARGATE", props["LaunchType"])
+			assert.NotContains(t, props, "CapacityProviderStrategy")
+			tpl.ResourceCountIs(jsii.String("AWS::ECS::ClusterCapacityProviderAssociations"), jsii.Number(0))
+		})
+	}
 }
 
-// TestSingle_CloudMapOptions_RegistersServiceInNamespace verifies the service registers in the given Cloud Map namespace.
-func TestSingle_CloudMapOptions_RegistersServiceInNamespace(t *testing.T) {
-	_, tpl := optionsStack(t, func(stack awscdk.Stack, vpc awsec2.Vpc, p *gobridgesingle.SingleProps) {
-		ns := awsservicediscovery.NewPrivateDnsNamespace(stack, jsii.String("Ns"), &awsservicediscovery.PrivateDnsNamespaceProps{
-			Name: jsii.String("bridge.local"), Vpc: vpc,
+// TestSingle_CapacityProviderStrategies_UnknownProviderOnOwnClusterPanics verifies the construct's own cluster refuses a provider it does not have.
+func TestSingle_CapacityProviderStrategies_UnknownProviderOnOwnClusterPanics(t *testing.T) {
+	require.PanicsWithValue(t, "GoBridgeSingle: capacity provider \"FARGATE_SPOTT\" is not on the construct's own cluster, "+
+		"which has only FARGATE and FARGATE_SPOT; pass a Cluster that has it", func() {
+		optionsStack(t, func(_ awscdk.Stack, _ awsec2.Vpc, p *gobridgesingle.SingleProps) {
+			p.CapacityProviderStrategies = []*awsecs.CapacityProviderStrategy{
+				{CapacityProvider: jsii.String("FARGATE_SPOTT"), Weight: jsii.Number(1)},
+			}
 		})
-		p.CloudMapOptions = &awsecs.CloudMapOptions{CloudMapNamespace: ns, Name: jsii.String("gobridge")}
 	})
-	tpl.ResourceCountIs(jsii.String("AWS::ServiceDiscovery::Service"), jsii.Number(1))
-	assert.Len(t, ecsService(t, tpl)["Properties"].(map[string]any)["ServiceRegistries"], 1)
+}
+
+// TestSingle_CloudMapOptions_RegistersService verifies the service registers in Cloud Map, from the options' namespace or the supplied cluster's default.
+func TestSingle_CloudMapOptions_RegistersService(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(awscdk.Stack, awsec2.Vpc, *gobridgesingle.SingleProps)
+	}{
+		{name: "options namespace", mutate: func(stack awscdk.Stack, vpc awsec2.Vpc, p *gobridgesingle.SingleProps) {
+			ns := awsservicediscovery.NewPrivateDnsNamespace(stack, jsii.String("Ns"), &awsservicediscovery.PrivateDnsNamespaceProps{
+				Name: jsii.String("bridge.local"), Vpc: vpc,
+			})
+			p.CloudMapOptions = &awsecs.CloudMapOptions{CloudMapNamespace: ns, Name: jsii.String("gobridge")}
+		}},
+		{name: "supplied cluster default namespace", mutate: func(stack awscdk.Stack, vpc awsec2.Vpc, p *gobridgesingle.SingleProps) {
+			p.Cluster = awsecs.NewCluster(stack, jsii.String("Cl"), &awsecs.ClusterProps{
+				Vpc:                      vpc,
+				DefaultCloudMapNamespace: &awsecs.CloudMapNamespaceOptions{Name: jsii.String("bridge.local")},
+			})
+			p.CloudMapOptions = &awsecs.CloudMapOptions{Name: jsii.String("gobridge")}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, tpl := optionsStack(t, tc.mutate)
+			tpl.ResourceCountIs(jsii.String("AWS::ServiceDiscovery::Service"), jsii.Number(1))
+			assert.Len(t, ecsService(t, tpl)["Properties"].(map[string]any)["ServiceRegistries"], 1)
+		})
+	}
 }
 
 // TestSingle_CloudMapOptions_WithoutNamespaceOnOwnClusterPanics verifies options with no namespace fail with the construct's own message.

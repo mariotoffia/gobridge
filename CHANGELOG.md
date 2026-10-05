@@ -19,8 +19,9 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   - `SingleProps.AssignPublicIp`: with `VpcSubnets` unset, the task and an
     auto-created EFS both use the public subnets.
   - `SingleProps.CapacityProviderStrategies`: the construct's own cluster gets
-    the `FARGATE` and `FARGATE_SPOT` providers, and the service waits for them.
-    A supplied cluster must already have the named providers.
+    the `FARGATE` and `FARGATE_SPOT` providers and refuses any other provider,
+    and the service waits for them. A supplied cluster must already have the
+    named providers.
   - `SingleProps.CloudMapOptions`: with no `Cluster`, the options must name a
     namespace; the construct's own cluster has no default one.
   - `GoBridgeSingle.ConfigTable()` returns the DynamoDB config table, or nil

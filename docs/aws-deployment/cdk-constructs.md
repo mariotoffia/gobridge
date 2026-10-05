@@ -171,7 +171,7 @@ Both control and worker access points expose `/`; their paths are not configurab
 | `MemoryMiB` | `*float64` | `1024` | Fargate memory (MiB). |
 | `MountPath` | `*string` | `/var/lib/gobridge` | Container EFS mount path. |
 | `AssignPublicIp` | `*bool` | `nil` (no public IP) | Public IP for a task in a public subnet with no NAT gateway. With `VpcSubnets` unset, the task and an auto-created EFS use the public subnets. Turning it on for a deployed stack moves those mount targets; the update fails and rolls back, because EFS allows one mount target per Availability Zone. |
-| `CapacityProviderStrategies` | `[]*awsecs.CapacityProviderStrategy` | `nil` (launch type `FARGATE`) | Capacity providers such as `FARGATE_SPOT`. The construct's own cluster gets `FARGATE` and `FARGATE_SPOT`; a supplied `Cluster` must already have the named providers. One task only, so a Spot interruption stops bridging until ECS starts a replacement. |
+| `CapacityProviderStrategies` | `[]*awsecs.CapacityProviderStrategy` | `nil` (launch type `FARGATE`) | Capacity providers such as `FARGATE_SPOT`. The construct's own cluster gets `FARGATE` and `FARGATE_SPOT` and refuses any other provider; a supplied `Cluster` must already have the named providers. One task only, so a Spot interruption stops bridging until ECS starts a replacement. |
 | `CloudMapOptions` | `*awsecs.CloudMapOptions` | `nil` (no service discovery) | Cloud Map registration. Set `CloudMapNamespace` unless the supplied `Cluster` has a default namespace; the construct's own cluster has none. |
 
 The single profile runs exactly one task (`DesiredCount` is not a prop) and has
