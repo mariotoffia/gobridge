@@ -10,13 +10,17 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
-GoBridge now limits MQTT by counts only and never by a memory or byte
-estimate. The per-session ingress memory budget, the AWS MQTT memory profile
-and the pending buffer's byte cap are gone. `receive_maximum` is a plain count
-you set, or 192, and the new optional `bridge.max_mqtt_sessions` caps how many
-MQTT sessions a configuration may use. Adding or removing one MQTT session
-no longer reconnects the other MQTT sessions on an in-place reload, and the
-same document passes on AWS and elsewhere.
+## [0.6.0] - 2026-10-06
+
+One failed session no longer stops the whole process: the runtime rebuilds
+just that session's reload unit and everything else keeps running. GoBridge
+now limits MQTT by counts only and never by a memory or byte estimate, so a
+few settings are removed and must be deleted from your configuration before
+you upgrade. `receive_maximum` is a plain count you set, or 192, and the new
+optional `bridge.max_mqtt_sessions` caps how many MQTT sessions a
+configuration may use. Adding or removing one MQTT session no longer
+reconnects the others. `GoBridgeSingle` gains a public IP, a capacity provider
+strategy and Cloud Map, and three alarm and metric gaps are fixed.
 
 ### Removed — MQTT memory estimates and the settings that fed them
 
@@ -2669,7 +2673,8 @@ consumable.
   integration coverage in CI: their tests depend on LocalStack, which requires a
   licence token that is not configured. Set `LOCALSTACK_AUTH_TOKEN` to run them.
 
-[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.6.0
 [0.5.2]: https://github.com/mariotoffia/gobridge/releases/tag/v0.5.2
 [0.5.1]: https://github.com/mariotoffia/gobridge/releases/tag/v0.5.1
 [0.5.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.5.0
