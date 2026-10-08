@@ -90,9 +90,6 @@ func (s *Session) probeQoSDowngrades(ctx context.Context) {
 		return
 	}
 	cm, epoch := s.cm, s.connEpoch
-	for _, spec := range specs {
-		s.markUnackedLocked(spec.Topic)
-	}
 	s.mu.Unlock()
 	sort.Slice(specs, func(i, j int) bool { return specs[i].Topic < specs[j].Topic })
 

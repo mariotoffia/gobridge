@@ -62,12 +62,14 @@ them as after a fresh session:
   the round trip leaves the broker's state for that filter unknown. Keeping
   its record could skip the SUBSCRIBE of a filter the broker already removed,
   which would lose it silently, or of one the broker now holds at another QoS.
-  Every SUBSCRIBE and UNSUBSCRIBE path marks its filters before sending: the
-  reconcile, the managed-subscription cleanup, the orphan cleanup and the QoS
-  probe. A mark is cleared only where the acknowledgement is recorded on the
-  same connection: `applyGrantLocked`, `removeObservedSubscriptions`, and the
-  orphan cleanup's confirmed removal. The orphan cleanup marks whatever the
-  connection epoch, because autopaho may send it on a newer connection.
+  A path that can change a filter recorded at full grant (the reconcile
+  SUBSCRIBE and `unsubscribeConfirmed`, which the managed cleanup uses) marks
+  it before sending. A mark is cleared only where the acknowledgement is
+  recorded on the same connection: `applyGrantLocked` and
+  `removeObservedSubscriptions`. The QoS probe and the orphan cleanup do not
+  mark: the probe re-subscribes only filters granted below their requested
+  QoS, and the orphan cleanup unsubscribes only a topic that is not active, so
+  a resumed connection never keeps either record.
 
 ### When the record is dropped
 

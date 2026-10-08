@@ -174,7 +174,9 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021, ADR-0022, ADR-0023 and
   granted below the requested QoS and filters in `unackedSubs`. Every other
   connection-up, every MQTT 5 one, and `disconnectGeneration` reset the record;
   Reload leaves it to the replacement on 3.1.1 and resets it when it fails.
-  A new SUBSCRIBE or UNSUBSCRIBE path must mark its filters unacknowledged
-  before sending and clear them only where the acknowledgement is recorded on
-  the same connection epoch. `subscriptionsSatisfied` stays false until the
-  reconcile converges, as on every connection (ADR-0023).
+  A path that can change a filter recorded at full grant (the reconcile
+  SUBSCRIBE and `unsubscribeConfirmed`, which the managed cleanup uses) marks
+  it before sending, through `beginSubscriptionOperation`, and the mark is
+  cleared only where the acknowledgement is recorded on the same connection
+  epoch. `subscriptionsSatisfied` stays false until the reconcile converges, as
+  on every connection (ADR-0023).

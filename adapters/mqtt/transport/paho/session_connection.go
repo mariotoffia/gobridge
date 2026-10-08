@@ -53,10 +53,10 @@ import (
 // new connection's record, so the authoritative reconnect reconcile issues a
 // full re-subscribe rather than computing an empty delta against stale state
 // and silently dropping subscriptions on an ephemeral (clean_start) session. A
-// SUBSCRIBE or UNSUBSCRIBE still in flight across this edge was marked
-// unacknowledged before it was sent, so a resumed MQTT 3.1.1 connection does
-// not keep that filter's record either. Do NOT add reloadGate here — the epoch
-// guard is the deadlock-free closure.
+// reconcile SUBSCRIBE or UNSUBSCRIBE still in flight across this edge was
+// marked unacknowledged before it was sent, so a resumed MQTT 3.1.1 connection
+// does not keep that filter's record either. Do NOT add reloadGate here — the
+// epoch guard is the deadlock-free closure.
 func (s *Session) handleConnectionUp() {
 	s.mu.Lock()
 	generation := s.connectionGeneration

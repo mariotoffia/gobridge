@@ -24,8 +24,9 @@ package paho
 //
 //   - a filter granted below its requested QoS, so every reconnect re-checks
 //     the grant, as it does on MQTT 5 (session_qos_downgrade.go);
-//   - a filter whose last SUBSCRIBE or UNSUBSCRIBE was not acknowledged. The
-//     broker may have applied it or not, so its record may be wrong either way.
+//   - a filter whose last reconcile SUBSCRIBE or UNSUBSCRIBE was not
+//     acknowledged. The broker may have applied it or not, so its record may
+//     be wrong either way.
 //
 // Callers hold s.mu.
 func (s *Session) keepResumedSubscriptionsLocked() {
@@ -53,29 +54,28 @@ func (s *Session) resetSubscriptionRecordLocked() {
 	s.unackedSubs = nil
 }
 
-// markUnackedLocked records that a SUBSCRIBE or UNSUBSCRIBE for filters is
-// about to be sent. The record of a filter is trusted again only once the
-// acknowledgement is recorded: applyGrantLocked for a SUBACK grant,
-// removeObservedSubscriptions or the orphan cleanup for an UNSUBACK. Callers
-// hold s.mu.
-func (s *Session) markUnackedLocked(filters ...string) {
-	if s.unackedSubs == nil {
-		s.unackedSubs = make(map[string]struct{}, len(filters))
-	}
-	for _, filter := range filters {
-		s.unackedSubs[filter] = struct{}{}
-	}
-}
-
 // beginSubscriptionOperation checks that the reconcile still runs on the
 // connection it started on and marks filters unacknowledged before the
-// SUBSCRIBE or UNSUBSCRIBE that carries them is sent.
+// SUBSCRIBE or UNSUBSCRIBE that carries them is sent. A mark is cleared only
+// where the acknowledgement is recorded: applyGrantLocked for a SUBACK grant,
+// removeObservedSubscriptions for an UNSUBACK.
+//
+// Only a path that can change a filter recorded at full grant marks: the
+// reconcile SUBSCRIBE and unsubscribeConfirmed, which the managed cleanup uses.
+// The QoS probe re-subscribes only filters granted below their requested QoS,
+// and the orphan cleanup unsubscribes only a topic that is not active; a
+// resumed connection never keeps either record.
 func (s *Session) beginSubscriptionOperation(operationEpoch uint64, filters []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := reconcileEpochMismatch(operationEpoch, s.connEpoch); err != nil {
 		return err
 	}
-	s.markUnackedLocked(filters...)
+	if s.unackedSubs == nil {
+		s.unackedSubs = make(map[string]struct{}, len(filters))
+	}
+	for _, filter := range filters {
+		s.unackedSubs[filter] = struct{}{}
+	}
 	return nil
 }

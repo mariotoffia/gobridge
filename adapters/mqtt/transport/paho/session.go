@@ -244,11 +244,12 @@ type Session struct {
 	// still being confirmed is not in it. Health reads only this map.
 	activeSubs map[string]byte // topic filter -> granted qos
 
-	// unackedSubs holds the filters a SUBSCRIBE or UNSUBSCRIBE was sent for
-	// whose acknowledgement has not been recorded. The broker may or may not
-	// have applied that operation, so a resumed MQTT 3.1.1 connection does not
-	// keep their record (keepResumedSubscriptionsLocked). Cleared whenever the
-	// record is reset or kept. Guarded by mu.
+	// unackedSubs holds the filters a reconcile SUBSCRIBE or UNSUBSCRIBE was
+	// sent for whose acknowledgement has not been recorded
+	// (beginSubscriptionOperation). The broker may or may not have applied that
+	// operation, so a resumed MQTT 3.1.1 connection does not keep their record
+	// (keepResumedSubscriptionsLocked). Cleared whenever the record is reset or
+	// kept. Guarded by mu.
 	unackedSubs map[string]struct{}
 
 	// oneBrokerDomain is true when every broker URL reaches one canonical
