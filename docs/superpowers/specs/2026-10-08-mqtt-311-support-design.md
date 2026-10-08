@@ -345,8 +345,8 @@ About `session_expiry_interval` on 3.1.1:
 
 Every error is `shared.ErrInvalidConfig.WithMessage(...)`. It names the key,
 the protocol version and what to do instead. Example: "mqtt: session.no_local
-is not available on protocol_version v3.1.1 (MQTT 3.1.1 has no No-Local);
-remove it, or use v5".
+is not available on session.protocol_version v3.1.1 (MQTT 3.1.1 has no
+No-Local; remove it, or use v5)".
 
 ### 4.3 Startup warning
 

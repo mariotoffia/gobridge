@@ -2,6 +2,7 @@ package paho
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"testing"
 
@@ -548,6 +549,68 @@ func TestMQTT311Conn_PacketIdentifierIsReusableAfterPahosPuback(t *testing.T) {
 	assert.Equal(t, []byte("x"), publishV5(t, readV5(t, conn)).Payload)
 	require.NoError(t, writeV5(conn, &packets.Puback{PacketID: 1, Properties: &packets.Properties{}}))
 	assert.Equal(t, []byte("z"), publishV5(t, readV5(t, conn)).Payload)
+	assert.Empty(t, *violations)
+}
+
+func TestMQTT311Conn_RetransmissionThatCrossesItsPubackIsDropped(t *testing.T) {
+	for _, id := range []uint16{1, 64, 65535} {
+		t.Run(fmt.Sprint(id), func(t *testing.T) {
+			// The broker's retry sends a DUP copy before Paho's PUBACK reaches
+			// it, and the copy is read after the PUBACK is written. It is
+			// skipped whole. A DUP on an identifier never seen on this
+			// connection is still a redelivery after a resume.
+			other := id%65535 + 1
+			wire := publish311(0x02, id, []byte("x"))
+			wire = append(wire, publish311(0x08|0x02, id, bytes.Repeat([]byte{'r'}, 2000))...)
+			wire = append(wire, publish311(0x08|0x02, other, []byte("y"))...)
+			conn, raw, violations := newTestMQTT311Conn(wire)
+
+			assert.Equal(t, []byte("x"), publishV5(t, readV5(t, conn)).Payload)
+			require.NoError(t, writeV5(conn, &packets.Puback{PacketID: id, Properties: &packets.Properties{}}))
+			redelivery := publishV5(t, readV5(t, conn))
+			assert.Equal(t, other, redelivery.PacketID, "the stale copy never reaches Paho")
+			assert.Equal(t, []byte("y"), redelivery.Payload)
+			assert.Zero(t, raw.UnreadBytes())
+			assert.Empty(t, *violations)
+		})
+	}
+}
+
+func TestMQTT311Conn_RetransmissionThatCrossesItsPubackTakesNoWindowSlot(t *testing.T) {
+	wire := publish311(0x02, 1, []byte("x"))
+	wire = append(wire, publish311(0x08|0x02, 1, []byte("x"))...)
+	for id := uint16(2); id <= testMQTT311ReceiveMaximum+1; id++ {
+		wire = append(wire, publish311(0x02, id, []byte("y"))...)
+	}
+	conn, raw, violations := newTestMQTT311Conn(wire)
+
+	readV5(t, conn)
+	require.NoError(t, writeV5(conn, &packets.Puback{PacketID: 1, Properties: &packets.Properties{}}))
+	for id := uint16(2); id <= testMQTT311ReceiveMaximum+1; id++ {
+		assert.Equal(t, id, publishV5(t, readV5(t, conn)).PacketID, "receive_maximum new identifiers fit the window")
+	}
+	assert.Zero(t, raw.UnreadBytes())
+	assert.Empty(t, *violations)
+}
+
+func TestMQTT311Conn_IdentifierReusedAfterPubackIsANewMessage(t *testing.T) {
+	var wire []byte
+	wire = append(wire, publish311(0x02, 1, []byte("x"))...)
+	wire = append(wire, publish311(0x02, 1, []byte("z"))...)      // the broker reuses 1 after the PUBACK
+	wire = append(wire, publish311(0x08|0x02, 1, []byte("z"))...) // a retransmission while in flight
+	wire = append(wire, 0xD0, 0)
+	wire = append(wire, publish311(0x08|0x02, 1, []byte("z"))...) // a retransmission that crossed the PUBACK
+	wire = append(wire, 0xD0, 0)
+	conn, raw, violations := newTestMQTT311Conn(wire)
+	puback := &packets.Puback{PacketID: 1, Properties: &packets.Properties{}}
+
+	assert.Equal(t, []byte("x"), publishV5(t, readV5(t, conn)).Payload)
+	require.NoError(t, writeV5(conn, puback))
+	assert.Equal(t, []byte("z"), publishV5(t, readV5(t, conn)).Payload, "a first copy without DUP is a new message")
+	assert.Equal(t, []byte{0xD0, 0}, readV5(t, conn), "the in-flight retransmission is dropped")
+	require.NoError(t, writeV5(conn, puback))
+	assert.Equal(t, []byte{0xD0, 0}, readV5(t, conn), "the crossing retransmission is dropped")
+	assert.Zero(t, raw.UnreadBytes())
 	assert.Empty(t, *violations)
 }
 

@@ -131,7 +131,7 @@ The same rules run everywhere a session can be built or changed:
 Each error names the key, the version and what to do. For example:
 
 ```text
-mqtt: session.no_local is not available on protocol_version v3.1.1 (MQTT 3.1.1 has no No-Local; remove it, or use v5)
+mqtt: session.no_local is not available on session.protocol_version v3.1.1 (MQTT 3.1.1 has no No-Local; remove it, or use v5)
 ```
 
 Persistent and Exclusive sessions still use a session expiry of 86400 seconds

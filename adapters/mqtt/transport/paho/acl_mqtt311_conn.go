@@ -63,6 +63,9 @@ type mqtt311Conn struct {
 	// handed to Paho and not yet released by its PUBACK (QoS 1) or PUBCOMP
 	// (QoS 2).
 	inflight map[uint16]struct{}
+	// pubacked marks, one bit per packet identifier, those Paho's PUBACK
+	// released and no inbound publish has reused since.
+	pubacked [1 << 16 / 64]uint64
 	// unsubscribeFilters is the filter count of each outbound UNSUBSCRIBE: a
 	// 3.1.1 UNSUBACK carries no reason codes, and Paho expects one per filter.
 	unsubscribeFilters map[uint16]int
@@ -167,6 +170,9 @@ func (c *mqtt311Conn) translateOutbound(v5 []byte) ([]byte, error) {
 		if cp.Type == packets.PUBACK || cp.Type == packets.PUBCOMP {
 			c.mu.Lock()
 			delete(c.inflight, packetID)
+			if cp.Type == packets.PUBACK {
+				c.pubacked[packetID/64] |= 1 << (packetID % 64)
+			}
 			c.mu.Unlock()
 		}
 		return binary.BigEndian.AppendUint16([]byte{fixedHeader, 2}, packetID), nil
@@ -499,11 +505,20 @@ func (c *mqtt311Conn) readPublish(fixedHeader byte, remaining int) ([]byte, erro
 //     allows one on a live connection and MQTT 5 does not (MQTT-4.4.0-1).
 //     Paho acks by identifier, so the late ack of a second copy could release
 //     a newer message that reused it. The copy Paho holds settles both.
+//   - An identifier Paho's PUBACK released, with DUP set, is a retransmission
+//     that crossed the PUBACK, and the broker may already have reused the
+//     identifier. A reused identifier's first copy has no DUP (MQTT-4.3.2-1)
+//     and on one connection precedes every copy with DUP. Admitting it clears
+//     the mark, so only a stale copy is dropped, and a new connection starts
+//     unmarked, so a redelivery after a resume is admitted. QoS 2 needs no
+//     mark: no copy follows the PUBREL (MQTT-4.3.3-1), so none is read after
+//     PUBCOMP releases the identifier.
 //   - An identifier still in flight without DUP is a broker reusing one it has
 //     not got back.
 //   - One identifier more than receive_maximum would block Paho's reader on
 //     the router's admission, which closing the socket does not release.
 func (c *mqtt311Conn) admitInbound(packetID uint16, duplicate bool) (retransmission bool, err error) {
+	word, bit := packetID/64, uint64(1)<<(packetID%64)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, inFlight := c.inflight[packetID]; inFlight {
@@ -511,6 +526,9 @@ func (c *mqtt311Conn) admitInbound(packetID uint16, duplicate bool) (retransmiss
 			return true, nil
 		}
 		return false, newMQTTMalformedError()
+	}
+	if duplicate && c.pubacked[word]&bit != 0 {
+		return true, nil
 	}
 	if len(c.inflight) >= c.receiveMaximum {
 		return false, &mqttIngressError{
@@ -520,6 +538,7 @@ func (c *mqtt311Conn) admitInbound(packetID uint16, duplicate bool) (retransmiss
 		}
 	}
 	c.inflight[packetID] = struct{}{}
+	c.pubacked[word] &^= bit
 	return false, nil
 }
 
