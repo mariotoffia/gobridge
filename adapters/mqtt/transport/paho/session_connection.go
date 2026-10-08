@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/logging"
 	"github.com/mariotoffia/gobridge/ports"
@@ -18,18 +19,21 @@ import (
 // owner of reconnect reconciliation. It reacts to the SessionConnected
 // event by calling Reconcile, whose outcome is authoritative and whose
 // failure propagates out of Manager.Run. This method must
-// therefore NOT reconcile inline; it only resets local subscription
+// therefore NOT reconcile inline; it only sets up local subscription
 // state and emits the event.
 //
-// Ordering is load-bearing: activeSubs is reset to empty BEFORE
-// SessionConnected is emitted. The reset happens-before the event, which
-// happens-before the manager's reconcile reads activeSubs, so on
-// reconnect the manager always observes an empty set and issues a full,
-// authoritative re-subscribe. The previous ordering emitted the event
-// first, letting the manager's reconcile observe stale subscriptions,
-// compute an empty delta, and skip the re-subscribe — which, combined
-// with an inline reconcile that swallowed its own failure, could leave a
-// topic silently unsubscribed with no error surfaced.
+// Ordering is load-bearing: the subscription record is set up BEFORE
+// SessionConnected is emitted. That happens-before the event, which
+// happens-before the manager's reconcile reads activeSubs. On every connection
+// except a resumed MQTT 3.1.1 one the record is reset to empty, so the manager
+// always observes an empty set and issues a full, authoritative re-subscribe.
+// The previous ordering emitted the event first, letting the manager's
+// reconcile observe stale subscriptions, compute an empty delta, and skip the
+// re-subscribe — which, combined with an inline reconcile that swallowed its
+// own failure, could leave a topic silently unsubscribed with no error
+// surfaced. A resumed MQTT 3.1.1 connection keeps only what the broker
+// confirmed and still holds (session_resume.go); its empty delta is
+// deliberate.
 //
 // Lock discipline: this callback takes ONLY s.mu for the
 // subscription-state reset and MUST NOT acquire reloadGate. autopaho invokes
@@ -45,11 +49,14 @@ import (
 // stale subscription state AFTER this reset — is instead closed
 // WITHOUT any new lock by the connEpoch generation counter: this reset
 // bumps s.connEpoch, and reconcile skips any write-back whose captured epoch no
-// longer matches. That keeps activeSubs empty for the new connection, so the
-// authoritative reconnect reconcile issues a full re-subscribe rather than
-// computing an empty delta against stale state and silently dropping
-// subscriptions on an ephemeral (clean_start) session. Do NOT add reloadGate
-// here — the epoch guard is the deadlock-free closure.
+// longer matches. That keeps the previous connection's late results out of the
+// new connection's record, so the authoritative reconnect reconcile issues a
+// full re-subscribe rather than computing an empty delta against stale state
+// and silently dropping subscriptions on an ephemeral (clean_start) session. A
+// SUBSCRIBE or UNSUBSCRIBE still in flight across this edge was marked
+// unacknowledged before it was sent, so a resumed MQTT 3.1.1 connection does
+// not keep that filter's record either. Do NOT add reloadGate here — the epoch
+// guard is the deadlock-free closure.
 func (s *Session) handleConnectionUp() {
 	s.mu.Lock()
 	generation := s.connectionGeneration
@@ -93,8 +100,16 @@ func (s *Session) handleConnectionUpGenerationWithSessionPresent(generation uint
 	s.connectErr = nil
 	s.connected = true
 	s.connUpAt = s.clock().Now().UnixNano()
-	s.observedSubs = make(map[string]subscriptionGrant)
-	s.activeSubs = make(map[string]byte)
+	// MQTT 3.1.1 has no Retain Handling, so a SUBSCRIBE replays retained
+	// messages. A connection that resumed a durable session therefore keeps the
+	// record of the subscriptions the broker still holds (session_resume.go).
+	// Session Present is trusted only when every broker URL reaches one
+	// endpoint, and an ephemeral session starts clean on every connect.
+	if s.opts.protocolV311() && sessionPresent && s.mode != connectivity.SessionEphemeral && s.oneBrokerDomain {
+		s.keepResumedSubscriptionsLocked()
+	} else {
+		s.resetSubscriptionRecordLocked()
+	}
 	s.subscriptionsSatisfied = false
 	s.connEpoch = nextEpoch
 	s.mu.Unlock()
@@ -326,8 +341,12 @@ func (s *Session) disconnectGeneration(ctx context.Context) {
 	s.clearSettledIngressRejectLocked(s.clock().Now().UnixNano())
 	s.connected = false
 	s.subscriptionsSatisfied = false
-	s.observedSubs = make(map[string]subscriptionGrant)
-	s.activeSubs = make(map[string]byte)
+	// The session gives the broker session up here: a failed exclusive
+	// reconcile releases the lease next, and a terminal session never
+	// reconnects. Another owner of the client id may change the subscriptions
+	// before this session connects again, so the record goes on every protocol
+	// version.
+	s.resetSubscriptionRecordLocked()
 	s.connEpoch++
 	s.mu.Unlock()
 

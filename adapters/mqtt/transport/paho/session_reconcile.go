@@ -190,8 +190,9 @@ func (s *Session) reconcileUnderGate(
 	// The teardown is gated on the last-APPLIED history (whether the plan we
 	// last SUCCESSFULLY reconciled held subscriptions), NOT on the volatile
 	// activeSubs snapshot and NOT on the desired plan. handleConnectionUp
-	// resets activeSubs to empty on every reconnect while a clean_start=false
-	// broker still holds the resumed subscriptions, so an empty plan reconciled
+	// resets activeSubs to empty on every reconnect but a resumed MQTT 3.1.1
+	// one, while a clean_start=false broker still holds the resumed
+	// subscriptions, so an empty plan reconciled
 	// in that post-reset/pre-resubscribe window would look like "nothing to
 	// remove" under an activeSubs guard and orphan the broker sub until the
 	// router's grace-sweep backstop. Gating on the applied plan closes that

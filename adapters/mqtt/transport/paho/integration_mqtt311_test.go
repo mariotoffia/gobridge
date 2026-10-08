@@ -839,6 +839,113 @@ func TestIntegration_MQTT311_BrokerWindowAboveReceiveMaximumIsRefusedNotWedged(t
 		"a receive_maximum at least the broker's in-flight limit is never overrun")
 }
 
+// TestIntegration_MQTT311_ResumedSessionDoesNotReplayRetained pins what Session
+// Present buys a 3.1.1 session, which cannot ask for Retain Handling: every
+// SUBSCRIBE makes the broker send the filter's retained messages again. A
+// persistent session gets the retained message once when it subscribes. Its
+// connection then drops and resumes with Session Present 1, the broker still
+// holds the subscription, and the reconcile sends no SUBSCRIBE, so the retained
+// message does not come back while live traffic still arrives. The control: the
+// broker then loses the session, the reconnect gets Session Present 0, and the
+// session subscribes again and receives the retained message, as a fresh
+// subscriber does.
+func TestIntegration_MQTT311_ResumedSessionDoesNotReplayRetained(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires a real local MQTT broker")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+	t.Cleanup(cancel)
+
+	// One message in flight per client: the broker sends the next QoS 1 publish
+	// only after it holds the PUBACK of the previous one. A delivery therefore
+	// proves the broker has the ack of the one before it, so a drop cannot make
+	// the broker redeliver that one.
+	broker := mqttlocal.NewBrokerInstance(t, mqttlocal.WithMaxInflightMessages(1))
+	link := netfault.Start(t, hostPortOf(t, broker.URL()))
+
+	clientID := mqttlocal.UniqueClientID("mqtt311-retained-resume")
+	topic := "mqtt311/retained-resume/" + mqttlocal.UniqueClientID("topic")
+	plan := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}}}
+
+	publisher := startMQTT311Publisher(t, ctx, broker.URL(), "mqtt311-retained-resume-publisher")
+	retainMQTT311(t, ctx, publisher, topic, "retained-state")
+
+	metrics := &ports.RecordingExporter{}
+	session := paho.NewSession(paho.SessionOptions{
+		BrokerURLs:        []string{link.URL("tcp")},
+		ClientID:          clientID,
+		KeepAlive:         5,
+		ConnectTimeout:    10 * time.Second,
+		ReconnectDelay:    200 * time.Millisecond,
+		ReconnectMaxDelay: time.Second,
+		ReconnectTimeout:  2 * time.Second,
+		CleanStart:        false,
+		ProtocolVersion:   paho.ProtocolVersion311,
+	}, connectivity.SessionPersistent, nil, metrics)
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+	require.NoError(t, session.Start(ctx), "start the persistent session")
+	pump := startReconcilePump(ctx, session, plan)
+	pump.waitCount(t, ports.SessionReconciled, 1, mqtt311Wait, "first reconcile")
+	deliveries, _ := recordMQTT311Deliveries(t, session, "mqtt311-retained-resume", topic)
+
+	first := wait.RequireReceive(t, deliveries, mqtt311Wait)
+	require.Equal(t, "retained-state", first.payload)
+	require.Equal(t, true, first.headers[paho.HeaderMQTTRetained], "a new subscription gets the retained message")
+	sendMQTT311(t, ctx, publisher, topic, 1, "before-drop")
+	require.Equal(t, "before-drop", wait.RequireReceive(t, deliveries, mqtt311Wait).payload)
+
+	// The connection drops without a DISCONNECT and resumes the session.
+	link.Cut()
+	pump.waitCount(t, ports.SessionDisconnected, 1, mqtt311Wait, "the drop")
+	link.Heal()
+	pump.waitCount(t, ports.SessionConnected, 2, mqtt311Wait, "the resumed connection")
+	pump.waitCount(t, ports.SessionReconciled, 2, mqtt311Wait, "the reconcile of the resumed connection")
+	require.Empty(t, metrics.FindEntries(paho.MetricMQTTSessionResumeLost),
+		"the broker must answer Session Present 1")
+
+	// A retained message sent for a SUBSCRIBE in that reconcile would be queued
+	// before this publish, which is sent after the reconcile finished.
+	sendMQTT311(t, ctx, publisher, topic, 1, "after-resume")
+	for {
+		got := wait.RequireReceive(t, deliveries, mqtt311Wait)
+		require.Equal(t, false, got.headers[paho.HeaderMQTTRetained],
+			"a resumed session must not be sent the retained message again (got %q)", got.payload)
+		if got.payload == "after-resume" {
+			break
+		}
+		// Its PUBACK can race the drop; that redelivery is ordinary at-least-once.
+		require.Equal(t, "before-drop", got.payload, "only a redelivery may precede the live publish")
+	}
+
+	// Control: the broker loses the session while the connection is down. A
+	// client connecting with the same client id and Clean Session 1 makes the
+	// broker discard it (MQTT 3.1.1 §3.1.2.4).
+	link.Cut()
+	pump.waitCount(t, ports.SessionDisconnected, 2, mqtt311Wait, "the second drop")
+	wiper := paho.NewSession(paho.SessionOptions{
+		BrokerURLs:      []string{broker.URL()},
+		ClientID:        clientID,
+		KeepAlive:       10,
+		ConnectTimeout:  10 * time.Second,
+		CleanStart:      true,
+		ProtocolVersion: paho.ProtocolVersion311,
+	}, connectivity.SessionEphemeral, nil)
+	require.NoError(t, wiper.Start(ctx), "discard the broker session")
+	require.NoError(t, wiper.Close(ctx))
+	link.Heal()
+	pump.waitCount(t, ports.SessionConnected, 3, mqtt311Wait, "the connection after the loss")
+	pump.waitCount(t, ports.SessionReconciled, 3, mqtt311Wait, "the reconcile after the loss")
+	require.Len(t, metrics.FindEntries(paho.MetricMQTTSessionResumeLost), 1,
+		"the broker must answer Session Present 0")
+
+	sendMQTT311(t, ctx, publisher, topic, 1, "after-loss")
+	replayed := wait.RequireReceive(t, deliveries, mqtt311Wait)
+	require.Equal(t, "retained-state", replayed.payload,
+		"a session the broker lost subscribes again and gets the retained message first")
+	require.Equal(t, true, replayed.headers[paho.HeaderMQTTRetained])
+	require.Equal(t, "after-loss", wait.RequireReceive(t, deliveries, mqtt311Wait).payload)
+}
+
 // ---------------------------------------------------------------------------
 // MQTT 3.1.1 helpers
 // ---------------------------------------------------------------------------
@@ -937,4 +1044,15 @@ func sendMQTT311(t *testing.T, ctx context.Context, publisher *paho.Session, top
 		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{Subject: topic, Payload: []byte(payload)}),
 		Address:  topic,
 	}), "publish to %s at QoS %d", topic, qos)
+}
+
+// retainMQTT311 publishes payload to topic at QoS 1 with the RETAIN flag, and
+// returns once the broker has stored it.
+func retainMQTT311(t *testing.T, ctx context.Context, publisher *paho.Session, topic, payload string) {
+	t.Helper()
+	sender := paho.NewSender(publisher, paho.SenderOptions{QoS: 1, Retain: true, Timeout: 10 * time.Second})
+	require.NoError(t, sender.Send(ctx, ports.OutboundMessage{
+		Envelope: messaging.MustEnvelope(messaging.EnvelopeInput{Subject: topic, Payload: []byte(payload)}),
+		Address:  topic,
+	}), "publish a retained message to %s", topic)
 }

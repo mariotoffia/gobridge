@@ -244,6 +244,18 @@ type Session struct {
 	// still being confirmed is not in it. Health reads only this map.
 	activeSubs map[string]byte // topic filter -> granted qos
 
+	// unackedSubs holds the filters a SUBSCRIBE or UNSUBSCRIBE was sent for
+	// whose acknowledgement has not been recorded. The broker may or may not
+	// have applied that operation, so a resumed MQTT 3.1.1 connection does not
+	// keep their record (keepResumedSubscriptionsLocked). Cleared whenever the
+	// record is reset or kept. Guarded by mu.
+	unackedSubs map[string]struct{}
+
+	// oneBrokerDomain is true when every broker URL reaches one canonical
+	// endpoint, so a CONNACK on any connection describes the same broker
+	// session. Immutable after NewSession.
+	oneBrokerDomain bool
+
 	// subscriptionsSatisfied is latched false when an explicit plan starts
 	// reconciling or the connection generation changes. Only an exact successful
 	// convergence of broker-observed and contract-active state sets it true.
@@ -424,8 +436,9 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 			"decision on a minted id is terminal unless max_replay_attempts is 0 or message_id is content_hash), "+
 			"sees a session takeover only as a "+
 			"connection that drops soon after it connects, cannot see a publish the broker refuses, replays "+
-			"retained messages on every reconnect, and leaves the in-flight window and the session lifetime to "+
-			"the broker, whose per-client in-flight limit must fit receive_maximum; see docs/transports/mqtt-311.md",
+			"retained messages on every reconnect that does not resume the session and on every QoS re-check, "+
+			"and leaves the in-flight window and the session lifetime to the broker, whose per-client in-flight "+
+			"limit must fit receive_maximum; see docs/transports/mqtt-311.md",
 			"client_id", opts.ClientID,
 			"receive_maximum", opts.ReceiveMaximum,
 		)
@@ -446,17 +459,18 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		)
 	}
 	s := &Session{
-		opts:         opts,
-		mode:         mode,
-		logger:       logger,
-		metrics:      m,
-		clk:          opts.Clock,
-		protocolErr:  protocolErr,
-		events:       make(chan ports.SessionEvent, sessionEventsBuffer),
-		closedCh:     make(chan struct{}),
-		reloadGate:   make(chan struct{}, 1),
-		observedSubs: make(map[string]subscriptionGrant),
-		activeSubs:   make(map[string]byte),
+		opts:            opts,
+		mode:            mode,
+		logger:          logger,
+		metrics:         m,
+		clk:             opts.Clock,
+		protocolErr:     protocolErr,
+		oneBrokerDomain: oneBrokerSessionDomain(opts.BrokerURLs, opts.BrokerURL),
+		events:          make(chan ports.SessionEvent, sessionEventsBuffer),
+		closedCh:        make(chan struct{}),
+		reloadGate:      make(chan struct{}, 1),
+		observedSubs:    make(map[string]subscriptionGrant),
+		activeSubs:      make(map[string]byte),
 	}
 	s.reloadGate <- struct{}{}
 	// The router shares the session's (possibly fake) clock so the startup

@@ -84,6 +84,10 @@ func (s *Session) unsubscribeOrphan(topic string) {
 	}
 
 	removed := false
+	// Marked whatever the epoch: autopaho may send this on a newer connection.
+	s.mu.Lock()
+	s.markUnackedLocked(topic)
+	s.mu.Unlock()
 	reasons, err := cm.Unsubscribe(ctx, []string{topic})
 	if err == nil {
 		confirmation := classifyUnsubackReasons([]string{topic}, reasons)
@@ -130,6 +134,7 @@ func (s *Session) unsubscribeOrphan(topic string) {
 	if s.connEpoch == startEpoch {
 		delete(s.observedSubs, topic)
 		delete(s.activeSubs, topic)
+		delete(s.unackedSubs, topic)
 	}
 	s.mu.Unlock()
 

@@ -245,8 +245,14 @@ func (s *Session) reloadLocked(ctx context.Context) error {
 	// return with a replacement CM whose OnConnectionUp callback is still queued.
 	// A prior-generation reconcile then cannot write into replacement state.
 	s.subscriptionsSatisfied = false
-	s.observedSubs = make(map[string]subscriptionGrant)
-	s.activeSubs = make(map[string]byte)
+	// On MQTT 3.1.1 the replacement's connection-up decides: it keeps the
+	// record when the broker resumed the session (session_resume.go). The
+	// session keeps owning the broker session across a Reload, unless the
+	// Reload fails; both failure paths below drop the record.
+	keepRecord := s.opts.protocolV311()
+	if !keepRecord {
+		s.resetSubscriptionRecordLocked()
+	}
 	s.connEpoch++
 	s.mu.Unlock()
 
@@ -261,6 +267,9 @@ func (s *Session) reloadLocked(ctx context.Context) error {
 	if disconnectErr != nil {
 		mapped := MapError(disconnectErr).WithMessage("mqtt reload: disconnect current generation")
 		s.mu.Lock()
+		if keepRecord {
+			s.resetSubscriptionRecordLocked()
+		}
 		recoveryOwnsTerminalSignal := s.recoveryPending ||
 			(s.recoveryGeneration > 0 && s.terminalErr != nil && s.recoveryErr != nil)
 		if !recoveryOwnsTerminalSignal {
@@ -288,6 +297,11 @@ func (s *Session) reloadLocked(ctx context.Context) error {
 		// spin on a closed channel. The close is guarded (closeEventsLocked)
 		// so a concurrent/subsequent Close cannot double-close it.
 		s.mu.Lock()
+		if keepRecord {
+			// The supervisor may hand the client id to another owner before
+			// this session starts again.
+			s.resetSubscriptionRecordLocked()
+		}
 		recoveryOwnsTerminalSignal := s.recoveryPending ||
 			(s.recoveryGeneration > 0 && s.terminalErr != nil && s.recoveryErr != nil)
 		if !recoveryOwnsTerminalSignal {

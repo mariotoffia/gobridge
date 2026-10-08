@@ -107,6 +107,7 @@ func (s *Session) applyGrantLocked(topic string, requested, granted byte, rechec
 		s.activeSubs = make(map[string]byte)
 	}
 	s.observedSubs[topic] = subscriptionGrant{Requested: requested, Granted: granted}
+	delete(s.unackedSubs, topic)
 	d := s.qosDowngrades[topic]
 	if granted >= requested {
 		s.activeSubs[topic] = granted
