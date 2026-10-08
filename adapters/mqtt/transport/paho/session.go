@@ -37,6 +37,11 @@ type Session struct {
 	logger  *slog.Logger
 	metrics ports.MetricsExporter
 	clk     clock.Clock
+	// protocolErr is validateProtocol's verdict on the options as configured,
+	// before NewSession applied any default. Start returns it, so a session
+	// built directly with options its protocol version cannot express never
+	// dials. Immutable after NewSession.
+	protocolErr error
 
 	mu sync.Mutex
 	// cm is the live connection seam. Defined as the unexported
@@ -98,12 +103,15 @@ type Session struct {
 	brokerMaxPacketSize uint32
 
 	// takeoverStreak counts consecutive session-takeover disconnects
-	// (0x8E) without an intervening stable connection; connUpAt is when
+	// (0x8E) without an intervening stable connection; on MQTT 3.1.1, which
+	// reports no takeover, it counts connections that dropped soon after
+	// coming up instead (noteMQTT311ConnectionDownLocked). connUpAt is when
 	// the current connection came up. Both guarded by mu; used to damp
 	// ClientID-collision takeover storms.
 	takeoverStreak int
 	// lastTakeoverAt is the unix-nanos time of the most recent session-takeover
-	// (0x8E) disconnect, or 0 if none. takeoverPenalty gates on it: the penalty
+	// (0x8E) disconnect, or of the most recent short-lived MQTT 3.1.1
+	// connection, or 0 if none. takeoverPenalty gates on it: the penalty
 	// only spaces out reconnects DURING an active storm, so once no takeover has
 	// occurred for connectionStabilityWindow the penalty decays to 0 even though
 	// takeoverStreak is still high. Without this, a RESOLVED storm's streak
@@ -365,19 +373,25 @@ const sessionEventsBuffer = 16
 // metrics may be nil; a no-op exporter is used in that case.
 //
 // For Persistent/Exclusive modes a zero SessionExpiryInterval is
-// coerced to DefaultPersistentSessionExpiry (with a warning): expiry 0
-// means the broker discards session state the moment the network drops,
+// coerced to DefaultPersistentSessionExpiry (with a warning on MQTT 5): expiry
+// 0 means the broker discards session state the moment the network drops,
 // which silently voids the offline-retention contract those modes exist
 // to provide.
 //
 // A zero ReceiveMaximum is coerced to DefaultReceiveMaximum. 0 is not a
 // legal MQTT v5 Receive Maximum (protocol error), so it means "unset" and
 // takes the default.
+//
+// NewSession cannot fail, so options the protocol version cannot express are
+// reported by Start, which then never dials.
 func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog.Logger, metrics ...ports.MetricsExporter) *Session {
 	var m ports.MetricsExporter = &ports.NoopExporter{}
 	if len(metrics) > 0 && metrics[0] != nil {
 		m = metrics[0]
 	}
+	// Judged before any default below: a coerced session expiry is not one the
+	// operator configured.
+	protocolErr := opts.validateProtocol(mode)
 	if opts.Clock == nil {
 		opts.Clock = clock.System
 	}
@@ -388,12 +402,25 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 	}
 	if mode != connectivity.SessionEphemeral && opts.SessionExpiryInterval == 0 {
 		opts.SessionExpiryInterval = DefaultPersistentSessionExpiry
-		if logger != nil {
+		// On MQTT 3.1.1 the expiry is never sent. It only keeps the local
+		// durable identity and redelivery admission meaningful, so there is
+		// nothing to warn about.
+		if logger != nil && !opts.protocolV311() {
 			logger.Warn("mqtt: session_expiry_interval 0 gives zero offline retention; defaulting",
 				"mode", string(mode),
 				"session_expiry_interval", opts.SessionExpiryInterval,
 			)
 		}
+	}
+	if opts.protocolV311() && logger != nil {
+		logger.Warn("mqtt: session.protocol_version v3.1.1 carries no headers or message identity (a retry decision "+
+			"on a minted id is terminal unless max_replay_attempts is 0), sees a session takeover only as a "+
+			"connection that drops soon after it connects, cannot see a publish the broker refuses, replays "+
+			"retained messages on every reconnect, and leaves the in-flight window and the session lifetime to "+
+			"the broker, whose per-client in-flight limit must fit receive_maximum; see docs/transports/mqtt-311.md",
+			"client_id", opts.ClientID,
+			"receive_maximum", opts.ReceiveMaximum,
+		)
 	}
 	// Persistent + clean_start=true is honored as configured, but it silently
 	// voids the mode's purpose on every restart: CleanStart discards the
@@ -416,6 +443,7 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		logger:       logger,
 		metrics:      m,
 		clk:          opts.Clock,
+		protocolErr:  protocolErr,
 		events:       make(chan ports.SessionEvent, sessionEventsBuffer),
 		closedCh:     make(chan struct{}),
 		reloadGate:   make(chan struct{}, 1),

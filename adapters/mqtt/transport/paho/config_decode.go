@@ -80,7 +80,9 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 	if raw, exists := m["protocol_version"]; exists {
 		v, ok := raw.(string)
 		if !ok {
-			return opts, fmt.Errorf("protocol_version must be a string, got %T", raw)
+			return opts, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("protocol_version must be a string, got %T", raw),
+			)
 		}
 		opts.ProtocolVersion = v
 	}

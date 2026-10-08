@@ -303,7 +303,9 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		return nil, nil, MapError(err)
 	}
 
-	return newPahoConn(cm, s.metrics, s.brokerMaximumPacketSize), cmCancel, nil
+	conn := newPahoConn(cm, s.metrics, s.brokerMaximumPacketSize)
+	conn.mqtt311 = s.opts.protocolV311()
+	return conn, cmCancel, nil
 }
 
 // applyConnectCredentials sets the MQTT v5 CONNECT username/password fields

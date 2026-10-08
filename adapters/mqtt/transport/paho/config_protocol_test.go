@@ -29,6 +29,20 @@ func TestValidateProtocol_RejectsUnknownVersion(t *testing.T) {
 	assert.Contains(t, err.Error(), "protocol_version")
 }
 
+func TestValidateProtocol_ErrorsNameTheProtocolVersionKey(t *testing.T) {
+	cases := map[string]SessionOptions{
+		"unknown version":              {ProtocolVersion: "5"},
+		"option unavailable on v3.1.1": {ProtocolVersion: ProtocolVersion311, NoLocal: true},
+	}
+	for name, opts := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := opts.validateProtocol("")
+			require.ErrorIs(t, err, shared.ErrInvalidConfig)
+			assert.Contains(t, err.Error(), "session.protocol_version")
+		})
+	}
+}
+
 func TestValidateProtocol_RejectsWhatMQTT311CannotExpress(t *testing.T) {
 	cases := []struct {
 		name string
@@ -47,28 +61,31 @@ func TestValidateProtocol_RejectsWhatMQTT311CannotExpress(t *testing.T) {
 			err := tc.opts.validateProtocol(tc.mode)
 			require.ErrorIs(t, err, shared.ErrInvalidConfig)
 			assert.Contains(t, err.Error(), tc.key)
-			assert.Contains(t, err.Error(), ProtocolVersion311)
 		})
 	}
 }
 
 func TestValidateProtocol_AllowsWhatMQTT311CanExpress(t *testing.T) {
 	ok := []struct {
+		name string
 		opts SessionOptions
 		mode connectivity.SessionMode
 	}{
-		{SessionOptions{Username: "u", Password: shared.NewSecret("p")}, connectivity.SessionPersistent},
-		{SessionOptions{CleanStart: true}, connectivity.SessionEphemeral},
-		{SessionOptions{CleanStart: true}, connectivity.SessionExclusive},
-		{SessionOptions{CleanStart: true}, ""}, // mode unknown: the mode rule waits for ValidateEffectiveSession
+		{"persistent username and password", SessionOptions{Username: "u", Password: shared.NewSecret("p")}, connectivity.SessionPersistent},
+		{"ephemeral clean start", SessionOptions{CleanStart: true}, connectivity.SessionEphemeral},
+		{"exclusive clean start", SessionOptions{CleanStart: true}, connectivity.SessionExclusive},
+		// The mode rule waits for ValidateEffectiveSession.
+		{"clean start, mode unknown", SessionOptions{CleanStart: true}, ""},
 	}
 	for _, tc := range ok {
-		tc.opts.ProtocolVersion = ProtocolVersion311
-		assert.NoError(t, tc.opts.validateProtocol(tc.mode))
+		t.Run(tc.name, func(t *testing.T) {
+			tc.opts.ProtocolVersion = ProtocolVersion311
+			assert.NoError(t, tc.opts.validateProtocol(tc.mode))
+		})
 	}
 }
 
-func TestConfigValidate_RunsTheProtocolValidator(t *testing.T) {
+func TestConfigValidate_RejectsNoLocalOnMQTT311(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Session.ProtocolVersion = ProtocolVersion311
 	cfg.Session.NoLocal = true
@@ -99,5 +116,5 @@ func TestSessionOptionsFromMap_ReadsProtocolVersion(t *testing.T) {
 	assert.Equal(t, ProtocolVersion311, opts.ProtocolVersion)
 
 	_, err = SessionOptionsFromMap(map[string]any{"protocol_version": 5})
-	require.Error(t, err, "a non-string protocol_version must not fall back to v5 silently")
+	require.ErrorIs(t, err, shared.ErrInvalidConfig, "a non-string protocol_version must not fall back to v5 silently")
 }

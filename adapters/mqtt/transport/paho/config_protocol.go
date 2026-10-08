@@ -60,5 +60,5 @@ func credentialsExpressibleOnMQTT311(username string, hasPassword bool) error {
 
 func errUnavailableOnMQTT311(key, why string) error {
 	return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
-		"mqtt: %s is not available on protocol_version %s (%s)", key, ProtocolVersion311, why))
+		"mqtt: %s is not available on session.protocol_version %s (%s)", key, ProtocolVersion311, why))
 }

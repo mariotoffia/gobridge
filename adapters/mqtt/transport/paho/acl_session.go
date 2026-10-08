@@ -132,12 +132,18 @@ func shortSubackError() *shared.BridgeError {
 // a "zombie" state where a freshly attached cm coexists with an
 // already-closed events channel.
 //
+// A session whose options its protocol version cannot express (NewSession's
+// validateProtocol verdict) never dials: Start returns that error every time.
+//
 // Start lives in the ACL because the entire body builds an
 // autopaho.ClientConfig and registers paho-typed callbacks with the
 // SDK. The orchestration around it (Reload, Close, Reconcile) sits in
 // SDK-free port-side files and drives Start through the
 // pahoConnection seam installed below.
 func (s *Session) Start(ctx context.Context) error {
+	if s.protocolErr != nil {
+		return s.protocolErr
+	}
 	s.mu.Lock()
 	for {
 		if s.terminalErr != nil {

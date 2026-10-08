@@ -180,6 +180,8 @@ func (s *Session) handleConnectionDownGeneration(generation uint64) bool {
 		s.mu.Unlock()
 		return false
 	}
+	// Judged before the reject bookkeeping below can clear lastIngressRejectAt.
+	shortLivedStreak := s.noteMQTT311ConnectionDownLocked(now)
 	s.clearSettledIngressRejectLocked(now)
 	s.connected = false
 	s.subscriptionsSatisfied = false
@@ -191,6 +193,7 @@ func (s *Session) handleConnectionDownGeneration(generation uint64) bool {
 		}
 	}
 	s.mu.Unlock()
+	s.reportShortLivedMQTT311Connections(shortLivedStreak)
 	// autopaho raises this edge only after the client's workers have returned,
 	// and builds the replacement only afterwards, so it is the happens-after
 	// point that lets the router recognise the replacement's first packet.
