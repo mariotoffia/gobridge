@@ -1008,15 +1008,17 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 
 	// Mark a swap in progress for its whole duration so Terminal() reports false
 	// while the old runtime is being stopped and the new one built — a swap is
-	// not death. Cleared on every exit path (success and error).
+	// not death. Cleared before the swap event fires, so its receiver sees the
+	// state the swap left behind, and on every exit path (success, error, panic).
 	s.mu.Lock()
 	s.swapping = true
 	s.mu.Unlock()
-	defer func() {
+	endSwap := func() {
 		s.mu.Lock()
 		s.swapping = false
 		s.mu.Unlock()
-	}()
+	}
+	defer endSwap()
 
 	start := s.clk.Now()
 	mode := s.detectSwapMode(frozenCfg)
@@ -1193,6 +1195,7 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 		s.watchPostSwapConvergence(ctx, newRt, frozenCfg)
 	}
 
+	endSwap()
 	if s.onSwap != nil {
 		s.safeOnSwap(ev)
 	}

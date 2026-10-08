@@ -83,7 +83,42 @@ func TestSupervisor_OldStopFails_WedgesInsteadOfRetainingDeadRuntime_Overlap(t *
 		"a wedged supervisor must report terminal so /live fails closed and the process is restarted")
 }
 
-// slowStopSession blocks Close until its context expires, so the old runtime's
+// The swap event reports a swap that has finished, so its receiver must see the
+// state the swap left behind. Terminal() is false while a swap is in progress,
+// so the event must not fire until the swap window has closed: a wedge read
+// from inside the callback already reports terminal.
+func TestSupervisor_SwapEventSeesTheWedgeItReports(t *testing.T) {
+	for name, mode := range map[string]SwapMode{
+		"prepare-commit": SwapPrepareCommit,
+		"overlap":        SwapOverlap,
+	} {
+		t.Run(name, func(t *testing.T) {
+			terminalAtEvent := make(chan bool, 1)
+			var s *Supervisor
+			s = NewSupervisor(
+				WithSupervisorBlueprintValidator(config.Validate),
+				WithOnSwap(func(SwapEvent) { terminalAtEvent <- s.Terminal() }),
+				WithSwapMode(mode),
+			)
+			s.RegisterTransport("fake", &fakeTransportFactory{})
+			s.RegisterTransport("exclusive", closeFailExclusiveFactory())
+			s.RegisterStoreFactory("memory", &fakeStoreFactory{})
+
+			ch := make(chan *ports.BridgeConfig, 1)
+			cancel, _ := quickSupervisorRun(s, supervisorTestConfigWithSession("r1", "s1"), ch)
+			defer cancel()
+
+			require.True(t, sendConfig(ch, supervisorTestConfigWithSession("r2", "s1"), time.Second))
+			select {
+			case terminal := <-terminalAtEvent:
+				assert.True(t, terminal, "the event for a wedging swap must see the supervisor terminal")
+			case <-time.After(swapTimeout):
+				t.Fatal("timed out waiting for swap event")
+			}
+		})
+	}
+}
+
 // Stop consumes its whole drain budget before returning.
 type slowStopSession struct {
 	fakeSession
