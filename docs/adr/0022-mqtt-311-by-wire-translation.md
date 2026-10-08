@@ -226,6 +226,10 @@ classification, `ErrNotAuthorized`, resume-loss detection) works unchanged.
   the broker has reused the id would ack a newer, unsettled message. A QoS 1
   or QoS 2 PUBLISH whose id is already in the set is therefore dropped before
   Paho sees it. The settlement of the original delivery acks it.
+  A QoS 1 copy can also cross the PUBACK on the wire. So a DUP copy of an id
+  whose PUBACK the translator already wrote is dropped too, unless that id has
+  since been admitted again. When the broker reuses an id, it sends the first
+  copy with DUP clear, and that copy arrives before any DUP copy.
 - *Window overflow.* A new packet id that would grow the set beyond the
   session's `receive_maximum` is a broker window violation. Without this check,
   the router's admission wait and Paho's unbuffered publish channel would block
