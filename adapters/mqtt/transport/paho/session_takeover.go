@@ -136,3 +136,50 @@ func (s *Session) takeoverPenalty() time.Duration {
 	}
 	return time.Duration(1<<shift) * time.Second
 }
+
+// noteMQTT311ConnectionDownLocked feeds the takeover damping from a connection
+// that just went down on MQTT 3.1.1, and returns the streak it counted, or 0
+// when the drop does not count. MQTT 3.1.1 has no Session-Taken-Over reason
+// code, so two live instances sharing a client_id show only as connections
+// that keep dying soon after they come up, which autopaho would redial with no
+// delay (ADR 0022). Such a drop shares takeoverStreak and lastTakeoverAt with
+// noteSessionTakeover, so takeoverPenalty spaces the redials the same way: the
+// first drop costs nothing, as a legitimate exclusive failover, and each
+// further one doubles the penalty.
+//
+// A drop counts when the connection was up for less than
+// connectionStabilityWindow and this session's own ingress reject did not
+// drop it; a connection that had been stable ends any storm instead. Callers
+// hold s.mu.
+func (s *Session) noteMQTT311ConnectionDownLocked(now int64) int {
+	if !s.opts.protocolV311() || s.connUpAt == 0 {
+		return 0
+	}
+	if now-s.connUpAt >= int64(connectionStabilityWindow) {
+		s.takeoverStreak = 0
+		return 0
+	}
+	if s.lastIngressRejectAt >= s.connUpAt {
+		return 0
+	}
+	s.takeoverStreak++
+	s.lastTakeoverAt = now
+	return s.takeoverStreak
+}
+
+// reportShortLivedMQTT311Connections names the likely client_id collision once
+// the short-lived MQTT 3.1.1 connections become a storm, from the third drop
+// on, as noteSessionTakeover does for reported takeovers. It counts no
+// MetricMQTTSessionTakeover: the cause is inferred, not reported.
+func (s *Session) reportShortLivedMQTT311Connections(streak int) {
+	if streak < 3 || s.logger == nil {
+		return
+	}
+	s.logger.Error("mqtt: the MQTT 3.1.1 connection keeps dropping soon after it connects; reconnects are being "+
+		"backed off. MQTT 3.1.1 reports no session takeover, and another live instance using the same client_id "+
+		"looks exactly like this: give each instance a unique client_id, or use an exclusive lease",
+		"client_id", s.opts.ClientID,
+		"drop_count", streak,
+		"backoff_penalty", s.takeoverPenalty(),
+	)
+}

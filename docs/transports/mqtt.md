@@ -5,6 +5,7 @@
 **Transport name:** `mqtt`
 **Factory:** `paho.NewFactory(logger)`
 **Capabilities:** `stateful_session`, `exclusive_identity`, `dedicated_ingress_session`, `shared_consumer`, `plan_driven_subscriptions`, and `source_redelivery` **per route** -- see below.
+**Protocol versions:** MQTT 5.0 (`v5`, the default) and MQTT 3.1.1 (`v3.1.1`), set per session by `options.session.protocol_version` -- see [MQTT 3.1.1](mqtt-311.md).
 
 MQTT requires a session. Each session permits at most one logical ingress
 receiver. Multiple senders may still share that session and its TCP connection.
@@ -95,7 +96,7 @@ not add speculative per-route queues or protocol-ACK aggregation.
 | Mode | `session_mode` | Effective clean-start on the wire | Behavior |
 |------|---------------|-----------------------------------|----------|
 | Ephemeral | `ephemeral` (default) | always `true` (the `clean_start` option is ignored) | No state survives disconnect |
-| Persistent | `persistent` | honours `clean_start` (default `false`) | Broker retains subscriptions and queued messages |
+| Persistent | `persistent` | honours `clean_start` (default `false`); on MQTT 3.1.1, `clean_start: true` is rejected | Broker retains subscriptions and queued messages |
 | Exclusive | `exclusive` | always `false` (`clean_start: true` is overridden to `false` with a warning) | Lease-based single holder; requires a lease store |
 
 The `clean_start` option defaults to **`false`** and is consulted only for
@@ -105,6 +106,10 @@ the option. `clean_start: true` on an Exclusive session is a misconfiguration
 (autopaho would reconnect with the same client ID and clean-start, producing a
 session-takeover loop); the adapter overrides it to `false` and logs a warning
 (`acl_session.go`).
+
+On MQTT 3.1.1 the wire flag is Clean Session instead: 1 for Ephemeral, 0 for
+Persistent and Exclusive. MQTT 3.1.1 has no flag that starts clean and keeps
+the session, so a Persistent session with `clean_start: true` is rejected.
 
 ### Clustered shared-subscription identity
 
@@ -178,6 +183,11 @@ shared `client_id`.
 > managed-subscription history. Rewrite such URLs into the canonical spelling
 > **before** upgrading, or treat the change as identity-incompatible and deploy
 > it by whole-cohort replacement (see `docs/cluster/operating.md`).
+
+**On MQTT 3.1.1 the protocol version is part of the durable identity**, so
+switching a Persistent or Exclusive session between `v5` and `v3.1.1` is handled
+like a `client_id` change ([switching a session](mqtt-311.md#switching-an-existing-session)).
+An orphaned 3.1.1 session expires by broker policy, not `session_expiry_interval`.
 
 **`deployment_mode: standalone` is a per-process assertion.** Two replicas
 each declaring `standalone` with process-local lease stores each believe they
@@ -461,29 +471,17 @@ refuses — a missing `client_id`, an empty `broker_urls`, an invalid
 malformed subscription filter, cleartext credentials on a non-TLS broker — is
 `INVALID_CONFIG`. `INVALID_PAYLOAD` stays reserved for a rejected message.
 
-## Dialing through a proxy
+On MQTT 3.1.1 PUBACK and PUBREC carry no reason code, so a broker that refuses
+a publish acks it or closes the connection (`CONNECTION_LOST`, retryable). SUBACK
+`0x80` stays `UNAVAILABLE`, including an ACL denial, every UNSUBACK reports
+success, and CONNACK return codes are [mapped to MQTT 5 codes](mqtt-311.md#connack-return-codes) first.
 
-`ALL_PROXY` (or `all_proxy`) routes broker dials through a SOCKS5 proxy, and
-`NO_PROXY` (or `no_proxy`) exempts hosts from it. This holds for every broker
-scheme, `ws://` and `wss://` included; `HTTP_PROXY` and `HTTPS_PROXY` are not
-read. Both spellings are read on every dial, **uppercase** first, as in
-`golang.org/x/net/proxy` and `net/http`, so no two resolvers can disagree.
+## MQTT 3.1.1
 
-Two behaviours are deliberate and differ from `proxy.FromEnvironment`:
-
-- **An unusable value fails the dial.** An unparseable URL or a scheme that
-  cannot be built (for example `http://`, which is not a SOCKS proxy) returns an
-  error instead of quietly dialing direct. A proxy is a network-control
-  boundary; silently bypassing it is worse than a loud connect failure.
-- **`ALL_PROXY=direct`** (or `direct://`) is an explicit opt-out, for a
-  container where the variable is set for other tools but the broker must be
-  reached without it.
-
-TLS broker connections derive the certificate `ServerName` from the broker URL
-host on **both** the direct and the proxied path, so an `ssl://` or `wss://`
-connection through a proxy verifies the broker's identity exactly as a direct
-one does. Previously the proxied `ssl://` path set no name at all, leaving a
-certificate-validating proxied connection unable to verify the broker.
+`options.session.protocol_version: v3.1.1` connects a session to a broker that
+speaks only MQTT 3.1.1. Options 3.1.1 cannot express are rejected, headers are
+not carried, and the broker's in-flight limit must fit `receive_maximum`; see
+[MQTT 3.1.1](mqtt-311.md) and [ADR 0022](../adr/0022-mqtt-311-by-wire-translation.md).
 
 ---
 
@@ -494,6 +492,7 @@ documentation is split by what you are looking for:
 
 | Page | Covers |
 |---|---|
-| [MQTT options](mqtt-options.md) | Session, sender and receiver options; credential URIs; mutual TLS from a credential store |
+| [MQTT options](mqtt-options.md) | Session, sender and receiver options; credential URIs; mutual TLS from a credential store; dialing through a proxy |
 | [MQTT behaviour](mqtt-behavior.md) | Settlement semantics, resilience and reconnection, backpressure, shared subscriptions, ingress headers |
 | [MQTT settlement recovery](mqtt-settlement-recovery.md) | Recovering a received-but-unsettled delivery: the bounded recycle, the per-mode policy, its safety bounds and metrics |
+| [MQTT 3.1.1](mqtt-311.md) | Speaking MQTT 3.1.1: the options it rejects, what degrades, broker limits, and switching a durable session |

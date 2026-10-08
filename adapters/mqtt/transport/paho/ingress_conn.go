@@ -31,11 +31,16 @@ type mqttIngressErrorKind uint8
 const (
 	mqttIngressMalformed mqttIngressErrorKind = iota + 1
 	mqttIngressPacketTooLarge
+	// mqttIngressWindowExceeded is an MQTT 3.1.1 broker sending more
+	// unacknowledged QoS 1/2 publishes than receive_maximum, which a 3.1.1
+	// CONNECT cannot announce (acl_mqtt311_conn.go).
+	mqttIngressWindowExceeded
 )
 
 // mqttIngressError is the secret-safe typed cause returned by the raw MQTT
-// ingress guard. It records only structural byte counts and limits; topic and
-// payload contents never enter the error, logs, or lifecycle event.
+// ingress guard and the MQTT 3.1.1 translator. It records only structural
+// counts and limits; topic and payload contents never enter the error, logs,
+// or lifecycle event.
 type mqttIngressError struct {
 	kind   mqttIngressErrorKind
 	actual uint64
@@ -52,6 +57,12 @@ func (e *mqttIngressError) Error() string {
 		return fmt.Sprintf(
 			"mqtt: inbound packet size %d exceeds Maximum Packet Size %d before decoding",
 			e.actual,
+			e.limit,
+		)
+	case mqttIngressWindowExceeded:
+		return fmt.Sprintf(
+			"mqtt: the broker sent more than receive_maximum %d unacknowledged QoS 1/2 publishes on MQTT 3.1.1; "+
+				"raise receive_maximum to at least the broker's per-client in-flight limit",
 			e.limit,
 		)
 	default:

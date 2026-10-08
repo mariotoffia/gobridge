@@ -29,6 +29,8 @@ import (
 // AttemptConnection for every connection generation. The guard is returned
 // unwrapped: it is the sync.Locker Paho serialises its packet writes through,
 // so a reject can write a DISCONNECT without interleaving with a Paho packet.
+// On MQTT 3.1.1 the stream is first wrapped in the translator
+// (acl_mqtt311_conn.go), so the guard above it still sees MQTT 5.
 func (s *Session) attemptGuardedConnection(
 	ctx context.Context,
 	cfg autopaho.ClientConfig,
@@ -37,6 +39,15 @@ func (s *Session) attemptGuardedConnection(
 	raw, err := dialMQTTConnection(ctx, cfg, serverURL)
 	if err != nil {
 		return nil, err
+	}
+
+	if s.opts.protocolV311() {
+		translated, translateErr := s.translateMQTT311(raw)
+		if translateErr != nil {
+			_ = raw.Close()
+			return nil, translateErr
+		}
+		raw = translated
 	}
 
 	guarded, err := s.guardIngress(raw)
@@ -83,6 +94,23 @@ func (s *Session) guardIngress(raw net.Conn) (*mqttIngressConn, error) {
 	)
 	guarded.onTruncate = s.notePredecodeTruncation
 	return guarded, nil
+}
+
+// translateMQTT311 wraps one dialled stream in the MQTT 3.1.1 translator,
+// bound to this session's limits and to the reject reporting the guard uses
+// (ADR 0022).
+func (s *Session) translateMQTT311(raw net.Conn) (*mqtt311Conn, error) {
+	maximumPacketSize, err := wirePacketSizeFor(s.opts.MaxPayloadBytes)
+	if err != nil {
+		return nil, err
+	}
+	return newMQTT311Conn(
+		raw,
+		s.opts.MaxPayloadBytes,
+		maximumPacketSize,
+		s.opts.ReceiveMaximum,
+		s.rejectPredecodeIngress,
+	), nil
 }
 
 // notePredecodeTruncation records one inbound PUBLISH whose User Property list

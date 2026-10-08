@@ -41,6 +41,13 @@ does with such a replay depends on whether the runtime has a dead-letter store
   fail-closed path so work cannot continue under a new owner while accepted
   work may still settle.
 
+**On MQTT 3.1.1** an UNSUBACK carries no reason codes, so the session reports
+Success for every filter of an UNSUBSCRIBE. Managed cleanup therefore always
+takes its connection-recycle path: one extra reconnect per cleanup. A broker
+that refuses an UNSUBSCRIBE anyway (Mosquitto dynamic-security ACLs can) looks
+like success, and GoBridge forgets a filter the broker still holds. On 3.1.1
+the broker must permit UNSUBSCRIBE for every filter the session subscribes.
+
 ### Removing filters
 
 Before removing persistent/exclusive filters, stop publishers or otherwise drain
@@ -117,8 +124,8 @@ those shortcuts can discard the pinned delivery. Instead:
 1. Stop the failed migration runtime. For Exclusive mode, wait for its retained
    lease to expire before another owner starts.
 2. Restore a fresh runtime with the **same broker URL, ClientID, session expiry,
-   and `stores.managed_subscriptions` identity**, plus the exact old filters and
-   handlers.
+   and `stores.managed_subscriptions` identity** (on MQTT 3.1.1, also the same
+   `protocol_version`), plus the exact old filters and handlers.
 3. Let the broker replay the pinned delivery and confirm its normal source
    settlement and downstream durable drain. Keep ingress stopped until the old
    session backlog is empty.
@@ -160,6 +167,24 @@ behavior, and effective session expiry. A live reload that changes or removes
 that identity is refused before the old runtime is stopped or a replacement is
 built. Credential rotation, TLS material/path changes, keepalive, reconnect,
 reconcile, and other tuning do not change this durable identity.
+
+On MQTT 3.1.1 (`protocol_version: v3.1.1`) the fingerprint also includes the
+protocol version. A broker need not resume a session that was created over the
+other version (AWS IoT Core does not), so switching a Persistent or Exclusive
+session between `v5` and `v3.1.1` changes its durable identity: the Supervisor
+refuses it as a live reload, and it needs the maintenance cutover below and the
+[managed-filter migration](../runbooks/mqtt-managed-subscription-migration.md).
+Drain the backlog before you switch. On `v5` the fingerprint is the one it was
+before MQTT 3.1.1 support existed, so existing sessions keep their stored
+history. The startup check that rejects two durable sessions with one client ID
+on one broker ignores the protocol version: they collide whatever their
+versions.
+
+On MQTT 3.1.1 the session expiry is never sent, so the broker decides how long
+a session lives after the bridge disconnects (broker defaults: Mosquitto never
+expires it, EMQX after 2 h, AWS IoT after 1 h). A non-zero
+`session_expiry_interval` is rejected on 3.1.1, so the fingerprint always holds
+the local 86400-second default.
 
 `WithAllowDestructiveReload` cannot bypass this guard. GoBridge intentionally
 does not automate broker-state migration. To change a durable MQTT identity,

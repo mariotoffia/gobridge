@@ -385,7 +385,7 @@ type SessionHealth struct {
 	SubscriptionsActive      int           // Number of unique contract-active subscription filters
 	SubscriptionsSatisfied   *bool         // Exact explicit-plan convergence, including removals; nil means legacy unknown
 	HandlersRegistered       int           // Number of receiver handlers on the message router
-	ReceiveMaximum           uint16        // MQTT v5 ReceiveMaximum (0 = unknown/not applicable)
+	ReceiveMaximum           uint16        // The session's Receive Maximum window: advertised on MQTT v5, enforced locally on MQTT 3.1.1 (0 = unknown/not applicable)
 	UnsettledCount           int           // Current connection-epoch deliveries awaiting terminal protocol settlement
 	OldestUnsettledAge       time.Duration // Age of the oldest current-epoch unsettled delivery
 	ReceiveWindowUtilization float64       // UnsettledCount / ReceiveMaximum (0 when not applicable)

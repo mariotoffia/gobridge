@@ -17,7 +17,7 @@ running your own proof.
 |---|---|
 | Product | Eclipse Mosquitto |
 | Version | 2.1.2, pinned by image digest |
-| Protocol | MQTT v5 only |
+| Protocol | MQTT v5 and v3.1.1, on the same listener |
 | Where it comes from | `testutil/mqttlocal`, started per test in Docker |
 
 Mosquitto 2.1's WebSocket listener rejects an empty WebSocket frame and
@@ -58,6 +58,25 @@ dial itself.
 | Server inflight quota | A broker quota far below the bridge's own loses nothing | `TestIntegration_ServerLimit_LowInflightQuotaLosesNothing` |
 | Server message-size limit | An oversized publish fails and says so, rather than vanishing | `TestIntegration_ServerLimit_OversizedPublishIsRejectedNotLost` |
 | Durable session resumption | A persistent session resumes its subscriptions and unsettled deliveries across a restart | `TestUC51_PersistentSessionRecovery`, `TestUC77_QoS2UnderBrokerRestart` |
+
+## Proved on MQTT 3.1.1
+
+Every row runs against the same broker, with the bridge session set to
+`protocol_version: v3.1.1` ([MQTT 3.1.1](mqtt-311.md)). A test that needs an
+MQTT 5 publisher says so.
+
+| Feature | What is proved | Evidence |
+|---|---|---|
+| Publish and subscribe | Connect, subscribe, publish and settle at QoS 0, 1 and 2; the delivered `mqtt.qos` is the published QoS | `TestIntegration_MQTT311_PubSubRoundTrip` |
+| Durable session resumption | For QoS 1 and QoS 2, a message the broker queued while the session was offline survives a broker restart and is delivered when the session resumes with Clean Session 0; a reconnect of that session sees Session Present (no `MQTTSessionResumeLost`) | `TestIntegration_MQTT311_PersistentSessionRedeliversUnsettled` |
+| Oversized publish | On a persistent session, a payload above `max_payload_bytes` is acked and dropped (`MQTTIngressPoisonDropped`) with no ingress reject, later traffic flows, and a fresh session with the same client ID never receives it again | `TestIntegration_MQTT311_OversizedPublishIsAckedAndDropped` |
+| Username/password | A wrong password (CONNACK return code 4 or 5) surfaces as a classified `ErrNotAuthorized` | `TestIntegration_MQTT311_CredentialFailureSurfacesNotAuthorized` |
+| Refused subscription | A filter the broker's ACL denies (SUBACK `0x80`) fails the reconcile; a permitted filter on the same session still delivers | `TestIntegration_MQTT311_RefusedSubscriptionFailsReconcile` |
+| Last Will | Published when the connection dies ungracefully, and **not** published after a graceful DISCONNECT | `TestIntegration_MQTT311_LastWill` |
+| Headers are not carried | A publish with a user property, a subject and an envelope ID from an MQTT 5 session arrives on a 3.1.1 session with only `mqtt.topic`, `mqtt.qos` and `mqtt.retained`, no subject, and a minted envelope ID (also in `mqtt.message-id`, marked `x-bridge.generated-id`) | `TestIntegration_MQTT311_HeadersAreNotCarried` |
+| Unsubscribe | Removing a filter converges on the synthesized UNSUBACK, and the removed filter stops delivering | `TestIntegration_MQTT311_UnsubscribeConverges` |
+| Shared subscriptions (`$share`) | Competing 3.1.1 consumers split a stream without duplication | `TestIntegration_MQTT311_SharedSubscription` |
+| Broker window above `receive_maximum` | A broker in-flight limit (Mosquitto's default 20) above `receive_maximum` is refused as an ingress reject on every connection, the session redials instead of wedging and `Close` returns, and nothing is lost: with a larger `receive_maximum` every queued message arrives | `TestIntegration_MQTT311_BrokerWindowAboveReceiveMaximumIsRefusedNotWedged` |
 
 ## Network fault profile
 
@@ -102,11 +121,11 @@ supported claim.
 
 | | Status |
 |---|---|
-| EMQX, HiveMQ, VerneMQ, NanoMQ, RabbitMQ's MQTT plugin | Untested. MQTT v5 conformance differs between products, particularly around shared subscriptions, session expiry and server-side limits. |
+| EMQX, HiveMQ, VerneMQ, NanoMQ, RabbitMQ's MQTT plugin | Untested, on either protocol version. MQTT v5 conformance differs between products, particularly around shared subscriptions, session expiry and server-side limits. |
 | AWS IoT Core | Untested. It restricts MQTT v5 properties, caps QoS at 1, and imposes its own topic and throughput limits. |
 | Broker-side high availability (clustered brokers, failover between broker nodes) | Untested. The multi-URL proof moves between *endpoints*, not between members of a broker cluster with shared session state. |
-| MQTT v3.1.1 | Not supported. The adapter requires MQTT v5 properties for identity, expiry and flow control. |
-| Broker-enforced authorization (ACLs on topics) | Untested. The bridge surfaces a refused subscription; which topics a broker permits is the broker's policy. |
+| MQTT 3.1 (protocol name `MQIsdp`, level 3) | Not supported. `protocol_version` accepts only `v5` and `v3.1.1`. |
+| Broker-enforced authorization (ACLs on topics) | Only a refused SUBSCRIBE is proved (`TestIntegration_MQTT311_RefusedSubscriptionFailsReconcile`). Publish ACLs are untested, and which topics a broker permits is the broker's policy. |
 
 If you need one of these supported, the shortest path is a fixture that starts
 that broker and the same proofs pointed at it: the tests above are written

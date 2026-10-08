@@ -151,6 +151,9 @@ func (c Config) Validate() error {
 	if err := c.validateDurations(); err != nil {
 		return err
 	}
+	if err := c.Session.validateProtocol(""); err != nil {
+		return err
+	}
 	if err := c.Subscription.validate(); err != nil {
 		return err
 	}
@@ -225,6 +228,9 @@ func (c Config) ValidateEffectiveSession(mode connectivity.SessionMode) error {
 	if err := c.ValidateSessionMode(mode); err != nil {
 		return err
 	}
+	if err := c.Session.validateProtocol(mode); err != nil {
+		return err
+	}
 	if c.Session.ClientID == "" {
 		return errors.New("mqtt: client_id is required")
 	}
@@ -279,6 +285,12 @@ func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 		applyTLSMaterial(&c.Session.TLS, set.TLS())
 	}
 	c.CredentialsURIRef = ""
+	// The resolved username and password are protocol options too (MQTT 3.1.1
+	// forbids a password without a username), so the whole protocol validator
+	// runs again here rather than a copy of one of its rules.
+	if err := c.Session.validateProtocol(""); err != nil {
+		return err
+	}
 	// the resolution above may have supplied the FIRST credentials
 	// (a credentials_uri-only config that deferred the plaintext gate at
 	// parse time). Re-run the gate now so resolved credentials over a non-TLS

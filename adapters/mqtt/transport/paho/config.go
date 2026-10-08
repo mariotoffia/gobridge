@@ -10,6 +10,13 @@ import (
 	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
+// MQTT protocol versions a session can speak (session.protocol_version).
+// Empty selects ProtocolVersion5. See ADR 0022.
+const (
+	ProtocolVersion5   = "v5"
+	ProtocolVersion311 = "v3.1.1"
+)
+
 // SessionOptions holds MQTT connection and session configuration.
 // These values are typically extracted from ports.SessionSpec.Options.
 type SessionOptions struct {
@@ -179,6 +186,12 @@ type SessionOptions struct {
 	// No-Local on $share is an MQTT 5 Protocol Error the broker rejects with a
 	// DISCONNECT, so reconcile forces it off there regardless.
 	NoLocal bool `mapstructure:"no_local" yaml:"no_local" json:"no_local"`
+	// ProtocolVersion selects the MQTT protocol the session speaks: "v5" (the
+	// default, also selected by an empty value) or "v3.1.1". On v3.1.1 the
+	// session's socket is wrapped by a translator (acl_mqtt311_conn.go), so
+	// everything above it keeps MQTT 5 semantics; options 3.1.1 cannot express
+	// are rejected (validateProtocol) and the rest degrade as ADR 0022 lists.
+	ProtocolVersion string `mapstructure:"protocol_version" yaml:"protocol_version,omitempty" json:"protocol_version,omitempty"`
 	// Clock is an internal dependency injected by the factory/tests and
 	// must never be populated from YAML; the dash tag excludes it from
 	// the strict options decoder (which would otherwise reject it).
@@ -203,6 +216,9 @@ func schemeUsesTLS(brokerURL string) bool {
 		return false
 	}
 }
+
+// protocolV311 reports whether the session speaks MQTT 3.1.1.
+func (o SessionOptions) protocolV311() bool { return o.ProtocolVersion == ProtocolVersion311 }
 
 // allBrokerURLsUseTLS reports whether EVERY configured broker URL uses a TLS
 // scheme. A single plaintext URL in the list is a cleartext-credential vector

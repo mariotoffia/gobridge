@@ -143,6 +143,10 @@ type pahoConn struct {
 	// measured against the one in force when it is written. May be nil in tests
 	// (treated as no ceiling).
 	brokerMaxPacketSize func() uint32
+	// mqtt311 marks a session speaking MQTT 3.1.1, which carries no publish
+	// properties. buildPublish then builds a bare publish, so a header that
+	// could never be sent cannot fail a publish that can.
+	mqtt311 bool
 }
 
 // newPahoConn wraps a live autopaho.ConnectionManager so it can be
@@ -248,7 +252,7 @@ func (c *pahoConn) PublishEnvelope(
 	opts SenderOptions,
 	clk clock.Clock,
 ) (publishResult, error) {
-	pub, err := PublishFromEnvelope(env, topic, opts, clk, c.metrics)
+	pub, err := c.buildPublish(env, topic, opts, clk)
 	if err != nil {
 		c.countEgressRejected()
 		return publishResult{}, err
@@ -270,6 +274,26 @@ func (c *pahoConn) PublishEnvelope(
 		return result, fmt.Errorf("paho: publish: %w", err)
 	}
 	return result, nil
+}
+
+// buildPublish builds the packet PublishEnvelope sends. MQTT 3.1.1 has no
+// publish properties, so on it only the topic, QoS, RETAIN flag and payload are
+// built and validated (ADR 0022): a header that could never be sent, such as
+// one over 65,535 bytes or not valid UTF-8, cannot fail the publish.
+func (c *pahoConn) buildPublish(
+	env *messaging.Envelope,
+	topic string,
+	opts SenderOptions,
+	clk clock.Clock,
+) (*pahov5.Publish, error) {
+	if !c.mqtt311 {
+		return PublishFromEnvelope(env, topic, opts, clk, c.metrics)
+	}
+	pub := &pahov5.Publish{Topic: topic, QoS: opts.QoS, Retain: opts.Retain, Payload: env.Payload()}
+	if err := validatePublishFieldLimits(pub); err != nil {
+		return nil, err
+	}
+	return pub, nil
 }
 
 // brokerMaximumPacketSize returns the ceiling in force for the current

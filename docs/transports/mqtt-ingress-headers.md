@@ -131,3 +131,35 @@ releases before in-process send retry existed. A producer that supplies
 a stable `mqtt.message-id`/correlation data — or a trusted bridge-to-bridge
 `x-bridge.dedup-id`/`x-bridge.idempotency-key` — restores countability and gets
 the full `MaxReplayAttempts` retry budget.
+
+### What arrives on MQTT 3.1.1
+
+MQTT 3.1.1 has no properties. A 3.1.1 PUBLISH carries a topic, a QoS, a RETAIN
+flag and a payload, and nothing else. On a session with
+`protocol_version: v3.1.1`:
+
+- The envelope gets `mqtt.topic`, `mqtt.qos` and `mqtt.retained`, as on MQTT 5.
+- None of these arrive: the producer's `mqtt.message-id`, correlation data, the
+  subject (`gobridge.subject`), the expiry, the content type, the response
+  topic, `traceparent`, or any user property. A header an MQTT 5 publisher sets
+  does not survive the hop to a 3.1.1 subscriber. `MQTTIngressHeaderDropped`
+  does not count them, because they never reach the session.
+- Identity always falls through to case 3 above: every message gets a minted
+  UUIDv4, which `mqtt.message-id` also carries, and `x-bridge.generated-id`,
+  and a broker redelivery gets a new id.
+- Every message is therefore count-less, as described in
+  [Replay-cap consequence](#envelope-identity-and-no-id-redelivery). With a
+  finite `max_replay_attempts`, every retry decision is terminal: a recoverable
+  processor failure, an outbox persist failure that is not a deadline, or a
+  send failure dead-letters or drops the message on its first occurrence. On
+  `direct_hold` a failing send is retried in process for `send_retry_budget`
+  first and then sunk as `unstable_identity`. `max_replay_attempts: 0` opts
+  the route into unbounded retry.
+- `shared_outbox` cannot deduplicate a broker redelivery, because the
+  redelivery has a new id.
+
+On egress a 3.1.1 session publishes only the topic, QoS, RETAIN flag and
+payload. Every header, the subject and the expiry are dropped before the
+publish is validated, so a header that could never be sent (over 65,535 bytes,
+or not valid UTF-8) cannot fail an otherwise valid publish. See
+[MQTT 3.1.1](mqtt-311.md#no-headers-on-ingress).

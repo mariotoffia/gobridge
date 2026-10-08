@@ -142,6 +142,14 @@ func (s *Session) ApplyCredentials(ctx context.Context, creds *connectivity.Cred
 			s.mu.Unlock()
 			return errPlaintextCredentials()
 		}
+		// The same rule config validation applies (validateProtocol), checked
+		// on the candidate for the same reason as the plaintext gate above.
+		if s.opts.protocolV311() {
+			if err := credentialsExpressibleOnMQTT311(user, pass != ""); err != nil {
+				s.mu.Unlock()
+				return err
+			}
+		}
 		s.liveCreds = mqttCredentials{Username: user, Password: pass}
 		// Also update s.opts so subsequent Start() calls (e.g. after
 		// a restart by the Supervisor) see consistent values. Mutated

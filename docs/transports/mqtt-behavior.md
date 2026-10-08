@@ -54,6 +54,12 @@ with consecutive rejects, and it reads not ready until a connection that came
 up after the last reject has stayed up for 30 s
 ([ADR 0021](../adr/0021-contain-mqtt-recovery-and-ingress-reject-in-session.md)).
 
+**On MQTT 3.1.1** no Maximum Packet Size is advertised, so an oversized PUBLISH
+is cut to `max_payload_bytes` + 1 payload bytes, then acked and dropped as
+above. A malformed packet, an oversized packet of another type, and a broker
+window above `receive_maximum` take the reject path without a DISCONNECT, so
+the broker publishes the Last Will ([MQTT 3.1.1](mqtt-311.md#oversized-publishes)).
+
 The same guard bounds the one cap whose decode cost the wire does not bound. A
 PUBLISH carrying more than 129 User Properties has its list cut to 129 on the
 raw bytes before the SDK decodes it: the callback still sees a violation and
@@ -109,6 +115,13 @@ Mixed subscriptions retain the QoS 1/2 effective-session requirements. Configure
 QoS 0 still requires a DLQ or explicit retry-drop permission and compatible
 terminal policies. Abrupt-crash gaps cannot be counted by the dead process.
 See [scenario 24](../scenarios/24-mqtt-mixed-qos-to-sqs.md).
+
+**MQTT 3.1.1 sources carry no producer identity**, so every message from one is
+count-less. With a finite `max_replay_attempts` every retry decision for it is
+terminal: its first recoverable failure dead-letters or drops it (a
+`direct_hold` send is still retried in process for `send_retry_budget` first).
+`max_replay_attempts: 0` opts the route into unbounded retry
+([no headers on ingress](mqtt-311.md#no-headers-on-ingress)).
 
 Producer identity is a stable `mqtt.message-id` (or MQTT correlation data); a
 content hash of topic+payload is **not** a producer ID, because two legitimate
@@ -190,6 +203,11 @@ exists only to flag such a future mode.
     covering `connection refused`, `no route to host` and `network unreachable`
     by type rather than by text;
   - anything unrecognized → `ErrUnavailable` (transient).
+- **MQTT 3.1.1 CONNACK return codes are mapped first**, to the nearest MQTT 5
+  reason code (1 → `0x84`, 2 → `0x85`, 3 → `0x88`, 4 → `0x86`, 5 → `0x87`),
+  then classified as above. There is no server-busy or quota code; a refused
+  3.1.1 subscription is always SUBACK `0x80`, classified `UNAVAILABLE`
+  ([MQTT 3.1.1](mqtt-311.md#connack-return-codes)).
 - **Ingress properties are session-owned copies.** The router converts incoming
   MQTT Properties into an owned envelope before dispatch. Config-driven
   composition binds at most one receiver per session, so no route shares its
@@ -227,7 +245,9 @@ exists only to flag such a future mode.
   is not flooded with a retained replay for every filter on every reconnect.
   Ephemeral sessions use Retain Handling = 0: each connect is a fresh
   subscription with no prior broker-side state, so the retained snapshot is the
-  intended first delivery.
+  intended first delivery. MQTT 3.1.1 has no Retain Handling, so a `v3.1.1`
+  session gets each matching retained message again on every reconnect and
+  every QoS re-check, marked `mqtt.retained=true`.
 
 ### QoS downgrade
 
@@ -305,6 +325,10 @@ affecting other sessions.
 To remove the downgrade, lower the route's `qos` to the granted level, or lift
 the broker's cap.
 
+On MQTT 3.1.1 the SUBACK carries the granted QoS too, so a downgrade is
+detected the same way, but each confirmation and re-check SUBSCRIBE replays the
+filter's retained messages, because 3.1.1 has no Retain Handling.
+
 ## Backpressure and dispatch
 
 The publish callback paho invokes must return quickly or the client stops
@@ -336,6 +360,13 @@ returns:
   draining) and counted on `MQTTRouterOverflowDropped`, so any non-zero value
   points at a broker bug, not operator mis-sizing. Publishes held in the buffer
   count on `MQTTRouterBuffered`.
+
+On MQTT 3.1.1 `receive_maximum` is not sent, so the broker's own per-client
+in-flight limit sets the window. The session enforces `receive_maximum` itself:
+a broker that sends more unacknowledged QoS 1/2 publishes is refused with an
+ingress reject before the extra publish reaches the dispatch queue. Set
+`receive_maximum` to at least the broker's limit
+([broker limits](mqtt-311.md#broker-limits)).
 
 ### Capacity sizing
 
@@ -422,6 +453,12 @@ logged at **Error** on the first occurrence — that combination is the
 smoking-gun of a reused `client_id`. `MQTTSessionTakeover` counts every
 takeover; a persistent non-zero rate on a `$share` deployment means the
 `client_id`s are colliding.
+
+MQTT 3.1.1 has no takeover reason code. On a `v3.1.1` session a connection that
+drops within 30 s of coming up feeds the same takeover penalty instead, with its
+own log line naming a client-id collision; `MQTTSessionTakeover` is not counted.
+`$share/` from a 3.1.1 client is the broker's choice: Mosquitto, EMQX, HiveMQ,
+VerneMQ and AWS IoT accept it; Azure Event Grid disconnects the client.
 
 #### Recipe: unique `client_id` per replica from one config file
 

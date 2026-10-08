@@ -60,6 +60,13 @@ func (c Config) DurableSessionIdentity(mode connectivity.SessionMode) (string, e
 	appendIdentityPart(&descriptor, clientID)
 	appendIdentityPart(&descriptor, strconv.FormatBool(cleanStart))
 	appendIdentityPart(&descriptor, strconv.FormatUint(uint64(expiry), 10))
+	if c.Session.protocolV311() {
+		// A broker need not resume one protocol's session from the other (AWS
+		// IoT Core does not), so switching protocol is a durable-identity
+		// change. Appended only on v3.1.1, so every v5 fingerprint is unchanged
+		// (ADR 0022).
+		appendIdentityPart(&descriptor, ProtocolVersion311)
+	}
 	for _, broker := range brokers {
 		appendIdentityPart(&descriptor, broker)
 	}
