@@ -125,7 +125,7 @@ supported claim.
 | AWS IoT Core | Untested. It restricts MQTT v5 properties, caps QoS at 1, and imposes its own topic and throughput limits. |
 | Broker-side high availability (clustered brokers, failover between broker nodes) | Untested. The multi-URL proof moves between *endpoints*, not between members of a broker cluster with shared session state. |
 | MQTT 3.1 (protocol name `MQIsdp`, level 3) | Not supported. `protocol_version` accepts only `v5` and `v3.1.1`. |
-| Broker-enforced authorization (ACLs on topics) | Untested. The bridge surfaces a refused subscription; which topics a broker permits is the broker's policy. |
+| Broker-enforced authorization (ACLs on topics) | Only a refused SUBSCRIBE is proved (`TestIntegration_MQTT311_RefusedSubscriptionFailsReconcile`). Publish ACLs are untested, and which topics a broker permits is the broker's policy. |
 
 If you need one of these supported, the shortest path is a fixture that starts
 that broker and the same proofs pointed at it: the tests above are written
