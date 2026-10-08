@@ -194,6 +194,17 @@ All of these use the existing `session_id` tag, plus `outcome` on
 `MQTTReceiverEmitRejected`. Message IDs, topics, and failure reasons are
 deliberately not dimensions, so cardinality remains bounded.
 
+**On MQTT 3.1.1** the receive window is the same count, enforced by the session
+instead of the broker. MQTT 3.1.1 has no Receive Maximum to send, so the
+session tracks the inbound QoS 1/2 packet ids it has handed on and not yet
+acknowledged. A broker that sends more than `receive_maximum` of them is
+refused with an ingress reject (`MQTTIngressRejected`); nothing is acked or
+lost. `receive_window_utilization` keeps its meaning. A 3.1.1 broker may also
+resend an unacknowledged PUBLISH on the live connection (EMQX
+`retry_interval`). The session drops that copy while the original is in flight,
+so a stranded delivery still needs the recovery above
+([MQTT 3.1.1](mqtt-311.md#broker-limits)).
+
 **Ephemeral sessions have a loss window.** An Ephemeral session keeps no offline
 retention: during any disconnect the broker queues nothing for it, so messages it
 would have delivered are lost with no redelivery on reconnect, and a

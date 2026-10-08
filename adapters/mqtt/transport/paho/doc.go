@@ -7,8 +7,10 @@
 // QoS 1/2 protocol state. Receiver and Sender are thin wrappers that
 // delegate to the Session's underlying ConnectionManager.
 //
-// MQTT 5 is the primary target; MQTT 3.1.1 degrades gracefully with
-// startup warnings for unavailable features.
+// MQTT 5 is the default. session.protocol_version v3.1.1 wraps the socket in
+// a translator (acl_mqtt311_conn.go) below the pre-decode guard, so everything
+// above it keeps MQTT 5 semantics. Options 3.1.1 cannot express are rejected,
+// and one startup warning lists what degrades (ADR 0022).
 //
 // Session modes: Ephemeral, Persistent, Exclusive.
 //

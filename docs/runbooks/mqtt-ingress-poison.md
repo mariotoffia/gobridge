@@ -146,4 +146,32 @@ session: the session reconnects and is never terminal
 ### Alerting
 
 Alert on ANY non-zero `MQTTIngressRejected`: a compliant broker never sends the
-packets it counts.
+packets it counts. On an MQTT 3.1.1 session there is one more cause, a broker
+in-flight limit above `receive_maximum`; see the next section.
+
+## On an MQTT 3.1.1 session
+
+A session with `protocol_version: v3.1.1` changes three things on this page
+([MQTT 3.1.1](../transports/mqtt-311.md)):
+
+- **An oversized publish is a poison drop, not a reject.** MQTT 3.1.1 cannot
+  tell the broker a Maximum Packet Size, so a compliant broker forwards a
+  PUBLISH of any size. The session keeps only the first `max_payload_bytes` + 1
+  payload bytes and discards the rest, and the publish is acked and dropped on
+  `MQTTIngressPoisonDropped` with class `payload`. Follow the poison steps at
+  the top of this page. To bound how long such a transfer takes, set the
+  broker's own maximum packet size (Mosquitto `max_packet_size`, EMQX
+  `max_packet_size`).
+- **`MQTTIngressRejected` can mean a window mismatch.** MQTT 3.1.1 has no
+  Receive Maximum, so the session enforces `receive_maximum` itself. A broker
+  whose per-client in-flight limit is above it sends one publish too many, and
+  the session rejects it on every connection. The Error log names
+  `receive_maximum` and the remedy. Raise `receive_maximum` to at least the
+  broker's limit (broker defaults: Mosquitto `max_inflight_messages` 20, EMQX
+  `max_inflight` 32, AWS IoT 100), or lower the broker's limit. Nothing was
+  acked or lost: the broker redelivers once the limits fit. A malformed 3.1.1
+  packet, or an oversized packet other than a PUBLISH, is still a broker or
+  intermediary fault, as described above.
+- **No DISCONNECT, so the Last Will is published.** On a 3.1.1 session a reject
+  closes the socket without a DISCONNECT, so every broker, Mosquitto included,
+  publishes the Last Will.

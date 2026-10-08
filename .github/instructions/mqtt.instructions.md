@@ -5,7 +5,8 @@ applyTo: "adapters/mqtt/**"
 # MQTT transport (paho)
 
 Adds to `adapters.instructions.md`. Sources: ADR-0002, ADR-0003, ADR-0009,
-ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021 and `docs/transports/mqtt*.md`.
+ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021, ADR-0022 and
+`docs/transports/mqtt*.md`.
 
 ## Settlement and ingress
 
@@ -104,3 +105,49 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021 and `docs/transports/mqtt*.md`.
 - Credential rotation is commit-then-reconnect: `Session.ApplyCredentials`
   swaps `liveCreds` / `opts` under `s.mu`, then disconnects. Build-first would
   open a second concurrent connection with the same client ID (ADR-0002).
+
+## MQTT 3.1.1 (ADR-0022)
+
+- The translator (`mqtt311Conn`, `acl_mqtt311_conn.go`) is the only code that
+  reads or writes the MQTT 3.1.1 wire format. Paho, the pre-decode guard, the
+  router, delivery and reconcile keep MQTT 5 semantics. Above the translator,
+  the protocol version is checked only to install the translator, validate,
+  warn at startup, build `DurableSessionIdentity`, strip egress properties and
+  damp short-lived connections. Flag any other version branch.
+- A non-zero DISCONNECT is never written on 3.1.1: the translator writes
+  nothing and the caller closes the socket, so the broker publishes the Last
+  Will. Only reason `0x00` becomes a 3.1.1 DISCONNECT. A translator violation
+  also closes the raw connection without a DISCONNECT.
+- Clean Session derives from Clean Start and Session Expiry: Clean Start 1 with
+  expiry 0 gives 1; Clean Start 0 with expiry above 0 gives 0; Clean Start 0
+  with expiry 0 gives 1; Clean Start 1 with expiry above 0 is an error. A v5
+  packet or field with no 3.1.1 form (AUTH, a topic alias, No Local, Retain As
+  Published, a password without a username) fails the write and drops the
+  connection; it is never silently weakened.
+- Inbound 3.1.1 packets are validated exactly (fixed-header flags, exact
+  lengths, CONNACK flags, non-zero packet ids, SUBACK codes, PUBLISH
+  structure). A successful `packets.ReadPacket` decode is not 3.1.1
+  validation.
+- An oversized PUBLISH is truncated to `max_payload_bytes + 1` payload bytes
+  and handed up before the rest is drained; the drain runs on the next `Read`.
+  Never buffer the whole payload and never reject it: the router's cap acks and
+  drops it (`MQTTIngressPoisonDropped`).
+- The inbound in-flight set enforces `receive_maximum` and drops a live
+  retransmission whose packet id is still in flight. An id leaves the set on
+  PUBACK (QoS 1) or PUBCOMP (QoS 2), never on PUBREC. QoS 0 is not counted. A
+  window overflow takes the violation path (`rejectPredecodeIngress`) before
+  Paho sees the packet, so the read loop never blocks.
+- On 3.1.1 the configuration is rejected (`shared.ErrInvalidConfig`) for
+  `no_local`, a non-zero `session_expiry_interval`, a password without a
+  username, and `clean_start: true` on a Persistent session. One validator,
+  `validateProtocol`, runs on every path: `Config.Validate`,
+  `ValidateEffectiveSession`, `Config.ApplyCredentials`, live
+  `Session.ApplyCredentials` (before any mutation) and `NewSession` → `Start`.
+- On 3.1.1 egress builds a publish with only topic, QoS, retain and payload,
+  before field and packet-size validation.
+- The protocol version is in `DurableSessionIdentity` on 3.1.1 only; a v5
+  fingerprint must never change. `DurableSessionIdentityDomains` stays
+  protocol-independent.
+- On 3.1.1 a connection that drops within `connectionStabilityWindow` feeds the
+  takeover streak and penalty, but never counts `MetricMQTTSessionTakeover`
+  (ADR-0011).

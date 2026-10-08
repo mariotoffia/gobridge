@@ -10,6 +10,23 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+### Added — the MQTT transport speaks MQTT 3.1.1
+
+- Set `options.session.protocol_version: v3.1.1` to bridge a broker that speaks
+  only MQTT 3.1.1. `v5` stays the default, so existing configurations and the
+  durable identities of existing sessions do not change; see
+  [MQTT 3.1.1](docs/transports/mqtt-311.md).
+- A translator below the connection guard rewrites each packet between MQTT 5
+  and MQTT 3.1.1, so the session keeps its MQTT 5 behaviour. The options MQTT
+  3.1.1 cannot express are rejected: `no_local`, a non-zero
+  `session_expiry_interval`, a `password` without a `username`, and
+  `clean_start: true` on a Persistent session.
+- MQTT 3.1.1 carries no headers or message identity, reports no takeover reason
+  or publish refusal, and replays retained messages on every reconnect. The
+  broker's in-flight limit must fit `receive_maximum`. One startup warning
+  lists this; [ADR 0022](docs/adr/0022-mqtt-311-by-wire-translation.md) records
+  what degrades and why.
+
 ## [0.6.0] - 2026-10-06
 
 One failed session no longer stops the whole process: the runtime rebuilds

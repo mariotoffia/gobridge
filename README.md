@@ -10,7 +10,7 @@ import only the adapters you use.
 
 | Capability | What it does | Implementations |
 |---|---|---|
-| **Transport** | Receive and send messages | MQTT v5 · AWS SQS · Azure Service Bus · RabbitMQ (AMQP 0-9-1) · AMQP 1.0 (Artemis, Solace, Qpid) · HTTP (POST in, SSE out) |
+| **Transport** | Receive and send messages | MQTT v5 and v3.1.1 · AWS SQS · Azure Service Bus · RabbitMQ (AMQP 0-9-1) · AMQP 1.0 (Artemis, Solace, Qpid) · HTTP (POST in, SSE out) |
 | **Delivery guarantee** | How hard it tries not to lose a message | `DirectHold` (send-then-ack) · `SharedOutbox` (persist-then-ack, durable drainer) |
 | **Outbox store** | Durable hand-off so a crash mid-delivery loses nothing | Memory · SQLite · DynamoDB |
 | **Dead-letter store** | Quarantines undeliverable messages instead of blocking or dropping them | Memory · SQLite · DynamoDB |
@@ -205,7 +205,7 @@ gobridge/
 ├── httpapi/          Admin and monitor HTTP servers
 ├── observability/    Context helpers and correlation slog handler
 ├── adapters/
-│   ├── mqtt/         MQTT v5 via Paho
+│   ├── mqtt/         MQTT v5 and v3.1.1 via Paho
 │   ├── aws/          SQS, DynamoDB stores, SSM credentials, CloudWatch, ECS cluster
 │   ├── amqp/         RabbitMQ (AMQP 0-9-1) and AMQP 1.0 (Artemis, Solace, Qpid)
 │   ├── azure/        Azure Service Bus
@@ -221,7 +221,7 @@ gobridge/
 
 | Transport | Module | Features |
 |-----------|--------|----------|
-| MQTT v5 | `adapters/mqtt/transport/paho` | Shared sessions, QoS 0/1/2, topic wildcards, autopaho reconnect |
+| MQTT v5 and v3.1.1 | `adapters/mqtt/transport/paho` | Shared sessions, QoS 0/1/2, topic wildcards, autopaho reconnect; MQTT 3.1.1 through a wire translator ([what degrades](docs/transports/mqtt-311.md)) |
 | AWS SQS | `adapters/aws/transport/sqs` | Long polling, batch send, visibility extension, FIFO support |
 | Azure Service Bus | `adapters/azure/transport/servicebus` | Queues, topics/subscriptions, batch send, auto-extend lock |
 | RabbitMQ (AMQP 0-9-1) | `adapters/amqp/transport/amqp091` | Exchanges, queues, bindings, publisher confirms, prefetch, reconnect |

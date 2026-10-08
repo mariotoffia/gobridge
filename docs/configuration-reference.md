@@ -331,6 +331,8 @@ Sessions represent stateful transport connections (an MQTT connection, an AMQP c
 - **`persistent`** -- Session state preserved across reconnections (MQTT: `clean_start=false`).
 - **`exclusive`** -- Lease-based single holder. Only one instance owns this session at a time. Requires a lease store.
 
+**MQTT protocol version:** an MQTT session speaks MQTT 5.0 unless its options set `session.protocol_version: v3.1.1`. See [MQTT options](transports/mqtt-options.md) and [MQTT 3.1.1](transports/mqtt-311.md) for what changes on 3.1.1.
+
 ```yaml
 sessions:
   - id: mqtt-conn
@@ -341,6 +343,7 @@ sessions:
         broker_urls:
           - tcp://mqtt.example.com:1883
         client_id: bridge-primary
+        protocol_version: v5   # v5 (default) or v3.1.1
 ```
 
 ## `receivers` -- Message Ingress
