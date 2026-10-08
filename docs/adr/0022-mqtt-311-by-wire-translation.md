@@ -3,6 +3,7 @@
 Status: accepted
 Date: 2026-10-08
 Deciders: GoBridge core
+Amended by: 0023 (a reconnect the broker resumed replays no retained messages)
 Relates to: [0010](0010-mqtt-loop-prevention-contract.md) (`no_local` is
 rejected on MQTT 3.1.1, so loop prevention never disappears without notice),
 [0011](0011-cluster-client-id-uniqueness.md) (on MQTT 3.1.1 a short-lived
@@ -87,9 +88,9 @@ a weaker form is documented and warned once at session start.**
   warning, because the value is never sent.
 - When the version is `v3.1.1`, `NewSession` logs one Warn that lists what the
   session cannot do: carry headers or message identity, see a takeover reason,
-  see a publish refusal, or avoid retained replay on reconnect. It also says
-  that the broker controls the in-flight window, which must fit
-  `receive_maximum`, and the session lifetime.
+  see a publish refusal, or avoid retained replay on a reconnect the broker did
+  not resume or on a QoS re-check. It also says that the broker controls the
+  in-flight window, which must fit `receive_maximum`, and the session lifetime.
 - **Durable identity.** On `v3.1.1`, `DurableSessionIdentity` appends the
   protocol version as one more identity part. On `v5` the parts are unchanged,
   so every existing fingerprint stays the same. A broker need not resume one
@@ -294,7 +295,9 @@ Above the translator, the session checks the protocol version only for these:
   reported;
 - the message id: a content-hash id is derived only on a `v3.1.1` session.
   This entry was added later; see the
-  [2026-10-08 addendum](#addendum-2026-10-08-opt-in-content-hash-message-id).
+  [2026-10-08 addendum](#addendum-2026-10-08-opt-in-content-hash-message-id);
+- the subscription record a resumed session keeps, added by
+  [ADR 0023](0023-keep-resumed-mqtt-311-subscriptions.md).
 
 The transport kind stays `mqtt`, so no core Go code changes. Every core rule
 keyed on the kind keeps working: `max_mqtt_sessions`, the managed-subscription
@@ -322,7 +325,7 @@ it applies.
 | Session takeover | Seen only as a connection that drops within 30 s of coming up. It feeds the takeover streak and penalty (1 s doubling to 64 s) without counting `MQTTSessionTakeover`. The exclusive lease is still the owner guarantee. |
 | Publish refusal | PUBACK and PUBREC carry no reason code. A broker that refuses a publish acks it (Mosquitto) or closes the connection, which surfaces as `ErrConnectionLost` (retryable). `throttle_retry_after` never applies. |
 | Subscribe refusal | SUBACK `0x80` is the only failure code. It keeps its MQTT 5 meaning, `ErrUnavailable` (transient), so a broker ACL denial is not classified `ErrForbidden`. |
-| Retained replay | No Retain Handling. Every reconnect and every QoS re-check re-subscribes, so each matching retained message is delivered again, marked `mqtt.retained=true`. |
+| Retained replay | No Retain Handling. A reconnect the broker resumed sends no SUBSCRIBE for an unchanged filter, so it replays nothing ([ADR 0023](0023-keep-resumed-mqtt-311-subscriptions.md)). Retained messages are delivered again, marked `mqtt.retained=true`, on a reconnect the broker did not resume (a fresh or lost session), on the first connection after a process start, and on a QoS re-check. |
 | Flow control | `receive_maximum` is not sent; the translator enforces it. The broker's per-client in-flight limit must not exceed it (defaults: Mosquitto `max_inflight_messages` 20, EMQX `max_inflight` 32, AWS IoT 100). A broker that sends more is refused on every connection, with nothing acked and the remedy logged. The session never wedges. |
 | Maximum packet size | Not advertised. An oversized PUBLISH is acked and dropped instead of being refused by the broker. Egress has no broker limit to check, so its cap falls back to the protocol maximum. |
 | UNSUBACK detail | Every filter reports Success. Managed cleanup always takes its connection-recycle path. A broker that refuses an UNSUBSCRIBE anyway looks like success, so the broker must permit UNSUBSCRIBE for every filter the session subscribes. |
@@ -398,7 +401,7 @@ unit's content identity.
 - **Suppress retained replay.** On a reconnect with Session Present over MQTT
   3.1.1, the session could keep the broker-confirmed subscription set and skip
   the re-SUBSCRIBE. That touches the reconcile and the QoS-grant reset logic.
-  Deferred.
+  Deferred, then done in [ADR 0023](0023-keep-resumed-mqtt-311-subscriptions.md).
 - **Out of scope:** MQTT 3.1, automatic fallback from MQTT 5 to 3.1.1, and a
   CDK builder option for the protocol version.
 
@@ -483,8 +486,8 @@ URLs), the topic and the payload. Rejected alternatives:
   `retention` (default `1h`) after it was delivered. During a sink outage,
   identical messages hours apart can collapse.
 - Retries are counted, so a failing delivery on a Persistent or Exclusive
-  QoS 1/2 session is retried by a connection recycle, and on MQTT 3.1.1 every
-  reconnect replays retained messages.
+  QoS 1/2 session is retried by a connection recycle, and on MQTT 3.1.1 a
+  reconnect the broker did not resume replays retained messages ([ADR 0023](0023-keep-resumed-mqtt-311-subscriptions.md)).
 - That trade-off is why `random` stays the default. `content_hash` suits only
   payloads in which every distinct message carries something unique: a
   timestamp, a sequence number or an event id. It does not suit heartbeats

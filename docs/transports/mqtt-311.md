@@ -149,7 +149,8 @@ session cannot do:
 - see a session takeover, other than as a connection that drops soon after it
   connects;
 - see a publish the broker refuses;
-- avoid retained messages being replayed on every reconnect;
+- avoid retained replay on a reconnect the broker did not resume, or on a QoS
+  re-check;
 - choose its in-flight window or session lifetime: the broker decides both,
   and its in-flight limit must fit `receive_maximum`.
 
@@ -182,7 +183,7 @@ session cannot do:
 | Session takeover | MQTT 3.1.1 has no DISCONNECT `0x8E`, so a takeover looks like any other connection loss. autopaho redials a connection that had come up with no delay, so two instances sharing a `client_id` would evict each other in a tight loop. A connection that drops within 30 s of coming up therefore feeds the takeover penalty: the first drop costs nothing, and each further one adds a reconnect penalty that starts at 1 s and doubles up to 64 s. A log line names a client-id collision as the likely cause. `MQTTSessionTakeover` is not counted, because the cause is inferred, not reported. The exclusive lease still guarantees one owner. |
 | Publish refusal | PUBACK and PUBREC carry no reason code. A broker that refuses a publish either acks it (Mosquitto does) or closes the connection, which surfaces as `CONNECTION_LOST` (retryable). `throttle_retry_after` never applies. |
 | Subscribe refusal | SUBACK `0x80` is the only failure code. It keeps its MQTT 5 meaning, `UNAVAILABLE` (transient), so a broker ACL denial is not classified `FORBIDDEN`. The reconcile still fails, as for any refused subscription. |
-| Retained replay | MQTT 3.1.1 has no Retain Handling. Every reconnect re-subscribes every filter, and so does every QoS re-check, so each matching retained message is delivered again. These are at-least-once duplicates. They carry `mqtt.retained=true`, so a consumer can filter them. |
+| Retained replay | MQTT 3.1.1 has no Retain Handling, so every SUBSCRIBE makes the broker send the filter's retained messages again. A reconnect that resumes the session subscribes only filters that are new or whose QoS changed, so it replays nothing for the rest. A reconnect the broker does not resume, the first connection after the process starts, and every QoS re-check still replay; see [Retained messages on reconnect](mqtt-durable-sessions.md#retained-messages-on-a-resumed-mqtt-311-session). These are at-least-once duplicates. They carry `mqtt.retained=true`, so a consumer can filter them. |
 | Flow control | `receive_maximum` is not sent, but the session enforces it, and it still sizes the dispatch queue and the pending buffer. The broker's per-client in-flight limit must not exceed it. See [Broker limits](#broker-limits). |
 | Maximum packet size | Not advertised. An oversized PUBLISH is acked and dropped instead of being refused by the broker; see [Oversized publishes](#oversized-publishes). Egress has no broker limit to check against, so its cap falls back to the protocol maximum, as it does when an MQTT 5 CONNACK omits the property. |
 | UNSUBACK detail | Every filter reports Success. Managed cleanup therefore always takes its connection-recycle path: one extra reconnect per cleanup. Orphan cleanup on an ephemeral session never reports that a subscription survived cleanup. A broker that refuses an UNSUBSCRIBE anyway (Mosquitto dynamic-security ACLs can) looks like success, and the managed history forgets a filter the broker still holds. The broker must permit UNSUBSCRIBE for every filter the session subscribes. |
@@ -359,9 +360,8 @@ These cannot be offered on MQTT 3.1.1 at all: a session expiry interval,
 broker-side message expiry, publish refusal verdicts, a takeover reason, and
 headers without changing the payload.
 
-ADR 0022 lists the extensions that were considered and not done: No-Local
-through a broker-specific "bridge bit", a payload envelope that carries
-headers, and suppressing retained replay on a resumed session.
+ADR 0022 lists the extensions considered and not done: No-Local through a
+broker-specific "bridge bit" and a payload envelope that carries headers.
 
 ## Proof
 

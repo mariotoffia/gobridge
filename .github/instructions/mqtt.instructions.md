@@ -5,7 +5,7 @@ applyTo: "adapters/mqtt/**"
 # MQTT transport (paho)
 
 Adds to `adapters.instructions.md`. Sources: ADR-0002, ADR-0003, ADR-0009,
-ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021, ADR-0022 and
+ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021, ADR-0022, ADR-0023 and
 `docs/transports/mqtt*.md`.
 
 ## Settlement and ingress
@@ -108,15 +108,15 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021, ADR-0022 and
   swaps `liveCreds` / `opts` under `s.mu`, then disconnects. Build-first would
   open a second concurrent connection with the same client ID (ADR-0002).
 
-## MQTT 3.1.1 (ADR-0022)
+## MQTT 3.1.1 (ADR-0022, ADR-0023)
 
 - The translator (`mqtt311Conn`, `acl_mqtt311_conn.go`) is the only code that
   reads or writes the MQTT 3.1.1 wire format. Paho, the pre-decode guard, the
   router, delivery and reconcile keep MQTT 5 semantics. Above the translator,
   the protocol version is checked only to install the translator, validate,
   warn at startup, build `DurableSessionIdentity`, strip egress properties,
-  damp short-lived connections and enable the `content_hash` message id. Flag
-  any other version branch.
+  damp short-lived connections, enable the `content_hash` message id and keep
+  a resumed session's subscription record. Flag any other version branch.
 - A non-zero DISCONNECT is never written on 3.1.1: the translator writes
   nothing and the caller closes the socket, so the broker publishes the Last
   Will. Only reason `0x00` becomes a 3.1.1 DISCONNECT. A translator violation
@@ -167,3 +167,14 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021, ADR-0022 and
 - Headers never cross a 3.1.1 hop. Flag any code that wraps the payload or
   encodes metadata in the topic to carry them: the other side of the broker is
   any MQTT client.
+- On 3.1.1 a connection-up with Session Present 1 on a Persistent or Exclusive
+  session whose broker URLs reach one endpoint keeps the subscription record
+  (`keepResumedSubscriptionsLocked`), so the reconcile SUBSCRIBEs only new or
+  changed filters and the broker replays no retained messages. It drops filters
+  granted below the requested QoS and filters in `unackedSubs`. Every other
+  connection-up, every MQTT 5 one, and `disconnectGeneration` reset the record;
+  Reload leaves it to the replacement on 3.1.1 and resets it when it fails.
+  A new SUBSCRIBE or UNSUBSCRIBE path must mark its filters unacknowledged
+  before sending and clear them only where the acknowledgement is recorded on
+  the same connection epoch. `subscriptionsSatisfied` stays false until the
+  reconcile converges, as on every connection (ADR-0023).

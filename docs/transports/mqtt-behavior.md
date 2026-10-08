@@ -246,9 +246,9 @@ exists only to flag such a future mode.
   is not flooded with a retained replay for every filter on every reconnect.
   Ephemeral sessions use Retain Handling = 0: each connect is a fresh
   subscription with no prior broker-side state, so the retained snapshot is the
-  intended first delivery. MQTT 3.1.1 has no Retain Handling, so a `v3.1.1`
-  session gets each matching retained message again on every reconnect and
-  every QoS re-check, marked `mqtt.retained=true`.
+  intended first delivery. MQTT 3.1.1 has no Retain Handling; a resumed
+  `v3.1.1` session sends no SUBSCRIBE for a filter the broker kept instead
+  ([Retained messages on a resumed MQTT 3.1.1 session](mqtt-durable-sessions.md#retained-messages-on-a-resumed-mqtt-311-session)).
 
 ### QoS downgrade
 
@@ -327,8 +327,9 @@ To remove the downgrade, lower the route's `qos` to the granted level, or lift
 the broker's cap.
 
 On MQTT 3.1.1 the SUBACK carries the granted QoS too, so a downgrade is
-detected the same way, but each confirmation and re-check SUBSCRIBE replays the
-filter's retained messages, because 3.1.1 has no Retain Handling.
+detected the same way, but every confirmation, re-check and reconnect
+SUBSCRIBE of the filter replays its retained messages, because 3.1.1 has no
+Retain Handling.
 
 ## Backpressure and dispatch
 

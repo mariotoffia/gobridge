@@ -21,8 +21,11 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   3.1.1 cannot express are rejected: `no_local`, a non-zero
   `session_expiry_interval`, a `password` without a `username`, and
   `clean_start: true` on a Persistent session.
-- MQTT 3.1.1 carries no headers or message identity, reports no takeover reason
-  or publish refusal, and replays retained messages on every reconnect. The
+- MQTT 3.1.1 carries no headers or message identity, and reports no takeover
+  reason or publish refusal. It has no Retain Handling: a reconnect that
+  resumes the session subscribes only new or changed filters, so retained
+  messages are replayed only when the broker did not resume the session, on
+  the first connection after a process start, and on a QoS re-check. The
   broker's in-flight limit must fit `receive_maximum`. One startup warning
   lists this; [ADR 0022](docs/adr/0022-mqtt-311-by-wire-translation.md) records
   what degrades and why.
