@@ -471,6 +471,7 @@ func TestMQTT311Conn_MalformedInboundIsAViolation(t *testing.T) {
 		"PUBLISH topic with +":                {0x30, 5, 0, 3, 'a', '/', '+'},
 		"PUBLISH topic with #":                {0x30, 3, 0, 1, '#'},
 		"PUBLISH topic with U+0000":           {0x30, 5, 0, 3, 'a', 0, 'b'},
+		"PUBLISH topic not UTF-8":             {0x30, 5, 0, 3, 'a', 0xC3, 0x28},
 		"PUBLISH QoS 3":                       {0x36, 3, 0, 1, 't'},
 		"PUBLISH QoS 0 with DUP":              {0x38, 3, 0, 1, 't'},
 		"PUBLISH QoS 1 zero packet id":        {0x32, 5, 0, 1, 't', 0, 0},

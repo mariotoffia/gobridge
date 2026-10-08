@@ -186,7 +186,8 @@ therefore stands on its own. These are malformed:
 - a zero packet id where one is required;
 - a SUBACK return code other than `0x00`, `0x01`, `0x02` and `0x80`;
 - a PUBLISH with QoS 3, DUP on QoS 0, an empty topic, a topic longer than the
-  packet, or a topic containing `+`, `#` or U+0000;
+  packet, a topic that is not well-formed UTF-8, or a topic containing `+`,
+  `#` or U+0000;
 - a packet an MQTT 3.1.1 server never sends: CONNECT, SUBSCRIBE, UNSUBSCRIBE,
   PINGREQ, DISCONNECT, AUTH and the reserved types.
 

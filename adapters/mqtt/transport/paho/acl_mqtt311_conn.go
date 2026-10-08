@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/eclipse/paho.golang/packets"
 
@@ -469,8 +470,9 @@ func (c *mqtt311Conn) readPublish(fixedHeader byte, remaining int) ([]byte, erro
 	if _, err := io.ReadFull(c.Conn, packet[topicStart:]); err != nil {
 		return nil, err //nolint:wrapcheck // net.Conn Read must preserve the transport error.
 	}
-	// A topic name holds no wildcard (MQTT-3.3.2-2) and no U+0000 (MQTT-1.5.3-2).
-	if bytes.ContainsAny(packet[topicStart:topicStart+topicSize], "+#\x00") {
+	// A topic name is well-formed UTF-8 (MQTT-1.5.3-1) with no wildcard
+	// (MQTT-3.3.2-2) and no U+0000 (MQTT-1.5.3-2).
+	if topic := packet[topicStart : topicStart+topicSize]; !utf8.Valid(topic) || bytes.ContainsAny(topic, "+#\x00") {
 		return nil, c.violation(newMQTTMalformedError())
 	}
 	if qos > 0 {
