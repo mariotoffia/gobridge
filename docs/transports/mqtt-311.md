@@ -290,7 +290,11 @@ the hash. So:
 - a retained message the broker replays to the same session after a reconnect
   keeps its id;
 - the same topic and payload received by a different session, with another
-  client id or another broker, gets a different id.
+  client id or another broker, gets a different id;
+- changing `client_id`, `client_id_suffix` or the broker list changes every id.
+
+For client id `c`, broker `tcp://broker:1883`, topic `t` and payload `p` the id
+is `mqtt-sha256:J9sTAITCmYSboGvwPskEehxc2_vzajBMr1WEj0MBI1k`.
 
 The id becomes the message's envelope id, and GoBridge uses the envelope id
 as:
