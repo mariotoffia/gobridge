@@ -17,6 +17,13 @@ const (
 	ProtocolVersion311 = "v3.1.1"
 )
 
+// How a session names a publish that carries no producer identity
+// (session.message_id). Empty selects MessageIDRandom. See ADR 0022.
+const (
+	MessageIDRandom      = "random"
+	MessageIDContentHash = "content_hash"
+)
+
 // SessionOptions holds MQTT connection and session configuration.
 // These values are typically extracted from ports.SessionSpec.Options.
 type SessionOptions struct {
@@ -192,6 +199,14 @@ type SessionOptions struct {
 	// everything above it keeps MQTT 5 semantics; options 3.1.1 cannot express
 	// are rejected (validateProtocol) and the rest degrade as ADR 0022 lists.
 	ProtocolVersion string `mapstructure:"protocol_version" yaml:"protocol_version,omitempty" json:"protocol_version,omitempty"`
+	// MessageID selects the envelope ID of a publish that carries no producer
+	// identity: "random" (the default, also selected by an empty value) mints a
+	// fresh ID per delivery, so a redelivery can be neither counted nor
+	// deduplicated; "content_hash" (MQTT 3.1.1 only) hashes the topic and
+	// payload, so a redelivery keeps its ID, but two publishes of the same
+	// payload to the same topic share one ID and a shared_outbox route keeps
+	// only the first.
+	MessageID string `mapstructure:"message_id" yaml:"message_id,omitempty" json:"message_id,omitempty"`
 	// Clock is an internal dependency injected by the factory/tests and
 	// must never be populated from YAML; the dash tag excludes it from
 	// the strict options decoder (which would otherwise reject it).
@@ -219,6 +234,14 @@ func schemeUsesTLS(brokerURL string) bool {
 
 // protocolV311 reports whether the session speaks MQTT 3.1.1.
 func (o SessionOptions) protocolV311() bool { return o.ProtocolVersion == ProtocolVersion311 }
+
+// contentHashMessageID reports whether ingress derives a missing identity from
+// the topic and payload. validateProtocol refuses content_hash off MQTT 3.1.1;
+// the version is checked here too so an unvalidated v5 session keeps its
+// minted identity.
+func (o SessionOptions) contentHashMessageID() bool {
+	return o.protocolV311() && o.MessageID == MessageIDContentHash
+}
 
 // allBrokerURLsUseTLS reports whether EVERY configured broker URL uses a TLS
 // scheme. A single plaintext URL in the list is a cleartext-credential vector

@@ -26,7 +26,8 @@ var (
 // goroutine that must return promptly to keep PINGRESP/PUBACK flowing. These
 // pin the cost of each branch: the pass-through for a publish that already
 // carries a producer identity, the sanitise-only copy when a publisher sent the
-// adapter-reserved marker, and the mint path for an anonymous publish.
+// adapter-reserved marker, and the mint and content-hash paths for an
+// anonymous publish.
 // ═══════════════════════════════════════════════════════════════════════════
 
 // benchIngressPublish builds one inbound publish with the given user
@@ -47,8 +48,9 @@ func benchIngressPublish(correlation []byte, user ...pahov5.UserProperty) *pahov
 // inbound publish, one sub-benchmark per branch.
 func BenchmarkPublishWithIdentity(b *testing.B) {
 	cases := []struct {
-		name string
-		pub  *pahov5.Publish
+		name        string
+		pub         *pahov5.Publish
+		contentHash bool
 	}{
 		{
 			name: "ProducerMessageID",
@@ -70,6 +72,7 @@ func BenchmarkPublishWithIdentity(b *testing.B) {
 			),
 		},
 		{name: "AnonymousMinted", pub: benchIngressPublish(nil)},
+		{name: "AnonymousContentHash", pub: benchIngressPublish(nil), contentHash: true},
 	}
 
 	for _, tc := range cases {
@@ -77,7 +80,7 @@ func BenchmarkPublishWithIdentity(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {
-				publishSink = publishWithIdentity(tc.pub)
+				publishSink = publishWithIdentity(tc.pub, tc.contentHash)
 			}
 		})
 	}
@@ -102,7 +105,7 @@ func BenchmarkEnvelopeFromPublish_Identity(b *testing.B) {
 
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
-			dispatched := publishWithIdentity(tc.pub)
+			dispatched := publishWithIdentity(tc.pub, false)
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {

@@ -153,6 +153,10 @@ type router struct {
 	// broker cannot see. A violation is acked-and-dropped, never terminal
 	// see ingressCapViolation.
 	maxPayloadBytes uint32
+	// contentHashID makes publishWithIdentity derive a missing identity from
+	// the topic and payload instead of minting one. Immutable after
+	// construction.
+	contentHashID bool
 	// poisonLogged dedups the poison Error log per violation class so a
 	// poison flood cannot flood the log while the metric still counts every
 	// drop. Keyed by the bounded class name (payload / user_properties /

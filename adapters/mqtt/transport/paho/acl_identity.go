@@ -2,7 +2,9 @@ package paho
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"io"
 
@@ -36,6 +38,10 @@ const (
 	// adapter-minted identity and the loss is counted.
 	correlationUnusable
 )
+
+// contentHashIdentityPrefix namespaces an envelope identity derived from a
+// publish's topic and payload (session.message_id content_hash).
+const contentHashIdentityPrefix = "mqtt-sha256:"
 
 // classifyCorrelationData decides how inbound Correlation Data is handled.
 func classifyCorrelationData(raw []byte) correlationClass {
@@ -100,7 +106,11 @@ func publishIdentity(pub *pahov5.Publish) string {
 //     redelivery as uncountable and terminalize the first transient failure.
 //   - When no producer identity remains, one generated mqtt.message-id is
 //     stamped once — before fan-out, so every handler derives the same envelope
-//     ID — together with the adapter's own marker.
+//     ID — together with the adapter's own marker. With contentHash
+//     (session.message_id content_hash on MQTT 3.1.1) the stamped id is
+//     contentHashIdentity instead, and no marker is stamped: the broker
+//     redelivers the same topic and payload, so the id is stable and the
+//     runtime's replay ledger can count it (ADR 0022).
 //
 // pub is Paho's callback packet and stays live in the SDK's acknowledgement
 // tracker until settlement, so changes are made on a shallow copy with a copied
@@ -112,7 +122,7 @@ func publishIdentity(pub *pahov5.Publish) string {
 // second application would strip the adapter's own marker and leave a minted,
 // per-redelivery identity looking stable. Nothing downstream re-enters here:
 // buffering, fan-out and the pending flush all carry the publish this returns.
-func publishWithIdentity(pub *pahov5.Publish) *pahov5.Publish {
+func publishWithIdentity(pub *pahov5.Publish, contentHash bool) *pahov5.Publish {
 	if pub == nil {
 		return pub
 	}
@@ -133,7 +143,12 @@ func publishWithIdentity(pub *pahov5.Publish) *pahov5.Publish {
 			properties.User = append(properties.User, property)
 		}
 	}
-	if identity == "" {
+	switch {
+	case identity != "":
+	case contentHash:
+		properties.User = append(properties.User,
+			pahov5.UserProperty{Key: HeaderMessageID, Value: contentHashIdentity(pub.Topic, pub.Payload)})
+	default:
 		properties.User = append(properties.User,
 			pahov5.UserProperty{Key: HeaderMessageID, Value: newIngressEnvelopeID()},
 			// Marker so EnvelopeFromPublish records the identity as adapter-minted.
@@ -143,6 +158,22 @@ func publishWithIdentity(pub *pahov5.Publish) *pahov5.Publish {
 	}
 	owned.Properties = &properties
 	return &owned
+}
+
+// contentHashIdentity names a publish by what a broker redelivers unchanged:
+// SHA-256 over the topic's byte length (big-endian uint64), the topic and the
+// payload, as unpadded base64url behind contentHashIdentityPrefix. The length
+// prefix keeps the topic/payload boundary unambiguous. QoS, RETAIN and DUP are
+// left out, so a redelivery and a retained replay of one message share its id.
+func contentHashIdentity(topic string, payload []byte) string {
+	digest := sha256.New()
+	var topicLength [8]byte
+	binary.BigEndian.PutUint64(topicLength[:], uint64(len(topic)))
+	_, _ = digest.Write(topicLength[:])
+	_, _ = io.WriteString(digest, topic)
+	_, _ = digest.Write(payload)
+	var sum [sha256.Size]byte
+	return contentHashIdentityPrefix + base64.RawURLEncoding.EncodeToString(digest.Sum(sum[:0]))
 }
 
 // carriesGeneratedMarker reports whether pub carries the adapter-reserved

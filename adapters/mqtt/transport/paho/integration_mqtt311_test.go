@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -528,6 +529,87 @@ func TestIntegration_MQTT311_HeadersAreNotCarried(t *testing.T) {
 		messaging.HeaderGeneratedID: "true",
 		paho.HeaderMessageID:        got.id,
 	}, got.headers, "only what the 3.1.1 PUBLISH carries, plus the minted identity, may arrive")
+}
+
+// TestIntegration_MQTT311_ContentHashIDSurvivesRedelivery proves message_id
+// content_hash against a real broker. A persistent MQTT 3.1.1 session retries a
+// QoS 1 delivery, which recycles the connection, and the broker redelivers the
+// message on the resumed session. The redelivery carries the same envelope ID
+// and is not marked adapter-minted, so the runtime's replay ledger can count it
+// and the outbox can deduplicate it (ADR 0022).
+func TestIntegration_MQTT311_ContentHashIDSurvivesRedelivery(t *testing.T) {
+	url := mqttlocal.BrokerURL(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	topic := "mqtt311/content-hash/" + mqttlocal.UniqueClientID("topic")
+	plan := connectivity.SessionPlan{Subscriptions: []connectivity.SubscriptionPlan{{Topic: topic, QoS: 1}}}
+
+	sess := paho.NewSession(paho.SessionOptions{
+		BrokerURLs:      []string{url},
+		ClientID:        mqttlocal.UniqueClientID("mqtt311-content-hash"),
+		KeepAlive:       10,
+		ConnectTimeout:  10 * time.Second,
+		CleanStart:      false,
+		ProtocolVersion: paho.ProtocolVersion311,
+		MessageID:       paho.MessageIDContentHash,
+	}, connectivity.SessionPersistent, nil)
+	t.Cleanup(func() { _ = sess.Close(context.Background()) })
+	require.NoError(t, sess.Start(ctx))
+	require.NoError(t, sess.Reconcile(ctx, plan))
+	waitSubActive(t, sess, 10*time.Second)
+
+	// Deliveries are keyed by payload: the first of a payload is retried, every
+	// later one is acked. A delivery is forwarded once it is settled.
+	deliveries := make(chan mqtt311Delivery, 8)
+	var mu sync.Mutex
+	seen := make(map[string]int)
+	receiver := paho.NewReceiver("rx-mqtt311-content-hash", sess, paho.WithTopicFilters(topic))
+	runCtx, stopReceiver := context.WithCancel(ctx)
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- receiver.Run(runCtx, func(ctx context.Context, delivery ports.Delivery) error {
+			envelope := delivery.Envelope()
+			payload := string(envelope.Payload())
+			mu.Lock()
+			seen[payload]++
+			first := seen[payload] == 1
+			mu.Unlock()
+			settle := delivery.Ack
+			if first {
+				settle = func(ctx context.Context) error { return delivery.Retry(ctx, 0, shared.ErrUnavailable) }
+			}
+			if err := settle(ctx); err != nil {
+				return fmt.Errorf("settle %q: %w", payload, err)
+			}
+			select {
+			case deliveries <- mqtt311Delivery{id: envelope.ID(), payload: payload, headers: envelope.HeadersSnapshot()}:
+			case <-ctx.Done():
+			}
+			return nil
+		})
+	}()
+	t.Cleanup(func() {
+		stopReceiver()
+		if err := wait.RequireReceive(t, runDone, 10*time.Second); !errors.Is(err, context.Canceled) {
+			t.Errorf("receiver stopped with %v, want context.Canceled", err)
+		}
+	})
+	wait.RequireClosed(t, receiver.Started(), 10*time.Second)
+
+	payload := mqttlocal.UniqueClientID("content-hash-payload")
+	publisher := startMQTT311Publisher(t, ctx, url, "mqtt311-content-hash-publisher")
+	sendMQTT311(t, ctx, publisher, topic, 1, payload)
+
+	first := wait.RequireReceive(t, deliveries, mqtt311Wait)
+	redelivered := wait.RequireReceive(t, deliveries, mqtt311Wait)
+	require.Equal(t, payload, first.payload)
+	require.Equal(t, payload, redelivered.payload, "one message was published, so a second delivery is its redelivery")
+	require.True(t, strings.HasPrefix(first.id, "mqtt-sha256:"), "envelope id %q is not a content hash", first.id)
+	require.Equal(t, first.id, redelivered.id, "a content-hash id must survive the broker's redelivery")
+	for _, delivery := range []mqtt311Delivery{first, redelivered} {
+		require.NotContains(t, delivery.headers, messaging.HeaderGeneratedID,
+			"a content-hash id is stable, so it must not be marked adapter-minted")
+	}
 }
 
 // TestIntegration_MQTT311_UnsubscribeConverges proves the UNSUBACK the

@@ -6,8 +6,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/config/parser"
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 func TestValidateProtocol_AcceptsEveryOptionOnV5(t *testing.T) {
@@ -112,9 +114,11 @@ func TestConfigApplyCredentials_RejectsAResolvedPasswordWithoutUsernameOnMQTT311
 
 func TestConfigApplyCredentials_RunsEveryProtocolRule(t *testing.T) {
 	for name, mutate := range map[string]func(*SessionOptions){
-		"unknown version":    func(o *SessionOptions) { o.ProtocolVersion = "5" },
-		"no_local on v3.1.1": func(o *SessionOptions) { o.ProtocolVersion, o.NoLocal = ProtocolVersion311, true },
-		"expiry on v3.1.1":   func(o *SessionOptions) { o.ProtocolVersion, o.SessionExpiryInterval = ProtocolVersion311, 60 },
+		"unknown version":         func(o *SessionOptions) { o.ProtocolVersion = "5" },
+		"no_local on v3.1.1":      func(o *SessionOptions) { o.ProtocolVersion, o.NoLocal = ProtocolVersion311, true },
+		"expiry on v3.1.1":        func(o *SessionOptions) { o.ProtocolVersion, o.SessionExpiryInterval = ProtocolVersion311, 60 },
+		"unknown message_id":      func(o *SessionOptions) { o.MessageID = "sha256" },
+		"content_hash on default": func(o *SessionOptions) { o.MessageID = MessageIDContentHash },
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := DefaultConfig()
@@ -133,4 +137,97 @@ func TestSessionOptionsFromMap_ReadsProtocolVersion(t *testing.T) {
 
 	_, err = SessionOptionsFromMap(map[string]any{"protocol_version": 5})
 	require.ErrorIs(t, err, shared.ErrInvalidConfig, "a non-string protocol_version must not fall back to v5 silently")
+}
+
+func TestValidateProtocol_RejectsUnknownMessageID(t *testing.T) {
+	for _, version := range []string{"", ProtocolVersion5, ProtocolVersion311} {
+		t.Run("version "+version, func(t *testing.T) {
+			err := SessionOptions{ProtocolVersion: version, MessageID: "sha256"}.validateProtocol("")
+			require.ErrorIs(t, err, shared.ErrInvalidConfig)
+			assert.Contains(t, err.Error(), "session.message_id")
+		})
+	}
+}
+
+func TestValidateProtocol_RejectsContentHashMessageIDOffMQTT311(t *testing.T) {
+	for _, version := range []string{"", ProtocolVersion5} {
+		t.Run("version "+version, func(t *testing.T) {
+			err := SessionOptions{ProtocolVersion: version, MessageID: MessageIDContentHash}.validateProtocol("")
+			require.ErrorIs(t, err, shared.ErrInvalidConfig, "an MQTT 5 producer carries its own message id")
+			assert.Contains(t, err.Error(), "session.message_id")
+		})
+	}
+}
+
+func TestValidateProtocol_AcceptsContentHashMessageIDOnMQTT311(t *testing.T) {
+	modes := []connectivity.SessionMode{
+		"", connectivity.SessionEphemeral, connectivity.SessionPersistent, connectivity.SessionExclusive,
+	}
+	for _, mode := range modes {
+		t.Run("mode "+string(mode), func(t *testing.T) {
+			opts := SessionOptions{ProtocolVersion: ProtocolVersion311, MessageID: MessageIDContentHash}
+			assert.NoError(t, opts.validateProtocol(mode))
+		})
+	}
+}
+
+func TestValidateProtocol_AcceptsRandomMessageIDOnEveryVersion(t *testing.T) {
+	for _, version := range []string{"", ProtocolVersion5, ProtocolVersion311} {
+		for _, messageID := range []string{"", MessageIDRandom} {
+			t.Run(version+"/"+messageID, func(t *testing.T) {
+				opts := SessionOptions{ProtocolVersion: version, MessageID: messageID}
+				assert.NoError(t, opts.validateProtocol(connectivity.SessionPersistent))
+			})
+		}
+	}
+}
+
+func TestConfigValidate_RejectsContentHashMessageIDOnV5(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Session.MessageID = MessageIDContentHash
+	require.ErrorIs(t, cfg.Validate(), shared.ErrInvalidConfig)
+
+	cfg.Session.ProtocolVersion = ProtocolVersion311
+	require.NoError(t, cfg.Validate())
+}
+
+func TestValidateEffectiveSession_RejectsContentHashMessageIDOnV5(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Session.ClientID = "c"
+	cfg.Session.BrokerURLs = []string{"tcp://localhost:1883"}
+	cfg.Session.MessageID = MessageIDContentHash
+	require.ErrorIs(t, cfg.ValidateEffectiveSession(connectivity.SessionPersistent), shared.ErrInvalidConfig)
+
+	cfg.Session.ProtocolVersion = ProtocolVersion311
+	require.NoError(t, cfg.ValidateEffectiveSession(connectivity.SessionPersistent))
+}
+
+func TestSessionOptionsFromMap_ReadsMessageID(t *testing.T) {
+	opts, err := SessionOptionsFromMap(map[string]any{"message_id": MessageIDContentHash})
+	require.NoError(t, err)
+	assert.Equal(t, MessageIDContentHash, opts.MessageID)
+
+	opts, err = SessionOptionsFromMap(map[string]any{})
+	require.NoError(t, err)
+	assert.Empty(t, opts.MessageID, "an omitted message_id keeps the random default")
+
+	_, err = SessionOptionsFromMap(map[string]any{"message_id": true})
+	require.ErrorIs(t, err, shared.ErrInvalidConfig, "a non-string message_id must not fall back to random silently")
+}
+
+func TestPluginOptionsDecode_ReadsMessageID(t *testing.T) {
+	reg := ports.NewRegistry()
+	require.NoError(t, Register(reg))
+	decode := func(session map[string]any) (ports.PluginConfig, error) {
+		return reg.Decode("mqtt", parser.NewRawConfig(map[string]any{"session": session}))
+	}
+
+	pc, err := decode(map[string]any{"protocol_version": ProtocolVersion311, "message_id": MessageIDContentHash})
+	require.NoError(t, err)
+	cfg, ok := pc.(*Config)
+	require.True(t, ok)
+	assert.Equal(t, MessageIDContentHash, cfg.Session.MessageID)
+
+	_, err = decode(map[string]any{"message_id": MessageIDContentHash})
+	require.ErrorIs(t, err, shared.ErrInvalidConfig, "content_hash on MQTT 5 is refused at load time")
 }

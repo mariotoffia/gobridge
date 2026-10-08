@@ -8,7 +8,10 @@ import (
 )
 
 // validateProtocol rejects the options the session's protocol version cannot
-// express. MQTT 5 accepts every option. On MQTT 3.1.1 it rejects:
+// express. An unknown message_id is rejected on every version, and
+// message_id: content_hash is accepted only on MQTT 3.1.1: an MQTT 5 producer
+// carries its own message id. Otherwise MQTT 5 accepts every option. On MQTT
+// 3.1.1 it rejects:
 //
 //   - no_local: 3.1.1 has no No-Local, and loop prevention must not silently
 //     disappear (ADR 0010);
@@ -22,13 +25,27 @@ import (
 // options as configured, before NewSession's defaults are applied.
 func (o SessionOptions) validateProtocol(mode connectivity.SessionMode) error {
 	switch o.ProtocolVersion {
-	case "", ProtocolVersion5:
-		return nil
-	case ProtocolVersion311:
+	case "", ProtocolVersion5, ProtocolVersion311:
 	default:
 		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
 			"mqtt: session.protocol_version must be %q or %q, got %q",
 			ProtocolVersion5, ProtocolVersion311, o.ProtocolVersion))
+	}
+	switch o.MessageID {
+	case "", MessageIDRandom:
+	case MessageIDContentHash:
+		if !o.protocolV311() {
+			return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+				"mqtt: session.message_id %s requires session.protocol_version %s (an MQTT 5 producer carries its own message id)",
+				MessageIDContentHash, ProtocolVersion311))
+		}
+	default:
+		return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf(
+			"mqtt: session.message_id must be %q or %q, got %q",
+			MessageIDRandom, MessageIDContentHash, o.MessageID))
+	}
+	if !o.protocolV311() {
+		return nil
 	}
 	if o.NoLocal {
 		return errUnavailableOnMQTT311("session.no_local", "MQTT 3.1.1 has no No-Local; remove it, or use v5")
