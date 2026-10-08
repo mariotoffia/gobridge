@@ -110,6 +110,22 @@ func TestConfigApplyCredentials_RejectsAResolvedPasswordWithoutUsernameOnMQTT311
 	require.ErrorIs(t, cfg.ApplyCredentials(set), shared.ErrInvalidConfig)
 }
 
+func TestConfigApplyCredentials_RunsEveryProtocolRule(t *testing.T) {
+	for name, mutate := range map[string]func(*SessionOptions){
+		"unknown version":    func(o *SessionOptions) { o.ProtocolVersion = "5" },
+		"no_local on v3.1.1": func(o *SessionOptions) { o.ProtocolVersion, o.NoLocal = ProtocolVersion311, true },
+		"expiry on v3.1.1":   func(o *SessionOptions) { o.ProtocolVersion, o.SessionExpiryInterval = ProtocolVersion311, 60 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Session.BrokerURLs = []string{"ssl://broker:8883"}
+			mutate(&cfg.Session)
+			set := connectivity.NewCredentialSet(pwCred("u", "p"), nil)
+			require.ErrorIs(t, cfg.ApplyCredentials(set), shared.ErrInvalidConfig)
+		})
+	}
+}
+
 func TestSessionOptionsFromMap_ReadsProtocolVersion(t *testing.T) {
 	opts, err := SessionOptionsFromMap(map[string]any{"protocol_version": ProtocolVersion311})
 	require.NoError(t, err)

@@ -285,10 +285,11 @@ func (c *Config) ApplyCredentials(set *connectivity.CredentialSet) error {
 		applyTLSMaterial(&c.Session.TLS, set.TLS())
 	}
 	c.CredentialsURIRef = ""
-	if c.Session.protocolV311() {
-		if err := credentialsExpressibleOnMQTT311(c.Session.Username, !c.Session.Password.IsZero()); err != nil {
-			return err
-		}
+	// The resolved username and password are protocol options too (MQTT 3.1.1
+	// forbids a password without a username), so the whole protocol validator
+	// runs again here rather than a copy of one of its rules.
+	if err := c.Session.validateProtocol(""); err != nil {
+		return err
 	}
 	// the resolution above may have supplied the FIRST credentials
 	// (a credentials_uri-only config that deferred the plaintext gate at
