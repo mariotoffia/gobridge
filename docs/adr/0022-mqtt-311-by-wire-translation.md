@@ -434,7 +434,8 @@ changes on every broker redelivery and is marked `x-bridge.generated-id`, so:
   The same topic and payload from another session, with another client id or
   another broker, get a different id.
 - The id is not marked `x-bridge.generated-id`. It is the envelope id, so it is
-  the replay-cap key, the outbox duplicate key, the DLQ entry id, and the input
+  the replay-cap key, the outbox duplicate key, an input to the DLQ entry id
+  (with the route, binding and source ids), and the input
   to the deduplication id each sender derives: SQS FIFO
   `MessageDeduplicationId`, Service Bus `MessageId`, HTTP `Idempotency-Key`,
   and `mqtt.message-id` on MQTT 5 egress.

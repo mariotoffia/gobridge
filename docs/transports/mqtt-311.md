@@ -301,7 +301,8 @@ as:
 
 - the key the replay cap counts retries on;
 - the `shared_outbox` duplicate key;
-- the dead-letter (DLQ) entry id;
+- an input to the dead-letter (DLQ) entry id, together with the route,
+  binding and source ids;
 - the input to the deduplication id a sender sets for the next hop:
   - SQS FIFO `MessageDeduplicationId`, derived from the payload, the subject
     and the envelope id. The SQS FIFO deduplication window is 5 minutes.
