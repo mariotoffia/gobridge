@@ -230,24 +230,26 @@ func (s *Session) reconcile(
 			// reconnect that resumes the session does not trigger a full
 			// retained-message replay per filter; ephemeral sessions keep
 			// 0 (each connect is a fresh subscription that must rehydrate
-			// retained state).
+			// retained state). MQTT 3.1.1 drops Retain Handling; a resumed
+			// 3.1.1 session keeps its record instead, so an unchanged filter
+			// does not reach this branch (session_resume.go).
 			toSub = append(toSub, s.subscribeSpec(topic, qos, retainHandlingForMode(s.mode)))
 		}
 	}
 
 	if len(toSub) > 0 {
+		filters := make([]string, len(toSub))
+		for i, sub := range toSub {
+			filters[i] = sub.Topic
+		}
 		if logging.TraceEnabled(s.logger) {
-			topics := make([]string, len(toSub))
-			for i, sub := range toSub {
-				topics[i] = sub.Topic
-			}
 			s.logger.Log(ctx, logging.LevelTrace, "mqtt: subscribing",
-				"client_id", s.opts.ClientID, "topics", topics)
+				"client_id", s.opts.ClientID, "topics", filters)
 		}
 		// Adapter-owned deadline per SUBSCRIBE too: a broker that accepts the
 		// connection but never returns SUBACK must not hang the reconcile — and
 		// any startup / hot-reload step awaiting it — indefinitely.
-		if err := s.requireReconcileEpoch(operationEpoch); err != nil {
+		if err := s.beginSubscriptionOperation(operationEpoch, filters); err != nil {
 			return err
 		}
 		subCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())

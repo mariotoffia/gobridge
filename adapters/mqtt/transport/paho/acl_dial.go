@@ -87,10 +87,11 @@ func (s *Session) dial(ctx context.Context) (pahoConnection, context.CancelFunc,
 		// SessionConnected event emitted here and drives Reconcile, whose
 		// outcome is authoritative (a rejected re-subscribe propagates out
 		// of Manager.Run so the bridge can restart/alarm —).
-		// This callback therefore only resets local subscription state and
+		// This callback therefore only sets up local subscription state and
 		// signals SessionConnected; it MUST NOT reconcile inline. See
-		// handleConnectionUp for the reset-before-signal ordering that lets
-		// the manager observe an empty subscription set on reconnect.
+		// handleConnectionUp for the record-before-signal ordering that lets
+		// the manager observe an empty subscription set on reconnect, or, on
+		// a resumed MQTT 3.1.1 session, the subscriptions the broker kept.
 		OnConnectionUp: func(_ *autopaho.ConnectionManager, connack *pahov5.Connack) {
 			sessionPresent := connack != nil && connack.SessionPresent
 			// The broker's Maximum Packet Size is granted per CONNACK and must be

@@ -162,7 +162,7 @@ func (s *Session) unsubscribeConfirmed(ctx context.Context, cm pahoConnection, t
 	if logging.TraceEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelTrace, "mqtt: unsubscribing", "client_id", s.opts.ClientID, "topics", topics)
 	}
-	if err := s.requireReconcileEpoch(operationEpoch); err != nil {
+	if err := s.beginSubscriptionOperation(operationEpoch, topics); err != nil {
 		return unsubscribeConfirmation{}, err
 	}
 	unsubCtx, cancel := context.WithTimeout(ctx, s.reconcileTimeout())
@@ -230,6 +230,7 @@ func (s *Session) removeObservedSubscriptions(operationEpoch uint64, topics []st
 	for _, topic := range topics {
 		delete(s.observedSubs, topic)
 		delete(s.activeSubs, topic)
+		delete(s.unackedSubs, topic)
 	}
 	return nil
 }

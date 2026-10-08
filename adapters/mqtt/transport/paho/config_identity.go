@@ -30,18 +30,38 @@ func (c Config) ValidateSessionMode(mode connectivity.SessionMode) error {
 	if mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive {
 		return errors.New("mqtt: invalid session mode")
 	}
-	brokers, err := canonicalBrokerSet(c.Session.BrokerURLs, c.Session.BrokerURL)
+	domains, err := brokerSessionDomains(c.Session.BrokerURLs, c.Session.BrokerURL)
 	if err != nil {
 		return err
+	}
+	if domains > 1 {
+		return errors.New("mqtt: persistent and exclusive sessions require one broker-session domain; independent multi-broker failover is unsafe for durable managed subscription history")
+	}
+	return nil
+}
+
+// brokerSessionDomains counts the distinct canonical endpoints the broker URLs
+// reach.
+func brokerSessionDomains(brokerURLs []string, brokerURL string) (int, error) {
+	brokers, err := canonicalBrokerSet(brokerURLs, brokerURL)
+	if err != nil {
+		return 0, err
 	}
 	domains := make(map[string]struct{}, len(brokers))
 	for _, broker := range brokers {
 		domains[broker] = struct{}{}
 	}
-	if len(domains) > 1 {
-		return errors.New("mqtt: persistent and exclusive sessions require one broker-session domain; independent multi-broker failover is unsafe for durable managed subscription history")
-	}
-	return nil
+	return len(domains), nil
+}
+
+// oneBrokerSessionDomain reports whether the broker URLs reach exactly one
+// canonical endpoint. Factory-built durable sessions are validated to do so
+// (ValidateSessionMode); a session built directly with NewSession is not, so the
+// session checks before it trusts Session Present to describe the broker
+// session it subscribed on.
+func oneBrokerSessionDomain(brokerURLs []string, brokerURL string) bool {
+	domains, err := brokerSessionDomains(brokerURLs, brokerURL)
+	return err == nil && domains == 1
 }
 
 // DurableSessionIdentity returns an opaque SHA-256 fingerprint of the

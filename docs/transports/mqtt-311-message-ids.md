@@ -94,8 +94,9 @@ The id is not marked `x-bridge.generated-id`, so:
 
 Because retries are counted, a failing delivery on a Persistent or Exclusive
 QoS 1/2 session is retried by recycling the connection
-([settlement recovery](mqtt-settlement-recovery.md)), and on MQTT 3.1.1 every
-reconnect also replays the retained messages.
+([settlement recovery](mqtt-settlement-recovery.md)). The recycle resumes the
+session, so it replays [retained messages](mqtt-durable-sessions.md#retained-messages-on-a-resumed-mqtt-311-session)
+only if the broker lost the session.
 
 **Trade-off: identical messages share one id.** Two different messages that
 one session receives with the same topic and payload get the same id, so

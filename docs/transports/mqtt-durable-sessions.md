@@ -247,3 +247,49 @@ deliberately no per-topic quarantine (a partial route set is never silently
 served). See `docs/runbooks/mqtt-suback-rejection-flap.md`. A filter the
 broker grants at a lower QoS does not fail the reconcile; see
 [QoS downgrade](mqtt-behavior.md#qos-downgrade).
+
+## Retained messages on a resumed MQTT 3.1.1 session
+
+An [MQTT 3.1.1](mqtt-311.md) session has no Retain Handling, so the broker
+sends a filter's retained messages again every time the session subscribes to
+it (MQTT 3.1.1 §3.8.4). An MQTT 5 session asks the broker not to, with Retain
+Handling 1. A 3.1.1 session avoids it by not sending the SUBSCRIBE.
+
+When a Persistent or Exclusive session reconnects and the broker answers
+Session Present 1, the broker still holds the session, and its subscriptions
+with it (MQTT 3.1.1 §3.2.2.2). The session then keeps its record of the
+subscriptions the broker confirmed before the connection dropped. The reconcile
+that follows sends SUBSCRIBE only for a filter that is new or whose requested
+QoS changed, and still unsubscribes a removed filter. Readiness waits for that
+reconcile, as on every connection. A Reload that succeeds (a credential
+rotation that needs a new connection, a managed-subscription cleanup, a
+settlement recovery) reconnects the same way.
+
+The session subscribes a filter again, and the broker replays its retained
+messages, when:
+
+- the broker answers Session Present 0: it lost the session, or never had one
+  (`MQTTSessionResumeLost` counts a loss);
+- the process starts: a new session has no record, so its first connection
+  subscribes every filter;
+- the filter was granted below its requested QoS: every reconnect re-checks the
+  grant, and so does each confirmation and re-check SUBSCRIBE (see
+  [QoS downgrade](mqtt-behavior.md#qos-downgrade));
+- the filter's last SUBSCRIBE or UNSUBSCRIBE got no acknowledgement before the
+  connection dropped, so the broker may or may not have applied it;
+- the session gave up the broker session: an exclusive reconcile failed and
+  released the lease, the session failed for good, or a Reload failed.
+
+An Ephemeral session starts clean on every connect, so it never resumes and
+always subscribes every filter. Session Present is trusted only for one broker:
+a Persistent or Exclusive session may use only one canonical broker URL.
+
+**What this relies on.** The broker keeps a session's subscriptions for as long
+as it answers Session Present 1, as MQTT 3.1.1 requires. A broker that answers
+Session Present 1 but has lost a subscription leaves that filter silent until
+the session next subscribes it. No other client changes the session's
+subscriptions: give each instance its own `client_id`, or use an exclusive
+lease, as for any durable session. Only Mosquitto is tested.
+
+The decision and the hazards it guards against are in
+[ADR 0023](../adr/0023-keep-resumed-mqtt-311-subscriptions.md).
