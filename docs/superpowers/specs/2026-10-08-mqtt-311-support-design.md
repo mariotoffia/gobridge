@@ -67,9 +67,11 @@ flowchart LR
 ```
 
 - **Where it lives.** The translator is a `net.Conn` wrapper in a new file,
-  `adapters/mqtt/transport/paho/mqtt311_conn.go`, in the existing package. A
-  new package would need its own `.go-arch-lint.yml` component, because the
-  MQTT component maps the exact package path.
+  `adapters/mqtt/transport/paho/acl_mqtt311_conn.go`, in the existing package.
+  - The `acl_` prefix is mandatory: `scripts/aclcheck` allows a paho import
+    (`packets`) only in `acl_*.go` files.
+  - A new package would need its own `.go-arch-lint.yml` component, because the
+    MQTT component maps the exact package path.
 - **Where it is installed.** `attemptGuardedConnection` (`acl_net.go`) wraps
   the dialled stream only when the session's protocol version is `v3.1.1`.
   - On v3.1.1 the chain is `raw → mqtt311Conn → mqttIngressConn → paho`.
@@ -99,7 +101,7 @@ flowchart LR
 |---|---|
 | CONNECT | Protocol name `MQTT`, level 4. Connect flags keep the same bit layout. All properties and will properties are dropped. **Clean Session** is derived as below. A password without a username is an error. |
 | PUBLISH | Fixed header, topic, packet id (QoS > 0) and payload. All properties are dropped. An empty topic (topic alias) is an error. |
-| PUBACK, PUBREC, PUBREL, PUBCOMP | Fixed header and the 2-byte packet id. Reason code and properties are dropped. PUBREL keeps flags `0x2`. |
+| PUBACK, PUBREC, PUBREL, PUBCOMP | Fixed header and the 2-byte packet id. Reason code and properties are dropped. PUBREL keeps flags `0x2`. This includes paho's PUBREL `0x92` for an unknown PUBREC, which becomes a plain PUBREL. A PUBACK, or a PUBCOMP, releases that packet id from the inbound in-flight set (§3.2). |
 | SUBSCRIBE | Packet id, then for each filter the topic and a requested-QoS byte with bits 2-7 zero. `NoLocal` or `RetainAsPublished` set is an error. Retain Handling is dropped (§5.2). Properties are dropped. |
 | UNSUBSCRIBE | Packet id and topics. Properties are dropped. The translator records `packet id → filter count` for the UNSUBACK. |
 | PINGREQ | Unchanged. |
@@ -139,7 +141,7 @@ reconnect sends 0, and the table maps that correctly.
 | v3.1.1 packet | v5 output |
 |---|---|
 | CONNACK (`flags, return code`) | `flags, reason code, 0x00` (empty properties). Return codes are mapped below this table. |
-| PUBLISH | Fixed header with a recomputed Remaining Length, then topic, packet id (QoS > 0), `0x00` (empty properties) and the payload. QoS 3, a topic length past the packet, or a zero packet id is malformed. |
+| PUBLISH | Fixed header with a recomputed Remaining Length, then topic, packet id (QoS > 0), `0x00` (empty properties) and the payload. The in-flight rules below this table apply first. |
 | PUBACK, PUBREC, PUBREL, PUBCOMP | Unchanged. The 2-byte form is valid v5 (§3.4.2.1: Remaining Length 2 means success and no properties). |
 | SUBACK | Packet id, `0x00`, then the return codes unchanged. The 3.1.1 codes `0x00`/`0x01`/`0x02`/`0x80` are valid v5 reason codes with the same meaning. |
 | UNSUBACK | Packet id, `0x00`, then `N × 0x00`, where N is the filter count recorded for that packet id. An unknown packet id is malformed. Always reporting Success is the conservative choice (§5.2). |
@@ -157,6 +159,47 @@ CONNACK return codes:
 | 4 | `0x86` (bad user name or password) |
 | 5 | `0x87` (not authorized) |
 | anything else | malformed |
+
+**Exact 3.1.1 packet validation.** This is a trust boundary. paho's v5 decoder
+accepts bytes that are invalid 3.1.1: for example, `40 03 00 01 87` would decode
+as a v5 PUBACK "Not authorized". Each rule below therefore stands on its own and
+is not proved by "paho decodes it".
+
+Each of the following is malformed:
+- **Fixed-header flags.** Any flag bits other than PUBLISH's DUP, QoS and
+  RETAIN, or other than `0x2` on PUBREL.
+- **Exact lengths.** A Remaining Length other than exactly 2 for CONNACK,
+  PUBACK, PUBREC, PUBREL, PUBCOMP and UNSUBACK, or other than 0 for PINGRESP.
+- **CONNACK flags.** Reserved bits set, or Session Present = 1 together with a
+  non-zero return code.
+- **Packet ids.** A zero packet id where one is required.
+- **SUBACK return codes.** Any value outside `0x00`, `0x01`, `0x02` and `0x80`.
+- **PUBLISH structure.** QoS 3; DUP set on QoS 0; an empty topic; a topic
+  length past the packet; a topic containing `+`, `#` or U+0000.
+
+**Inbound in-flight set (Receive Maximum and retransmission).**
+- *The set.* The translator keeps the set of inbound QoS 1/2 packet ids it has
+  handed to paho and not yet seen released. A packet id leaves the set when
+  paho writes a PUBACK (QoS 1) or a PUBCOMP (QoS 2). That is the window a v5
+  broker enforces for Receive Maximum.
+- *Retransmission.* 3.1.1 lets a broker resend an unacknowledged PUBLISH on the
+  same connection (EMQX `retry_interval`). v5 forbids it (MQTT-4.4.0-1).
+  - paho delivers every copy to the callback but tracks acks by packet id
+    (`acks_tracker.go`). Settling the late duplicate after the broker has
+    reused the id would ack a newer, unsettled message.
+  - A QoS 1/2 PUBLISH whose packet id is already in the set is therefore a
+    retransmission, and it is dropped before paho sees it. The original
+    delivery's settlement acks it.
+- *Window overflow.* A new packet id that would grow the set beyond the
+  session's `receive_maximum` is a broker window violation.
+  - Without this check, the router's admission wait and paho's unbuffered
+    `pubChan` send block the read loop. Closing the socket does not release
+    them, so the session wedges instead of reconnecting.
+  - Instead, the packet takes the violation path below, before paho sees it.
+    Nothing is acked or lost, the broker redelivers on resume, and the Error
+    log names the remedy: raise `receive_maximum` to at least the broker's
+    per-client in-flight limit.
+- QoS 0 is not counted, as in v5.
 
 Because the translated CONNACK carries no properties, paho falls back to the v5
 defaults:
@@ -178,20 +221,28 @@ works unchanged.
 - *The fix.* The translator never buffers more than the payload cap:
   1. It reads the topic and packet id.
   2. It keeps the first `max_payload_bytes + 1` bytes of the payload.
-  3. It discards the rest from the stream with `io.CopyN(io.Discard, …)`.
-  4. It emits a v5 PUBLISH carrying that truncated payload.
+  3. It emits a v5 PUBLISH carrying that truncated payload **immediately**.
+  4. It discards the rest of the payload at the start of the next `Read`.
 - *Why it works.* The truncated packet fits the guard's size limit, because the
   metadata allowance covers the topic. The router's existing ingress cap
   (`payload > max_payload_bytes`) then acks and drops it in receive order,
   counted on `MQTTIngressPoisonDropped`.
+- *Why the head goes first.* paho's pinger fails the connection when a PINGRESP
+  is not read within one keep-alive interval, and that PINGRESP queues behind
+  the oversized payload. Handing the head over first lets the ack reach the
+  broker while the drain is still running. If the drain then outlasts the
+  keep-alive, the broker already holds the ack and does not redeliver.
+- *Residual case.* The ack can still wait behind earlier unsettled deliveries
+  (acks go out in receive order). Bound transfer time with the broker's own
+  maximum packet size (Mosquitto `max_packet_size`, EMQX `max_packet_size`).
 - No new metric, queue or ack path is introduced.
 
 **Oversized non-PUBLISH.** A non-PUBLISH packet above the guard's maximum
 packet size (`wirePacketSizeFor(max_payload_bytes)`) is rejected as too large.
 Only a broken broker produces one.
 
-**Violations.** A malformed or oversized non-PUBLISH packet takes the guard's
-reporting path:
+**Violations.** A malformed packet, an oversized non-PUBLISH packet, and a
+window overflow all take the guard's reporting path:
 - `onViolation` is `Session.rejectPredecodeIngress`. It records
   `MQTTIngressRejected`, sets health to None, applies the reject streak
   backoff, and starts the readiness hold-down.
@@ -202,8 +253,11 @@ reporting path:
 ### 3.3 Concurrency
 
 - Read and write run on different goroutines.
-- The only state they share is the UNSUBSCRIBE packet-id map, and a mutex
-  guards it.
+- They share two pieces of state, guarded by one mutex:
+  - the UNSUBSCRIBE packet-id map;
+  - the inbound in-flight set.
+- Both belong to one connection and die with it. Every reconnect builds a
+  fresh translator.
 - Read-side state is touched only on the read path, which the guard already
   serialises.
 - `Close` closes the raw connection. Deadlines and addresses pass through the
@@ -239,24 +293,47 @@ ProtocolVersion string `mapstructure:"protocol_version" yaml:"protocol_version,o
     `*paho.Config` without `DefaultConfig()`, so its zero value is `v5`.
 - **Library path.** `SessionOptionsFromMap` (`config_decode.go`) also reads
   `protocol_version`, so the lenient library path matches the registry path.
-- **Not part of durable identity.** The value is left out of
-  `DurableSessionIdentity`:
-  - A broker keeps one session per client id, whichever protocol version
-    resumes it.
-  - Including the value would make the managed-subscription ledger fail closed
-    ("missing baseline") on a protocol switch.
-  - A protocol change still rebuilds the session, because the typed config is
-    part of the reload unit's content identity.
+  A value that is present but not a string is an error. It must never fall
+  back silently to `v5`.
+- **Part of durable identity on v3.1.1 only.** On v3.1.1, `DurableSessionIdentity`
+  appends the protocol version as one more identity part. On `v5` the parts are
+  unchanged, so every existing fingerprint stays the same.
+  - Why it is identity: a broker need not resume one protocol's persistent
+    session from the other. AWS IoT Core explicitly does not.
+  - Consequence: switching a persistent or exclusive session between `v5` and
+    `v3.1.1` is a durable-identity change, handled like changing `client_id`.
+    The supervisor refuses it as a live reload, and the managed-subscription
+    ledger needs the documented migration
+    (`docs/runbooks/mqtt-managed-subscription-migration.md`). Drain the
+    backlog before switching.
+  - `DurableSessionIdentityDomains` (client id × broker collision detection)
+    stays protocol-independent. Two sessions with the same client id on one
+    broker collide whatever their versions.
+  - Ephemeral sessions have no durable identity. For them a protocol change is
+    an ordinary rebuild, because the typed config is part of the reload unit's
+    content identity.
 
 ### 4.2 Validation on `v3.1.1`
 
-| Rule | Where | Why |
-|---|---|---|
-| `protocol_version` must be empty, `v5` or `v3.1.1` | `Config.Validate` | Typos fail at load. |
-| `no_local: true` is rejected | `Config.Validate` | 3.1.1 has no No-Local. Loop prevention must not silently disappear (ADR 0010). |
-| `session_expiry_interval` other than 0 is rejected | `Config.Validate` | 3.1.1 cannot send it, and the broker decides how long a session lives. See the note below this table. |
-| `password` without `username` is rejected | `Config.Validate`, and `ApplyCredentials` after `credentials_uri` resolution (as the plaintext gate does) | MQTT-3.1.2-22. |
-| `clean_start: true` with `session_mode: persistent` is rejected | `ValidateEffectiveSession(mode)` | No 3.1.1 wire form exists (§3.1). Exclusive already overrides `clean_start` to false, and Ephemeral ignores it. |
+One validator, `SessionOptions.validateProtocol(mode)`, holds every rule below.
+The mode-dependent rule runs only when a mode is known. It is called from every
+path that can build or change a session:
+
+| Path | Call site |
+|---|---|
+| Registry decode | `Config.Validate` (rules that do not need the mode) |
+| Factory build, CDK and deployment preflight | `ValidateEffectiveSession(mode)` (all rules) |
+| `credentials_uri` resolution | `Config.ApplyCredentials` (username/password), as the plaintext gate does |
+| Live credential rotation | `Session.ApplyCredentials`, on the candidate and **before** any credential or TLS mutation, so a rejected rotation leaves the working session untouched |
+| Direct `NewSession` | `NewSession` runs the validator on the options **before** it coerces anything, records the error, and `Start` returns it without dialling. `NewSession` cannot return an error itself. |
+
+| Rule | Why |
+|---|---|
+| `protocol_version` must be empty, `v5` or `v3.1.1` | Typos fail at load. |
+| `no_local: true` is rejected | 3.1.1 has no No-Local. Loop prevention must not silently disappear (ADR 0010). |
+| `session_expiry_interval` other than 0 is rejected | 3.1.1 cannot send it, and the broker decides how long a session lives. See the note below this table. |
+| `password` without `username` is rejected | MQTT-3.1.2-22. |
+| `clean_start: true` with `session_mode: persistent` is rejected | No 3.1.1 wire form exists (§3.1). Exclusive already overrides `clean_start` to false, and Ephemeral ignores it. |
 
 About `session_expiry_interval` on 3.1.1:
 - Default session lifetimes: Mosquitto never expires the session, EMQX expires
@@ -275,11 +352,13 @@ remove it, or use v5".
 
 When the protocol version is `v3.1.1`, `NewSession` logs one Warn listing what
 the session cannot do:
-- no headers or message identity;
-- no takeover detection;
+- no headers or message identity, so a retry of a count-less message is
+  terminal (§5.2);
+- takeover is detected only as a short-lived connection;
 - no publish refusal verdicts;
 - retained messages replay on every reconnect;
-- the broker controls the in-flight window and the session lifetime.
+- the broker controls the in-flight window, which must fit `receive_maximum`,
+  and the session lifetime.
 
 That makes the warning `doc.go` describes real.
 
@@ -310,14 +389,14 @@ These behave exactly as on v5:
 
 | Behaviour | On v3.1.1 |
 |---|---|
-| Headers and identity | Only topic, payload, QoS and RETAIN cross the wire. On egress, all headers, the subject and the expiry are dropped. Ingress consequences are listed below this table. |
-| Session takeover | No DISCONNECT 0x8E exists, so a takeover looks like any other connection loss. The ordinary reconnect backoff applies. `MQTTSessionTakeover` and the takeover penalty stay idle. The exclusive lease is still the owner guarantee. |
+| Headers and identity | Only topic, payload, QoS and RETAIN cross the wire. On egress the sender strips every property on v3.1.1 **before** field and packet-size validation. So a header that could never be sent (oversized, invalid UTF-8) cannot fail an otherwise valid publish. All headers, the subject and the expiry are dropped. Ingress consequences are listed below this table. |
+| Session takeover | No DISCONNECT 0x8E exists, so a takeover looks like any other connection loss. autopaho redials a connection that had come up with zero base delay, so two instances sharing a client id would evict each other in a hot loop. On v3.1.1 a connection that drops within `connectionStabilityWindow` (30 s) of coming up therefore feeds the existing takeover streak and penalty (1 s doubling to 64 s). It gets its own log line ("connection keeps dropping shortly after connecting; on MQTT 3.1.1 a client-id collision looks like this"). `MQTTSessionTakeover` is not incremented, because the cause is inferred, not reported. The exclusive lease is still the owner guarantee. |
 | Publish refusal | PUBACK and PUBREC carry no reason code. A broker that refuses a publish either acks it (Mosquitto) or closes the connection, which surfaces as `ErrConnectionLost` (retryable). `throttle_retry_after` never applies. |
 | Subscribe refusal | SUBACK `0x80` is the only failure code. It keeps its v5 meaning, `ErrUnavailable` (transient), so a broker ACL denial is not classified `ErrForbidden`. |
 | Retained replay | There is no Retain Handling. Every reconnect re-SUBSCRIBEs all filters, and so does every QoS re-check, so each matching retained message is delivered again. These are at-least-once duplicates, flagged `mqtt.retained=true`. |
-| Flow control | `receive_maximum` is not sent, but it still sizes the dispatch queue and the pending buffer. The broker's per-client in-flight limit must not exceed it. Defaults: Mosquitto `max_inflight_messages` 20, EMQX `max_inflight` 32, AWS IoT 100. If the broker sends more, the router blocks rather than drops, so nothing is lost. A blocked read can delay PINGRESP until keep-alive forces a reconnect, which redelivers. |
+| Flow control | `receive_maximum` is not sent, but the translator enforces it (§3.2), and it still sizes the dispatch queue and the pending buffer. The broker's per-client in-flight limit must not exceed it. Defaults: Mosquitto `max_inflight_messages` 20, EMQX `max_inflight` 32, AWS IoT 100. A broker that sends more is refused loudly on every connection: an ingress reject, nothing acked, the remedy logged. The session never wedges. |
 | Maximum packet size | Not advertised. An oversized PUBLISH is acked and dropped (§3.2) instead of being refused by the broker. Egress has no broker limit to check against: its cap falls back to the protocol maximum, as it already does when a v5 CONNACK omits the property. |
-| UNSUBACK detail | Every filter reports Success. Managed cleanup therefore always takes its connection-recycle path, one extra reconnect per cleanup. Non-managed orphan cleanup never logs "survived cleanup"; a reconnect resets both maps anyway. |
+| UNSUBACK detail | Every filter reports Success. Managed cleanup therefore always takes its connection-recycle path, one extra reconnect per cleanup. Non-managed orphan cleanup never logs "survived cleanup"; a reconnect resets both maps anyway. 3.1.1 has no unsubscribe failure. A broker that refuses an UNSUBSCRIBE anyway (Mosquitto dynamic-security ACLs can) is indistinguishable from success, and the managed ledger forgets a filter the broker still holds. The broker must permit UNSUBSCRIBE for every filter the session subscribes. |
 | Session lifetime | Broker policy. `session_expiry_interval` is rejected (§4.2). |
 | Shared subscriptions | `$share/` depends on the broker. Mosquitto, EMQX, HiveMQ, VerneMQ and AWS IoT accept it from 3.1.1 clients; Azure Event Grid disconnects. `shared_consumer` stays declared, because factory capabilities are per kind, not per config. |
 | Error classification | CONNACK codes 1–5 map to the nearest v5 code (§3.2). There is no server-busy (`0x89`) or quota (`0x97`) signal. |
@@ -326,6 +405,16 @@ Ingress consequences of carrying no headers:
 - None of these arrive: `mqtt.message-id`, correlation data, subject, expiry,
   content type, response topic, `traceparent`, user headers.
 - Every message therefore gets a minted id and `x-bridge.generated-id`.
+- The message is **count-less**: it has no stable key and no native receive
+  count. With a finite `max_replay_attempts`, the replay cap
+  (`runtime/route/leakguard.go`, `uncountableRedelivery`) treats every retry
+  decision for it as already at the cap. That covers recoverable processor
+  failures and non-deadline outbox persist failures as well as sends. So the
+  message is dead-lettered or dropped on its **first** failure instead of being
+  retried by redelivery.
+- `max_replay_attempts: 0` opts the route into unbounded retry instead. That is
+  the existing contract for count-less sources, now true of every 3.1.1
+  message.
 - `direct_hold` sinks a message whose send keeps failing as `unstable_identity`
   once `send_retry_budget` is spent.
 - `shared_outbox` cannot dedup a broker redelivery.
@@ -348,6 +437,9 @@ The adapter never sets or configures these, so no config key exists to reject:
 - UNSUBACK synthesis;
 - the will-preserving DISCONNECT mapping;
 - the oversized-PUBLISH poison escape;
+- the inbound in-flight set, which provides the Receive Maximum window and
+  drops live retransmissions;
+- short-lived-connection damping;
 - the four validation rejections and the startup warning.
 
 **Simple but deferred.**
@@ -400,12 +492,16 @@ Considered and not needed:
 
 | File | Change |
 |---|---|
-| `adapters/mqtt/transport/paho/mqtt311_conn.go` | **New.** The translator (§3). |
+| `adapters/mqtt/transport/paho/acl_mqtt311_conn.go` | **New.** The translator (§3), including exact 3.1.1 validation and the inbound in-flight set. |
 | `adapters/mqtt/transport/paho/config.go` | `ProtocolVersion` field, the `ProtocolVersion*` constants and a `protocolV311()` helper. The field docs for `clean_start`, `session_expiry_interval`, `receive_maximum`, `max_payload_bytes` and `no_local` mention v3.1.1. |
-| `adapters/mqtt/transport/paho/config_plugin.go` | The §4.2 rules in `Validate`, `ValidateEffectiveSession` and `ApplyCredentials`. |
+| `adapters/mqtt/transport/paho/config_plugin.go` | Calls the §4.2 validator from `Validate`, `ValidateEffectiveSession` and `ApplyCredentials`. |
+| `adapters/mqtt/transport/paho/config_identity.go` | `DurableSessionIdentity` appends the protocol version on v3.1.1 only (§4.1). |
+| `adapters/mqtt/transport/paho/session_credentials.go` | Live rotation runs the username/password rule on the candidate before mutating (§4.2). |
+| `adapters/mqtt/transport/paho/session_connection.go` | On v3.1.1, a connection that drops inside the stability window feeds the takeover streak (§5.2). |
+| `adapters/mqtt/transport/paho/acl_client.go` | On v3.1.1, strips publish properties before egress field and packet-size validation (§5.2). |
 | `adapters/mqtt/transport/paho/config_decode.go` | `protocol_version` in `SessionOptionsFromMap`. |
-| `adapters/mqtt/transport/paho/acl_net.go` | `attemptGuardedConnection` wraps the raw stream on v3.1.1. A `Session.translateMQTT311` helper mirrors `guardIngress`. |
-| `adapters/mqtt/transport/paho/session.go` | The §4.3 warning. The expiry-coercion warning is skipped on v3.1.1. |
+| `adapters/mqtt/transport/paho/acl_net.go` | `attemptGuardedConnection` wraps the raw stream on v3.1.1. A `Session.translateMQTT311` helper mirrors `guardIngress`; it passes `max_payload_bytes`, `receive_maximum` and `rejectPredecodeIngress`. |
+| `adapters/mqtt/transport/paho/session.go` | The §4.3 warning. The expiry-coercion warning is skipped on v3.1.1. `NewSession` records the §4.2 validator result before coercion, and `Start` returns it. |
 | `adapters/mqtt/transport/paho/doc.go` | Replace the unbacked 3.1.1 claim with the translator design. |
 | `ports/transport.go` | The `SessionHealth.ReceiveMaximum` comment (§6). |
 | `docs/adr/0022-mqtt-311-by-wire-translation.md` | **New ADR.** Decision, alternatives and consequences (§2, §3, §5). |
@@ -435,7 +531,7 @@ Rules to add to `.github/instructions/mqtt.instructions.md`:
 
 ### 8.1 Unit tests (package `paho`, no Docker)
 
-**`mqtt311_conn_test.go`.** Table-driven golden tests for every row of the §3.1
+**`acl_mqtt311_conn_test.go`.** Table-driven golden tests for every row of the §3.1
 and §3.2 tables, in both directions:
 - the Clean Session table;
 - CONNACK codes 0–5 and an invalid code;
@@ -466,6 +562,24 @@ packets in one `Write`, translate identically.
 **Violations.** A malformed inbound packet calls `onViolation`, closes the raw
 conn, writes no bytes, and returns the same error on later reads.
 
+**Exact validation (negative seeds, independent of `packets.ReadPacket`).**
+- `40 03 00 01 87` (a 3-byte PUBACK) is malformed.
+- `62 03 00 07 92` (a 3-byte PUBREL) is malformed.
+- PUBREL with flags other than `0x2` is malformed.
+- CONNACK with reserved bits, or with Session Present and a non-zero code, is malformed.
+- A SUBACK code `0x03` is malformed.
+- A zero packet id is malformed.
+- In PUBLISH, an empty topic, a topic with a wildcard, and QoS 0 with DUP are malformed.
+
+**Inbound in-flight set.**
+- A retransmitted QoS 1 PUBLISH whose id is still in flight is not handed to paho.
+- After paho's PUBACK for that id, the same id is accepted as a new message.
+- QoS 2 leaves the set only on PUBCOMP, not on PUBREC.
+- The packet id that would exceed `receive_maximum` takes the violation path before any byte reaches paho.
+- QoS 0 is never counted.
+
+**Head-first drain.** The truncated head is returned before any discarded payload byte is read, and the next `Read` discards the remainder and then frames the following packet.
+
 **`FuzzMQTT311Inbound`.**
 - Arbitrary inbound bytes never panic.
 - Any accepted packet decodes with `packets.ReadPacket`.
@@ -476,7 +590,16 @@ conn, writes no bytes, and returns the same error on later reads.
 - `v5` and empty are accepted.
 - The `credentials_uri` path rejects a resolved password without a username.
 - Persistent with `clean_start` is rejected only on v3.1.1.
-- `SessionOptionsFromMap` matches the registry path.
+- `SessionOptionsFromMap` matches the registry path, and rejects a non-string `protocol_version`.
+- A rejected live rotation leaves the existing credentials unchanged.
+- A directly constructed `NewSession` with a rejected option fails `Start` without dialling.
+- `DurableSessionIdentity` is byte-for-byte unchanged on `v5`, and differs between `v5` and `v3.1.1`.
+- Egress on v3.1.1 publishes a payload whose header value exceeds 65,535 bytes.
+
+**Short-lived connection damping** (`session_takeover` unit tests, with an injected clock).
+- On v3.1.1, repeated drops inside the stability window grow the penalty.
+- A drop after a stable connection resets it.
+- `v5` is unaffected.
 
 ### 8.2 Integration tests (package `paho_test`, Mosquitto via `testutil/mqttlocal`)
 
@@ -487,7 +610,7 @@ needs no change. Each test skips with `testing.Short()` and the Docker probe
 | Test | Proves |
 |---|---|
 | `TestIntegration_MQTT311_PubSubRoundTrip` | Connect, subscribe, publish and settle at QoS 0/1/2 over v3.1.1. |
-| `TestIntegration_MQTT311_PersistentSessionRedeliversUnsettled` | An unsettled QoS 1 delivery is redelivered after the session restarts with Clean Session 0, and Session Present is observed. |
+| `TestIntegration_MQTT311_PersistentSessionRedeliversUnsettled` | For QoS 1 and QoS 2, an unsettled delivery is redelivered after the session restarts with Clean Session 0, and Session Present is observed. |
 | `TestIntegration_MQTT311_OversizedPublishIsAckedAndDropped` | On a persistent session, a payload above `max_payload_bytes` is counted on `MQTTIngressPoisonDropped` and never redelivered, and the next message flows (no reject loop). |
 | `TestIntegration_MQTT311_CredentialFailureSurfacesNotAuthorized` | CONNACK code 4 or 5 surfaces as `ErrNotAuthorized`. |
 | `TestIntegration_MQTT311_RefusedSubscriptionFailsReconcile` | An ACL-denied filter (SUBACK 0x80, `mqttlocal.WithACL`) fails the reconcile. |
@@ -508,7 +631,9 @@ needs no change. Each test skips with `testing.Short()` and the Docker probe
 | A translation bug corrupts the stream | paho's own codec decodes the write side. Golden tests cover both directions, a fuzz target covers the inbound side, and Mosquitto integration tests run every packet type against a real broker. |
 | A paho upgrade emits a v5 feature the translator cannot express | The translator fails closed: the write errors and the connection drops, so nothing is silently weakened. The golden tests pin the packets paho writes today. |
 | An operator misses a degraded behaviour | Startup warning, the docs matrix (§5.2), and ADR 0022. |
-| The broker's in-flight limit exceeds `receive_maximum` | Documented requirement. No loss, only a possible keep-alive reconnect. |
+| The broker's in-flight limit exceeds `receive_maximum` | Loud reject with the remedy in the log (§3.2). No loss, and no wedge. |
+| A broker retransmits on a live connection | The in-flight set drops the duplicate (§3.2). |
+| A slow drain of an oversized publish outlasts keep-alive | The head is delivered first, so the ack precedes the drain. The residual case is bounded by the broker's maximum packet size (§3.2). |
 
 ## 10. Out of scope
 
@@ -518,3 +643,24 @@ needs no change. Each test skips with `testing.Short()` and the Docker probe
 - The header envelope.
 - Suppressing retained replay.
 - A CDK builder option for the protocol version.
+
+## 11. Adversarial review outcome
+
+Two independent MQTT-expert reviews challenged this spec. Each finding was
+verified against the repository and the paho.golang v0.23.0 source before it
+was accepted.
+
+| Finding | Disposition |
+|---|---|
+| A live retransmission can ack a newer, unsettled message (paho tracks acks by packet id) | Fixed: the inbound in-flight set drops the retransmission (§3.2). |
+| A broker window above `receive_maximum` wedges the session (admission wait plus unbuffered `pubChan` send) | Fixed: the same set enforces the window as a loud reject (§3.2). |
+| Draining an oversized payload can outlast the PINGRESP timeout and recreate the kill switch | Fixed: the head is delivered first and the drain is lazy (§3.2). |
+| No 0x8E means a zero-delay takeover hot loop | Fixed: short-lived connections feed the existing streak penalty on v3.1.1 (§5.2). |
+| A protocol switch can lose a durable session (AWS IoT) | Fixed: the protocol version is in `DurableSessionIdentity` on v3.1.1 only; v5 fingerprints are unchanged (§4.1). |
+| Direct `NewSession` and live rotation bypass validation | Fixed: one validator on every path, and `Start` returns its result (§4.2). |
+| Dropped headers can still fail egress validation | Fixed: properties are stripped before validation on v3.1.1 (§5.2). |
+| A successful paho decode is not 3.1.1 validation | Fixed: exact packet-shape checks and negative seeds (§3.2, §8.1). |
+| `mqtt311_conn.go` fails the ACL import gate | Fixed: renamed to `acl_mqtt311_conn.go` (§3). |
+| A broker that refuses UNSUBSCRIBE looks like success | Documented. 3.1.1 has no signal for it; the broker must permit UNSUBSCRIBE (§5.2). |
+| A count-less identity is terminal on the first retry decision | Documented, together with the `max_replay_attempts: 0` opt-out (§5.2). |
+| The proof plan does not cover QoS 2 recovery | Partly added: QoS 2 redelivery and the PUBREL `0x92` golden test. A full handshake-interruption matrix is out of scope; paho's QoS 2 state machine is unchanged and already tested upstream. |
