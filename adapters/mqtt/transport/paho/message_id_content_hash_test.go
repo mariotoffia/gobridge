@@ -170,6 +170,15 @@ func TestNewSession_StartRefusesContentHashMessageIDWithoutACanonicalBroker(t *t
 	assert.Zero(t, dials.Load(), "a session whose broker session cannot be named never dials")
 }
 
+func TestNewSession_StartRefusesContentHashMessageIDWithoutAClientID(t *testing.T) {
+	s := contentHashSession(t, "", "tcp://broker:1883")
+	var dials atomic.Int32
+	countingDial(s, &dials, nil)
+
+	require.ErrorIs(t, s.Start(t.Context()), shared.ErrInvalidConfig)
+	assert.Zero(t, dials.Load(), "without a client id two sessions would share one hash scope")
+}
+
 func TestPublishWithIdentity_ContentHashIsStableAcrossRedelivery(t *testing.T) {
 	first := contentHashEnvelope(&pahov5.Publish{
 		PacketID: 7, QoS: 1, Topic: "sensors/1", Payload: []byte(`{"t":21.5}`),

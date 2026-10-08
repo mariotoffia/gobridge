@@ -254,6 +254,12 @@ func (o SessionOptions) contentHashScope() ([]byte, error) {
 	if !o.contentHashMessageID() {
 		return nil, nil
 	}
+	if o.ClientID == "" {
+		// A broker-assigned client id is never returned on MQTT 3.1.1, so every
+		// such session would share one scope and collide on identical content.
+		return nil, shared.ErrInvalidConfig.WithMessage(
+			"mqtt: session.message_id content_hash requires session.client_id")
+	}
 	brokers, err := canonicalBrokerSet(o.BrokerURLs, o.BrokerURL)
 	if err != nil {
 		return nil, shared.ErrInvalidConfig.Wrap(err).WithMessage(
