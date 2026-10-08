@@ -930,6 +930,7 @@ func TestIntegration_MQTT311_ResumedSessionDoesNotReplayRetained(t *testing.T) {
 		CleanStart:      true,
 		ProtocolVersion: paho.ProtocolVersion311,
 	}, connectivity.SessionEphemeral, nil)
+	t.Cleanup(func() { _ = wiper.Close(context.Background()) })
 	require.NoError(t, wiper.Start(ctx), "discard the broker session")
 	require.NoError(t, wiper.Close(ctx))
 	link.Heal()
