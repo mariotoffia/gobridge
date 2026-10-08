@@ -143,8 +143,9 @@ admission meaningful. It is never sent, and on `v3.1.1` it logs no warning.
 Every `v3.1.1` session logs one Warn when it is created. It lists what the
 session cannot do:
 
-- carry headers or message identity, so a retry decision on a minted id is
-  terminal unless `max_replay_attempts` is `0`;
+- carry headers or message identity. A retry decision on a minted id is
+  terminal unless `max_replay_attempts` is `0`; `message_id: content_hash`
+  replaces the minted id (see [Message ids](#message-ids));
 - see a session takeover, other than as a connection that drops soon after it
   connects;
 - see a publish the broker refuses;
@@ -177,7 +178,7 @@ session cannot do:
 
 | Behaviour | On MQTT 3.1.1 |
 |---|---|
-| Headers and identity | Only the topic, payload, QoS and RETAIN flag cross the wire. On egress the sender drops every property before it validates the publish, so a header that could never be sent (over 65,535 bytes, or not valid UTF-8) cannot fail an otherwise valid publish. Every header, the subject and the expiry are dropped. For ingress, see [No headers on ingress](#no-headers-on-ingress). |
+| Headers and identity | Only the topic, payload, QoS and RETAIN flag cross the wire. On egress the sender drops every property before it validates the publish, so a header that could never be sent (over 65,535 bytes, or not valid UTF-8) cannot fail an otherwise valid publish. Every header, the subject and the expiry are dropped. For ingress, see [No headers on ingress](#no-headers-on-ingress) and [Message ids](#message-ids). |
 | Session takeover | MQTT 3.1.1 has no DISCONNECT `0x8E`, so a takeover looks like any other connection loss. autopaho redials a connection that had come up with no delay, so two instances sharing a `client_id` would evict each other in a tight loop. A connection that drops within 30 s of coming up therefore feeds the takeover penalty: the first drop costs nothing, and each further one adds a reconnect penalty that starts at 1 s and doubles up to 64 s. A log line names a client-id collision as the likely cause. `MQTTSessionTakeover` is not counted, because the cause is inferred, not reported. The exclusive lease still guarantees one owner. |
 | Publish refusal | PUBACK and PUBREC carry no reason code. A broker that refuses a publish either acks it (Mosquitto does) or closes the connection, which surfaces as `CONNECTION_LOST` (retryable). `throttle_retry_after` never applies. |
 | Subscribe refusal | SUBACK `0x80` is the only failure code. It keeps its MQTT 5 meaning, `UNAVAILABLE` (transient), so a broker ACL denial is not classified `FORBIDDEN`. The reconcile still fails, as for any refused subscription. |
@@ -202,13 +203,13 @@ as on MQTT 5. None of these arrive:
 - user properties.
 
 A header an MQTT 5 publisher set does not survive the hop to an MQTT 3.1.1
-subscriber. Every message gets a minted id, which `mqtt.message-id` also
-carries, and is marked `x-bridge.generated-id`. A broker redelivery gets a new
-id
+subscriber. With the default `message_id: random`, every message gets a minted
+id, which `mqtt.message-id` also carries, and is marked `x-bridge.generated-id`.
+A broker redelivery gets a new id
 ([envelope identity](mqtt-ingress-headers.md#envelope-identity-and-no-id-redelivery)).
 
-So every MQTT 3.1.1 message is **count-less**: it has no stable key and no
-native receive count. What that means for a route:
+So with `random` every MQTT 3.1.1 message is **count-less**: it has no stable
+key and no native receive count. What that means for a route:
 
 - With a finite `max_replay_attempts`, the route's replay cap treats every
   retry decision for the message as already at the cap. That covers a
@@ -221,6 +222,96 @@ native receive count. What that means for a route:
 - `max_replay_attempts: 0` opts the route into unbounded retry. That is the
   existing contract for count-less sources.
 - `shared_outbox` cannot deduplicate a broker redelivery.
+
+`message_id: content_hash` gives each message a stable id instead, so its
+retries are counted and `shared_outbox` recognises a redelivery. It has a
+trade-off; see [Message ids](#message-ids).
+
+## Message ids
+
+An MQTT 3.1.1 PUBLISH carries a topic, a payload, a QoS, a RETAIN flag and a
+DUP flag. It has no properties, so no producer id can arrive. The session gives
+each message an id itself, and `options.session.message_id` chooses how:
+
+| `message_id` | Envelope id | Marked `x-bridge.generated-id` |
+|---|---|---|
+| omitted or `random` (the default) | A fresh random id, new on every broker redelivery | Yes |
+| `content_hash` | `mqtt-sha256:` and a hash of the topic and payload, the same on every redelivery | No |
+
+`content_hash` is valid only with `protocol_version: v3.1.1`. On an MQTT 5
+session the configuration fails with `INVALID_CONFIG`: an MQTT 5 producer can
+send its own id in the `mqtt.message-id` user property or in correlation data.
+A value other than `random` or `content_hash` is rejected too.
+
+```yaml
+sessions:
+  - id: legacy-broker
+    transport: mqtt
+    options:
+      session:
+        broker_url: "ssl://legacy.example.com:8883"
+        client_id: "bridge-legacy-01"
+        protocol_version: v3.1.1
+        message_id: content_hash   # random (default) or content_hash
+```
+
+### `random`
+
+Every delivery gets a new id, including a broker redelivery of the same
+message. This is the behaviour described under
+[No headers on ingress](#no-headers-on-ingress):
+
+- The replay cap cannot count retries. With a finite `max_replay_attempts`, a
+  message whose processing fails is dead-lettered or dropped on its first
+  failure. `max_replay_attempts: 0` retries without a limit.
+- `shared_outbox` cannot recognise a broker redelivery, so the message can
+  reach downstream twice. That is normal at-least-once delivery.
+
+Nothing is ever dropped as a duplicate.
+
+### `content_hash`
+
+The id is `mqtt-sha256:` followed by the SHA-256 digest of the length-prefixed
+topic followed by the payload, encoded as base64url without padding. QoS,
+RETAIN and DUP are not part of the hash. A broker redelivery therefore gets the
+same id, and so does a retained message the broker replays after a reconnect.
+
+The id is not marked `x-bridge.generated-id`, so:
+
+- the replay cap counts retries, and `max_replay_attempts` applies as
+  configured;
+- `shared_outbox` recognises a broker redelivery, acks it and does not send it
+  again.
+
+**Trade-off.** Two different messages with the same topic and payload get the
+same id, so they count as one message. On a `shared_outbox` route the second
+one is acked and dropped, with no error and no dead-letter record, if it
+arrives within the outbox `retention` window (default `1h`). Only the
+`OutboxDuplicateSuppressed` metric counts it. A `direct_hold` route never drops
+it: there the id only counts retries.
+
+For example, a sensor publishes `21.5` to `plant/7/temp` at 10:00 and again at
+10:20. Both readings get the same id. A `shared_outbox` route with the default
+`retention` forwards only the 10:00 reading.
+
+The outbox `retention` is its deduplication window; see
+[store backends](../store-backends.md) and the `retention` key in the
+[configuration reference](../configuration-reference.md#store-config-fields).
+
+Switch `content_hash` on when two different messages on one topic never carry
+the same payload. Leave it off when the same payload legitimately repeats:
+
+| Payload | Example | `message_id` |
+|---|---|---|
+| Carries a timestamp, a sequence number or an event id | `{"seq":1042,"temp":21.5}` | `content_hash` |
+| A command or a JSON event | `{"cmd":"open","valve":3,"ts":1791468000}` | `content_hash` |
+| A heartbeat | `alive` | `random` |
+| A status | `ON`, `OFF` | `random` |
+| A raw reading | `21.5` | `random` |
+
+Neither setting carries headers over MQTT 3.1.1. GoBridge never wraps the
+payload or encodes metadata in the topic to carry them, because the client on
+the other side of the broker can be any MQTT client.
 
 ## Broker limits
 

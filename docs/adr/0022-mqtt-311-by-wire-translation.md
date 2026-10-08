@@ -315,7 +315,7 @@ it applies.
 
 | Behaviour | On MQTT 3.1.1 |
 |---|---|
-| Headers and identity | Only topic, payload, QoS and RETAIN cross the wire. On egress every header, the subject and the expiry are dropped before validation. On ingress every message gets a minted id and is count-less (see below). |
+| Headers and identity | Only topic, payload, QoS and RETAIN cross the wire. On egress every header, the subject and the expiry are dropped before validation. On ingress every message gets a minted id and is count-less (see below), unless the session opts into a content-hash id (see the [2026-10-08 addendum](#addendum-2026-10-08-opt-in-content-hash-message-id)). |
 | Session takeover | Seen only as a connection that drops within 30 s of coming up. It feeds the takeover streak and penalty (1 s doubling to 64 s) without counting `MQTTSessionTakeover`. The exclusive lease is still the owner guarantee. |
 | Publish refusal | PUBACK and PUBREC carry no reason code. A broker that refuses a publish acks it (Mosquitto) or closes the connection, which surfaces as `ErrConnectionLost` (retryable). `throttle_retry_after` never applies. |
 | Subscribe refusal | SUBACK `0x80` is the only failure code. It keeps its MQTT 5 meaning, `ErrUnavailable` (transient), so a broker ACL denial is not classified `ErrForbidden`. |
@@ -331,7 +331,9 @@ Carrying no headers has these consequences on ingress:
 
 - None of these arrive: `mqtt.message-id`, correlation data, subject, expiry,
   content type, response topic, `traceparent`, user properties.
-- Every message gets a minted id and `x-bridge.generated-id`.
+- Every message gets a minted id and `x-bridge.generated-id`. This is the
+  default; `message_id: content_hash` replaces it (see the
+  [2026-10-08 addendum](#addendum-2026-10-08-opt-in-content-hash-message-id)).
 - The message is count-less: it has no stable key and no native receive count.
   With a finite `max_replay_attempts`, the route's replay cap treats every
   retry decision for it as already at the cap. That covers recoverable
@@ -340,7 +342,7 @@ Carrying no headers has these consequences on ingress:
   retried through redelivery.
 - `max_replay_attempts: 0` opts the route into unbounded retry instead. That is
   the existing contract for count-less sources, now true of every MQTT 3.1.1
-  message.
+  message with a minted id.
 - `direct_hold` sinks a message whose send keeps failing as
   `unstable_identity` once `send_retry_budget` is spent.
 - `shared_outbox` cannot deduplicate a broker redelivery.
@@ -396,3 +398,55 @@ unit's content identity.
   Deferred.
 - **Out of scope:** MQTT 3.1, automatic fallback from MQTT 5 to 3.1.1, and a
   CDK builder option for the protocol version.
+
+## Addendum 2026-10-08: opt-in content-hash message id
+
+The Consequences above say every MQTT 3.1.1 message gets a minted id and is
+count-less. That stays the default. A session can now choose a content-hash id
+instead.
+
+**Why.** An MQTT 3.1.1 PUBLISH carries only the topic, the payload, QoS, RETAIN
+and DUP. It has no properties, so no producer id can arrive. A minted id
+changes on every broker redelivery and is marked `x-bridge.generated-id`, so:
+
+- the replay cap cannot count retries. With a finite `max_replay_attempts`, a
+  message whose processing fails is dead-lettered or dropped on its first
+  failure;
+- `shared_outbox` cannot recognise a broker redelivery, so the message can
+  reach downstream twice. That is normal at-least-once delivery.
+
+**Decision.** `options.session.message_id` takes `random` or `content_hash`.
+
+- `random` is the default, and an omitted key means `random`. Every delivery
+  gets a fresh random id, marked `x-bridge.generated-id`, as described above.
+  Nothing is ever dropped as a duplicate.
+- `content_hash` sets the id to `mqtt-sha256:` followed by the SHA-256 digest
+  of the length-prefixed topic followed by the payload, encoded as base64url
+  without padding. QoS, RETAIN and DUP are not part of the hash, so a broker
+  redelivery gets the same id, and so does a retained message replayed after a
+  reconnect. The id is not marked `x-bridge.generated-id`: the replay cap
+  counts retries, and `shared_outbox` recognises a redelivery.
+- `content_hash` requires `protocol_version: v3.1.1`. On MQTT 5 it is rejected
+  with `INVALID_CONFIG` when the configuration is validated, because an MQTT 5
+  producer can send its own id in the `mqtt.message-id` user property or in
+  correlation data. Any value other than `random` and `content_hash` is
+  rejected.
+- The list under "Version checks above the translator" gains one entry: a
+  content-hash id is derived only on a `v3.1.1` session.
+
+**Consequences.**
+
+- Two different messages with the same topic and payload count as one. On a
+  `shared_outbox` route the second is acked and dropped, with no error and no
+  dead-letter record, if it arrives within the outbox `retention` window
+  (default `1h`). Only `OutboxDuplicateSuppressed` counts it. A `direct_hold`
+  route never drops it; there the id only counts retries.
+- That trade-off is why `random` stays the default. `content_hash` suits
+  payloads that carry a timestamp, a sequence number or an event id, and
+  commands and JSON events. It does not suit heartbeats (`alive`), status
+  values (`ON`, `OFF`) or raw readings (`21.5`), which legitimately repeat.
+- Headers still do not cross an MQTT 3.1.1 hop. The header envelope stays
+  rejected, and GoBridge does not encode metadata in the topic either: the
+  client on the other side of the broker can be any MQTT client.
+
+Operator guidance is on [MQTT 3.1.1](../transports/mqtt-311.md#message-ids).

@@ -26,6 +26,10 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   broker's in-flight limit must fit `receive_maximum`. One startup warning
   lists this; [ADR 0022](docs/adr/0022-mqtt-311-by-wire-translation.md) records
   what degrades and why.
+- `options.session.message_id: content_hash` gives each MQTT 3.1.1 message an
+  id hashed from its topic and payload, so a broker redelivery keeps its id;
+  two different messages with the same topic and payload then count as one, and
+  `random` stays the default ([message ids](docs/transports/mqtt-311.md#message-ids)).
 
 ## [0.6.0] - 2026-10-06
 
