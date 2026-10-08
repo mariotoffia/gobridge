@@ -10,6 +10,17 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-08
+
+GoBridge can now bridge MQTT brokers that speak only the older MQTT 3.1.1
+protocol: set `options.session.protocol_version: v3.1.1` on the session. MQTT 5
+stays the default, so existing configurations behave exactly as before. MQTT
+3.1.1 carries less information than MQTT 5, so a few options are refused on it
+and some behaviour is reduced; one startup warning and the
+[MQTT 3.1.1 page](docs/transports/mqtt-311.md) list what. A reconfiguration
+that leaves the supervisor terminal is now reported only once the supervisor
+reads as terminal.
+
 ### Added — the MQTT transport speaks MQTT 3.1.1
 
 - Set `options.session.protocol_version: v3.1.1` to bridge a broker that speaks
@@ -34,6 +45,13 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   keeps its id; two different messages with identical content are then treated
   as one, so `random` stays the default
   ([message ids](docs/transports/mqtt-311-message-ids.md)).
+
+### Fixed
+
+- The supervisor's swap event (`WithOnSwap`) now fires after the swap has
+  finished. Before, a reconfiguration that left the supervisor wedged was
+  reported while `Terminal()` still read false, so a receiver that checked it
+  straight away could see a live supervisor.
 
 ## [0.6.0] - 2026-10-06
 
@@ -2698,7 +2716,8 @@ consumable.
   integration coverage in CI: their tests depend on LocalStack, which requires a
   licence token that is not configured. Set `LOCALSTACK_AUTH_TOKEN` to run them.
 
-[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.7.0
 [0.6.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.6.0
 [0.5.2]: https://github.com/mariotoffia/gobridge/releases/tag/v0.5.2
 [0.5.1]: https://github.com/mariotoffia/gobridge/releases/tag/v0.5.1
