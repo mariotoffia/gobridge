@@ -68,15 +68,15 @@ MQTT 5 publisher says so.
 | Feature | What is proved | Evidence |
 |---|---|---|
 | Publish and subscribe | Connect, subscribe, publish and settle at QoS 0, 1 and 2; the delivered `mqtt.qos` is the published QoS | `TestIntegration_MQTT311_PubSubRoundTrip` |
-| Durable session resumption | For QoS 1 and QoS 2, an unsettled delivery is redelivered after the session restarts with Clean Session 0, and Session Present is observed | `TestIntegration_MQTT311_PersistentSessionRedeliversUnsettled` |
+| Durable session resumption | For QoS 1 and QoS 2, a message the broker queued while the session was offline survives a broker restart and is delivered when the session resumes with Clean Session 0; a reconnect of that session sees Session Present (no `MQTTSessionResumeLost`) | `TestIntegration_MQTT311_PersistentSessionRedeliversUnsettled` |
 | Oversized publish | On a persistent session, a payload above `max_payload_bytes` is acked and dropped (`MQTTIngressPoisonDropped`) with no ingress reject, later traffic flows, and a fresh session with the same client ID never receives it again | `TestIntegration_MQTT311_OversizedPublishIsAckedAndDropped` |
 | Username/password | A wrong password (CONNACK return code 4 or 5) surfaces as a classified `ErrNotAuthorized` | `TestIntegration_MQTT311_CredentialFailureSurfacesNotAuthorized` |
 | Refused subscription | A filter the broker's ACL denies (SUBACK `0x80`) fails the reconcile; a permitted filter on the same session still delivers | `TestIntegration_MQTT311_RefusedSubscriptionFailsReconcile` |
 | Last Will | Published when the connection dies ungracefully, and **not** published after a graceful DISCONNECT | `TestIntegration_MQTT311_LastWill` |
-| Headers are not carried | A publish with user properties from an MQTT 5 session arrives on a 3.1.1 session with only `mqtt.topic`, `mqtt.qos` and `mqtt.retained`, and a minted envelope ID | `TestIntegration_MQTT311_HeadersAreNotCarried` |
+| Headers are not carried | A publish with a user property, a subject and an envelope ID from an MQTT 5 session arrives on a 3.1.1 session with only `mqtt.topic`, `mqtt.qos` and `mqtt.retained`, no subject, and a minted envelope ID (also in `mqtt.message-id`, marked `x-bridge.generated-id`) | `TestIntegration_MQTT311_HeadersAreNotCarried` |
 | Unsubscribe | Removing a filter converges on the synthesized UNSUBACK, and the removed filter stops delivering | `TestIntegration_MQTT311_UnsubscribeConverges` |
 | Shared subscriptions (`$share`) | Competing 3.1.1 consumers split a stream without duplication | `TestIntegration_MQTT311_SharedSubscription` |
-| Broker window above `receive_maximum` | A broker in-flight limit (Mosquitto's default 20) above `receive_maximum` is refused as an ingress reject, `Close` returns instead of wedging, and nothing is lost: with a larger `receive_maximum` every queued message arrives | `TestIntegration_MQTT311_BrokerWindowAboveReceiveMaximumIsRefusedNotWedged` |
+| Broker window above `receive_maximum` | A broker in-flight limit (Mosquitto's default 20) above `receive_maximum` is refused as an ingress reject on every connection, the session redials instead of wedging and `Close` returns, and nothing is lost: with a larger `receive_maximum` every queued message arrives | `TestIntegration_MQTT311_BrokerWindowAboveReceiveMaximumIsRefusedNotWedged` |
 
 ## Network fault profile
 
