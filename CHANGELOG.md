@@ -30,7 +30,7 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   id hashed from its broker session, topic and payload, so a broker redelivery
   keeps its id; two different messages with identical content are then treated
   as one, so `random` stays the default
-  ([message ids](docs/transports/mqtt-311.md#message-ids)).
+  ([message ids](docs/transports/mqtt-311-message-ids.md)).
 
 ## [0.6.0] - 2026-10-06
 

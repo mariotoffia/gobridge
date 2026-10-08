@@ -494,4 +494,4 @@ URLs), the topic and the payload. Rejected alternatives:
   rejected, and GoBridge does not encode metadata in the topic either: the
   client on the other side of the broker can be any MQTT client.
 
-Operator guidance is on [MQTT 3.1.1](../transports/mqtt-311.md#message-ids).
+Operator guidance is on [MQTT 3.1.1](../transports/mqtt-311-message-ids.md).

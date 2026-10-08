@@ -64,7 +64,7 @@ Inbound identity uses this precedence:
    router-owned Paho publish before buffering or fan-out. On an MQTT 3.1.1
    session with `options.session.message_id: content_hash`, a hash of the
    broker session, the topic and the payload replaces the UUIDv4; see
-   [message ids](mqtt-311.md#message-ids).
+   [message ids](mqtt-311-message-ids.md).
 
 Every handler reached by one publish therefore sees the same generated
 `Envelope.ID`. Two separate publishes receive separate IDs even when their topic
@@ -120,7 +120,7 @@ publishes in `shared_outbox`. Producers that require stable deduplication across
 redelivery must provide a stable `mqtt.message-id` (preferred) or correlation
 identity and reuse it for every delivery attempt. An MQTT 3.1.1 producer cannot
 send either; there `message_id: content_hash` makes the opposite trade (see
-[message ids](mqtt-311.md#message-ids)).
+[message ids](mqtt-311-message-ids.md)).
 
 **Replay-cap consequence.** Because a no-ID publish is re-minted a
 fresh envelope id on every broker redelivery, the runtime's replay ledger — which
@@ -171,7 +171,7 @@ flag and a payload, and nothing else. On a session with
 With `message_id: content_hash`, case 3 is a hash of the broker session, the
 topic and the payload instead of a UUIDv4, so a redelivery keeps its id and
 retries are counted. Two different messages with identical content then share
-one id; read [message ids](mqtt-311.md#message-ids) before you enable it.
+one id; read [message ids](mqtt-311-message-ids.md) before you enable it.
 
 On egress a 3.1.1 session publishes only the topic, QoS, RETAIN flag and
 payload. Every header, the subject and the expiry are dropped before the
