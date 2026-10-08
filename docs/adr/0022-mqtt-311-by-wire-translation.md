@@ -421,8 +421,8 @@ changes on every broker redelivery and is marked `x-bridge.generated-id`, so:
   gets a fresh random id, marked `x-bridge.generated-id`, as described above.
   Nothing is ever dropped as a duplicate.
 - `content_hash` sets the id to `mqtt-sha256:` followed by the SHA-256 digest
-  of the length-prefixed topic followed by the payload, encoded as base64url
-  without padding. QoS, RETAIN and DUP are not part of the hash, so a broker
+  of the topic's byte length (big-endian, 8 bytes), the topic and the payload,
+  encoded as base64url without padding. QoS, RETAIN and DUP are not part of the hash, so a broker
   redelivery gets the same id, and so does a retained message replayed after a
   reconnect. The id is not marked `x-bridge.generated-id`: the replay cap
   counts retries, and `shared_outbox` recognises a redelivery.

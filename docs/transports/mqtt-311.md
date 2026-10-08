@@ -271,10 +271,12 @@ Nothing is ever dropped as a duplicate.
 
 ### `content_hash`
 
-The id is `mqtt-sha256:` followed by the SHA-256 digest of the length-prefixed
-topic followed by the payload, encoded as base64url without padding. QoS,
-RETAIN and DUP are not part of the hash. A broker redelivery therefore gets the
-same id, and so does a retained message the broker replays after a reconnect.
+The id is `mqtt-sha256:` followed by the SHA-256 digest of the topic's byte
+length as a big-endian 8-byte integer, then the topic, then the payload,
+encoded as base64url without padding. For topic `t` and payload `p` that is
+`mqtt-sha256:KNCqR35t-GU1tF6r6uPvU7L1WaqZ7YbpHTbDjTfD1g0`. QoS, RETAIN and DUP
+are not part of the hash. A broker redelivery therefore gets the same id, and
+so does a retained message the broker replays after a reconnect.
 
 The id is not marked `x-bridge.generated-id`, so:
 

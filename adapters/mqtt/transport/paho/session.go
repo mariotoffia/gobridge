@@ -413,8 +413,9 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		}
 	}
 	if opts.protocolV311() && logger != nil {
-		logger.Warn("mqtt: session.protocol_version v3.1.1 carries no headers or message identity (a retry decision "+
-			"on a minted id is terminal unless max_replay_attempts is 0), sees a session takeover only as a "+
+		logger.Warn("mqtt: session.protocol_version v3.1.1 carries no headers or producer message id (a retry "+
+			"decision on a minted id is terminal unless max_replay_attempts is 0 or message_id is content_hash), "+
+			"sees a session takeover only as a "+
 			"connection that drops soon after it connects, cannot see a publish the broker refuses, replays "+
 			"retained messages on every reconnect, and leaves the in-flight window and the session lifetime to "+
 			"the broker, whose per-client in-flight limit must fit receive_maximum; see docs/transports/mqtt-311.md",
