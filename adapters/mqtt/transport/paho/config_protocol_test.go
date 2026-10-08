@@ -231,3 +231,26 @@ func TestPluginOptionsDecode_ReadsMessageID(t *testing.T) {
 	_, err = decode(map[string]any{"message_id": MessageIDContentHash})
 	require.ErrorIs(t, err, shared.ErrInvalidConfig, "content_hash on MQTT 5 is refused at load time")
 }
+
+// Content identity hashes the decoded config, so writing a documented default
+// must decode to the same value as omitting it; otherwise the edit alone would
+// rebuild the session (ADR 0016).
+func TestPluginOptionsDecode_ExplicitDefaultsMatchOmitted(t *testing.T) {
+	reg := ports.NewRegistry()
+	require.NoError(t, Register(reg))
+	decode := func(session map[string]any) *Config {
+		t.Helper()
+		pc, err := reg.Decode("mqtt", parser.NewRawConfig(map[string]any{"session": session}))
+		require.NoError(t, err)
+		cfg, ok := pc.(*Config)
+		require.True(t, ok)
+		return cfg
+	}
+
+	omitted := decode(map[string]any{})
+	assert.Equal(t, omitted, decode(map[string]any{"protocol_version": ProtocolVersion5}))
+	assert.Equal(t, omitted, decode(map[string]any{"message_id": MessageIDRandom}))
+	assert.Equal(t,
+		decode(map[string]any{"protocol_version": ProtocolVersion311}),
+		decode(map[string]any{"protocol_version": ProtocolVersion311, "message_id": MessageIDRandom}))
+}

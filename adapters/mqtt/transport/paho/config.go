@@ -326,6 +326,19 @@ func (o *SessionOptions) normalizeBrokerURLs() {
 	o.BrokerURL = ""
 }
 
+// normalizeDefaults folds an explicitly written default protocol_version or
+// message_id into its omitted form. Content identity hashes the decoded config
+// (ADR 0016), so without this, writing the documented default would count as a
+// change and rebuild the session. The registry decoder calls this after Decode.
+func (o *SessionOptions) normalizeDefaults() {
+	if o.ProtocolVersion == ProtocolVersion5 {
+		o.ProtocolVersion = ""
+	}
+	if o.MessageID == MessageIDRandom {
+		o.MessageID = ""
+	}
+}
+
 // ReceiverOptions holds MQTT receiver-specific configuration.
 type ReceiverOptions struct {
 	// No additional fields; subscriptions come from ReceiverSpec.Subscriptions.
