@@ -38,9 +38,10 @@ type Session struct {
 	metrics ports.MetricsExporter
 	clk     clock.Clock
 	// protocolErr is validateProtocol's verdict on the options as configured,
-	// before NewSession applied any default. Start returns it, so a session
-	// built directly with options its protocol version cannot express never
-	// dials. Immutable after NewSession.
+	// before NewSession applied any default, or else a content_hash session's
+	// failure to name its broker session. Start returns it, so a session built
+	// directly with options its protocol version cannot express never dials.
+	// Immutable after NewSession.
 	protocolErr error
 
 	mu sync.Mutex
@@ -392,6 +393,12 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 	// Judged before any default below: a coerced session expiry is not one the
 	// operator configured.
 	protocolErr := opts.validateProtocol(mode)
+	// Computed once: the client ID and broker URLs never change for the
+	// session's lifetime (Reload does not re-read options).
+	contentHashScope, scopeErr := opts.contentHashScope()
+	if protocolErr == nil {
+		protocolErr = scopeErr
+	}
 	if opts.Clock == nil {
 		opts.Clock = clock.System
 	}
@@ -413,8 +420,9 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		}
 	}
 	if opts.protocolV311() && logger != nil {
-		logger.Warn("mqtt: session.protocol_version v3.1.1 carries no headers or message identity (a retry decision "+
-			"on a minted id is terminal unless max_replay_attempts is 0), sees a session takeover only as a "+
+		logger.Warn("mqtt: session.protocol_version v3.1.1 carries no headers or producer message id (a retry "+
+			"decision on a minted id is terminal unless max_replay_attempts is 0 or message_id is content_hash), "+
+			"sees a session takeover only as a "+
 			"connection that drops soon after it connects, cannot see a publish the broker refuses, replays "+
 			"retained messages on every reconnect, and leaves the in-flight window and the session lifetime to "+
 			"the broker, whose per-client in-flight limit must fit receive_maximum; see docs/transports/mqtt-311.md",
@@ -465,6 +473,7 @@ func NewSession(opts SessionOptions, mode connectivity.SessionMode, logger *slog
 		withSessionTag(opts.ClientID),
 		withDispatchCapacity(int(opts.ReceiveMaximum)),
 		withMaxPayloadBytes(opts.MaxPayloadBytes),
+		withContentHashMessageID(contentHashScope),
 	)
 	if opts.ReceiveMaximum > 0 {
 		// Bound the pre-registration pending buffer by the same window

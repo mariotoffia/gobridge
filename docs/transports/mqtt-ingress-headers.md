@@ -61,13 +61,19 @@ Inbound identity uses this precedence:
    bytes, non-UTF-8) keeps one identity across redelivery instead of falling
    through to case 3;
 3. an RFC 4122 UUIDv4 generated once for the received publish and stamped on the
-   router-owned Paho publish before buffering or fan-out.
+   router-owned Paho publish before buffering or fan-out. On an MQTT 3.1.1
+   session with `options.session.message_id: content_hash`, a hash of the
+   broker session, the topic and the payload replaces the UUIDv4; see
+   [message ids](mqtt-311-message-ids.md).
 
 Every handler reached by one publish therefore sees the same generated
 `Envelope.ID`. Two separate publishes receive separate IDs even when their topic
 and payload bytes are identical. Packet ID, topic, payload, QoS, and DUP are
 never fallback identity inputs: packet IDs are reusable within an MQTT session
-and none of those fields proves application-event identity.
+and none of those fields proves application-event identity. The one exception
+is the MQTT 3.1.1 `content_hash` opt-in: it hashes the broker session, the
+topic and the payload, and accepts that identical publishes on one session
+share one ID. It never uses the packet ID, QoS, RETAIN or DUP.
 
 **Who owns the ID namespace.** Cases 1 and 2 are producer-supplied, so whoever
 may publish to the subscribed topics owns that source's envelope-ID space. MQTT
@@ -112,7 +118,9 @@ GoBridge deliberately accepts that at-least-once duplicate because delivering a
 possible duplicate is safer than silently collapsing two legitimate equal-valued
 publishes in `shared_outbox`. Producers that require stable deduplication across
 redelivery must provide a stable `mqtt.message-id` (preferred) or correlation
-identity and reuse it for every delivery attempt.
+identity and reuse it for every delivery attempt. An MQTT 3.1.1 producer cannot
+send either; there `message_id: content_hash` makes the opposite trade (see
+[message ids](mqtt-311-message-ids.md)).
 
 **Replay-cap consequence.** Because a no-ID publish is re-minted a
 fresh envelope id on every broker redelivery, the runtime's replay ledger — which
@@ -130,7 +138,8 @@ it terminally routes the message to the DLQ (or drops it, per
 releases before in-process send retry existed. A producer that supplies
 a stable `mqtt.message-id`/correlation data — or a trusted bridge-to-bridge
 `x-bridge.dedup-id`/`x-bridge.idempotency-key` — restores countability and gets
-the full `MaxReplayAttempts` retry budget.
+the full `MaxReplayAttempts` retry budget. On MQTT 3.1.1,
+`message_id: content_hash` restores it too.
 
 ### What arrives on MQTT 3.1.1
 
@@ -144,10 +153,11 @@ flag and a payload, and nothing else. On a session with
   topic, `traceparent`, or any user property. A header an MQTT 5 publisher sets
   does not survive the hop to a 3.1.1 subscriber. `MQTTIngressHeaderDropped`
   does not count them, because they never reach the session.
-- Identity always falls through to case 3 above: every message gets a minted
-  UUIDv4, which `mqtt.message-id` also carries, and `x-bridge.generated-id`,
-  and a broker redelivery gets a new id.
-- Every message is therefore count-less, as described in
+- With the default `options.session.message_id: random` (or the key omitted),
+  identity falls through to case 3 above: every message gets a minted UUIDv4,
+  which `mqtt.message-id` also carries, and `x-bridge.generated-id`, and a
+  broker redelivery gets a new id.
+- Every such message is count-less, as described in
   [Replay-cap consequence](#envelope-identity-and-no-id-redelivery). With a
   finite `max_replay_attempts`, every retry decision is terminal: a recoverable
   processor failure, an outbox persist failure that is not a deadline, or a
@@ -157,6 +167,11 @@ flag and a payload, and nothing else. On a session with
   the route into unbounded retry.
 - `shared_outbox` cannot deduplicate a broker redelivery, because the
   redelivery has a new id.
+
+With `message_id: content_hash`, case 3 is a hash of the broker session, the
+topic and the payload instead of a UUIDv4, so a redelivery keeps its id and
+retries are counted. Two different messages with identical content then share
+one id; read [message ids](mqtt-311-message-ids.md) before you enable it.
 
 On egress a 3.1.1 session publishes only the topic, QoS, RETAIN flag and
 payload. Every header, the subject and the expiry are dropped before the

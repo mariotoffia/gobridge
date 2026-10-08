@@ -86,6 +86,15 @@ func SessionOptionsFromMap(m map[string]any) (SessionOptions, error) {
 		}
 		opts.ProtocolVersion = v
 	}
+	if raw, exists := m["message_id"]; exists {
+		v, ok := raw.(string)
+		if !ok {
+			return opts, shared.ErrInvalidConfig.WithMessage(
+				fmt.Sprintf("message_id must be a string, got %T", raw),
+			)
+		}
+		opts.MessageID = v
+	}
 	if raw, exists := m["session_expiry_interval"]; exists {
 		// MQTT v5 SessionExpiryInterval is an unsigned 32-bit value
 		// (seconds; 0xFFFFFFFF = "never expire"). Reject negative

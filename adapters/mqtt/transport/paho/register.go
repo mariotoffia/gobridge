@@ -33,6 +33,7 @@ func Register(reg *ports.Registry) error {
 			}
 		}
 		c.Session.normalizeBrokerURLs()
+		c.Session.normalizeDefaults()
 		if err := c.Validate(); err != nil {
 			return nil, err
 		}

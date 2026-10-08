@@ -77,7 +77,7 @@ func BenchmarkPublishWithIdentity(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {
-				publishSink = publishWithIdentity(tc.pub)
+				publishSink = publishWithIdentity(tc.pub, nil)
 			}
 		})
 	}
@@ -102,7 +102,7 @@ func BenchmarkEnvelopeFromPublish_Identity(b *testing.B) {
 
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
-			dispatched := publishWithIdentity(tc.pub)
+			dispatched := publishWithIdentity(tc.pub, nil)
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {

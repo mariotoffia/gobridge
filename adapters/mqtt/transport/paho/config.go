@@ -17,6 +17,13 @@ const (
 	ProtocolVersion311 = "v3.1.1"
 )
 
+// How a session names a publish that carries no producer identity
+// (session.message_id). Empty selects MessageIDRandom. See ADR 0022.
+const (
+	MessageIDRandom      = "random"
+	MessageIDContentHash = "content_hash"
+)
+
 // SessionOptions holds MQTT connection and session configuration.
 // These values are typically extracted from ports.SessionSpec.Options.
 type SessionOptions struct {
@@ -192,6 +199,15 @@ type SessionOptions struct {
 	// everything above it keeps MQTT 5 semantics; options 3.1.1 cannot express
 	// are rejected (validateProtocol) and the rest degrade as ADR 0022 lists.
 	ProtocolVersion string `mapstructure:"protocol_version" yaml:"protocol_version,omitempty" json:"protocol_version,omitempty"`
+	// MessageID selects the envelope ID of a publish that carries no producer
+	// identity: "random" (the default, also selected by an empty value) mints a
+	// fresh ID per delivery, so a redelivery can be neither counted nor
+	// deduplicated; "content_hash" (MQTT 3.1.1 only) hashes the broker session
+	// (effective client_id and broker URLs), the topic and the payload, so a
+	// redelivery keeps its ID, but two publishes of the same payload to the same
+	// topic on one session share one ID and a shared_outbox route keeps only
+	// the first.
+	MessageID string `mapstructure:"message_id" yaml:"message_id,omitempty" json:"message_id,omitempty"`
 	// Clock is an internal dependency injected by the factory/tests and
 	// must never be populated from YAML; the dash tag excludes it from
 	// the strict options decoder (which would otherwise reject it).
@@ -219,6 +235,13 @@ func schemeUsesTLS(brokerURL string) bool {
 
 // protocolV311 reports whether the session speaks MQTT 3.1.1.
 func (o SessionOptions) protocolV311() bool { return o.ProtocolVersion == ProtocolVersion311 }
+
+// contentHashMessageID reports whether ingress derives a missing identity from
+// the broker session, topic and payload. validateProtocol refuses content_hash
+// off MQTT 3.1.1, and Start returns that verdict, so such a session never dials.
+func (o SessionOptions) contentHashMessageID() bool {
+	return o.MessageID == MessageIDContentHash
+}
 
 // allBrokerURLsUseTLS reports whether EVERY configured broker URL uses a TLS
 // scheme. A single plaintext URL in the list is a cleartext-credential vector
@@ -301,6 +324,19 @@ func (o *SessionOptions) normalizeBrokerURLs() {
 		o.BrokerURLs = []string{o.BrokerURL}
 	}
 	o.BrokerURL = ""
+}
+
+// normalizeDefaults folds an explicitly written default protocol_version or
+// message_id into its omitted form. Content identity hashes the decoded config
+// (ADR 0016), so without this, writing the documented default would count as a
+// change and rebuild the session. The registry decoder calls this after Decode.
+func (o *SessionOptions) normalizeDefaults() {
+	if o.ProtocolVersion == ProtocolVersion5 {
+		o.ProtocolVersion = ""
+	}
+	if o.MessageID == MessageIDRandom {
+		o.MessageID = ""
+	}
 }
 
 // ReceiverOptions holds MQTT receiver-specific configuration.

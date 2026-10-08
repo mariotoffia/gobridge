@@ -139,7 +139,7 @@ func (r *router) onPublishReceived(pr pahov5.PublishReceived) (bool, error) {
 		r.dropPoisonIngress(received, class, violation, ack)
 		return true, nil
 	}
-	pub := publishWithIdentity(received)
+	pub := publishWithIdentity(received, r.contentHashScope)
 	client := pr.Client
 	var ack func() error
 	if received != nil && received.QoS > 0 && client != nil {
@@ -255,7 +255,7 @@ func (r *router) Route(pb *packets.Publish) {
 		r.dropPoisonIngress(pub, class, violation, nil)
 		return
 	}
-	r.dispatch(clonePublish(publishWithIdentity(pub)), nil)
+	r.dispatch(clonePublish(publishWithIdentity(pub, r.contentHashScope)), nil)
 }
 
 // dispatch fans a publish out to every registered handler whose topic

@@ -495,4 +495,4 @@ documentation is split by what you are looking for:
 | [MQTT options](mqtt-options.md) | Session, sender and receiver options; credential URIs; mutual TLS from a credential store; dialing through a proxy |
 | [MQTT behaviour](mqtt-behavior.md) | Settlement semantics, resilience and reconnection, backpressure, shared subscriptions, ingress headers |
 | [MQTT settlement recovery](mqtt-settlement-recovery.md) | Recovering a received-but-unsettled delivery: the bounded recycle, the per-mode policy, its safety bounds and metrics |
-| [MQTT 3.1.1](mqtt-311.md) | Speaking MQTT 3.1.1: the options it rejects, what degrades, broker limits, and switching a durable session |
+| [MQTT 3.1.1](mqtt-311.md) | Speaking MQTT 3.1.1: the options it rejects, what degrades, message ids, broker limits, and switching a durable session |

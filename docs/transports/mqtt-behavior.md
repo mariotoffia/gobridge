@@ -98,12 +98,12 @@ destination, so downstream idempotency is required in every row.
 | QoS 1/2, Persistent/Exclusive | `shared_outbox` | any | durable store, crash **before** Persist | source redelivers on resume | No source-side loss: Persist precedes the source ack, so a crash before Persist leaves the source un-acked; it redelivers and the record is built and persisted on replay. |
 | QoS 0 or Ephemeral (clean start) | `shared_outbox` | any | crash **before** Persist | no source redelivery | Possible loss: before a successful Persist there is no durable record, and a QoS 0 / clean-start source cannot redeliver. |
 | any source | `shared_outbox` | unique | **volatile** store (in-memory; unit-test only, not production), "persisted" | process restart | Possible loss: an in-memory outbox does not survive a restart, so no record remains to replay. |
-| QoS 1/2 | `shared_outbox` | **missing** (no producer ID) | durable, persisted | any | No silent collapse and no cross-redelivery dedup: each publish gets a fresh per-publish UUID, so two equal-valued events both flow and a broker redelivery of one publish duplicates it. |
+| QoS 1/2 | `shared_outbox` | **missing** (no producer ID) | durable, persisted | any | No silent collapse and no cross-redelivery dedup: each publish gets a fresh per-publish UUID, so two equal-valued events both flow and a broker redelivery of one publish duplicates it. An MQTT 3.1.1 session with `message_id: content_hash` reverses both: a redelivery is suppressed, and so is an equal-valued event from the same session ([message ids](mqtt-311-message-ids.md)). |
 | QoS 1/2 | `shared_outbox` | **reused** (same ID for distinct events) | durable, persisted | any | Collapse of a distinct event: the second event reuses the first's dedup key (`partition` + `EnvelopeID` + `binding`); its Persist returns `ErrDuplicateRecord` and is acked-and-dropped. A supplied producer ID is preserved and trusted as identity. |
 | QoS 1/2, source broker offline | either | any | n/a | source queue/session expiry or capacity drop before receipt | Possible loss: the source broker can expire or drop its offline/session queue before the bridge ever receives the message. |
 | any | `shared_outbox` | any | durable, persisted | `ReplayCount` > `MaxReplayAttempts` **and** `ReplayBudget` elapsed since first attempt | Permanent failure: the record reaches the terminal action below. A record whose envelope TTL passes is expired first, per `OnExpired`. |
 | any (stable identity) | `direct_hold` | present, or bridge dedup/idempotency key | n/a | source attempts reach `MaxReplayAttempts` (count only, no wall-clock gate) | Permanent failure: the source delivery reaches the terminal action below. A recoverable send failure is first retried **inside the bridge** for `send_retry_budget` (default 60s) with the source delivery still held, so a short destination outage no longer recycles the session. Only afterwards is the source asked to redeliver. Count-less sources are counted by the bridge-owned replay ledger keyed on the stable identity. |
-| Any QoS (no stable identity) | `direct_hold` | **missing** (no producer ID) | n/a | a transient failure that outlives `send_retry_budget` | The message is retried in process for `send_retry_budget` (default 60s) first. Only if it is still failing then does the terminal action apply: a count-less source with an adapter-generated id cannot be counted across redelivery, so it uses category `unstable_identity`. Supply `mqtt.message-id`/correlation data for a countable retry budget, or raise `send_retry_budget`. |
+| Any QoS (no stable identity) | `direct_hold` | **missing** (no producer ID) | n/a | a transient failure that outlives `send_retry_budget` | The message is retried in process for `send_retry_budget` (default 60s) first. Only if it is still failing then does the terminal action apply: a count-less source with an adapter-generated id cannot be counted across redelivery, so it uses category `unstable_identity`. Supply `mqtt.message-id`/correlation data for a countable retry budget (on MQTT 3.1.1, `message_id: content_hash`, after reading its [trade-off](mqtt-311-message-ids.md)), or raise `send_retry_budget`. |
 | any | `direct_hold` | any | n/a | terminal action after permanent failure/expiry | Per `OnPermanentFailure`/`OnExpired` (default `dlq`): confirmed DLQ persistence counts `DLQEntries` and settles the source; an explicit drop records its terminal metric and settles without a DLQ record. |
 | Retry-capable QoS 1/2, resuming session | `direct_hold` | any | n/a | DLQ persistence fails | Remains protocol-unsettled; bounded session recovery requests redelivery. No acknowledged terminal drop or false DLQ success. |
 | Actual QoS 0 | `direct_hold` | any | n/a | Retry unsupported and bounded DLQ persistence fails | Terminal loss counted once as `MessagesDropped{reason=retry_unsupported_dlq_failed}`; the persistence error is surfaced. No successful DLQ entry, no QoS-0-induced session recycle, and route capacity is released. |
@@ -116,16 +116,17 @@ QoS 0 still requires a DLQ or explicit retry-drop permission and compatible
 terminal policies. Abrupt-crash gaps cannot be counted by the dead process.
 See [scenario 24](../scenarios/24-mqtt-mixed-qos-to-sqs.md).
 
-**MQTT 3.1.1 sources carry no producer identity**, so every message from one is
-count-less. With a finite `max_replay_attempts` every retry decision for it is
-terminal: its first recoverable failure dead-letters or drops it (a
-`direct_hold` send is still retried in process for `send_retry_budget` first).
-`max_replay_attempts: 0` opts the route into unbounded retry
-([no headers on ingress](mqtt-311.md#no-headers-on-ingress)).
+**MQTT 3.1.1 sources carry no producer identity**, so by default every message
+from one is count-less. With a finite `max_replay_attempts` every retry decision
+for it is terminal unless the session sets `message_id: content_hash`. The first
+recoverable failure dead-letters or drops it (a `direct_hold` send is still
+retried in process for `send_retry_budget` first). `max_replay_attempts: 0` opts
+the route into unbounded retry ([no headers on ingress](mqtt-311.md#no-headers-on-ingress), [message ids](mqtt-311-message-ids.md)).
 
 Producer identity is a stable `mqtt.message-id` (or MQTT correlation data); a
 content hash of topic+payload is **not** a producer ID, because two legitimate
-equal-valued events would hash the same and one would be silently collapsed. A
+equal-valued events would hash the same and one would be silently collapsed
+(an MQTT 3.1.1 session with `message_id: content_hash` opts into that). A
 **reused** producer ID has the same effect from the other direction: a supplied
 ID is trusted as identity, so a distinct event carrying a duplicate ID collapses
 into the first record. When no producer ID is present, GoBridge stamps a fresh

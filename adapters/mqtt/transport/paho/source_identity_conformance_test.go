@@ -22,7 +22,7 @@ func mqttSourceIdentity(same func(*pahov5.PublishProperties), distinct func(int,
 			Topic:      "sensors/1",
 			Payload:    []byte("p"),
 			Properties: properties,
-		}), nil)
+		}, nil), nil)
 	}
 	return transporttest.SourceIdentity{
 		Redeliver: func() *messaging.Envelope { return convert(same) },

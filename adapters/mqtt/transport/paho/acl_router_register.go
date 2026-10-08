@@ -68,6 +68,14 @@ func withMaxPayloadBytes(maxPayloadBytes uint32) routerOption {
 	return func(r *router) { r.maxPayloadBytes = maxPayloadBytes }
 }
 
+// withContentHashMessageID makes the router name a publish that carries no
+// producer identity after scope — its broker session — and its topic and
+// payload (session.message_id content_hash on MQTT 3.1.1). An empty scope keeps
+// the random default.
+func withContentHashMessageID(scope []byte) routerOption {
+	return func(r *router) { r.contentHashScope = scope }
+}
+
 func newRouter(logger *slog.Logger, metrics ports.MetricsExporter, opts ...routerOption) *router {
 	if metrics == nil {
 		metrics = &ports.NoopExporter{}

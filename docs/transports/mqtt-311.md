@@ -143,8 +143,9 @@ admission meaningful. It is never sent, and on `v3.1.1` it logs no warning.
 Every `v3.1.1` session logs one Warn when it is created. It lists what the
 session cannot do:
 
-- carry headers or message identity, so a retry decision on a minted id is
-  terminal unless `max_replay_attempts` is `0`;
+- carry headers or message identity. A retry decision on a minted id is
+  terminal unless `max_replay_attempts` is `0`; `message_id: content_hash`
+  replaces the minted id (see [Message ids](#message-ids));
 - see a session takeover, other than as a connection that drops soon after it
   connects;
 - see a publish the broker refuses;
@@ -177,7 +178,7 @@ session cannot do:
 
 | Behaviour | On MQTT 3.1.1 |
 |---|---|
-| Headers and identity | Only the topic, payload, QoS and RETAIN flag cross the wire. On egress the sender drops every property before it validates the publish, so a header that could never be sent (over 65,535 bytes, or not valid UTF-8) cannot fail an otherwise valid publish. Every header, the subject and the expiry are dropped. For ingress, see [No headers on ingress](#no-headers-on-ingress). |
+| Headers and identity | Only the topic, payload, QoS and RETAIN flag cross the wire. On egress the sender drops every property before it validates the publish, so a header that could never be sent (over 65,535 bytes, or not valid UTF-8) cannot fail an otherwise valid publish. Every header, the subject and the expiry are dropped. For ingress, see [No headers on ingress](#no-headers-on-ingress) and [Message ids](#message-ids). |
 | Session takeover | MQTT 3.1.1 has no DISCONNECT `0x8E`, so a takeover looks like any other connection loss. autopaho redials a connection that had come up with no delay, so two instances sharing a `client_id` would evict each other in a tight loop. A connection that drops within 30 s of coming up therefore feeds the takeover penalty: the first drop costs nothing, and each further one adds a reconnect penalty that starts at 1 s and doubles up to 64 s. A log line names a client-id collision as the likely cause. `MQTTSessionTakeover` is not counted, because the cause is inferred, not reported. The exclusive lease still guarantees one owner. |
 | Publish refusal | PUBACK and PUBREC carry no reason code. A broker that refuses a publish either acks it (Mosquitto does) or closes the connection, which surfaces as `CONNECTION_LOST` (retryable). `throttle_retry_after` never applies. |
 | Subscribe refusal | SUBACK `0x80` is the only failure code. It keeps its MQTT 5 meaning, `UNAVAILABLE` (transient), so a broker ACL denial is not classified `FORBIDDEN`. The reconcile still fails, as for any refused subscription. |
@@ -202,13 +203,13 @@ as on MQTT 5. None of these arrive:
 - user properties.
 
 A header an MQTT 5 publisher set does not survive the hop to an MQTT 3.1.1
-subscriber. Every message gets a minted id, which `mqtt.message-id` also
-carries, and is marked `x-bridge.generated-id`. A broker redelivery gets a new
-id
+subscriber. With the default `message_id: random`, every message gets a minted
+id, which `mqtt.message-id` also carries, and is marked `x-bridge.generated-id`.
+A broker redelivery gets a new id
 ([envelope identity](mqtt-ingress-headers.md#envelope-identity-and-no-id-redelivery)).
 
-So every MQTT 3.1.1 message is **count-less**: it has no stable key and no
-native receive count. What that means for a route:
+So with `random` every MQTT 3.1.1 message is **count-less**: it has no stable
+key and no native receive count. What that means for a route:
 
 - With a finite `max_replay_attempts`, the route's replay cap treats every
   retry decision for the message as already at the cap. That covers a
@@ -221,6 +222,19 @@ native receive count. What that means for a route:
 - `max_replay_attempts: 0` opts the route into unbounded retry. That is the
   existing contract for count-less sources.
 - `shared_outbox` cannot deduplicate a broker redelivery.
+
+`message_id: content_hash` gives each message a stable id instead, so its
+retries are counted and `shared_outbox` recognises a redelivery. It has a
+trade-off; see [Message ids](#message-ids).
+
+## Message ids
+
+An MQTT 3.1.1 PUBLISH carries no producer id, so the session gives each
+message an id itself. `options.session.message_id` chooses how: `random`
+(the default) or the opt-in `content_hash`. Read
+[MQTT 3.1.1 message ids](mqtt-311-message-ids.md) before you enable
+`content_hash`: it trades a stable id across redelivery for treating two
+different messages with identical content as one.
 
 ## Broker limits
 

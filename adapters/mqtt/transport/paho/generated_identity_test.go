@@ -21,7 +21,7 @@ import (
 func TestGeneratedIdentity_MarkedAndScoped(t *testing.T) {
 	t.Run("count-less publish is marked generated", func(t *testing.T) {
 		raw := &pahov5.Publish{Topic: "t", Payload: []byte("p")}
-		env := EnvelopeFromPublish(publishWithIdentity(raw), nil)
+		env := EnvelopeFromPublish(publishWithIdentity(raw, nil), nil)
 		if _, ok := messaging.GetHeaderString(env.Headers(), messaging.HeaderGeneratedID); !ok {
 			t.Fatalf("no-identity publish: HeaderGeneratedID not set; runtime cannot detect the uncountable case")
 		}
@@ -43,7 +43,7 @@ func TestGeneratedIdentity_MarkedAndScoped(t *testing.T) {
 				User: []pahov5.UserProperty{{Key: HeaderMessageID, Value: "producer-stable-1"}},
 			},
 		}
-		env := EnvelopeFromPublish(publishWithIdentity(raw), nil)
+		env := EnvelopeFromPublish(publishWithIdentity(raw, nil), nil)
 		if _, ok := messaging.GetHeaderString(env.Headers(), messaging.HeaderGeneratedID); ok {
 			t.Fatalf("stable producer identity must NOT be marked generated")
 		}
@@ -69,7 +69,7 @@ func TestGeneratedIdentity_MarkedAndScoped(t *testing.T) {
 			},
 		}
 
-		env := EnvelopeFromPublish(publishWithIdentity(raw), nil)
+		env := EnvelopeFromPublish(publishWithIdentity(raw, nil), nil)
 
 		if _, ok := messaging.GetHeaderString(env.Headers(), messaging.HeaderGeneratedID); ok {
 			t.Fatalf("publisher-supplied %q set adapter-minted provenance on a stable producer identity", headerMQTTGeneratedID)
@@ -91,7 +91,7 @@ func TestGeneratedIdentity_MarkedAndScoped(t *testing.T) {
 			},
 		}
 
-		sanitized := publishWithIdentity(raw)
+		sanitized := publishWithIdentity(raw, nil)
 
 		markers := 0
 		for _, u := range sanitized.Properties.User {
@@ -124,7 +124,7 @@ func TestGeneratedIdentity_MarkedAndScoped(t *testing.T) {
 			},
 		}
 
-		_ = publishWithIdentity(raw)
+		_ = publishWithIdentity(raw, nil)
 
 		if len(raw.Properties.User) != 2 || raw.Properties.User[1].Key != headerMQTTGeneratedID {
 			t.Fatalf("ingress sanitising mutated the SDK-owned packet: %+v", raw.Properties.User)
@@ -186,7 +186,7 @@ func TestGeneratedIdentity_MarkedAndScoped(t *testing.T) {
 	})
 
 	t.Run("marker does not ride egress", func(t *testing.T) {
-		env := EnvelopeFromPublish(publishWithIdentity(&pahov5.Publish{Topic: "t", Payload: []byte("p")}), nil)
+		env := EnvelopeFromPublish(publishWithIdentity(&pahov5.Publish{Topic: "t", Payload: []byte("p")}, nil), nil)
 		pub := mustPublishFromEnvelope(t, env, "out/topic", SenderOptions{}, nil)
 		if pub.Properties != nil {
 			for _, u := range pub.Properties.User {
