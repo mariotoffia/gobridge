@@ -135,8 +135,10 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021, ADR-0022 and
 - The inbound in-flight set enforces `receive_maximum` and drops a live
   retransmission whose packet id is still in flight. An id leaves the set on
   PUBACK (QoS 1) or PUBCOMP (QoS 2), never on PUBREC. QoS 0 is not counted. A
-  window overflow takes the violation path (`rejectPredecodeIngress`) before
-  Paho sees the packet, so the read loop never blocks.
+  QoS 1 DUP copy that arrives after its PUBACK was written is dropped too,
+  until the id is admitted again. A window overflow takes the violation path
+  (`rejectPredecodeIngress`) before Paho sees the packet, so the read loop
+  never blocks.
 - On 3.1.1 the configuration is rejected (`shared.ErrInvalidConfig`) for
   `no_local`, a non-zero `session_expiry_interval`, a password without a
   username, and `clean_start: true` on a Persistent session. One validator,
