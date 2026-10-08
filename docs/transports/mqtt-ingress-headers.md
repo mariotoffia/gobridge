@@ -139,13 +139,14 @@ flag and a payload, and nothing else. On a session with
 `protocol_version: v3.1.1`:
 
 - The envelope gets `mqtt.topic`, `mqtt.qos` and `mqtt.retained`, as on MQTT 5.
-- None of these arrive: `mqtt.message-id`, correlation data, the subject
-  (`gobridge.subject`), the expiry, the content type, the response topic,
-  `traceparent`, or any user property. A header an MQTT 5 publisher sets does
-  not survive the hop to a 3.1.1 subscriber. `MQTTIngressHeaderDropped` does
-  not count them, because they never reach the session.
+- None of these arrive: the producer's `mqtt.message-id`, correlation data, the
+  subject (`gobridge.subject`), the expiry, the content type, the response
+  topic, `traceparent`, or any user property. A header an MQTT 5 publisher sets
+  does not survive the hop to a 3.1.1 subscriber. `MQTTIngressHeaderDropped`
+  does not count them, because they never reach the session.
 - Identity always falls through to case 3 above: every message gets a minted
-  UUIDv4 and `x-bridge.generated-id`, and a broker redelivery gets a new id.
+  UUIDv4, which `mqtt.message-id` also carries, and `x-bridge.generated-id`,
+  and a broker redelivery gets a new id.
 - Every message is therefore count-less, as described in
   [Replay-cap consequence](#envelope-identity-and-no-id-redelivery). With a
   finite `max_replay_attempts`, every retry decision is terminal: a recoverable

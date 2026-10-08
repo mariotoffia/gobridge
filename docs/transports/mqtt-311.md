@@ -195,15 +195,16 @@ An MQTT 3.1.1 PUBLISH carries a topic, a QoS, a RETAIN flag and a payload,
 nothing else. The envelope gets `mqtt.topic`, `mqtt.qos` and `mqtt.retained`,
 as on MQTT 5. None of these arrive:
 
-- `mqtt.message-id` and correlation data;
+- the producer's `mqtt.message-id` and correlation data;
 - the subject (`gobridge.subject`);
 - the expiry, content type and response topic;
 - `traceparent`;
 - user properties.
 
 A header an MQTT 5 publisher set does not survive the hop to an MQTT 3.1.1
-subscriber. Every message gets a minted id and `x-bridge.generated-id`, and a
-broker redelivery gets a new id
+subscriber. Every message gets a minted id, which `mqtt.message-id` also
+carries, and is marked `x-bridge.generated-id`. A broker redelivery gets a new
+id
 ([envelope identity](mqtt-ingress-headers.md#envelope-identity-and-no-id-redelivery)).
 
 So every MQTT 3.1.1 message is **count-less**: it has no stable key and no
