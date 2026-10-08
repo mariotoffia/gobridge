@@ -36,8 +36,8 @@ func TestCorrelationIdentity_BinaryDataIsStableAcrossRedelivery(t *testing.T) {
 		}
 	}
 
-	first := EnvelopeFromPublish(publishWithIdentity(newDelivery(), false), nil)
-	second := EnvelopeFromPublish(publishWithIdentity(newDelivery(), false), nil)
+	first := EnvelopeFromPublish(publishWithIdentity(newDelivery(), nil), nil)
+	second := EnvelopeFromPublish(publishWithIdentity(newDelivery(), nil), nil)
 
 	if first.ID() == "" {
 		t.Fatal("binary correlation data must yield a non-empty envelope id")
@@ -182,7 +182,7 @@ func TestCorrelationIdentity_OverLongBinaryDataIsCountedAndUnused(t *testing.T) 
 	env := EnvelopeFromPublish(publishWithIdentity(&pahov5.Publish{
 		Topic:      "t",
 		Properties: &pahov5.PublishProperties{CorrelationData: oversized},
-	}, false), nil, exporter)
+	}, nil), nil, exporter)
 
 	if _, ok := messaging.GetHeaderString(env.Headers(), messaging.HeaderCorrelationData); ok {
 		t.Fatalf("oversized correlation data must not be retained as a header")

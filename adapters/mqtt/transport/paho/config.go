@@ -202,10 +202,11 @@ type SessionOptions struct {
 	// MessageID selects the envelope ID of a publish that carries no producer
 	// identity: "random" (the default, also selected by an empty value) mints a
 	// fresh ID per delivery, so a redelivery can be neither counted nor
-	// deduplicated; "content_hash" (MQTT 3.1.1 only) hashes the topic and
-	// payload, so a redelivery keeps its ID, but two publishes of the same
-	// payload to the same topic share one ID and a shared_outbox route keeps
-	// only the first.
+	// deduplicated; "content_hash" (MQTT 3.1.1 only) hashes the broker session
+	// (effective client_id and broker URLs), the topic and the payload, so a
+	// redelivery keeps its ID, but two publishes of the same payload to the same
+	// topic on one session share one ID and a shared_outbox route keeps only
+	// the first.
 	MessageID string `mapstructure:"message_id" yaml:"message_id,omitempty" json:"message_id,omitempty"`
 	// Clock is an internal dependency injected by the factory/tests and
 	// must never be populated from YAML; the dash tag excludes it from
@@ -236,11 +237,10 @@ func schemeUsesTLS(brokerURL string) bool {
 func (o SessionOptions) protocolV311() bool { return o.ProtocolVersion == ProtocolVersion311 }
 
 // contentHashMessageID reports whether ingress derives a missing identity from
-// the topic and payload. validateProtocol refuses content_hash off MQTT 3.1.1;
-// the version is checked here too so an unvalidated v5 session keeps its
-// minted identity.
+// the broker session, topic and payload. validateProtocol refuses content_hash
+// off MQTT 3.1.1, and Start returns that verdict, so such a session never dials.
 func (o SessionOptions) contentHashMessageID() bool {
-	return o.protocolV311() && o.MessageID == MessageIDContentHash
+	return o.MessageID == MessageIDContentHash
 }
 
 // allBrokerURLsUseTLS reports whether EVERY configured broker URL uses a TLS

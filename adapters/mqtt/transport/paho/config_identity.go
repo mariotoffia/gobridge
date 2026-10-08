@@ -2,6 +2,7 @@ package paho
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
+	"github.com/mariotoffia/gobridge/domain/shared"
 )
 
 // ValidateSessionMode rejects durable MQTT failover across independent broker
@@ -239,4 +241,30 @@ func brokerDialFamily(scheme string) (family, defaultPort string, addressed bool
 
 func appendIdentityPart(dst *strings.Builder, value string) {
 	_, _ = fmt.Fprintf(dst, "%d:%s;", len(value), value)
+}
+
+// contentHashScope returns the broker session a content-hash message id is
+// scoped to, or nil when the session mints random ids: the client ID as it
+// connects (Factory.NewSession has already applied client_id_suffix), then the
+// canonical broker URLs in configured order joined by "\n", each behind its
+// byte length as a big-endian uint64. A broker redelivers only on the session
+// that received a message, so the scope keeps a redelivery's id while two
+// sessions receiving identical content get different ids.
+func (o SessionOptions) contentHashScope() ([]byte, error) {
+	if !o.contentHashMessageID() {
+		return nil, nil
+	}
+	brokers, err := canonicalBrokerSet(o.BrokerURLs, o.BrokerURL)
+	if err != nil {
+		return nil, shared.ErrInvalidConfig.Wrap(err).WithMessage(
+			"mqtt: session.message_id content_hash cannot name the broker session")
+	}
+	scope := appendContentHashField(nil, o.ClientID)
+	return appendContentHashField(scope, strings.Join(brokers, "\n")), nil
+}
+
+// appendContentHashField appends field behind its byte length as a big-endian
+// uint64, so adjacent fields cannot trade bytes.
+func appendContentHashField(dst []byte, field string) []byte {
+	return append(binary.BigEndian.AppendUint64(dst, uint64(len(field))), field...)
 }

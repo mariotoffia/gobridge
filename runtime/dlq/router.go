@@ -365,7 +365,10 @@ var idFallbackCounter atomic.Uint64
 // This depends on the transport contract that an envelope ID is stable across
 // redelivery and unique within its source (ports.Source). A source that broke
 // that contract would simply fall back to today's behaviour — a distinct row —
-// never a wrong collapse across different messages.
+// never a wrong collapse across different messages. The documented exception:
+// an MQTT 3.1.1 session configured with message_id: content_hash derives the ID
+// from its broker session, topic and payload, so two distinct messages with
+// identical content collide by design (an operator opt-in, ADR 0022).
 //
 // An envelope with no ID cannot be identified, so it falls back to a random ID
 // rather than collapsing unrelated failures onto one row. Envelope IDs are

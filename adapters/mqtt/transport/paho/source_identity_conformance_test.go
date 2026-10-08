@@ -1,10 +1,8 @@
 package paho
 
 import (
-	"strconv"
 	"testing"
 
-	"github.com/eclipse/paho.golang/packets"
 	pahov5 "github.com/eclipse/paho.golang/paho"
 
 	"github.com/mariotoffia/gobridge/domain/messaging"
@@ -24,7 +22,7 @@ func mqttSourceIdentity(same func(*pahov5.PublishProperties), distinct func(int,
 			Topic:      "sensors/1",
 			Payload:    []byte("p"),
 			Properties: properties,
-		}, false), nil)
+		}, nil), nil)
 	}
 	return transporttest.SourceIdentity{
 		Redeliver: func() *messaging.Envelope { return convert(same) },
@@ -37,8 +35,7 @@ func mqttSourceIdentity(same func(*pahov5.PublishProperties), distinct func(int,
 // TestMQTTSourceIdentityConformance runs the ports.Receiver envelope-identity
 // contract over each way an MQTT publish can carry — or lack — a producer
 // identity: a message-id user property, textual Correlation Data, binary
-// Correlation Data, nothing at all (adapter-minted, declared generated), and
-// nothing on a session that derives the id from content.
+// Correlation Data, and nothing at all (adapter-minted, declared generated).
 func TestMQTTSourceIdentityConformance(t *testing.T) {
 	t.Run("producer message-id", func(t *testing.T) {
 		transporttest.RunSourceIdentityConformanceTests(t, func(*testing.T) transporttest.SourceIdentity {
@@ -77,34 +74,6 @@ func TestMQTTSourceIdentityConformance(t *testing.T) {
 				func(*pahov5.PublishProperties) {},
 				func(int, *pahov5.PublishProperties) {},
 			)
-		})
-	})
-
-	// On an MQTT 3.1.1 session set to message_id content_hash a publish carries
-	// no producer identity, so the id is derived from what the broker redelivers
-	// unchanged: the topic and the payload. A redelivery gets a new packet id
-	// and DUP; a distinct message differs in its payload.
-	t.Run("content hash", func(t *testing.T) {
-		transporttest.RunSourceIdentityConformanceTests(t, func(*testing.T) transporttest.SourceIdentity {
-			convert := func(packetID uint16, duplicate bool, payload string) *messaging.Envelope {
-				return EnvelopeFromPublish(publishWithIdentity(inboundPublish(&packets.Publish{
-					PacketID:  packetID,
-					QoS:       1,
-					Duplicate: duplicate,
-					Topic:     "sensors/1",
-					Payload:   []byte(payload),
-				}), true), nil)
-			}
-			var redeliveries uint16
-			return transporttest.SourceIdentity{
-				Redeliver: func() *messaging.Envelope {
-					redeliveries++
-					return convert(redeliveries, redeliveries > 1, "p")
-				},
-				Distinct: func(n int) *messaging.Envelope {
-					return convert(1, false, "p-"+strconv.Itoa(n))
-				},
-			}
 		})
 	})
 }

@@ -15,17 +15,21 @@ import (
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/shared"
+	"github.com/mariotoffia/gobridge/ports"
 )
 
 // A session set to message_id content_hash names a publish that carries no
-// producer identity after its topic and payload, so a broker redelivery keeps
-// its envelope ID and is not marked adapter-minted (ADR 0022). These tests pin
-// that ingress rule and that the default stays a fresh, marked UUID.
+// producer identity after its broker session, topic and payload, so a broker
+// redelivery keeps its envelope ID and is not marked adapter-minted (ADR 0022).
+// These tests pin that ingress rule and that the default stays a fresh, marked
+// UUID.
 
-// contentHashEnvelope runs one publish through the content-hash ingress rule
-// and the envelope conversion the router applies after it.
+// contentHashEnvelope runs one publish through the content-hash ingress rule of
+// a session connecting as "c" to tcp://broker:1883, and the envelope conversion
+// the router applies after it.
 func contentHashEnvelope(pub *pahov5.Publish) *messaging.Envelope {
-	return EnvelopeFromPublish(publishWithIdentity(pub, true), nil)
+	scope := appendContentHashField(appendContentHashField(nil, "c"), "tcp://broker:1883")
+	return EnvelopeFromPublish(publishWithIdentity(pub, scope), nil)
 }
 
 func requireNotMarkedGenerated(t *testing.T, env *messaging.Envelope) {
@@ -43,13 +47,127 @@ func inboundPublish(p *packets.Publish) *pahov5.Publish {
 	return pahov5.PublishFromPacketPublish(p)
 }
 
-func TestPublishWithIdentity_ContentHashIsTheDocumentedDigest(t *testing.T) {
-	// SHA-256 over the topic length (big-endian uint64), the topic and the
-	// payload, as unpadded base64url behind the mqtt-sha256: prefix.
-	env := contentHashEnvelope(&pahov5.Publish{Topic: "t", Payload: []byte("p")})
+// contentHashSession builds an MQTT 3.1.1 session set to message_id
+// content_hash that connects as clientID to brokerURLs.
+func contentHashSession(t *testing.T, clientID string, brokerURLs ...string) *Session {
+	t.Helper()
+	s := NewSession(SessionOptions{
+		BrokerURLs:      brokerURLs,
+		ClientID:        clientID,
+		ProtocolVersion: ProtocolVersion311,
+		MessageID:       MessageIDContentHash,
+	}, connectivity.SessionEphemeral, nil)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	return s
+}
 
-	assert.Equal(t, "mqtt-sha256:KNCqR35t-GU1tF6r6uPvU7L1WaqZ7YbpHTbDjTfD1g0", env.ID())
-	requireNotMarkedGenerated(t, env)
+// routedEnvelopeID routes one inbound publish through s's router and returns
+// the envelope ID its handler saw.
+func routedEnvelopeID(t *testing.T, s *Session, topic, payload string) string {
+	t.Helper()
+	delivered := recordRouterEnvelopes(s.Router())
+	_, err := s.Router().onPublishReceived(pahov5.PublishReceived{
+		Packet: &pahov5.Publish{PacketID: 1, QoS: 1, Topic: topic, Payload: []byte(payload)},
+	})
+	require.NoError(t, err)
+	envelopes := delivered()
+	require.Len(t, envelopes, 1)
+	requireNotMarkedGenerated(t, envelopes[0])
+	return envelopes[0].ID()
+}
+
+func TestContentHashMessageID_IsTheDocumentedDigest(t *testing.T) {
+	// SHA-256 over the client_id, the canonical broker URLs joined by "\n" and
+	// the topic, each behind its byte length as a big-endian uint64, then the
+	// payload; unpadded base64url behind the mqtt-sha256: prefix. Every case
+	// hashes client_id "c", topic "t" and payload "p". The expected ids were
+	// computed outside Go from those inputs and the canonical broker field.
+	cases := []struct {
+		name       string
+		brokerURLs []string
+		canonical  string
+		want       string
+	}{
+		{
+			name:       "one broker",
+			brokerURLs: []string{"tcp://broker:1883"},
+			canonical:  "tcp://broker:1883",
+			want:       "mqtt-sha256:J9sTAITCmYSboGvwPskEehxc2_vzajBMr1WEj0MBI1k",
+		},
+		{
+			name:       "broker list in configured order",
+			brokerURLs: []string{"MQTT://Broker-A", "ssl://bridge@broker-b:8883"},
+			canonical:  "tcp://broker-a:1883\nssl://broker-b:8883",
+			want:       "mqtt-sha256:6bwIAW51a1tHqgLx-2FJXB4QouW3srgIufR_1kfiQ1A",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			brokers, err := canonicalBrokerSet(tc.brokerURLs, "")
+			require.NoError(t, err)
+			require.Equal(t, tc.canonical, strings.Join(brokers, "\n"))
+
+			assert.Equal(t, tc.want, routedEnvelopeID(t, contentHashSession(t, "c", tc.brokerURLs...), "t", "p"))
+		})
+	}
+}
+
+func TestContentHashMessageID_IsScopedToTheBrokerSession(t *testing.T) {
+	// Two sessions feeding one shared binding may receive the same topic and
+	// payload; a broker redelivers only on the session that received it.
+	base := routedEnvelopeID(t, contentHashSession(t, "bridge-a", "tcp://broker:1883"), "t", "p")
+	cases := []struct {
+		name     string
+		clientID string
+		broker   string
+		same     bool
+	}{
+		{"another client_id", "bridge-b", "tcp://broker:1883", false},
+		{"another broker", "bridge-a", "tcp://other-broker:1883", false},
+		{"the same broker spelled differently", "bridge-a", "mqtt://BROKER", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id := routedEnvelopeID(t, contentHashSession(t, tc.clientID, tc.broker), "t", "p")
+			assert.Equal(t, tc.same, id == base, "id %q, base %q", id, base)
+		})
+	}
+}
+
+func TestFactoryNewSession_ContentHashMessageIDHashesTheEffectiveClientID(t *testing.T) {
+	cfg := Config{Session: SessionOptions{
+		BrokerURLs:      []string{"tcp://broker:1883"},
+		ClientID:        "c",
+		ClientIDSuffix:  ClientIDSuffixNonce,
+		ProtocolVersion: ProtocolVersion311,
+		MessageID:       MessageIDContentHash,
+	}}
+	// The nonce suffix hex-encodes these 16 bytes, so the session connects as
+	// "c-30313233343536373839616263646566".
+	cfg.clientIDSuffixIdentity = &clientIDSuffixProcessIdentity{random: strings.NewReader("0123456789abcdef")}
+	built, err := NewFactory(nil).NewSession(t.Context(), ports.SessionSpec{
+		ID: "content-hash", SessionMode: connectivity.SessionEphemeral, Config: cfg,
+	})
+	require.NoError(t, err)
+	s, ok := built.(*Session)
+	require.True(t, ok)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+
+	got := routedEnvelopeID(t, s, "t", "p")
+
+	effective := contentHashSession(t, "c-30313233343536373839616263646566", "tcp://broker:1883")
+	assert.Equal(t, routedEnvelopeID(t, effective, "t", "p"), got)
+	assert.NotEqual(t, routedEnvelopeID(t, contentHashSession(t, "c", "tcp://broker:1883"), "t", "p"), got,
+		"the configured client_id without its suffix names no broker session")
+}
+
+func TestNewSession_StartRefusesContentHashMessageIDWithoutACanonicalBroker(t *testing.T) {
+	s := contentHashSession(t, "refused", "tcp://:1883")
+	var dials atomic.Int32
+	countingDial(s, &dials, nil)
+
+	require.ErrorIs(t, s.Start(t.Context()), shared.ErrInvalidConfig)
+	assert.Zero(t, dials.Load(), "a session whose broker session cannot be named never dials")
 }
 
 func TestPublishWithIdentity_ContentHashIsStableAcrossRedelivery(t *testing.T) {
@@ -93,62 +211,11 @@ func TestPublishWithIdentity_ContentHashSeparatesTopicAndPayload(t *testing.T) {
 	}
 }
 
-func TestPublishWithIdentity_ContentHashKeepsAProducerMessageID(t *testing.T) {
-	env := contentHashEnvelope(&pahov5.Publish{
-		Topic:   "t",
-		Payload: []byte("p"),
-		Properties: &pahov5.PublishProperties{
-			User: pahov5.UserProperties{{Key: HeaderMessageID, Value: "producer-stable-1"}},
-		},
-	})
-
-	assert.Equal(t, "producer-stable-1", env.ID())
-	requireNotMarkedGenerated(t, env)
-}
-
-func TestPublishWithIdentity_ContentHashStripsAPublisherGeneratedMarker(t *testing.T) {
-	t.Run("without a producer identity", func(t *testing.T) {
-		raw := &pahov5.Publish{
-			Topic:   "t",
-			Payload: []byte("p"),
-			Properties: &pahov5.PublishProperties{
-				User: pahov5.UserProperties{{Key: headerMQTTGeneratedID, Value: "1"}},
-			},
-		}
-
-		sanitized := publishWithIdentity(raw, true)
-
-		for _, property := range sanitized.Properties.User {
-			assert.NotEqual(t, headerMQTTGeneratedID, property.Key, "a publisher-supplied marker survived ingress")
-		}
-		env := EnvelopeFromPublish(sanitized, nil)
-		assert.Equal(t, contentHashEnvelope(&pahov5.Publish{Topic: "t", Payload: []byte("p")}).ID(), env.ID())
-		requireNotMarkedGenerated(t, env)
-		require.Len(t, raw.Properties.User, 1, "sanitising must copy, never mutate the SDK-owned packet")
-	})
-
-	t.Run("beside a producer identity", func(t *testing.T) {
-		env := contentHashEnvelope(&pahov5.Publish{
-			Topic:   "t",
-			Payload: []byte("p"),
-			Properties: &pahov5.PublishProperties{
-				User: pahov5.UserProperties{
-					{Key: HeaderMessageID, Value: "producer-stable-1"},
-					{Key: headerMQTTGeneratedID, Value: "1"},
-				},
-			},
-		})
-
-		assert.Equal(t, "producer-stable-1", env.ID())
-		requireNotMarkedGenerated(t, env)
-	})
-}
-
 func TestPublishWithIdentity_RandomDefaultMintsAFreshMarkedID(t *testing.T) {
 	newPublish := func() *pahov5.Publish { return &pahov5.Publish{QoS: 1, Topic: "t", Payload: []byte("p")} }
 
-	first := EnvelopeFromPublish(publishWithIdentity(newPublish(), false), nil)
-	second := EnvelopeFromPublish(publishWithIdentity(newPublish(), false), nil)
+	first := EnvelopeFromPublish(publishWithIdentity(newPublish(), nil), nil)
+	second := EnvelopeFromPublish(publishWithIdentity(newPublish(), nil), nil)
 
 	assert.NotEqual(t, first.ID(), second.ID(), "the default mints a fresh id per delivery")
 	assert.False(t, strings.HasPrefix(first.ID(), contentHashIdentityPrefix), "id %q", first.ID())
@@ -176,7 +243,7 @@ func recordRouterEnvelopes(r *router) func() []*messaging.Envelope {
 }
 
 func TestRouter_ContentHashMessageIDIsStableAtEveryIngressEntryPoint(t *testing.T) {
-	r := newRouter(nil, nil, withContentHashMessageID(true))
+	r := newRouter(nil, nil, withContentHashMessageID(appendContentHashField(nil, "c")))
 	delivered := recordRouterEnvelopes(r)
 
 	handled, err := r.onPublishReceived(pahov5.PublishReceived{
@@ -234,8 +301,6 @@ func TestNewSession_ContentHashMessageIDAppliesOnlyToMQTT311(t *testing.T) {
 		{"v3.1.1 random", SessionOptions{ProtocolVersion: ProtocolVersion311, MessageID: MessageIDRandom}, false},
 		{"v3.1.1 default", SessionOptions{ProtocolVersion: ProtocolVersion311}, false},
 		{"v5 default", SessionOptions{}, false},
-		// Refused by Start; the router still never derives an id from content.
-		{"v5 content_hash", SessionOptions{MessageID: MessageIDContentHash}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

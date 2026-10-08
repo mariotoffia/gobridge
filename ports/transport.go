@@ -196,12 +196,16 @@ type Delivery interface {
 //   - Source-scoped uniqueness. Two DISTINCT source messages reaching one
 //     Receiver MUST NOT share an Envelope.ID. Uniqueness is required within the
 //     source, not globally: IDs from different sources reach different routes
-//     and bindings and are never compared. Where the ID is derived from a
-//     PRODUCER-supplied field rather than minted by the broker or the adapter,
-//     the adapter MUST document that whoever may publish to the source owns
-//     that ID namespace — a reused ID is one identity to the outbox, and the
-//     second message is suppressed (counted on
-//     shared.MetricOutboxDuplicateSuppressed) rather than delivered.
+//     and bindings and are never compared. The documented exception: an MQTT
+//     3.1.1 session configured with message_id: content_hash derives the ID
+//     from its broker session, topic and payload, so two distinct messages
+//     with identical content collide by design (an operator opt-in, ADR 0022).
+//     Where the ID is derived from a PRODUCER-supplied field rather than
+//     minted by the broker or the adapter, the adapter MUST document that
+//     whoever may publish to the source owns that ID namespace — a reused ID
+//     is one identity to the outbox, and the second message is suppressed
+//     (counted on shared.MetricOutboxDuplicateSuppressed) rather than
+//     delivered.
 type Receiver interface {
 	Run(ctx context.Context, emit func(context.Context, Delivery) error) error
 }
