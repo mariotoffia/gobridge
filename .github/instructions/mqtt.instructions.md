@@ -59,8 +59,9 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021, ADR-0022 and
 - Envelope identity is `mqtt.message-id`, then correlation data (binary as
   `mqtt-bin:<base64url>`), then a UUIDv4 minted once per publish. It is never
   derived from packet ID, QoS or DUP — packet IDs are reused within a session
-  (`mqtt-ingress-headers.md`). It is derived from topic and payload only under
-  the MQTT 3.1.1 `message_id: content_hash` opt-in (see MQTT 3.1.1 below).
+  (`mqtt-ingress-headers.md`). It is derived from the broker session, topic and
+  payload only under the MQTT 3.1.1 `message_id: content_hash` opt-in (see
+  MQTT 3.1.1 below).
 - `mqtt.generated-id` is stripped from every inbound publish before the mint
   decision, and a minted ID is marked with `x-bridge.generated-id`.
 - `x-bridge.correlation-data` is internal. It is never emitted as a user
@@ -155,14 +156,14 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021, ADR-0022 and
 - On 3.1.1 a connection that drops within `connectionStabilityWindow` feeds the
   takeover streak and penalty, but never counts `MetricMQTTSessionTakeover`
   (ADR-0011).
-- `message_id: content_hash` is opt-in and valid only on 3.1.1. On v5 it is
-  rejected (`shared.ErrInvalidConfig`), and so is any value other than `random`
-  and `content_hash`. The id is `mqtt-sha256:` plus the unpadded base64url
-  SHA-256 of the length-prefixed topic followed by the payload. QoS, retain and
-  DUP are never hashed, so a broker redelivery keeps its id. The id is not
-  marked `x-bridge.generated-id`. `random` (a fresh id per delivery, marked
-  generated) stays the default, and an omitted key means `random`; flag any
-  change to that default (ADR-0022 addendum 2026-10-08).
+- `message_id: content_hash` is opt-in and valid only on 3.1.1: on v5 it is
+  rejected (`shared.ErrInvalidConfig`), and so is any value other than
+  `random` and `content_hash`. The id hashes the broker session (effective
+  client id and canonical broker URLs), the topic and the payload, never QoS,
+  retain, DUP or the packet id, and is never marked `x-bridge.generated-id`.
+  `random` stays the default, and an omitted key means `random`; flag any
+  change to that default. Format and trade-offs: `mqtt-311.md` §Message ids
+  and the ADR-0022 addendum 2026-10-08.
 - Headers never cross a 3.1.1 hop. Flag any code that wraps the payload or
   encodes metadata in the topic to carry them: the other side of the broker is
   any MQTT client.

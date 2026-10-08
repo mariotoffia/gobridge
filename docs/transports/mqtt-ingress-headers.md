@@ -62,18 +62,18 @@ Inbound identity uses this precedence:
    through to case 3;
 3. an RFC 4122 UUIDv4 generated once for the received publish and stamped on the
    router-owned Paho publish before buffering or fan-out. On an MQTT 3.1.1
-   session with `options.session.message_id: content_hash`, a hash of the topic
-   and payload replaces the UUIDv4; see
-   [What arrives on MQTT 3.1.1](#what-arrives-on-mqtt-311).
+   session with `options.session.message_id: content_hash`, a hash of the
+   broker session, the topic and the payload replaces the UUIDv4; see
+   [message ids](mqtt-311.md#message-ids).
 
 Every handler reached by one publish therefore sees the same generated
 `Envelope.ID`. Two separate publishes receive separate IDs even when their topic
 and payload bytes are identical. Packet ID, topic, payload, QoS, and DUP are
 never fallback identity inputs: packet IDs are reusable within an MQTT session
 and none of those fields proves application-event identity. The one exception
-is the MQTT 3.1.1 `content_hash` opt-in, which hashes the topic and payload and
-accepts that identical publishes share one ID. It never uses the packet ID,
-QoS, RETAIN or DUP.
+is the MQTT 3.1.1 `content_hash` opt-in: it hashes the broker session, the
+topic and the payload, and accepts that identical publishes on one session
+share one ID. It never uses the packet ID, QoS, RETAIN or DUP.
 
 **Who owns the ID namespace.** Cases 1 and 2 are producer-supplied, so whoever
 may publish to the subscribed topics owns that source's envelope-ID space. MQTT
@@ -120,7 +120,7 @@ publishes in `shared_outbox`. Producers that require stable deduplication across
 redelivery must provide a stable `mqtt.message-id` (preferred) or correlation
 identity and reuse it for every delivery attempt. An MQTT 3.1.1 producer cannot
 send either; there `message_id: content_hash` makes the opposite trade (see
-[What arrives on MQTT 3.1.1](#what-arrives-on-mqtt-311)).
+[message ids](mqtt-311.md#message-ids)).
 
 **Replay-cap consequence.** Because a no-ID publish is re-minted a
 fresh envelope id on every broker redelivery, the runtime's replay ledger — which
@@ -168,22 +168,10 @@ flag and a payload, and nothing else. On a session with
 - `shared_outbox` cannot deduplicate a broker redelivery, because the
   redelivery has a new id.
 
-With `message_id: content_hash`, case 3 is a content hash instead of a UUIDv4:
-
-- The id is `mqtt-sha256:` followed by the unpadded base64url SHA-256 of the
-  length-prefixed topic followed by the payload. QoS, RETAIN and DUP are not
-  hashed, so a broker redelivery, and a retained message replayed after a
-  reconnect, gets the same id.
-- The id is not marked `x-bridge.generated-id`. The replay cap counts retries
-  as for a producer id, and `shared_outbox` recognises a broker redelivery.
-- Two different messages with the same topic and payload get the same id. On
-  `shared_outbox` the second is acked and dropped, counted only on
-  `OutboxDuplicateSuppressed`, if it arrives within the outbox `retention`
-  window (default `1h`). `direct_hold` never drops it.
-- `content_hash` requires `protocol_version: v3.1.1`. An MQTT 5 producer sends
-  its own id, so the configuration is rejected on MQTT 5.
-
-When to use which is on [MQTT 3.1.1](mqtt-311.md#message-ids).
+With `message_id: content_hash`, case 3 is a hash of the broker session, the
+topic and the payload instead of a UUIDv4, so a redelivery keeps its id and
+retries are counted. Two different messages with identical content then share
+one id; read [message ids](mqtt-311.md#message-ids) before you enable it.
 
 On egress a 3.1.1 session publishes only the topic, QoS, RETAIN flag and
 payload. Every header, the subject and the expiry are dropped before the

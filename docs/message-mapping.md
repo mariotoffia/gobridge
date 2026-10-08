@@ -127,10 +127,11 @@ smaller. Dropped attributes are counted on `SQSDroppedAttributes`. See
 **MQTT 3.1.1 carries no properties.** On a session with
 `protocol_version: v3.1.1` only the topic, QoS, RETAIN flag and payload cross
 the wire. Into the envelope, only the payload, `mqtt.topic`, `mqtt.qos` and
-`mqtt.retained` arrive, and the identity is always newly created. Out of the
-envelope, only the payload, topic, QoS and RETAIN flag are sent: the identity,
-subject, Correlation Data, Content Type, Response Topic, expiry and every other
-header are dropped. The tables below describe MQTT 5. See
+`mqtt.retained` arrive, and the identity is newly created unless the session
+sets `message_id: content_hash` ([message ids](transports/mqtt-311.md#message-ids)).
+Out of the envelope, only the payload, topic, QoS and RETAIN flag are sent: the
+identity, subject, Correlation Data, Content Type, Response Topic, expiry and
+every other header are dropped. The tables below describe MQTT 5. See
 [MQTT 3.1.1](transports/mqtt-311.md#no-headers-on-ingress).
 
 ### MQTT into the envelope
