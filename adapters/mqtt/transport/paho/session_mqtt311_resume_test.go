@@ -34,11 +34,20 @@ func resumePlan(subs ...connectivity.SubscriptionPlan) connectivity.SessionPlan 
 
 // ackLosingConn is a broker connection whose next SUBSCRIBE or UNSUBSCRIBE
 // reaches the broker but whose acknowledgement never arrives, as when the
-// connection drops in the middle of the round trip.
+// connection drops in the middle of the round trip. Its next Disconnect can be
+// made to fail.
 type ackLosingConn struct {
 	*fakeReconcileConn
-	loseNextSubAck   atomic.Bool
-	loseNextUnsubAck atomic.Bool
+	loseNextSubAck     atomic.Bool
+	loseNextUnsubAck   atomic.Bool
+	failNextDisconnect atomic.Bool
+}
+
+func (c *ackLosingConn) Disconnect(ctx context.Context) error {
+	if c.failNextDisconnect.Swap(false) {
+		return errors.New("connection reset during DISCONNECT")
+	}
+	return c.fakeReconcileConn.Disconnect(ctx)
 }
 
 func (c *ackLosingConn) Subscribe(ctx context.Context, subs []subscribeSpec) ([]byte, error) {
@@ -329,6 +338,19 @@ func TestReload_MQTT311ReplacementKeepsTheRecordOnlyWhenResumed(t *testing.T) {
 		assert.Empty(t, s.Health(context.Background()).ActiveTopics, "the failed Reload dropped the record")
 
 		failDial.Store(false)
+		require.NoError(t, s.Start(context.Background()), "the supervisor starts the session again")
+		subCalls := conn.subscribeCallCount()
+		connectionUp(s, true)
+		require.NoError(t, s.Reconcile(context.Background(), plan))
+		assert.Equal(t, []string{"plant/a", "plant/b"}, subscribedSince(conn, subCalls))
+	})
+
+	t.Run("MQTT 3.1.1 Reload whose DISCONNECT fails", func(t *testing.T) {
+		s, conn, _ := reloadable(t, ProtocolVersion311)
+		conn.failNextDisconnect.Store(true)
+		require.Error(t, s.Reload(context.Background()), "Reload stops at the failed DISCONNECT")
+		assert.Empty(t, s.Health(context.Background()).ActiveTopics, "the failed Reload dropped the record")
+
 		require.NoError(t, s.Start(context.Background()), "the supervisor starts the session again")
 		subCalls := conn.subscribeCallCount()
 		connectionUp(s, true)
