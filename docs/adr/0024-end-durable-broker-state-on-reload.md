@@ -258,8 +258,8 @@ unchanged: a durable session with no history needs a seeded baseline.
   their managed identity, so automatic redrive
   ([ADR 0019](0019-dlq-auto-redrive-by-system-event.md)) does not match them.
   Redrive them by hand.
-- The AMQP 1.0 durable subscription delete needs an integration test against
-  Artemis; nothing tests it today.
+- An integration test against ActiveMQ Artemis checks that the closing detach
+  deletes the durable subscription. Qpid Broker-J and Solace are not tested.
 - Stale AMQP 0-9-1 bindings are not covered: the adapter never unbinds a
   routing key it no longer uses, so the old binding keeps routing traffic into
   the queue. That needs its own change.
