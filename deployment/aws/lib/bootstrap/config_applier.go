@@ -70,6 +70,16 @@ func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfi
 		}
 	}
 
+	// A durable MQTT session's identity selects its broker state and its managed
+	// filter history, so changing, removing or renaming it live strands both on
+	// every reload path below. Refuse it as the Supervisor does, before anything
+	// is resolved, seeded or rebuilt; a cutover restarts the task instead.
+	if applied := a.appliedRef.Get(); applied != nil {
+		if err := bridge.DurableSessionIdentityChanged(applied, logical); err != nil {
+			return err
+		}
+	}
+
 	// One resolution serves the whole apply: the in-place attempt and, when the
 	// change is not confined to reload units, the full swap after it.
 	epoch := a.applyEpoch(ctx)

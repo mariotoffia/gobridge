@@ -161,18 +161,20 @@ only then change configuration.
 
 ## Durable identity and live-reload migration
 
-The Supervisor fingerprints the canonical broker set (URL userinfo removed),
-effective client ID after suffix resolution, session mode, effective clean-start
-behavior, and effective session expiry. A live reload that changes or removes
-that identity is refused before the old runtime is stopped or a replacement is
-built. Credential rotation, TLS material/path changes, keepalive, reconnect,
-reconcile, and other tuning do not change this durable identity.
+The Supervisor and the AWS runtime fingerprint the canonical broker set (URL
+userinfo removed), effective client ID after suffix resolution, session mode,
+effective clean-start behavior, and effective session expiry. A live reload that
+changes or removes that identity is refused before the old runtime is stopped or
+a replacement is built. Both run the same comparison; a custom composition root
+calls `bridge.DurableSessionIdentityChanged` before it reloads. Credential
+rotation, TLS material/path changes, keepalive, reconnect, reconcile, and other
+tuning do not change this durable identity.
 
 On MQTT 3.1.1 (`protocol_version: v3.1.1`) the fingerprint also includes the
 protocol version. A broker need not resume a session that was created over the
 other version (AWS IoT Core does not), so switching a Persistent or Exclusive
-session between `v5` and `v3.1.1` changes its durable identity: the Supervisor
-refuses it as a live reload, and it needs the maintenance cutover below and the
+session between `v5` and `v3.1.1` changes its durable identity: a live reload
+refuses it, and it needs the maintenance cutover below and the
 [managed-filter migration](../runbooks/mqtt-managed-subscription-migration.md).
 Drain the backlog before you switch. On `v5` the fingerprint is the one it was
 before MQTT 3.1.1 support existed, so existing sessions keep their stored
@@ -190,9 +192,12 @@ the local 86400-second default.
 does not automate broker-state migration. To change a durable MQTT identity,
 operators must externally orchestrate a maintenance cutover: stop new ingress,
 drain and verify the old broker backlog, exact-UNSUBSCRIBE every managed filter, remove the old session,
-apply the new identity, then resume traffic and verify consumption. In a cluster,
-perform this as a coordinated versioned rollout; independent per-process reloads
-are unsafe.
+apply the new identity, then resume traffic and verify consumption. A running
+process refuses the new identity, so it is applied by a restart: on AWS, store
+the new version and restart the task
+([durable MQTT session identity](../aws-deployment/config-reload.md#durable-mqtt-session-identity)).
+In a cluster, perform this as a coordinated versioned rollout; independent
+per-process reloads are unsafe.
 
 ### Reload semantics: a controlled restart of what changed, not a hitless reload
 

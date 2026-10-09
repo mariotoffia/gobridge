@@ -1517,10 +1517,14 @@ type durableSessionIdentity struct {
 	fingerprint string
 }
 
-// durableSessionIdentityChanged remains the config-to-config seam used by unit
-// tests. Supervisor reloads compare the proposed snapshot with the immutable
-// snapshot captured when the current config was accepted.
-func durableSessionIdentityChanged(oldCfg, newCfg *ports.BridgeConfig) error {
+// DurableSessionIdentityChanged refuses newCfg when it would strand the broker
+// state of a durable session oldCfg runs: a persistent or exclusive session whose
+// identity changed, or that was removed or renamed. It also refuses newCfg when
+// one of its durable identities cannot be verified, or two of its durable
+// sessions share one broker identity; with a nil oldCfg only those are checked.
+// The Supervisor compares snapshots it captured when it accepted a config; a
+// composition root without a Supervisor calls this before it reloads.
+func DurableSessionIdentityChanged(oldCfg, newCfg *ports.BridgeConfig) error {
 	frozenOld, err := cloneConfigForBuild(oldCfg)
 	if err != nil {
 		return err

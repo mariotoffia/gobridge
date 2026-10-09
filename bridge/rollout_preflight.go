@@ -170,7 +170,7 @@ func classifyRolloutDelta(oldCfg, newCfg *ports.BridgeConfig) (rolloutDeltaClass
 		return rolloutReplacementRequired, "incomplete config delta; cannot classify"
 	}
 	for _, check := range []func(_, _ *ports.BridgeConfig) error{
-		durableSessionIdentityChanged,
+		DurableSessionIdentityChanged,
 		storeIdentityChanged,
 		leaseSessionIDChanged,
 	} {

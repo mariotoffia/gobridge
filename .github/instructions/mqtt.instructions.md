@@ -97,6 +97,9 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021, ADR-0022, ADR-0023 and
   timestamp, and a suffix is rejected with `session_mode: exclusive`.
   Takeover damping (`connectionStabilityWindow`, capped `takeoverPenalty`,
   `MetricMQTTSessionTakeover`) stays (ADR-0011).
+- `Factory.NewSession` gives the session a logger scoped with `session_id`, so
+  every session record names the configured session, not only its client ID.
+  Session code does not add `session_id` again.
 
 ## Egress and rotation
 

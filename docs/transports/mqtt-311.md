@@ -140,8 +140,9 @@ admission meaningful. It is never sent, and on `v3.1.1` it logs no warning.
 
 ## Startup warning
 
-Every `v3.1.1` session logs one Warn when it is created. It lists what the
-session cannot do:
+Every `v3.1.1` session logs one Warn when it is created. The record names the
+session by `session_id`, as every record a session logs does, and carries its
+`client_id` and `receive_maximum`. It lists what the session cannot do:
 
 - carry headers or message identity. A retry decision on a minted id is
   terminal unless `max_replay_attempts` is `0`; `message_id: content_hash`
@@ -336,7 +337,9 @@ broker need not resume a session that was created over the other version; AWS
 IoT Core does not. Switching a Persistent or Exclusive session between `v5` and
 `v3.1.1` is therefore handled like a `client_id` change:
 
-- the supervisor refuses it as a live reload;
+- the Supervisor and the AWS runtime refuse it as a live reload; apply it with
+  a restart after the cutover
+  ([durable identity](mqtt-durable-sessions.md#durable-identity-and-live-reload-migration));
 - the managed subscription history needs the documented migration
   ([managed-filter migration](../runbooks/mqtt-managed-subscription-migration.md));
 - drain the broker backlog before you switch.

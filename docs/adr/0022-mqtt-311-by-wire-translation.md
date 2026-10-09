@@ -362,8 +362,8 @@ expiry, publish refusal verdicts, a takeover reason, and header carriage
 without changing the payload.
 
 Switching a Persistent or Exclusive session between `v5` and `v3.1.1` is a
-durable-identity change. The supervisor refuses it as a live reload, and the
-managed-subscription history needs the documented migration
+durable-identity change. The Supervisor and the AWS runtime refuse it as a live
+reload, and the managed-subscription history needs the documented migration
 ([managed-filter migration](../runbooks/mqtt-managed-subscription-migration.md)).
 Drain the backlog before switching. For an Ephemeral session a protocol change
 is an ordinary rebuild, because the typed configuration is part of the reload

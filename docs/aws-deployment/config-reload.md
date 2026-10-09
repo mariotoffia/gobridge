@@ -98,8 +98,9 @@ stores and started inside it. Routes that share a session are one unit, so give
 each tenant its own sessions when tenants must not disturb each other. See
 [ADR 0018](../adr/0018-reload-in-place-by-unit.md).
 
-The in-place attempt runs after the same deployment-profile admission and
-cluster checks as every apply, with the secrets resolved once for it and for
+The in-place attempt runs after the same deployment-profile admission, cluster
+checks and [durable MQTT session identity](#durable-mqtt-session-identity)
+check as every apply, with the secrets resolved once for it and for
 the full swap that may follow. The bootstrap
 library falls back to the [full swap](#swap-modes) when:
 
@@ -149,10 +150,11 @@ outcome and the error, and ends one of three ways:
 
 An MQTT session's options depend only on its own configuration. Its
 `receive_maximum` is the count you set, or the default 192; nothing is derived
-from the task memory or from the number of other sessions. So adding or
-removing one tenant's MQTT session replaces only that session's reload unit.
-Every other tenant's MQTT session stays connected. No per-session setting is
-needed to keep them apart.
+from the task memory or from the number of other sessions. So adding one
+tenant's MQTT session, or removing an ephemeral one, replaces only that
+session's reload unit. Every other tenant's MQTT session stays connected. No
+per-session setting is needed to keep them apart. Removing a persistent or
+exclusive session is a [cutover](#durable-mqtt-session-identity).
 
 GoBridge does not estimate memory. It limits MQTT by counts:
 
@@ -179,6 +181,40 @@ sessions:
         client_id: bridge-tenant-a
         receive_maximum: 192   # a count; 192 is also the default
 ```
+
+### Durable MQTT session identity
+
+A persistent or exclusive MQTT session keeps state on the broker: its
+subscriptions and the QoS 1/2 messages queued while it is offline. Its durable
+identity selects that state and the session's managed subscription history: the
+broker URLs, the effective client ID, the session mode, clean start, the
+session expiry and, on MQTT 3.1.1, the protocol version
+([durable sessions](../transports/mqtt-durable-sessions.md#durable-identity-and-live-reload-migration)).
+
+A reload that changes that identity, or removes or renames such a session, is
+refused before anything is resolved, seeded or rebuilt, whether the change
+would reload in place or replace the runtime. The check and its error are the
+Supervisor's (`bridge.DurableSessionIdentityChanged`). The running configuration
+keeps serving, the version is reported rejected, and the warning names the
+session:
+
+```text
+bootstrap: config reload rejected; keeping last good runtime  error="bridge: refusing live reload: durable session \"tenant-a\" broker identity changed; ..."
+```
+
+To change or retire such a session, cut over:
+
+1. Stop ingress and drain the old session's broker backlog.
+2. Exact-UNSUBSCRIBE every managed filter
+   ([managed-filter migration](../runbooks/mqtt-managed-subscription-migration.md)).
+3. Store the new version in the config source: the file, or the DynamoDB item
+   through CAS-aware tooling. An admin-API commit of it fails and is rolled
+   back. The running task refuses the version and keeps serving.
+4. Restart the task. A starting task has no running configuration to compare
+   with, so it applies the stored version.
+
+A clustered deployment refuses this change in the cluster reload seam; see the
+[cluster config rollout runbook](../runbooks/cluster-config-rollout.md).
 
 ### Swap Modes
 
@@ -254,7 +290,8 @@ Follow this workflow for safe configuration updates in production.
 3. **Config is parsed and validated.** The YAML is deserialized into a
    `BridgeConfig` struct. The `validateFilesystemProfile` function checks
    topology constraints (e.g. `shared_outbox` routes are rejected under
-   `filesystem_replicated` topology).
+   `filesystem_replicated` topology). A change to a persistent or exclusive
+   MQTT session's [durable identity](#durable-mqtt-session-identity) is refused.
 
 4. **SSM parameters are resolved.** The `resolveInputs` function reads
    `admin_api_key_param`, `monitor_api_key_param`, and any

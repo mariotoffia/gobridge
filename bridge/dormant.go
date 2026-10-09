@@ -12,7 +12,7 @@ func ValidateDormantReactivation(previous, next *ports.BridgeConfig) error {
 	if previous == nil {
 		return nil
 	}
-	if err := durableSessionIdentityChanged(previous, next); err != nil {
+	if err := DurableSessionIdentityChanged(previous, next); err != nil {
 		return err
 	}
 	if err := storeIdentityChanged(previous, next); err != nil {
