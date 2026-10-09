@@ -5,7 +5,7 @@ applyTo: "runtime/**,bridge/**,adapters/native/cluster/**,adapters/aws/cluster/*
 # Runtime, composition root and clustering
 
 Sources: ADR-0001, ADR-0004, ADR-0009, ADR-0012 to ADR-0015, ADR-0017 to
-ADR-0020, `docs/internals/architecture-message-flow.md`,
+ADR-0020, ADR-0024, `docs/internals/architecture-message-flow.md`,
 `docs/internals/architecture-contracts-and-clustering.md` and
 `docs/cluster/spec/cluster-config-rollout-protocol.md`.
 
@@ -137,7 +137,7 @@ ADR-0020, `docs/internals/architecture-message-flow.md`,
 - `InPlaceReload.Apply` preflights the whole next document and plans every
   added unit's part before it retires anything. Each root first runs every
   check its full swap runs — the Supervisor's no-op detection, cluster guard,
-  durable session identity guard, store-identity, lease `session_id` and
+  duplicate durable identity validation, store-identity, lease `session_id` and
   durable-backlog preflights; the AWS runtime's fingerprint, deployment-profile
   admission, cluster seam and `bridge.ValidateDurableReload` (the same guards
   without `WithAllowDestructiveReload`) — so an
@@ -208,3 +208,39 @@ ADR-0020, `docs/internals/architecture-message-flow.md`,
   advances only on `Confirmed`. Revert is whole-cohort.
 - Post-commit apply failures retry with capped backoff and go terminal past the
   attempt bound (ADR-0013).
+
+## Ending broker state (ADR 0024)
+
+- A changed, removed or renamed durable broker identity is never refused. Flag
+  any reload guard that compares durable identities per `session_id`; only
+  `validateDurableBrokerIdentities` (duplicates, run by `Builder.Preflight`)
+  remains.
+- Lost and added keys come from `bridge.PlanBrokerStateChange` over the whole
+  running and next configurations, computed from configuration through
+  `ports.BrokerStateKeyer`, never from running instances. The same
+  configuration on both sides (a session rebuild) changes nothing.
+- Only `Runtime.Retire` (`Unit.EndBrokerState`) and
+  `Runtime.StopEndingBrokerState` ask a component to end broker state.
+  Receivers are asked after the settle wait, just before the unit's runs are
+  cancelled; sessions through `session.Manager.CloseEndingBrokerState`, just
+  before their manager closes them; a lease is released only after that close.
+  Only sessions a manager runs are asked. Flag any ending on `Stop`,
+  `StopBridge`, a lease loss, failover or a session rebuild.
+- A lease-managed session ends state only while this instance holds its lease
+  and the lease's local deadline has not passed
+  (`session.Manager.MayEndBrokerState`), and a session only when the unit's
+  runs finished. The ask carries that deadline (`EndBrokerStateOnClose(before)`),
+  a receiver's capped by the retire or stop `ctx` deadline less
+  `storeCloseGraceMargin`, and an ending that cannot finish before it is abandoned.
+- Nothing is asked to end broker state when the drain before the cancel did
+  not settle every delivery: a Warn naming `session_id` and a
+  `BrokerStateEndFailures` count instead. This is the early check: a delivery
+  admitted after it can still be left unsettled by the cancel, so the MQTT
+  session and the AMQP 1.0 receiver also end nothing while a delivery they
+  received is unsettled. Keep both.
+- Ending is bounded by the transport's connect timeout. A failure is a Warn
+  naming `session_id` and a `BrokerStateEndFailures` count; it never fails the
+  retire or the reload.
+- A full swap passes the lost keys to the old runtime's
+  `StopEndingBrokerState`, and marks the added keys on the builder
+  (`MarkAddedBrokerStateKeys`) before the build creates sessions.

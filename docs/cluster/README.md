@@ -129,7 +129,7 @@ not a veto over the cohort. Watch for it the way you watch for any unhealthy
 process.
 
 **What is still refused.** A change that cannot be applied live on *any* single
-process — a durable session's identity, a store's target — is refused here too,
+process — a store's target, a lease-bearing exclusive `session_id` — is refused here too,
 with the same message a standalone bridge gives, and still needs the whole-cohort
 replacement from setup 2.
 
@@ -245,10 +245,13 @@ the cohort rolls it out.
 
 Coordinated mode only rolls out **live-safe** changes — the same kinds of change
 a single process is allowed to reload live (routing, bindings, processor tuning,
-log level, non-identity session options).
+log level, session options).
 
-Changes that touch **durable identity or storage** — a session's client id or
-subscription, a lease/outbox/DLQ **store target**, the `deployment_mode`, or the
+A durable session's broker identity (its client id or broker URL) rolls live:
+the member that holds the session's lease ends the old broker session as it
+retires the old unit ([ADR 0024](../adr/0024-end-durable-broker-state-on-reload.md)).
+Changes that touch **storage or ownership** — a lease/outbox/DLQ **store
+target**, a lease-bearing exclusive `session_id`, the `deployment_mode`, or the
 cohort's own `members` / `endpoints` / `rollout` settings — are
 **replacement-required**: they still need the whole-cohort stop-and-restart from
 setup 2, even in a coordinated cohort. GoBridge classifies the change for you and

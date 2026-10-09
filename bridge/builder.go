@@ -29,6 +29,9 @@ type Builder struct {
 	// sessionUnrecoverable is forwarded to a full build's runtime
 	// (WithSessionUnrecoverableHandler).
 	sessionUnrecoverable func(sessionID string, cause error) bool
+	// addedBrokerStateKeys names the sessions whose broker state key the live
+	// reload this builder builds for added (MarkAddedBrokerStateKeys).
+	addedBrokerStateKeys map[string]bool
 	// regErrs accumulates deferred registration errors (e.g. a duplicate
 	// processor name) so a chaining Register* call can still return *Builder.
 	// prepare() surfaces them before doing any work, failing the Build.

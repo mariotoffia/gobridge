@@ -712,6 +712,21 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context, managedStore ports.
 			cleanup()
 			return nil, nil, fmt.Errorf("bridge: create session spec %q: %w", sd.ID, err)
 		}
+		spec.BrokerStateKeyAdded = b.addedBrokerStateKeys[sd.ID]
+		if spec.BrokerStateKeyAdded && spec.ManagedSubscriptionStore != nil {
+			// Carry the legacy history over first: an empty baseline under the
+			// new key would hide it, and the session would end a broker session
+			// whose history exists (ADR 0024).
+			if err := ports.CarryOverManagedSubscriptionHistory(ctx, spec.ManagedSubscriptionStore,
+				spec.ManagedSubscriptionIdentity, spec.LegacyManagedSubscriptionIdentity); err != nil {
+				cleanup()
+				return nil, nil, fmt.Errorf("bridge: carry over managed subscription history of session %q: %w", sd.ID, err)
+			}
+			if err := ensureManagedSubscriptionBaseline(ctx, spec.ManagedSubscriptionStore, spec.ManagedSubscriptionIdentity); err != nil {
+				cleanup()
+				return nil, nil, fmt.Errorf("bridge: record managed subscription baseline of session %q: %w", sd.ID, err)
+			}
+		}
 		sess, err := tf.NewSession(ctx, spec)
 		if err != nil {
 			cleanup()

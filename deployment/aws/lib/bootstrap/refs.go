@@ -103,6 +103,18 @@ func stopRuntime(ctx context.Context, rt *goruntime.Runtime, cfg *ports.BridgeCo
 	return rt.Stop(stopCtx)
 }
 
+// stopRuntimeEndingBrokerState is stopRuntime for a full swap: the sessions in
+// lost end the broker state the next configuration no longer has (ADR 0024).
+func stopRuntimeEndingBrokerState(ctx context.Context, rt *goruntime.Runtime, cfg *ports.BridgeConfig, lost []string) error {
+	if rt == nil {
+		return nil
+	}
+
+	stopCtx, cancel := context.WithTimeout(ctx, drainTimeout(cfg))
+	defer cancel()
+	return rt.StopEndingBrokerState(stopCtx, lost)
+}
+
 // drainTimeout is the budget stopRuntime gives a runtime running cfg to drain.
 func drainTimeout(cfg *ports.BridgeConfig) time.Duration {
 	if cfg == nil {

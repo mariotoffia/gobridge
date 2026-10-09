@@ -3,6 +3,8 @@
 Status: accepted
 Date: 2026-09-23
 Deciders: GoBridge core
+Amended by: 0024 (retiring a reload unit ends the broker state of a key the
+next configuration no longer has)
 Amends: 0004 (a running runtime may retire and graft reload units; it is still
 started once, stopped once and never restarted)
 Relates to: 0016 (a reload unit is identified by its content normal form)

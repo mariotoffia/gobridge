@@ -118,6 +118,14 @@ func (r *router) clearUnsettledLocked() {
 	clear(r.unsettled)
 }
 
+// unsettledCount returns the number of QoS 1/2 packets received and not yet
+// acknowledged in the current connection epoch.
+func (r *router) unsettledCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.unsettled)
+}
+
 func (r *router) unsettledSnapshot(receiveMaximum uint16) unsettledHealth {
 	r.mu.RLock()
 	count := len(r.unsettled)

@@ -205,6 +205,10 @@ type ReceiverConfig struct {
 	// is derived from the session's ContainerID and the link Address.
 	SubscriptionName string
 
+	// SessionID is the GoBridge session_id the receiver reads through. The log
+	// and the metric about ending its durable subscription name it (ADR 0024).
+	SessionID string
+
 	// Clock drives retry backoff waits. When nil defaults to
 	// clock.System (wall clock). Tests may inject a clocktest.Fake to
 	// control retry delays deterministically.
@@ -353,8 +357,8 @@ const defaultIdleTimeout = 30 * time.Second
 // usesSASLPlain reports whether the effective SASL layer will be PLAIN,
 // which transmits the username/password to the broker. It is PLAIN when:
 //
-//   - the Address URL carries userinfo. go-amqp's dialConn (v1.5.1
-//     conn.go:224) UNCONDITIONALLY does cp.SASLType = SASLTypePlain(user,
+//   - the Address URL carries userinfo. go-amqp's dialConn (v1.7.0
+//     conn.go:226) UNCONDITIONALLY does cp.SASLType = SASLTypePlain(user,
 //     pass) whenever u.User != nil, OVERRIDING whatever SASLType the
 //     adapter assembled from SASLMechanism. So credentials embedded in the
 //     Address (amqp://user:pass@host, or even username-only) put PLAIN on

@@ -17,6 +17,8 @@ var (
 	_ ports.FreezableConfig                   = (*Config)(nil)
 	_ ports.DurableSessionIdentityConfig      = Config{}
 	_ ports.DurableSessionIdentityConfig      = (*Config)(nil)
+	_ ports.ManagedSubscriptionIdentityConfig = Config{}
+	_ ports.ManagedSubscriptionIdentityConfig = (*Config)(nil)
 	_ ports.ReplicaIdentityConfig             = Config{}
 	_ ports.ReplicaIdentityConfig             = (*Config)(nil)
 	_ ports.PostAcquireActivationTimingConfig = Config{}

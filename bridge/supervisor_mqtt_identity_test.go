@@ -58,99 +58,82 @@ func configWithDurableSessionIdentity(version int, identity string) *ports.Bridg
 	return cfg
 }
 
-func TestDurableSessionIdentityChanged_StableSessionIDs(t *testing.T) {
-	oldCfg := configWithDurableSessionIdentity(1, "opaque-a")
-
-	unchanged := configWithDurableSessionIdentity(2, "opaque-a")
-	require.NoError(t, durableSessionIdentityChanged(oldCfg, unchanged))
-
-	changed := configWithDurableSessionIdentity(2, "opaque-b")
-	err := durableSessionIdentityChanged(oldCfg, changed)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "stable-session")
-	assert.NotContains(t, err.Error(), "opaque-a")
-	assert.NotContains(t, err.Error(), "opaque-b")
-
-	renamed := configWithDurableSessionIdentity(2, "opaque-b")
-	renamed.Sessions[0].ID = "new-session"
-	require.Error(t, durableSessionIdentityChanged(oldCfg, renamed), "renaming a durable session can strand its broker state")
-}
-
-func TestDurableSessionIdentityChanged_FailsClosedOnCapabilityError(t *testing.T) {
-	oldCfg := configWithDurableSessionIdentity(1, "opaque-a")
-	newCfg := configWithDurableSessionIdentity(2, "opaque-a")
-	newCfg.Sessions[0].Config = durableIdentityTestConfig{err: errors.New("cannot resolve effective identity")}
-
-	err := durableSessionIdentityChanged(oldCfg, newCfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "stable-session")
-	assert.NotContains(t, err.Error(), "cannot resolve effective identity")
-}
-
-func TestSupervisor_SessionIdentityChangeRefusedBeforeBuildAndOldRuntimeContinues(t *testing.T) {
-	for _, allow := range []bool{false, true} {
-		t.Run(map[bool]string{false: "default", true: "destructive override"}[allow], func(t *testing.T) {
-			onSwap, swaps := swapChan(1)
-			factory := &countingTransportFactory{}
-			s := NewSupervisor(WithOnSwap(onSwap), WithAllowDestructiveReload(allow))
-			s.RegisterTransport("fake", &fakeTransportFactory{})
-			s.RegisterTransport("identity", factory)
-
-			oldCfg := configWithDurableSessionIdentity(1, "opaque-a")
-			changes := make(chan *ports.BridgeConfig, 1)
-			cancel, errCh := quickSupervisorRun(s, oldCfg, changes)
-			defer func() { cancel(); <-errCh }()
-
-			oldRuntime := s.Runtime()
-			require.NotNil(t, oldRuntime)
-			beforeSessions, _, _ := factory.Counts()
-			require.Equal(t, 1, beforeSessions)
-
-			newCfg := configWithDurableSessionIdentity(2, "opaque-b")
-			require.True(t, sendConfig(changes, newCfg, time.Second))
-			ev := awaitSwap(t, swaps)
-			require.Error(t, ev.Error)
-			assert.Same(t, oldRuntime, s.Runtime(), "refusal must leave the old runtime serving")
-			assert.Equal(t, oldCfg, s.Config(), "refusal must preserve old config and version")
-			assert.Equal(t, 1, s.Config().Version)
-			afterSessions, _, _ := factory.Counts()
-			assert.Equal(t, beforeSessions, afterSessions, "replacement must not be built before identity preflight")
-		})
-	}
-}
-
-func TestSupervisor_InPlaceSessionIdentityMutationUsesAppliedSnapshot(t *testing.T) {
+func startIdentitySupervisor(t *testing.T, cfg *ports.BridgeConfig) (*Supervisor, *countingTransportFactory, <-chan SwapEvent, chan *ports.BridgeConfig) {
+	t.Helper()
 	onSwap, swaps := swapChan(1)
 	factory := &countingTransportFactory{}
 	s := NewSupervisor(WithOnSwap(onSwap))
 	s.RegisterTransport("fake", &fakeTransportFactory{})
 	s.RegisterTransport("identity", factory)
-
-	cfg := configWithDurableSessionIdentity(1, "opaque-a")
 	changes := make(chan *ports.BridgeConfig, 1)
 	cancel, errCh := quickSupervisorRun(s, cfg, changes)
-	defer func() { cancel(); <-errCh }()
-
-	oldRuntime := s.Runtime()
-	require.NotNil(t, oldRuntime)
-	beforeSessions, _, _ := factory.Counts()
-
-	// Mutate the caller-held object that Supervisor previously retained directly,
-	// then submit that same pointer as a reload.
-	cfg.Version = 2
-	cfg.Sessions[0].Config = durableIdentityTestConfig{Identity: "opaque-b"}
-	require.True(t, sendConfig(changes, cfg, time.Second))
-
-	ev := awaitSwap(t, swaps)
-	require.Error(t, ev.Error)
-	assert.Same(t, oldRuntime, s.Runtime())
-	require.NotNil(t, s.Config())
-	assert.Equal(t, 1, s.Config().Version, "caller mutation must not alter the applied blueprint snapshot")
-	afterSessions, _, _ := factory.Counts()
-	assert.Equal(t, beforeSessions, afterSessions, "identity refusal must happen before replacement build")
+	t.Cleanup(func() { cancel(); <-errCh })
+	return s, factory, swaps, changes
 }
 
-func TestDurableSessionIdentityChanged_RejectsDuplicateIdentityOnStartupAndReload(t *testing.T) {
+func TestSupervisor_AcceptsAReloadThatChangesADurableBrokerIdentity(t *testing.T) {
+	s, factory, swaps, changes := startIdentitySupervisor(t, configWithDurableSessionIdentity(1, "opaque-a"))
+	beforeSessions, _, _ := factory.Counts()
+
+	require.True(t, sendConfig(changes, configWithDurableSessionIdentity(2, "opaque-b"), time.Second))
+	ev := awaitSwap(t, swaps)
+
+	require.NoError(t, ev.Error, "a changed broker identity is an ordinary reload (ADR 0024)")
+	assert.Equal(t, 2, s.Config().Version)
+	afterSessions, _, _ := factory.Counts()
+	assert.Equal(t, beforeSessions+1, afterSessions, "the reload builds the session under its new identity")
+}
+
+func TestSupervisor_AcceptsAReloadThatRemovesADurableSession(t *testing.T) {
+	s, _, swaps, changes := startIdentitySupervisor(t, configWithDurableSessionIdentity(1, "opaque-a"))
+	next := supervisorTestConfig("r1")
+	next.Version = 2
+
+	require.True(t, sendConfig(changes, next, time.Second))
+	ev := awaitSwap(t, swaps)
+
+	require.NoError(t, ev.Error)
+	assert.Equal(t, 2, s.Config().Version)
+	assert.Empty(t, s.Config().Sessions)
+}
+
+func TestSupervisor_AcceptsAReloadThatRenamesADurableSession(t *testing.T) {
+	s, _, swaps, changes := startIdentitySupervisor(t, configWithDurableSessionIdentity(1, "opaque-a"))
+	next := renamedDurableSession(configWithDurableSessionIdentity(2, "opaque-a"), "renamed-session")
+
+	require.True(t, sendConfig(changes, next, time.Second))
+	ev := awaitSwap(t, swaps)
+
+	require.NoError(t, ev.Error)
+	require.Len(t, s.Config().Sessions, 1)
+	assert.Equal(t, "renamed-session", s.Config().Sessions[0].ID)
+}
+
+func TestSupervisor_CallerMutationDoesNotAlterTheAppliedConfig(t *testing.T) {
+	cfg := configWithDurableSessionIdentity(1, "opaque-a")
+	s, _, _, _ := startIdentitySupervisor(t, cfg)
+
+	// Mutate the caller-held object the Supervisor was started with.
+	cfg.Version = 2
+	cfg.Sessions[0].Config = durableIdentityTestConfig{Identity: "opaque-b"}
+
+	applied := s.Config()
+	require.NotNil(t, applied)
+	assert.Equal(t, 1, applied.Version, "caller mutation must not alter the applied blueprint snapshot")
+	assert.Equal(t, durableIdentityTestConfig{Identity: "opaque-a"}, applied.Sessions[0].Config)
+}
+
+func TestValidateDurableBrokerIdentities_FailsClosedOnCapabilityError(t *testing.T) {
+	cfg := configWithDurableSessionIdentity(1, "opaque-a")
+	cfg.Sessions[0].Config = durableIdentityTestConfig{err: errors.New("cannot resolve effective identity")}
+
+	err := validateDurableBrokerIdentities(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stable-session")
+	assert.NotContains(t, err.Error(), "cannot resolve effective identity")
+}
+
+func TestValidateDurableBrokerIdentities_RejectsDuplicateIdentities(t *testing.T) {
 	duplicate := configWithDurableSessionIdentity(2, "opaque-a")
 	duplicate.Sessions[0].Config = durableIdentityTestConfig{Identity: "opaque-a", Domains: []string{"shared-domain"}}
 	duplicate.Sessions = append(duplicate.Sessions, ports.SessionDef{
@@ -161,12 +144,7 @@ func TestDurableSessionIdentityChanged_RejectsDuplicateIdentityOnStartupAndReloa
 		ID: "duplicate-sender", Transport: "identity", SessionID: "duplicate-session",
 	})
 
-	require.Error(t, durableSessionIdentityChanged(nil, duplicate),
-		"initial startup must reject duplicate effective identities")
-
-	oldCfg := configWithDurableSessionIdentity(1, "opaque-a")
-	require.Error(t, durableSessionIdentityChanged(oldCfg, duplicate),
-		"reload must reject a newly-added duplicate effective identity")
+	require.Error(t, validateDurableBrokerIdentities(duplicate))
 }
 
 func TestSupervisor_DuplicateDurableIdentityRejectedBeforeInitialBuild(t *testing.T) {
@@ -243,7 +221,7 @@ func (*typedNilDurableIdentityConfig) DurableSessionIdentityDomains(connectivity
 	panic("typed nil durable identity domains invoked")
 }
 
-func TestSnapshotDurableSessionIdentities_RejectsOverlappingEndpointDomainsOnly(t *testing.T) {
+func TestValidateDurableBrokerIdentities_RejectsOverlappingEndpointDomainsOnly(t *testing.T) {
 	cfg := configWithDurableSessionIdentity(1, "state-a")
 	cfg.Sessions[0].Config = durableIdentityTestConfig{
 		Identity: "state-a", Domains: []string{"endpoint-a", "endpoint-b"},
@@ -258,17 +236,17 @@ func TestSnapshotDurableSessionIdentities_RejectsOverlappingEndpointDomainsOnly(
 		ID: "second-sender", Transport: "identity", SessionID: "second-session",
 	})
 
-	_, err := snapshotDurableSessionIdentities(cfg)
+	err := validateDurableBrokerIdentities(cfg)
 	require.Error(t, err, "one overlapping broker endpoint plus client identity must collide")
 
 	cfg.Sessions[1].Config = durableIdentityTestConfig{
 		Identity: "state-b", Domains: []string{"endpoint-c", "endpoint-d"},
 	}
-	_, err = snapshotDurableSessionIdentities(cfg)
+	err = validateDurableBrokerIdentities(cfg)
 	require.NoError(t, err, "non-overlapping broker endpoints must not collide")
 }
 
-func TestSnapshotDurableSessionIdentities_OnlyReferencedDurableSessions(t *testing.T) {
+func TestValidateDurableBrokerIdentities_ChecksOnlyReferencedDurableSessions(t *testing.T) {
 	cfg := configWithDurableSessionIdentity(1, "referenced-durable")
 	cfg.Sessions = append(cfg.Sessions,
 		ports.SessionDef{
@@ -284,21 +262,17 @@ func TestSnapshotDurableSessionIdentities_OnlyReferencedDurableSessions(t *testi
 		ID: "ephemeral-sender", Transport: "identity", SessionID: "referenced-ephemeral",
 	})
 
-	snapshot, err := snapshotDurableSessionIdentities(cfg)
-	require.NoError(t, err)
-	assert.Equal(t, durableSessionIdentitySnapshot{
-		"stable-session": {kind: "identity", fingerprint: "referenced-durable"},
-	}, snapshot)
+	require.NoError(t, validateDurableBrokerIdentities(cfg))
 }
 
-func TestSnapshotDurableSessionIdentities_TypedNilCapabilityReturnsError(t *testing.T) {
+func TestValidateDurableBrokerIdentities_TypedNilCapabilityReturnsError(t *testing.T) {
 	cfg := configWithDurableSessionIdentity(1, "unused")
 	var typedNil *typedNilDurableIdentityConfig
 	cfg.Sessions[0].Config = typedNil
 
 	var err error
 	require.NotPanics(t, func() {
-		_, err = snapshotDurableSessionIdentities(cfg)
+		err = validateDurableBrokerIdentities(cfg)
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stable-session")
@@ -315,6 +289,9 @@ type mutableIdentityTestConfig struct {
 
 	domainStarted  chan struct{}
 	domainContinue chan struct{}
+	// domainOnce is shared by the frozen copies, so the hook fires on the first
+	// call only, however often validation asks for the domains.
+	domainOnce *sync.Once
 }
 
 func (*mutableIdentityTestConfig) Kind() string    { return "identity" }
@@ -325,8 +302,10 @@ func (*mutableIdentityTestConfig) DurableSessionIdentity(connectivity.SessionMod
 func (c *mutableIdentityTestConfig) ownershipDomains() ([]string, error) {
 	domain := c.identityParts[0]
 	if c.domainStarted != nil {
-		close(c.domainStarted)
-		<-c.domainContinue
+		c.domainOnce.Do(func() {
+			close(c.domainStarted)
+			<-c.domainContinue
+		})
 	}
 	return []string{domain}, nil
 }
@@ -353,7 +332,7 @@ func (c unfreezableDurableIdentityConfig) DurableSessionIdentityDomains(connecti
 	return []string{c.identity}, nil
 }
 
-func TestSupervisor_FreezesProposalBeforeIdentityPreflightAndBuild(t *testing.T) {
+func TestSupervisor_FreezesProposalBeforeValidationAndBuild(t *testing.T) {
 	onSwap, swaps := swapChan(1)
 	type capturedConfig struct {
 		identity   string
@@ -388,7 +367,7 @@ func TestSupervisor_FreezesProposalBeforeIdentityPreflightAndBuild(t *testing.T)
 	newCfg.Bindings[0].Address = "addr/reloaded"
 	proposed := &mutableIdentityTestConfig{
 		identityParts: []string{"broker-a"}, dependency: dependency,
-		domainStarted: started, domainContinue: proceed,
+		domainStarted: started, domainContinue: proceed, domainOnce: &sync.Once{},
 	}
 	newCfg.Sessions[0].Config = proposed
 	require.True(t, sendConfig(changes, newCfg, time.Second))
@@ -409,11 +388,11 @@ func TestSupervisor_FreezesProposalBeforeIdentityPreflightAndBuild(t *testing.T)
 	assert.Same(t, dependency, stored.dependency)
 }
 
-func TestSnapshotDurableSessionIdentities_RequiresAdapterOwnedFreezeCapability(t *testing.T) {
+func TestValidateDurableBrokerIdentities_RequiresAdapterOwnedFreezeCapability(t *testing.T) {
 	cfg := configWithDurableSessionIdentity(1, "state")
 	cfg.Sessions[0].Config = unfreezableDurableIdentityConfig{identity: "state"}
 
-	_, err := snapshotDurableSessionIdentities(cfg)
+	err := validateDurableBrokerIdentities(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "freeze")
 	assert.Contains(t, err.Error(), "stable-session")

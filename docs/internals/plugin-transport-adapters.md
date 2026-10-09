@@ -81,6 +81,18 @@ Optional companion interfaces (also in `ports`):
 
 - `ports.VisibilityTimeoutProvider` — declares the source visibility
   timeout used by the runtime validator (e.g. SQS).
+- `ports.BrokerStateKeyer` (on the `TransportFactory`) — returns the broker
+  state keys a session and its receivers hold, computed from configuration
+  only: one per piece of broker state that outlives a connection (MQTT
+  persistent/exclusive session, AMQP 1.0 durable topic receiver). A reload ends
+  the state of a key the next configuration no longer has (ADR 0024).
+- `ports.BrokerStateEnder` (on a `Session` or `Receiver`) —
+  `EndBrokerStateOnClose(before)` asks the next `Close` to end that broker
+  state, when still connected or attached and no delivery it received is
+  unsettled, and, when `before` is non-zero, to give up rather than finish
+  after it (the local lease deadline). A failure, or a state kept for an
+  unsettled delivery, is a Warn naming `session_id` and a
+  `BrokerStateEndFailures` count, never a `Close` error.
 
 Do not add a capability that estimates memory or byte use. GoBridge limits
 transports by counts (for MQTT, `receive_maximum` per session and

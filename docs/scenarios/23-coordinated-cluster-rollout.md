@@ -211,7 +211,7 @@ routine tuning that always converges. See
 ## Variation: A change that can't roll live
 
 Some changes are **replacement-required** even in a coordinated cohort — changing
-a durable session identity (`client_id`), a lease/outbox/DLQ **store target**,
+a lease-bearing exclusive `session_id`, a lease/outbox/DLQ **store target**,
 `deployment_mode`, or the cohort's own `bridge.cluster.members` / `endpoints` /
 `rollout`. The cohort refuses to roll these through the barrier (it names the
 class) and you apply them with the manual

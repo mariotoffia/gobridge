@@ -199,7 +199,7 @@ func newManagedMQTTSession(ctx context.Context, t *testing.T, brokerURL, session
 		SessionExpiryInterval: 300,
 		UnmatchedGrace:        unmatchedGrace,
 	}}
-	identity, err := cfg.DurableSessionIdentity(connectivity.SessionPersistent)
+	identity, err := cfg.ManagedSubscriptionIdentity(connectivity.SessionPersistent)
 	if err != nil {
 		t.Fatalf("derive durable identity: %v", err)
 	}

@@ -143,6 +143,9 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 	session.managedStore = spec.ManagedSubscriptionStore
 	session.managedIdentity = spec.ManagedSubscriptionIdentity
 	session.managedRequired = spec.ManagedSubscriptionsRequired
+	session.sessionID = spec.ID
+	session.legacyManagedIdentity = spec.LegacyManagedSubscriptionIdentity
+	session.freshBrokerSessionPending = spec.BrokerStateKeyAdded && endsBrokerState(mode)
 	return session, nil
 }
 

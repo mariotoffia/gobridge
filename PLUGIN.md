@@ -385,6 +385,7 @@ from `ports/plugin_config.go`:
 | Capability | What it exposes, and what an absent or zero value means |
 |---|---|
 | `DurableSessionIdentityConfig` | Opaque, secret-safe fingerprints for transport-owned durable broker state, and one broker/client ownership domain per canonical endpoint. Include effective storage identity only; exclude credentials and runtime tuning. Never return or log raw descriptors. A durable identity config must also implement `FreezableConfig`. |
+| `ManagedSubscriptionIdentityConfig` | The opaque key a durable session's managed subscription history is stored under: a SHA-256 digest of the session's broker state key (ADR 0024). Settings that keep the broker state key (switching between persistent and exclusive, clean start, expiry, protocol version) keep it. Empty for a session that keeps no history. |
 | `FreezableConfig` | A deep-owned immutable configuration snapshot that intentionally preserves opaque runtime dependencies whose identity must remain stable. Core code never reflect-clones adapter configs. Initialization requires it for mutable custom configs, such as a config with a map or slice; deeply immutable scalar value configs, such as a value struct containing only strings and numbers, need not implement it. See [initialization snapshots](docs/aws-deployment/config-initialization.md#snapshot-ownership). |
 | `ReplicaIdentityConfig` | The effective per-replica identity strategy used by clustered shared consumers. Validation fails closed when a shared subscription cannot prove a strategy. |
 | `TransportFailoverTimingConfig` | One conservative complete post-takeover activation bound through `ServiceLevelFull`, including connect, cleanup/replay, recycle/reconnect, and final reconciliation exactly once. A declared `failover_slo` fails closed when the aggregate bound is unavailable; core code must not add nested phases again and remains transport-neutral. |
@@ -403,9 +404,8 @@ capability the frozen value drops is otherwise silent — the config still
 validates and keeps its kind, while the core code reading it sees an absent
 value and skips the very check the capability exists for.
 
-These capabilities keep `bridge/` and `validate/` transport-neutral: core code
-asserts the generic interface and never switches on a transport name or imports
-an adapter config type.
+These capabilities keep `bridge/` and `validate/` transport-neutral: core code asserts the generic interface and never switches on a transport name or imports an adapter config type.
+A transport whose broker keeps state that outlives a connection also implements the runtime capabilities `ports.BrokerStateKeyer` and `ports.BrokerStateEnder` (ADR 0024); see [transport adapters](docs/internals/plugin-transport-adapters.md#transport-factory-ports-first).
 
 ### Registering the decoder
 

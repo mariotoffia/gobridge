@@ -4,7 +4,7 @@ applyTo: "adapters/amqp/**"
 
 # AMQP transports (0-9-1 and 1.0)
 
-Adds to `adapters.instructions.md`. Sources: ADR-0002, ADR-0008,
+Adds to `adapters.instructions.md`. Sources: ADR-0002, ADR-0008, ADR-0024,
 `docs/transports/amqp091.md` and `docs/transports/amqp10.md`.
 
 ## AMQP 0-9-1 (`adapters/amqp/transport/amqp091/`)
@@ -51,3 +51,21 @@ Adds to `adapters.instructions.md`. Sources: ADR-0002, ADR-0008,
   retries. Downstream must be idempotent.
 - Rotation is commit-then-reconnect: swap `liveCreds` / `opts`, then close the
   connection. The single-use rule applies when run as an exclusive session.
+- A durable receiver's `Close` drops the connection, keeping the durable
+  subscription, except when `EndBrokerStateOnClose` asked it to end broker
+  state, it is a `multicast` receiver with `durability_mode` above 0 and a live
+  link, and its `Run` has returned (`Session.runsReceiver` is false): then it
+  closes the link with a closing detach, which deletes the subscription
+  (ADR 0024). A force close while `Run` is still active keeps the subscription.
+  The detach runs under the `ctx` `Close` was given, capped by
+  `connect_timeout`, never under `context.Background()`. A failed closing
+  detach, or one the ask's `before` (the lease deadline, or the retire or stop
+  budget less its headroom when earlier) leaves no time to
+  send, falls back to the connection drop. So does a close while a delivery
+  the link received is unsettled: still in flight, refused by the pipeline,
+  or its settlement failed (`holdsUnsettledDelivery`; `createLink` forgets the
+  previous link's). That keep is a Warn and a `BrokerStateEndFailures`. Never
+  end on any other close, and never for an `anycast` receiver.
+- A durable receiver has its session to itself (`Session.reserveLink` refuses
+  any other link beside it), so ending one session's broker state ends exactly
+  one receiver's subscription.

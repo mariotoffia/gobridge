@@ -281,6 +281,7 @@ table. See [ADR 0005](../adr/0005-outbox-partition-claim-design.md) and the
 |--------|-----------|------|-------------|
 | `ConfigReloads` | `state` | Count | Live reconfiguration attempts, tagged `state=success` or `state=failure`. A rising failure rate means the running runtime keeps rejecting a config it is offered |
 | `ConfigDegraded` | none | Count (gauge) | `1` while the configuration machinery is degraded, back to `0` when a reload next succeeds or the condition resolves. Two conditions raise it and `/deephealth` (`ConfigWatchHealth.Reason`) says which: live reconfiguration is no longer available (the config-change stream closed and the bridge runs blind on its last good config), or a reload was **applied** but its transport sessions never converged within the transport's activation budget — reload success is green while the transport cannot reach its broker state (an ACL-denied topic, rotated-away credentials). The second clears on its own when the sessions converge |
+| `BrokerStateEndFailures` | `session_id` | Count | A live reload removed a durable subscription or changed its broker identity, and GoBridge could not end the state the broker keeps for the old identity (ADR 0024): the MQTT session or the AMQP 1.0 durable topic subscription stays on the broker. The reload itself went on. Find the Warn log with the same `session_id`; the MQTT session expires on its own, an AMQP 1.0 subscription has to be deleted on the broker |
 
 **Cluster rollout**
 

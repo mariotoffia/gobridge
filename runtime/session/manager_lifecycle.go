@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -208,4 +209,40 @@ func (m *Manager) Close(ctx context.Context) error {
 		cancel()
 	}
 	return closeErr
+}
+
+// MayEndBrokerState reports whether this instance may end the session's broker
+// state (ADR 0024): it holds the session's lease, or the session takes part in
+// no lease-based failover. A standby never connected as the session's broker
+// identity, and another instance may be connected as it now, so it ends
+// nothing. A lease whose local deadline passed may already be held by another
+// instance, so it ends nothing either. before is that local deadline, by which
+// the ending must complete (ports.BrokerStateEnder); it is zero for a session
+// that takes part in no lease-based failover.
+func (m *Manager) MayEndBrokerState() (before time.Time, ok bool) {
+	if !m.Exclusive() {
+		return time.Time{}, true
+	}
+	m.mu.Lock()
+	held, deadline := m.hasLease, m.leaseDeadline
+	m.mu.Unlock()
+	passed := !deadline.IsZero() && !m.clk.Now().Before(deadline)
+	if !held || passed {
+		return time.Time{}, false
+	}
+	return deadline, true
+}
+
+// CloseEndingBrokerState closes the session as Close does, after asking a
+// session that implements ports.BrokerStateEnder to end its broker state on
+// that close, by the lease's local deadline, when MayEndBrokerState allows it.
+// Close releases a held lease only after the session's Close returned, so no
+// other instance connects as the broker identity while its state is ended.
+func (m *Manager) CloseEndingBrokerState(ctx context.Context) error {
+	if ender, ok := m.session.(ports.BrokerStateEnder); ok {
+		if before, may := m.MayEndBrokerState(); may {
+			ender.EndBrokerStateOnClose(before)
+		}
+	}
+	return m.Close(ctx)
 }

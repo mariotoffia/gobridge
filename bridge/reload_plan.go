@@ -28,6 +28,10 @@ type InPlaceReload struct {
 	// a retired unit holds one on a transport an added unit still attaches to.
 	// Otherwise the added units are built while the retired ones still serve.
 	serialized bool
+	// transports are the factories the plan was made with; Apply asks them for
+	// the broker state keys of the running and next configuration
+	// (PlanBrokerStateChange).
+	transports map[string]ports.TransportFactory
 }
 
 // PlanInPlaceReload plans replacing only the reload units that differ between
@@ -66,10 +70,11 @@ func PlanInPlaceReload(running, next *ports.BridgeConfig, transports map[string]
 		return nil, false
 	}
 	plan := &InPlaceReload{
-		running: running,
-		next:    next,
-		retire:  unitsMissingFrom(runningUnits, nextUnits),
-		add:     unitsMissingFrom(nextUnits, runningUnits),
+		running:    running,
+		next:       next,
+		retire:     unitsMissingFrom(runningUnits, nextUnits),
+		add:        unitsMissingFrom(nextUnits, runningUnits),
+		transports: transports,
 	}
 	for _, u := range slices.Concat(plan.retire, plan.add) {
 		if mayAttachHTTPEndpoint(u.sub, transports) {
@@ -101,7 +106,9 @@ func PlanSessionRebuild(running *ports.BridgeConfig, sessionID string, transport
 		if mayAttachHTTPEndpoint(u.sub, transports) {
 			return nil, false
 		}
-		return &InPlaceReload{running: running, next: running, retire: []reloadUnit{u}, add: []reloadUnit{u}, serialized: true}, true
+		// next is running itself, so the rebuild changes no broker state key and
+		// ends nothing (ADR 0024).
+		return &InPlaceReload{running: running, next: running, retire: []reloadUnit{u}, add: []reloadUnit{u}, serialized: true, transports: transports}, true
 	}
 	return nil, false
 }

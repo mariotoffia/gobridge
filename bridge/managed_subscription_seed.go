@@ -28,6 +28,9 @@ import (
 //
 // Seeding is idempotent per identity — an established baseline is kept and the
 // listed filters are added to it — so a deployment may run it on every start.
+// The baseline is stored under the session's managed subscription identity, a
+// digest of its broker state key (ADR 0024); a history kept under the key used
+// before ADR 0024 is carried over first.
 // It opens only the configured stores.managed_subscriptions store and closes it
 // before returning; no lease, outbox, DLQ, or transport is touched. Every
 // baseline is validated before anything is opened, so a rejected map seeds
@@ -46,12 +49,13 @@ func (b *Builder) SeedManagedSubscriptionBaselines(ctx context.Context, baseline
 	type seed struct {
 		sessionID string
 		identity  string
+		legacy    string
 		filters   []string
 	}
 	sessionIDs := slices.Sorted(maps.Keys(baselines))
 	seeds := make([]seed, 0, len(sessionIDs))
 	for _, id := range sessionIDs {
-		identity, err := seedIdentityForSession(b.cfg, id)
+		identity, legacy, err := seedIdentityForSession(b.cfg, id)
 		if err != nil {
 			return err
 		}
@@ -61,7 +65,7 @@ func (b *Builder) SeedManagedSubscriptionBaselines(ctx context.Context, baseline
 				return shared.ErrInvalidConfig.WithMessage(fmt.Sprintf("bridge: managed subscription baseline for session %q contains an empty filter", id))
 			}
 		}
-		seeds = append(seeds, seed{sessionID: id, identity: identity, filters: filters})
+		seeds = append(seeds, seed{sessionID: id, identity: identity, legacy: legacy, filters: filters})
 	}
 
 	store, _, err := b.newManagedSubscriptionStore(ctx)
@@ -76,6 +80,12 @@ func (b *Builder) SeedManagedSubscriptionBaselines(ctx context.Context, baseline
 		}
 	}()
 	for _, s := range seeds {
+		// A baseline written under the new key first would hide the history the
+		// session kept under the old fingerprint, because a session carries that
+		// history over only while its key has none (ADR 0024).
+		if err := ports.CarryOverManagedSubscriptionHistory(ctx, store, s.identity, s.legacy); err != nil {
+			return fmt.Errorf("bridge: carry over managed subscription history for session %q: %w", s.sessionID, err)
+		}
 		if err := store.Remember(ctx, s.identity, s.filters); err != nil {
 			return fmt.Errorf("bridge: seed managed subscription baseline for session %q: %w", s.sessionID, err)
 		}
@@ -84,28 +94,34 @@ func (b *Builder) SeedManagedSubscriptionBaselines(ctx context.Context, baseline
 }
 
 // seedIdentityForSession resolves the managed-subscription storage identity of
-// one persistent or exclusive MQTT session, rejecting anything else with
+// one persistent or exclusive MQTT session, and the legacy key its history was
+// stored under before ADR 0024, rejecting anything else with
 // shared.ErrInvalidConfig so a mistyped id or an ephemeral session cannot seed
 // a row nobody will read.
-func seedIdentityForSession(cfg *ports.BridgeConfig, sessionID string) (string, error) {
+func seedIdentityForSession(cfg *ports.BridgeConfig, sessionID string) (identity, legacy string, err error) {
 	def := findSession(cfg, sessionID)
 	if def == nil {
-		return "", shared.ErrInvalidConfig.WithMessage(fmt.Sprintf("bridge: managed subscription baseline names unknown session %q", sessionID))
+		return "", "", shared.ErrInvalidConfig.WithMessage(fmt.Sprintf("bridge: managed subscription baseline names unknown session %q", sessionID))
 	}
 	mode := connectivity.SessionMode(def.SessionMode)
 	if !isMQTTPahoTransport(def.Transport) || (mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive) {
-		return "", shared.ErrInvalidConfig.WithMessage(fmt.Sprintf("bridge: session %q is not a persistent or exclusive MQTT session; only those keep a managed subscription baseline", sessionID))
+		return "", "", shared.ErrInvalidConfig.WithMessage(fmt.Sprintf("bridge: session %q is not a persistent or exclusive MQTT session; only those keep a managed subscription baseline", sessionID))
 	}
-	identityConfig, ok := def.Config.(ports.DurableSessionIdentityConfig)
+	identityConfig, ok := def.Config.(ports.ManagedSubscriptionIdentityConfig)
 	if !ok || ports.IsNilPluginConfig(def.Config) {
-		return "", shared.ErrInvalidConfig.WithMessage(fmt.Sprintf("bridge: session %q config does not expose a durable storage identity", sessionID))
+		return "", "", shared.ErrInvalidConfig.WithMessage(fmt.Sprintf("bridge: session %q config does not expose a managed subscription storage identity", sessionID))
 	}
-	identity, err := identityConfig.DurableSessionIdentity(mode)
+	identity, err = identityConfig.ManagedSubscriptionIdentity(mode)
 	if err != nil {
-		return "", fmt.Errorf("bridge: derive managed subscription storage identity for session %q: %w", sessionID, err)
+		return "", "", fmt.Errorf("bridge: derive managed subscription storage identity for session %q: %w", sessionID, err)
 	}
 	if identity == "" {
-		return "", shared.ErrInvalidConfig.WithMessage(fmt.Sprintf("bridge: session %q derives an empty managed subscription storage identity", sessionID))
+		return "", "", shared.ErrInvalidConfig.WithMessage(fmt.Sprintf("bridge: session %q derives an empty managed subscription storage identity", sessionID))
 	}
-	return identity, nil
+	if legacyConfig, ok := def.Config.(ports.DurableSessionIdentityConfig); ok {
+		if legacy, err = legacyConfig.DurableSessionIdentity(mode); err != nil {
+			return "", "", fmt.Errorf("bridge: derive legacy managed subscription storage identity for session %q: %w", sessionID, err)
+		}
+	}
+	return identity, legacy, nil
 }

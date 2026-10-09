@@ -9,9 +9,9 @@ import (
 )
 
 // TestClassifyRolloutDelta_LiveSafe_BenignChange validates that a delta which
-// changes neither durable session identity, store target, nor lease ownership
-// (here: a publish topic/address) is classified live-safe — eligible for a
-// coordinated cluster rollout.
+// changes neither a store target nor lease ownership (here: a publish
+// topic/address) is classified live-safe — eligible for a coordinated cluster
+// rollout.
 func TestClassifyRolloutDelta_LiveSafe_BenignChange(t *testing.T) {
 	oldCfg := supervisorTestConfigWithSession("r1", "sess")
 	newCfg := supervisorTestConfigWithSession("r1", "sess")
@@ -274,4 +274,14 @@ func TestClassifyRolloutDelta_ReplacementRequired_RolloutModeChange(t *testing.T
 
 	require.Equal(t, rolloutReplacementRequired, class)
 	require.NotEmpty(t, reason)
+}
+
+// TestClassifyRolloutDelta_LiveSafe_DurableBrokerIdentityChange validates that
+// a changed durable broker identity rolls live: the lease holder ends the old
+// broker state when it retires the old unit (ADR 0024).
+func TestClassifyRolloutDelta_LiveSafe_DurableBrokerIdentityChange(t *testing.T) {
+	class, reason := classifyRolloutDelta(configWithDurableSessionIdentity(1, "opaque-a"), configWithDurableSessionIdentity(2, "opaque-b"))
+
+	require.Equal(t, rolloutLiveSafe, class, "reason=%q", reason)
+	require.Empty(t, reason)
 }

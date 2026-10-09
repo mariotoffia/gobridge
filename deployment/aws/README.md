@@ -152,12 +152,25 @@ sessions fail synthesis.
 
 The facade derives the same opaque `storage_identity` as the Paho adapter and
 uses a create-only custom resource to set `baseline=true` and union any declared
-filters after validating MQTT wildcard and shared-subscription syntax. A durable
-identity change creates a new initializer; changing only the declared filters
-does not. Updates and deletes intentionally perform no write, so a later stack
-update cannot resurrect a filter that the runtime removed. Each initializer
+filters after validating MQTT wildcard and shared-subscription syntax. The
+`storage_identity` is a digest of the session's broker state key (broker URL and
+client ID, ADR 0024): changing either creates a new initializer; changing the
+session expiry, the protocol version or only the declared filters does not.
+Updates and deletes intentionally perform no write, so a later stack update
+cannot resurrect a filter that the runtime removed. Each initializer
 hides request data in logs, has only `dynamodb:UpdateItem` on the exact managed-
 subscriptions table, and is a dependency of both ECS services.
+
+**Upgrading to ADR 0024** changes every attested session's `storage_identity`,
+so the stack update creates new initializers. Before the updated services start
+a task, they write the declared baseline under the new key with
+`baseline=true`. The runtime then
+finds a baseline there and does not copy the history it kept under the old key.
+Before you upgrade, set each session's `ManagedSubscriptionBaselines` entry to
+every exact filter its broker session may still hold. A filter the entry does
+not name is never unsubscribed, because the new baseline does not know it. The
+row under the old key stays in the retained table; the runtime no longer reads
+it.
 
 On-demand mode removes capacity-unit forecasting, not capacity engineering.
 Watch throttles and system errors. A single hot Exclusive session concentrates

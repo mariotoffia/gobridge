@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"slices"
 	"time"
 
 	"github.com/mariotoffia/gobridge/logging"
+	"github.com/mariotoffia/gobridge/runtime/session"
 )
 
 // Stop gracefully shuts down the runtime. It cancels all goroutines,
@@ -31,7 +31,24 @@ import (
 // shutdown whatever reload is running, so Stop may close closable stores while
 // that Retire still releases the unit's leases through them, and the Retire
 // then reports the failure.
-func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
+func (rt *Runtime) Stop(ctx context.Context) error {
+	return rt.stop(ctx, nil)
+}
+
+// StopEndingBrokerState stops the runtime as Stop does, and ends the broker
+// state of the sessions in sessionIDs (ADR 0024): a full replacement swap stops
+// the runtime for a configuration that no longer has their broker state keys.
+// A session ends its state only when the drain settled every in-flight
+// delivery, the runtime's components stopped and this instance may end it
+// (session.Manager.MayEndBrokerState). A Stop already in progress or done ends
+// nothing.
+func (rt *Runtime) StopEndingBrokerState(ctx context.Context, sessionIDs []string) error {
+	return rt.stop(ctx, endingSessions(sessionIDs, nil))
+}
+
+// stop is Stop, ending the broker state of the sessions in ending
+// (StopEndingBrokerState).
+func (rt *Runtime) stop(ctx context.Context, ending map[string]bool) (retErr error) {
 	rt.mu.Lock()
 	if rt.consumed {
 		rt.mu.Unlock()
@@ -81,6 +98,10 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 	cancel := rt.cancel
 	// No route joins or leaves once running is false: Graft and Retire refuse.
 	entries := rt.entries
+	var managers map[string]*session.Manager
+	if len(ending) > 0 {
+		managers = maps.Clone(rt.sessionMgrs)
+	}
 	rt.mu.Unlock()
 
 	// close(stopDone) MUST be the very last thing Stop does. Registered first
@@ -124,14 +145,23 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 		// when the budget or the caller ctx expires we cancel remaining work and
 		// return, leaving any unsettled source to broker redelivery (at-least-once),
 		// never silently acked. WaitQuiescent acquires rt.mu, which we released above.
-		if budget := rt.stopDrainBudget(); budget > 0 && ctx.Err() == nil && rt.anyRouteInFlight() {
+		settled := !rt.anyRouteInFlight()
+		if budget := rt.stopDrainBudget(); budget > 0 && ctx.Err() == nil && !settled {
 			qCtx, qCancel := context.WithTimeout(ctx, budget)
-			if err := rt.WaitQuiescent(qCtx, QuiescenceOptions{}); err != nil && rt.logger != nil {
+			err := rt.WaitQuiescent(qCtx, QuiescenceOptions{})
+			settled = err == nil
+			if err != nil && rt.logger != nil {
 				rt.logger.Warn("stop drain did not fully settle in-flight deliveries before deadline; cancelling (unsettled sources rely on broker redelivery)",
 					"instance_id", rt.instanceID, "budget", budget, "error", err)
 			}
 			qCancel()
 		}
+		if !settled {
+			ending = rt.keepUnsettledBrokerState(ending, managers)
+		}
+		// Receivers close inside their route runs, which cancel() ends, so a
+		// receiver holding broker state is asked just before that.
+		askReceiversToEndBrokerState(ctx, entries, ending, managers)
 		cancel()
 	}
 
@@ -217,7 +247,7 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 	// broker client's Close must not hold rt.mu — that would stall Role(),
 	// DeepHealth and the /live+/ready probes for the whole Stop duration.
 	rt.mu.Lock()
-	mgrs := slices.Collect(maps.Values(rt.sessionMgrs))
+	mgrs := maps.Clone(rt.sessionMgrs)
 	unmanagedSessions := rt.unmanagedSessionRefsLocked(componentSet{
 		entries:         rt.entries,
 		sessionSenders:  rt.sessionSenders,
@@ -238,8 +268,8 @@ func (rt *Runtime) Stop(ctx context.Context) (retErr error) {
 	sharedStores := rt.sharedStores
 	rt.mu.Unlock()
 
-	for _, mgr := range mgrs {
-		if err := mgr.Close(closeCtx); err != nil {
+	for sid, mgr := range mgrs {
+		if err := closeManager(closeCtx, mgr, drainersDone && ending[sid]); err != nil {
 			errs = append(errs, fmt.Errorf("runtime: stop: closing session manager: %w", err))
 		}
 	}

@@ -352,6 +352,10 @@ func (s *Session) closeEventsLocked() {
 //  4. Await in-flight handlers (bounded by ctx), then close s.events —
 //     safe because step 1 guarantees no concurrent sender can reach the
 //     channel send.
+//  5. When EndBrokerStateOnClose asked and the session was connected at
+//     step 1, end its broker session (session_broker_state.go). It runs only
+//     after step 3 stopped the session's own connection manager, and not at
+//     all while a QoS 1/2 delivery the session received is unacknowledged.
 //
 // Delivery semantics on Close: the adapter uses manual acknowledgment
 // (see delivery.go), so a publish whose Delivery has not been settled
@@ -375,6 +379,11 @@ func (s *Session) Close(ctx context.Context) error {
 	s.closed = true
 	s.retireQoSDowngradesLocked()
 	s.clearSettledIngressRejectLocked(s.clock().Now().UnixNano())
+	// Only a session whose own connection is up right now ends the broker
+	// session it holds (ADR 0024). While autopaho reconnects, connected is
+	// false; while a Start is in flight, cm is nil.
+	endBrokerState := s.endBrokerStateOnClose && s.connected && s.cm != nil && endsBrokerState(s.mode)
+	endBrokerStateBefore := s.endBrokerStateBefore
 	s.connected = false
 	// Wake every detached session-lifetime wait (the settlement-recovery
 	// cooldown runs on a context deliberately immune to route cancellation, so
@@ -402,6 +411,16 @@ func (s *Session) Close(ctx context.Context) error {
 	starting := s.starting
 	startDone := s.startDone
 	s.mu.Unlock()
+
+	// A received QoS 1/2 delivery the runtime has not acknowledged — one a
+	// cancelled route abandoned, too — exists on the broker only in the broker
+	// session, so ending that session would delete it. The record is read here,
+	// before a settlement recovery racing this Close can clear it, and again at
+	// the end step, so a publish the router takes after this look counts too.
+	unsettled := 0
+	if endBrokerState {
+		unsettled = s.router.unsettledCount()
+	}
 
 	// Wait (bounded by ctx) for the in-flight Start to finish. With
 	// s.closed already set, that Start's post-AwaitConnection re-check
@@ -461,6 +480,17 @@ func (s *Session) Close(ctx context.Context) error {
 	s.mu.Lock()
 	s.closeEventsLocked()
 	s.mu.Unlock()
+
+	// After the disconnect and the handler drain: the broker session is ended
+	// only once this session stopped consuming from it. A nil disconnErr means
+	// autopaho's connection manager has exited, so nothing reconnects as the
+	// client ID while the clean-start connection runs. Neither the disconnect
+	// nor the drain clears the unsettled record: only a connection generation
+	// advance or a settlement recovery does, and Close starts neither.
+	if endBrokerState {
+		unsettled = max(unsettled, s.router.unsettledCount())
+		s.endBrokerStateAfterClose(ctx, disconnErr, unsettled, endBrokerStateBefore)
+	}
 
 	if disconnErr != nil {
 		return MapError(disconnErr)

@@ -172,7 +172,7 @@ func TestDirectHoldMQTTIngressOnDurableSessionCarriesMessagesWithoutOutboxOrLeas
 	if err := rt.Stop(ctx); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	identity, err := sessionConfig.DurableSessionIdentity(connectivity.SessionPersistent)
+	identity, err := sessionConfig.ManagedSubscriptionIdentity(connectivity.SessionPersistent)
 	if err != nil {
 		t.Fatalf("derive the durable identity: %v", err)
 	}

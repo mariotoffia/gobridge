@@ -71,7 +71,7 @@ func TestApp_SeedsManagedSubscriptionBaselinesAtBoot(t *testing.T) {
 	require.NoError(t, seedThrough(t, app, cfg),
 		"seeding runs on every apply, so it must be idempotent")
 
-	identity, err := mqtt.DurableSessionIdentity(connectivity.SessionPersistent)
+	identity, err := mqtt.ManagedSubscriptionIdentity(connectivity.SessionPersistent)
 	require.NoError(t, err)
 	store, err := nativestore.NewSQLiteStoreFactory().NewManagedSubscriptionStore(t.Context(),
 		&nativestore.SQLiteConfig{Path: historyPath})
@@ -95,7 +95,7 @@ func TestApp_SeedSkipsWhatTheBootConfigCannotTake(t *testing.T) {
 
 	require.NoError(t, seedThrough(t, app, cfg),
 		"an attested session the config does not carry is skipped")
-	identity, err := mqtt.DurableSessionIdentity(connectivity.SessionPersistent)
+	identity, err := mqtt.ManagedSubscriptionIdentity(connectivity.SessionPersistent)
 	require.NoError(t, err)
 	store, err := nativestore.NewSQLiteStoreFactory().NewManagedSubscriptionStore(t.Context(),
 		&nativestore.SQLiteConfig{Path: historyPath})
@@ -139,7 +139,7 @@ func TestApp_SeedsADurablePublishOnlySessionToo(t *testing.T) {
 			_ = closer.Close()
 		}
 	})
-	identity, err := publisherConfig.DurableSessionIdentity(connectivity.SessionPersistent)
+	identity, err := publisherConfig.ManagedSubscriptionIdentity(connectivity.SessionPersistent)
 	require.NoError(t, err)
 	_, err = store.List(t.Context(), identity)
 	require.NoError(t, err, "a durable publish-only session must have its baseline seeded")

@@ -52,9 +52,9 @@ func TestClassifyClusterReload_IndependentAppliesLiveSafeDeltaDirectly(t *testin
 }
 
 // TestClassifyClusterReload_IndependentStillRefusesWhatCannotBeAppliedLive pins
-// the limit. These deltas are refused on a single node too, because a durable
-// identity or a store target cannot change under a running session — nothing
-// about the cluster mode makes them safe.
+// the limit. These deltas are refused on a single node too, because a store
+// target cannot change under a running session — nothing about the cluster
+// mode makes them safe.
 func TestClassifyClusterReload_IndependentStillRefusesWhatCannotBeAppliedLive(t *testing.T) {
 	before := independentClusterConfig("info")
 	before.Stores.Lease = &ports.StoreConfig{Type: "memory"}

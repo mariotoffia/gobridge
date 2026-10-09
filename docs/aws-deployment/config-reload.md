@@ -154,7 +154,9 @@ from the task memory or from the number of other sessions. So adding one
 tenant's MQTT session, or removing an ephemeral one, replaces only that
 session's reload unit. Every other tenant's MQTT session stays connected. No
 per-session setting is needed to keep them apart. Removing a persistent or
-exclusive session is a [cutover](#reloads-that-strand-durable-state).
+exclusive session also replaces only its unit, and ends the broker session it
+leaves behind; see
+[reloads that change a durable broker identity](#reloads-that-change-a-durable-broker-identity).
 
 GoBridge does not estimate memory. It limits MQTT by counts:
 
@@ -182,6 +184,64 @@ sessions:
         receive_maximum: 192   # a count; 192 is also the default
 ```
 
+### Reloads that change a durable broker identity
+
+A live reload accepts a change to a durable subscription's broker identity, and
+the removal or rename of what holds it
+([ADR 0024](../adr/0024-end-durable-broker-state-on-reload.md)):
+
+- an MQTT persistent or exclusive session: its broker URL or its effective
+  client ID changes, or the session is removed;
+- an AMQP 1.0 receiver with `durability_mode` above 0 on a `multicast` address:
+  its broker, its `container_id` or its link name changes, or the receiver is
+  removed.
+
+The task retires the old reload unit as for any other change. As it closes the
+old unit, after in-flight deliveries drained and before it releases the
+session's lease, it ends the state the broker keeps for the old identity. MQTT
+disconnects the session, then connects once more as the old client ID with
+clean start and disconnects, so the broker deletes that session, its
+subscriptions and its queued messages. AMQP 1.0 closes the link with a closing
+detach, so the broker deletes the durable subscription. If the drain does not
+settle every delivery within `drain_timeout`, the state is kept (a Warn and
+`BrokerStateEndFailures`). So it is when the MQTT session or the AMQP 1.0
+receiver still holds a delivery it received and nothing settled, for example
+one that arrived after the drain and was dropped when its route was cancelled.
+Only the task that is
+connected as the identity does this. For an exclusive session it must also hold
+the session's lease, and that lease must not have expired by the task's own
+clock; an ending that cannot finish before that lease's deadline is abandoned.
+Renaming only the `session_id` ends nothing, because the broker identity
+is still there. Switching an MQTT session between `persistent` and `exclusive`,
+or changing clean start, the session expiry or the MQTT protocol version, keeps
+the identity and ends nothing. Changing a session to `ephemeral` drops the
+identity, so the reload ends its broker session.
+
+An AMQP 1.0 receiver ends its subscription only when it stops on its own after
+the retire cancels it. A receiver that is still running when the runtime stops
+waiting and force-closes it drops the connection instead, and the subscription
+stays.
+
+If ending the state fails (access denied, broker unreachable), the task logs a
+Warn naming the `session_id`, counts `BrokerStateEndFailures`, and the reload
+continues. The broker then keeps the state until it expires (MQTT) or for good
+(AMQP 1.0). An MQTT session whose own disconnect fails sends nothing, because
+its connection may still be up as the client ID, and counts the same failure.
+
+What such a reload loses:
+
+- the backlog the old identity still had on the broker; a rollback does not
+  bring it back;
+- QoS 1/2 messages published between the old disconnect and the new
+  subscription, as on a restart.
+
+For no loss, change in two reloads: first add the new session next to the old
+one, then remove the old one. Messages that arrive while both run are delivered
+twice; downstream idempotency absorbs them.
+
+A shutdown, a restart, a pause, a lease loss or failover, and the rebuild of a
+failed session never end broker state.
+
 ### Reloads that strand durable state
 
 Some changes leave durable state behind when a running task applies them. The
@@ -191,7 +251,6 @@ their errors are the Supervisor's reload guards (`bridge.ValidateDurableReload`)
 
 | Change | What it strands |
 |---|---|
-| A persistent or exclusive MQTT session's durable identity changes, or the session is removed or renamed. The identity is the broker URLs, the effective client ID, the session mode, clean start, the session expiry and, on MQTT 3.1.1, the protocol version ([durable sessions](../transports/mqtt-durable-sessions.md#durable-identity-and-live-reload-migration)). | Its broker subscriptions, the QoS 1/2 messages queued for it, and its managed subscription history. |
 | A lease, outbox, DLQ or managed subscription store changes type or backing location (path or table), or the managed subscription store is removed. | The records in the old store. |
 | A lease-bearing exclusive route changes its `session_id`. | Ownership of its source: the old and new `session_id` are different lease keys. |
 | The outbox or DLQ store is removed, or a `shared_outbox` partition loses its drainer. | The outbox or DLQ records. |
@@ -200,20 +259,17 @@ The running configuration keeps serving, the version is reported rejected, and
 the config manager logs an Error whose `error` says what was refused:
 
 ```text
-config manager: runtime apply FAILED; desired config is NOT running ...  desired_version=4 running_version=3 error="bridge: refusing live reload: durable session \"tenant-a\" broker identity changed; ..."
+config manager: runtime apply FAILED; desired config is NOT running ...  desired_version=4 running_version=3 error="bridge: refusing live reload: it can strand durable records [dlq store removal]; ..."
 ```
 
 The Supervisor's `WithAllowDestructiveReload` has no AWS counterpart. To make
 such a change, cut over:
 
-1. Stop ingress and let what the change strands drain: the old MQTT session's
-   broker backlog, or the old store's records.
-2. For an MQTT session, exact-UNSUBSCRIBE every managed filter
-   ([managed-filter migration](../runbooks/mqtt-managed-subscription-migration.md)).
-3. Store the new version in the config source: the file, or the DynamoDB item
+1. Stop ingress and let the old store's records drain.
+2. Store the new version in the config source: the file, or the DynamoDB item
    through CAS-aware tooling. An admin-API commit of it fails and is rolled
    back. The running task refuses the version and keeps serving.
-4. Restart the task. A starting task has no running configuration to compare
+3. Restart the task. A starting task has no running configuration to compare
    with, so it applies the stored version.
 
 A clustered deployment refuses these changes in the cluster reload seam; see

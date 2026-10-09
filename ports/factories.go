@@ -17,12 +17,29 @@ type SessionSpec struct {
 	Config      PluginConfig
 
 	// ManagedSubscriptionStore carries exact durable topic-filter history for
-	// persistent/exclusive sessions. Identity is an opaque secret-safe durable
-	// fingerprint. Required is true only when the session must fail closed if
-	// history cannot be loaded before broker activation.
+	// persistent/exclusive sessions. Identity is an opaque secret-safe digest of
+	// the session's broker state key (ADR 0024). Required is true only when the
+	// session must fail closed if history cannot be loaded before broker
+	// activation.
 	ManagedSubscriptionStore     ManagedSubscriptionStore
 	ManagedSubscriptionIdentity  string
 	ManagedSubscriptionsRequired bool
+
+	// LegacyManagedSubscriptionIdentity is the key the session's managed
+	// subscription history was stored under before ADR 0024 (the
+	// DurableSessionIdentity fingerprint). When ManagedSubscriptionIdentity has
+	// no baseline, the session copies the history found under this key once
+	// (CarryOverManagedSubscriptionHistory). Empty copies nothing.
+	LegacyManagedSubscriptionIdentity string
+
+	// BrokerStateKeyAdded is true when the live reload that built this session
+	// added its broker state key: the running configuration did not have it
+	// (ADR 0024). The builder has already recorded an empty managed subscription
+	// history for it when none existed; an existing history is kept. A
+	// persistent or exclusive session ends any broker session its client ID
+	// still has before its first connection only while its loaded history is
+	// empty, so the broker state matches that history.
+	BrokerStateKeyAdded bool
 }
 
 // ReceiverSpec holds ingress behavior configuration.

@@ -101,10 +101,12 @@ func inspectHAConfig(
 		if err := mqtt.ValidateEffectiveSession(connectivity.SessionExclusive); err != nil {
 			return inspectedHAConfig{}, fmt.Errorf("exclusive session %q is not an effective stable MQTT session: %w", session.ID, err)
 		}
-		storageIdentity, err := mqtt.DurableSessionIdentity(connectivity.SessionExclusive)
+		// The attested baseline is written under the key the session reads its
+		// managed subscription history from (ADR 0024).
+		storageIdentity, err := mqtt.ManagedSubscriptionIdentity(connectivity.SessionExclusive)
 		if err != nil {
 			return inspectedHAConfig{}, fmt.Errorf(
-				"exclusive session %q durable identity: %w",
+				"exclusive session %q managed subscription identity: %w",
 				session.ID,
 				err,
 			)

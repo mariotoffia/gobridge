@@ -47,7 +47,7 @@ func TestMQTTPersistentSubscriptionMigrationReleasesWildcardAndSharedFilters(t *
 		SessionExpiryInterval: 300,
 		UnmatchedGrace:        unmatchedGrace,
 	}}
-	storageIdentity, err := sessionConfig.DurableSessionIdentity(connectivity.SessionPersistent)
+	storageIdentity, err := sessionConfig.ManagedSubscriptionIdentity(connectivity.SessionPersistent)
 	if err != nil {
 		t.Fatalf("derive managed-subscription identity: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestMQTTExclusiveDefaultProfileNoBufferMigrationConvergesWithinLease(t *tes
 	cfg.Session.BrokerURLs = []string{brokerURL}
 	cfg.Session.ClientID = clientID
 	cfg.Session.SessionExpiryInterval = 300
-	identity, err := cfg.DurableSessionIdentity(connectivity.SessionExclusive)
+	identity, err := cfg.ManagedSubscriptionIdentity(connectivity.SessionExclusive)
 	if err != nil {
 		t.Fatalf("derive exclusive durable identity: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestMQTTPersistentSubscriptionMigrationPinnedSharedDeliveryRequiresRestoreD
 		SessionExpiryInterval: 300,
 		UnmatchedGrace:        unmatchedGrace,
 	}}
-	identity, err := cfg.DurableSessionIdentity(connectivity.SessionPersistent)
+	identity, err := cfg.ManagedSubscriptionIdentity(connectivity.SessionPersistent)
 	if err != nil {
 		t.Fatalf("derive durable identity: %v", err)
 	}

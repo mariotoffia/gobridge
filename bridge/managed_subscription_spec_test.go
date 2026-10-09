@@ -19,6 +19,9 @@ func (managedIdentityConfig) DurableSessionIdentity(connectivity.SessionMode) (s
 func (managedIdentityConfig) DurableSessionIdentityDomains(connectivity.SessionMode) ([]string, error) {
 	return []string{"safe-domain"}, nil
 }
+func (managedIdentityConfig) ManagedSubscriptionIdentity(connectivity.SessionMode) (string, error) {
+	return "safe-managed-identity", nil
+}
 
 type managedSpecStore struct{}
 
@@ -41,8 +44,11 @@ func TestSessionSpecManagedSubscriptionsForDurableMQTT(t *testing.T) {
 	if spec.ManagedSubscriptionStore == nil {
 		t.Fatal("managed store was not injected")
 	}
-	if spec.ManagedSubscriptionIdentity != "safe-durable-fingerprint" {
+	if spec.ManagedSubscriptionIdentity != "safe-managed-identity" {
 		t.Fatalf("identity = %q", spec.ManagedSubscriptionIdentity)
+	}
+	if spec.LegacyManagedSubscriptionIdentity != "safe-durable-fingerprint" {
+		t.Fatalf("legacy identity = %q", spec.LegacyManagedSubscriptionIdentity)
 	}
 }
 

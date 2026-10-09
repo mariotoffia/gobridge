@@ -142,7 +142,7 @@ func (s *Session) Health(_ context.Context) ports.SessionHealth {
 		rm = DefaultReceiveMaximum
 	}
 	unsettled := s.router.unsettledSnapshot(rm)
-	tags := []shared.Tag{{Key: shared.TagKeySessionID, Value: s.opts.ClientID}}
+	tags := []shared.Tag{{Key: shared.TagKeySessionID, Value: s.metricSessionID()}}
 	s.metrics.Gauge(MetricMQTTUnsettled, float64(unsettled.Count), tags...)
 	s.metrics.Gauge(MetricMQTTOldestUnsettledAge, unsettled.OldestAge.Seconds(), tags...)
 	s.metrics.Gauge(MetricMQTTReceiveWindowUtilization, unsettled.ReceiveWindowUtilization, tags...)

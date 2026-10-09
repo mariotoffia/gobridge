@@ -214,6 +214,10 @@ func (s *Session) Start(ctx context.Context) error {
 		finishStart()
 		return err
 	}
+	if err := s.startFreshBrokerSession(ctx); err != nil {
+		finishStart()
+		return err
+	}
 
 	if logging.DebugEnabled(s.logger) {
 		s.logger.Log(ctx, logging.LevelDebug, "mqtt: session connecting",

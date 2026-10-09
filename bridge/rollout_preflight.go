@@ -14,12 +14,14 @@ import (
 type rolloutDeltaClass int
 
 const (
-	// rolloutLiveSafe marks a delta that changes no durable session identity,
-	// store target, or lease ownership key — eligible for coordinated rollout.
+	// rolloutLiveSafe marks a delta that changes no store target or lease
+	// ownership key — eligible for coordinated rollout. A changed durable broker
+	// identity is live-safe: the lease holder ends the old broker state (ADR 0024).
 	rolloutLiveSafe rolloutDeltaClass = iota
-	// rolloutReplacementRequired marks a delta that alters durable identity or
-	// store targets (the reasons ADR 0012 exists). It is refused live and keeps
-	// the whole-cohort replacement procedure (§2).
+	// rolloutReplacementRequired marks a delta that alters a store target or a
+	// lease ownership key (the reasons ADR 0012 exists), the deployment mode, or
+	// the cohort's own shape. It is refused live and keeps the whole-cohort
+	// replacement procedure (§2).
 	rolloutReplacementRequired
 )
 
@@ -47,7 +49,7 @@ const rolloutModeCoordinated = "coordinated"
 // broken member to be replaced, not a veto over the cohort.
 //
 // What it does NOT relax: a delta that cannot be applied live on ANY node —
-// a durable session's identity, a store's target — is still refused, with the
+// a store's target, a lease-bearing session_id — is still refused, with the
 // same reason a standalone bridge gives. Nor does it relax the cohort's own shape
 // (see clusterShapeChanged): the roster and the endpoint map describe the
 // deployment rather than what the cohort runs, so they change by redeploying even
@@ -161,8 +163,8 @@ func ClassifyClusterReload(oldCfg, newCfg *ports.BridgeConfig) (ClusterReloadDis
 // classifyRolloutDelta decides whether the delta from oldCfg to newCfg is
 // live-safe (eligible for a coordinated cluster rollout) or replacement-required.
 // It reuses the EXACT per-node reload-preflight predicates that already refuse a
-// single-node live reload for identity/store-target changes, so the coordinated
-// path admits only deltas the single-node path would also accept. The second
+// single-node live reload for store-target and lease-identity changes, so the
+// coordinated path admits only deltas the single-node path would also accept. The second
 // return is a non-empty, operator-facing reason iff replacement-required.
 func classifyRolloutDelta(oldCfg, newCfg *ports.BridgeConfig) (rolloutDeltaClass, string) {
 	// Fail closed: a delta we cannot fully classify is never admitted live.
@@ -170,7 +172,6 @@ func classifyRolloutDelta(oldCfg, newCfg *ports.BridgeConfig) (rolloutDeltaClass
 		return rolloutReplacementRequired, "incomplete config delta; cannot classify"
 	}
 	for _, check := range []func(_, _ *ports.BridgeConfig) error{
-		durableSessionIdentityChanged,
 		storeIdentityChanged,
 		leaseSessionIDChanged,
 	} {

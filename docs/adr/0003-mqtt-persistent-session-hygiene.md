@@ -3,6 +3,9 @@
 Status: accepted
 Date: 2026-07-03
 Deciders: GoBridge core
+Amended by: 0024 (the managed subscription history is keyed by a digest of the
+broker state key; a durable session may be removed or renamed by a live reload,
+which ends its broker session)
 
 ## Context
 

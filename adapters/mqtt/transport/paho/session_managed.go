@@ -243,9 +243,15 @@ func (s *Session) loadManagedSubscriptionHistory(ctx context.Context) error {
 	}
 	store := s.managedStore
 	identity := s.managedIdentity
+	legacy := s.legacyManagedIdentity
 	s.mu.Unlock()
 	if store == nil || identity == "" {
 		return shared.ErrInvalidConfig.WithMessage("mqtt: managed subscription history is required but not configured")
+	}
+	// History stored under the key used before ADR 0024 moves to the current key
+	// once, the first time a session finds no history under it.
+	if err := ports.CarryOverManagedSubscriptionHistory(ctx, store, identity, legacy); err != nil {
+		return shared.ErrUnavailable.WithMessage("mqtt: carry managed subscription history over before broker activation").Wrap(err)
 	}
 	filters, err := store.List(ctx, identity)
 	if err != nil {

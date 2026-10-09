@@ -107,7 +107,6 @@ type Supervisor struct {
 	mu                  sync.RWMutex
 	rt                  *runtime.Runtime
 	cfg                 *ports.BridgeConfig
-	durableIdentities   durableSessionIdentitySnapshot
 	transports          map[string]ports.TransportFactory
 	stores              map[string]ports.StoreFactory
 	processors          map[string]ports.Processor
@@ -499,10 +498,6 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 	if err != nil {
 		return err
 	}
-	initialIdentities, err := snapshotDurableSessionIdentities(appliedInitial)
-	if err != nil {
-		return fmt.Errorf("supervisor: initial durable session identity preflight: %w", err)
-	}
 	// Bounded like every reload build: an unbounded initial construction lets a
 	// hung external call (NewSession against a partitioned broker, a credential
 	// resolve that never returns) block Run forever, with no runtime, no health
@@ -525,7 +520,6 @@ func (s *Supervisor) Run(ctx context.Context, initial *ports.BridgeConfig, chang
 	s.mu.Lock()
 	s.rt = rt
 	s.cfg = appliedInitial
-	s.durableIdentities = initialIdentities
 	s.mu.Unlock()
 
 	// Start the coordinated-rollout barrier drive (applier + coordinator) once
@@ -754,7 +748,6 @@ func (s *Supervisor) StartBridge(ctx context.Context) error {
 	rt := s.rt
 	cfg := s.cfg
 	baseCtx := s.baseCtx
-	appliedIdentities := cloneDurableSessionIdentitySnapshot(s.durableIdentities)
 	s.mu.RUnlock()
 	if rt != nil && rt.IsRunning() {
 		return nil
@@ -777,13 +770,6 @@ func (s *Supervisor) StartBridge(ctx context.Context) error {
 		// Run has not been entered, so there is no process-scoped context to own
 		// the runtime's lifetime. Refuse rather than bind it to the request ctx.
 		return fmt.Errorf("supervisor: not running; cannot start bridge")
-	}
-	proposedIdentities, err := snapshotDurableSessionIdentities(cfg)
-	if err == nil {
-		err = compareDurableSessionIdentitySnapshots(appliedIdentities, proposedIdentities)
-	}
-	if err != nil {
-		return fmt.Errorf("supervisor: start bridge durable session identity preflight: %w", err)
 	}
 	// Bound the BUILD by the admin-request ctx (so the handler stays responsive to
 	// its operation timeout), but START the runtime under the long-lived Run ctx:
@@ -825,7 +811,7 @@ func (s *Supervisor) apply(ctx context.Context, newCfg *ports.BridgeConfig) {
 // only reaches Committed after every member of the frozen epoch acked a
 // validated, built candidate, which is a strictly stronger check than the guard
 // — the guard's job is to stop an UNCOORDINATED per-process reload, and this one
-// is the coordinated commit itself. Every other preflight (durable session
+// is the coordinated commit itself. Every other preflight (duplicate durable
 // identity, store identity, orphaned backlog, paused) still runs.
 func (s *Supervisor) applyBarrierCommitted(ctx context.Context, newCfg *ports.BridgeConfig) {
 	s.applyConfig(ctx, newCfg, true)
@@ -858,7 +844,7 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 	}
 
 	// No-op detection and the clustered-reload guard run FIRST — before the
-	// durable-identity preflight, the paused handling, and any Plan/build/store
+	// duplicate-identity validation, the paused handling, and any Plan/build/store
 	// query or Stop — so no clustered reload can slip through a paused or
 	// destructive path and a genuine no-op never needlessly rebuilds
 	// a runtime.
@@ -880,9 +866,8 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 	// The RUNTIME is kept and the DOCUMENT is adopted. Nothing has to be rebuilt,
 	// because the two documents describe the same content — but the new one is
 	// what now describes what is running, and its version number is what the
-	// config manager tracks as the running version. Only s.cfg moves: the runtime,
-	// the durable session identities and everything else derive from the content,
-	// and the content did not change.
+	// config manager tracks as the running version. Only s.cfg moves: the runtime
+	// and everything else derive from the content, and the content did not change.
 	//
 	// Acknowledge it WITHOUT a swap. onSwap MUST still fire (an in-band applier
 	// blocks on the result for this exact config pointer); mirror the paused/live
@@ -917,23 +902,20 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 	}
 	// clusterReloadProceed: continue to normal apply.
 
-	// MQTT and similar durable broker sessions are external stores. Changing or
-	// removing their identity can strand subscriptions and queued QoS messages,
-	// so compare the typed plugin fingerprints before stopping the old runtime,
-	// building a replacement, or honoring any destructive-reload override.
+	// Two durable sessions that would connect as one client to one broker
+	// disconnect each other on every connect. That is plain configuration
+	// validation (validateDurableBrokerIdentities, also run by every Preflight),
+	// and it runs here too so a paused reload, which builds nothing, still
+	// refuses such a document. A changed, removed or renamed broker identity is
+	// an ordinary reload: retiring the old unit ends the state the old identity
+	// leaves on the broker (ADR 0024).
 	s.mu.RLock()
 	paused := s.paused
 	oldCfgAtPreflight := s.cfg
-	appliedIdentities := cloneDurableSessionIdentitySnapshot(s.durableIdentities)
 	s.mu.RUnlock()
-	proposedIdentities, identityErr := snapshotDurableSessionIdentities(frozenCfg)
-	if identityErr == nil {
-		identityErr = compareDurableSessionIdentitySnapshots(appliedIdentities, proposedIdentities)
-	}
-	if identityErr != nil {
+	if identityErr := validateDurableBrokerIdentities(frozenCfg); identityErr != nil {
 		if s.logger != nil {
-			s.logger.Error("supervisor: refusing reload that changes or duplicates durable broker session identity; "+
-				"externally drain, unsubscribe, and cut over the old session first",
+			s.logger.Error("supervisor: refusing reload whose durable sessions share one broker identity",
 				"error", identityErr, "attempted_config_version", frozenCfg.Version)
 		}
 		s.emitConfigReload(false)
@@ -984,7 +966,6 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 		}
 		s.mu.Lock()
 		s.cfg = frozenCfg
-		s.durableIdentities = proposedIdentities
 		s.mu.Unlock()
 		if s.logger != nil {
 			s.logger.Info("supervisor: config change recorded but not applied; bridge is paused by admin",
@@ -1170,7 +1151,6 @@ func (s *Supervisor) applyConfig(ctx context.Context, newCfg *ports.BridgeConfig
 		s.mu.Lock()
 		s.rt = newRt
 		s.cfg = frozenCfg
-		s.durableIdentities = proposedIdentities
 		s.wedged = false
 		s.degraded = false
 		s.degradedReason = ""
@@ -1216,7 +1196,7 @@ func (s *Supervisor) applyOverlap(
 	oldCfg *ports.BridgeConfig,
 	newCfg *ports.BridgeConfig,
 ) (*runtime.Runtime, error) {
-	newRt, err := s.buildRuntimeBounded(ctx, newCfg)
+	newRt, change, err := s.buildForOverlap(ctx, oldRt, oldCfg, newCfg)
 	if err != nil {
 		return nil, fmt.Errorf("build: %w", err)
 	}
@@ -1225,7 +1205,7 @@ func (s *Supervisor) applyOverlap(
 		drainTimeout := s.drainTimeoutFrom(oldCfg)
 		// Detach caller cancellation so drain completes, preserving values.
 		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainTimeout)
-		stopErr := oldRt.Stop(stopCtx)
+		stopErr := oldRt.StopEndingBrokerState(stopCtx, change.Lost)
 		cancel()
 		if stopErr != nil {
 			// The old runtime did NOT stop cleanly (e.g. a hung broker close).
@@ -1265,6 +1245,45 @@ func (s *Supervisor) applyOverlap(
 	}
 
 	return newRt, nil
+}
+
+// buildForOverlap builds the runtime of an overlap swap under the swap-phase
+// deadline, as buildRuntimeBounded does, and returns what the swap does to
+// broker state (ADR 0024). The change is computed after the build's
+// preflight, so a configuration the preflight refuses fails with the
+// preflight's error.
+func (s *Supervisor) buildForOverlap(ctx context.Context, oldRt *runtime.Runtime, oldCfg, newCfg *ports.BridgeConfig,
+) (*runtime.Runtime, BrokerStateChange, error) {
+	phaseCtx, cancel := s.swapPhaseCtx(ctx)
+	defer cancel()
+	builder := s.newBuilder(newCfg)
+	prep, err := builder.prepare(phaseCtx)
+	if err != nil {
+		return nil, BrokerStateChange{}, err
+	}
+	change, err := s.brokerStateChange(oldRt, oldCfg, newCfg)
+	if err != nil {
+		builder.closeStoreHandles(prep.stores)
+		return nil, BrokerStateChange{}, err
+	}
+	newRt, err := builder.MarkAddedBrokerStateKeys(change.Added).complete(phaseCtx, prep)
+	if err != nil {
+		return nil, BrokerStateChange{}, err
+	}
+	return newRt, change, nil
+}
+
+// brokerStateChange is what a full swap from oldCfg, which oldRt runs, to
+// newCfg does to broker state (PlanBrokerStateChange). With no runtime running,
+// the build is a start: it ends nothing and adds nothing.
+func (s *Supervisor) brokerStateChange(oldRt *runtime.Runtime, oldCfg, newCfg *ports.BridgeConfig) (BrokerStateChange, error) {
+	if oldRt == nil {
+		return BrokerStateChange{}, nil
+	}
+	s.mu.RLock()
+	transports := maps.Clone(s.transports)
+	s.mu.RUnlock()
+	return PlanBrokerStateChange(oldCfg, newCfg, transports)
 }
 
 // stopAbandoned stops a built-but-abandoned runtime with a bounded, detached
@@ -1363,12 +1382,20 @@ func (s *Supervisor) applyPrepareCommit(
 	if err != nil {
 		return nil, fmt.Errorf("prepare: %w", err)
 	}
+	change, err := s.brokerStateChange(oldRt, oldCfg, newCfg)
+	if err != nil {
+		builder.closeStoreHandles(prep.stores)
+		return nil, fmt.Errorf("prepare: %w", err)
+	}
+	builder.MarkAddedBrokerStateKeys(change.Added)
 
 	if oldRt != nil {
 		drainTimeout := s.drainTimeoutFrom(oldCfg)
 		// Detach caller cancellation so drain completes, preserving values.
+		// A session whose broker state key newCfg no longer has ends that state
+		// as the old runtime stops (ADR 0024).
 		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainTimeout)
-		stopErr := oldRt.Stop(stopCtx)
+		stopErr := oldRt.StopEndingBrokerState(stopCtx, change.Lost)
 		cancel()
 		if stopErr != nil {
 			// The old runtime did NOT stop cleanly. complete() below opens the
@@ -1505,118 +1532,6 @@ func (s *Supervisor) detectSwapMode(cfg *ports.BridgeConfig) SwapMode {
 		return SwapPrepareCommit
 	}
 	return SwapOverlap
-}
-
-// durableSessionIdentitySnapshot is immutable after publication on Supervisor.
-// Both keys and fingerprints are opaque comparison material and must not be
-// logged. The plugin kind scopes fingerprints from unrelated transports.
-type durableSessionIdentitySnapshot map[string]durableSessionIdentity
-
-type durableSessionIdentity struct {
-	kind        string
-	fingerprint string
-}
-
-// durableSessionIdentityChanged refuses newCfg when it would strand the broker
-// state of a durable session oldCfg runs: a persistent or exclusive session whose
-// identity changed, or that was removed or renamed. It also refuses newCfg when
-// one of its durable identities cannot be verified, or two of its durable
-// sessions share one broker identity; with a nil oldCfg only those are checked.
-// The Supervisor compares snapshots it captured when it accepted a config; this
-// config-to-config form serves ValidateDurableReload and the rollout preflight.
-func durableSessionIdentityChanged(oldCfg, newCfg *ports.BridgeConfig) error {
-	frozenOld, err := cloneConfigForBuild(oldCfg)
-	if err != nil {
-		return err
-	}
-	oldIdentities, err := snapshotDurableSessionIdentities(frozenOld)
-	if err != nil {
-		return err
-	}
-	frozenNew, err := cloneConfigForBuild(newCfg)
-	if err != nil {
-		return err
-	}
-	newIdentities, err := snapshotDurableSessionIdentities(frozenNew)
-	if err != nil {
-		return err
-	}
-	return compareDurableSessionIdentitySnapshots(oldIdentities, newIdentities)
-}
-
-func snapshotDurableSessionIdentities(cfg *ports.BridgeConfig) (durableSessionIdentitySnapshot, error) {
-	snapshot := make(durableSessionIdentitySnapshot)
-	if cfg == nil {
-		return snapshot, nil
-	}
-	referenced := referencedSessionIDs(cfg)
-	owners := make(map[string]string)
-	for _, session := range cfg.Sessions {
-		mode := normalizedSessionMode(session.SessionMode)
-		if _, ok := referenced[session.ID]; !ok ||
-			(mode != connectivity.SessionPersistent && mode != connectivity.SessionExclusive) {
-			continue
-		}
-		identityConfig, ok := session.Config.(ports.DurableSessionIdentityConfig)
-		if !ok {
-			continue
-		}
-		if ports.IsNilPluginConfig(session.Config) {
-			return nil, fmt.Errorf("bridge: durable session %q identity config is nil", session.ID)
-		}
-		if _, ok := session.Config.(ports.FreezableConfig); !ok {
-			return nil, fmt.Errorf("bridge: durable session %q identity config lacks adapter-owned freeze capability", session.ID)
-		}
-		fingerprint, err := identityConfig.DurableSessionIdentity(mode)
-		if err != nil || fingerprint == "" {
-			return nil, fmt.Errorf("bridge: durable session %q identity cannot be verified", session.ID)
-		}
-		domains, err := identityConfig.DurableSessionIdentityDomains(mode)
-		if err != nil || len(domains) == 0 {
-			return nil, fmt.Errorf("bridge: durable session %q identity domains cannot be verified", session.ID)
-		}
-		identity := durableSessionIdentity{kind: session.Config.Kind(), fingerprint: fingerprint}
-		for _, domain := range domains {
-			if domain == "" {
-				return nil, fmt.Errorf("bridge: durable session %q identity domains cannot be verified", session.ID)
-			}
-			collisionKey := identity.kind + "\x00" + domain
-			if owner, duplicate := owners[collisionKey]; duplicate && owner != session.ID {
-				return nil, fmt.Errorf("bridge: durable sessions %q and %q have duplicate effective broker identities", owner, session.ID)
-			}
-			owners[collisionKey] = session.ID
-		}
-		snapshot[session.ID] = identity
-	}
-	return snapshot, nil
-}
-
-func compareDurableSessionIdentitySnapshots(oldIdentities, newIdentities durableSessionIdentitySnapshot) error {
-	for sessionID, oldIdentity := range oldIdentities {
-		newIdentity, ok := newIdentities[sessionID]
-		if !ok {
-			return fmt.Errorf("bridge: refusing live reload: durable session %q was removed, renamed, or lost its identity capability; its broker state and managed filter history could be stranded; externally drain and exact-unsubscribe every managed filter before cutover", sessionID)
-		}
-		if oldIdentity != newIdentity {
-			return fmt.Errorf("bridge: refusing live reload: durable session %q broker identity changed; externally drain queued messages, unsubscribe the old session, and perform a cutover", sessionID)
-		}
-	}
-	return nil
-}
-
-func cloneDurableSessionIdentitySnapshot(in durableSessionIdentitySnapshot) durableSessionIdentitySnapshot {
-	out := make(durableSessionIdentitySnapshot, len(in))
-	for id, identity := range in {
-		out[id] = identity
-	}
-	return out
-}
-
-func normalizedSessionMode(mode string) connectivity.SessionMode {
-	if mode == "" {
-		return connectivity.SessionEphemeral
-	}
-	return connectivity.SessionMode(mode)
 }
 
 // storageIdentifiedConfig is an OPTIONAL store PluginConfig capability that
