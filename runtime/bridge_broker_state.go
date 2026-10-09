@@ -4,7 +4,6 @@ import (
 	"context"
 	"maps"
 	"slices"
-	"time"
 
 	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
@@ -20,9 +19,9 @@ import (
 // before their manager closes them, after every run stopped. Nothing is asked
 // when the drain before the cancel did not settle every delivery, since ending
 // the state would delete a received but unsettled one. A lease-managed
-// session's lease is released only after its Close returned. Every configured
-// session has a manager; a session none runs carries the empty id, which no
-// reload names, so it is never asked.
+// session's lease is released only after its Close returned. A receiver whose
+// session no manager runs is never asked, since nothing tells whether this
+// instance may end that session's state.
 
 // endingSessions returns the ids of ids that keep accepts, as a set; a nil keep
 // accepts every id.
@@ -34,17 +33,6 @@ func endingSessions(ids []string, keep func(string) bool) map[string]bool {
 		}
 	}
 	return ending
-}
-
-// mayEndBrokerState reports whether this instance may end the broker state of
-// a session mgr runs, and the local lease deadline the ending must complete by
-// (session.Manager.MayEndBrokerState). A session no manager runs holds no
-// lease.
-func mayEndBrokerState(mgr *session.Manager) (before time.Time, ok bool) {
-	if mgr == nil {
-		return time.Time{}, true
-	}
-	return mgr.MayEndBrokerState()
 }
 
 // keepUnsettledBrokerState is called when the drain before the cancel did not
@@ -74,8 +62,12 @@ func (rt *Runtime) keepUnsettledBrokerState(ending map[string]bool, managers map
 }
 
 // askReceiversToEndBrokerState asks every receiver of entries that reads
-// through a session in ending, and implements ports.BrokerStateEnder, to end
-// its broker state when its route closes it. The ask carries the earlier of the
+// through a session in ending that a manager in managers runs, and implements
+// ports.BrokerStateEnder, to end its broker state when its route closes it, if
+// this instance may end it (session.Manager.MayEndBrokerState). A receiver is
+// matched to its session by its route's SourceSessionID, which the bridge
+// builder sets for every route that reads through a session; a route without
+// one is not asked and keeps its state. The ask carries the earlier of the
 // local deadline of that session's lease and ctx's deadline less
 // storeCloseGraceMargin: the route runner closes the receiver inside the run
 // the teardown waits for, under a close budget of its own that may outlast ctx,
@@ -91,7 +83,11 @@ func askReceiversToEndBrokerState(ctx context.Context, entries []*routeEntry, en
 		if !ending[sid] {
 			continue
 		}
-		before, ok := mayEndBrokerState(managers[sid])
+		mgr := managers[sid]
+		if mgr == nil {
+			continue
+		}
+		before, ok := mgr.MayEndBrokerState()
 		if !ok {
 			continue
 		}

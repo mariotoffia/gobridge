@@ -226,7 +226,8 @@ func (m *Manager) MayEndBrokerState() (before time.Time, ok bool) {
 	m.mu.Lock()
 	held, deadline := m.hasLease, m.leaseDeadline
 	m.mu.Unlock()
-	if !held || m.leaseDeadlinePassed() {
+	passed := !deadline.IsZero() && !m.clk.Now().Before(deadline)
+	if !held || passed {
 		return time.Time{}, false
 	}
 	return deadline, true

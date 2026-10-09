@@ -20,8 +20,11 @@ type Unit struct {
 	// state key. An id Sessions does not name is ignored. A session ends its
 	// state only when the unit's components stopped and this instance may end it
 	// (session.Manager.MayEndBrokerState); a receiver reading through it is asked
-	// before the unit's runs are cancelled. Neither ends anything when the drain
-	// before that cancel did not settle every in-flight delivery.
+	// before the unit's runs are cancelled, matched to it by its route's
+	// SourceSessionID, which the bridge builder sets for every route that reads
+	// through a session (a route without one is not asked and keeps its state).
+	// Neither ends anything when the drain before that cancel did not settle
+	// every in-flight delivery.
 	EndBrokerState []string
 }
 

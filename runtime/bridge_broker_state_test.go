@@ -191,6 +191,22 @@ func TestRetire_AsksAReceiverOnALostSessionToEndItsBrokerStateBeforeItCloses(t *
 	assert.Zero(t, events.askedBefore("rx"), "neither a session without a lease nor a retire without a deadline bounds the ending")
 }
 
+// TestAskReceiversToEndBrokerState_SkipsAReceiverWhoseSessionNoManagerRuns pins
+// that a receiver reading through an ending session no manager runs is not
+// asked: nothing tells whether this instance may end that session's state.
+//
+// Mutation check: ask when managers has no manager for the session and this
+// test fails.
+func TestAskReceiversToEndBrokerState_SkipsAReceiverWhoseSessionNoManagerRuns(t *testing.T) {
+	events := &brokerStateEvents{}
+	recv := &endingReceiver{componentReceiver: newComponentReceiver(), id: "rx", events: events}
+	entries := []*routeEntry{{config: ridingRoute("r1", "s1"), receiver: recv}}
+
+	askReceiversToEndBrokerState(t.Context(), entries, map[string]bool{"s1": true}, map[string]*session.Manager{})
+
+	assert.False(t, events.ended())
+}
+
 // TestRetire_AsksAReceiverToEndItsBrokerStateByItsSessionsLeaseDeadline pins
 // that a receiver reading through a lease-managed session is asked to finish
 // ending its broker state by the local deadline of that session's lease: past
