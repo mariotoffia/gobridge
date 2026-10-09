@@ -93,6 +93,7 @@ func (f *Factory) NewReceiver(_ context.Context, spec ports.ReceiverSpec, sessio
 		DurabilityMode:   cfg.Receiver.DurabilityMode,
 		Routing:          cfg.Receiver.Routing,
 		SubscriptionName: cfg.Receiver.SubscriptionName,
+		SessionID:        spec.SessionID,
 		Logger:           f.Logger,
 		Metrics:          f.Metrics,
 		Session:          amqpSession,

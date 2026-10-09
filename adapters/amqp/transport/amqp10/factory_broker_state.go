@@ -29,7 +29,7 @@ func (f *Factory) BrokerStateKeys(session ports.SessionSpec, receivers []ports.R
 		if err != nil {
 			return nil, fmt.Errorf("amqp10 receiver %q: %w", spec.ID, err)
 		}
-		if !holdsDurableTopicSubscription(cfg.Receiver) {
+		if !holdsDurableTopicSubscription(cfg.Receiver.Routing, cfg.Receiver.DurabilityMode) {
 			continue
 		}
 		key, err := durableSubscriptionKey(session, cfg.Receiver)
@@ -41,12 +41,14 @@ func (f *Factory) BrokerStateKeys(session ports.SessionSpec, receivers []ports.R
 	return keys, nil
 }
 
-// holdsDurableTopicSubscription reports whether receiver attaches the link
-// receiverLinkOptions makes a durable topic subscription: a durable source
-// terminus with expiry policy never and the "topic" capability. The default
-// routing is anycast, which attaches to a queue.
-func holdsDurableTopicSubscription(receiver ReceiverParams) bool {
-	return receiver.Routing == RoutingMulticast && receiver.DurabilityMode > 0
+// holdsDurableTopicSubscription reports whether a receiver with routing and
+// durabilityMode attaches the link receiverLinkOptions makes a durable topic
+// subscription: a durable source terminus with expiry policy never and the
+// "topic" capability. The default routing is anycast, which attaches to a
+// queue. Both the broker state key and the closing detach that ends the
+// subscription (Receiver.closeLink) use it.
+func holdsDurableTopicSubscription(routing RoutingType, durabilityMode uint32) bool {
+	return routing == RoutingMulticast && durabilityMode > 0
 }
 
 // durableSubscriptionKey returns the broker state key of one durable topic

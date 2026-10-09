@@ -570,6 +570,15 @@ func (s *Session) unregisterReceiver(r *Receiver) {
 	s.mu.Unlock()
 }
 
+// runsReceiver reports whether r's Run is active: registerReceiver added it
+// and its Run has not returned yet.
+func (s *Session) runsReceiver(r *Receiver) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.receivers[r]
+	return ok
+}
+
 // markReceiverLink updates the link-up state of an already-registered
 // receiver. Unknown receivers are ignored so a late callback after
 // unregister cannot resurrect an entry, and direct handleLinkError calls

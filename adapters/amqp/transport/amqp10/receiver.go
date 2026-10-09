@@ -30,6 +30,9 @@ type Receiver struct {
 	mu       sync.Mutex
 	link     linkReceiver
 	linkConn amqpConn
+	// endBrokerStateOnClose is set by EndBrokerStateOnClose: the next
+	// closeLink ends the durable subscription (ADR 0024). Guarded by mu.
+	endBrokerStateOnClose bool
 
 	// In-flight settlement tracking.
 	// inflightCount counts deliveries emitted to the pipeline whose
@@ -343,9 +346,24 @@ func (r *Receiver) closeLink() {
 	r.link = nil
 	failedConn := r.linkConn
 	r.linkConn = nil
+	endBrokerState := r.endBrokerStateOnClose
+	r.endBrokerStateOnClose = false
 	r.mu.Unlock()
 
 	if link == nil {
+		return
+	}
+
+	// A reload that retires this receiver for a configuration without its
+	// durable subscription ends the subscription with the closing detach every
+	// other close avoids (ADR 0024), but only once Run has returned and the
+	// route runner has drained its deliveries. A close while Run is still
+	// active is the route runner's force close after ReceiverCloseTimeout,
+	// with deliveries possibly in flight: it drops the connection like any
+	// other close. When the broker does not acknowledge the closing detach,
+	// the connection drop below still takes the link down.
+	if endBrokerState && holdsDurableTopicSubscription(r.cfg.Routing, r.cfg.DurabilityMode) &&
+		r.session != nil && !r.session.runsReceiver(r) && r.endDurableSubscription(link) {
 		return
 	}
 

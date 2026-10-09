@@ -127,12 +127,14 @@
 // Why the dedicated session: one Session owns exactly one AMQP connection
 // and multiplexes ALL of its receivers and senders over it. Closing a
 // durable receiver cannot use a normal link detach, because the pinned
-// go-amqp (v1.5.1) can only emit a CLOSING detach (Detach{Closed:true});
+// go-amqp (v1.7.0) can only emit a CLOSING detach (Detach{Closed:true});
 // Artemis reads that as UNSUBSCRIBE and DESTROYS the durable terminus
 // (dropping every retained message). The only way to detach the live
 // durable link while PRESERVING the durable subscription is to drop the
 // whole connection — a non-closing detach of every link on it (see
-// Receiver.closeLink).
+// Receiver.closeLink). A live reload whose next configuration no longer has
+// the subscription wants exactly the closing detach: it ends the subscription
+// on purpose (ADR 0024, Receiver.EndBrokerStateOnClose).
 //
 // Consequence (blast radius): closing a durable receiver forces a full
 // connection teardown, which transiently blips EVERY sibling link on the
