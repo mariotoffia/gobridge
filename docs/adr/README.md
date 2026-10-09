@@ -34,6 +34,7 @@ record remains available and links to its replacement.
 | [0021](0021-contain-mqtt-recovery-and-ingress-reject-in-session.md) | Contain an MQTT recovery failure and a pre-decode ingress reject in the session | accepted |
 | [0022](0022-mqtt-311-by-wire-translation.md) | Speak MQTT 3.1.1 by translating the wire below the MQTT 5 client | accepted; amended by 0023 |
 | [0023](0023-keep-resumed-mqtt-311-subscriptions.md) | Keep a resumed MQTT 3.1.1 session's subscriptions | accepted |
+| [0024](0024-end-durable-broker-state-on-reload.md) | End a durable subscription's broker state on reload instead of refusing the reload | proposed |
 
 ## Numbering
 
