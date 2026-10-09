@@ -66,3 +66,6 @@ Adds to `adapters.instructions.md`. Sources: ADR-0002, ADR-0008, ADR-0024,
   or its settlement failed (`holdsUnsettledDelivery`; `createLink` forgets the
   previous link's). That keep is a Warn and a `BrokerStateEndFailures`. Never
   end on any other close, and never for an `anycast` receiver.
+- A durable receiver has its session to itself (`Session.reserveLink` refuses
+  any other link beside it), so ending one session's broker state ends exactly
+  one receiver's subscription.

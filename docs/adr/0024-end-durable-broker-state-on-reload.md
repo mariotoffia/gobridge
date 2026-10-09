@@ -157,7 +157,9 @@ the AMQP 1.0 receiver:
   `closed=true`, AMQP 1.0 transport §2.6.6), and Artemis and Qpid Broker-J
   delete a durable topic subscription on a closing detach. Today the adapter
   drops the connection precisely to avoid that delete; it still does so for
-  every retire that loses no key.
+  every retire that loses no key. A durable receiver must have its session to
+  itself (`Session.reserveLink` refuses any other link beside it), so ending
+  the state of one session ends the subscription of exactly one receiver.
 
 The step is bounded by the transport's connect timeout, and is abandoned when
 it cannot finish before the local deadline of the lease the instance holds.
