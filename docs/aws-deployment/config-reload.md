@@ -202,7 +202,9 @@ session's lease, it ends the state the broker keeps for the old identity. MQTT
 disconnects the session, then connects once more as the old client ID with
 clean start and disconnects, so the broker deletes that session, its
 subscriptions and its queued messages. AMQP 1.0 closes the link with a closing
-detach, so the broker deletes the durable subscription. Only the task that is
+detach, so the broker deletes the durable subscription. If the drain does not
+settle every delivery within `drain_timeout`, the state is kept (a Warn and
+`BrokerStateEndFailures`). Only the task that is
 connected as the identity does this. For an exclusive session it must also hold
 the session's lease, and that lease must not have expired by the task's own
 clock; an ending that cannot finish before that lease's deadline is abandoned.

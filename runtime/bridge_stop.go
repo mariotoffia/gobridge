@@ -38,9 +38,10 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 // StopEndingBrokerState stops the runtime as Stop does, and ends the broker
 // state of the sessions in sessionIDs (ADR 0024): a full replacement swap stops
 // the runtime for a configuration that no longer has their broker state keys.
-// A session ends its state only when the runtime's components stopped and this
-// instance may end it (session.Manager.MayEndBrokerState). A Stop already in
-// progress or done ends nothing.
+// A session ends its state only when the drain settled every in-flight
+// delivery, the runtime's components stopped and this instance may end it
+// (session.Manager.MayEndBrokerState). A Stop already in progress or done ends
+// nothing.
 func (rt *Runtime) StopEndingBrokerState(ctx context.Context, sessionIDs []string) error {
 	return rt.stop(ctx, endingSessions(sessionIDs, nil))
 }
@@ -144,13 +145,19 @@ func (rt *Runtime) stop(ctx context.Context, ending map[string]bool) (retErr err
 		// when the budget or the caller ctx expires we cancel remaining work and
 		// return, leaving any unsettled source to broker redelivery (at-least-once),
 		// never silently acked. WaitQuiescent acquires rt.mu, which we released above.
-		if budget := rt.stopDrainBudget(); budget > 0 && ctx.Err() == nil && rt.anyRouteInFlight() {
+		settled := !rt.anyRouteInFlight()
+		if budget := rt.stopDrainBudget(); budget > 0 && ctx.Err() == nil && !settled {
 			qCtx, qCancel := context.WithTimeout(ctx, budget)
-			if err := rt.WaitQuiescent(qCtx, QuiescenceOptions{}); err != nil && rt.logger != nil {
+			err := rt.WaitQuiescent(qCtx, QuiescenceOptions{})
+			settled = err == nil
+			if err != nil && rt.logger != nil {
 				rt.logger.Warn("stop drain did not fully settle in-flight deliveries before deadline; cancelling (unsettled sources rely on broker redelivery)",
 					"instance_id", rt.instanceID, "budget", budget, "error", err)
 			}
 			qCancel()
+		}
+		if !settled {
+			ending = rt.keepUnsettledBrokerState(ending, managers)
 		}
 		// Receivers close inside their route runs, which cancel() ends, so a
 		// receiver holding broker state is asked just before that.

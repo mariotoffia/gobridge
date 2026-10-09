@@ -186,7 +186,9 @@ next one:
   more as the old client ID with clean start and Session Expiry Interval 0
   (`CleanSession=1` on MQTT 3.1.1), and disconnects. The broker deletes the old
   session, its subscriptions and its queued messages, and takes it out of every
-  `$share` group. Only then is the session's lease released. `connect_timeout`
+  `$share` group. Only then is the session's lease released. If the drain does
+  not settle every delivery within `drain_timeout`, the broker session is kept
+  (a Warn and `BrokerStateEndFailures`). `connect_timeout`
   bounds this connection, and `reconnect_timeout` each broker URL it tries. It
   is done once the broker accepts the clean-start CONNECT; a failed DISCONNECT
   after that changes nothing.

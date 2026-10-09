@@ -205,7 +205,9 @@ unchanged: a durable session with no history needs a seeded baseline.
 ## Delivery guarantee
 
 - Every delivery the old identity received is settled within `drain_timeout`
-  before the state is ended: at-least-once, as on any retire.
+  before the state is ended: at-least-once, as on any retire. If the drain does
+  not settle every delivery within `drain_timeout`, the state is kept (a Warn
+  and `BrokerStateEndFailures`).
 - QoS 1/2 messages published between the old disconnect and the new
   subscription's acknowledgement are lost, as on a restart. On AMQP 1.0, so are
   messages sent to the address while neither subscription exists. For `$share`,

@@ -11,7 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mariotoffia/gobridge/domain/messaging"
 	"github.com/mariotoffia/gobridge/domain/persistence"
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/session"
 	"github.com/mariotoffia/gobridge/testutil/wait"
@@ -322,6 +324,74 @@ func TestStopEndingBrokerState_EndsOnlyTheNamedSessionsBeforeReleasingTheirLease
 	assert.Less(t, slices.Index(got, "close:s1"), slices.Index(got, "release:s1"))
 	assert.NotContains(t, got, "end:s2", "a session whose key survives ends nothing")
 	assert.Contains(t, got, "release:s2")
+}
+
+// startUnsettledDelivery starts a runtime whose route r1 reads through a
+// receiver rx on session s1, both able to end their broker state, and holds
+// one delivery in flight on r1 that never settles: its send returns only when
+// the route's run is cancelled, after a drain budget far shorter than the
+// teardown's.
+func startUnsettledDelivery(t *testing.T, events *brokerStateEvents, metrics ports.MetricsExporter) (*Runtime, *ackDelivery) {
+	t.Helper()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	rt := New(WithInstanceID("broker-state-unsettled"), WithStopQuiesce(20*time.Millisecond), WithMetrics(metrics))
+	s1 := newEndingSession("s1", events)
+	recv := &endingReceiver{componentReceiver: newComponentReceiver(), id: "rx", events: events}
+	require.NoError(t, rt.RegisterSessionSender(session.Config{SessionID: "s1"}, s1, nopRouteSender{}))
+	require.NoError(t, rt.AddRoute(ridingRoute("r1", "s1"), recv, &componentSender{release: release}, s1, nil))
+	startComponentRuntime(t, rt)
+	wait.RequireClosed(t, recv.ready, 2*time.Second)
+	env := messaging.MustEnvelope(messaging.EnvelopeInput{ID: "unsettled", Subject: "broker-state"})
+	del := &ackDelivery{syntheticDelivery: syntheticDelivery{env: env}}
+	// Emitted under the receiver's run context, as a transport does, so the
+	// cancel after the drain ends the send and leaves the delivery unsettled.
+	require.NoError(t, recv.emit(recv.ctx, del))
+	wait.Until(t, 2*time.Second, "the delivery is in flight", rt.anyRouteInFlight)
+	return rt, del
+}
+
+// assertBrokerStateKeptForS1 asserts that neither rx nor s1 was asked to end
+// its broker state, and that the skipped end of s1 was counted.
+func assertBrokerStateKeptForS1(t *testing.T, events *brokerStateEvents, metrics *ports.RecordingExporter, del *ackDelivery) {
+	t.Helper()
+	assert.False(t, del.acked.Load(), "the delivery must still be unsettled for the test to hold")
+	assert.Equal(t, []string{"close:rx", "close:s1"}, events.list(),
+		"ending the state would delete the only copy of the unsettled delivery")
+	entries := metrics.FindEntries(shared.MetricBrokerStateEndFailures)
+	require.Len(t, entries, 1)
+	assert.Contains(t, entries[0].Tags, shared.Tag{Key: shared.TagKeySessionID, Value: "s1"})
+}
+
+// TestRetire_EndsNoBrokerStateWhenTheDrainDidNotSettle pins that a retire whose
+// drain did not settle every delivery before the cancel asks neither the
+// receiver nor the session to end its broker state: the broker holds the only
+// copy of the delivery the cancel left unsettled. The retire goes on as it
+// does for any unsettled drain.
+//
+// Mutation check: drop the settled gate in Retire and this test fails.
+func TestRetire_EndsNoBrokerStateWhenTheDrainDidNotSettle(t *testing.T) {
+	events, metrics := &brokerStateEvents{}, &ports.RecordingExporter{}
+	rt, del := startUnsettledDelivery(t, events, metrics)
+
+	retire(t, rt, Unit{Routes: []string{"r1"}, Sessions: []string{"s1"}, EndBrokerState: []string{"s1"}})
+
+	assertBrokerStateKeptForS1(t, events, metrics, del)
+}
+
+// TestStopEndingBrokerState_EndsNoBrokerStateWhenTheDrainDidNotSettle pins the
+// same for a full swap's stop.
+//
+// Mutation check: drop the settled gate in stop and this test fails.
+func TestStopEndingBrokerState_EndsNoBrokerStateWhenTheDrainDidNotSettle(t *testing.T) {
+	events, metrics := &brokerStateEvents{}, &ports.RecordingExporter{}
+	rt, del := startUnsettledDelivery(t, events, metrics)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, rt.StopEndingBrokerState(ctx, []string{"s1"}))
+
+	assertBrokerStateKeptForS1(t, events, metrics, del)
 }
 
 func TestStop_EndsNoBrokerState(t *testing.T) {

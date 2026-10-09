@@ -8,8 +8,9 @@ const (
 	// MetricBrokerStateEndFailures counts the times GoBridge could not end that
 	// state, tagged session_id with the configured session id: the broker
 	// refused it (access denied), could not be reached within the transport's
-	// connect timeout, or rejected the closing detach. The reload goes on, and
-	// the state stays on the broker: an MQTT session until it expires, an AMQP
-	// 1.0 durable subscription until an operator deletes it.
+	// connect timeout, or rejected the closing detach, or the drain before the
+	// cancel did not settle every delivery, so no ending was tried. The reload
+	// goes on, and the state stays on the broker: an MQTT session until it
+	// expires, an AMQP 1.0 durable subscription until an operator deletes it.
 	MetricBrokerStateEndFailures = "BrokerStateEndFailures"
 )

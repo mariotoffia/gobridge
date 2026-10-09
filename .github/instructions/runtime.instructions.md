@@ -232,6 +232,9 @@ ADR-0020, ADR-0024, `docs/internals/architecture-message-flow.md`,
   runs finished. The ask carries that deadline (`EndBrokerStateOnClose(before)`),
   a receiver's capped by the retire or stop `ctx` deadline less
   `storeCloseGraceMargin`, and an ending that cannot finish before it is abandoned.
+- Nothing is asked to end broker state when the drain before the cancel did
+  not settle every delivery: a Warn naming `session_id` and a
+  `BrokerStateEndFailures` count instead.
 - Ending is bounded by the transport's connect timeout. A failure is a Warn
   naming `session_id` and a `BrokerStateEndFailures` count; it never fails the
   retire or the reload.

@@ -2,8 +2,11 @@ package runtime
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"time"
 
+	"github.com/mariotoffia/gobridge/domain/shared"
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/session"
 )
@@ -14,7 +17,9 @@ import (
 // end it when they close: the session (MQTT) and the receivers reading through
 // it (AMQP 1.0). Receivers are asked before the unit's runs are cancelled,
 // because the route runner closes them inside the run; sessions are asked just
-// before their manager closes them, after every run stopped. A lease-managed
+// before their manager closes them, after every run stopped. Nothing is asked
+// when the drain before the cancel did not settle every delivery, since ending
+// the state would delete a received but unsettled one. A lease-managed
 // session's lease is released only after its Close returned. Every configured
 // session has a manager; a session none runs carries the empty id, which no
 // reload names, so it is never asked.
@@ -40,6 +45,32 @@ func mayEndBrokerState(mgr *session.Manager) (before time.Time, ok bool) {
 		return time.Time{}, true
 	}
 	return mgr.MayEndBrokerState()
+}
+
+// keepUnsettledBrokerState is called when the drain before the cancel did not
+// settle every delivery: the broker holds the only copy of one still
+// unsettled, which ending the state would delete. For each session in ending
+// that a manager in managers runs and this instance may end, it logs a Warn and
+// counts shared.MetricBrokerStateEndFailures. It returns nil, so nothing ends.
+func (rt *Runtime) keepUnsettledBrokerState(ending map[string]bool, managers map[string]*session.Manager) map[string]bool {
+	for _, sid := range slices.Sorted(maps.Keys(ending)) {
+		mgr, managed := managers[sid]
+		if !managed {
+			continue
+		}
+		if _, may := mgr.MayEndBrokerState(); !may {
+			continue
+		}
+		if rt.metrics != nil {
+			rt.metrics.Counter(shared.MetricBrokerStateEndFailures, 1, shared.Tag{Key: shared.TagKeySessionID, Value: sid})
+		}
+		if rt.logger != nil {
+			rt.logger.Warn("broker state kept: in-flight deliveries did not settle before the cancel, "+
+				"and ending the state would delete them; the broker keeps it until it expires or an operator deletes it",
+				"session_id", sid)
+		}
+	}
+	return nil
 }
 
 // askReceiversToEndBrokerState asks every receiver of entries that reads

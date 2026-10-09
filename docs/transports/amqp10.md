@@ -171,7 +171,9 @@ than an opaque broker SASL failure at dial.
 > ([ADR 0024](../adr/0024-end-durable-broker-state-on-reload.md)). It does so
 > only when the receiver stopped on its own before the close: a receiver the
 > runtime force-closes while it is still running drops the connection and keeps
-> its durable subscription. Every other close (shutdown, restart, pause, a
+> its durable subscription, as does every receiver of a retire whose drain did
+> not settle every delivery within `drain_timeout` (a Warn and
+> `BrokerStateEndFailures`). Every other close (shutdown, restart, pause, a
 > reload that keeps the subscription) still drops the connection and keeps it.
 > An `anycast` (queue) receiver never deletes anything. If the closing detach
 > fails, the adapter logs a Warn naming the `session_id`, counts

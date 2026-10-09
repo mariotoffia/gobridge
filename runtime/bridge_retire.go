@@ -20,7 +20,8 @@ type Unit struct {
 	// state key. An id Sessions does not name is ignored. A session ends its
 	// state only when the unit's components stopped and this instance may end it
 	// (session.Manager.MayEndBrokerState); a receiver reading through it is asked
-	// before the unit's runs are cancelled.
+	// before the unit's runs are cancelled. Neither ends anything when the drain
+	// before that cancel did not settle every in-flight delivery.
 	EndBrokerState []string
 }
 
@@ -87,7 +88,8 @@ type retiredUnit struct {
 // (ADR 0024): its receivers are asked before the runs are cancelled, and its
 // session just before its manager closes it, which releases its lease after
 // that close. Only an instance that may end it does (MayEndBrokerState), and
-// only when every component stopped.
+// only when the drain settled every in-flight delivery and every component
+// stopped.
 func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 	d, err := rt.detach(u)
 	if err != nil {
@@ -104,14 +106,20 @@ func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 	// delivery accepted between the in-flight check and the cancel is left
 	// unsettled for the source to redeliver: the same at-least-once boundary
 	// Stop accepts (broker redelivery, never a silent ack).
-	if budget := rt.stopDrainBudget(); budget > 0 && ctx.Err() == nil && anyInFlight(d.set.entries) {
+	settled := !anyInFlight(d.set.entries)
+	if budget := rt.stopDrainBudget(); budget > 0 && ctx.Err() == nil && !settled {
 		qCtx, cancel := context.WithTimeout(ctx, budget)
 		snapshot := func() []*routeEntry { return d.set.entries }
-		if err := rt.waitEntriesQuiescent(qCtx, snapshot, QuiescenceOptions{}); err != nil && rt.logger != nil {
+		err := rt.waitEntriesQuiescent(qCtx, snapshot, QuiescenceOptions{})
+		settled = err == nil
+		if err != nil && rt.logger != nil {
 			rt.logger.Warn("retire drain did not settle in-flight deliveries before deadline; cancelling (unsettled sources rely on broker redelivery)",
 				"routes", u.Routes, "budget", budget, "error", err)
 		}
 		cancel()
+	}
+	if !settled {
+		ending = rt.keepUnsettledBrokerState(ending, d.managers)
 	}
 	askReceiversToEndBrokerState(ctx, d.set.entries, ending, d.managers)
 	for _, run := range d.runs {
