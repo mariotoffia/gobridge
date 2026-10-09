@@ -277,8 +277,9 @@ type Session struct {
 	// stored under before ADR 0024; Start carries that history over once.
 	legacyManagedIdentity string
 	// freshBrokerSessionPending is set when a live reload added this session's
-	// broker state key (ADR 0024): the first Start ends any broker session the
-	// client ID still has before it connects. Guarded by mu.
+	// broker state key (ADR 0024): while the loaded managed subscription
+	// history is empty, Start ends any broker session the client ID still has
+	// before it connects (startFreshBrokerSession). Guarded by mu.
 	freshBrokerSessionPending bool
 	// endBrokerStateOnClose is set by EndBrokerStateOnClose: the next Close ends
 	// the broker session after it disconnects (ADR 0024). Guarded by mu.

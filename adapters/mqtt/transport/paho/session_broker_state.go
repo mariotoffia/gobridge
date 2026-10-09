@@ -73,4 +73,37 @@ func (s *Session) metricSessionID() string {
 	return s.opts.ClientID
 }
 
+// startFreshBrokerSession ends the broker session the client ID may still have
+// before the first connection of a session whose broker state key a live
+// reload added (ADR 0024), so the broker holds nothing the empty managed
+// subscription history the reload recorded does not know. A session that
+// loaded a non-empty history leaves the broker session alone: another instance
+// already connected as the identity and recorded what it subscribed, as after
+// a failover. A failure fails Start, which the session manager retries, so the
+// session never resumes a broker session its history does not describe.
+func (s *Session) startFreshBrokerSession(ctx context.Context) error {
+	s.mu.Lock()
+	pending := s.freshBrokerSessionPending
+	historyEmpty := len(s.managedHistory) == 0
+	if pending && !historyEmpty {
+		s.freshBrokerSessionPending = false
+	}
+	s.mu.Unlock()
+	if !pending || !historyEmpty {
+		return nil
+	}
+	end := s.endBrokerSession
+	if s.endBrokerSessionOverride != nil {
+		end = s.endBrokerSessionOverride
+	}
+	if err := end(ctx); err != nil {
+		return fmt.Errorf("mqtt: session %q: end the broker session of a newly added client ID before connecting: %w",
+			s.metricSessionID(), err)
+	}
+	s.mu.Lock()
+	s.freshBrokerSessionPending = false
+	s.mu.Unlock()
+	return nil
+}
+
 var _ ports.BrokerStateEnder = (*Session)(nil)

@@ -3,6 +3,7 @@ package paho
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -215,4 +216,127 @@ func TestFactoryNewSession_KnowsItsSessionID(t *testing.T) {
 	require.True(t, ok)
 
 	assert.Equal(t, "orders-session", s.metricSessionID())
+}
+
+// startOrder makes s record, in operations, each attempt to end its broker
+// session ("end") and each dial ("dial").
+func startOrder(s *Session, operations *[]string) {
+	s.endBrokerSessionOverride = func(context.Context) error {
+		*operations = append(*operations, "end")
+		return nil
+	}
+	dial := s.connectOverride
+	s.connectOverride = func(ctx context.Context) (pahoConnection, context.CancelFunc, error) {
+		*operations = append(*operations, "dial")
+		return dial(ctx)
+	}
+}
+
+// startSteps keeps the history load, the broker session end and the dial.
+func startSteps(operations []string) []string {
+	return slices.DeleteFunc(slices.Clone(operations), func(op string) bool {
+		return op != "list" && op != "end" && op != "dial"
+	})
+}
+
+func TestStart_CarriesTheLegacyHistoryOverBeforeLoadingIt(t *testing.T) {
+	operations := []string{}
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
+		"legacy-identity": {"orders/#": {}},
+	}}
+	s := newManagedTestSession(t, store, &managedConnFake{operations: &operations})
+	s.legacyManagedIdentity = "legacy-identity"
+
+	require.NoError(t, s.Start(t.Context()))
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+
+	assert.Equal(t, []string{"orders/#"}, store.snapshot("safe-session-id"))
+	s.mu.Lock()
+	_, loaded := s.managedHistory["orders/#"]
+	s.mu.Unlock()
+	assert.True(t, loaded, "the carried-over filter is cleaned up like any remembered one")
+}
+
+func TestStart_EndsTheBrokerSessionOfAnAddedKeyBeforeTheFirstConnection(t *testing.T) {
+	operations := []string{}
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
+		"safe-session-id": {},
+	}}
+	s := newManagedTestSession(t, store, &managedConnFake{operations: &operations})
+	s.freshBrokerSessionPending = true
+	startOrder(s, &operations)
+
+	require.NoError(t, s.Start(t.Context()))
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+
+	assert.Equal(t, []string{"list", "end", "dial"}, startSteps(operations))
+}
+
+func TestStart_LeavesTheBrokerSessionAloneOnceHistoryWasRecorded(t *testing.T) {
+	operations := []string{}
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
+		"safe-session-id": {"orders/#": {}},
+	}}
+	s := newManagedTestSession(t, store, &managedConnFake{operations: &operations})
+	s.freshBrokerSessionPending = true
+	startOrder(s, &operations)
+
+	require.NoError(t, s.Start(t.Context()))
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+
+	assert.Equal(t, []string{"list", "dial"}, startSteps(operations),
+		"another instance already connected as the identity and recorded what it subscribed")
+}
+
+func TestStart_FailsUntilTheBrokerSessionOfAnAddedKeyIsEnded(t *testing.T) {
+	operations := []string{}
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
+		"safe-session-id": {},
+	}}
+	s := newManagedTestSession(t, store, &managedConnFake{operations: &operations})
+	s.freshBrokerSessionPending = true
+	startOrder(s, &operations)
+	endErr := errors.New("broker unreachable")
+	s.endBrokerSessionOverride = func(context.Context) error {
+		operations = append(operations, "end")
+		return endErr
+	}
+
+	require.Error(t, s.Start(t.Context()))
+	assert.Equal(t, []string{"list", "end"}, startSteps(operations), "no connection resumes the old broker session")
+
+	endErr = nil
+	require.NoError(t, s.Start(t.Context()))
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	assert.Equal(t, []string{"list", "end", "end", "dial"}, startSteps(operations))
+}
+
+func TestFactoryNewSession_CarriesTheLegacyIdentityAndTheAddedKey(t *testing.T) {
+	operations := []string{}
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{}}
+	config := &Config{Session: SessionOptions{BrokerURLs: []string{"tcp://192.0.2.1:1883"}, ClientID: "orders-client"}}
+
+	raw, err := NewFactory(nil).NewSession(t.Context(), ports.SessionSpec{
+		ID:                                "orders-session",
+		SessionMode:                       connectivity.SessionPersistent,
+		Config:                            config,
+		ManagedSubscriptionStore:          store,
+		ManagedSubscriptionIdentity:       "safe-session-id",
+		ManagedSubscriptionsRequired:      true,
+		LegacyManagedSubscriptionIdentity: "legacy-identity",
+		BrokerStateKeyAdded:               true,
+	})
+	require.NoError(t, err)
+	s, ok := raw.(*Session)
+	require.True(t, ok)
+	assert.Equal(t, "legacy-identity", s.legacyManagedIdentity)
+	assert.True(t, s.freshBrokerSessionPending)
+
+	raw, err = NewFactory(nil).NewSession(t.Context(), ports.SessionSpec{
+		ID: "orders-session", SessionMode: connectivity.SessionEphemeral, Config: config, BrokerStateKeyAdded: true,
+	})
+	require.NoError(t, err)
+	ephemeral, ok := raw.(*Session)
+	require.True(t, ok)
+	assert.False(t, ephemeral.freshBrokerSessionPending, "an ephemeral session always starts clean")
 }
