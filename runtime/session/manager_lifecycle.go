@@ -214,13 +214,14 @@ func (m *Manager) Close(ctx context.Context) error {
 // state (ADR 0024): it holds the session's lease, or the session takes part in
 // no lease-based failover. A standby never connected as the session's broker
 // identity, and another instance may be connected as it now, so it ends
-// nothing.
+// nothing. A lease whose local deadline passed may already be held by another
+// instance, so it ends nothing either.
 func (m *Manager) MayEndBrokerState() bool {
 	if !m.Exclusive() {
 		return true
 	}
 	_, held := m.Token()
-	return held
+	return held && !m.leaseDeadlinePassed()
 }
 
 // CloseEndingBrokerState closes the session as Close does, after asking a

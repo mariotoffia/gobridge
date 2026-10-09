@@ -98,7 +98,6 @@ func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 		rt.logger.Info("retire ends the broker state the next configuration no longer has",
 			"sessions", slices.Sorted(maps.Keys(ending)))
 	}
-	askReceiversToEndBrokerState(d.set.entries, ending, d.managers)
 	var errs []error
 	// Settle before cancelling, for the same reason Stop does: a cancelled send
 	// fails its source ack and the broker redelivers a message already sent. A
@@ -114,6 +113,7 @@ func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 		}
 		cancel()
 	}
+	askReceiversToEndBrokerState(d.set.entries, ending, d.managers)
 	for _, run := range d.runs {
 		if run.cancel != nil {
 			run.cancel()

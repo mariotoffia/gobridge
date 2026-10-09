@@ -102,9 +102,6 @@ func (rt *Runtime) stop(ctx context.Context, ending map[string]bool) (retErr err
 		managers = maps.Clone(rt.sessionMgrs)
 	}
 	rt.mu.Unlock()
-	// Receivers close inside their route runs, which cancel() below ends, so a
-	// receiver holding broker state is asked before that.
-	askReceiversToEndBrokerState(entries, ending, managers)
 
 	// close(stopDone) MUST be the very last thing Stop does. Registered first
 	// ⇒ runs last (LIFO), after closeCancel/flushCancel and after the return
@@ -155,6 +152,9 @@ func (rt *Runtime) stop(ctx context.Context, ending map[string]bool) (retErr err
 			}
 			qCancel()
 		}
+		// Receivers close inside their route runs, which cancel() ends, so a
+		// receiver holding broker state is asked just before that.
+		askReceiversToEndBrokerState(entries, ending, managers)
 		cancel()
 	}
 
