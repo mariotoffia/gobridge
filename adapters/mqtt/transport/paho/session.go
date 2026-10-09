@@ -269,6 +269,24 @@ type Session struct {
 	// without rebuilding the ConnectionManager. Protected by mu.
 	liveCreds mqttCredentials
 
+	// sessionID is the GoBridge session_id the factory built this session for;
+	// metrics tag session_id with it (metricSessionID). Empty for a session
+	// built without the factory.
+	sessionID string
+	// legacyManagedIdentity is the key the managed subscription history was
+	// stored under before ADR 0024; Start carries that history over once.
+	legacyManagedIdentity string
+	// freshBrokerSessionPending is set when a live reload added this session's
+	// broker state key (ADR 0024): the first Start ends any broker session the
+	// client ID still has before it connects. Guarded by mu.
+	freshBrokerSessionPending bool
+	// endBrokerStateOnClose is set by EndBrokerStateOnClose: the next Close ends
+	// the broker session after it disconnects (ADR 0024). Guarded by mu.
+	endBrokerStateOnClose bool
+	// endBrokerSessionOverride, when non-nil, replaces endBrokerSession, so a
+	// test can end a broker session without a broker.
+	endBrokerSessionOverride func(context.Context) error
+
 	// connectOverride, when non-nil, replaces the real autopaho dial in
 	// Start (build ClientConfig → NewConnection → AwaitConnection) with a
 	// test double. It returns the connection seam plus the cancel func
