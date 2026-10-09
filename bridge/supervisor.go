@@ -1196,7 +1196,7 @@ func (s *Supervisor) applyOverlap(
 	oldCfg *ports.BridgeConfig,
 	newCfg *ports.BridgeConfig,
 ) (*runtime.Runtime, error) {
-	newRt, err := s.buildRuntimeBounded(ctx, newCfg)
+	newRt, change, err := s.buildForOverlap(ctx, oldRt, oldCfg, newCfg)
 	if err != nil {
 		return nil, fmt.Errorf("build: %w", err)
 	}
@@ -1205,7 +1205,7 @@ func (s *Supervisor) applyOverlap(
 		drainTimeout := s.drainTimeoutFrom(oldCfg)
 		// Detach caller cancellation so drain completes, preserving values.
 		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainTimeout)
-		stopErr := oldRt.Stop(stopCtx)
+		stopErr := oldRt.StopEndingBrokerState(stopCtx, change.Lost)
 		cancel()
 		if stopErr != nil {
 			// The old runtime did NOT stop cleanly (e.g. a hung broker close).
@@ -1245,6 +1245,45 @@ func (s *Supervisor) applyOverlap(
 	}
 
 	return newRt, nil
+}
+
+// buildForOverlap builds the runtime of an overlap swap under the swap-phase
+// deadline, as buildRuntimeBounded does, and returns what the swap does to
+// broker state (ADR 0024). The change is computed after the build's
+// preflight, so a configuration the preflight refuses fails with the
+// preflight's error.
+func (s *Supervisor) buildForOverlap(ctx context.Context, oldRt *runtime.Runtime, oldCfg, newCfg *ports.BridgeConfig,
+) (*runtime.Runtime, BrokerStateChange, error) {
+	phaseCtx, cancel := s.swapPhaseCtx(ctx)
+	defer cancel()
+	builder := s.newBuilder(newCfg)
+	prep, err := builder.prepare(phaseCtx)
+	if err != nil {
+		return nil, BrokerStateChange{}, err
+	}
+	change, err := s.brokerStateChange(oldRt, oldCfg, newCfg)
+	if err != nil {
+		builder.closeStoreHandles(prep.stores)
+		return nil, BrokerStateChange{}, err
+	}
+	newRt, err := builder.MarkAddedBrokerStateKeys(change.Added).complete(phaseCtx, prep)
+	if err != nil {
+		return nil, BrokerStateChange{}, err
+	}
+	return newRt, change, nil
+}
+
+// brokerStateChange is what a full swap from oldCfg, which oldRt runs, to
+// newCfg does to broker state (PlanBrokerStateChange). With no runtime running,
+// the build is a start: it ends nothing and adds nothing.
+func (s *Supervisor) brokerStateChange(oldRt *runtime.Runtime, oldCfg, newCfg *ports.BridgeConfig) (BrokerStateChange, error) {
+	if oldRt == nil {
+		return BrokerStateChange{}, nil
+	}
+	s.mu.RLock()
+	transports := maps.Clone(s.transports)
+	s.mu.RUnlock()
+	return PlanBrokerStateChange(oldCfg, newCfg, transports)
 }
 
 // stopAbandoned stops a built-but-abandoned runtime with a bounded, detached
@@ -1343,12 +1382,20 @@ func (s *Supervisor) applyPrepareCommit(
 	if err != nil {
 		return nil, fmt.Errorf("prepare: %w", err)
 	}
+	change, err := s.brokerStateChange(oldRt, oldCfg, newCfg)
+	if err != nil {
+		builder.closeStoreHandles(prep.stores)
+		return nil, fmt.Errorf("prepare: %w", err)
+	}
+	builder.MarkAddedBrokerStateKeys(change.Added)
 
 	if oldRt != nil {
 		drainTimeout := s.drainTimeoutFrom(oldCfg)
 		// Detach caller cancellation so drain completes, preserving values.
+		// A session whose broker state key newCfg no longer has ends that state
+		// as the old runtime stops (ADR 0024).
 		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainTimeout)
-		stopErr := oldRt.Stop(stopCtx)
+		stopErr := oldRt.StopEndingBrokerState(stopCtx, change.Lost)
 		cancel()
 		if stopErr != nil {
 			// The old runtime did NOT stop cleanly. complete() below opens the

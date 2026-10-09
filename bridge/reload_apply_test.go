@@ -361,7 +361,7 @@ func TestInPlaceReload_TeardownIsDetachedFromTheCallersContext(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	require.NoError(t, plan.retireUnit(cancelled, rt, plan.retire[0]), "the retired unit's components finish stopping")
+	require.NoError(t, plan.retireUnit(cancelled, rt, plan.retire[0], nil), "the retired unit's components finish stopping")
 	require.NoError(t, plan.stopParts(cancelled, []*runtime.Runtime{part}), "the part's components finish stopping")
 
 	assert.Equal(t, []int{1, 1}, tf.closeCounts("b-s"), "the retired session and the part's session are closed")

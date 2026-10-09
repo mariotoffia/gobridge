@@ -96,6 +96,12 @@ func (o InPlaceOutcome) String() string {
 // retired units from the running configuration, unless rt stopped running or
 // something that may still hold an identity they claim did not stop (see
 // restore).
+//
+// A retired session holding a broker state key the next configuration does not
+// have ends that state as it retires; an added session holding a key the
+// running configuration did not have starts with an empty managed subscription
+// history and a clean broker session (PlanBrokerStateChange, ADR 0024). A
+// restored unit ends nothing.
 func (r *InPlaceReload) Apply(ctx context.Context, rt *runtime.Runtime, newBuilder func(*ports.BridgeConfig) *Builder,
 	phase func(context.Context) (context.Context, context.CancelFunc),
 ) (InPlaceOutcome, error) {
@@ -105,7 +111,7 @@ func (r *InPlaceReload) Apply(ctx context.Context, rt *runtime.Runtime, newBuild
 	if phase == nil {
 		phase = func(ctx context.Context) (context.Context, context.CancelFunc) { return ctx, func() {} }
 	}
-	plans, err := r.prepareParts(ctx, rt, newBuilder, phase)
+	plans, change, err := r.prepareParts(ctx, rt, newBuilder, phase)
 	if err != nil {
 		return InPlaceUnchanged, err
 	}
@@ -117,7 +123,7 @@ func (r *InPlaceReload) Apply(ctx context.Context, rt *runtime.Runtime, newBuild
 		}
 	}
 	for i, u := range r.retire {
-		if err := r.retireUnit(ctx, rt, u); err != nil {
+		if err := r.retireUnit(ctx, rt, u, change.Lost); err != nil {
 			// A retire refused because rt stopped running took nothing out, so no
 			// ownership is in doubt. Refused first, it changed nothing; refused
 			// later, the units retired before it are gone.
@@ -145,25 +151,30 @@ func (r *InPlaceReload) Apply(ctx context.Context, rt *runtime.Runtime, newBuild
 	return InPlaceApplied, nil
 }
 
-// prepareParts preflights the whole next document and plans the part of every
+// prepareParts preflights the whole next document, compares the broker state
+// keys of the running and next configuration, and plans the part of every
 // added unit, in order, in one phase. It opens nothing.
 func (r *InPlaceReload) prepareParts(ctx context.Context, rt *runtime.Runtime, newBuilder func(*ports.BridgeConfig) *Builder,
 	phase func(context.Context) (context.Context, context.CancelFunc),
-) ([]*BuildPlan, error) {
+) ([]*BuildPlan, BrokerStateChange, error) {
 	ctx, cancel := phase(ctx)
 	defer cancel()
 	if err := newBuilder(r.next).Preflight(ctx); err != nil {
-		return nil, fmt.Errorf("in-place reload: preflight: %w", err)
+		return nil, BrokerStateChange{}, fmt.Errorf("in-place reload: preflight: %w", err)
+	}
+	change, err := PlanBrokerStateChange(r.running, r.next, r.transports)
+	if err != nil {
+		return nil, BrokerStateChange{}, fmt.Errorf("in-place reload: %w", err)
 	}
 	plans := make([]*BuildPlan, len(r.add))
 	for i, u := range r.add {
-		plan, err := newBuilder(u.sub).planPart(ctx, rt)
+		plan, err := newBuilder(u.sub).MarkAddedBrokerStateKeys(change.Added).planPart(ctx, rt)
 		if err != nil {
-			return nil, fmt.Errorf("in-place reload: prepare unit (%v): %w", u, err)
+			return nil, BrokerStateChange{}, fmt.Errorf("in-place reload: prepare unit (%v): %w", u, err)
 		}
 		plans[i] = plan
 	}
-	return plans, nil
+	return plans, change, nil
 }
 
 // buildParts commits the plan of every added unit, in order, in one phase. On
@@ -212,7 +223,7 @@ func (r *InPlaceReload) restore(ctx context.Context, rt *runtime.Runtime, newBui
 		}
 	}
 	for _, u := range grafted {
-		if err := r.retireUnit(ctx, rt, u); err != nil {
+		if err := r.retireUnit(ctx, rt, u, nil); err != nil {
 			return InPlaceWedged, errors.Join(cause, err)
 		}
 	}
@@ -237,11 +248,12 @@ func (r *InPlaceReload) restore(ctx context.Context, rt *runtime.Runtime, newBui
 	return InPlaceUnchanged, cause
 }
 
-// retireUnit retires u from rt.
-func (r *InPlaceReload) retireUnit(ctx context.Context, rt *runtime.Runtime, u reloadUnit) error {
+// retireUnit retires u from rt, ending the broker state of the sessions of u
+// that lost names (ADR 0024).
+func (r *InPlaceReload) retireUnit(ctx context.Context, rt *runtime.Runtime, u reloadUnit, lost []string) error {
 	retireCtx, cancel := r.teardownCtx(ctx)
 	defer cancel()
-	if err := rt.Retire(retireCtx, runtime.Unit{Routes: u.routes, Sessions: u.sessions}); err != nil {
+	if err := rt.Retire(retireCtx, runtime.Unit{Routes: u.routes, Sessions: u.sessions, EndBrokerState: lost}); err != nil {
 		return fmt.Errorf("in-place reload: retire unit (%v): %w", u, err)
 	}
 	return nil
