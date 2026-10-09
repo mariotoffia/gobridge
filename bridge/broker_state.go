@@ -118,3 +118,24 @@ func ensureManagedSubscriptionBaseline(ctx context.Context, store ports.ManagedS
 	}
 	return err
 }
+
+// MarkAddedBrokerStateKeys names the sessions whose broker state key the live
+// reload this builder builds for added (BrokerStateChange.Added, ADR 0024). For
+// each, the build records an empty managed subscription history when the
+// identity has none, before it creates the session, and sets
+// ports.SessionSpec.BrokerStateKeyAdded. A session that then loads an empty
+// history starts with a clean broker session. A builder for a process start
+// marks nothing: the seeded baseline rule applies there. Returns the builder
+// for chaining.
+func (b *Builder) MarkAddedBrokerStateKeys(sessionIDs []string) *Builder {
+	if len(sessionIDs) == 0 {
+		return b
+	}
+	if b.addedBrokerStateKeys == nil {
+		b.addedBrokerStateKeys = make(map[string]bool, len(sessionIDs))
+	}
+	for _, id := range sessionIDs {
+		b.addedBrokerStateKeys[id] = true
+	}
+	return b
+}

@@ -712,6 +712,13 @@ func (b *Builder) buildSessionsWithURIs(ctx context.Context, managedStore ports.
 			cleanup()
 			return nil, nil, fmt.Errorf("bridge: create session spec %q: %w", sd.ID, err)
 		}
+		spec.BrokerStateKeyAdded = b.addedBrokerStateKeys[sd.ID]
+		if spec.BrokerStateKeyAdded && spec.ManagedSubscriptionStore != nil {
+			if err := ensureManagedSubscriptionBaseline(ctx, spec.ManagedSubscriptionStore, spec.ManagedSubscriptionIdentity); err != nil {
+				cleanup()
+				return nil, nil, fmt.Errorf("bridge: record managed subscription baseline of session %q: %w", sd.ID, err)
+			}
+		}
 		sess, err := tf.NewSession(ctx, spec)
 		if err != nil {
 			cleanup()
