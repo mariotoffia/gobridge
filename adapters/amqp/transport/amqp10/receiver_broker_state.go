@@ -23,15 +23,16 @@ func (r *Receiver) EndBrokerStateOnClose(before time.Time) {
 	r.endBrokerStateBefore = before
 }
 
-// endDurableSubscription closes link with a closing detach, bounded by the
-// session's connect timeout and, when non-zero, by before, the local lease
-// deadline past which another instance may hold the subscription; once before
-// passed nothing is sent. It reports whether the broker acknowledged the
-// detach. A failure is logged at Warn and counted on
-// shared.MetricBrokerStateEndFailures; the caller then drops the connection as
-// on any other close, so the link goes down either way.
-func (r *Receiver) endDurableSubscription(link linkReceiver, before time.Time) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), r.brokerStateEndTimeout())
+// endDurableSubscription closes link with a closing detach, bounded by ctx (the
+// budget Close was given), by the session's connect timeout and, when
+// non-zero, by before, the local lease deadline past which another instance
+// may hold the subscription; once ctx is done or before passed nothing is
+// sent. It reports whether the broker acknowledged the detach. A failure is
+// logged at Warn and counted on shared.MetricBrokerStateEndFailures; the caller
+// then drops the connection as on any other close, so the link goes down
+// either way.
+func (r *Receiver) endDurableSubscription(ctx context.Context, link linkReceiver, before time.Time) bool {
+	ctx, cancel := context.WithTimeout(ctx, r.brokerStateEndTimeout())
 	defer cancel()
 	if !before.IsZero() {
 		var cancelBefore context.CancelFunc

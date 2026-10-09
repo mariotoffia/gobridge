@@ -42,7 +42,7 @@ func TestReceiver_CloseLink_Durable_ForcesConnectionTeardown(t *testing.T) {
 	r.linkConn = conn
 	r.mu.Unlock()
 
-	r.closeLink()
+	r.closeLink(t.Context())
 
 	// The live link must be REALLY detached: closeLink forces a connection
 	// teardown (notifyDisconnect closes the conn synchronously) so the
@@ -97,7 +97,7 @@ func TestReceiver_CloseLink_NonDurable_ClosesLinkNotConnection(t *testing.T) {
 	r.linkConn = conn
 	r.mu.Unlock()
 
-	r.closeLink()
+	r.closeLink(t.Context())
 
 	link.mu.Lock()
 	closeCalls := link.closeCalls
@@ -170,7 +170,7 @@ func TestReceiver_DurableClose_BlastRadius_MarksSiblingsDownAndSignalsReconnect(
 	require.True(t, sess.senders[siblingSender], "sibling sender must start link-up")
 	sess.mu.Unlock()
 
-	durable.closeLink()
+	durable.closeLink(t.Context())
 
 	// Blast radius: the shared connection is really torn down, so EVERY
 	// sibling link on it is collateral-damaged (marked down -> Health

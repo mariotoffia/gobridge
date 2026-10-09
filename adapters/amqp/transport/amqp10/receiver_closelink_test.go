@@ -57,7 +57,7 @@ func TestReceiver_CloseLink_BoundedByLinkCloseTimeout(t *testing.T) {
 	r.link = link
 	r.mu.Unlock()
 
-	r.closeLink()
+	r.closeLink(t.Context())
 
 	link.mu.Lock()
 	defer link.mu.Unlock()

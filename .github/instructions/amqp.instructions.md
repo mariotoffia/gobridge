@@ -57,6 +57,8 @@ Adds to `adapters.instructions.md`. Sources: ADR-0002, ADR-0008, ADR-0024,
   link, and its `Run` has returned (`Session.runsReceiver` is false): then it
   closes the link with a closing detach, which deletes the subscription
   (ADR 0024). A force close while `Run` is still active keeps the subscription.
-  A failed closing detach, or one the ask's `before` (the lease deadline)
-  leaves no time to send, falls back to the connection drop. Never end on any
+  The detach runs under the `ctx` `Close` was given, capped by
+  `connect_timeout`, never under `context.Background()`. A failed closing
+  detach, or one the ask's `before` (the lease deadline) leaves no time to
+  send, falls back to the connection drop. Never end on any
   other close, and never for an `anycast` receiver.

@@ -22,6 +22,21 @@ func (l *failingCloseLink) Close(ctx context.Context) error {
 	return errors.New("detach not acknowledged")
 }
 
+// unacknowledgedDetachLink is a link whose closing detach the broker never
+// acknowledges: its Close returns only once its ctx is done. entered is closed
+// when Close starts.
+type unacknowledgedDetachLink struct {
+	recordingLink
+	entered chan struct{}
+}
+
+func (l *unacknowledgedDetachLink) Close(ctx context.Context) error {
+	_ = l.recordingLink.Close(ctx)
+	close(l.entered)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 // attachedReceiver returns a receiver built from cfg with link attached over a
 // connected session, and that connection.
 func attachedReceiver(t *testing.T, cfg ReceiverConfig, link linkReceiver) (*Receiver, *mockConn) {
@@ -140,6 +155,35 @@ func TestReceiver_FallsBackToTheConnectionDropWhenTheSubscriptionCannotBeEnded(t
 	entries := metrics.FindEntries(shared.MetricBrokerStateEndFailures)
 	require.Len(t, entries, 1)
 	assert.Contains(t, entries[0].Tags, shared.Tag{Key: shared.TagKeySessionID, Value: "orders-session"})
+}
+
+// TestReceiver_TheClosingDetachEndsWithTheCloseBudget pins that the closing
+// detach runs under the ctx Close was given: a broker that never acknowledges
+// it holds Close only for that budget, not for the connect timeout, so the
+// retire that closes the receiver keeps to its own budget. The detach is
+// counted as a failure and the connection is dropped, as on any failure to
+// end.
+//
+// Mutation check: derive the detach ctx from context.Background() in
+// endDurableSubscription and Close blocks for the connect timeout.
+func TestReceiver_TheClosingDetachEndsWithTheCloseBudget(t *testing.T) {
+	metrics := &ports.RecordingExporter{}
+	link := &unacknowledgedDetachLink{entered: make(chan struct{})}
+	r, conn := attachedReceiver(t, durableTopicReceiverConfig(metrics), link)
+	r.session.opts.ConnectTimeout = time.Hour
+	r.EndBrokerStateOnClose(time.Time{})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	closed := make(chan error, 1)
+	go func() { closed <- r.Close(ctx) }()
+	wait.RequireClosed(t, link.entered, 2*time.Second)
+	cancel()
+
+	require.NoError(t, wait.RequireReceive(t, closed, 2*time.Second),
+		"a failure to end broker state never fails the reload")
+	assert.True(t, connClosed(conn), "the link is still taken down")
+	assert.Len(t, metrics.FindEntries(shared.MetricBrokerStateEndFailures), 1)
 }
 
 // TestReceiver_SendsNoClosingDetachPastTheLeaseDeadline pins that once the

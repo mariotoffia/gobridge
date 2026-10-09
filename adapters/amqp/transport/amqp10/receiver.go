@@ -174,7 +174,7 @@ func (r *Receiver) Run(ctx context.Context, emit func(context.Context, ports.Del
 // graceful shutdown never strands an Ack on a closed link.
 func (r *Receiver) Close(ctx context.Context) error {
 	r.waitInflight(ctx)
-	r.closeLink()
+	r.closeLink(ctx)
 	return nil
 }
 
@@ -343,7 +343,10 @@ func (r *Receiver) waitInflight(ctx context.Context) {
 	}
 }
 
-func (r *Receiver) closeLink() {
+// closeLink takes the receiver's link down. ctx is the budget of the Close
+// that called it; it bounds only the closing detach that ends a durable
+// subscription.
+func (r *Receiver) closeLink(ctx context.Context) {
 	r.mu.Lock()
 	link := r.link
 	r.link = nil
@@ -366,7 +369,7 @@ func (r *Receiver) closeLink() {
 	// other close. When the broker does not acknowledge the closing detach,
 	// the connection drop below still takes the link down.
 	if endBrokerState && holdsDurableTopicSubscription(r.cfg.Routing, r.cfg.DurabilityMode) &&
-		r.session != nil && !r.session.runsReceiver(r) && r.endDurableSubscription(link, endBefore) {
+		r.session != nil && !r.session.runsReceiver(r) && r.endDurableSubscription(ctx, link, endBefore) {
 		return
 	}
 
