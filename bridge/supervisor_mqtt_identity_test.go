@@ -62,10 +62,10 @@ func TestDurableSessionIdentityChanged_StableSessionIDs(t *testing.T) {
 	oldCfg := configWithDurableSessionIdentity(1, "opaque-a")
 
 	unchanged := configWithDurableSessionIdentity(2, "opaque-a")
-	require.NoError(t, DurableSessionIdentityChanged(oldCfg, unchanged))
+	require.NoError(t, durableSessionIdentityChanged(oldCfg, unchanged))
 
 	changed := configWithDurableSessionIdentity(2, "opaque-b")
-	err := DurableSessionIdentityChanged(oldCfg, changed)
+	err := durableSessionIdentityChanged(oldCfg, changed)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stable-session")
 	assert.NotContains(t, err.Error(), "opaque-a")
@@ -73,7 +73,7 @@ func TestDurableSessionIdentityChanged_StableSessionIDs(t *testing.T) {
 
 	renamed := configWithDurableSessionIdentity(2, "opaque-b")
 	renamed.Sessions[0].ID = "new-session"
-	require.Error(t, DurableSessionIdentityChanged(oldCfg, renamed), "renaming a durable session can strand its broker state")
+	require.Error(t, durableSessionIdentityChanged(oldCfg, renamed), "renaming a durable session can strand its broker state")
 }
 
 func TestDurableSessionIdentityChanged_FailsClosedOnCapabilityError(t *testing.T) {
@@ -81,7 +81,7 @@ func TestDurableSessionIdentityChanged_FailsClosedOnCapabilityError(t *testing.T
 	newCfg := configWithDurableSessionIdentity(2, "opaque-a")
 	newCfg.Sessions[0].Config = durableIdentityTestConfig{err: errors.New("cannot resolve effective identity")}
 
-	err := DurableSessionIdentityChanged(oldCfg, newCfg)
+	err := durableSessionIdentityChanged(oldCfg, newCfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stable-session")
 	assert.NotContains(t, err.Error(), "cannot resolve effective identity")
@@ -161,11 +161,11 @@ func TestDurableSessionIdentityChanged_RejectsDuplicateIdentityOnStartupAndReloa
 		ID: "duplicate-sender", Transport: "identity", SessionID: "duplicate-session",
 	})
 
-	require.Error(t, DurableSessionIdentityChanged(nil, duplicate),
+	require.Error(t, durableSessionIdentityChanged(nil, duplicate),
 		"initial startup must reject duplicate effective identities")
 
 	oldCfg := configWithDurableSessionIdentity(1, "opaque-a")
-	require.Error(t, DurableSessionIdentityChanged(oldCfg, duplicate),
+	require.Error(t, durableSessionIdentityChanged(oldCfg, duplicate),
 		"reload must reject a newly-added duplicate effective identity")
 }
 

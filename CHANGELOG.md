@@ -12,15 +12,23 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ### Fixed
 
-- The AWS runtime (`gobridge-aws`) now refuses a live reload that changes,
-  removes or renames a persistent or exclusive MQTT session's durable identity,
-  as the Supervisor and the docs already did. Before, a configuration that is
-  not clustered applied the change in place or by a full swap and left the old
-  identity's managed subscription history behind. To change or retire such a
-  session, cut over and restart the task; see
-  [durable MQTT session identity](docs/aws-deployment/config-reload.md#durable-mqtt-session-identity).
-  The comparison is exported as `bridge.DurableSessionIdentityChanged` for
-  composition roots that do not use the Supervisor.
+- On a configuration that is not clustered, the AWS runtime (`gobridge-aws`)
+  now refuses every live reload the Supervisor refuses for stranding durable
+  state. That covers four changes:
+  - a persistent or exclusive MQTT session's durable identity changes, or the
+    session is removed or renamed;
+  - a durable store is repointed;
+  - a lease-bearing exclusive route's `session_id` changes;
+  - an outbox or DLQ store is removed, or a `shared_outbox` partition loses
+    its drainer.
+
+  Before, the runtime applied these changes in place or by a full swap and
+  left the old state behind, such as the old identity's managed subscription
+  history. To make such a change, cut over and restart the task; see
+  [reloads that strand durable state](docs/aws-deployment/config-reload.md#reloads-that-strand-durable-state).
+  The guards are exported as `bridge.ValidateDurableReload` for composition
+  roots that do not use the Supervisor. `bridge.ValidateDormantReactivation`
+  runs the same function, so its durable-backlog refusal now names the hazard.
 - Every record an MQTT session logs, including the MQTT 3.1.1 startup warning,
   now names the configured session with `session_id`.
 

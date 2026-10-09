@@ -1517,14 +1517,14 @@ type durableSessionIdentity struct {
 	fingerprint string
 }
 
-// DurableSessionIdentityChanged refuses newCfg when it would strand the broker
+// durableSessionIdentityChanged refuses newCfg when it would strand the broker
 // state of a durable session oldCfg runs: a persistent or exclusive session whose
 // identity changed, or that was removed or renamed. It also refuses newCfg when
 // one of its durable identities cannot be verified, or two of its durable
 // sessions share one broker identity; with a nil oldCfg only those are checked.
-// The Supervisor compares snapshots it captured when it accepted a config; a
-// composition root without a Supervisor calls this before it reloads.
-func DurableSessionIdentityChanged(oldCfg, newCfg *ports.BridgeConfig) error {
+// The Supervisor compares snapshots it captured when it accepted a config; this
+// config-to-config form serves ValidateDurableReload and the rollout preflight.
+func durableSessionIdentityChanged(oldCfg, newCfg *ports.BridgeConfig) error {
 	frozenOld, err := cloneConfigForBuild(oldCfg)
 	if err != nil {
 		return err
@@ -1894,6 +1894,33 @@ func destructiveReloadShape(oldCfg, newCfg *ports.BridgeConfig) bool {
 // message backlog. Store identity changes are rejected separately before this
 // preflight.
 func (s *Supervisor) durableReloadPreflight(_ context.Context, _ *runtime.Runtime, oldCfg, newCfg *ports.BridgeConfig) error {
+	if !s.allowDestructiveReload {
+		return durableBacklogStranded(oldCfg, newCfg)
+	}
+	if hazards := durableBacklogHazards(oldCfg, newCfg); len(hazards) > 0 && s.logger != nil {
+		s.logger.Warn("supervisor: destructive reload FORCED by WithAllowDestructiveReload; "+
+			"durable records may be discarded", "hazards", hazards,
+			"attempted_config_version", newCfg.Version)
+	}
+	return nil
+}
+
+// durableBacklogStranded refuses every hazard durableBacklogHazards finds.
+func durableBacklogStranded(oldCfg, newCfg *ports.BridgeConfig) error {
+	hazards := durableBacklogHazards(oldCfg, newCfg)
+	if len(hazards) == 0 {
+		return nil
+	}
+	return fmt.Errorf("bridge: refusing live reload: it can strand durable records [%s]; "+
+		"a pending-depth read cannot prove safety because claimed records, eventually-consistent indexes, "+
+		"and late ingress are not excluded. Quiesce ingress and perform a stopped migration, or set "+
+		"WithAllowDestructiveReload to explicitly discard records",
+		strings.Join(hazards, "; "))
+}
+
+// durableBacklogHazards names each way newCfg orphans durable records oldCfg
+// holds, comparing the two configs only.
+func durableBacklogHazards(oldCfg, newCfg *ports.BridgeConfig) []string {
 	if oldCfg == nil || newCfg == nil {
 		return nil
 	}
@@ -1918,23 +1945,7 @@ func (s *Supervisor) durableReloadPreflight(_ context.Context, _ *runtime.Runtim
 	if oldCfg.Stores.DLQ != nil && newCfg.Stores.DLQ == nil {
 		hazards = append(hazards, "dlq store removal")
 	}
-
-	if len(hazards) == 0 {
-		return nil
-	}
-	if s.allowDestructiveReload {
-		if s.logger != nil {
-			s.logger.Warn("supervisor: destructive reload FORCED by WithAllowDestructiveReload; "+
-				"durable records may be discarded", "hazards", hazards,
-				"attempted_config_version", newCfg.Version)
-		}
-		return nil
-	}
-	return fmt.Errorf("bridge: refusing live reload: it can strand durable records [%s]; "+
-		"a pending-depth read cannot prove safety because claimed records, eventually-consistent indexes, "+
-		"and late ingress are not excluded. Quiesce ingress and perform a stopped migration, or set "+
-		"WithAllowDestructiveReload to explicitly discard records",
-		strings.Join(hazards, "; "))
+	return hazards
 }
 
 // reportOrphanedStrand adds best-effort observability after an explicitly forced

@@ -166,7 +166,7 @@ userinfo removed), effective client ID after suffix resolution, session mode,
 effective clean-start behavior, and effective session expiry. A live reload that
 changes or removes that identity is refused before the old runtime is stopped or
 a replacement is built. Both run the same comparison; a custom composition root
-calls `bridge.DurableSessionIdentityChanged` before it reloads. Credential
+calls `bridge.ValidateDurableReload` before it reloads. Credential
 rotation, TLS material/path changes, keepalive, reconnect, reconcile, and other
 tuning do not change this durable identity.
 
@@ -195,7 +195,7 @@ drain and verify the old broker backlog, exact-UNSUBSCRIBE every managed filter,
 apply the new identity, then resume traffic and verify consumption. A running
 process refuses the new identity, so it is applied by a restart: on AWS, store
 the new version and restart the task
-([durable MQTT session identity](../aws-deployment/config-reload.md#durable-mqtt-session-identity)).
+([reloads that strand durable state](../aws-deployment/config-reload.md#reloads-that-strand-durable-state)).
 In a cluster, perform this as a coordinated versioned rollout; independent
 per-process reloads are unsafe.
 

@@ -139,7 +139,8 @@ ADR-0020, `docs/internals/architecture-message-flow.md`,
   check its full swap runs — the Supervisor's no-op detection, cluster guard,
   durable session identity guard, store-identity, lease `session_id` and
   durable-backlog preflights; the AWS runtime's fingerprint, deployment-profile
-  admission, cluster seam and `bridge.DurableSessionIdentityChanged` — so an
+  admission, cluster seam and `bridge.ValidateDurableReload` (the same guards
+  without `WithAllowDestructiveReload`) — so an
   in-place reload never admits what a full swap refuses.
 - When `RequiresSerializedSwap(retired, added)` holds, every retired unit stops
   before any part is built; otherwise parts are built first and a failed build

@@ -70,12 +70,13 @@ func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfi
 		}
 	}
 
-	// A durable MQTT session's identity selects its broker state and its managed
-	// filter history, so changing, removing or renaming it live strands both on
-	// every reload path below. Refuse it as the Supervisor does, before anything
-	// is resolved, seeded or rebuilt; a cutover restarts the task instead.
+	// A reload that changes a durable MQTT session's identity, repoints a durable
+	// store, changes a lease-bearing session_id or orphans outbox/DLQ records
+	// strands that durable state on every reload path below. Refuse it as the
+	// Supervisor does, before anything is resolved, seeded or rebuilt; there is
+	// no override here, so a cutover restarts the task instead.
 	if applied := a.appliedRef.Get(); applied != nil {
-		if err := bridge.DurableSessionIdentityChanged(applied, logical); err != nil {
+		if err := bridge.ValidateDurableReload(applied, logical); err != nil {
 			return err
 		}
 	}
