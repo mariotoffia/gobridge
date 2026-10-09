@@ -135,7 +135,11 @@ func (f *Factory) NewSession(_ context.Context, spec ports.SessionSpec) (ports.S
 			return nil, shared.ErrInvalidConfig.WithMessage("mqtt: durable managed subscription store and secret-safe identity are required")
 		}
 	}
-	session := NewSession(opts, mode, f.Logger, f.Metrics)
+	logger := f.Logger
+	if logger != nil {
+		logger = logger.With("session_id", spec.ID)
+	}
+	session := NewSession(opts, mode, logger, f.Metrics)
 	session.managedStore = spec.ManagedSubscriptionStore
 	session.managedIdentity = spec.ManagedSubscriptionIdentity
 	session.managedRequired = spec.ManagedSubscriptionsRequired

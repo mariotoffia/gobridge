@@ -137,8 +137,10 @@ ADR-0020, `docs/internals/architecture-message-flow.md`,
 - `InPlaceReload.Apply` preflights the whole next document and plans every
   added unit's part before it retires anything. Each root first runs every
   check its full swap runs — the Supervisor's no-op detection, cluster guard,
-  store-identity, lease `session_id` and durable-backlog preflights; the AWS
-  runtime's fingerprint, deployment-profile admission and cluster seam — so an
+  durable session identity guard, store-identity, lease `session_id` and
+  durable-backlog preflights; the AWS runtime's fingerprint, deployment-profile
+  admission, cluster seam and `bridge.ValidateDurableReload` (the same guards
+  without `WithAllowDestructiveReload`) — so an
   in-place reload never admits what a full swap refuses.
 - When `RequiresSerializedSwap(retired, added)` holds, every retired unit stops
   before any part is built; otherwise parts are built first and a failed build

@@ -70,6 +70,17 @@ func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfi
 		}
 	}
 
+	// A reload that changes a durable MQTT session's identity, repoints a durable
+	// store, changes a lease-bearing session_id or orphans outbox/DLQ records
+	// strands that durable state on every reload path below. Refuse it as the
+	// Supervisor does, before anything is resolved, seeded or rebuilt; there is
+	// no override here, so a cutover restarts the task instead.
+	if applied := a.appliedRef.Get(); applied != nil {
+		if err := bridge.ValidateDurableReload(applied, logical); err != nil {
+			return err
+		}
+	}
+
 	// One resolution serves the whole apply: the in-place attempt and, when the
 	// change is not confined to reload units, the full swap after it.
 	epoch := a.applyEpoch(ctx)

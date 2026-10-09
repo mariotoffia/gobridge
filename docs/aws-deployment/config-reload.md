@@ -98,8 +98,9 @@ stores and started inside it. Routes that share a session are one unit, so give
 each tenant its own sessions when tenants must not disturb each other. See
 [ADR 0018](../adr/0018-reload-in-place-by-unit.md).
 
-The in-place attempt runs after the same deployment-profile admission and
-cluster checks as every apply, with the secrets resolved once for it and for
+The in-place attempt runs after the same deployment-profile admission, cluster
+checks and [durable-state guards](#reloads-that-strand-durable-state) as every
+apply, with the secrets resolved once for it and for
 the full swap that may follow. The bootstrap
 library falls back to the [full swap](#swap-modes) when:
 
@@ -149,10 +150,11 @@ outcome and the error, and ends one of three ways:
 
 An MQTT session's options depend only on its own configuration. Its
 `receive_maximum` is the count you set, or the default 192; nothing is derived
-from the task memory or from the number of other sessions. So adding or
-removing one tenant's MQTT session replaces only that session's reload unit.
-Every other tenant's MQTT session stays connected. No per-session setting is
-needed to keep them apart.
+from the task memory or from the number of other sessions. So adding one
+tenant's MQTT session, or removing an ephemeral one, replaces only that
+session's reload unit. Every other tenant's MQTT session stays connected. No
+per-session setting is needed to keep them apart. Removing a persistent or
+exclusive session is a [cutover](#reloads-that-strand-durable-state).
 
 GoBridge does not estimate memory. It limits MQTT by counts:
 
@@ -179,6 +181,43 @@ sessions:
         client_id: bridge-tenant-a
         receive_maximum: 192   # a count; 192 is also the default
 ```
+
+### Reloads that strand durable state
+
+Some changes leave durable state behind when a running task applies them. The
+AWS runtime refuses them before anything is resolved, seeded or rebuilt,
+whether the change would reload in place or replace the runtime. The checks and
+their errors are the Supervisor's reload guards (`bridge.ValidateDurableReload`):
+
+| Change | What it strands |
+|---|---|
+| A persistent or exclusive MQTT session's durable identity changes, or the session is removed or renamed. The identity is the broker URLs, the effective client ID, the session mode, clean start, the session expiry and, on MQTT 3.1.1, the protocol version ([durable sessions](../transports/mqtt-durable-sessions.md#durable-identity-and-live-reload-migration)). | Its broker subscriptions, the QoS 1/2 messages queued for it, and its managed subscription history. |
+| A lease, outbox, DLQ or managed subscription store changes type or backing location (path or table), or the managed subscription store is removed. | The records in the old store. |
+| A lease-bearing exclusive route changes its `session_id`. | Ownership of its source: the old and new `session_id` are different lease keys. |
+| The outbox or DLQ store is removed, or a `shared_outbox` partition loses its drainer. | The outbox or DLQ records. |
+
+The running configuration keeps serving, the version is reported rejected, and
+the config manager logs an Error whose `error` says what was refused:
+
+```text
+config manager: runtime apply FAILED; desired config is NOT running ...  desired_version=4 running_version=3 error="bridge: refusing live reload: durable session \"tenant-a\" broker identity changed; ..."
+```
+
+The Supervisor's `WithAllowDestructiveReload` has no AWS counterpart. To make
+such a change, cut over:
+
+1. Stop ingress and let what the change strands drain: the old MQTT session's
+   broker backlog, or the old store's records.
+2. For an MQTT session, exact-UNSUBSCRIBE every managed filter
+   ([managed-filter migration](../runbooks/mqtt-managed-subscription-migration.md)).
+3. Store the new version in the config source: the file, or the DynamoDB item
+   through CAS-aware tooling. An admin-API commit of it fails and is rolled
+   back. The running task refuses the version and keeps serving.
+4. Restart the task. A starting task has no running configuration to compare
+   with, so it applies the stored version.
+
+A clustered deployment refuses these changes in the cluster reload seam; see
+the [cluster config rollout runbook](../runbooks/cluster-config-rollout.md).
 
 ### Swap Modes
 
@@ -254,7 +293,8 @@ Follow this workflow for safe configuration updates in production.
 3. **Config is parsed and validated.** The YAML is deserialized into a
    `BridgeConfig` struct. The `validateFilesystemProfile` function checks
    topology constraints (e.g. `shared_outbox` routes are rejected under
-   `filesystem_replicated` topology).
+   `filesystem_replicated` topology). A change that would
+   [strand durable state](#reloads-that-strand-durable-state) is refused.
 
 4. **SSM parameters are resolved.** The `resolveInputs` function reads
    `admin_api_key_param`, `monitor_api_key_param`, and any

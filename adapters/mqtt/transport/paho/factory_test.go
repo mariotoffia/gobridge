@@ -1,9 +1,13 @@
 package paho
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -101,6 +105,41 @@ func TestFactory_NewSession_DurableModeRejectsIndependentBrokerURLs(t *testing.T
 		ID: "ephemeral", SessionMode: connectivity.SessionEphemeral, Config: cfg,
 	}); err != nil {
 		t.Fatalf("ephemeral multi-broker failover must remain valid: %v", err)
+	}
+}
+
+// A v3.1.1 session with receive_maximum unset logs two warnings when it is
+// built; the records must name the configured session, not just its client ID.
+func TestFactory_NewSession_EveryRecordNamesTheSession(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := Config{Session: SessionOptions{
+		ClientID:        "shared-client",
+		BrokerURLs:      []string{"tcp://broker:1883"},
+		ProtocolVersion: ProtocolVersion311,
+	}}
+
+	if _, err := NewFactory(slog.New(slog.NewJSONHandler(&buf, nil))).NewSession(t.Context(),
+		ports.SessionSpec{ID: "ingress", Config: cfg}); err != nil {
+		t.Fatal(err)
+	}
+
+	var messages []string
+	for _, line := range bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")) {
+		var record struct {
+			Msg       string `json:"msg"`
+			SessionID any    `json:"session_id"`
+		}
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatal(err)
+		}
+		if record.SessionID != "ingress" {
+			t.Errorf("session_id = %v, want ingress: %s", record.SessionID, line)
+		}
+		messages = append(messages, record.Msg)
+	}
+	if len(messages) != 2 || !strings.Contains(messages[0], "receive_maximum unset") ||
+		!strings.Contains(messages[1], "protocol_version v3.1.1") {
+		t.Fatalf("records = %q, want the receive_maximum and v3.1.1 warnings", messages)
 	}
 }
 

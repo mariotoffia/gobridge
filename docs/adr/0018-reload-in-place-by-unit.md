@@ -88,9 +88,11 @@ under `SwapAuto`, the default. `WithSwapMode(SwapInPlace)` acts as `SwapAuto`;
 an explicit `SwapOverlap` or `SwapPrepareCommit` keeps the full replacement it
 asks for. The AWS runtime always tries in place first. Each root runs the
 checks its own full swap runs before an in-place reload changes anything: the
-Supervisor its no-op detection, clustered-reload guard, and store-identity,
-lease `session_id` and durable-backlog preflights; the AWS runtime its no-op
-content fingerprint, deployment-profile admission and cluster reload seam. So
+Supervisor its no-op detection, clustered-reload guard, durable session
+identity guard, and store-identity, lease `session_id` and durable-backlog
+preflights; the AWS runtime its no-op content fingerprint, deployment-profile
+admission, cluster reload seam and the same durable-state guards without
+`WithAllowDestructiveReload` (`bridge.ValidateDurableReload`). So
 neither root's in-place reload lets through a change its own full swap would
 refuse.
 
