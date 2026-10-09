@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/mariotoffia/gobridge/ports"
@@ -14,6 +15,13 @@ import (
 type Unit struct {
 	Routes   []string
 	Sessions []string
+	// EndBrokerState names the sessions of the unit whose broker state the
+	// retire ends (ADR 0024): the next configuration no longer has their broker
+	// state key. An id Sessions does not name is ignored. A session ends its
+	// state only when the unit's components stopped and this instance may end it
+	// (session.Manager.MayEndBrokerState); a receiver reading through it is asked
+	// before the unit's runs are cancelled.
+	EndBrokerState []string
 }
 
 // ErrNotRunning is wrapped by a Retire or Graft that the runtime refuses
@@ -74,11 +82,23 @@ type retiredUnit struct {
 // close error is the caller's to act on: once every component has stopped,
 // nothing writes under the unit's sessions, though an in-place reload wedges on
 // any Retire error all the same.
+//
+// A session u.EndBrokerState names ends the state its broker keeps for it
+// (ADR 0024): its receivers are asked before the runs are cancelled, and its
+// session just before its manager closes it, which releases its lease after
+// that close. Only an instance that may end it does (MayEndBrokerState), and
+// only when every component stopped.
 func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 	d, err := rt.detach(u)
 	if err != nil {
 		return err
 	}
+	ending := endingSessions(u.EndBrokerState, func(sid string) bool { return slices.Contains(u.Sessions, sid) })
+	if len(ending) > 0 && rt.logger != nil {
+		rt.logger.Info("retire ends the broker state the next configuration no longer has",
+			"sessions", slices.Sorted(maps.Keys(ending)))
+	}
+	askReceiversToEndBrokerState(d.set.entries, ending, d.managers)
 	var errs []error
 	// Settle before cancelling, for the same reason Stop does: a cancelled send
 	// fails its source ack and the broker redelivers a message already sent. A
@@ -117,12 +137,15 @@ func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 
 	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rt.closeTimeout())
 	defer cancel()
-	for _, mgr := range d.managers {
-		if err := mgr.Close(closeCtx); err != nil {
+	for sid, mgr := range d.managers {
+		if err := closeManager(closeCtx, mgr, finished && ending[sid]); err != nil {
 			errs = append(errs, fmt.Errorf("runtime: retire: closing session manager: %w", err))
 		}
 	}
 	for _, ref := range rt.releasedUnmanagedSessions(d, finished) {
+		if finished && ending[ref.sid] {
+			askSessionToEndBrokerState(ref.sess)
+		}
 		if err := ref.sess.Close(closeCtx); err != nil {
 			errs = append(errs, fmt.Errorf("runtime: retire: closing unmanaged session %q: %w", ref.sid, err))
 		}

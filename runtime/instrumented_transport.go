@@ -143,6 +143,16 @@ func (r *InstrumentedReceiver) SetRouteID(routeID string) {
 	}
 }
 
+// EndBrokerStateOnClose forwards the ask to end broker state (ADR 0024) to the
+// wrapped receiver when it has the ports.BrokerStateEnder capability, so a
+// wrapper does not hide it from a retire. A no-op when inner does not
+// implement it, as Close and SetRouteID are.
+func (r *InstrumentedReceiver) EndBrokerStateOnClose() {
+	if ender, ok := r.inner.(ports.BrokerStateEnder); ok {
+		ender.EndBrokerStateOnClose()
+	}
+}
+
 // NewInstrumentedReceiverCapabilityPreserving decorates inner with
 // receive-latency metrics while preserving its optional
 // ports.ReceiverStartedSignaler capability. This is the

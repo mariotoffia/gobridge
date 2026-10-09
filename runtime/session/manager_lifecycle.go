@@ -209,3 +209,28 @@ func (m *Manager) Close(ctx context.Context) error {
 	}
 	return closeErr
 }
+
+// MayEndBrokerState reports whether this instance may end the session's broker
+// state (ADR 0024): it holds the session's lease, or the session takes part in
+// no lease-based failover. A standby never connected as the session's broker
+// identity, and another instance may be connected as it now, so it ends
+// nothing.
+func (m *Manager) MayEndBrokerState() bool {
+	if !m.Exclusive() {
+		return true
+	}
+	_, held := m.Token()
+	return held
+}
+
+// CloseEndingBrokerState closes the session as Close does, after asking a
+// session that implements ports.BrokerStateEnder to end its broker state on
+// that close, when MayEndBrokerState allows it. Close releases a held lease only
+// after the session's Close returned, so no other instance connects as the
+// broker identity while its state is ended.
+func (m *Manager) CloseEndingBrokerState(ctx context.Context) error {
+	if ender, ok := m.session.(ports.BrokerStateEnder); ok && m.MayEndBrokerState() {
+		ender.EndBrokerStateOnClose()
+	}
+	return m.Close(ctx)
+}
