@@ -74,6 +74,24 @@ func TestBuild_KeepsAnExistingHistoryOfABrokerStateKeyAReloadAdded(t *testing.T)
 	assert.Equal(t, []string{"orders/#"}, history)
 }
 
+// TestBuild_CarriesTheLegacyHistoryOverForABrokerStateKeyAReloadAdded pins
+// that an added key whose client ID still has history under the legacy
+// fingerprint gets that history, not an empty baseline: an empty one would
+// hide it, and the session would end a broker session whose history exists.
+//
+// Mutation check: drop the carry-over from the added-key branch of the build
+// and the new key holds an empty history.
+func TestBuild_CarriesTheLegacyHistoryOverForABrokerStateKeyAReloadAdded(t *testing.T) {
+	store := newHistoryStore(map[string][]string{"safe-durable-fingerprint": {"orders/#"}})
+
+	spec := buildMarkingAddedKeys(t, store, []string{"stable-session"})
+
+	assert.True(t, spec.BrokerStateKeyAdded)
+	history, established := store.history("safe-managed-identity")
+	require.True(t, established)
+	assert.Equal(t, []string{"orders/#"}, history)
+}
+
 func TestBuild_KeepsTheHistoryOfABrokerStateKeyNoReloadAdded(t *testing.T) {
 	store := newHistoryStore(map[string][]string{"safe-managed-identity": {"orders/#"}})
 
