@@ -50,6 +50,7 @@ type trackedTransportFactory struct {
 	closes    map[string][]int // session id → close count of each session built for it, oldest first
 	refusals  map[string]int   // session id → NewSession calls left to refuse
 	closeErrs map[string]error // "<id>#<n>" → what the n-th session built for id returns from Close
+	ended     map[string]int   // session id → asks to end broker state, set lazily
 }
 
 func newTrackedTransportFactory(exclusive bool) *trackedTransportFactory {

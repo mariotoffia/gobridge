@@ -73,9 +73,9 @@ func TestValidateDeploymentProfile_DynamoDBHARejectsTamperedTableIdentity(t *tes
 // content, not a field the deployment provisions, so deployment admission passes
 // it — and it must, because an operator legitimately adds durable sessions
 // through a coordinated rollout and no fingerprint can express "a superset of the
-// admitted sessions". Changing an EXISTING durable identity is still refused, by
-// the live-reload preflight (bridge.ClassifyClusterReload), which is the check
-// that owns that rule.
+// admitted sessions". Changing an EXISTING durable identity is a live-safe
+// delta too: the lease holder ends the old broker state when it retires the old
+// unit (ADR 0024), so the change rolls through the barrier.
 func TestValidateDeploymentProfile_DynamoDBHAAdmitsAnExclusiveIdentityChange(t *testing.T) {
 	cfg := haRolloutCfg()
 	bootstrap := qualityReviewHABootstrap(t, cfg)
@@ -86,9 +86,9 @@ func TestValidateDeploymentProfile_DynamoDBHAAdmitsAnExclusiveIdentityChange(t *
 		"operator content must not be gated by the immutable deployment profile")
 
 	disp, reason := bridge.ClassifyClusterReload(before, cfg)
-	require.Equal(t, bridge.ClusterReloadRefuse, disp,
-		"the reload preflight is what refuses a changed durable session identity")
-	require.NotEmpty(t, reason)
+	require.Equal(t, bridge.ClusterReloadCoordinated, disp,
+		"a changed durable broker identity rolls through the barrier; reason=%q", reason)
+	require.Empty(t, reason)
 }
 
 // TestValidateDeploymentProfile_DynamoDBHARejectsTamperedCohortShape proves the

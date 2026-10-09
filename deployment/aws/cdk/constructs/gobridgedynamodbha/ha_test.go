@@ -190,6 +190,24 @@ func TestGoBridgeDynamoDBHA_ReplacesBaselineInitializerWhenDurableIdentityChange
 	}
 }
 
+func TestGoBridgeDynamoDBHA_KeepsBaselineInitializerWhenOnlySessionExpiryChanges(t *testing.T) {
+	first := newHAHarness(t, nil)
+	firstID := managedSubscriptionInitializerID(t, first.stack)
+
+	singleton.ResetForTest()
+	changedYAML := strings.Replace(
+		validHAYAML,
+		"session_expiry_interval: 3600",
+		"session_expiry_interval: 7200",
+		1,
+	)
+	second := newHAHarnessWithYAML(t, changedYAML, nil)
+	secondID := managedSubscriptionInitializerID(t, second.stack)
+	if firstID != secondID {
+		t.Fatalf("initializer logical ID changed with the session expiry, which keeps the broker state key: %s -> %s", firstID, secondID)
+	}
+}
+
 func TestGoBridgeDynamoDBHA_RejectsMissingManagedSubscriptionBaseline(t *testing.T) {
 	defer func() {
 		recovered := recover()

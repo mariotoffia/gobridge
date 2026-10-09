@@ -33,6 +33,10 @@ type runtimePlan struct {
 	resolved *ports.BridgeConfig
 	inputs   *resolvedInputs
 	mode     swapMode
+	// lostBrokerState names the running sessions whose broker state key this
+	// plan's configuration no longer has; stopping the old runtime ends their
+	// broker state (ADR 0024).
+	lostBrokerState []string
 
 	registry *factoryRegistry
 	plan     *bridge.BuildPlan
@@ -70,11 +74,12 @@ func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfi
 		}
 	}
 
-	// A reload that changes a durable MQTT session's identity, repoints a durable
-	// store, changes a lease-bearing session_id or orphans outbox/DLQ records
-	// strands that durable state on every reload path below. Refuse it as the
-	// Supervisor does, before anything is resolved, seeded or rebuilt; there is
-	// no override here, so a cutover restarts the task instead.
+	// A reload that repoints a durable store, changes a lease-bearing session_id
+	// or orphans outbox/DLQ records strands that durable state on every reload
+	// path below. Refuse it as the Supervisor does, before anything is resolved,
+	// seeded or rebuilt; there is no override here, so a cutover restarts the
+	// task instead. A changed durable broker identity is not refused: the reload
+	// ends the state the old identity leaves on the broker (ADR 0024).
 	if applied := a.appliedRef.Get(); applied != nil {
 		if err := bridge.ValidateDurableReload(applied, logical); err != nil {
 			return err
@@ -91,10 +96,15 @@ func (a *App) applyLogicalConfig(ctx context.Context, logical *ports.BridgeConfi
 	if handled, err := a.applyInPlace(ctx, logical, inputs, epoch); handled {
 		return err
 	}
-	plan, err := a.prepareRuntimePlan(ctx, epoch, logical, inputs, seedBaselines)
+	change, err := a.brokerStateChange(inputs.RuntimeConfig)
 	if err != nil {
 		return err
 	}
+	plan, err := a.prepareRuntimePlan(ctx, epoch, logical, inputs, seedBaselines, change.Added)
+	if err != nil {
+		return err
+	}
+	plan.lostBrokerState = change.Lost
 
 	oldRuntime := a.runtimeRef.Get()
 	oldApplied := a.appliedRef.Get()
@@ -134,8 +144,25 @@ func (a *App) applyEpoch(ctx context.Context) uint64 {
 	return a.observationEpoch.Load()
 }
 
+// brokerStateChange is what a full swap from the installed runtime to next, a
+// resolved runtime configuration, does to broker state
+// (bridge.PlanBrokerStateChange, ADR 0024). The installed registry holds the
+// resolved configuration the installed runtime runs. With no runtime installed
+// the swap is a start: it ends nothing and adds nothing.
+func (a *App) brokerStateChange(next *ports.BridgeConfig) (bridge.BrokerStateChange, error) {
+	installed := a.registryRef.Load()
+	if a.runtimeRef.Get() == nil || installed == nil {
+		return bridge.BrokerStateChange{}, nil
+	}
+	change, err := bridge.PlanBrokerStateChange(installed.cfg, next, installed.transports)
+	if err != nil {
+		return bridge.BrokerStateChange{}, fmt.Errorf("bootstrap: %w", err)
+	}
+	return change, nil
+}
+
 func (a *App) prepareRuntimePlan(ctx context.Context, epoch uint64, logical *ports.BridgeConfig, inputs *resolvedInputs,
-	seed bool,
+	seed bool, added []string,
 ) (*runtimePlan, error) {
 	registry := a.newFactoryRegistry(inputs.RuntimeConfig)
 	// Managed-subscription history is a prerequisite of durable MQTT sessions.
@@ -151,6 +178,11 @@ func (a *App) prepareRuntimePlan(ctx context.Context, epoch uint64, logical *por
 			return nil, err
 		}
 	}
+	// A session whose broker state key the running configuration did not have
+	// gets an empty managed subscription history when its identity has none, and
+	// a session that loads an empty history starts with a clean broker session
+	// (ADR 0024). A baseline seeded above is kept, never emptied.
+	registry.builder.MarkAddedBrokerStateKeys(added)
 	mode := a.swapModeFor(registry, inputs.RuntimeConfig)
 
 	plan := &runtimePlan{
@@ -215,7 +247,7 @@ func (a *App) applyOverlap(
 	installed = true
 
 	if oldRuntime != nil {
-		if err := stopRuntime(context.Background(), oldRuntime, oldApplied); err != nil {
+		if err := stopRuntimeEndingBrokerState(context.Background(), oldRuntime, oldApplied, plan.lostBrokerState); err != nil {
 			a.logger.Warn("bootstrap: stop old runtime after overlap swap", "error", err)
 		}
 	}
@@ -248,7 +280,7 @@ func (a *App) applyPrepareCommit(
 	defer a.closeSupersededHTTP(ctx, oldRegistry)
 
 	if oldRuntime != nil {
-		if err := stopRuntime(context.Background(), oldRuntime, oldApplied); err != nil {
+		if err := stopRuntimeEndingBrokerState(context.Background(), oldRuntime, oldApplied, plan.lostBrokerState); err != nil {
 			// prepare/commit stops the old runtime BEFORE committing the new one,
 			// so a failed stop leaves ownership uncertain (its exclusive broker
 			// session / lease may still be held). Committing a replacement onto
@@ -318,7 +350,7 @@ func (a *App) recoverPrevious(ctx context.Context, logical *ports.BridgeConfig) 
 	inputs, err := resolveInputs(ctx, a.parameterResolver, a.cfg, a.pluginRegistry, logical)
 	var plan *runtimePlan
 	if err == nil {
-		plan, err = a.prepareRuntimePlan(ctx, epoch, logical, inputs, skipBaselineSeed)
+		plan, err = a.prepareRuntimePlan(ctx, epoch, logical, inputs, skipBaselineSeed, nil)
 	}
 	if err != nil {
 		if a.recoveryRevoked(ctx) {
