@@ -59,6 +59,7 @@ Adds to `adapters.instructions.md`. Sources: ADR-0002, ADR-0008, ADR-0024,
   (ADR 0024). A force close while `Run` is still active keeps the subscription.
   The detach runs under the `ctx` `Close` was given, capped by
   `connect_timeout`, never under `context.Background()`. A failed closing
-  detach, or one the ask's `before` (the lease deadline) leaves no time to
+  detach, or one the ask's `before` (the lease deadline, or the retire or stop
+  budget less its headroom when earlier) leaves no time to
   send, falls back to the connection drop. Never end on any
   other close, and never for an `anycast` receiver.

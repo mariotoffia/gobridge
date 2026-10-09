@@ -37,7 +37,8 @@ type BrokerStateKeyer interface {
 //
 // A non-zero before is the latest moment the ending may complete: the local
 // deadline of the lease the caller holds, past which another instance may own
-// the broker identity. An ending that cannot finish by then is abandoned and
+// the broker identity, or, for a receiver, the end of the caller's own teardown
+// budget when earlier. An ending that cannot finish by then is abandoned and
 // counted as a failure; one whose before already passed sends nothing. A zero
 // before leaves the ending unbounded by a lease.
 //

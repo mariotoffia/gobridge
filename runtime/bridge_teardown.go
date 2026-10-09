@@ -73,6 +73,8 @@ func effectiveStoreCloseGrace(entries []*routeEntry) time.Duration {
 // deadline when clamping the store-close grace, so the bounded manager-close wait
 // leaves a little headroom for the caller to observe the clamp rather than
 // consuming the ENTIRE remaining budget right up to the platform kill instant.
+// A receiver asked to end its broker state gets the same headroom
+// (askReceiversToEndBrokerState).
 const storeCloseGraceMargin = 1 * time.Second
 
 // clampedStoreCloseGrace bounds the store-close grace derived from entries by

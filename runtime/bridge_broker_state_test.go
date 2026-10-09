@@ -183,10 +183,10 @@ func TestRetire_AsksAReceiverOnALostSessionToEndItsBrokerStateBeforeItCloses(t *
 	startComponentRuntime(t, rt)
 	wait.RequireClosed(t, recv.ready, 2*time.Second)
 
-	retire(t, rt, Unit{Routes: []string{"r1"}, Sessions: []string{"s1"}, EndBrokerState: []string{"s1"}})
+	require.NoError(t, rt.Retire(t.Context(), Unit{Routes: []string{"r1"}, Sessions: []string{"s1"}, EndBrokerState: []string{"s1"}}))
 
 	assert.Equal(t, []string{"end:rx", "close:rx"}, events.list())
-	assert.Zero(t, events.askedBefore("rx"), "a session without a lease bounds nothing")
+	assert.Zero(t, events.askedBefore("rx"), "neither a session without a lease nor a retire without a deadline bounds the ending")
 }
 
 // TestRetire_AsksAReceiverToEndItsBrokerStateByItsSessionsLeaseDeadline pins
@@ -215,10 +215,72 @@ func TestRetire_AsksAReceiverToEndItsBrokerStateByItsSessionsLeaseDeadline(t *te
 	require.True(t, ok)
 	require.False(t, deadline.IsZero())
 
-	retire(t, rt, Unit{Routes: []string{"r1"}, Sessions: []string{"s1"}, EndBrokerState: []string{"s1"}})
+	// A retire without a deadline of its own leaves the lease deadline to bound
+	// the ending.
+	require.NoError(t, rt.Retire(t.Context(), Unit{Routes: []string{"r1"}, Sessions: []string{"s1"}, EndBrokerState: []string{"s1"}}))
 
 	assert.Equal(t, deadline, events.askedBefore("rx"))
 	assert.Equal(t, deadline, events.askedBefore("s1"))
+}
+
+// unacknowledgedEndReceiver is a receiver whose closing detach the broker never
+// acknowledges: once asked to end its broker state, its Close returns only when
+// the deadline the ask carried passed, or its ctx is done.
+type unacknowledgedEndReceiver struct {
+	*componentReceiver
+	mu     sync.Mutex
+	before time.Time
+}
+
+func (r *unacknowledgedEndReceiver) EndBrokerStateOnClose(before time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.before = before
+}
+
+func (r *unacknowledgedEndReceiver) askedBefore() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.before
+}
+
+func (r *unacknowledgedEndReceiver) Close(ctx context.Context) error {
+	if before := r.askedBefore(); !before.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, before)
+		defer cancel()
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestRetire_AsksAReceiverToEndItsBrokerStateWithinTheRetireBudget pins that a
+// receiver is asked to finish ending its broker state while the retire can
+// still finish. The route runner closes the receiver inside the run the retire
+// waits for, under a close budget of its own (ReceiverCloseTimeout, 10s by
+// default) that outlasts this retire's; a closing detach the broker never
+// acknowledges then gives up in time, and the reload goes on.
+//
+// Mutation check: ask the receiver by its session's lease deadline alone in
+// askReceiversToEndBrokerState and the retire reports that its routes did not
+// finish.
+func TestRetire_AsksAReceiverToEndItsBrokerStateWithinTheRetireBudget(t *testing.T) {
+	rt := New(WithInstanceID("broker-state-receiver-budget"))
+	s1 := newRetireSession()
+	recv := &unacknowledgedEndReceiver{componentReceiver: newComponentReceiver()}
+	require.NoError(t, rt.RegisterSessionSender(session.Config{SessionID: "s1"}, s1, nopRouteSender{}))
+	require.NoError(t, rt.AddRoute(ridingRoute("r1", "s1"), recv, &componentSender{}, s1, nil))
+	startComponentRuntime(t, rt)
+	wait.RequireClosed(t, recv.ready, 2*time.Second)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 1500*time.Millisecond)
+	defer cancel()
+	budgetEnd, _ := ctx.Deadline()
+	require.NoError(t, rt.Retire(ctx, Unit{Routes: []string{"r1"}, Sessions: []string{"s1"}, EndBrokerState: []string{"s1"}}))
+
+	before := recv.askedBefore()
+	require.False(t, before.IsZero(), "a retire with a deadline bounds the ending")
+	assert.True(t, before.Before(budgetEnd), "the ending must give up before the retire's budget ends")
 }
 
 func TestRetire_EndsNoBrokerStateWhenAComponentDidNotStop(t *testing.T) {

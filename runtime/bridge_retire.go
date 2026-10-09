@@ -113,7 +113,7 @@ func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 		}
 		cancel()
 	}
-	askReceiversToEndBrokerState(d.set.entries, ending, d.managers)
+	askReceiversToEndBrokerState(ctx, d.set.entries, ending, d.managers)
 	for _, run := range d.runs {
 		if run.cancel != nil {
 			run.cancel()

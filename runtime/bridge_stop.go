@@ -154,7 +154,7 @@ func (rt *Runtime) stop(ctx context.Context, ending map[string]bool) (retErr err
 		}
 		// Receivers close inside their route runs, which cancel() ends, so a
 		// receiver holding broker state is asked just before that.
-		askReceiversToEndBrokerState(entries, ending, managers)
+		askReceiversToEndBrokerState(ctx, entries, ending, managers)
 		cancel()
 	}
 

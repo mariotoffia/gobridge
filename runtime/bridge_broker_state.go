@@ -44,9 +44,17 @@ func mayEndBrokerState(mgr *session.Manager) (before time.Time, ok bool) {
 
 // askReceiversToEndBrokerState asks every receiver of entries that reads
 // through a session in ending, and implements ports.BrokerStateEnder, to end
-// its broker state when its route closes it, by the local deadline of that
-// session's lease. managers are the session managers by session id.
-func askReceiversToEndBrokerState(entries []*routeEntry, ending map[string]bool, managers map[string]*session.Manager) {
+// its broker state when its route closes it. The ask carries the earlier of the
+// local deadline of that session's lease and ctx's deadline less
+// storeCloseGraceMargin: the route runner closes the receiver inside the run
+// the teardown waits for, under a close budget of its own that may outlast ctx,
+// so an ending the broker never acknowledges gives up while that run can still
+// finish in time. managers are the session managers by session id.
+func askReceiversToEndBrokerState(ctx context.Context, entries []*routeEntry, ending map[string]bool, managers map[string]*session.Manager) {
+	teardownEnd, bounded := ctx.Deadline()
+	if bounded {
+		teardownEnd = teardownEnd.Add(-storeCloseGraceMargin)
+	}
 	for _, entry := range entries {
 		sid := entry.config.SourceSessionID
 		if !ending[sid] {
@@ -55,6 +63,9 @@ func askReceiversToEndBrokerState(entries []*routeEntry, ending map[string]bool,
 		before, ok := mayEndBrokerState(managers[sid])
 		if !ok {
 			continue
+		}
+		if bounded && (before.IsZero() || teardownEnd.Before(before)) {
+			before = teardownEnd
 		}
 		if ender, isEnder := entry.receiver.(ports.BrokerStateEnder); isEnder {
 			ender.EndBrokerStateOnClose(before)
