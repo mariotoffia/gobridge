@@ -13,6 +13,8 @@ release that broke without it.
   `${var,,}` / `${var^^}`, or other bash-4-only features.
 - Tags are pushed one at a time. A bulk tag push can silently skip triggering
   the release workflow for some tags, and a tag cannot be re-pushed.
+- Every `git tag` passes `-m`. With `tag.gpgsign` set, a tag without a message
+  opens an editor, and a train run without a terminal stops at the root tag.
 - Polling GitHub stays one API call per cycle for the whole layer, not one
   poller per module, which exhausts the rate limit on large layers.
 - The release workflow's privileged job (the one that writes the GitHub

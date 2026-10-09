@@ -205,7 +205,7 @@ publish_module() { # module dir
       [ -f "${module}/go.sum" ] && git add "${module}/go.sum"
     fi
     git diff --cached --quiet || git commit -m "release: ${module} ${VERSION}"
-    git tag "$tag"
+    git tag -m "GoBridge ${VERSION}" "$tag"
     git push "$REMOTE" "$tag"
   fi
   wait_for_release_workflow "$tag"
@@ -250,7 +250,7 @@ publish_layer() { # layer number
         [ -f "${module}/go.sum" ] && git add "${module}/go.sum"
       fi
       git diff --cached --quiet || git commit -m "release: ${module} ${VERSION}"
-      git tag "$tag"
+      git tag -m "GoBridge ${VERSION}" "$tag"
     fi
     tags+=("$tag")
     imports+=("$(import_for "$module")")

@@ -249,7 +249,7 @@ if ! git diff --quiet -- go.mod go.sum; then
   git commit -m "release: root ${VERSION}"
 fi
 
-git tag "$VERSION"
+git tag -m "GoBridge ${VERSION}" "$VERSION"
 git push origin "$VERSION"
 wait_for_release_workflow "$VERSION"
 wait_for_proxy github.com/mariotoffia/gobridge
