@@ -77,10 +77,13 @@ func TestEndBrokerSession_ConnectsWithCleanStartAndNoExpiryThenDisconnects(t *te
 	isolateProxyEnv(t, nil) // the shell's ALL_PROXY must not route this loopback dial
 	brokerURL, seen := serveBrokerSessionEnd(t, []byte{0x20, 0x03, 0x00, 0x00, 0x00})
 	s := NewSession(SessionOptions{
-		BrokerURLs:     []string{brokerURL},
-		ClientID:       "orders",
-		ConnectTimeout: 10 * time.Second,
-		Will:           &WillOptions{Topic: "bridge/gone", Payload: "gone"},
+		BrokerURLs:                []string{brokerURL},
+		ClientID:                  "orders",
+		Username:                  "bridge",
+		Password:                  shared.NewSecret("s3cret"),
+		AllowPlaintextCredentials: true,
+		ConnectTimeout:            10 * time.Second,
+		Will:                      &WillOptions{Topic: "bridge/gone", Payload: "gone"},
 	}, connectivity.SessionPersistent, nil)
 
 	require.NoError(t, s.endBrokerSession(boundedDialContext(t)))
@@ -96,6 +99,10 @@ func TestEndBrokerSession_ConnectsWithCleanStartAndNoExpiryThenDisconnects(t *te
 	require.NotNil(t, connect.Properties.SessionExpiryInterval)
 	assert.Zero(t, *connect.Properties.SessionExpiryInterval, "expiry 0 discards the new session on disconnect")
 	assert.False(t, connect.WillFlag, "ending a broker session must not register the session's Will")
+	assert.True(t, connect.UsernameFlag, "the CONNECT carries the session's credentials")
+	assert.Equal(t, "bridge", connect.Username)
+	assert.True(t, connect.PasswordFlag, "the CONNECT carries the session's credentials")
+	assert.Equal(t, []byte("s3cret"), connect.Password)
 	wantPacketSize, err := wirePacketSizeFor(s.opts.MaxPayloadBytes)
 	require.NoError(t, err)
 	require.NotNil(t, connect.Properties.ReceiveMaximum)
@@ -128,6 +135,30 @@ func TestEndBrokerSession_MQTT311ConnectsWithCleanSession(t *testing.T) {
 	idLength := int(binary.BigEndian.Uint16(end.body[10:12]))
 	assert.Equal(t, "orders", string(end.body[12:12+idLength]))
 	assert.Equal(t, byte(packets.DISCONNECT<<4), end.next)
+}
+
+func TestEndBrokerSession_FallsThroughToTheNextBrokerURL(t *testing.T) {
+	isolateProxyEnv(t, nil)
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	refusingURL := "tcp://" + closed.Addr().String()
+	require.NoError(t, closed.Close()) // the port now refuses every dial
+	brokerURL, seen := serveBrokerSessionEnd(t, []byte{0x20, 0x03, 0x00, 0x00, 0x00})
+	s := NewSession(SessionOptions{
+		BrokerURLs:     []string{refusingURL, brokerURL},
+		ClientID:       "orders",
+		ConnectTimeout: 10 * time.Second,
+	}, connectivity.SessionPersistent, nil)
+
+	require.NoError(t, s.endBrokerSession(boundedDialContext(t)))
+
+	end := wait.RequireReceive(t, seen, 5*time.Second)
+	packet, err := packets.ReadPacket(bytes.NewReader(end.packet))
+	require.NoError(t, err)
+	connect, ok := packet.Content.(*packets.Connect)
+	require.True(t, ok)
+	assert.Equal(t, "orders", connect.ClientID)
+	assert.True(t, connect.CleanStart, "the next broker URL gets the clean-start CONNECT")
 }
 
 func TestEndBrokerSession_ReportsARefusedConnection(t *testing.T) {

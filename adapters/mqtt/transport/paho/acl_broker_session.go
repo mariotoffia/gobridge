@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/url"
-	"slices"
 
 	"github.com/eclipse/paho.golang/autopaho"
 	"github.com/eclipse/paho.golang/packets"
@@ -20,7 +19,9 @@ import (
 // discard the new one when the connection closes (MQTT 5 §3.1.2.4, §3.1.2.11.2).
 // On MQTT 3.1.1 the translator sends the same CONNECT as CleanSession=1, which
 // does both. A DISCONNECT cannot do this on its own: MQTT 3.1.1 has no session
-// expiry to send.
+// expiry to send. The caller must have closed the session's own connection
+// first: a clean-start connection while the session is connected would take
+// over its client ID.
 //
 // The connection reaches the broker the way every session connection does:
 // the session's broker URLs in order, its credentials, its TLS settings, the
@@ -37,18 +38,17 @@ func (s *Session) endBrokerSession(ctx context.Context) error {
 	s.mu.Lock()
 	tlsOpts := s.opts.TLS
 	user, pass := s.opts.Username, s.opts.Password.Reveal()
-	allowPlaintext := s.opts.AllowPlaintextCredentials
-	brokerURLs := slices.Clone(s.opts.BrokerURLs)
+	plaintextErr := s.opts.validatePlaintextCredentials()
 	s.mu.Unlock()
 
 	clientID := s.opts.ClientID
 	if clientID == "" {
 		return shared.ErrInvalidConfig.WithMessage("mqtt: ending a broker session needs the session's client ID")
 	}
-	if plaintextCredentialViolation(user != "" || pass != "", allowPlaintext, brokerURLs) {
-		return errPlaintextCredentials()
+	if plaintextErr != nil {
+		return plaintextErr
 	}
-	serverURLs, err := parseURLs(brokerURLs)
+	serverURLs, err := parseURLs(s.opts.BrokerURLs)
 	if err != nil {
 		return shared.ErrInvalidConfig.Wrap(err).WithMessage("parse broker URLs")
 	}
@@ -120,7 +120,6 @@ func (s *Session) endBrokerSessionAt(ctx context.Context, cfg autopaho.ClientCon
 	})
 	connack, err := client.Connect(ctx, connect)
 	if err != nil {
-		_ = conn.Close()
 		if connack != nil {
 			// The same typed refusal autopaho reports, so MapError classifies
 			// the CONNACK reason code (0x86 and 0x87 are ErrNotAuthorized).
@@ -128,12 +127,9 @@ func (s *Session) endBrokerSessionAt(ctx context.Context, cfg autopaho.ClientCon
 		}
 		return MapError(err)
 	}
-	// Paho's DISCONNECT write has no deadline of its own.
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = conn.SetWriteDeadline(deadline)
-	}
-	if err := client.Disconnect(&pahov5.Disconnect{ReasonCode: packets.DisconnectNormalDisconnection}); err != nil {
-		return MapError(err)
-	}
+	// The accepted clean-start CONNECT already ended the broker state: Clean
+	// Start dropped the old session and expiry 0 (CleanSession=1) ends the new
+	// one when the connection closes, so a failed DISCONNECT changes nothing.
+	_ = client.Disconnect(&pahov5.Disconnect{ReasonCode: packets.DisconnectNormalDisconnection})
 	return nil
 }
