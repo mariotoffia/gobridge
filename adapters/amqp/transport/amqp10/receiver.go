@@ -468,26 +468,34 @@ func (r *Receiver) createLink(ctx context.Context) error {
 	return nil
 }
 
-// linkName returns the AMQP link name for this receiver. An explicit
-// SubscriptionName always wins. Durable subscriptions (DurabilityMode >
-// 0) REQUIRE a stable name — brokers identify the subscription by
-// container-id + link name, so the SDK's random default would orphan
-// the subscription on every reconnect and silently drop everything
-// published while detached — hence a deterministic name is derived from
-// the session container id and the link address. Non-durable links keep
-// the SDK's random name (empty return).
+// linkName returns the AMQP link name for this receiver: receiverLinkName
+// of its configuration and its session's container id.
 func (r *Receiver) linkName() string {
-	if r.cfg.SubscriptionName != "" {
-		return r.cfg.SubscriptionName
-	}
-	if r.cfg.DurabilityMode == 0 {
-		return ""
-	}
 	cid := ""
 	if r.session != nil {
 		cid = r.session.opts.ContainerID
 	}
-	if cid == "" {
+	return receiverLinkName(r.cfg.SubscriptionName, r.cfg.DurabilityMode, cid, r.cfg.Address)
+}
+
+// receiverLinkName returns the AMQP link name a receiver attaches with. An
+// explicit subscriptionName always wins. Durable subscriptions
+// (durabilityMode > 0) REQUIRE a stable name — brokers identify the
+// subscription by container-id + link name, so the SDK's random default would
+// orphan the subscription on every reconnect and silently drop everything
+// published while detached — hence a deterministic name is derived from the
+// session container id and the link address. Non-durable links keep the SDK's
+// random name (empty return). Factory.BrokerStateKeys keys a durable
+// subscription by the same name, so the key always names the subscription the
+// receiver attaches.
+func receiverLinkName(subscriptionName string, durabilityMode uint32, containerID, address string) string {
+	if subscriptionName != "" {
+		return subscriptionName
+	}
+	if durabilityMode == 0 {
+		return ""
+	}
+	if containerID == "" {
 		// Only reachable for directly-constructed sessions (tests):
 		// SessionOptions.applyDefaults generates a per-instance
 		// container-id when none is configured, so sessions built via
@@ -496,9 +504,9 @@ func (r *Receiver) linkName() string {
 		// Factory.NewReceiver rejects durability_mode > 0 on a session with
 		// a generated container-id — so this generated-identity
 		// fallback never anchors a real durable subscription.
-		return "gobridge:" + r.cfg.Address
+		return "gobridge:" + address
 	}
-	return cid + ":" + r.cfg.Address
+	return containerID + ":" + address
 }
 
 func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, ports.Delivery) error) error {
