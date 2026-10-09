@@ -14,7 +14,9 @@ import (
 // it (AMQP 1.0). Receivers are asked before the unit's runs are cancelled,
 // because the route runner closes them inside the run; sessions are asked just
 // before their manager closes them, after every run stopped. A lease-managed
-// session's lease is released only after its Close returned.
+// session's lease is released only after its Close returned. Every configured
+// session has a manager; a session none runs carries the empty id, which no
+// reload names, so it is never asked.
 
 // endingSessions returns the ids of ids that keep accepts, as a set; a nil keep
 // accepts every id.
@@ -47,14 +49,6 @@ func askReceiversToEndBrokerState(entries []*routeEntry, ending map[string]bool,
 		if ender, ok := entry.receiver.(ports.BrokerStateEnder); ok {
 			ender.EndBrokerStateOnClose()
 		}
-	}
-}
-
-// askSessionToEndBrokerState asks sess, a session no manager runs, to end its
-// broker state when it closes.
-func askSessionToEndBrokerState(sess ports.Session) {
-	if ender, ok := sess.(ports.BrokerStateEnder); ok {
-		ender.EndBrokerStateOnClose()
 	}
 }
 

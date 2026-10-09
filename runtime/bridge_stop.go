@@ -272,9 +272,6 @@ func (rt *Runtime) stop(ctx context.Context, ending map[string]bool) (retErr err
 	// refs are already deduplicated by pointer, and a session a manager closed
 	// is never in them, so each is closed exactly once.
 	for _, ref := range unmanagedSessions {
-		if drainersDone && ending[ref.sid] {
-			askSessionToEndBrokerState(ref.sess)
-		}
 		if err := ref.sess.Close(closeCtx); err != nil {
 			errs = append(errs, fmt.Errorf("runtime: stop: closing unmanaged session %q: %w", ref.sid, err))
 		}

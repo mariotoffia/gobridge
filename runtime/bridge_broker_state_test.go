@@ -169,36 +169,21 @@ func TestRetire_AsksAReceiverOnALostSessionToEndItsBrokerStateBeforeItCloses(t *
 	assert.Equal(t, []string{"end:rx", "close:rx"}, events.list())
 }
 
-func TestRetire_AsksASessionNoManagerRunsToEndItsBrokerStateBeforeItCloses(t *testing.T) {
-	events := &brokerStateEvents{}
-	rt := New(WithInstanceID("broker-state-unmanaged"))
-	bare := newEndingSession("bare", events)
-	// A route added with a session object and no session block runs that
-	// session without a manager, under the empty session id.
-	require.NoError(t, rt.AddRoute(componentRoute("r1"), newComponentReceiver(), &componentSender{}, bare, nil))
-	startComponentRuntime(t, rt)
-
-	retire(t, rt, Unit{Routes: []string{"r1"}, Sessions: []string{""}, EndBrokerState: []string{""}})
-
-	assert.Equal(t, []string{"end:bare", "close:bare"}, events.list())
-}
-
 func TestRetire_EndsNoBrokerStateWhenAComponentDidNotStop(t *testing.T) {
 	events := &brokerStateEvents{}
 	rt := New(WithInstanceID("broker-state-stuck"))
-	s1, bare, release := newEndingSession("s1", events), newEndingSession("bare", events), make(chan struct{})
+	s1, release := newEndingSession("s1", events), make(chan struct{})
 	require.NoError(t, rt.RegisterSessionSender(session.Config{SessionID: "s1"}, s1, nopRouteSender{}))
 	require.NoError(t, rt.AddRoute(ridingRoute("r1", "s1"), stuckReceiver{release: release}, &componentSender{}, s1, nil))
-	require.NoError(t, rt.AddRoute(componentRoute("r2"), newComponentReceiver(), &componentSender{}, bare, nil))
 	startComponentRuntime(t, rt)
 	t.Cleanup(func() { close(release) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	err := rt.Retire(ctx, Unit{Routes: []string{"r1", "r2"}, Sessions: []string{"s1", ""}, EndBrokerState: []string{"s1", ""}})
+	err := rt.Retire(ctx, Unit{Routes: []string{"r1"}, Sessions: []string{"s1"}, EndBrokerState: []string{"s1"}})
 
 	require.ErrorContains(t, err, "did not finish")
-	assert.Equal(t, []string{"close:s1", "close:bare"}, events.list(),
+	assert.Equal(t, []string{"close:s1"}, events.list(),
 		"a session ends nothing while a component of its unit may still use it")
 }
 

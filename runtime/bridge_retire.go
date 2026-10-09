@@ -143,9 +143,6 @@ func (rt *Runtime) Retire(ctx context.Context, u Unit) error {
 		}
 	}
 	for _, ref := range rt.releasedUnmanagedSessions(d, finished) {
-		if finished && ending[ref.sid] {
-			askSessionToEndBrokerState(ref.sess)
-		}
 		if err := ref.sess.Close(closeCtx); err != nil {
 			errs = append(errs, fmt.Errorf("runtime: retire: closing unmanaged session %q: %w", ref.sid, err))
 		}
