@@ -9,9 +9,9 @@ import (
 )
 
 // TestClassifyRolloutDelta_LiveSafe_BenignChange validates that a delta which
-// changes neither durable session identity, store target, nor lease ownership
-// (here: a publish topic/address) is classified live-safe — eligible for a
-// coordinated cluster rollout.
+// changes neither a store target nor lease ownership (here: a publish
+// topic/address) is classified live-safe — eligible for a coordinated cluster
+// rollout.
 func TestClassifyRolloutDelta_LiveSafe_BenignChange(t *testing.T) {
 	oldCfg := supervisorTestConfigWithSession("r1", "sess")
 	newCfg := supervisorTestConfigWithSession("r1", "sess")

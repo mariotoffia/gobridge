@@ -162,6 +162,22 @@ than an opaque broker SASL failure at dial.
 > receiver with another link on the same session — give each durable (multicast)
 > receiver its own `session_id`.
 
+> **A reload that drops a durable subscription deletes it.** When a live reload
+> retires a durable receiver on a `multicast` address and the next
+> configuration no longer has its subscription (the receiver is removed, or its
+> broker, `container_id` or link name changes), the adapter closes the link with
+> the closing detach on purpose, and the broker deletes the subscription and
+> every message kept for it
+> ([ADR 0024](../adr/0024-end-durable-broker-state-on-reload.md)). It does so
+> only when the receiver stopped on its own before the close: a receiver the
+> runtime force-closes while it is still running drops the connection and keeps
+> its durable subscription. Every other close (shutdown, restart, pause, a
+> reload that keeps the subscription) still drops the connection and keeps it.
+> An `anycast` (queue) receiver never deletes anything. If the closing detach
+> fails, the adapter logs a Warn naming the `session_id`, counts
+> `BrokerStateEndFailures`, drops the connection instead, and the reload
+> continues.
+
 > **No safe clustered durable multicast.** Two replicas that resume the same
 > durable multicast identity (container-id + link name) fight over the link: the
 > broker grants it to one and detaches the other permanently with `amqp:link:stolen`

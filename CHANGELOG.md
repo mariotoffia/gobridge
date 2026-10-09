@@ -10,6 +10,77 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+A live reload now accepts a change, removal or rename of a durable
+subscription's broker identity instead of refusing it, and retiring the old
+reload unit ends the state the broker keeps for the old identity
+([ADR 0024](docs/adr/0024-end-durable-broker-state-on-reload.md)).
+
+### Changed
+
+- The Supervisor, the AWS runtime (`gobridge-aws`) and the coordinated cluster
+  rollout accept a reload that changes a persistent or exclusive MQTT session's
+  broker URL or client ID, or removes or renames the session. Retiring the old
+  session ends its broker session: it connects once more as the old client ID
+  with clean start and disconnects. A durable AMQP 1.0 receiver on a
+  `multicast` address that the next configuration no longer has closes its link
+  with a closing detach, which deletes the subscription; a receiver the runtime
+  force-closes while it is still running keeps it. Only an instance connected
+  as the identity ends anything, and for an exclusive session only while it
+  holds the session's lease and that lease has not expired by its own clock. A
+  failure is a Warn log and a `BrokerStateEndFailures` count; the reload
+  continues. A shutdown, restart, pause, failover or session rebuild never ends
+  broker state. See
+  [reloads that change a durable broker identity](docs/aws-deployment/config-reload.md#reloads-that-change-a-durable-broker-identity).
+- `bridge.ValidateDurableReload` and `bridge.ValidateDormantReactivation` no
+  longer refuse a changed durable broker identity. Two durable sessions with one
+  client ID on one broker are still rejected, now by configuration validation
+  (`Builder.Preflight`) on every configuration.
+- MQTT managed subscription history is stored under a SHA-256 digest of the
+  broker state key (the canonical broker endpoint and the effective client ID).
+  Switching between `persistent` and `exclusive`, or changing clean start, the
+  session expiry or the protocol version, keeps the history.
+- When a live reload adds a broker state key, GoBridge records an empty managed
+  subscription history for it unless one already exists. A session that loads
+  an empty history ends any broker session its client ID still has before its
+  first connection.
+- The MQTT unsettled-delivery gauges (`MQTTUnsettled`,
+  `MQTTOldestUnsettledAge`, `MQTTReceiveWindowUtilization`) tag `session_id`
+  with the GoBridge session ID instead of the client ID.
+- New optional ports `ports.BrokerStateKeyer`, `ports.BrokerStateEnder` and
+  `ports.ManagedSubscriptionIdentityConfig`; new `runtime.Unit.EndBrokerState`,
+  `Runtime.StopEndingBrokerState`, `bridge.PlanBrokerStateChange` and
+  `Builder.MarkAddedBrokerStateKeys`.
+
+### Upgrade notes
+
+- The first start of each persistent or exclusive MQTT session copies its
+  managed subscription history from the old fingerprint to the new key. Nothing
+  to do.
+- On the AWS DynamoDB HA deployment the stack update writes the declared
+  baseline under the new key, with `baseline=true`, before the updated services
+  start a task, so the runtime never copies the old history. Before you upgrade,
+  set each session's `ManagedSubscriptionBaselines` entry to every exact filter
+  its broker session may still hold: a filter the entry does not name is never
+  unsubscribed. The row under the old key stays in the retained table; see
+  [deployment/aws/README.md](deployment/aws/README.md).
+- A removed-subscription dead-letter record written before the upgrade names
+  the old key, so it is not redriven automatically; redrive or purge it by
+  hand.
+- Dashboards that select the MQTT unsettled gauges by client ID must select by
+  session ID.
+- If an in-place reload fails after it retired a unit, and restores that unit,
+  the old identity's broker state has already been ended. The restored session
+  starts on an empty broker session, and the backlog the old state held is gone.
+- If ending the broker session of a key a reload added fails (broker
+  unreachable, access denied), that session's start fails and the session
+  manager retries it. Nothing connects as the new client ID until ending the
+  broker session succeeds.
+
+### Fixed
+
+- The AMQP 1.0 adapter documentation names go-amqp v1.7.0, the version the
+  module requires, instead of v1.5.1.
+
 ## [0.7.1] - 2026-10-09
 
 The AWS runtime (`gobridge-aws`) now refuses the same configuration changes the

@@ -10,8 +10,12 @@ use multiple broker URLs.
 
 A persistent/exclusive MQTT session with desired subscriptions requires
 `stores.managed_subscriptions` (`sqlite` for one process, `dynamodb` for a
-cluster). Startup strongly loads the exact history by the opaque
-`DurableSessionIdentity` **before broker activation**. Missing history is not an
+cluster). Startup strongly loads the exact history by the opaque managed
+subscription identity, a SHA-256 digest of the session's broker state key (the
+canonical broker endpoint and the effective client ID), **before broker
+activation**. History stored under the fingerprint used before
+[ADR 0024](../adr/0024-end-durable-broker-state-on-reload.md) is carried over
+once. Missing history is not an
 empty set: it is an unknown migration state and startup fails below Full. A
 store outage has the same fail-closed result; there is no in-memory fallback.
 
@@ -154,50 +158,91 @@ from `gobridge -config bridge.yaml -seed-managed-subscriptions <session-id>`
 `Builder.SeedManagedSubscriptionBaselines`. All three are idempotent: an
 established baseline is kept and listed filters are added to it.
 
-Ordinary live removal/rename/identity change of a persistent/exclusive session is
-refused even with `WithAllowDestructiveReload`, because managed filters may
-remain. Externally drain, exact-unsubscribe, seed/cut over the new identity, and
-only then change configuration.
+A live reload that removes or renames a persistent or exclusive session, or
+changes its broker identity, ends the broker session the old client ID leaves
+behind; see
+[broker identity changes on live reload](#broker-identity-changes-on-live-reload).
 
-## Durable identity and live-reload migration
+## Broker identity changes on live reload
 
-The Supervisor and the AWS runtime fingerprint the canonical broker set (URL
-userinfo removed), effective client ID after suffix resolution, session mode,
-effective clean-start behavior, and effective session expiry. A live reload that
-changes or removes that identity is refused before the old runtime is stopped or
-a replacement is built. Both run the same comparison; a custom composition root
-calls `bridge.ValidateDurableReload` before it reloads. Credential
-rotation, TLS material/path changes, keepalive, reconnect, reconcile, and other
-tuning do not change this durable identity.
+A persistent or exclusive session's **broker state key** is the canonical broker
+endpoint (URL userinfo removed) and the effective client ID after suffix
+resolution ([ADR 0024](../adr/0024-end-durable-broker-state-on-reload.md)). The
+broker keeps the session, its subscriptions and its queued QoS 1/2 messages
+under that client ID. Switching between `persistent` and `exclusive`, clean
+start, the session expiry, the protocol version, credentials, TLS material,
+keepalive, reconnect and reconcile tuning are not part of it: changing them
+reconnects the same broker session and keeps the managed subscription history.
+An `ephemeral` session has no key, so changing a session to `ephemeral` loses
+its key.
 
-On MQTT 3.1.1 (`protocol_version: v3.1.1`) the fingerprint also includes the
-protocol version. A broker need not resume a session that was created over the
-other version (AWS IoT Core does not), so switching a Persistent or Exclusive
-session between `v5` and `v3.1.1` changes its durable identity: a live reload
-refuses it, and it needs the maintenance cutover below and the
-[managed-filter migration](../runbooks/mqtt-managed-subscription-migration.md).
-Drain the backlog before you switch. On `v5` the fingerprint is the one it was
-before MQTT 3.1.1 support existed, so existing sessions keep their stored
-history. The startup check that rejects two durable sessions with one client ID
-on one broker ignores the protocol version: they collide whatever their
-versions.
+A live reload accepts a change to the key, and the removal or rename of the
+session. The Supervisor, the AWS runtime and a coordinated cluster rollout
+compare the keys of the whole running configuration with those of the whole
+next one:
 
-On MQTT 3.1.1 the session expiry is never sent, so the broker decides how long
-a session lives after the bridge disconnects (broker defaults: Mosquitto never
-expires it, EMQX after 2 h, AWS IoT after 1 h). A non-zero
-`session_expiry_interval` is rejected on 3.1.1, so the fingerprint always holds
-the local 86400-second default.
+- **A key the next configuration does not have is lost.** Retiring the old
+  session drains its in-flight deliveries and closes it, then connects once
+  more as the old client ID with clean start and Session Expiry Interval 0
+  (`CleanSession=1` on MQTT 3.1.1), and disconnects. The broker deletes the old
+  session, its subscriptions and its queued messages, and takes it out of every
+  `$share` group. Only then is the session's lease released. `connect_timeout`
+  bounds this connection, and `reconnect_timeout` each broker URL it tries. It
+  is done once the broker accepts the clean-start CONNECT; a failed DISCONNECT
+  after that changes nothing.
+- **A key the running configuration did not have is added.** GoBridge records
+  an empty managed subscription history for it when it has none; a history that
+  already exists is kept. A session whose loaded history is empty ends any
+  broker session the client ID still has before its first connection, so the
+  broker holds nothing the history does not know. When that fails (broker
+  unreachable, access denied), the session's start fails, nothing connects as
+  the client ID, and the session manager retries; each retry reads the history
+  from the store again. At process start, with no running configuration, a
+  durable session with no history still needs a seeded baseline.
+- **Renaming only the `session_id`** loses and adds nothing: the broker
+  identity is still there and keeps its history.
 
-`WithAllowDestructiveReload` cannot bypass this guard. GoBridge intentionally
-does not automate broker-state migration. To change a durable MQTT identity,
-operators must externally orchestrate a maintenance cutover: stop new ingress,
-drain and verify the old broker backlog, exact-UNSUBSCRIBE every managed filter, remove the old session,
-apply the new identity, then resume traffic and verify consumption. A running
-process refuses the new identity, so it is applied by a restart: on AWS, store
-the new version and restart the task
-([reloads that strand durable state](../aws-deployment/config-reload.md#reloads-that-strand-durable-state)).
-In a cluster, perform this as a coordinated versioned rollout; independent
-per-process reloads are unsafe.
+Only a task connected as the old client ID ends its broker session; a session
+that is reconnecting, or whose start has not finished, ends nothing. For an
+exclusive session the task must also hold the session's lease, and that lease
+must not have expired by the task's own clock. When ending it fails (access
+denied, broker unreachable), the session logs a Warn naming the `session_id`,
+counts `BrokerStateEndFailures`, and the reload continues; the broker then keeps
+the session until its expiry. When the session's own disconnect fails, it sends
+nothing, because its connection may still be up as the client ID, and counts
+the same failure. A shutdown, a restart, a pause (`StopBridge`), a lease loss
+or failover, and the rebuild of a failed session never end a broker session.
+
+What a change loses:
+
+- the backlog the old client ID still had on the broker; rolling back does not
+  bring it back;
+- QoS 1/2 messages published between the old disconnect and the new
+  subscription, as on a restart. For a `$share` filter, only when the group has
+  no other member.
+
+For no loss, change in two reloads: first add a new session next to the old
+one, then remove the old one. Messages that arrive while both run are delivered
+twice; downstream idempotency absorbs them.
+
+On MQTT 3.1.1 (`protocol_version: v3.1.1`) the session expiry is never sent, so
+the broker decides how long a session lives after the bridge disconnects
+(broker defaults: Mosquitto never expires it, EMQX after 2 h, AWS IoT after
+1 h). Ending a lost key is what removes such a session before that. Switching
+between `v5` and `v3.1.1` keeps the key; see
+[switching an existing session](mqtt-311.md#switching-an-existing-session).
+
+Two durable sessions with one client ID on one broker are rejected when the
+configuration is validated, whatever their protocol versions: they would
+disconnect each other on every connect.
+
+The managed subscription history is stored under a SHA-256 digest of the broker
+state key. A session that finds no history under it reads the history stored
+under the fingerprint used before ADR 0024 once, and stores it under the new
+key. A removed-subscription dead-letter record names the key its session used
+when it was written, so a record written before the upgrade is not redriven
+automatically; redrive it by hand
+([managed-filter migration](../runbooks/mqtt-managed-subscription-migration.md#dead-lettered-deliveries-inspect-then-redrive-or-purge)).
 
 ### Reload semantics: a controlled restart of what changed, not a hitless reload
 

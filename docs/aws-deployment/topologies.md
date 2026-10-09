@@ -51,7 +51,7 @@ workers wait idle for a valid document without any seeder dependency.
 `0/100` caps total tasks at the desired count, so a second cohort never runs
 beside the first. It constrains counts, not ORDER: on the autoscaled shape, at a
 desired count of two or more, the ECS scheduler may still replace in batches, so
-a revision that changes durable session identity or store targets still needs the
+a revision that changes store targets or a lease-bearing `session_id` still needs the
 scale-to-zero procedure in
 [the cluster config rollout runbook](../runbooks/cluster-config-rollout.md).
 Expect an ingress gap and a breaching warm-standby alarm for the duration of an
@@ -162,9 +162,10 @@ document cannot bypass synth-time admission:
   deliberately does **not** cover routes, receivers, senders, sessions, or
   processors: those are operator content that a live config change is supposed to
   change, and gating them here would make every committed change fail on every
-  member after the cohort had already agreed to it. Changing an existing durable
-  session identity or an exclusive route's `session_id` is still refused — by the
-  live-reload preflight, which owns that rule.
+  member after the cohort had already agreed to it. Changing an exclusive route's
+  `session_id` is still refused — by the live-reload preflight, which owns that
+  rule. Changing an existing durable session's broker identity rolls live; the
+  lease holder ends the old broker session (ADR 0024).
 - **Baseline config digest** (`dynamodb_ha_baseline_config_digest`) — the content
   identity of the document this deployment admitted, including editable content.
   Both file and DynamoDB sources use `bridge.DeploymentBaselineContentDigest`,

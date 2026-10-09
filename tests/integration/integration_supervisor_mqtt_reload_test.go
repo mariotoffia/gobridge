@@ -54,11 +54,9 @@ import (
 //   - The source is the inert "fake" receiver (blocks forever); traffic is
 //     driven through the route pipeline via Runtime.Inject, which exercises
 //     outbox persist → drain → the real MQTT sender against the real broker.
-//   - The MQTT session is declared session_mode-less (ephemeral): a durable
-//     (persistent/exclusive) session changing its broker URL is REFUSED at
-//     reload preflight ("durable session broker identity changed"), while
-//     the broker-convergence contract under test needs the v1→v2→v3 URL
-//     swap to commit.
+//   - The MQTT session is declared session_mode-less (ephemeral): it keeps no
+//     broker state, so the v1→v2→v3 URL swaps under test commit without
+//     ending a broker session on the way (ADR 0024).
 //   - The route carries an inline session block, which is what makes the
 //     builder wire a runtime session manager for the MQTT session so its
 //     broker connection drives Runtime.ReadinessLevel. An inline session is

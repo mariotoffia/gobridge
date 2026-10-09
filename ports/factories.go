@@ -35,9 +35,10 @@ type SessionSpec struct {
 	// BrokerStateKeyAdded is true when the live reload that built this session
 	// added its broker state key: the running configuration did not have it
 	// (ADR 0024). The builder has already recorded an empty managed subscription
-	// history for it, and a persistent or exclusive session whose history is
-	// empty ends any broker session its client ID still has before its first
-	// connection, so the broker state matches that history.
+	// history for it when none existed; an existing history is kept. A
+	// persistent or exclusive session ends any broker session its client ID
+	// still has before its first connection only while its loaded history is
+	// empty, so the broker state matches that history.
 	BrokerStateKeyAdded bool
 }
 

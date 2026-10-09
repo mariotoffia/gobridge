@@ -67,9 +67,9 @@ Non-goals
 
 - N1 General consensus (no raft/etcd dependency). The shared store is the
   single source of truth; DynamoDB conditional writes provide the atomicity.
-- N2 **Destructive deltas stay out of scope.** Changes that alter durable
-  identity or store targets (session identity, lease/outbox/DLQ store
-  bindings — the reasons 0012 exists) are still refused live and keep the
+- N2 **Destructive deltas stay out of scope.** Changes that alter store
+  targets or lease ownership (lease/outbox/DLQ store bindings, a lease-bearing
+  `session_id` — the reasons 0012 exists) are still refused live and keep the
   whole-cohort replacement procedure. The protocol lifts refusal only for
   deltas that pass the existing per-node preflight (see §8 rollout classes).
 - N3 File/EFS-sourced clusters. The protocol requires the versioned,
@@ -251,9 +251,11 @@ is live-safe (§8); everything else still refuses fail-closed exactly as today.
 
 Per-node preflight classifies the delta before Ack:
 
-- **live-safe** — passes today's reload preflights (no durable session
-  identity change, no lease/outbox/DLQ store target change, no
-  deployment-mode change). Eligible for coordinated rollout.
+- **live-safe** — passes today's reload preflights (no lease/outbox/DLQ store
+  target change, no lease-bearing `session_id` change, no deployment-mode
+  change). A durable session's broker identity change is live-safe: the lease
+  holder ends the old broker state on retire (ADR 0024). Eligible for
+  coordinated rollout.
 - **replacement-required** — anything else. `Nack(reason=class)` → abort with
   a message pointing at the whole-cohort runbook. ADR 0012 continues to
   govern these.

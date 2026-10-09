@@ -130,7 +130,7 @@ A live config change on a clustered deployment is governed by
 `bridge.cluster.rollout`. The default is the safe one; each step up trades
 operational cost for zero-downtime changes. Every mode refuses the same set of
 changes that cannot be applied live at all (store identity, deployment shape,
-exclusive-session identity) and names the reason; those still need the
+a lease-bearing exclusive `session_id`) and names the reason; those still need the
 whole-cohort replacement in
 [docs/runbooks/cluster-config-rollout.md](../runbooks/cluster-config-rollout.md).
 
@@ -144,7 +144,7 @@ The barrier is atomic BEFORE the commit and per-member AFTER it: applying is
 local work that can fail on one member and succeed on another, so a mixed cohort
 during the convergence window is a bounded, alarmed state rather than a
 violation (ADR 0013, "What the barrier guarantees, precisely").
-`WithAllowDestructiveReload` cannot bypass any of this: discarding local backlog
+`WithAllowDestructiveReload` does not bypass any of this: discarding local backlog
 is not cluster consensus. The plain-language guide is
 [docs/cluster/README.md](../cluster/README.md); the protocol lives under
 [docs/cluster/spec/](../cluster/spec/).

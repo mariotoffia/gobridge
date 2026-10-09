@@ -13,7 +13,7 @@ record remains available and links to its replacement.
 |-----|-------|--------|
 | [0001](0001-reserved-header-trust-model.md) | Reserved-header trust model and out-of-band signaling | accepted |
 | [0002](0002-credential-rotation-build-first.md) | Credential rotation: build-first, commit-after-success | accepted |
-| [0003](0003-mqtt-persistent-session-hygiene.md) | MQTT persistent-session subscription hygiene | accepted |
+| [0003](0003-mqtt-persistent-session-hygiene.md) | MQTT persistent-session subscription hygiene | accepted; amended by 0024 |
 | [0004](0004-single-use-runtime-lifecycle.md) | Single-use runtime lifecycle and terminal wedge | accepted; amended by 0018 |
 | [0005](0005-outbox-partition-claim-design.md) | Outbox partition design: claim selection, fence rows, seq allocation | accepted |
 | [0006](0006-dlq-redrive-at-most-once.md) | DLQ redrive at-most-once | superseded by 0015 |
@@ -28,13 +28,13 @@ record remains available and links to its replacement.
 | [0015](0015-dlq-redrive-inject-then-delete.md) | DLQ redrive inject-then-delete (at-least-once) | accepted |
 | [0016](0016-config-content-normal-form.md) | Configuration content identity: compare the normal form, not the bytes | accepted |
 | [0017](0017-direct-hold-in-process-send-retry.md) | `direct_hold` retries a failed send in process before replay or dead-lettering | accepted; amended by 0019 |
-| [0018](0018-reload-in-place-by-unit.md) | Reload in place by reload unit | accepted |
+| [0018](0018-reload-in-place-by-unit.md) | Reload in place by reload unit | accepted; amended by 0024 |
 | [0019](0019-dlq-auto-redrive-by-system-event.md) | DLQ automatic redrive triggered by system events | accepted |
 | [0020](0020-contain-unrecoverable-session-by-unit-rebuild.md) | Contain an unrecoverable session by rebuilding its reload unit | accepted; amended by 0021 |
 | [0021](0021-contain-mqtt-recovery-and-ingress-reject-in-session.md) | Contain an MQTT recovery failure and a pre-decode ingress reject in the session | accepted |
-| [0022](0022-mqtt-311-by-wire-translation.md) | Speak MQTT 3.1.1 by translating the wire below the MQTT 5 client | accepted; amended by 0023 |
+| [0022](0022-mqtt-311-by-wire-translation.md) | Speak MQTT 3.1.1 by translating the wire below the MQTT 5 client | accepted; amended by 0023, 0024 |
 | [0023](0023-keep-resumed-mqtt-311-subscriptions.md) | Keep a resumed MQTT 3.1.1 session's subscriptions | accepted |
-| [0024](0024-end-durable-broker-state-on-reload.md) | End a durable subscription's broker state on reload instead of refusing the reload | proposed |
+| [0024](0024-end-durable-broker-state-on-reload.md) | End a durable subscription's broker state on reload instead of refusing the reload | accepted |
 
 ## Numbering
 

@@ -1,17 +1,18 @@
 # 0024 — End a durable subscription's broker state on reload instead of refusing the reload
 
-Status: proposed
+Status: accepted
 Date: 2026-10-09
 Deciders: GoBridge core
 Amends: [0003](0003-mqtt-persistent-session-hygiene.md) (the managed
 subscription history key, and a durable session may now be removed or renamed
 by a live reload), [0018](0018-reload-in-place-by-unit.md) (retiring a reload
-unit may end the broker state the unit leaves behind)
+unit may end the broker state the unit leaves behind),
+[0022](0022-mqtt-311-by-wire-translation.md) (switching the protocol version
+keeps the managed subscription history)
 Relates to: [0011](0011-cluster-client-id-uniqueness.md),
 [0013](0013-coordinated-cluster-config-rollout.md),
 [0019](0019-dlq-auto-redrive-by-system-event.md),
-[0020](0020-contain-unrecoverable-session-by-unit-rebuild.md),
-[0022](0022-mqtt-311-by-wire-translation.md)
+[0020](0020-contain-unrecoverable-session-by-unit-rebuild.md)
 
 ## Context
 

@@ -5,7 +5,7 @@ applyTo: "adapters/mqtt/**"
 # MQTT transport (paho)
 
 Adds to `adapters.instructions.md`. Sources: ADR-0002, ADR-0003, ADR-0009,
-ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021, ADR-0022, ADR-0023 and
+ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021, ADR-0022, ADR-0023, ADR-0024 and
 `docs/transports/mqtt*.md`.
 
 ## Settlement and ingress
@@ -154,8 +154,9 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021, ADR-0022, ADR-0023 and
 - On 3.1.1 egress builds a publish with only topic, QoS, retain and payload,
   before field and packet-size validation.
 - The protocol version is in `DurableSessionIdentity` on 3.1.1 only; a v5
-  fingerprint must never change. `DurableSessionIdentityDomains` stays
-  protocol-independent.
+  fingerprint must never change, because it is the legacy key history is
+  carried over from. `DurableSessionIdentityDomains`, `BrokerStateKey` and
+  `ManagedSubscriptionIdentity` stay protocol-independent.
 - On 3.1.1 a connection that drops within `connectionStabilityWindow` feeds the
   takeover streak and penalty, but never counts `MetricMQTTSessionTakeover`
   (ADR-0011).
@@ -183,3 +184,32 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021, ADR-0022, ADR-0023 and
   cleared only where the acknowledgement is recorded on the same connection
   epoch. `subscriptionsSatisfied` stays false until the reconcile converges, as
   on every connection (ADR-0023).
+
+## Broker state (ADR 0024)
+
+- `Config.BrokerStateKey` is the canonical endpoint and the effective client ID
+  only. Flag any other field in it: switching between persistent and
+  exclusive, clean start, expiry and protocol version reconnect the same broker
+  session.
+- Managed subscription history is keyed by `ManagedSubscriptionIdentity`;
+  `loadManagedSubscriptionHistory` carries the legacy `DurableSessionIdentity`
+  history over through `ports.CarryOverManagedSubscriptionHistory` before it
+  lists.
+- `Close` ends the broker session only when asked
+  (`EndBrokerStateOnClose`), connected with a connection manager installed,
+  and the mode is persistent or exclusive, and only after its own disconnect
+  and the handler drain. When its own disconnect fails it sends nothing and
+  counts a `BrokerStateEndFailures`.
+- `endBrokerSession` (`acl_broker_session.go`) goes through
+  `attemptGuardedConnection` (translator and ingress guard), sends Clean Start
+  with Session Expiry Interval 0 and no Will, and disconnects normally.
+  `connect_timeout` bounds it, and the reconnect attempt timeout each broker
+  URL. It succeeds once the clean-start CONNACK arrived; the DISCONNECT error is
+  ignored.
+- A session whose key a reload added (`SessionSpec.BrokerStateKeyAdded`) ends
+  the broker session before its first dial only while its loaded history is
+  empty. A failure fails `Start`, and the next `Start` reads the history from
+  the store again.
+- Metrics tag `session_id` with `metricSessionID()` (the GoBridge session ID)
+  where the series is new or ADR 0024 moved it; do not change other series'
+  tag values.

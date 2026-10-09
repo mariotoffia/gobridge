@@ -35,7 +35,7 @@ const wholeCohortAdvisory = "GoBridgeDynamoDBHA: config changes deploy by whole-
 	"Both services deploy at MinimumHealthyPercent=0 / MaximumPercent=100 and the worker service is " +
 	"ordered after the control service. Workers wait for the shared configuration; embedded " +
 	"initialization never replaces an existing document. ECS may still replace workers in batches, so a " +
-	"revision that changes durable session identity or store targets MUST use the scale-to-zero " +
+	"revision that changes store targets or a lease-bearing session_id MUST use the scale-to-zero " +
 	"procedure in docs/runbooks/cluster-config-rollout.md rather than a rolling update. This profile " +
 	"has NO coordinated cluster rollout: its ECS worker tasks are interchangeable and carry no " +
 	"restart-stable member_id. Costs to plan for: an ingress gap for the duration of every " +

@@ -117,8 +117,8 @@ in a coordinated cohort:
 
 | Class | Examples | How it is applied |
 |---|---|---|
-| **live-safe** | routing/binding changes, processor tuning, log level, non-identity session options, adding/removing a non-durable route, **changing a receiver's subscription list** | Coordinated barrier (no downtime) |
-| **replacement-required** | changing a durable session **identity** (the client id the broker keys the session on); changing a lease / outbox / DLQ / managed-subscription **store target**; changing `deployment_mode` | Whole-cohort replacement |
+| **live-safe** | routing/binding changes, processor tuning, log level, session options, adding/removing a route, **changing a receiver's subscription list**, **changing a durable session's broker identity** (client id or broker URL; the lease holder ends the old broker session, ADR 0024) | Coordinated barrier (no downtime) |
+| **replacement-required** | changing a lease / outbox / DLQ / managed-subscription **store target**; changing a lease-bearing exclusive `session_id`; changing `deployment_mode` | Whole-cohort replacement |
 | **replacement-required (cohort shape)** | changing `bridge.cluster.members` (the roster), `bridge.cluster.endpoints`, or `bridge.cluster.rollout` itself | Whole-cohort replacement |
 
 **A subscription change is live-safe, and that is what the managed-subscription

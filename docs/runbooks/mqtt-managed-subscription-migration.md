@@ -56,7 +56,11 @@ does not restart the window.
 4. Apply the desired configuration. Wait for Full only after exact UNSUBSCRIBE,
    reconnect, and the `unmatched_grace` no-replay verification window complete.
 
-Do not remove/rename an entire durable session as an ordinary live reload.
+Removing or renaming an entire durable session, or changing its broker URL or
+client ID, is an ordinary live reload: retiring the old session ends its broker
+session, with its subscriptions and queued messages
+([broker identity changes on live reload](../transports/mqtt-durable-sessions.md#broker-identity-changes-on-live-reload)).
+Drain what you need from the old session first.
 Existing sessions with no ledger baseline must first be seeded with every exact
 filter or migrated under maintenance as documented in the
 [MQTT transport reference](../transports/mqtt-durable-sessions.md#managed-subscription-history).
@@ -89,7 +93,11 @@ and deletes each one once the route has delivered it
 ([automatic redrive](../http-api-admin.md#automatic-redrive)). It does not
 redrive records older than the window, records with an empty `route_id`,
 records filed under a route that was since renamed, or any record while the
-session has no single ingress route: redrive those by hand as below. The
+session has no single ingress route: redrive those by hand as below. Nor does
+it redrive a record whose session a live reload removed, renamed or gave a new
+broker URL or client ID, or a record written before ADR 0024: the record names
+the session and the managed subscription identity it had, and no running
+session has both any more. The
 redrive waits until the runtime is ready, and that wait is runtime-wide: every
 session of the runtime must be connected and subscribed, so an unrelated
 session that is down postpones it.

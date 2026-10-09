@@ -18,9 +18,10 @@ const (
 	// ownership key — eligible for coordinated rollout. A changed durable broker
 	// identity is live-safe: the lease holder ends the old broker state (ADR 0024).
 	rolloutLiveSafe rolloutDeltaClass = iota
-	// rolloutReplacementRequired marks a delta that alters durable identity or
-	// store targets (the reasons ADR 0012 exists). It is refused live and keeps
-	// the whole-cohort replacement procedure (§2).
+	// rolloutReplacementRequired marks a delta that alters a store target or a
+	// lease ownership key (the reasons ADR 0012 exists), the deployment mode, or
+	// the cohort's own shape. It is refused live and keeps the whole-cohort
+	// replacement procedure (§2).
 	rolloutReplacementRequired
 )
 
@@ -48,7 +49,7 @@ const rolloutModeCoordinated = "coordinated"
 // broken member to be replaced, not a veto over the cohort.
 //
 // What it does NOT relax: a delta that cannot be applied live on ANY node —
-// a durable session's identity, a store's target — is still refused, with the
+// a store's target, a lease-bearing session_id — is still refused, with the
 // same reason a standalone bridge gives. Nor does it relax the cohort's own shape
 // (see clusterShapeChanged): the roster and the endpoint map describe the
 // deployment rather than what the cohort runs, so they change by redeploying even

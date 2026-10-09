@@ -184,10 +184,21 @@ shared `client_id`.
 > **before** upgrading, or treat the change as identity-incompatible and deploy
 > it by whole-cohort replacement (see `docs/cluster/operating.md`).
 
-**On MQTT 3.1.1 the protocol version is part of the durable identity**, so
-switching a Persistent or Exclusive session between `v5` and `v3.1.1` is handled
-like a `client_id` change ([switching a session](mqtt-311.md#switching-an-existing-session)).
-An orphaned 3.1.1 session expires by broker policy, not `session_expiry_interval`.
+> **Upgrade note — managed subscription history key (ADR 0024).** The history is
+> now stored under a digest of the broker state key: the canonical endpoint and
+> the effective client ID. Every spelling of one endpoint gives the same key, and
+> switching between `persistent` and `exclusive`, or changing clean start, the
+> expiry or the protocol version, keeps it. A session that finds no history under
+> the new key reads the history stored under the previous fingerprint once and
+> stores it there, so a running deployment keeps its history across the upgrade.
+
+**The protocol version is not part of the broker state key**, so switching a
+Persistent or Exclusive session between `v5` and `v3.1.1` keeps its managed
+subscription history and ends nothing
+([switching a session](mqtt-311.md#switching-an-existing-session)). An orphaned
+3.1.1 session expires by broker policy, not `session_expiry_interval`; a live
+reload that drops its client ID ends it
+([broker identity changes](mqtt-durable-sessions.md#broker-identity-changes-on-live-reload)).
 
 **`deployment_mode: standalone` is a per-process assertion.** Two replicas
 each declaring `standalone` with process-local lease stores each believe they

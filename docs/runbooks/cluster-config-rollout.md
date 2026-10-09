@@ -9,8 +9,8 @@ durable records.
 
 This runbook is the **manual stop-and-restart procedure**. You need it when:
 
-- A **coordinated** cohort makes a **replacement-required** change — a durable
-  session identity (client id, subscription), a lease/outbox/DLQ **store target**,
+- A **coordinated** cohort makes a **replacement-required** change — a
+  lease/outbox/DLQ **store target**, a lease-bearing exclusive `session_id`,
   `deployment_mode`, or the cohort's own `bridge.cluster.members` /
   `bridge.cluster.endpoints` / `bridge.cluster.rollout`. The cohort refuses to
   roll these through the barrier and names the class.

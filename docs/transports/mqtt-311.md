@@ -135,8 +135,8 @@ mqtt: session.no_local is not available on session.protocol_version v3.1.1 (MQTT
 ```
 
 Persistent and Exclusive sessions still use a session expiry of 86400 seconds
-internally when you leave it at `0`. It keeps durable identity and redelivery
-admission meaningful. It is never sent, and on `v3.1.1` it logs no warning.
+internally when you leave it at `0`. It keeps redelivery admission meaningful.
+It is never sent, and on `v3.1.1` it logs no warning.
 
 ## Startup warning
 
@@ -332,24 +332,22 @@ DISCONNECT `0x95` or `0x81`, and Mosquitto discards the will when one arrives
 
 ## Switching an existing session
 
-On `v3.1.1` the protocol version is part of a session's durable identity. A
-broker need not resume a session that was created over the other version; AWS
-IoT Core does not. Switching a Persistent or Exclusive session between `v5` and
-`v3.1.1` is therefore handled like a `client_id` change:
+The protocol version is not part of a session's broker state key
+([ADR 0024](../adr/0024-end-durable-broker-state-on-reload.md)). Switching a
+Persistent or Exclusive session between `v5` and `v3.1.1` is an ordinary live
+reload of its reload unit: the session keeps its managed subscription history,
+and nothing ends its broker session.
 
-- the Supervisor and the AWS runtime refuse it as a live reload; apply it with
-  a restart after the cutover
-  ([durable identity](mqtt-durable-sessions.md#durable-identity-and-live-reload-migration));
-- the managed subscription history needs the documented migration
-  ([managed-filter migration](../runbooks/mqtt-managed-subscription-migration.md));
-- drain the broker backlog before you switch.
+A broker need not resume a session that was created over the other version; AWS
+IoT Core does not. Such a broker starts a new session after the switch: GoBridge
+subscribes the desired filters again, and the session created over the old
+version expires on the broker's schedule, with whatever it had queued. Drain the
+broker backlog before you switch.
 
-On `v5` the identity is what it was before MQTT 3.1.1 support existed, so
-existing sessions keep their stored history. The client-ID collision check
-ignores the version: two sessions with one `client_id` on one broker collide
-whatever their versions.
+The client-ID collision check ignores the version: two sessions with one
+`client_id` on one broker collide whatever their versions.
 
-An Ephemeral session has no durable identity. Changing its protocol version is
+An Ephemeral session has no broker state key. Changing its protocol version is
 an ordinary rebuild of its reload unit.
 
 ## What MQTT 3.1.1 cannot do

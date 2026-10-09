@@ -3,7 +3,9 @@
 Status: accepted
 Date: 2026-10-08
 Deciders: GoBridge core
-Amended by: 0023 (a reconnect the broker resumed replays no retained messages)
+Amended by: 0023 (a reconnect the broker resumed replays no retained messages),
+0024 (switching the protocol version keeps the broker state key and the managed
+subscription history, and a live reload no longer refuses it)
 Relates to: [0010](0010-mqtt-loop-prevention-contract.md) (`no_local` is
 rejected on MQTT 3.1.1, so loop prevention never disappears without notice),
 [0011](0011-cluster-client-id-uniqueness.md) (on MQTT 3.1.1 a short-lived

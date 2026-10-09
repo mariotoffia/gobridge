@@ -49,8 +49,7 @@ them under a rolling reload splits ownership or strands durable records:
   and drain independently (duplicate sends + stranded backlog).
 - A lease, outbox, DLQ, or managed-subscription store's `type` or backing
   path/table — repointing a store live strands durable records/history.
-- Removing an outbox/DLQ store, orphaning a `shared_outbox` partition, or
-  removing/renaming a persistent/exclusive MQTT session identity.
+- Removing an outbox/DLQ store or orphaning a `shared_outbox` partition.
 
 These are **hard-refused at swap time**, per process, not merely warned. The
 bridge rejects the reload and keeps the OLD runtime serving (metric
@@ -63,6 +62,14 @@ bridge rejects the reload and keeps the OLD runtime serving (metric
 The only override discards the stranded backlog by design — do not set it for a routine
 change. Separately, config validation rejects clustered-invalid shapes (for
 example cluster endpoint and clustered exclusive HTTP `direct_hold` rules) at load, before any swap.
+
+A persistent/exclusive MQTT session's broker URL or client ID, or the session
+itself, may change or go in a live reload: the instance connected as the
+session, holding its lease when the session is exclusive, ends the old broker
+session as it retires the old unit
+([ADR 0024](../adr/0024-end-durable-broker-state-on-reload.md)). In a clustered
+deployment the change still rolls only through a coordinated rollout, like every
+live change.
 
 ## Action — drain-and-stop for an invariant change
 
