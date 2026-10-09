@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,7 +67,7 @@ func TestClose_EndsTheBrokerSessionWhenAskedWhileConnected(t *testing.T) {
 	for _, mode := range []connectivity.SessionMode{connectivity.SessionPersistent, connectivity.SessionExclusive} {
 		var ends atomic.Int32
 		s := connectedSessionCountingEnds(mode, &ends, nil)
-		s.EndBrokerStateOnClose()
+		s.EndBrokerStateOnClose(time.Time{})
 
 		require.NoError(t, s.Close(t.Context()))
 
@@ -85,7 +86,7 @@ func TestClose_EndsTheBrokerSessionAfterItsOwnConnectionClosed(t *testing.T) {
 	s.cm = &recordingDisconnectConn{steps: steps}
 	s.connected = true
 	s.mu.Unlock()
-	s.EndBrokerStateOnClose()
+	s.EndBrokerStateOnClose(time.Time{})
 
 	require.NoError(t, s.Close(t.Context()))
 
@@ -124,7 +125,7 @@ func TestClose_EndsNothingWhenNotConnected(t *testing.T) {
 			s.cm = state.cm
 			s.connected = state.connected
 			s.mu.Unlock()
-			s.EndBrokerStateOnClose()
+			s.EndBrokerStateOnClose(time.Time{})
 
 			require.NoError(t, s.Close(t.Context()))
 
@@ -136,7 +137,7 @@ func TestClose_EndsNothingWhenNotConnected(t *testing.T) {
 func TestClose_EndsNothingForAnEphemeralSession(t *testing.T) {
 	var ends atomic.Int32
 	s := connectedSessionCountingEnds(connectivity.SessionEphemeral, &ends, nil)
-	s.EndBrokerStateOnClose()
+	s.EndBrokerStateOnClose(time.Time{})
 
 	require.NoError(t, s.Close(t.Context()))
 
@@ -148,7 +149,7 @@ func TestClose_CountsAFailureToEndTheBrokerSessionAndStillCloses(t *testing.T) {
 	metrics := &ports.RecordingExporter{}
 	s := connectedSessionCountingEnds(connectivity.SessionPersistent, &ends, errors.New("broker unreachable"), metrics)
 	s.sessionID = "orders-session"
-	s.EndBrokerStateOnClose()
+	s.EndBrokerStateOnClose(time.Time{})
 
 	require.NoError(t, s.Close(t.Context()), "a failure to end broker state never fails the reload")
 
@@ -156,6 +157,50 @@ func TestClose_CountsAFailureToEndTheBrokerSessionAndStillCloses(t *testing.T) {
 	require.Len(t, entries, 1)
 	assert.Equal(t, int64(1), entries[0].IValue)
 	assert.Contains(t, entries[0].Tags, shared.Tag{Key: shared.TagKeySessionID, Value: "orders-session"})
+}
+
+// TestClose_EndsTheBrokerSessionByTheLeaseDeadline pins that the clean-start
+// connection runs under the deadline the ask carried, and that once that
+// deadline passed nothing is dialled: another instance may own the client ID
+// by then, and a clean-start connection would take it over and delete its
+// broker session. Not dialling is a failure to end, counted as any other.
+//
+// Mutation check: drop the deadline from endBrokerStateAfterClose and the
+// passed-deadline case dials.
+func TestClose_EndsTheBrokerSessionByTheLeaseDeadline(t *testing.T) {
+	t.Run("deadline ahead", func(t *testing.T) {
+		before := time.Date(2999, 1, 1, 0, 0, 0, 0, time.UTC)
+		var got time.Time
+		s := NewSession(SessionOptions{ClientID: "orders-client"}, connectivity.SessionPersistent, nil)
+		s.endBrokerSessionOverride = func(ctx context.Context) error {
+			got, _ = ctx.Deadline()
+			return nil
+		}
+		s.mu.Lock()
+		s.cm = &fakeLiveConn{}
+		s.connected = true
+		s.mu.Unlock()
+		s.EndBrokerStateOnClose(before)
+
+		require.NoError(t, s.Close(t.Context()))
+
+		assert.Equal(t, before, got)
+	})
+
+	t.Run("deadline passed", func(t *testing.T) {
+		var ends atomic.Int32
+		metrics := &ports.RecordingExporter{}
+		s := connectedSessionCountingEnds(connectivity.SessionPersistent, &ends, nil, metrics)
+		s.sessionID = "orders-session"
+		s.EndBrokerStateOnClose(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC))
+
+		require.NoError(t, s.Close(t.Context()))
+
+		assert.Zero(t, ends.Load(), "past the lease deadline another instance may own the client ID")
+		entries := metrics.FindEntries(shared.MetricBrokerStateEndFailures)
+		require.Len(t, entries, 1, "the broker session was not ended")
+		assert.Contains(t, entries[0].Tags, shared.Tag{Key: shared.TagKeySessionID, Value: "orders-session"})
+	})
 }
 
 func TestClose_DoesNotEndTheBrokerSessionWhenItsOwnDisconnectFailed(t *testing.T) {
@@ -171,7 +216,7 @@ func TestClose_DoesNotEndTheBrokerSessionWhenItsOwnDisconnectFailed(t *testing.T
 	s.cm = &recordingDisconnectConn{steps: &stepRecorder{}, err: context.DeadlineExceeded}
 	s.connected = true
 	s.mu.Unlock()
-	s.EndBrokerStateOnClose()
+	s.EndBrokerStateOnClose(time.Time{})
 
 	require.Error(t, s.Close(t.Context()))
 

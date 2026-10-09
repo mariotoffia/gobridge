@@ -3,6 +3,7 @@ package ports
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -31,8 +32,14 @@ type BrokerStateKeyer interface {
 // the MQTT session deletes its broker session, the AMQP 1.0 receiver deletes its
 // durable subscription. A Close that is not connected (MQTT) or attached (AMQP
 // 1.0) at that moment ends nothing. Ending is bounded by the transport's connect
-// timeout. A failure is logged at Warn naming the session_id and counted on
-// shared.MetricBrokerStateEndFailures; Close does not return it.
+// timeout and by before. A failure is logged at Warn naming the session_id and
+// counted on shared.MetricBrokerStateEndFailures; Close does not return it.
+//
+// A non-zero before is the latest moment the ending may complete: the local
+// deadline of the lease the caller holds, past which another instance may own
+// the broker identity. An ending that cannot finish by then is abandoned and
+// counted as a failure; one whose before already passed sends nothing. A zero
+// before leaves the ending unbounded by a lease.
 //
 // The runtime asks only when a reload retires the component, or a full swap
 // stops its runtime, and the next configuration no longer has the state's
@@ -40,7 +47,7 @@ type BrokerStateKeyer interface {
 // the session is lease-managed. It never asks on a shutdown, a pause, a lease
 // loss or a session rebuild.
 type BrokerStateEnder interface {
-	EndBrokerStateOnClose()
+	EndBrokerStateOnClose(before time.Time)
 }
 
 // ManagedSubscriptionIdentityConfig is an OPTIONAL typed session-config

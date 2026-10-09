@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -53,7 +54,7 @@ type brokerStateSession struct {
 	log *brokerStateLog
 }
 
-func (s *brokerStateSession) EndBrokerStateOnClose() { s.log.add("end:" + s.key) }
+func (s *brokerStateSession) EndBrokerStateOnClose(time.Time) { s.log.add("end:" + s.key) }
 
 func (s *brokerStateSession) Close(context.Context) error {
 	s.log.add("close:" + s.key)

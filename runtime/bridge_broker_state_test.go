@@ -19,16 +19,35 @@ import (
 
 // brokerStateEvents records, in order, the asks to end broker state
 // ("end:<id>"), the closes ("close:<id>") and the lease releases
-// ("release:<id>") a test observes.
+// ("release:<id>") a test observes, and the deadline each ask carried.
 type brokerStateEvents struct {
 	mu     sync.Mutex
 	events []string
+	before map[string]time.Time
 }
 
 func (e *brokerStateEvents) add(event string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.events = append(e.events, event)
+}
+
+// ask records that id was asked to end its broker state by before.
+func (e *brokerStateEvents) ask(id string, before time.Time) {
+	e.add("end:" + id)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.before == nil {
+		e.before = map[string]time.Time{}
+	}
+	e.before[id] = before
+}
+
+// askedBefore is the deadline id was last asked to end its broker state by.
+func (e *brokerStateEvents) askedBefore(id string) time.Time {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.before[id]
 }
 
 func (e *brokerStateEvents) list() []string {
@@ -52,7 +71,7 @@ func newEndingSession(id string, events *brokerStateEvents) *endingSession {
 	return &endingSession{roleFakeSession: roleFakeSession{events: make(chan ports.SessionEvent, 1)}, id: id, events: events}
 }
 
-func (s *endingSession) EndBrokerStateOnClose() { s.events.add("end:" + s.id) }
+func (s *endingSession) EndBrokerStateOnClose(before time.Time) { s.events.ask(s.id, before) }
 
 func (s *endingSession) Close(context.Context) error {
 	s.events.add("close:" + s.id)
@@ -66,7 +85,7 @@ type endingReceiver struct {
 	events *brokerStateEvents
 }
 
-func (r *endingReceiver) EndBrokerStateOnClose() { r.events.add("end:" + r.id) }
+func (r *endingReceiver) EndBrokerStateOnClose(before time.Time) { r.events.ask(r.id, before) }
 
 func (r *endingReceiver) Close(context.Context) error {
 	r.events.add("close:" + r.id)
@@ -167,6 +186,39 @@ func TestRetire_AsksAReceiverOnALostSessionToEndItsBrokerStateBeforeItCloses(t *
 	retire(t, rt, Unit{Routes: []string{"r1"}, Sessions: []string{"s1"}, EndBrokerState: []string{"s1"}})
 
 	assert.Equal(t, []string{"end:rx", "close:rx"}, events.list())
+	assert.Zero(t, events.askedBefore("rx"), "a session without a lease bounds nothing")
+}
+
+// TestRetire_AsksAReceiverToEndItsBrokerStateByItsSessionsLeaseDeadline pins
+// that a receiver reading through a lease-managed session is asked to finish
+// ending its broker state by the local deadline of that session's lease: past
+// it a standby may own the identity.
+//
+// Mutation check: ask the receiver with a zero deadline in
+// askReceiversToEndBrokerState and this test fails.
+func TestRetire_AsksAReceiverToEndItsBrokerStateByItsSessionsLeaseDeadline(t *testing.T) {
+	events := &brokerStateEvents{}
+	rt := New(WithInstanceID("broker-state-receiver-lease"), WithLeaseStore(&eventLeaseStore{events: events}))
+	s1 := newEndingSession("s1", events)
+	recv := &endingReceiver{componentReceiver: newComponentReceiver(), id: "rx", events: events}
+	// A lease far longer than the test keeps the deadline from being renewed.
+	cfg := session.Config{SessionID: "s1", Exclusive: true, LeaseTTL: time.Hour}
+	require.NoError(t, rt.RegisterSessionSender(cfg, s1, nopRouteSender{}))
+	require.NoError(t, rt.AddRoute(ridingRoute("r1", "s1"), recv, &componentSender{}, s1, nil))
+	startComponentRuntime(t, rt)
+	wait.RequireClosed(t, recv.ready, 2*time.Second)
+	wait.Until(t, 2*time.Second, "s1 acquires its lease", func() bool { return rt.LeaseStatus()["s1"] })
+	rt.mu.Lock()
+	mgr := rt.sessionMgrs["s1"]
+	rt.mu.Unlock()
+	deadline, ok := mgr.MayEndBrokerState()
+	require.True(t, ok)
+	require.False(t, deadline.IsZero())
+
+	retire(t, rt, Unit{Routes: []string{"r1"}, Sessions: []string{"s1"}, EndBrokerState: []string{"s1"}})
+
+	assert.Equal(t, deadline, events.askedBefore("rx"))
+	assert.Equal(t, deadline, events.askedBefore("s1"))
 }
 
 func TestRetire_EndsNoBrokerStateWhenAComponentDidNotStop(t *testing.T) {
@@ -228,7 +280,7 @@ func TestInstrumentedReceiver_ForwardsTheAskToEndBrokerState(t *testing.T) {
 
 	ender, ok := any(wrapped).(ports.BrokerStateEnder)
 	require.True(t, ok, "a wrapper must not hide the capability from a retire")
-	ender.EndBrokerStateOnClose()
+	ender.EndBrokerStateOnClose(time.Time{})
 
 	assert.Equal(t, []string{"end:rx"}, events.list())
 }

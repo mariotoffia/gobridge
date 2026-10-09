@@ -3,6 +3,7 @@ package paho
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/connectivity"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -15,11 +16,12 @@ import (
 // clean-start connection as its client ID (endBrokerSession). An ephemeral
 // session keeps no broker state, and a session that is not connected never
 // connected as the identity, or lost the connection and is reconnecting, so
-// neither ends anything.
-func (s *Session) EndBrokerStateOnClose() {
+// neither ends anything. A non-zero before bounds the clean-start connection.
+func (s *Session) EndBrokerStateOnClose(before time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.endBrokerStateOnClose = true
+	s.endBrokerStateBefore = before
 }
 
 // endsBrokerState reports whether a session in mode keeps state on the broker
@@ -31,15 +33,25 @@ func endsBrokerState(mode connectivity.SessionMode) bool {
 // endBrokerStateAfterClose ends the broker session Close was asked to end.
 // disconnErr is the error of Close's own disconnect: while it is set, autopaho
 // may still be connected or reconnecting as the client ID, so nothing is sent
-// and the broker session is left as it is. A failure is logged at Warn (the
-// factory scopes the logger with session_id) and counted on
-// shared.MetricBrokerStateEndFailures; it never fails the Close, because the
-// reload that asked continues either way.
-func (s *Session) endBrokerStateAfterClose(ctx context.Context, disconnErr error) {
-	err := disconnErr
-	if err != nil {
-		err = fmt.Errorf("the session's own connection did not stop: %w", err)
-	} else {
+// and the broker session is left as it is. A non-zero before is the local
+// lease deadline the clean-start connection must finish by; past it another
+// instance may be connected as the client ID, so once it passed nothing is
+// sent. A failure is logged at Warn (the factory scopes the logger with
+// session_id) and counted on shared.MetricBrokerStateEndFailures; it never
+// fails the Close, because the reload that asked continues either way.
+func (s *Session) endBrokerStateAfterClose(ctx context.Context, disconnErr error, before time.Time) {
+	if !before.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, before)
+		defer cancel()
+	}
+	var err error
+	switch {
+	case disconnErr != nil:
+		err = fmt.Errorf("the session's own connection did not stop: %w", disconnErr)
+	case ctx.Err() != nil:
+		err = fmt.Errorf("no time left to connect before the close or lease deadline: %w", ctx.Err())
+	default:
 		err = s.callEndBrokerSession(ctx)
 	}
 	if err != nil {

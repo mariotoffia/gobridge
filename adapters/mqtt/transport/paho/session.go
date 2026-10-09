@@ -284,6 +284,9 @@ type Session struct {
 	// endBrokerStateOnClose is set by EndBrokerStateOnClose: the next Close ends
 	// the broker session after it disconnects (ADR 0024). Guarded by mu.
 	endBrokerStateOnClose bool
+	// endBrokerStateBefore is the latest moment that ending may complete; zero
+	// means unbounded by a lease. Guarded by mu.
+	endBrokerStateBefore time.Time
 	// endBrokerSessionOverride, when non-nil, replaces endBrokerSession, so a
 	// test can end a broker session without a broker.
 	endBrokerSessionOverride func(context.Context) error

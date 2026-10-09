@@ -15,22 +15,34 @@ import (
 // takes as an unsubscribe and so deletes the subscription and every message
 // kept for it. Every other close keeps the subscription by dropping the
 // connection instead (closeLink). A queue (anycast) receiver and a non-durable
-// one hold no subscription to end.
-func (r *Receiver) EndBrokerStateOnClose() {
+// one hold no subscription to end. A non-zero before bounds the closing detach.
+func (r *Receiver) EndBrokerStateOnClose(before time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.endBrokerStateOnClose = true
+	r.endBrokerStateBefore = before
 }
 
 // endDurableSubscription closes link with a closing detach, bounded by the
-// session's connect timeout, and reports whether the broker acknowledged it.
-// A failure is logged at Warn and counted on
+// session's connect timeout and, when non-zero, by before, the local lease
+// deadline past which another instance may hold the subscription; once before
+// passed nothing is sent. It reports whether the broker acknowledged the
+// detach. A failure is logged at Warn and counted on
 // shared.MetricBrokerStateEndFailures; the caller then drops the connection as
 // on any other close, so the link goes down either way.
-func (r *Receiver) endDurableSubscription(link linkReceiver) bool {
+func (r *Receiver) endDurableSubscription(link linkReceiver, before time.Time) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), r.brokerStateEndTimeout())
 	defer cancel()
-	if err := link.Close(ctx); err != nil {
+	if !before.IsZero() {
+		var cancelBefore context.CancelFunc
+		ctx, cancelBefore = context.WithDeadline(ctx, before)
+		defer cancelBefore()
+	}
+	err := ctx.Err()
+	if err == nil {
+		err = link.Close(ctx)
+	}
+	if err != nil {
 		r.metrics.Counter(shared.MetricBrokerStateEndFailures, 1,
 			shared.Tag{Key: shared.TagKeySessionID, Value: r.cfg.SessionID})
 		if r.logger != nil {

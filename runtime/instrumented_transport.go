@@ -147,9 +147,9 @@ func (r *InstrumentedReceiver) SetRouteID(routeID string) {
 // wrapped receiver when it has the ports.BrokerStateEnder capability, so a
 // wrapper does not hide it from a retire. A no-op when inner does not
 // implement it, as Close and SetRouteID are.
-func (r *InstrumentedReceiver) EndBrokerStateOnClose() {
+func (r *InstrumentedReceiver) EndBrokerStateOnClose(before time.Time) {
 	if ender, ok := r.inner.(ports.BrokerStateEnder); ok {
-		ender.EndBrokerStateOnClose()
+		ender.EndBrokerStateOnClose(before)
 	}
 }
 

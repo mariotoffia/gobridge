@@ -33,6 +33,9 @@ type Receiver struct {
 	// endBrokerStateOnClose is set by EndBrokerStateOnClose: the next
 	// closeLink ends the durable subscription (ADR 0024). Guarded by mu.
 	endBrokerStateOnClose bool
+	// endBrokerStateBefore is the latest moment that ending may complete; zero
+	// means unbounded by a lease. Guarded by mu.
+	endBrokerStateBefore time.Time
 
 	// In-flight settlement tracking.
 	// inflightCount counts deliveries emitted to the pipeline whose
@@ -346,7 +349,7 @@ func (r *Receiver) closeLink() {
 	r.link = nil
 	failedConn := r.linkConn
 	r.linkConn = nil
-	endBrokerState := r.endBrokerStateOnClose
+	endBrokerState, endBefore := r.endBrokerStateOnClose, r.endBrokerStateBefore
 	r.endBrokerStateOnClose = false
 	r.mu.Unlock()
 
@@ -363,7 +366,7 @@ func (r *Receiver) closeLink() {
 	// other close. When the broker does not acknowledge the closing detach,
 	// the connection drop below still takes the link down.
 	if endBrokerState && holdsDurableTopicSubscription(r.cfg.Routing, r.cfg.DurabilityMode) &&
-		r.session != nil && !r.session.runsReceiver(r) && r.endDurableSubscription(link) {
+		r.session != nil && !r.session.runsReceiver(r) && r.endDurableSubscription(link, endBefore) {
 		return
 	}
 

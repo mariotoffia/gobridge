@@ -26,8 +26,8 @@ reload unit ends the state the broker keeps for the old identity
   with a closing detach, which deletes the subscription; a receiver the runtime
   force-closes while it is still running keeps it. Only an instance connected
   as the identity ends anything, and for an exclusive session only while it
-  holds the session's lease and that lease has not expired by its own clock. A
-  failure is a Warn log and a `BrokerStateEndFailures` count; the reload
+  holds the session's lease and that lease has not expired by its own clock,
+  abandoning an ending that cannot finish before then. A failure is a Warn log and a `BrokerStateEndFailures` count; the reload
   continues. A shutdown, restart, pause, failover or session rebuild never ends
   broker state. See
   [reloads that change a durable broker identity](docs/aws-deployment/config-reload.md#reloads-that-change-a-durable-broker-identity).

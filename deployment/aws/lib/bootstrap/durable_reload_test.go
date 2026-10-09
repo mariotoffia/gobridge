@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -120,7 +121,7 @@ func (f *trackedTransportFactory) BrokerStateKeys(session ports.SessionSpec, rec
 	return paho.NewFactory(nil).BrokerStateKeys(session, receivers)
 }
 
-func (s *trackedSession) EndBrokerStateOnClose() {
+func (s *trackedSession) EndBrokerStateOnClose(time.Time) {
 	s.factory.mu.Lock()
 	defer s.factory.mu.Unlock()
 	if s.factory.ended == nil {

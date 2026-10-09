@@ -229,7 +229,8 @@ ADR-0020, ADR-0024, `docs/internals/architecture-message-flow.md`,
 - A lease-managed session ends state only while this instance holds its lease
   and the lease's local deadline has not passed
   (`session.Manager.MayEndBrokerState`), and a session only when the unit's
-  runs finished.
+  runs finished. The ask carries that deadline (`EndBrokerStateOnClose(before)`)
+  and an ending that cannot finish before it is abandoned.
 - Ending is bounded by the transport's connect timeout. A failure is a Warn
   naming `session_id` and a `BrokerStateEndFailures` count; it never fails the
   retire or the reload.

@@ -87,8 +87,9 @@ Optional companion interfaces (also in `ports`):
   persistent/exclusive session, AMQP 1.0 durable topic receiver). A reload ends
   the state of a key the next configuration no longer has (ADR 0024).
 - `ports.BrokerStateEnder` (on a `Session` or `Receiver`) —
-  `EndBrokerStateOnClose` asks the next `Close` to end that broker state, when
-  still connected or attached. A failure is a Warn naming `session_id` and a
+  `EndBrokerStateOnClose(before)` asks the next `Close` to end that broker
+  state, when still connected or attached, and, when `before` is non-zero, to
+  give up rather than finish after it (the local lease deadline). A failure is a Warn naming `session_id` and a
   `BrokerStateEndFailures` count, never a `Close` error.
 
 Do not add a capability that estimates memory or byte use. GoBridge limits

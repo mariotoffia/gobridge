@@ -205,7 +205,8 @@ subscriptions and its queued messages. AMQP 1.0 closes the link with a closing
 detach, so the broker deletes the durable subscription. Only the task that is
 connected as the identity does this. For an exclusive session it must also hold
 the session's lease, and that lease must not have expired by the task's own
-clock. Renaming only the `session_id` ends nothing, because the broker identity
+clock; an ending that cannot finish before that lease's deadline is abandoned.
+Renaming only the `session_id` ends nothing, because the broker identity
 is still there. Switching an MQTT session between `persistent` and `exclusive`,
 or changing clean start, the session expiry or the MQTT protocol version, keeps
 the identity and ends nothing. Changing a session to `ephemeral` drops the

@@ -205,7 +205,8 @@ next one:
 Only a task connected as the old client ID ends its broker session; a session
 that is reconnecting, or whose start has not finished, ends nothing. For an
 exclusive session the task must also hold the session's lease, and that lease
-must not have expired by the task's own clock. When ending it fails (access
+must not have expired by the task's own clock; an ending that cannot finish
+before that lease's deadline is abandoned. When ending it fails (access
 denied, broker unreachable), the session logs a Warn naming the `session_id`,
 counts `BrokerStateEndFailures`, and the reload continues; the broker then keeps
 the session until its expiry. When the session's own disconnect fails, it sends

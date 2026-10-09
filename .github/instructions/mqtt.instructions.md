@@ -204,7 +204,8 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021, ADR-0022, ADR-0023, ADR-0024 a
   `attemptGuardedConnection` (translator and ingress guard), sends Clean Start
   with Session Expiry Interval 0 and no Will, and disconnects normally.
   `connect_timeout` bounds it, and the reconnect attempt timeout each broker
-  URL. It succeeds once the clean-start CONNACK arrived; the DISCONNECT error is
+  URL. On `Close` the ask's `before` (the lease deadline) bounds it too; once
+  that passed nothing is dialled and a failure is counted. It succeeds once the clean-start CONNACK arrived; the DISCONNECT error is
   ignored.
 - A session whose key a reload added (`SessionSpec.BrokerStateKeyAdded`) ends
   the broker session before its first dial only while its loaded history is

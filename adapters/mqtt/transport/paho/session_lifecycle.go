@@ -382,6 +382,7 @@ func (s *Session) Close(ctx context.Context) error {
 	// session it holds (ADR 0024). While autopaho reconnects, connected is
 	// false; while a Start is in flight, cm is nil.
 	endBrokerState := s.endBrokerStateOnClose && s.connected && s.cm != nil && endsBrokerState(s.mode)
+	endBrokerStateBefore := s.endBrokerStateBefore
 	s.connected = false
 	// Wake every detached session-lifetime wait (the settlement-recovery
 	// cooldown runs on a context deliberately immune to route cancellation, so
@@ -474,7 +475,7 @@ func (s *Session) Close(ctx context.Context) error {
 	// autopaho's connection manager has exited, so nothing reconnects as the
 	// client ID while the clean-start connection runs.
 	if endBrokerState {
-		s.endBrokerStateAfterClose(ctx, disconnErr)
+		s.endBrokerStateAfterClose(ctx, disconnErr, endBrokerStateBefore)
 	}
 
 	if disconnErr != nil {

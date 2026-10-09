@@ -57,7 +57,7 @@ func linkCloses(link *recordingLink) (int, bool) {
 func TestReceiver_CloseEndsADurableTopicSubscriptionWhenAsked(t *testing.T) {
 	link := &recordingLink{}
 	r, conn := attachedReceiver(t, durableTopicReceiverConfig(nil), link)
-	r.EndBrokerStateOnClose()
+	r.EndBrokerStateOnClose(time.Time{})
 
 	require.NoError(t, r.Close(t.Context()))
 
@@ -83,7 +83,7 @@ func TestReceiver_CloseNeverEndsAQueueReceiver(t *testing.T) {
 	cfg := durableTopicReceiverConfig(nil)
 	cfg.Routing = RoutingAnycast
 	r, conn := attachedReceiver(t, cfg, link)
-	r.EndBrokerStateOnClose()
+	r.EndBrokerStateOnClose(time.Time{})
 
 	require.NoError(t, r.Close(t.Context()))
 
@@ -104,7 +104,7 @@ func TestReceiver_CloseWhileRunIsActiveKeepsTheSubscription(t *testing.T) {
 	metrics := &ports.RecordingExporter{}
 	link := &recordingLink{}
 	r, conn := attachedReceiver(t, durableTopicReceiverConfig(metrics), link)
-	r.EndBrokerStateOnClose()
+	r.EndBrokerStateOnClose(time.Time{})
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -132,7 +132,7 @@ func TestReceiver_FallsBackToTheConnectionDropWhenTheSubscriptionCannotBeEnded(t
 	metrics := &ports.RecordingExporter{}
 	link := &failingCloseLink{}
 	r, conn := attachedReceiver(t, durableTopicReceiverConfig(metrics), link)
-	r.EndBrokerStateOnClose()
+	r.EndBrokerStateOnClose(time.Time{})
 
 	require.NoError(t, r.Close(t.Context()), "a failure to end broker state never fails the reload")
 
@@ -142,9 +142,30 @@ func TestReceiver_FallsBackToTheConnectionDropWhenTheSubscriptionCannotBeEnded(t
 	assert.Contains(t, entries[0].Tags, shared.Tag{Key: shared.TagKeySessionID, Value: "orders-session"})
 }
 
+// TestReceiver_SendsNoClosingDetachPastTheLeaseDeadline pins that once the
+// deadline the ask carried passed, the receiver sends no closing detach:
+// another instance may hold the subscription by then. It counts a failure and
+// drops the connection as on any other failure to end.
+//
+// Mutation check: drop the deadline from endDurableSubscription and the link
+// is closed.
+func TestReceiver_SendsNoClosingDetachPastTheLeaseDeadline(t *testing.T) {
+	metrics := &ports.RecordingExporter{}
+	link := &recordingLink{}
+	r, conn := attachedReceiver(t, durableTopicReceiverConfig(metrics), link)
+	r.EndBrokerStateOnClose(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC))
+
+	require.NoError(t, r.Close(t.Context()))
+
+	calls, _ := linkCloses(link)
+	assert.Zero(t, calls, "past the lease deadline another instance may hold the subscription")
+	assert.True(t, connClosed(conn), "the link is still taken down")
+	assert.Len(t, metrics.FindEntries(shared.MetricBrokerStateEndFailures), 1)
+}
+
 func TestReceiver_TheAskLastsForOneClose(t *testing.T) {
 	r, _ := attachedReceiver(t, durableTopicReceiverConfig(nil), &recordingLink{})
-	r.EndBrokerStateOnClose()
+	r.EndBrokerStateOnClose(time.Time{})
 	require.NoError(t, r.Close(t.Context()))
 
 	second := &recordingLink{}

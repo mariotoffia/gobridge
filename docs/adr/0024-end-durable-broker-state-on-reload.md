@@ -159,9 +159,11 @@ the AMQP 1.0 receiver:
   drops the connection precisely to avoid that delete; it still does so for
   every retire that loses no key.
 
-The step is bounded by the transport's connect timeout. When it fails — access
-denied, broker unreachable — the session logs a Warn naming `session_id` and
-counts the failure in a metric, and the reload continues. The state is then
+The step is bounded by the transport's connect timeout, and is abandoned when
+it cannot finish before the local deadline of the lease the instance holds.
+When it fails — access denied, broker unreachable — the session logs a Warn
+naming `session_id` and counts the failure in a metric, and the reload
+continues. The state is then
 left as it was before this decision: it expires (MQTT) or stays (AMQP 1.0).
 
 A full replacement (prepare-commit or overlap swap) gives the old runtime's

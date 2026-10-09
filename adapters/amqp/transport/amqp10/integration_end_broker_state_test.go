@@ -81,7 +81,7 @@ func TestIntegration_EndBrokerState_DeletesTheDurableSubscription(t *testing.T) 
 		})
 	}()
 	wait.RequireClosed(t, recv1.Started(), 30*time.Second)
-	recv1.EndBrokerStateOnClose()
+	recv1.EndBrokerStateOnClose(time.Time{})
 	attachCancel()
 	// Only that Run returns matters here, not its cancellation error.
 	_ = wait.RequireReceive(t, recv1Done, 30*time.Second)
@@ -116,7 +116,7 @@ func TestIntegration_EndBrokerState_DeletesTheDurableSubscription(t *testing.T) 
 	}()
 	defer func() {
 		// Leave no durable subscription behind on the shared broker.
-		recv2.EndBrokerStateOnClose()
+		recv2.EndBrokerStateOnClose(time.Time{})
 		recvCancel()
 		_ = wait.RequireReceive(t, recv2Done, 30*time.Second)
 		_ = recv2.Close(context.Background())

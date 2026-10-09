@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"time"
 
 	"github.com/mariotoffia/gobridge/ports"
 	"github.com/mariotoffia/gobridge/runtime/session"
@@ -31,23 +32,32 @@ func endingSessions(ids []string, keep func(string) bool) map[string]bool {
 }
 
 // mayEndBrokerState reports whether this instance may end the broker state of
-// a session mgr runs. A session no manager runs holds no lease.
-func mayEndBrokerState(mgr *session.Manager) bool {
-	return mgr == nil || mgr.MayEndBrokerState()
+// a session mgr runs, and the local lease deadline the ending must complete by
+// (session.Manager.MayEndBrokerState). A session no manager runs holds no
+// lease.
+func mayEndBrokerState(mgr *session.Manager) (before time.Time, ok bool) {
+	if mgr == nil {
+		return time.Time{}, true
+	}
+	return mgr.MayEndBrokerState()
 }
 
 // askReceiversToEndBrokerState asks every receiver of entries that reads
 // through a session in ending, and implements ports.BrokerStateEnder, to end
-// its broker state when its route closes it. managers are the session managers
-// by session id.
+// its broker state when its route closes it, by the local deadline of that
+// session's lease. managers are the session managers by session id.
 func askReceiversToEndBrokerState(entries []*routeEntry, ending map[string]bool, managers map[string]*session.Manager) {
 	for _, entry := range entries {
 		sid := entry.config.SourceSessionID
-		if !ending[sid] || !mayEndBrokerState(managers[sid]) {
+		if !ending[sid] {
 			continue
 		}
-		if ender, ok := entry.receiver.(ports.BrokerStateEnder); ok {
-			ender.EndBrokerStateOnClose()
+		before, ok := mayEndBrokerState(managers[sid])
+		if !ok {
+			continue
+		}
+		if ender, isEnder := entry.receiver.(ports.BrokerStateEnder); isEnder {
+			ender.EndBrokerStateOnClose(before)
 		}
 	}
 }

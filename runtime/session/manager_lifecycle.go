@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/mariotoffia/gobridge/domain/persistence"
 	"github.com/mariotoffia/gobridge/domain/shared"
@@ -215,23 +216,32 @@ func (m *Manager) Close(ctx context.Context) error {
 // no lease-based failover. A standby never connected as the session's broker
 // identity, and another instance may be connected as it now, so it ends
 // nothing. A lease whose local deadline passed may already be held by another
-// instance, so it ends nothing either.
-func (m *Manager) MayEndBrokerState() bool {
+// instance, so it ends nothing either. before is that local deadline, by which
+// the ending must complete (ports.BrokerStateEnder); it is zero for a session
+// that takes part in no lease-based failover.
+func (m *Manager) MayEndBrokerState() (before time.Time, ok bool) {
 	if !m.Exclusive() {
-		return true
+		return time.Time{}, true
 	}
-	_, held := m.Token()
-	return held && !m.leaseDeadlinePassed()
+	m.mu.Lock()
+	held, deadline := m.hasLease, m.leaseDeadline
+	m.mu.Unlock()
+	if !held || m.leaseDeadlinePassed() {
+		return time.Time{}, false
+	}
+	return deadline, true
 }
 
 // CloseEndingBrokerState closes the session as Close does, after asking a
 // session that implements ports.BrokerStateEnder to end its broker state on
-// that close, when MayEndBrokerState allows it. Close releases a held lease only
-// after the session's Close returned, so no other instance connects as the
-// broker identity while its state is ended.
+// that close, by the lease's local deadline, when MayEndBrokerState allows it.
+// Close releases a held lease only after the session's Close returned, so no
+// other instance connects as the broker identity while its state is ended.
 func (m *Manager) CloseEndingBrokerState(ctx context.Context) error {
-	if ender, ok := m.session.(ports.BrokerStateEnder); ok && m.MayEndBrokerState() {
-		ender.EndBrokerStateOnClose()
+	if ender, ok := m.session.(ports.BrokerStateEnder); ok {
+		if before, may := m.MayEndBrokerState(); may {
+			ender.EndBrokerStateOnClose(before)
+		}
 	}
 	return m.Close(ctx)
 }
