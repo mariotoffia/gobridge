@@ -16,11 +16,9 @@ import (
 // kept for it. Every other close keeps the subscription by dropping the
 // connection instead (closeLink). A queue (anycast) receiver and a non-durable
 // one hold no subscription to end. A non-zero before bounds the closing detach.
+// The ask never waits for the link lock, which an attach in progress holds.
 func (r *Receiver) EndBrokerStateOnClose(before time.Time) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.endBrokerStateOnClose = true
-	r.endBrokerStateBefore = before
+	r.endBrokerStateAsk.Store(&before)
 }
 
 // endDurableSubscription closes link with a closing detach, bounded by ctx (the

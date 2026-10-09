@@ -3,6 +3,7 @@ package amqp10
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -220,6 +221,44 @@ func TestReceiver_TheAskLastsForOneClose(t *testing.T) {
 
 	calls, _ := linkCloses(second)
 	assert.Zero(t, calls)
+}
+
+// TestReceiver_TheAskDoesNotWaitForAStalledAttach pins that asking a receiver
+// to end its broker state never waits on its link lock. ensureLink holds that
+// lock until the attach returns, which a broker that never answers ATTACH never
+// lets it do, and the runtime asks before it cancels the run that would end the
+// attach: a retire would block behind it.
+//
+// Mutation check: take r.mu in EndBrokerStateOnClose and the ask blocks until
+// the attach ends.
+func TestReceiver_TheAskDoesNotWaitForAStalledAttach(t *testing.T) {
+	r, err := NewReceiver(durableTopicReceiverConfig(nil), newTestSession())
+	require.NoError(t, err)
+	// A held session lock stalls ensureLink inside createLink with the link
+	// lock held, as an unanswered attach does.
+	r.session.mu.Lock()
+	unstall := sync.OnceFunc(r.session.mu.Unlock)
+	attached := make(chan error, 1)
+	go func() { attached <- r.ensureLink(t.Context()) }()
+	t.Cleanup(func() {
+		unstall()
+		_ = wait.RequireReceive(t, attached, 2*time.Second)
+	})
+	wait.Until(t, 2*time.Second, "ensureLink to hold the link lock", func() bool {
+		if r.mu.TryLock() {
+			r.mu.Unlock()
+			return false
+		}
+		return true
+	})
+
+	asked := make(chan struct{})
+	go func() {
+		r.EndBrokerStateOnClose(time.Time{})
+		close(asked)
+	}()
+
+	wait.RequireClosed(t, asked, 2*time.Second)
 }
 
 func TestFactoryNewReceiver_KnowsItsSessionID(t *testing.T) {

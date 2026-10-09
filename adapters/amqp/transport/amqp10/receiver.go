@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	mathrand "math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mariotoffia/gobridge/domain/clock"
@@ -30,12 +31,12 @@ type Receiver struct {
 	mu       sync.Mutex
 	link     linkReceiver
 	linkConn amqpConn
-	// endBrokerStateOnClose is set by EndBrokerStateOnClose: the next
-	// closeLink ends the durable subscription (ADR 0024). Guarded by mu.
-	endBrokerStateOnClose bool
-	// endBrokerStateBefore is the latest moment that ending may complete; zero
-	// means unbounded by a lease. Guarded by mu.
-	endBrokerStateBefore time.Time
+	// endBrokerStateAsk is set by EndBrokerStateOnClose: the next closeLink
+	// ends the durable subscription (ADR 0024) by the moment it points to, zero
+	// meaning unbounded. nil when not asked. Atomic rather than guarded by mu:
+	// ensureLink holds mu across an attach the broker may never answer, and the
+	// runtime asks before it cancels the run that would end that attach.
+	endBrokerStateAsk atomic.Pointer[time.Time]
 
 	// In-flight settlement tracking.
 	// inflightCount counts deliveries emitted to the pipeline whose
@@ -352,9 +353,8 @@ func (r *Receiver) closeLink(ctx context.Context) {
 	r.link = nil
 	failedConn := r.linkConn
 	r.linkConn = nil
-	endBrokerState, endBefore := r.endBrokerStateOnClose, r.endBrokerStateBefore
-	r.endBrokerStateOnClose = false
 	r.mu.Unlock()
+	ask := r.endBrokerStateAsk.Swap(nil)
 
 	if link == nil {
 		return
@@ -368,8 +368,8 @@ func (r *Receiver) closeLink(ctx context.Context) {
 	// with deliveries possibly in flight: it drops the connection like any
 	// other close. When the broker does not acknowledge the closing detach,
 	// the connection drop below still takes the link down.
-	if endBrokerState && holdsDurableTopicSubscription(r.cfg.Routing, r.cfg.DurabilityMode) &&
-		r.session != nil && !r.session.runsReceiver(r) && r.endDurableSubscription(ctx, link, endBefore) {
+	if ask != nil && holdsDurableTopicSubscription(r.cfg.Routing, r.cfg.DurabilityMode) &&
+		r.session != nil && !r.session.runsReceiver(r) && r.endDurableSubscription(ctx, link, *ask) {
 		return
 	}
 
