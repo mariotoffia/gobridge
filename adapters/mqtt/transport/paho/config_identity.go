@@ -67,7 +67,10 @@ func oneBrokerSessionDomain(brokerURLs []string, brokerURL string) bool {
 // DurableSessionIdentity returns an opaque SHA-256 fingerprint of the
 // broker-side state selected by this config. Credential and tuning fields are
 // deliberately absent. In particular, broker URL userinfo is removed before
-// hashing because it is authentication material, not broker identity.
+// hashing because it is authentication material, not broker identity. Since
+// ADR 0024 it is only the key managed subscription history was stored under
+// before ManagedSubscriptionIdentity; a session reads it once to carry that
+// history over.
 func (c Config) DurableSessionIdentity(mode connectivity.SessionMode) (string, error) {
 	clientID, brokers, normalizedMode, err := c.durableSessionIdentityCoordinates(mode)
 	if err != nil {
@@ -112,6 +115,46 @@ func (c Config) DurableSessionIdentityDomains(mode connectivity.SessionMode) ([]
 		domains = append(domains, identityDigest(descriptor.String()))
 	}
 	return domains, nil
+}
+
+// brokerStateKeyPrefix scopes an MQTT broker state key, so it never equals a key
+// another transport computes.
+const brokerStateKeyPrefix = "mqtt:"
+
+// BrokerStateKey returns the broker state key of a persistent or exclusive
+// session (ADR 0024): the canonical broker endpoint and the effective client ID,
+// digested so the key carries neither. Two configs with equal keys reach the
+// same broker session. The session mode, clean start, session expiry and
+// protocol version are not part of it: changing them reconnects the same broker
+// session (MQTT 5 §3.1.3.1). An ephemeral session has no broker state and
+// returns "".
+func (c Config) BrokerStateKey(mode connectivity.SessionMode) (string, error) {
+	if mode == "" || mode == connectivity.SessionEphemeral {
+		return "", nil
+	}
+	domains, err := c.DurableSessionIdentityDomains(mode)
+	if err != nil {
+		return "", err
+	}
+	if len(domains) == 0 {
+		return "", errors.New("mqtt: a broker state key needs a broker URL")
+	}
+	// ValidateSessionMode, which DurableSessionIdentityDomains runs, has proved
+	// that every broker URL of a durable session reaches one endpoint, so every
+	// domain is the same digest.
+	return brokerStateKeyPrefix + domains[0], nil
+}
+
+// ManagedSubscriptionIdentity implements ports.ManagedSubscriptionIdentityConfig:
+// the key a persistent or exclusive session's managed subscription history is
+// stored under, a SHA-256 digest of its broker state key (ADR 0024). An
+// ephemeral session keeps no history and returns "".
+func (c Config) ManagedSubscriptionIdentity(mode connectivity.SessionMode) (string, error) {
+	key, err := c.BrokerStateKey(mode)
+	if err != nil || key == "" {
+		return "", err
+	}
+	return identityDigest(key), nil
 }
 
 func (c Config) durableSessionIdentityCoordinates(mode connectivity.SessionMode) (string, []string, connectivity.SessionMode, error) {
