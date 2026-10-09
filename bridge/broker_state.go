@@ -18,8 +18,9 @@ type BrokerStateChange struct {
 	// runtime that runs it in a full swap, ends that state on the broker.
 	Lost []string
 	// Added names, sorted, the next sessions that hold a broker state key the
-	// running configuration did not have. Such a session starts with an empty
-	// managed subscription history and a clean broker session.
+	// running configuration did not have. An MQTT session holding one starts
+	// with an empty managed subscription history and a clean broker session;
+	// an AMQP 1.0 receiver simply creates its new subscription.
 	Added []string
 }
 
