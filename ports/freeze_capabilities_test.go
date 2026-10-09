@@ -27,6 +27,10 @@ func TestLostFreezeCapability_NamesEachCapabilityAFrozenCopyDropped(t *testing.T
 		}{},
 		struct {
 			PluginConfig
+			ManagedSubscriptionIdentityConfig
+		}{},
+		struct {
+			PluginConfig
 			PostAcquireActivationTimingConfig
 		}{},
 		struct {

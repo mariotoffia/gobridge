@@ -49,16 +49,19 @@ var ErrNilDecoder = shared.NewBridgeError(
 
 // DurableSessionIdentityConfig is an OPTIONAL interface for typed transport
 // configs whose broker-side session state can outlive a process. The returned
-// value is an opaque, secret-safe fingerprint of every field that selects that
-// durable state. It must remain stable for the same effective config within a
-// process. Callers compare it for equality only and must not log identity input.
+// values are opaque, secret-safe fingerprints. They must remain stable for the
+// same effective config within a process. Callers compare them for equality
+// only and must not log identity input.
 type DurableSessionIdentityConfig interface {
-	// DurableSessionIdentity fingerprints all effective broker-state fields and
-	// is used to reject state-stranding reload changes.
+	// DurableSessionIdentity fingerprints every effective broker-state field.
+	// Since ADR 0024 it only names the key managed subscription history was
+	// stored under before; a session reads that history once to carry it over
+	// (CarryOverManagedSubscriptionHistory).
 	DurableSessionIdentity(mode connectivity.SessionMode) (string, error)
 	// DurableSessionIdentityDomains returns one opaque ownership key per
 	// canonical broker endpoint combined with the effective client identity.
-	// Any shared key means two sessions can connect as the same broker client.
+	// Any shared key means two sessions can connect as the same broker client,
+	// which configuration validation rejects.
 	DurableSessionIdentityDomains(mode connectivity.SessionMode) ([]string, error)
 }
 
@@ -133,6 +136,7 @@ func freezeCapabilities() []reflect.Type {
 		reflect.TypeFor[FreezableConfig](),
 		reflect.TypeFor[CredentialedConfig](),
 		reflect.TypeFor[DurableSessionIdentityConfig](),
+		reflect.TypeFor[ManagedSubscriptionIdentityConfig](),
 		reflect.TypeFor[PostAcquireActivationTimingConfig](),
 		reflect.TypeFor[SettlementRecoveryTimingConfig](),
 		reflect.TypeFor[TransportFailoverTimingConfig](),
