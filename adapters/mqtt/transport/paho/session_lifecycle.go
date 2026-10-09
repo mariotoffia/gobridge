@@ -382,7 +382,6 @@ func (s *Session) Close(ctx context.Context) error {
 	// session it holds (ADR 0024). While autopaho reconnects, connected is
 	// false; while a Start is in flight, cm is nil.
 	endBrokerState := s.endBrokerStateOnClose && s.connected && s.cm != nil && endsBrokerState(s.mode)
-	s.endBrokerStateOnClose = false
 	s.connected = false
 	// Wake every detached session-lifetime wait (the settlement-recovery
 	// cooldown runs on a context deliberately immune to route cancellation, so

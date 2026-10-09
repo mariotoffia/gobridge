@@ -40,11 +40,7 @@ func (s *Session) endBrokerStateAfterClose(ctx context.Context, disconnErr error
 	if err != nil {
 		err = fmt.Errorf("the session's own connection did not stop: %w", err)
 	} else {
-		end := s.endBrokerSession
-		if s.endBrokerSessionOverride != nil {
-			end = s.endBrokerSessionOverride
-		}
-		err = end(ctx)
+		err = s.callEndBrokerSession(ctx)
 	}
 	if err != nil {
 		s.metrics.Counter(shared.MetricBrokerStateEndFailures, 1,
@@ -80,7 +76,9 @@ func (s *Session) metricSessionID() string {
 // loaded a non-empty history leaves the broker session alone: another instance
 // already connected as the identity and recorded what it subscribed, as after
 // a failover. A failure fails Start, which the session manager retries, so the
-// session never resumes a broker session its history does not describe.
+// session never resumes a broker session its history does not describe. The
+// retry reads the history again, because another instance may have filled it
+// meanwhile.
 func (s *Session) startFreshBrokerSession(ctx context.Context) error {
 	s.mu.Lock()
 	pending := s.freshBrokerSessionPending
@@ -92,11 +90,10 @@ func (s *Session) startFreshBrokerSession(ctx context.Context) error {
 	if !pending || !historyEmpty {
 		return nil
 	}
-	end := s.endBrokerSession
-	if s.endBrokerSessionOverride != nil {
-		end = s.endBrokerSessionOverride
-	}
-	if err := end(ctx); err != nil {
+	if err := s.callEndBrokerSession(ctx); err != nil {
+		s.mu.Lock()
+		s.managedLoaded = false
+		s.mu.Unlock()
 		return fmt.Errorf("mqtt: session %q: end the broker session of a newly added client ID before connecting: %w",
 			s.metricSessionID(), err)
 	}
@@ -104,6 +101,15 @@ func (s *Session) startFreshBrokerSession(ctx context.Context) error {
 	s.freshBrokerSessionPending = false
 	s.mu.Unlock()
 	return nil
+}
+
+// callEndBrokerSession runs endBrokerSession, or endBrokerSessionOverride when
+// a test set one.
+func (s *Session) callEndBrokerSession(ctx context.Context) error {
+	if s.endBrokerSessionOverride != nil {
+		return s.endBrokerSessionOverride(ctx)
+	}
+	return s.endBrokerSession(ctx)
 }
 
 var _ ports.BrokerStateEnder = (*Session)(nil)

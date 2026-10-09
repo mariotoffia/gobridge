@@ -103,10 +103,15 @@ func TestClose_EndsNothingWithoutTheAsk(t *testing.T) {
 }
 
 func TestClose_EndsNothingWhenNotConnected(t *testing.T) {
-	for name, cm := range map[string]pahoConnection{
-		"never connected": nil,
+	for name, state := range map[string]struct {
+		cm        pahoConnection
+		connected bool
+	}{
+		"never connected": {},
 		// autopaho lost the connection and is reconnecting as the client ID.
-		"reconnecting": &fakeLiveConn{},
+		"reconnecting": {cm: &fakeLiveConn{}},
+		// The connection came up but its Start has not installed it yet.
+		"start in flight": {connected: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var ends atomic.Int32
@@ -116,8 +121,8 @@ func TestClose_EndsNothingWhenNotConnected(t *testing.T) {
 				return nil
 			}
 			s.mu.Lock()
-			s.cm = cm
-			s.connected = false
+			s.cm = state.cm
+			s.connected = state.connected
 			s.mu.Unlock()
 			s.EndBrokerStateOnClose()
 
@@ -270,6 +275,10 @@ func TestStart_EndsTheBrokerSessionOfAnAddedKeyBeforeTheFirstConnection(t *testi
 	t.Cleanup(func() { _ = s.Close(context.Background()) })
 
 	assert.Equal(t, []string{"list", "end", "dial"}, startSteps(operations))
+
+	require.NoError(t, s.Reload(t.Context()))
+	assert.Equal(t, []string{"list", "end", "dial", "dial"}, startSteps(operations),
+		"a later connection resumes the broker session this session started")
 }
 
 func TestStart_LeavesTheBrokerSessionAloneOnceHistoryWasRecorded(t *testing.T) {
@@ -286,6 +295,14 @@ func TestStart_LeavesTheBrokerSessionAloneOnceHistoryWasRecorded(t *testing.T) {
 
 	assert.Equal(t, []string{"list", "dial"}, startSteps(operations),
 		"another instance already connected as the identity and recorded what it subscribed")
+
+	// The reconcile forgets every filter the plan no longer has.
+	s.mu.Lock()
+	clear(s.managedHistory)
+	s.mu.Unlock()
+	require.NoError(t, s.Reload(t.Context()))
+	assert.Equal(t, []string{"list", "dial", "dial"}, startSteps(operations),
+		"the broker session belongs to the history this session loaded")
 }
 
 func TestStart_FailsUntilTheBrokerSessionOfAnAddedKeyIsEnded(t *testing.T) {
@@ -308,7 +325,30 @@ func TestStart_FailsUntilTheBrokerSessionOfAnAddedKeyIsEnded(t *testing.T) {
 	endErr = nil
 	require.NoError(t, s.Start(t.Context()))
 	t.Cleanup(func() { _ = s.Close(context.Background()) })
-	assert.Equal(t, []string{"list", "end", "end", "dial"}, startSteps(operations))
+	assert.Equal(t, []string{"list", "end", "list", "end", "dial"}, startSteps(operations),
+		"the retry reads the history again")
+}
+
+func TestStart_RetryLeavesTheBrokerSessionAloneOnceAnotherInstanceRecordedHistory(t *testing.T) {
+	operations := []string{}
+	store := &managedHistoryFake{operations: &operations, values: map[string]map[string]struct{}{
+		"safe-session-id": {},
+	}}
+	s := newManagedTestSession(t, store, &managedConnFake{operations: &operations})
+	s.freshBrokerSessionPending = true
+	startOrder(s, &operations)
+	s.endBrokerSessionOverride = func(context.Context) error {
+		operations = append(operations, "end")
+		return errors.New("broker unreachable")
+	}
+
+	require.Error(t, s.Start(t.Context()))
+	require.NoError(t, store.Remember(t.Context(), "safe-session-id", []string{"orders/#"}))
+
+	require.NoError(t, s.Start(t.Context()))
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	assert.Equal(t, []string{"list", "end", "list", "dial"}, startSteps(operations),
+		"the other instance's broker session is what the recorded history describes")
 }
 
 func TestFactoryNewSession_CarriesTheLegacyIdentityAndTheAddedKey(t *testing.T) {
