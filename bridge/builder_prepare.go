@@ -210,6 +210,9 @@ func (b *Builder) Preflight(ctx context.Context) error {
 	if err := b.validateMQTTSessionCount(); err != nil {
 		return err
 	}
+	if err := validateDurableBrokerIdentities(b.cfg); err != nil {
+		return err
+	}
 	return validateManagedSubscriptionStore(b.cfg)
 }
 

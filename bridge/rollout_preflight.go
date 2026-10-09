@@ -14,8 +14,9 @@ import (
 type rolloutDeltaClass int
 
 const (
-	// rolloutLiveSafe marks a delta that changes no durable session identity,
-	// store target, or lease ownership key — eligible for coordinated rollout.
+	// rolloutLiveSafe marks a delta that changes no store target or lease
+	// ownership key — eligible for coordinated rollout. A changed durable broker
+	// identity is live-safe: the lease holder ends the old broker state (ADR 0024).
 	rolloutLiveSafe rolloutDeltaClass = iota
 	// rolloutReplacementRequired marks a delta that alters durable identity or
 	// store targets (the reasons ADR 0012 exists). It is refused live and keeps
@@ -161,8 +162,8 @@ func ClassifyClusterReload(oldCfg, newCfg *ports.BridgeConfig) (ClusterReloadDis
 // classifyRolloutDelta decides whether the delta from oldCfg to newCfg is
 // live-safe (eligible for a coordinated cluster rollout) or replacement-required.
 // It reuses the EXACT per-node reload-preflight predicates that already refuse a
-// single-node live reload for identity/store-target changes, so the coordinated
-// path admits only deltas the single-node path would also accept. The second
+// single-node live reload for store-target and lease-identity changes, so the
+// coordinated path admits only deltas the single-node path would also accept. The second
 // return is a non-empty, operator-facing reason iff replacement-required.
 func classifyRolloutDelta(oldCfg, newCfg *ports.BridgeConfig) (rolloutDeltaClass, string) {
 	// Fail closed: a delta we cannot fully classify is never admitted live.
@@ -170,7 +171,6 @@ func classifyRolloutDelta(oldCfg, newCfg *ports.BridgeConfig) (rolloutDeltaClass
 		return rolloutReplacementRequired, "incomplete config delta; cannot classify"
 	}
 	for _, check := range []func(_, _ *ports.BridgeConfig) error{
-		durableSessionIdentityChanged,
 		storeIdentityChanged,
 		leaseSessionIDChanged,
 	} {

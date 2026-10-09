@@ -30,10 +30,6 @@ func TestValidateDurableReload_RefusesEachStrandingChange(t *testing.T) {
 		oldCfg, newCfg *ports.BridgeConfig
 		guard          func(oldCfg, newCfg *ports.BridgeConfig) error
 	}{
-		"durable session identity changed": {
-			configWithDurableSessionIdentity(1, "opaque-a"), configWithDurableSessionIdentity(2, "opaque-b"),
-			durableSessionIdentityChanged,
-		},
 		"durable store repointed": {withDLQ("memory"), withDLQ("sqlite"), storeIdentityChanged},
 		"lease-bearing session_id changed": {
 			supervisorTestConfigWithSession("r1", "s1"), supervisorTestConfigWithSession("r1", "s2"),
@@ -56,4 +52,16 @@ func TestValidateDurableReload_AcceptsATuningChange(t *testing.T) {
 	next.Routes[0].Policy.MaxInFlight = 7
 
 	assert.NoError(t, ValidateDurableReload(supervisorTestConfigWithSession("r1", "s1"), next))
+}
+
+func TestValidateDurableReload_AcceptsADurableBrokerIdentityChange(t *testing.T) {
+	for name, next := range map[string]*ports.BridgeConfig{
+		"changed identity": configWithDurableSessionIdentity(2, "opaque-b"),
+		"renamed session":  renamedDurableSession(configWithDurableSessionIdentity(2, "opaque-a"), "renamed-session"),
+		"removed session":  supervisorTestConfig("r1"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.NoError(t, ValidateDurableReload(configWithDurableSessionIdentity(1, "opaque-a"), next))
+		})
+	}
 }
