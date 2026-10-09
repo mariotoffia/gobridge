@@ -195,11 +195,11 @@ A reload that changes that identity, or removes or renames such a session, is
 refused before anything is resolved, seeded or rebuilt, whether the change
 would reload in place or replace the runtime. The check and its error are the
 Supervisor's (`bridge.DurableSessionIdentityChanged`). The running configuration
-keeps serving, the version is reported rejected, and the warning names the
-session:
+keeps serving, the version is reported rejected, and the config manager logs an
+Error whose `error` names the session:
 
 ```text
-bootstrap: config reload rejected; keeping last good runtime  error="bridge: refusing live reload: durable session \"tenant-a\" broker identity changed; ..."
+config manager: runtime apply FAILED; desired config is NOT running ...  desired_version=4 running_version=3 error="bridge: refusing live reload: durable session \"tenant-a\" broker identity changed; ..."
 ```
 
 To change or retire such a session, cut over:
