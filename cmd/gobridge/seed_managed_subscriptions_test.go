@@ -100,7 +100,7 @@ func TestSeedManagedSubscriptions_EstablishesBaselineTheSessionWillLoad(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity, err := cfg.Sessions[0].Config.(ports.DurableSessionIdentityConfig).DurableSessionIdentity(connectivity.SessionPersistent)
+	identity, err := cfg.Sessions[0].Config.(ports.ManagedSubscriptionIdentityConfig).ManagedSubscriptionIdentity(connectivity.SessionPersistent)
 	if err != nil {
 		t.Fatal(err)
 	}

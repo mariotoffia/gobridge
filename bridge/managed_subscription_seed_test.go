@@ -90,7 +90,7 @@ func TestSeedManagedSubscriptionBaselines_EstablishesEmptyBaselineForPersistentS
 	if err != nil {
 		t.Fatalf("SeedManagedSubscriptionBaselines: %v", err)
 	}
-	got, ok := store.remembers["safe-durable-fingerprint"]
+	got, ok := store.remembers["safe-managed-identity"]
 	if !ok {
 		t.Fatalf("baseline not remembered under the session's durable identity; remembers=%v", store.remembers)
 	}
@@ -115,7 +115,7 @@ func TestSeedManagedSubscriptionBaselines_RemembersFiltersForExclusiveSession(t 
 	if err != nil {
 		t.Fatalf("SeedManagedSubscriptionBaselines: %v", err)
 	}
-	got := store.remembers["safe-durable-fingerprint"]
+	got := store.remembers["safe-managed-identity"]
 	if len(got) != 2 || got[0] != "orders/legacy/#" || got[1] != "$share/group/orders/#" {
 		t.Fatalf("remembered filters = %v", got)
 	}

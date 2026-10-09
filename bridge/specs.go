@@ -36,21 +36,40 @@ func sessionSpecWithManagedSubscriptions(def ports.SessionDef, cfg *ports.Bridge
 	if store == nil {
 		return ports.SessionSpec{}, fmt.Errorf("bridge: persistent/exclusive MQTT session with desired subscriptions requires stores.managed_subscriptions")
 	}
-	identityConfig, ok := def.Config.(ports.DurableSessionIdentityConfig)
-	if !ok || ports.IsNilPluginConfig(def.Config) {
-		return ports.SessionSpec{}, fmt.Errorf("bridge: persistent/exclusive MQTT session config does not expose a durable storage identity")
-	}
-	identity, err := identityConfig.DurableSessionIdentity(mode)
+	identity, legacy, err := managedSubscriptionIdentities(def, mode)
 	if err != nil {
-		return ports.SessionSpec{}, fmt.Errorf("bridge: derive managed subscription storage identity: %w", err)
-	}
-	if identity == "" {
-		return ports.SessionSpec{}, fmt.Errorf("bridge: managed subscription storage identity is empty")
+		return ports.SessionSpec{}, err
 	}
 	spec.ManagedSubscriptionStore = store
 	spec.ManagedSubscriptionIdentity = identity
+	spec.LegacyManagedSubscriptionIdentity = legacy
 	spec.ManagedSubscriptionsRequired = true
 	return spec, nil
+}
+
+// managedSubscriptionIdentities returns the key a persistent or exclusive MQTT
+// session's managed subscription history is stored under, a digest of its
+// broker state key (ADR 0024), and legacy, the key it was stored under before
+// (ports.CarryOverManagedSubscriptionHistory). legacy is "" when the config
+// cannot name it.
+func managedSubscriptionIdentities(def ports.SessionDef, mode connectivity.SessionMode) (identity, legacy string, err error) {
+	identityConfig, ok := def.Config.(ports.ManagedSubscriptionIdentityConfig)
+	if !ok || ports.IsNilPluginConfig(def.Config) {
+		return "", "", fmt.Errorf("bridge: persistent/exclusive MQTT session config does not expose a managed subscription storage identity")
+	}
+	identity, err = identityConfig.ManagedSubscriptionIdentity(mode)
+	if err != nil {
+		return "", "", fmt.Errorf("bridge: derive managed subscription storage identity: %w", err)
+	}
+	if identity == "" {
+		return "", "", fmt.Errorf("bridge: managed subscription storage identity is empty")
+	}
+	if legacyConfig, ok := def.Config.(ports.DurableSessionIdentityConfig); ok {
+		if legacy, err = legacyConfig.DurableSessionIdentity(mode); err != nil {
+			return "", "", fmt.Errorf("bridge: derive legacy managed subscription storage identity: %w", err)
+		}
+	}
+	return identity, legacy, nil
 }
 
 func isMQTTPahoTransport(kind string) bool {
