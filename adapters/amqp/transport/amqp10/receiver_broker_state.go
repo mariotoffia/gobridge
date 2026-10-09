@@ -14,9 +14,11 @@ import (
 // subscription: it closes the link with a closing detach, which the broker
 // takes as an unsubscribe and so deletes the subscription and every message
 // kept for it. Every other close keeps the subscription by dropping the
-// connection instead (closeLink). A queue (anycast) receiver and a non-durable
-// one hold no subscription to end. A non-zero before bounds the closing detach.
-// The ask never waits for the link lock, which an attach in progress holds.
+// connection instead (closeLink), and so does a close while a delivery the
+// link received is unsettled, because the subscription holds its only copy. A
+// queue (anycast) receiver and a non-durable one hold no subscription to end.
+// A non-zero before bounds the closing detach. The ask never waits for the
+// link lock, which an attach in progress holds.
 func (r *Receiver) EndBrokerStateOnClose(before time.Time) {
 	r.endBrokerStateAsk.Store(&before)
 }
@@ -55,6 +57,20 @@ func (r *Receiver) endDurableSubscription(ctx context.Context, link linkReceiver
 			"session_id", r.cfg.SessionID, "address", redactURL(r.cfg.Address))
 	}
 	return true
+}
+
+// keepDurableSubscription counts and logs a durable subscription closeLink was
+// asked to end and keeps, because a delivery its link received is unsettled;
+// in is the number still in flight. The caller drops the connection as on any
+// other close.
+func (r *Receiver) keepDurableSubscription(in int) {
+	r.metrics.Counter(shared.MetricBrokerStateEndFailures, 1,
+		shared.Tag{Key: shared.TagKeySessionID, Value: r.cfg.SessionID})
+	if r.logger != nil {
+		r.logger.Warn("amqp10: kept the durable subscription the next configuration no longer has: a delivery "+
+			"it received is unsettled, and a closing detach would delete it; the broker keeps the subscription",
+			"session_id", r.cfg.SessionID, "address", redactURL(r.cfg.Address), "in_flight", in)
+	}
 }
 
 // brokerStateEndTimeout bounds the closing detach that ends a durable

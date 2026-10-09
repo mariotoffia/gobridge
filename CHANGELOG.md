@@ -29,7 +29,9 @@ reload unit ends the state the broker keeps for the old identity
   holds the session's lease and that lease has not expired by its own clock,
   abandoning an ending that cannot finish before then. If the drain does not
   settle every delivery within `drain_timeout`, the state is kept and counted
-  as a failure. A failure is a Warn log and a `BrokerStateEndFailures` count; the reload
+  as a failure, and so is the state of an MQTT session or AMQP 1.0 receiver
+  that still holds an unsettled delivery it received when it closes. A failure
+  is a Warn log and a `BrokerStateEndFailures` count; the reload
   continues. A shutdown, restart, pause, failover or session rebuild never ends
   broker state. See
   [reloads that change a durable broker identity](docs/aws-deployment/config-reload.md#reloads-that-change-a-durable-broker-identity).
@@ -77,6 +79,11 @@ reload unit ends the state the broker keeps for the old identity
   unreachable, access denied), that session's start fails and the session
   manager retries it. Nothing connects as the new client ID until ending the
   broker session succeeds.
+- If a second reload replaces that session before ending its broker session
+  has succeeded, and does not change its key, the replacement does not start
+  clean. It resumes any broker session the client ID still had, and the
+  subscriptions in it that the managed history does not know stay on the
+  broker until that session ends.
 
 ### Fixed
 

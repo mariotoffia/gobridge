@@ -207,7 +207,10 @@ unchanged: a durable session with no history needs a seeded baseline.
 - Every delivery the old identity received is settled within `drain_timeout`
   before the state is ended: at-least-once, as on any retire. If the drain does
   not settle every delivery within `drain_timeout`, the state is kept (a Warn
-  and `BrokerStateEndFailures`).
+  and `BrokerStateEndFailures`). The state is also kept when a delivery the
+  MQTT session or the AMQP 1.0 receiver received is still unsettled when it
+  closes, such as one that arrived after the drain and was dropped when the
+  route was cancelled.
 - QoS 1/2 messages published between the old disconnect and the new
   subscription's acknowledgement are lost, as on a restart. On AMQP 1.0, so are
   messages sent to the address while neither subscription exists. For `$share`,
@@ -245,6 +248,12 @@ unchanged: a durable session with no history needs a seeded baseline.
   old identity's broker state has already been ended. The restored session
   starts on an empty broker session, so the backlog the old state held is
   lost, as it would be on a successful reload.
+- If a reload adds a key and ending that client ID's broker session has not
+  yet succeeded (the broker is unreachable), and a second reload then replaces
+  the session without changing its key, the replacement does not start clean.
+  It resumes any broker session the client ID still had, and the subscriptions
+  in it that the managed history does not know stay on the broker until that
+  session ends.
 - Dead-letter records written before the upgrade carry the old fingerprint as
   their managed identity, so automatic redrive
   ([ADR 0019](0019-dlq-auto-redrive-by-system-event.md)) does not match them.

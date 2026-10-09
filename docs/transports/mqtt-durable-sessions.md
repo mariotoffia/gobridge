@@ -188,7 +188,10 @@ next one:
   session, its subscriptions and its queued messages, and takes it out of every
   `$share` group. Only then is the session's lease released. If the drain does
   not settle every delivery within `drain_timeout`, the broker session is kept
-  (a Warn and `BrokerStateEndFailures`). `connect_timeout`
+  (a Warn and `BrokerStateEndFailures`), and so it is when the session still
+  holds a QoS 1/2 delivery it received and nothing acknowledged, for example
+  one that arrived after the drain and was dropped when its route was
+  cancelled. `connect_timeout`
   bounds this connection, and `reconnect_timeout` each broker URL it tries. It
   is done once the broker accepts the clean-start CONNECT; a failed DISCONNECT
   after that changes nothing.

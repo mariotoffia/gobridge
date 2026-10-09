@@ -226,6 +226,105 @@ func TestClose_DoesNotEndTheBrokerSessionWhenItsOwnDisconnectFailed(t *testing.T
 	assert.Contains(t, entries[0].Tags, shared.Tag{Key: shared.TagKeySessionID, Value: "orders-session"})
 }
 
+// hookedDisconnectConn is a live connection that runs onDisconnect when Close
+// disconnects it.
+type hookedDisconnectConn struct {
+	fakeLiveConn
+	onDisconnect func()
+}
+
+func (c *hookedDisconnectConn) Disconnect(context.Context) error {
+	c.onDisconnect()
+	return nil
+}
+
+// TestClose_KeepsTheBrokerSessionWhileAReceivedDeliveryIsUnsettled pins that
+// a session asked to end its broker session sends no clean-start connection
+// while a QoS 1/2 delivery it received is unacknowledged. A delivery the
+// runtime admitted after its drain check, and whose route was then cancelled,
+// is never acknowledged: the broker session holds its only copy. The kept
+// session is counted as a failure to end.
+//
+// Mutation check: drop the unsettled check from endBrokerStateAfterClose and
+// the clean-start connection runs.
+func TestClose_KeepsTheBrokerSessionWhileAReceivedDeliveryIsUnsettled(t *testing.T) {
+	var ends atomic.Int32
+	metrics := &ports.RecordingExporter{}
+	s := connectedSessionCountingEnds(connectivity.SessionPersistent, &ends, nil, metrics)
+	s.sessionID = "orders-session"
+	// A received QoS 1 publish whose acknowledgement the runtime never calls.
+	_ = s.router.trackAcknowledgement(func() error { return nil })
+	s.EndBrokerStateOnClose(time.Time{})
+
+	require.NoError(t, s.Close(t.Context()), "keeping the broker session never fails the reload")
+
+	assert.Zero(t, ends.Load(), "ending the broker session would delete the unsettled delivery")
+	entries := metrics.FindEntries(shared.MetricBrokerStateEndFailures)
+	require.Len(t, entries, 1, "the broker session was not ended")
+	assert.Equal(t, int64(1), entries[0].IValue)
+	assert.Contains(t, entries[0].Tags, shared.Tag{Key: shared.TagKeySessionID, Value: "orders-session"})
+}
+
+func TestClose_EndsTheBrokerSessionOnceItsReceivedDeliveryIsAcknowledged(t *testing.T) {
+	var ends atomic.Int32
+	metrics := &ports.RecordingExporter{}
+	s := connectedSessionCountingEnds(connectivity.SessionPersistent, &ends, nil, metrics)
+	ack := s.router.trackAcknowledgement(func() error { return nil })
+	require.NoError(t, ack())
+	s.EndBrokerStateOnClose(time.Time{})
+
+	require.NoError(t, s.Close(t.Context()))
+
+	assert.Equal(t, int32(1), ends.Load())
+	assert.Empty(t, metrics.FindEntries(shared.MetricBrokerStateEndFailures))
+}
+
+// TestClose_KeepsTheBrokerSessionForADeliveryReceivedWhileClosing pins the second look at the
+// unsettled record: a publish the client reads after Close stopped the router,
+// and before its connection is down, is never acknowledged either.
+//
+// Mutation check: read the unsettled record only once, before the router
+// stops, and the clean-start connection runs.
+func TestClose_KeepsTheBrokerSessionForADeliveryReceivedWhileClosing(t *testing.T) {
+	var ends atomic.Int32
+	s := connectedSessionCountingEnds(connectivity.SessionPersistent, &ends, nil)
+	s.mu.Lock()
+	s.cm = &hookedDisconnectConn{onDisconnect: func() {
+		_ = s.router.trackAcknowledgement(func() error { return nil })
+	}}
+	s.mu.Unlock()
+	s.EndBrokerStateOnClose(time.Time{})
+
+	require.NoError(t, s.Close(t.Context()))
+
+	assert.Zero(t, ends.Load(), "the publish received while closing is unsettled")
+}
+
+// TestClose_KeepsTheBrokerSessionWhenARacingRecoveryClearsTheRecord pins the first look at the
+// unsettled record: a settlement recovery racing the Close clears the record
+// as it recycles the connection, yet the deliveries it held are still
+// unacknowledged in the broker session the end step would delete.
+//
+// Mutation check: read the unsettled record only at the end step and the
+// clean-start connection runs.
+func TestClose_KeepsTheBrokerSessionWhenARacingRecoveryClearsTheRecord(t *testing.T) {
+	var ends atomic.Int32
+	s := connectedSessionCountingEnds(connectivity.SessionPersistent, &ends, nil)
+	_ = s.router.trackAcknowledgement(func() error { return nil })
+	s.mu.Lock()
+	s.cm = &hookedDisconnectConn{onDisconnect: func() {
+		s.router.mu.Lock()
+		s.router.clearUnsettledLocked()
+		s.router.mu.Unlock()
+	}}
+	s.mu.Unlock()
+	s.EndBrokerStateOnClose(time.Time{})
+
+	require.NoError(t, s.Close(t.Context()))
+
+	assert.Zero(t, ends.Load(), "the cleared delivery is still unacknowledged on the broker")
+}
+
 func TestMetricSessionID_IsTheGoBridgeSessionIDOrElseTheClientID(t *testing.T) {
 	s := NewSession(SessionOptions{ClientID: "orders-client"}, connectivity.SessionPersistent, nil)
 	assert.Equal(t, "orders-client", s.metricSessionID(), "a session built without the factory has no session_id")

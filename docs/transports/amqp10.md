@@ -172,7 +172,9 @@ than an opaque broker SASL failure at dial.
 > only when the receiver stopped on its own before the close: a receiver the
 > runtime force-closes while it is still running drops the connection and keeps
 > its durable subscription, as does every receiver of a retire whose drain did
-> not settle every delivery within `drain_timeout` (a Warn and
+> not settle every delivery within `drain_timeout`, and every receiver that
+> still holds a delivery its link received and nothing settled — one dropped
+> when its route was cancelled, or one whose settlement failed (a Warn and
 > `BrokerStateEndFailures`). Every other close (shutdown, restart, pause, a
 > reload that keeps the subscription) still drops the connection and keeps it.
 > An `anycast` (queue) receiver never deletes anything. If the closing detach

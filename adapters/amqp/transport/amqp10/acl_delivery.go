@@ -133,6 +133,13 @@ func (d *Delivery) fireOnSettled() {
 	})
 }
 
+// settledOK reports whether a settlement of d finished successfully.
+func (d *Delivery) settledOK() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.settleOK
+}
+
 // fireOnSettleFailed invokes the receiver's settlement-failure hook
 // exactly once. Safe to call with a nil hook.
 func (d *Delivery) fireOnSettleFailed(err error) {

@@ -208,6 +208,116 @@ func TestReceiver_SendsNoClosingDetachPastTheLeaseDeadline(t *testing.T) {
 	assert.Len(t, metrics.FindEntries(shared.MetricBrokerStateEndFailures), 1)
 }
 
+// runUntilOneDelivery runs r until its link hands out one delivery, gives
+// that delivery to emit and stops the run, as a route whose run is cancelled
+// does. emit's error is Run's.
+func runUntilOneDelivery(t *testing.T, r *Receiver, emit func(ports.Delivery) error) error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	return r.Run(ctx, func(_ context.Context, d ports.Delivery) error {
+		cancel()
+		return emit(d)
+	})
+}
+
+// requireSubscriptionKept asserts that the receiver sent no closing detach on
+// link, dropped conn instead, and counted one failure to end for its session.
+func requireSubscriptionKept(t *testing.T, link *fakeLink, conn *mockConn, metrics *ports.RecordingExporter) {
+	t.Helper()
+	assert.Zero(t, link.closeCalls, "a closing detach would delete the unsettled delivery with the subscription")
+	assert.True(t, connClosed(conn), "the link is taken down by dropping the connection")
+	entries := metrics.FindEntries(shared.MetricBrokerStateEndFailures)
+	require.Len(t, entries, 1, "the subscription was not ended")
+	assert.Equal(t, int64(1), entries[0].IValue)
+	assert.Contains(t, entries[0].Tags, shared.Tag{Key: shared.TagKeySessionID, Value: "orders-session"})
+}
+
+// TestReceiver_KeepsTheSubscriptionWhileAHandedOutDeliveryIsUnsettled pins
+// that a receiver asked to end its durable subscription sends no closing
+// detach while a delivery it handed out is unsettled: a route cancelled after
+// the runtime's drain check abandons such a delivery, and the subscription
+// holds its only copy. Close reaches closeLink only once its wait for that
+// settlement has spent its budget, which alone already stops the detach, so
+// this test enters closeLink with the budget still open.
+//
+// Mutation check: drop the unsettled check from closeLink and the closing
+// detach is sent.
+func TestReceiver_KeepsTheSubscriptionWhileAHandedOutDeliveryIsUnsettled(t *testing.T) {
+	metrics := &ports.RecordingExporter{}
+	link := &fakeLink{deliveries: []*Delivery{rerunDelivery("orders-1")}}
+	r, conn := attachedReceiver(t, durableTopicReceiverConfig(metrics), link)
+	require.ErrorIs(t, runUntilOneDelivery(t, r, func(ports.Delivery) error { return nil }), context.Canceled)
+	r.EndBrokerStateOnClose(time.Time{})
+
+	r.closeLink(t.Context())
+
+	requireSubscriptionKept(t, link, conn, metrics)
+}
+
+// TestReceiver_KeepsTheSubscriptionWhenThePipelineRefusedADelivery pins that a
+// delivery the route runner refused — its run was cancelled while the link
+// handed the delivery out — keeps the durable subscription. Nothing settles
+// it and Close does not wait for it, so without the record the closing detach
+// would delete it.
+//
+// Mutation check: drop the left-unsettled record from trackDelivery's hook,
+// or the unsettled check from closeLink, and the closing detach is sent.
+func TestReceiver_KeepsTheSubscriptionWhenThePipelineRefusedADelivery(t *testing.T) {
+	metrics := &ports.RecordingExporter{}
+	link := &fakeLink{deliveries: []*Delivery{rerunDelivery("orders-1")}}
+	r, conn := attachedReceiver(t, durableTopicReceiverConfig(metrics), link)
+	require.ErrorIs(t, runUntilOneDelivery(t, r, func(ports.Delivery) error { return context.Canceled }),
+		context.Canceled)
+	r.EndBrokerStateOnClose(time.Time{})
+
+	require.NoError(t, r.Close(t.Context()))
+
+	requireSubscriptionKept(t, link, conn, metrics)
+}
+
+// TestReceiver_KeepsTheSubscriptionWhenASettlementFailed pins that a delivery
+// whose settlement failed keeps the durable subscription: its disposition may
+// never have reached the broker, and Close stops waiting for it once the
+// attempt returned.
+//
+// Mutation check: drop the left-unsettled record from trackDelivery's hook and
+// the closing detach is sent.
+func TestReceiver_KeepsTheSubscriptionWhenASettlementFailed(t *testing.T) {
+	metrics := &ports.RecordingExporter{}
+	settler := newMockSettler()
+	settler.acceptErr = errors.New("disposition not acknowledged")
+	del := rerunDelivery("orders-1")
+	del.settle = settler
+	link := &fakeLink{deliveries: []*Delivery{del}}
+	r, conn := attachedReceiver(t, durableTopicReceiverConfig(metrics), link)
+	require.ErrorIs(t, runUntilOneDelivery(t, r, func(d ports.Delivery) error {
+		assert.Error(t, d.Ack(t.Context()))
+		return nil
+	}), context.Canceled)
+	r.EndBrokerStateOnClose(time.Time{})
+
+	require.NoError(t, r.Close(t.Context()))
+
+	requireSubscriptionKept(t, link, conn, metrics)
+}
+
+func TestReceiver_EndsTheSubscriptionOnceItsDeliveryIsSettled(t *testing.T) {
+	metrics := &ports.RecordingExporter{}
+	link := &fakeLink{deliveries: []*Delivery{rerunDelivery("orders-1")}}
+	r, conn := attachedReceiver(t, durableTopicReceiverConfig(metrics), link)
+	require.ErrorIs(t, runUntilOneDelivery(t, r, func(d ports.Delivery) error {
+		return d.Ack(t.Context())
+	}), context.Canceled)
+	r.EndBrokerStateOnClose(time.Time{})
+
+	require.NoError(t, r.Close(t.Context()))
+
+	assert.Equal(t, 1, link.closeCalls, "a closing detach deletes the subscription")
+	assert.False(t, connClosed(conn))
+	assert.Empty(t, metrics.FindEntries(shared.MetricBrokerStateEndFailures))
+}
+
 func TestReceiver_TheAskLastsForOneClose(t *testing.T) {
 	r, _ := attachedReceiver(t, durableTopicReceiverConfig(nil), &recordingLink{})
 	r.EndBrokerStateOnClose(time.Time{})

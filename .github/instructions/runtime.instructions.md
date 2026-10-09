@@ -234,7 +234,10 @@ ADR-0020, ADR-0024, `docs/internals/architecture-message-flow.md`,
   `storeCloseGraceMargin`, and an ending that cannot finish before it is abandoned.
 - Nothing is asked to end broker state when the drain before the cancel did
   not settle every delivery: a Warn naming `session_id` and a
-  `BrokerStateEndFailures` count instead.
+  `BrokerStateEndFailures` count instead. This is the early check: a delivery
+  admitted after it can still be left unsettled by the cancel, so the MQTT
+  session and the AMQP 1.0 receiver also end nothing while a delivery they
+  received is unsettled. Keep both.
 - Ending is bounded by the transport's connect timeout. A failure is a Warn
   naming `session_id` and a `BrokerStateEndFailures` count; it never fails the
   retire or the reload.

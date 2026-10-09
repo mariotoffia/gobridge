@@ -31,7 +31,8 @@ type BrokerStateKeyer interface {
 // Close to end that state on the broker after the component stopped consuming:
 // the MQTT session deletes its broker session, the AMQP 1.0 receiver deletes its
 // durable subscription. A Close that is not connected (MQTT) or attached (AMQP
-// 1.0) at that moment ends nothing. Ending is bounded by the transport's connect
+// 1.0) at that moment ends nothing, and an ender ends nothing while a delivery
+// it received is unsettled. Ending is bounded by the transport's connect
 // timeout and by before. A failure is logged at Warn naming the session_id and
 // counted on shared.MetricBrokerStateEndFailures; Close does not return it.
 //

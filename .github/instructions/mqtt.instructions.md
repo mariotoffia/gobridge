@@ -199,7 +199,10 @@ ADR-0010, ADR-0011, ADR-0019, ADR-0020, ADR-0021, ADR-0022, ADR-0023, ADR-0024 a
   (`EndBrokerStateOnClose`), connected with a connection manager installed,
   and the mode is persistent or exclusive, and only after its own disconnect
   and the handler drain. When its own disconnect fails it sends nothing and
-  counts a `BrokerStateEndFailures`.
+  counts a `BrokerStateEndFailures`. So it does while the router's unsettled
+  record (`router.unsettled`, the `MQTTUnsettled` gauge) holds a received QoS
+  1/2 delivery, read before the router stops and again at the end step: the
+  broker session holds that delivery's only copy.
 - `endBrokerSession` (`acl_broker_session.go`) goes through
   `attemptGuardedConnection` (translator and ingress guard), sends Clean Start
   with Session Expiry Interval 0 and no Will, and disconnects normally.

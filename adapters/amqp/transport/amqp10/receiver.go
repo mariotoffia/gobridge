@@ -63,6 +63,12 @@ type Receiver struct {
 	// link) is not miscounted against the current link and cannot trip a
 	// spurious extra rebuild. Guarded by settleFailMu.
 	linkGeneration int
+	// leftUnsettled records that a delivery received on the current link left
+	// in-flight tracking without a successful settlement: the pipeline refused
+	// it, or its settlement failed. The broker still holds it unsettled on the
+	// link, so closeLink keeps the durable subscription. createLink clears it.
+	// Guarded by settleFailMu.
+	leftUnsettled bool
 }
 
 // NewReceiver creates an AMQP 1.0 Receiver.
@@ -182,7 +188,10 @@ func (r *Receiver) Close(ctx context.Context) error {
 // trackDelivery registers del in the in-flight settlement count and
 // arms its onSettled hook to decrement on completion. It also arms the
 // onSettleFailed hook so a settlement failure feeds the leaked-credit
-// watchdog.
+// watchdog. A delivery that leaves the count without a successful
+// settlement — the pipeline refused it, or its settlement failed — is
+// recorded as left unsettled on its link before the count drops, so
+// closeLink never sees the count at zero without that record.
 func (r *Receiver) trackDelivery(del *Delivery) {
 	r.inflightMu.Lock()
 	if r.inflightCount == 0 {
@@ -190,14 +199,46 @@ func (r *Receiver) trackDelivery(del *Delivery) {
 	}
 	r.inflightCount++
 	r.inflightMu.Unlock()
-	del.onSettled = r.settlementDone
 	// bind the failure hook to the link generation live at track
 	// time so a settlement completing after a later rebuild is recognised
 	// as stale and not counted against the new link.
 	r.settleFailMu.Lock()
 	gen := r.linkGeneration
 	r.settleFailMu.Unlock()
+	del.onSettled = func() {
+		if !del.settledOK() {
+			r.noteLeftUnsettled(gen)
+		}
+		r.settlementDone()
+	}
 	del.onSettleFailed = func(err error) { r.settlementFailed(gen, err) }
+}
+
+// noteLeftUnsettled records that a delivery received on link generation gen
+// left in-flight tracking without a successful settlement. A delivery from a
+// link that has since been replaced is ignored: the broker redelivers it on
+// the replacement.
+func (r *Receiver) noteLeftUnsettled(gen int) {
+	r.settleFailMu.Lock()
+	if gen == r.linkGeneration {
+		r.leftUnsettled = true
+	}
+	r.settleFailMu.Unlock()
+}
+
+// holdsUnsettledDelivery reports whether a delivery received on the current
+// link is not settled: in is the number still in flight, left whether one
+// left in-flight tracking unsettled.
+func (r *Receiver) holdsUnsettledDelivery() (in int, left bool) {
+	// The count first: trackDelivery records a delivery as left unsettled
+	// before it leaves the count.
+	r.inflightMu.Lock()
+	in = r.inflightCount
+	r.inflightMu.Unlock()
+	r.settleFailMu.Lock()
+	left = r.leftUnsettled
+	r.settleFailMu.Unlock()
+	return in, left
 }
 
 // settlementFailed is the Delivery.onSettleFailed hook. It records the
@@ -366,11 +407,18 @@ func (r *Receiver) closeLink(ctx context.Context) {
 	// route runner has drained its deliveries. A close while Run is still
 	// active is the route runner's force close after ReceiverCloseTimeout,
 	// with deliveries possibly in flight: it drops the connection like any
-	// other close. When the broker does not acknowledge the closing detach,
-	// the connection drop below still takes the link down.
+	// other close. So does a close while a delivery this link received is
+	// unsettled — a cancelled route abandoned it, the pipeline refused it, or
+	// its settlement failed: the subscription holds its only copy, and the
+	// closing detach would delete it. When the broker does not acknowledge the
+	// closing detach, the connection drop below still takes the link down.
 	if ask != nil && holdsDurableTopicSubscription(r.cfg.Routing, r.cfg.DurabilityMode) &&
-		r.session != nil && !r.session.runsReceiver(r) && r.endDurableSubscription(ctx, link, *ask) {
-		return
+		r.session != nil && !r.session.runsReceiver(r) {
+		if in, left := r.holdsUnsettledDelivery(); in > 0 || left {
+			r.keepDurableSubscription(in)
+		} else if r.endDurableSubscription(ctx, link, *ask) {
+			return
+		}
 	}
 
 	// Durable subscriptions (DurabilityMode > 0) must NOT be full-closed
@@ -480,10 +528,13 @@ func (r *Receiver) createLink(ctx context.Context) error {
 	// A fresh link starts with full credit; clear any settlement-failure
 	// count carried from the previous link so the watchdog counts only
 	// failures on THIS link, and bump the link generation so stale
-	// in-flight settlements from the previous link are ignored.
+	// in-flight settlements from the previous link are ignored. The
+	// deliveries the previous link left unsettled are forgotten too: the
+	// broker redelivers them on this link.
 	r.settleFailMu.Lock()
 	r.settleFailures = 0
 	r.linkGeneration++
+	r.leftUnsettled = false
 	r.settleFailMu.Unlock()
 	if r.session != nil {
 		r.session.markReceiverLink(r, true) // Link is up
@@ -640,8 +691,10 @@ func (r *Receiver) receiveLoop(ctx context.Context, emit func(context.Context, p
 		if err := emit(ctx, del); err != nil {
 			// The pipeline did not take ownership: release the in-flight
 			// slot so Close does not wait on a settlement nobody will
-			// perform. The delivery itself stays settleable (ownership
-			// contract: settlement remains with whoever holds it).
+			// perform. The release records the delivery as left unsettled
+			// on its link, so closeLink keeps a durable subscription that
+			// still holds it. The delivery itself stays settleable
+			// (ownership contract: settlement remains with whoever holds it).
 			del.fireOnSettled()
 			return err
 		}

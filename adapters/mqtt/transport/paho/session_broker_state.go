@@ -16,7 +16,9 @@ import (
 // clean-start connection as its client ID (endBrokerSession). An ephemeral
 // session keeps no broker state, and a session that is not connected never
 // connected as the identity, or lost the connection and is reconnecting, so
-// neither ends anything. A non-zero before bounds the clean-start connection.
+// neither ends anything. Nor does a session holding a received QoS 1/2
+// delivery the runtime has not acknowledged: the broker session holds the only
+// copy of it. A non-zero before bounds the clean-start connection.
 func (s *Session) EndBrokerStateOnClose(before time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -31,6 +33,9 @@ func endsBrokerState(mode connectivity.SessionMode) bool {
 }
 
 // endBrokerStateAfterClose ends the broker session Close was asked to end.
+// unsettled is the number of QoS 1/2 deliveries the session received and the
+// runtime has not acknowledged: the broker session holds the only copy of each,
+// so while it is above zero nothing is sent and the broker session is kept.
 // disconnErr is the error of Close's own disconnect: while it is set, autopaho
 // may still be connected or reconnecting as the client ID, so nothing is sent
 // and the broker session is left as it is. A non-zero before is the local
@@ -39,7 +44,18 @@ func endsBrokerState(mode connectivity.SessionMode) bool {
 // sent. A failure is logged at Warn (the factory scopes the logger with
 // session_id) and counted on shared.MetricBrokerStateEndFailures; it never
 // fails the Close, because the reload that asked continues either way.
-func (s *Session) endBrokerStateAfterClose(ctx context.Context, disconnErr error, before time.Time) {
+func (s *Session) endBrokerStateAfterClose(ctx context.Context, disconnErr error, unsettled int, before time.Time) {
+	if unsettled > 0 {
+		s.countBrokerStateEndFailure()
+		if s.logger != nil {
+			s.logger.Warn("mqtt: kept the broker session the next configuration no longer has: a delivery it "+
+				"received is unsettled, and ending the session would delete it; the broker keeps the session, "+
+				"its subscriptions and its queued messages until it expires the session, which an MQTT 3.1.1 "+
+				"broker may never do",
+				"client_id", s.opts.ClientID, "unsettled", unsettled)
+		}
+		return
+	}
 	if !before.IsZero() {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, before)
@@ -55,8 +71,7 @@ func (s *Session) endBrokerStateAfterClose(ctx context.Context, disconnErr error
 		err = s.callEndBrokerSession(ctx)
 	}
 	if err != nil {
-		s.metrics.Counter(shared.MetricBrokerStateEndFailures, 1,
-			shared.Tag{Key: shared.TagKeySessionID, Value: s.metricSessionID()})
+		s.countBrokerStateEndFailure()
 		if s.logger != nil {
 			s.logger.Warn("mqtt: could not end the broker session the next configuration no longer has; "+
 				"the broker keeps the session, its subscriptions and its queued messages until it expires "+
@@ -69,6 +84,13 @@ func (s *Session) endBrokerStateAfterClose(ctx context.Context, disconnErr error
 		s.logger.Info("mqtt: ended the broker session the next configuration no longer has",
 			"client_id", s.opts.ClientID)
 	}
+}
+
+// countBrokerStateEndFailure counts one broker session Close was asked to end
+// and did not.
+func (s *Session) countBrokerStateEndFailure() {
+	s.metrics.Counter(shared.MetricBrokerStateEndFailures, 1,
+		shared.Tag{Key: shared.TagKeySessionID, Value: s.metricSessionID()})
 }
 
 // metricSessionID is the session_id tag value of this session's metrics: the

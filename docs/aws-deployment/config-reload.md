@@ -204,7 +204,10 @@ clean start and disconnects, so the broker deletes that session, its
 subscriptions and its queued messages. AMQP 1.0 closes the link with a closing
 detach, so the broker deletes the durable subscription. If the drain does not
 settle every delivery within `drain_timeout`, the state is kept (a Warn and
-`BrokerStateEndFailures`). Only the task that is
+`BrokerStateEndFailures`). So it is when the MQTT session or the AMQP 1.0
+receiver still holds a delivery it received and nothing settled, for example
+one that arrived after the drain and was dropped when its route was cancelled.
+Only the task that is
 connected as the identity does this. For an exclusive session it must also hold
 the session's lease, and that lease must not have expired by the task's own
 clock; an ending that cannot finish before that lease's deadline is abandoned.

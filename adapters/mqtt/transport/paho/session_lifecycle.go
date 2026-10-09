@@ -354,7 +354,8 @@ func (s *Session) closeEventsLocked() {
 //     channel send.
 //  5. When EndBrokerStateOnClose asked and the session was connected at
 //     step 1, end its broker session (session_broker_state.go). It runs only
-//     after step 3 stopped the session's own connection manager.
+//     after step 3 stopped the session's own connection manager, and not at
+//     all while a QoS 1/2 delivery the session received is unacknowledged.
 //
 // Delivery semantics on Close: the adapter uses manual acknowledgment
 // (see delivery.go), so a publish whose Delivery has not been settled
@@ -410,6 +411,16 @@ func (s *Session) Close(ctx context.Context) error {
 	starting := s.starting
 	startDone := s.startDone
 	s.mu.Unlock()
+
+	// A received QoS 1/2 delivery the runtime has not acknowledged — one a
+	// cancelled route abandoned, too — exists on the broker only in the broker
+	// session, so ending that session would delete it. The record is read here,
+	// before a settlement recovery racing this Close can clear it, and again at
+	// the end step, so a publish the router takes after this look counts too.
+	unsettled := 0
+	if endBrokerState {
+		unsettled = s.router.unsettledCount()
+	}
 
 	// Wait (bounded by ctx) for the in-flight Start to finish. With
 	// s.closed already set, that Start's post-AwaitConnection re-check
@@ -473,9 +484,12 @@ func (s *Session) Close(ctx context.Context) error {
 	// After the disconnect and the handler drain: the broker session is ended
 	// only once this session stopped consuming from it. A nil disconnErr means
 	// autopaho's connection manager has exited, so nothing reconnects as the
-	// client ID while the clean-start connection runs.
+	// client ID while the clean-start connection runs. Neither the disconnect
+	// nor the drain clears the unsettled record: only a connection generation
+	// advance or a settlement recovery does, and Close starts neither.
 	if endBrokerState {
-		s.endBrokerStateAfterClose(ctx, disconnErr, endBrokerStateBefore)
+		unsettled = max(unsettled, s.router.unsettledCount())
+		s.endBrokerStateAfterClose(ctx, disconnErr, unsettled, endBrokerStateBefore)
 	}
 
 	if disconnErr != nil {

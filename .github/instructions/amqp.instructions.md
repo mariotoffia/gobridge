@@ -61,5 +61,8 @@ Adds to `adapters.instructions.md`. Sources: ADR-0002, ADR-0008, ADR-0024,
   `connect_timeout`, never under `context.Background()`. A failed closing
   detach, or one the ask's `before` (the lease deadline, or the retire or stop
   budget less its headroom when earlier) leaves no time to
-  send, falls back to the connection drop. Never end on any
-  other close, and never for an `anycast` receiver.
+  send, falls back to the connection drop. So does a close while a delivery
+  the link received is unsettled: still in flight, refused by the pipeline,
+  or its settlement failed (`holdsUnsettledDelivery`; `createLink` forgets the
+  previous link's). That keep is a Warn and a `BrokerStateEndFailures`. Never
+  end on any other close, and never for an `anycast` receiver.
