@@ -10,6 +10,15 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-09
+
+The AWS runtime (`gobridge-aws`) now refuses the same configuration changes the
+Supervisor refuses because they would leave durable state behind: a changed,
+removed or renamed persistent MQTT session identity, a repointed store, a
+changed lease `session_id`, and a removed outbox or DLQ store. Such a change is
+now a planned cutover that ends with a task restart. MQTT session log records
+also name the session they belong to.
+
 ### Fixed
 
 - On a configuration that is not clustered, the AWS runtime (`gobridge-aws`)
@@ -2738,7 +2747,8 @@ consumable.
   integration coverage in CI: their tests depend on LocalStack, which requires a
   licence token that is not configured. Set `LOCALSTACK_AUTH_TOKEN` to run them.
 
-[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/mariotoffia/gobridge/releases/tag/v0.7.1
 [0.7.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.7.0
 [0.6.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.6.0
 [0.5.2]: https://github.com/mariotoffia/gobridge/releases/tag/v0.5.2
