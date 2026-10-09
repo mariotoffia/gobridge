@@ -404,16 +404,8 @@ capability the frozen value drops is otherwise silent — the config still
 validates and keeps its kind, while the core code reading it sees an absent
 value and skips the very check the capability exists for.
 
-These capabilities keep `bridge/` and `validate/` transport-neutral: core code
-asserts the generic interface and never switches on a transport name or imports
-an adapter config type.
-
-A transport whose broker keeps state that outlives a connection also implements
-two optional runtime capabilities (ADR 0024): `ports.BrokerStateKeyer` on its
-`TransportFactory`, which computes the broker state keys of a session and its
-receivers from configuration only, and `ports.BrokerStateEnder` on the session
-or receiver that holds the state, whose `EndBrokerStateOnClose` makes the next
-`Close` end it. Assert both with `var _ ports.X = (*Y)(nil)`.
+These capabilities keep `bridge/` and `validate/` transport-neutral: core code asserts the generic interface and never switches on a transport name or imports an adapter config type.
+A transport whose broker keeps state that outlives a connection also implements the runtime capabilities `ports.BrokerStateKeyer` and `ports.BrokerStateEnder` (ADR 0024); see [transport adapters](docs/internals/plugin-transport-adapters.md#transport-factory-ports-first).
 
 ### Registering the decoder
 
