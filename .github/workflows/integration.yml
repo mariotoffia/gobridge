@@ -44,6 +44,20 @@ jobs:
         with:
           go-version: '1.25'
 
+      # Docker Hub rate-limits anonymous pulls per IP, and a hosted runner
+      # shares its IP, so the suite's image builds and fixture pulls failed
+      # with 429 Too Many Requests. Google's public Docker Hub mirror serves the
+      # same images by the same digests; the daemon falls back to Docker Hub for
+      # any image the mirror lacks. The runner's own daemon.json is merged, not
+      # replaced.
+      - name: Pull Docker Hub images through mirror.gcr.io
+        run: |
+          daemon_json=/etc/docker/daemon.json
+          if sudo test -s "$daemon_json"; then current="$(sudo cat "$daemon_json")"; else current='{}'; fi
+          echo "$current" | jq '. + {"registry-mirrors": ["https://mirror.gcr.io"]}' | sudo tee "$daemon_json" >/dev/null
+          sudo systemctl restart docker
+          docker info --format 'registry mirrors: {{.RegistryConfig.Mirrors}}'
+
       # Nothing longrunning-tagged runs in the cloud. The separate-process
       # failover proof is part of `make test-long-running`, which is a
       # developer-machine run.
