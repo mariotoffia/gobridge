@@ -10,6 +10,8 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-15
+
 ### Added
 
 - `parser.WithIgnoreUnknownFields()`, an option of `parser.Parse` (which now
@@ -2860,7 +2862,8 @@ consumable.
   integration coverage in CI: their tests depend on LocalStack, which requires a
   licence token that is not configured. Set `LOCALSTACK_AUTH_TOKEN` to run them.
 
-[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/mariotoffia/gobridge/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.9.0
 [0.8.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.8.0
 [0.7.1]: https://github.com/mariotoffia/gobridge/releases/tag/v0.7.1
 [0.7.0]: https://github.com/mariotoffia/gobridge/releases/tag/v0.7.0
