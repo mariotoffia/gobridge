@@ -24,6 +24,11 @@ config and registry symmetry, so those need no review comment.
   positional parameter or an options struct passed to `New` breaks the shape
   every other adapter uses.
 - A reference to another domain context goes through `domain/shared`.
+- A plugin decoder reads its options only through `raw.Decode` and never
+  rejects an unknown key itself. The raw config decides: it refuses an unknown
+  option in a document a person writes and ignores it in a document the bridge
+  stored (ADR-0025, PLUGIN.md). A check of the decoder's own would refuse a
+  document the next release stored.
 
 ## Subject and Address
 

@@ -5,7 +5,7 @@ applyTo: "runtime/**,bridge/**,adapters/native/cluster/**,adapters/aws/cluster/*
 # Runtime, composition root and clustering
 
 Sources: ADR-0001, ADR-0004, ADR-0009, ADR-0012 to ADR-0015, ADR-0017 to
-ADR-0020, ADR-0024, `docs/internals/architecture-message-flow.md`,
+ADR-0020, ADR-0024, ADR-0025, `docs/internals/architecture-message-flow.md`,
 `docs/internals/architecture-contracts-and-clustering.md` and
 `docs/cluster/spec/cluster-config-rollout-protocol.md`.
 
@@ -208,6 +208,11 @@ ADR-0020, ADR-0024, `docs/internals/architecture-message-flow.md`,
   advances only on `Confirmed`. Revert is whole-cohort.
 - Post-commit apply failures retry with capped backoff and go terminal past the
   attempt bound (ADR-0013).
+- The AWS runtime's rollout codec (`deployment/aws/lib/bootstrap/rollout.go`)
+  decodes the last-committed artifact with `parser.WithIgnoreUnknownFields()`
+  (ADR-0025). Its digest check still refuses an artifact that contains a field
+  this release does not know, and the error names that cause next to
+  corruption so the record is not removed by hand.
 
 ## Ending broker state (ADR 0024)
 

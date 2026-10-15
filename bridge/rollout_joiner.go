@@ -145,8 +145,10 @@ func (d *ClusterRolloutDriver) resolveBootFromCommittedArtifact(ctx context.Cont
 	// it describes rather than from whatever this member happens to be holding.
 	if !d.barrier.recordedDigestMatches(committedCfg, committed.Digest, committed.ConfigVersion) {
 		return nil, fmt.Errorf("bridge: cluster.rollout: the durable last-committed config artifact "+
-			"(generation=%d) failed its digest check after decoding, so its bytes are not the config the "+
-			"cohort committed; refusing to start", committed.Generation)
+			"(generation=%d) failed its digest check after decoding: either its bytes are not the config "+
+			"the cohort committed, or a release that writes fields this release does not know committed it "+
+			"(ADR 0025), in which case run the release that committed it or a later one rather than "+
+			"removing the record; refusing to start", committed.Generation)
 	}
 	// The record did not carry this document's content digest, but the decoded
 	// artifact settles the question on content instead of on a digest: when

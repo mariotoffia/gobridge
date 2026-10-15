@@ -24,7 +24,7 @@ refuse a field they do not know:
 This exists to catch a typo. `shutdown_timout: 30s` is refused instead of
 running with the default the person did not mean.
 
-### Two documents are written by the bridge and read back later
+### Three documents are written by the bridge and read back later
 
 - **The DynamoDB configuration document.** The DynamoDB config source
   (`adapters/aws/config/dynamodb`) stores the document with
@@ -33,11 +33,17 @@ running with the default the person did not mean.
 - **The cluster rollout's last-committed artifact** (ADR 0013). A coordinated
   cluster stores the committed document, and a member decodes it when it
   starts or catches up on a commit it missed.
+- **The file config store** (`parser.FileStore`, `config/parser/store.go`).
+  The admin API saves a changed document into the bridge's configuration
+  file. People also edit that file by hand, so an unknown key in it is most
+  likely a typo. It stays strict.
 
 The release that reads a document is not always the release that stored it.
 During a rolling deploy, tasks of two releases read the same row. After a
 rollback, the older release reads what the newer release wrote. A release
-that adds a field writes it whenever the field is set. The older release then
+that adds a field writes it into the document. A field without `omitempty`,
+which is most plugin options, is written into every document the release
+stores, and a field with `omitempty` whenever it is set. The older release then
 refuses the whole document: the DynamoDB source reports
 `dynamodb config load: parse`, the task does not start or reload, and a
 joining cluster member cannot rebuild the committed configuration.
@@ -95,8 +101,8 @@ Exactly two readers pass the option:
 - the AWS runtime's rollout codec, which decodes the last-committed artifact.
 
 Every other reader stays strict: `parser.ParseFile`, the file config source
-and its watcher, `parser.NewInlineSource` and the embedded initial document,
-the admin API, and the CDK configuration source.
+and its watcher, the file config store, `parser.NewInlineSource` and the
+embedded initial document, the admin API, and the CDK configuration source.
 
 ## Consequences
 
@@ -110,12 +116,22 @@ the admin API, and the CDK configuration source.
   default.
 - The content digest (ADR 0016) of a document read leniently covers only the
   fields this release knows. A coordinated cluster's rollout record carries the
-  digest the committing member computed. When the committed document sets a
-  field one member does not know, that member computes another digest, and the
-  record's integrity check still refuses the record on boot and on reconcile.
-  Lenient reading removes the decode failure. It does not let a cohort that
-  runs two releases agree on a document that uses a field only one of them
-  knows.
+  digest the committing member computed. When the committed document contains
+  a field one member does not know, that member computes another digest, and
+  the record's integrity check still refuses the record: on boot the member
+  refuses to start, and on reconcile it keeps its running configuration. A
+  newer release writes a new field without `omitempty` into every document it
+  commits, so after a newer release commits any document, a member rolled back
+  to an older release can refuse to start. Lenient reading removes the decode
+  failure. It does not let a cohort that runs two releases agree on a document
+  that contains a field only one of them knows.
+- The digest-check error and log name both causes: corrupt bytes, or a commit
+  by a release that writes fields this release does not know. In the second
+  case the record is sound, so it is not removed by hand: run the release that
+  committed it, or a later one.
+- A release that removes a key ignores it in a stored document that still
+  contains it, instead of refusing the document. A document a person writes
+  that still sets the key is refused as before.
 - A typo written by hand straight into the DynamoDB table bypasses every strict
   path, and is now ignored instead of refused. Write the document through the
   admin API or the initial document, which read it strictly.

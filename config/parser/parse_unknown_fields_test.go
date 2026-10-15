@@ -127,7 +127,7 @@ func TestParse_UnknownPluginKind_RefusedWithAndWithoutIgnoreUnknownFields(t *tes
 	}
 }
 
-func TestParse_IgnoreUnknownFields_KeepsTrailingDataAndTypeChecks(t *testing.T) {
+func TestParse_IgnoreUnknownFields_KeepsTrailingDataTypeAndSizeChecks(t *testing.T) {
 	reject := []struct {
 		name   string
 		format parser.Format
@@ -136,6 +136,9 @@ func TestParse_IgnoreUnknownFields_KeepsTrailingDataAndTypeChecks(t *testing.T) 
 		{"json trailing document", parser.FormatJSON, `{"bridge":{"id":"b1"}}{"bridge":{"id":"b2"}}`},
 		{"yaml trailing document", parser.FormatYAML, "bridge:\n  id: b1\n---\nbridge:\n  id: b2\n"},
 		{"known field with the wrong type", parser.FormatJSON, `{"bridge":{"id":7}}`},
+		{"yaml known field with the wrong type", parser.FormatYAML, "bridge:\n  id: [b1]\n"},
+		{"larger than MaxConfigBytes", parser.FormatJSON,
+			`{"bridge":{"id":"b1"}}` + strings.Repeat(" ", parser.MaxConfigBytes)},
 		{"known plugin option with the wrong type", parser.FormatJSON,
 			`{"bridge":{"id":"b1"},"sessions":[{"id":"s1","transport":"hosttest","options":{"host":["h1"]}}]}`},
 	}

@@ -17,7 +17,9 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   not know at every level of the document, plugin `options` included, instead
   of rejecting it. An unknown plugin kind, a known field with the wrong type,
   trailing data and the size limit are still rejected. Without it, nothing
-  changes. See
+  changes. Code that stores `parser.Parse` in a variable or field of the old
+  function type must update that type, because the signature gained
+  `...parser.ParseOption`. See
   [ADR 0025](docs/adr/0025-ignore-unknown-fields-in-stored-configuration.md).
 
 ### Changed
@@ -28,9 +30,16 @@ there is no per-module changelog. See [RELEASE.md](RELEASE.md#one-version-for-ev
   release does not know. A task running an older release, during a rolling
   deploy or after a rollback, now starts on a document a newer release stored
   instead of failing with `dynamodb config load: parse`. Files, the initial
-  document and the admin API stay strict. In a coordinated cluster, a member
-  still refuses a committed artifact that sets a field it does not know, at the
-  artifact's digest check.
+  document and the admin API stay strict. A key a release removed, such as
+  `ingress_memory_budget_bytes`, is likewise ignored in a stored document; a
+  file, the initial document and the admin API still refuse it.
+- With `bridge.cluster.rollout: coordinated`, a member still refuses to start
+  when the committed artifact contains a field it does not know, at the
+  artifact's digest check. A newer release writes a new field without
+  `omitempty` into every document it commits, so after a newer release commits
+  any document, a member rolled back to an older release can refuse to start.
+  The digest-check error and the reconcile log now name this cause next to
+  corruption, so the record is not removed by hand.
 
 ## [0.8.0] - 2026-10-09
 

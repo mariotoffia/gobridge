@@ -231,7 +231,8 @@ func (a *rolloutApplier) reconcileMissedCommit(ctx context.Context, decidedGen u
 	if !a.barrier.recordedDigestMatches(cfg, committed.Digest, committed.ConfigVersion) {
 		if a.host.RolloutLogger() != nil {
 			a.host.RolloutLogger().Error("supervisor: the durable last-committed rollout artifact failed its digest "+
-				"check on reconcile; the running config is kept", "generation", committed.Generation)
+				"check on reconcile: its bytes are corrupt, or a release that writes fields this release does not "+
+				"know committed it (ADR 0025); the running config is kept", "generation", committed.Generation)
 		}
 		return nil
 	}
