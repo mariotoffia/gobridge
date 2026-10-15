@@ -210,9 +210,10 @@ ADR-0020, ADR-0024, ADR-0025, `docs/internals/architecture-message-flow.md`,
   attempt bound (ADR-0013).
 - The AWS runtime's rollout codec (`deployment/aws/lib/bootstrap/rollout.go`)
   decodes the last-committed artifact with `parser.WithIgnoreUnknownFields()`
-  (ADR-0025). Its digest check still refuses an artifact that contains a field
-  this release does not know, and the error names that cause next to
-  corruption so the record is not removed by hand.
+  (ADR-0025). The artifact's digest check, in `bridge/rollout_joiner.go` (boot)
+  and `bridge/rollout_apply.go` (reconcile), still refuses an artifact that
+  contains a field this release does not know. Its error and log name that
+  cause next to corruption so the record is not removed by hand.
 
 ## Ending broker state (ADR 0024)
 

@@ -50,7 +50,8 @@ joining cluster member cannot rebuild the committed configuration.
 
 ### An unknown field in a stored document is not a typo
 
-Every document reaches storage through one of two writers:
+This holds for the DynamoDB document and the rollout artifact, which no person
+edits. Each of them reaches storage through one of two writers:
 
 - a strict path a person uses — a configuration file, the initial document
   built into the binary, or the admin API — which refuses a typo before the
@@ -58,14 +59,17 @@ Every document reaches storage through one of two writers:
 - the library's own marshaller, which writes only the fields its release
   knows.
 
-So an unknown field in a stored document means another release wrote it.
-Refusing it protects nothing and stops a bridge that could run the document.
+So an unknown field in one of those two documents means another release wrote
+it. Refusing it protects nothing and stops a bridge that could run the
+document. The file config store is the exception: people edit that file by
+hand, so an unknown key in it may be a typo.
 
 ## Decision
 
-**A configuration document the bridge stored is read leniently: an unknown
-field is ignored at every level, plugin `options` included. A document a
-person writes is still read strictly.**
+**A configuration document the bridge stored, other than the file config
+store, is read leniently: an unknown field is ignored at every level, plugin
+`options` included. A document a person writes, the file config store
+included, is still read strictly.**
 
 ### 1. One parser option
 
