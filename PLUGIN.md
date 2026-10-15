@@ -455,8 +455,8 @@ Rules:
   explicitly (typically via `builder.RegisterTransportFactory` /
   `builder.RegisterStoreFactory`); registration is never an import
   side effect.
-- A decoder must call `Validate()` and surface the error; the bridge
-  treats parse-time errors as fatal.
+- A decoder decodes only through `raw.Decode`, never rejects an unknown key
+  itself (ADR 0025), and surfaces `Validate()`'s error; parse errors are fatal.
 - `reg.Register(kind, dec)` does **not** panic. It returns
   `ports.ErrDuplicateKind` (a typed `*shared.BridgeError`, recoverable
   via `errors.Is`) when `kind` is already registered, and

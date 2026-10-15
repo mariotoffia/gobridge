@@ -262,6 +262,31 @@ The core copies blueprint-owned state without a serialization round trip and
 does not reflect-clone adapter-owned values. This preserves logical credentials
 and numeric condition types. Observed snapshots must not be mutated while in use.
 
+## Reading a stored document
+
+The initial document and a document sent to the admin API are read strictly:
+an unknown field is rejected, so a typo never reaches the target. Once stored,
+the DynamoDB document is read leniently
+([ADR 0025](../adr/0025-ignore-unknown-fields-in-stored-configuration.md)).
+Every read of it — `Load`, the watcher and the observer — ignores a field this
+release does not know, at every level and inside plugin `options`. A task that
+runs an older release, during a rolling deploy or after a rollback, therefore
+still starts on a document a newer release stored, and each field it does not
+know takes this release's default. An unknown plugin kind, a known field with
+the wrong type and trailing data are still rejected.
+
+With `bridge.cluster.rollout: coordinated`, there is one exception. A member
+still refuses to start when the committed artifact contains a field it does
+not know, at the artifact's digest check (ADR 0025). A newer release writes a
+new field without `omitempty` into every document it commits, so a member
+rolled back to an older release can refuse to start after any newer commit.
+The record is not corrupt in that case: run the release that committed it, or
+a later one.
+
+A field the reading release ignored is not kept: when that release saves the
+document, the field is dropped. The content identity below covers only the
+fields the reading release knows.
+
 ## Configuration identities
 
 The high-availability (HA) deployment baseline uses content identity, not the

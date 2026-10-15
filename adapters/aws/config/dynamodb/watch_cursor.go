@@ -30,7 +30,10 @@ func (l *Loader) load(ctx context.Context) (*ports.BridgeConfig, bool, error) {
 		return nil, true, shared.ErrNotFound.WithMessage("config not found for bridge " + l.bridgeID)
 	}
 
-	cfg, err := parser.Parse(bytes.NewReader([]byte(rawData)), parser.FormatJSON, l.registry)
+	// The row holds a document a bridge stored, possibly one running another
+	// release, so a field this release does not know is ignored (ADR 0025).
+	cfg, err := parser.Parse(bytes.NewReader([]byte(rawData)), parser.FormatJSON, l.registry,
+		parser.WithIgnoreUnknownFields())
 	if err != nil {
 		return nil, false, shared.ErrInvalidConfig.WithMessage("dynamodb config load: parse").Wrap(err)
 	}

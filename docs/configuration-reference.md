@@ -6,6 +6,18 @@ Complete field-by-field reference for the `BridgeConfig` YAML/JSON model. All fi
 > (`"30s"`, `"5m"`, `"1h30m"`). A bare number (`30`) is **rejected** by the
 > strict decoder -- it would be read as nanoseconds, which is never intended.
 
+> **Unknown fields.** A document a person writes -- a configuration file, the
+> initial document built into the binary, or a document sent to the admin
+> API -- is read strictly: a field the bridge does not know is rejected at
+> every level, plugin `options` included, so a typo is reported. A document the
+> bridge stored itself -- the DynamoDB configuration document and the cluster
+> rollout's last-committed artifact -- is read leniently: an unknown field is
+> ignored, so a release can read a document another release stored. An unknown
+> plugin kind (a `transport` or store `type` no adapter registered) is rejected
+> in both cases. In a coordinated cluster, the committed artifact's digest check
+> still refuses an artifact that contains a field the member does not know. See
+> [ADR 0025](adr/0025-ignore-unknown-fields-in-stored-configuration.md).
+
 ## Config Model Overview
 
 ```mermaid

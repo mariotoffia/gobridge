@@ -133,13 +133,15 @@ func (h appRolloutHost) Converged(ctx context.Context) (bool, bool) {
 // Decode parses it back through THIS App's plugin registry, so a (re)joining member
 // reconstructs the committed config with a digest the joiner/reconcile paths accept.
 // bridge cannot import config/parser (arch-lint), which is why the composition root
-// injects these.
+// injects these. Decode ignores a field this release does not know: the artifact
+// may come from a member running another release (ADR 0025).
 func (a *App) rolloutCodec() (func(*ports.BridgeConfig) ([]byte, error), func([]byte) (*ports.BridgeConfig, error)) {
 	encode := func(cfg *ports.BridgeConfig) ([]byte, error) {
 		return cfgparser.MarshalBridgeConfigJSON(cfg)
 	}
 	decode := func(b []byte) (*ports.BridgeConfig, error) {
-		return cfgparser.Parse(bytes.NewReader(b), cfgparser.FormatJSON, a.pluginRegistry)
+		return cfgparser.Parse(bytes.NewReader(b), cfgparser.FormatJSON, a.pluginRegistry,
+			cfgparser.WithIgnoreUnknownFields())
 	}
 	return encode, decode
 }

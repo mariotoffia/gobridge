@@ -28,6 +28,29 @@ const (
 // Inputs exceeding this limit are rejected to prevent excessive memory use.
 const MaxConfigBytes = 4 << 20
 
+// ParseOption changes how Parse reads a document.
+type ParseOption func(*parseOptions)
+
+type parseOptions struct {
+	ignoreUnknownFields bool
+}
+
+// WithIgnoreUnknownFields makes Parse ignore a field it does not know, at
+// every level of the document, plugin `options` blocks included. Without it
+// Parse refuses such a field, so a typo in a document a person writes is
+// reported instead of dropped.
+//
+// Use it only to read a document the bridge itself stored, such as the
+// DynamoDB configuration document or the cluster rollout artifact. Another
+// release may have stored that document with fields this release does not
+// know, and refusing them would stop the bridge from starting on a document
+// it can run. Everything else stays checked: an unknown plugin kind, a known
+// field with the wrong type, trailing data and the size limit are still
+// refused. See ADR 0025.
+func WithIgnoreUnknownFields() ParseOption {
+	return func(o *parseOptions) { o.ignoreUnknownFields = true }
+}
+
 // ParseFile loads and parses a configuration file using the supplied
 // plugin registry. The format is detected from the file extension
 // unless overridden by format. Supported extensions: .yaml, .yml
@@ -50,7 +73,8 @@ func ParseFile(path string, format Format, registry *ports.Registry) (*ports.Bri
 
 // Parse reads configuration from r using the specified format and the
 // supplied plugin registry. Inputs larger than MaxConfigBytes are
-// rejected. registry MUST be non-nil.
+// rejected. registry MUST be non-nil. An unknown field is refused unless
+// WithIgnoreUnknownFields is given.
 //
 // The two-stage decode is:
 //
@@ -59,13 +83,17 @@ func ParseFile(path string, format Format, registry *ports.Registry) (*ports.Bri
 //     map[string]any;
 //  2. for every attachment point, look up the registered decoder by
 //     kind (Type/Transport, or inherited from parent for
-//     SubscriptionDef/BindingDef), build a ports.RawConfig via
-//     NewRawConfig, decode it through the registry, and stash both
+//     SubscriptionDef/BindingDef), build a ports.RawConfig like
+//     NewRawConfig does, decode it through the registry, and stash both
 //     the typed PluginConfig and the originating RawConfig on the
 //     ports blueprint type via SetDecoded.
-func Parse(r io.Reader, format Format, registry *ports.Registry) (*ports.BridgeConfig, error) {
+func Parse(r io.Reader, format Format, registry *ports.Registry, opts ...ParseOption) (*ports.BridgeConfig, error) {
 	if registry == nil {
 		return nil, fmt.Errorf("config: registry must not be nil")
+	}
+	var o parseOptions
+	for _, opt := range opts {
+		opt(&o)
 	}
 
 	lr := io.LimitReader(r, MaxConfigBytes+1)
@@ -80,12 +108,15 @@ func Parse(r io.Reader, format Format, registry *ports.Registry) (*ports.BridgeC
 	var s1 stage1Bridge
 	switch format {
 	case FormatJSON:
-		// Strict decode: reject unknown/typo top-level or nested keys
-		// (e.g. "shutdown_timout") instead of silently discarding them.
+		// Strict decode, unless WithIgnoreUnknownFields: reject unknown/typo
+		// top-level or nested keys (e.g. "shutdown_timout") instead of
+		// silently discarding them.
 		// Plugin `options:` blocks stay lax here because they decode into
 		// map[string]any; the registry applies its own strict decode.
 		dec := json.NewDecoder(bytes.NewReader(data))
-		dec.DisallowUnknownFields()
+		if !o.ignoreUnknownFields {
+			dec.DisallowUnknownFields()
+		}
 		if err := dec.Decode(&s1); err != nil {
 			return nil, fmt.Errorf("config: json parse: %w", err)
 		}
@@ -97,7 +128,7 @@ func Parse(r io.Reader, format Format, registry *ports.Registry) (*ports.BridgeC
 		}
 	case FormatYAML, FormatAuto, "":
 		dec := yaml.NewDecoder(bytes.NewReader(data))
-		dec.KnownFields(true)
+		dec.KnownFields(!o.ignoreUnknownFields)
 		// io.EOF means an empty document; preserve the prior yaml.Unmarshal
 		// behavior of leaving s1 zero-valued (validation reports the missing
 		// required fields) rather than surfacing a parse error.
@@ -137,7 +168,7 @@ func Parse(r io.Reader, format Format, registry *ports.Registry) (*ports.BridgeC
 		return nil, fmt.Errorf("config: unsupported format %q", format)
 	}
 
-	return s1.toBridgeConfig(registry)
+	return s1.toBridgeConfig(pluginDecoder{registry: registry, ignoreUnknownFields: o.ignoreUnknownFields})
 }
 
 func detectFormat(path string) Format {
@@ -235,10 +266,17 @@ type stage1Binding struct {
 	Options   map[string]any `yaml:"options,omitempty" json:"options,omitempty"`
 }
 
+// pluginDecoder decodes each plugin attachment point's `options:` block
+// through registry, ignoring an unknown option when ignoreUnknownFields is set.
+type pluginDecoder struct {
+	registry            *ports.Registry
+	ignoreUnknownFields bool
+}
+
 // toBridgeConfig walks the stage-1 result and routes every plugin
-// attachment point through registry, returning a fully populated
+// attachment point through plugins, returning a fully populated
 // *ports.BridgeConfig or the first parse error encountered.
-func (s *stage1Bridge) toBridgeConfig(registry *ports.Registry) (*ports.BridgeConfig, error) {
+func (s *stage1Bridge) toBridgeConfig(plugins pluginDecoder) (*ports.BridgeConfig, error) {
 	out := &ports.BridgeConfig{
 		Version:     int(s.Version),
 		Bridge:      s.Bridge,
@@ -248,28 +286,28 @@ func (s *stage1Bridge) toBridgeConfig(registry *ports.Registry) (*ports.BridgeCo
 	}
 
 	if s.Stores.Lease != nil {
-		sc, err := decodeStore(registry, "lease", s.Stores.Lease)
+		sc, err := decodeStore(plugins, "lease", s.Stores.Lease)
 		if err != nil {
 			return nil, err
 		}
 		out.Stores.Lease = sc
 	}
 	if s.Stores.Outbox != nil {
-		sc, err := decodeStore(registry, "outbox", s.Stores.Outbox)
+		sc, err := decodeStore(plugins, "outbox", s.Stores.Outbox)
 		if err != nil {
 			return nil, err
 		}
 		out.Stores.Outbox = sc
 	}
 	if s.Stores.DLQ != nil {
-		sc, err := decodeStore(registry, "dlq", s.Stores.DLQ)
+		sc, err := decodeStore(plugins, "dlq", s.Stores.DLQ)
 		if err != nil {
 			return nil, err
 		}
 		out.Stores.DLQ = sc
 	}
 	if s.Stores.ManagedSubscriptions != nil {
-		sc, err := decodeStore(registry, "managed_subscriptions", s.Stores.ManagedSubscriptions)
+		sc, err := decodeStore(plugins, "managed_subscriptions", s.Stores.ManagedSubscriptions)
 		if err != nil {
 			return nil, err
 		}
@@ -287,7 +325,7 @@ func (s *stage1Bridge) toBridgeConfig(registry *ports.Registry) (*ports.BridgeCo
 	}
 
 	for _, s1 := range s.Sessions {
-		sd, err := decodeSession(registry, s1)
+		sd, err := decodeSession(plugins, s1)
 		if err != nil {
 			return nil, err
 		}
@@ -295,7 +333,7 @@ func (s *stage1Bridge) toBridgeConfig(registry *ports.Registry) (*ports.BridgeCo
 	}
 
 	for _, r1 := range s.Receivers {
-		rd, err := decodeReceiver(registry, r1, sessionKindByID)
+		rd, err := decodeReceiver(plugins, r1, sessionKindByID)
 		if err != nil {
 			return nil, err
 		}
@@ -305,7 +343,7 @@ func (s *stage1Bridge) toBridgeConfig(registry *ports.Registry) (*ports.BridgeCo
 	// senderKindByID lets us resolve the inherited kind for bindings.
 	senderKindByID := make(map[string]string, len(s.Senders))
 	for _, s1 := range s.Senders {
-		sd, err := decodeSender(registry, s1, sessionKindByID)
+		sd, err := decodeSender(plugins, s1, sessionKindByID)
 		if err != nil {
 			return nil, err
 		}
@@ -317,7 +355,7 @@ func (s *stage1Bridge) toBridgeConfig(registry *ports.Registry) (*ports.BridgeCo
 	}
 
 	for _, b1 := range s.Bindings {
-		bd, err := decodeBinding(registry, b1, senderKindByID)
+		bd, err := decodeBinding(plugins, b1, senderKindByID)
 		if err != nil {
 			return nil, err
 		}
@@ -332,12 +370,12 @@ func (s *stage1Bridge) toBridgeConfig(registry *ports.Registry) (*ports.BridgeCo
 // with the user-facing attachment-point context. An empty options
 // block still consults the registry: registered decoders see a
 // zero-value RawConfig and can Validate accordingly.
-func decodePlugin(registry *ports.Registry, attachment, id, kind string, options map[string]any) (ports.PluginConfig, ports.RawConfig, error) {
+func decodePlugin(plugins pluginDecoder, attachment, id, kind string, options map[string]any) (ports.PluginConfig, ports.RawConfig, error) {
 	if kind == "" {
 		return nil, nil, fmt.Errorf("config: %s %q (kind %q): missing %s", attachment, id, kind, kindFieldName(attachment))
 	}
-	raw := NewRawConfig(options)
-	cfg, err := registry.Decode(kind, raw)
+	raw := &rawMapConfig{data: options, ignoreUnknownFields: plugins.ignoreUnknownFields}
+	cfg, err := plugins.registry.Decode(kind, raw)
 	if err != nil {
 		return nil, nil, fmt.Errorf("config: %s %q (kind %q): %w", attachment, id, kind, err)
 	}
@@ -354,8 +392,8 @@ func kindFieldName(attachment string) string {
 	return "transport"
 }
 
-func decodeStore(registry *ports.Registry, role string, s *stage1Store) (*ports.StoreConfig, error) {
-	cfg, raw, err := decodePlugin(registry, "store", role, s.Type, s.Options)
+func decodeStore(plugins pluginDecoder, role string, s *stage1Store) (*ports.StoreConfig, error) {
+	cfg, raw, err := decodePlugin(plugins, "store", role, s.Type, s.Options)
 	if err != nil {
 		return nil, err
 	}
@@ -364,8 +402,8 @@ func decodeStore(registry *ports.Registry, role string, s *stage1Store) (*ports.
 	return out, nil
 }
 
-func decodeSession(registry *ports.Registry, s stage1Session) (ports.SessionDef, error) {
-	cfg, raw, err := decodePlugin(registry, "session", s.ID, s.Transport, s.Options)
+func decodeSession(plugins pluginDecoder, s stage1Session) (ports.SessionDef, error) {
+	cfg, raw, err := decodePlugin(plugins, "session", s.ID, s.Transport, s.Options)
 	if err != nil {
 		return ports.SessionDef{}, err
 	}
@@ -394,9 +432,9 @@ func resolveTransportKind(transport, sessionID string, sessionKind map[string]st
 	return ""
 }
 
-func decodeReceiver(registry *ports.Registry, r stage1Receiver, sessionKind map[string]string) (ports.ReceiverDef, error) {
+func decodeReceiver(plugins pluginDecoder, r stage1Receiver, sessionKind map[string]string) (ports.ReceiverDef, error) {
 	kind := resolveTransportKind(r.Transport, r.SessionID, sessionKind)
-	cfg, raw, err := decodePlugin(registry, "receiver", r.ID, kind, r.Options)
+	cfg, raw, err := decodePlugin(plugins, "receiver", r.ID, kind, r.Options)
 	if err != nil {
 		return ports.ReceiverDef{}, err
 	}
@@ -413,7 +451,7 @@ func decodeReceiver(registry *ports.Registry, r stage1Receiver, sessionKind map[
 		out.Topics = make([]ports.SubscriptionDef, 0, len(r.Topics))
 		for i, t := range r.Topics {
 			subID := fmt.Sprintf("%s/topics[%d]", r.ID, i)
-			scfg, sraw, err := decodePlugin(registry, "subscription", subID, kind, t.Options)
+			scfg, sraw, err := decodePlugin(plugins, "subscription", subID, kind, t.Options)
 			if err != nil {
 				return ports.ReceiverDef{}, err
 			}
@@ -425,9 +463,9 @@ func decodeReceiver(registry *ports.Registry, r stage1Receiver, sessionKind map[
 	return out, nil
 }
 
-func decodeSender(registry *ports.Registry, s stage1Sender, sessionKind map[string]string) (ports.SenderDef, error) {
+func decodeSender(plugins pluginDecoder, s stage1Sender, sessionKind map[string]string) (ports.SenderDef, error) {
 	kind := resolveTransportKind(s.Transport, s.SessionID, sessionKind)
-	cfg, raw, err := decodePlugin(registry, "sender", s.ID, kind, s.Options)
+	cfg, raw, err := decodePlugin(plugins, "sender", s.ID, kind, s.Options)
 	if err != nil {
 		return ports.SenderDef{}, err
 	}
@@ -440,12 +478,12 @@ func decodeSender(registry *ports.Registry, s stage1Sender, sessionKind map[stri
 	return out, nil
 }
 
-func decodeBinding(registry *ports.Registry, b stage1Binding, senderKindByID map[string]string) (ports.BindingDef, error) {
+func decodeBinding(plugins pluginDecoder, b stage1Binding, senderKindByID map[string]string) (ports.BindingDef, error) {
 	kind, ok := senderKindByID[b.SenderID]
 	if !ok {
 		return ports.BindingDef{}, fmt.Errorf("config: binding %q: sender %q not found", b.ID, b.SenderID)
 	}
-	cfg, raw, err := decodePlugin(registry, "binding", b.ID, kind, b.Options)
+	cfg, raw, err := decodePlugin(plugins, "binding", b.ID, kind, b.Options)
 	if err != nil {
 		return ports.BindingDef{}, err
 	}
