@@ -108,6 +108,17 @@ For round-tripping, `config/blueprint_marshal.go` projects the typed
 `Config` back into the canonical `options:` wire form so emitted
 config matches the input shape.
 
+Both stages refuse a field they do not know, unless the caller passes
+`parser.WithIgnoreUnknownFields()` (ADR 0025,
+`docs/adr/0025-ignore-unknown-fields-in-stored-configuration.md`).
+Only readers of a document the bridge stored pass it: the DynamoDB config
+source and the AWS runtime's rollout codec. Under it, stage 1 ignores an
+unknown key, and the `RawConfig` handed to each decoder ignores an unknown
+option in `raw.Decode`. A decoder therefore reads its options only through
+`raw.Decode` and never adds a check of its own that rejects a key its
+`Config` has no field for: that check would refuse a document the next
+release stored. An unknown plugin kind is refused either way.
+
 == How to add a new plugin
 
 The checklist below mirrors what `cfgshape` enforces. All four steps

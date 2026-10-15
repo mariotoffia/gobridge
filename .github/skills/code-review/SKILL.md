@@ -72,7 +72,8 @@ These are the findings that past reviews got right and that authors fixed.
    (PLUGIN.md).
 3. **Fail closed.** Invalid, foreign, typed-nil, negative, zero-where-unset or
    trailing input is rejected with a classified error. It is never silently
-   defaulted or accepted.
+   defaulted or accepted. One exception: a configuration document the bridge
+   stored ignores an unknown field (ADR-0025, `config.instructions.md`).
 4. **Normalised forms match the runtime.** A canonical or hashed form must treat
    a value exactly as the runtime reads it (number precision, `-0.0`, empty vs
    absent).
@@ -114,6 +115,9 @@ Each of these was raised before, then declined with a reason.
   draws.
 - Deleting or rewriting plan files while the plan is still in progress.
 - Renaming shared test fixtures for style alone.
+- Parsing the DynamoDB configuration document or the rollout artifact strictly
+  again. Another release may have stored fields this one does not know
+  (ADR-0025).
 
 ## Before you post a finding
 

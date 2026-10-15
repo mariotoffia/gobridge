@@ -19,6 +19,9 @@ import (
 // into the adapter's typed Config struct in stage 2.
 type rawMapConfig struct {
 	data map[string]any
+	// ignoreUnknownFields makes Decode ignore an option the target has no
+	// field for. Parse sets it under WithIgnoreUnknownFields.
+	ignoreUnknownFields bool
 }
 
 // NewRawConfig wraps a stage-1 map[string]any as a ports.RawConfig. A
@@ -41,7 +44,9 @@ func NewRawConfig(data map[string]any) ports.RawConfig {
 // (typo, removed field, wrong shape) fails the entire decode and the
 // target is reset to its zero value before the error is returned.
 // Type mismatches (e.g. a string where an int is expected) are
-// likewise surfaced as errors — WeaklyTypedInput is disabled.
+// likewise surfaced as errors — WeaklyTypedInput is disabled. A
+// RawConfig that Parse built under WithIgnoreUnknownFields ignores an
+// unknown key instead; every other check stays.
 //
 // Convenience hooks: textual durations such as `"30s"` decode into
 // time.Duration, and comma-separated strings decode into []string —
@@ -60,7 +65,7 @@ func (r *rawMapConfig) Decode(target any) error {
 
 	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		TagName:          "json",
-		ErrorUnused:      true,
+		ErrorUnused:      !r.ignoreUnknownFields,
 		WeaklyTypedInput: false,
 		Result:           target,
 		DecodeHook: mapstructure.ComposeDecodeHookFunc(

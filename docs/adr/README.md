@@ -35,6 +35,7 @@ record remains available and links to its replacement.
 | [0022](0022-mqtt-311-by-wire-translation.md) | Speak MQTT 3.1.1 by translating the wire below the MQTT 5 client | accepted; amended by 0023, 0024 |
 | [0023](0023-keep-resumed-mqtt-311-subscriptions.md) | Keep a resumed MQTT 3.1.1 session's subscriptions | accepted |
 | [0024](0024-end-durable-broker-state-on-reload.md) | End a durable subscription's broker state on reload instead of refusing the reload | accepted |
+| [0025](0025-ignore-unknown-fields-in-stored-configuration.md) | Ignore unknown fields in a configuration document the bridge stored | accepted |
 
 ## Numbering
 

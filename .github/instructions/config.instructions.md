@@ -4,8 +4,21 @@ applyTo: "config/**,validate/**,ports/blueprint*.go,ports/plugin_config*.go,port
 
 # Configuration: loading, normal form and validation
 
-Sources: ADR-0013, ADR-0016, PLUGIN.md, `docs/internals/ddd-aggregates.md`
-and `docs/cluster/spec/cluster-config-rollout-protocol.md`.
+Sources: ADR-0013, ADR-0016, ADR-0025, PLUGIN.md,
+`docs/internals/ddd-aggregates.md` and
+`docs/cluster/spec/cluster-config-rollout-protocol.md`.
+
+## Strict and lenient reading (ADR-0025)
+
+- A document a person writes (`parser.ParseFile`, the file source,
+  `parser.NewInlineSource`, the admin API) is parsed strictly: an unknown
+  field fails at every level, plugin `options` included.
+- A document the bridge stored is parsed with
+  `parser.WithIgnoreUnknownFields()`: only the DynamoDB config source's
+  `Loader.load` and the AWS runtime's rollout codec. A new reader of a stored
+  document uses it too; a reader of a document a person writes never does.
+- The option ignores unknown fields only. An unknown plugin kind, a wrong
+  type, trailing data and the size limit still fail.
 
 ## Content identity (ADR-0016)
 

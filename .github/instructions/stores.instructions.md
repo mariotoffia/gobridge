@@ -61,6 +61,9 @@ ADR-0019, `docs/internals/architecture-stores-and-configuration.md`,
 - Config `Save` is compare-and-swap on `BridgeConfig.Version`.
   `CreateIfAbsent` creates at version 1, never replaces a present document
   (even an invalid one), and re-reads the winner.
+- A config store reads its stored document back with
+  `parser.WithIgnoreUnknownFields()` (ADR-0025): another release may have
+  stored fields this release does not know.
 - Optional capabilities (`OutboxReleaser`, `OutboxDepthReporter`,
   `OutboxClaimedDepthReporter`) cost a feature when skipped, never a build
   break.
